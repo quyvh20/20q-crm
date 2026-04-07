@@ -1,0 +1,43 @@
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+node_modules/
+.env
+.env.local
+.env.*.local
+
+# Build output
+dist/
+build/
+bin/
+out/
+tmp/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go
+crm-backend/bin/
+crm-backend/tmp/
+**/*.test
+**/coverage.out
+
+# React / Node
+crm-frontend/node_modules/
+crm-frontend/dist/
+crm-frontend/dist-ssr/
+crm-frontend/*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# docker
+postgres_data/
+redis_data/
