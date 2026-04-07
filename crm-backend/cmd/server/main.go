@@ -8,12 +8,16 @@ import (
 	"syscall"
 	"time"
 
+	delivery "crm-backend/internal/delivery/http"
+	"crm-backend/internal/repository"
+	"crm-backend/internal/usecase"
 	"crm-backend/pkg/cache"
 	"crm-backend/pkg/config"
 	"crm-backend/pkg/database"
 	"crm-backend/pkg/logger"
 
 	"github.com/getsentry/sentry-go"
+	sentrygin "github.com/getsentry/sentry-go/gin"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -41,6 +45,7 @@ func main() {
 			Dsn:              cfg.SentryDSN,
 			EnableTracing:    true,
 			TracesSampleRate: 1.0,
+			Environment:      os.Getenv("GIN_MODE"),
 		})
 		if err != nil {
 			log.Error("Sentry initialization failed", zap.Error(err))
@@ -71,15 +76,21 @@ func main() {
 	// 6. Setup Gin Router
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
-	
+
 	// Middleware
 	router.Use(gin.Recovery())
+
+	// Sentry middleware
+	if cfg.SentryDSN != "" {
+		router.Use(sentrygin.New(sentrygin.Options{Repanic: true}))
+	}
+
 	// Custom Zap Logger Middleware
 	router.Use(func(c *gin.Context) {
 		start := time.Now()
 		path := c.Request.URL.Path
 		query := c.Request.URL.RawQuery
-		
+
 		c.Next()
 
 		log.Info("HTTP Request",
@@ -92,10 +103,10 @@ func main() {
 			zap.Duration("latency", time.Since(start)),
 		)
 	})
-	
+
 	// CORS Middleware
 	router.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"*"}, // Configure properly in production
+		AllowOrigins:     []string{cfg.FrontendURL, "http://localhost:5173", "https://20q-crm.vercel.app"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},
 		ExposeHeaders:    []string{"Content-Length"},
@@ -103,15 +114,26 @@ func main() {
 		MaxAge:           12 * time.Hour,
 	}))
 
-	// 7. Routes (Health Check)
+	// 7. Health Check
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"status":  "ok",
-			"version": "0.1.0",
+			"version": "0.2.0",
 		})
 	})
 
-	// 8. Server Setup
+	// 8. Wire Clean Architecture
+	if db != nil {
+		authRepo := repository.NewAuthRepository(db)
+		authUseCase := usecase.NewAuthUseCase(authRepo, cfg)
+		authHandler := delivery.NewAuthHandler(authUseCase, cfg)
+		delivery.RegisterRoutes(router, authHandler, cfg)
+		log.Info("Auth routes registered")
+	} else {
+		log.Warn("Database not connected — auth routes skipped")
+	}
+
+	// 9. Server Setup
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,
 		Handler: router,
@@ -124,7 +146,7 @@ func main() {
 	}()
 	log.Info("Server listening", zap.String("port", cfg.Port))
 
-	// 9. Graceful Shutdown
+	// 10. Graceful Shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit

@@ -1,73 +1,108 @@
-# Tóm tắt Dự án: AI-First SaaS CRM
+# Project Summary: AI-First SaaS CRM
 
-Dự án này được xây dựng trên mô hình **Clean Architecture** để đảm bảo tính dễ kiểm thử, cấu trúc tách rời và dễ dàng cho việc bảo trì. Dưới đây là hướng dẫn về cấu trúc hệ thống và luồng dữ liệu (Data Flow) giữa các hàm.
+This project is built using **Clean Architecture** to ensure testability, decoupled structure, and ease of maintenance. Below is a guide to the system structure, data flow, and infrastructure setup.
 
-## 1. Cấu trúc thư mục (Tầng Backend)
+## 1. Directory Structure (Backend Layer)
 
 ### `cmd/server/main.go`
-Đây là điểm khởi chạy của dự án. Mọi thứ được thiết lập và tiêm (Dependency Injection) từ đây:
-1. Nạp config (`pkg/config.go`)
-2. Kết nối DB và Redis (`pkg/database` & `pkg/cache`)
-3. Khởi tạo logger và sentry
-4. Gọi ra các Repository, UseCase, Handler và đăng ký với router (Gin).
+This is the entry point of the project. Everything is initialized and injected (Dependency Injection) from here:
+1. Load configuration (`pkg/config.go`)
+2. Connect to Database and Redis (`pkg/database` & `pkg/cache`)
+3. Initialize Logger (Zap) and Sentry
+4. Instantiate Repositories, UseCases, and Handlers, then register them with the router (Gin).
 
 ### `internal/domain/`
-Đây là lõi của hệ thống (Enterprise Business Rules), KHÔNG phụ thuộc vào bất kỳ thư viện hay framework bên ngoài nào:
-- Khai báo các mô hình dữ liệu (Structs như `User`, `Customer`).
-- Khai báo các **Interfaces** định nghĩa hành vi mà `UseCase` và `Repository` sẽ phải implement. (Ví dụ: `CustomerRepository`, `CustomerUseCase`).
+The core of the system (Enterprise Business Rules), independent of any external libraries or frameworks:
+- Defines data models (Structs like `User`, `Customer`).
+- Declares **Interfaces** for `UseCase` and `Repository` implementations (e.g., `CustomerRepository`, `CustomerUseCase`).
 
 ### `internal/repository/`
-Triển khai trực tiếp (Implementation) của các interface Database thuộc `domain`:
-- Sử dụng GORM để tương tác với PostgreSQL.
-- Gọi các truy vấn phức tạp bằng pgvector ở đây.
-- Trả kết quả về dưới dạng `domain` entity.
+Direct implementations of the Database interfaces defined in `domain`:
+- Uses GORM to interact with PostgreSQL.
+- Executes complex queries using `pgvector` here.
+- Returns results as `domain` entities.
 
 ### `internal/usecase/`
-Chứa các logic nghiệp vụ cụ thể của ứng dụng (Application Business Rules):
-- Triển khai các UseCase interfaces từ `domain`.
-- Tại đây, nó sẽ nhận vào một Interface của `Repository` (được tiêm vào từ `main.go`) để thực hiện các thao tác xử lý logic trước khi lưu.
-- Ví dụ: `CreateCustomerUseCase` sẽ check validation của email, nếu ok mới gọi tới `CustomerRepository.Save()`.
+Contains application-specific business logic (Application Business Rules):
+- Implements the UseCase interfaces from `domain`.
+- Orchestrates logic by calling Repository interfaces (injected from `main.go`).
+- Example: `CreateCustomerUseCase` validates an email before calling `CustomerRepository.Save()`.
 
 ### `internal/delivery/http/`
-Tầng giao tiếp nhận dữ liệu từ thế giới bên ngoài (Controllers):
-- Nhận HTTP Request từ Client (React Frontend) -> Validate JSON đầu vào.
-- Gọi vào `UseCase` để xử lý -> Nhận lại kết quả từ `UseCase`.
-- Trả về JSON Response cho Client.
+The communication layer that interface with the outside world (Controllers):
+- Receives HTTP Requests from the Client (React Frontend) and validates input JSON.
+- Calls the appropriate `UseCase` and receives results.
+- Returns JSON Responses to the Client.
 
 ### `internal/ai/`
-Chứa các client gọi sang Cloudflare Workers AI sử dụng HTTP hoặc SDK, có thể coi như một repository chuyên dụng cho các model AI.
+Contains clients for Cloudflare Workers AI using HTTP or SDKs. Functions as a specialized repository for AI model interactions.
 
 ---
 
-## 2. Mối quan hệ luồng đi của dữ liệu (Data Flow)
+## 2. Data Flow
 
-Một luồng xử lý điển hình (Ví dụ: Tạo mới một Customer từ API) sẽ đi như sau:
+A typical processing flow (e.g., creating a new Customer via API):
 
-**1. Request từ Client (Frontend)** 
-→ `POST /api/v1/customers` (Frontend gửi request HTTP JSON).
+1. **Client Request (Frontend)**
+   → `POST /api/v1/customers` (Frontend sends HTTP JSON request).
 
-**2. Giao tiếp (Delivery Layer - `delivery/http/customer_handler.go`)**
-→ Handler nhận request, bóc tách JSON thành struct đầu vào.
-→ Truyền dữ liệu hợp lệ xuống cho tầng UseCase bằng cách gọi: `h.customerUseCase.CreateCustomer(ctx, input)`.
+2. **Communication (Delivery Layer - `delivery/http/customer_handler.go`)**
+   → Handler receives the request and unmarshals JSON into an input struct.
+   → Passes validated data to the UseCase layer: `h.customerUseCase.CreateCustomer(ctx, input)`.
 
-**3. Nghiệp vụ (UseCase Layer - `usecase/customer_usecase.go`)**
-→ UseCase tiếp nhận data. Nó có thể gọi vào `internal/ai/` để phân loại thẻ (tagging) bằng AI hoặc xử lý logic.
-→ Sau đó UseCase tiến hành gọi Repository Interface để lưu: `uc.customerRepo.Insert(ctx, domainEntity)`.
+3. **Business Logic (UseCase Layer - `usecase/customer_usecase.go`)**
+   → UseCase receives the data. It may call `internal/ai/` for tagging or classification.
+   → UseCase then calls the Repository Interface to persist data: `uc.customerRepo.Insert(ctx, domainEntity)`.
 
-**4. Dữ liệu Cơ sở (Repository Layer - `repository/customer_postgres.go`)**
-→ Triển khai thực sự của `Insert` sẽ dùng GORM query xuống DB Postgres, sau đó trả về DB entity hoặc Lỗi.
+4. **Persistence (Repository Layer - `repository/customer_postgres.go`)**
+   → The actual implementation of `Insert` uses GORM to query the Postgres DB and returns the entity or an error.
 
-**5. Response về lại Client**
-→ Luồng dữ liệu quay ngược trở lại từ: `Repository` → `UseCase` → `Delivery/Handler`. 
-→ Handler format lại dữ liệu thành JSON theo chuẩn REST rồi gửi response kết thúc (Status `200 OK`).
+5. **Client Response**
+   → Data flows back: `Repository` → `UseCase` → `Delivery/Handler`.
+   → The Handler formats the data into standard REST JSON and sends the `200 OK` response.
 
 ---
 
-## 3. Kiến trúc Frontend (crm-frontend)
+## 3. Frontend Architecture (crm-frontend)
 
-Ứng dụng Frontend sử dụng React + Vite + TailwindCSS + Shadcn UI.
-- **`src/App.tsx`**: Point truy cập của React. Nơi định ra các routes (react-router-dom nếu có).
-- **`src/AppLayout.tsx`**: Khung layout chính cung cấp Sidebar Navigation, Header và khu vực Content động. Khi xây dựng các màn hình (Customers, Settings,...), bạn sẽ render chúng bên trong phần `children` của layout này.
-- **`src/components/ui/`**: Chứa các component cơ sở từ Shadcn (Button, Input, Form) được style sẵn hoàn hảo. Đừng sửa logic vào thư mục này.
-- Khuyến khích tạo folder `src/pages/` cho thiết kế từng route. 
-- Gọi Backend APIs thông qua chuẩn Fetch hoặc thư viện liên lạc như React Query hay Axios, được tổ chức trong thư mục `src/lib/api` để tách biệt giao diện UI phần View và Logic API.
+The frontend application uses React + Vite + Tailwind CSS v4 + Shadcn UI.
+- **`src/App.tsx`**: React entry point and route definitions.
+- **`src/AppLayout.tsx`**: Main layout frame providing Sidebar Navigation, Header, and dynamic Content area.
+- **`src/components/ui/`**: Shadcn UI base components (Button, Input, Form) with pre-configured styling.
+- **`src/pages/`**: Recommended folder for individual route designs (e.g., Dashboard, Customers).
+- **`src/lib/api/`**: Organization for API calls using Fetch or Axios, separating View logic from Data fetching.
+
+---
+
+## 4. Infrastructure & Deployment (Active)
+
+The project is fully automated and deployed to production:
+
+### Persistence & Storage
+- **Production DB**: [Supabase](https://supabase.com) (PostgreSQL 16)
+  - **Extensions Enabled**: `pgvector` (AI Vector Search), `uuid-ossp` (UUID generation).
+  - **Connection**: Managed via Transaction Pooler (Port 6543).
+- **Local DB**: Docker container (`crm-postgres`) using the official `pgvector/pgvector:pg16` image.
+
+### Cloud Deployment
+- **Backend**: [Railway](https://railway.app)
+  - Auto-builds from `main` branch.
+  - Health Endpoint: `https://20q-crm-production.up.railway.app/health`
+- **Frontend**: [Vercel](https://vercel.app)
+  - Live URL: [https://20q-crm.vercel.app](https://20q-crm.vercel.app)
+
+---
+
+## 5. Development Setup
+
+### Environment Variables
+Copy `.env.example` to `.env` to configure your local environment:
+- `DATABASE_URL`: Connection string for Postgres.
+- `REDIS_URL`: Connection string for Redis.
+- `CF_AI_TOKEN`: Cloudflare Workers AI access.
+
+### Makefile Commands
+- `make dev`: Start backend server.
+- `make build`: Compile Go binary.
+- `make migrate-up`: Apply database migrations (requires `migrate` CLI).
+- `make docker-up`: Start local Postgres and Redis containers.
