@@ -169,28 +169,71 @@ func (r *contactRepository) SoftDelete(ctx context.Context, orgID, id uuid.UUID)
 
 // ============================================================
 // BulkCreate — batch insert, skip on email conflict per org
+// Uses chunked raw SQL (500 rows/chunk) for O(n/500) round-trips instead of O(n).
 // ============================================================
+
+const bulkChunkSize = 500
 
 func (r *contactRepository) BulkCreate(ctx context.Context, contacts []domain.Contact) (int64, error) {
 	if len(contacts) == 0 {
 		return 0, nil
 	}
 
-	// Use simple batch insert — deduplication is handled at the usecase level
-	// The partial unique index will cause failures for true duplicates,
-	// so we insert one-by-one to skip conflicts gracefully
-	var created int64
-	for i := range contacts {
-		err := r.db.WithContext(ctx).Create(&contacts[i]).Error
-		if err != nil {
-			// Skip duplicate email conflicts
-			continue
+	var totalCreated int64
+
+	for start := 0; start < len(contacts); start += bulkChunkSize {
+		end := start + bulkChunkSize
+		if end > len(contacts) {
+			end = len(contacts)
 		}
-		created++
+		chunk := contacts[start:end]
+
+		// Build INSERT ... VALUES (...), (...) ON CONFLICT DO NOTHING
+		// columns: id, org_id, first_name, last_name, email, phone, company_id, created_at, updated_at
+		sql := "INSERT INTO contacts (id, org_id, first_name, last_name, email, phone, company_id, created_at, updated_at) VALUES "
+		args := make([]interface{}, 0, len(chunk)*9)
+		now := time.Now().UTC()
+
+		for i, c := range chunk {
+			id := uuid.New()
+			if i > 0 {
+				sql += ","
+			}
+			sql += "(?,?,?,?,?,?,?,?,?)"
+			var emailVal interface{} = nil
+			if c.Email != nil {
+				emailVal = *c.Email
+			}
+			var phoneVal interface{} = nil
+			if c.Phone != nil {
+				phoneVal = *c.Phone
+			}
+			var companyVal interface{} = nil
+			if c.CompanyID != nil {
+				companyVal = *c.CompanyID
+			}
+			args = append(args, id, c.OrgID, c.FirstName, c.LastName, emailVal, phoneVal, companyVal, now, now)
+		}
+
+		// ON CONFLICT on partial unique index (org_id, email) where email IS NOT NULL
+		sql += " ON CONFLICT DO NOTHING"
+
+		result := r.db.WithContext(ctx).Exec(sql, args...)
+		if result.Error != nil {
+			// If batch fails, fall back to one-by-one for this chunk
+			for i := range chunk {
+				if err := r.db.WithContext(ctx).Create(&chunk[i]).Error; err == nil {
+					totalCreated++
+				}
+			}
+		} else {
+			totalCreated += result.RowsAffected
+		}
 	}
 
-	return created, nil
+	return totalCreated, nil
 }
+
 
 // ============================================================
 // Count

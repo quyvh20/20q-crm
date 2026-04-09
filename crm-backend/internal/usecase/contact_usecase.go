@@ -178,7 +178,8 @@ func (uc *contactUseCase) BulkImport(ctx context.Context, orgID uuid.UUID, file 
 	colMap := mapColumns(header)
 
 	result := &domain.ImportResult{}
-	seen := make(map[string]bool)
+	seen := make(map[string]bool)           // within-batch email dedup
+	companyCache := make(map[string]*uuid.UUID) // company name → ID cache (avoids per-row DB lookup)
 	var contacts []domain.Contact
 
 	for i, row := range rows[1:] {
@@ -219,23 +220,29 @@ func (uc *contactUseCase) BulkImport(ctx context.Context, orgID uuid.UUID, file 
 			c.Phone = &phone
 		}
 
-		// Resolve company
+		// Resolve company — use cache to avoid N DB round-trips for same name
 		if companyName != "" {
-			company, err := uc.contactRepo.FindCompanyByName(ctx, orgID, companyName)
-			if err != nil {
-				result.Errors++
-				result.ErrorDetails = append(result.ErrorDetails, fmt.Sprintf("row %d: failed to lookup company", lineNum))
-				continue
-			}
-			if company == nil {
-				company = &domain.Company{OrgID: orgID, Name: companyName}
-				if err := uc.contactRepo.CreateCompany(ctx, company); err != nil {
+			cacheKey := strings.ToLower(companyName)
+			if cachedID, ok := companyCache[cacheKey]; ok {
+				c.CompanyID = cachedID
+			} else {
+				company, err := uc.contactRepo.FindCompanyByName(ctx, orgID, companyName)
+				if err != nil {
 					result.Errors++
-					result.ErrorDetails = append(result.ErrorDetails, fmt.Sprintf("row %d: failed to create company", lineNum))
+					result.ErrorDetails = append(result.ErrorDetails, fmt.Sprintf("row %d: failed to lookup company", lineNum))
 					continue
 				}
+				if company == nil {
+					company = &domain.Company{OrgID: orgID, Name: companyName}
+					if err := uc.contactRepo.CreateCompany(ctx, company); err != nil {
+						result.Errors++
+						result.ErrorDetails = append(result.ErrorDetails, fmt.Sprintf("row %d: failed to create company", lineNum))
+						continue
+					}
+				}
+				companyCache[cacheKey] = &company.ID
+				c.CompanyID = &company.ID
 			}
-			c.CompanyID = &company.ID
 		}
 
 		// When overwrite mode: check for existing contact by email and update instead
