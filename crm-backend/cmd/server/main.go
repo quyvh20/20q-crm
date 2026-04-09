@@ -132,7 +132,11 @@ func main() {
 		contactUseCase := usecase.NewContactUseCase(contactRepo)
 		contactHandler := delivery.NewContactHandler(contactUseCase)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, cfg)
+		companyRepo := repository.NewCompanyRepository(db)
+		companyUseCase := usecase.NewCompanyUseCase(companyRepo)
+		companyHandler := delivery.NewCompanyHandler(companyUseCase)
+
+		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, cfg)
 		log.Info("Auth + Contact routes registered")
 	} else {
 		log.Warn("Database not connected — routes skipped")

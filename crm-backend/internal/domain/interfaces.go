@@ -150,3 +150,53 @@ type ContactUseCase interface {
 	BulkImport(ctx context.Context, orgID uuid.UUID, file multipart.File, filename string) (*ImportResult, error)
 	Count(ctx context.Context, orgID uuid.UUID) (int64, error)
 }
+
+// ============================================================
+// Company DTOs
+// ============================================================
+
+type CompanyFilter struct {
+	Q      string `form:"q"`
+	Cursor string `form:"cursor"`
+	Limit  int    `form:"limit"`
+}
+
+type CreateCompanyInput struct {
+	Name         string     `json:"name" binding:"required,min=1"`
+	Industry     *string    `json:"industry"`
+	Website      *string    `json:"website"`
+	CustomFields JSON       `json:"custom_fields"`
+}
+
+type UpdateCompanyInput struct {
+	Name         *string    `json:"name"`
+	Industry     *string    `json:"industry"`
+	Website      *string    `json:"website"`
+	CustomFields *JSON      `json:"custom_fields"`
+}
+
+// ============================================================
+// Company Repository Interface
+// ============================================================
+
+type CompanyRepository interface {
+	List(ctx context.Context, orgID uuid.UUID, f CompanyFilter) ([]Company, string, error)
+	GetByID(ctx context.Context, orgID, id uuid.UUID) (*Company, error)
+	Create(ctx context.Context, c *Company) error
+	Update(ctx context.Context, c *Company) error
+	SoftDelete(ctx context.Context, orgID, id uuid.UUID) error
+	Count(ctx context.Context, orgID uuid.UUID) (int64, error)
+}
+
+// ============================================================
+// Company UseCase Interface
+// ============================================================
+
+type CompanyUseCase interface {
+	List(ctx context.Context, orgID uuid.UUID, f CompanyFilter) ([]Company, string, error)
+	GetByID(ctx context.Context, orgID, id uuid.UUID) (*Company, error)
+	Create(ctx context.Context, orgID uuid.UUID, input CreateCompanyInput) (*Company, error)
+	Update(ctx context.Context, orgID, id uuid.UUID, input UpdateCompanyInput) (*Company, error)
+	Delete(ctx context.Context, orgID, id uuid.UUID) error
+	Count(ctx context.Context, orgID uuid.UUID) (int64, error)
+}
