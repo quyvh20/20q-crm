@@ -322,9 +322,8 @@ func (r *contactRepository) BulkDeleteByIDs(ctx context.Context, orgID uuid.UUID
 		return 0, nil
 	}
 	result := r.db.WithContext(ctx).
-		Model(&domain.Contact{}).
-		Where("org_id = ? AND id IN ? AND deleted_at IS NULL", orgID, ids).
-		Update("deleted_at", time.Now().UTC())
+		Where("org_id = ? AND id IN ?", orgID, ids).
+		Delete(&domain.Contact{})
 	return result.RowsAffected, result.Error
 }
 
