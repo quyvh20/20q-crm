@@ -200,3 +200,42 @@ type CompanyUseCase interface {
 	Delete(ctx context.Context, orgID, id uuid.UUID) error
 	Count(ctx context.Context, orgID uuid.UUID) (int64, error)
 }
+
+// ============================================================
+// Tag DTOs
+// ============================================================
+
+type CreateTagInput struct {
+	Name  string `json:"name" binding:"required,min=1"`
+	Color string `json:"color"`
+}
+
+type UpdateTagInput struct {
+	Name  *string `json:"name"`
+	Color *string `json:"color"`
+}
+
+// ============================================================
+// Tag Repository Interface
+// ============================================================
+
+type TagRepository interface {
+	List(ctx context.Context, orgID uuid.UUID) ([]Tag, error)
+	GetByID(ctx context.Context, orgID, id uuid.UUID) (*Tag, error)
+	Create(ctx context.Context, t *Tag) error
+	Update(ctx context.Context, t *Tag) error
+	Delete(ctx context.Context, orgID, id uuid.UUID) error
+}
+
+// ============================================================
+// Tag UseCase Interface
+// ============================================================
+
+type TagUseCase interface {
+	List(ctx context.Context, orgID uuid.UUID) ([]Tag, error)
+	GetByID(ctx context.Context, orgID, id uuid.UUID) (*Tag, error)
+	Create(ctx context.Context, orgID uuid.UUID, input CreateTagInput) (*Tag, error)
+	Update(ctx context.Context, orgID, id uuid.UUID, input UpdateTagInput) (*Tag, error)
+	Delete(ctx context.Context, orgID, id uuid.UUID) error
+}
+
