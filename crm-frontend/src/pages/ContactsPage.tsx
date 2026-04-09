@@ -15,9 +15,10 @@ function ContactsPageInner() {
   const qc = useQueryClient();
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
-  
+
   const [selectedCompanyId, setSelectedCompanyId] = useState<string>('');
-  const [selectedTagId, setSelectedTagId] = useState<string>('');
+  // Multi-select tags: Set<id>
+  const [selectedTagIds, setSelectedTagIds] = useState<Set<string>>(new Set());
   const [showFilters, setShowFilters] = useState(true);
 
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
@@ -34,11 +35,41 @@ function ContactsPageInner() {
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
+  const toggleTag = (id: string) => {
+    setSelectedTagIds(prev => {
+      const s = new Set(prev);
+      s.has(id) ? s.delete(id) : s.add(id);
+      return s;
+    });
+  };
+
+  const clearAllFilters = () => {
+    setSearchQuery('');
+    setSelectedCompanyId('');
+    setSelectedTagIds(new Set());
+  };
+
+  const hasActiveFilters = !!(searchQuery || selectedCompanyId || selectedTagIds.size > 0);
+
   const filters: ContactFilter = {
     q: debouncedQuery || undefined,
     company_id: selectedCompanyId || undefined,
-    tag_ids: selectedTagId ? [selectedTagId] : undefined,
+    tag_ids: selectedTagIds.size > 0 ? Array.from(selectedTagIds) : undefined,
   };
+
+  // Active filter chips data
+  const activeChips: { label: string; onRemove: () => void }[] = [];
+  if (searchQuery) {
+    activeChips.push({ label: `Search: "${searchQuery}"`, onRemove: () => setSearchQuery('') });
+  }
+  if (selectedCompanyId) {
+    const co = companies?.find(c => c.id === selectedCompanyId);
+    activeChips.push({ label: `Company: ${co?.name ?? '…'}`, onRemove: () => setSelectedCompanyId('') });
+  }
+  selectedTagIds.forEach(id => {
+    const tag = tags?.find(t => t.id === id);
+    activeChips.push({ label: `Tag: ${tag?.name ?? '…'}`, onRemove: () => toggleTag(id) });
+  });
 
   return (
     <div className="space-y-6 max-w-[1600px] mx-auto">
@@ -67,18 +98,19 @@ function ContactsPageInner() {
       </div>
 
       <div className="flex flex-col md:flex-row gap-6 items-start">
-        {/* Sidebar Fillters */}
+        {/* Sidebar Filters */}
         {showFilters && (
           <div className="w-full md:w-64 shrink-0 space-y-6 p-5 bg-card border rounded-xl">
             <div>
               <h3 className="font-semibold mb-3 text-sm">Filters</h3>
-              
+
               {/* Search */}
               <div className="space-y-2 mb-5">
                 <label className="text-xs font-medium text-muted-foreground">Search</label>
                 <div className="relative">
                   <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
                   <input
+                    id="filter-search"
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
@@ -92,6 +124,7 @@ function ContactsPageInner() {
               <div className="space-y-2 mb-5">
                 <label className="text-xs font-medium text-muted-foreground">Company</label>
                 <select
+                  id="filter-company"
                   value={selectedCompanyId}
                   onChange={(e) => setSelectedCompanyId(e.target.value)}
                   className="w-full px-3 py-2 rounded-lg border bg-background text-sm outline-none focus:ring-2 focus:ring-blue-500/40 transition-all"
@@ -103,44 +136,55 @@ function ContactsPageInner() {
                 </select>
               </div>
 
-              {/* Tag Filter */}
+              {/* Tag Multi-Filter */}
               <div className="space-y-2 mb-5">
-                <label className="text-xs font-medium text-muted-foreground">Tag</label>
+                <label className="text-xs font-medium text-muted-foreground">
+                  Tags
+                  {selectedTagIds.size > 0 && (
+                    <span className="ml-1.5 inline-flex items-center justify-center w-4 h-4 rounded-full bg-blue-500 text-white text-[9px] font-bold">
+                      {selectedTagIds.size}
+                    </span>
+                  )}
+                </label>
                 <div className="flex flex-wrap gap-2">
-                  <button
-                    onClick={() => setSelectedTagId('')}
-                    className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${!selectedTagId ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-background hover:bg-muted text-muted-foreground'}`}
-                  >
-                    All Tags
-                  </button>
-                  {tags?.map(t => (
-                    <button
-                      key={t.id}
-                      onClick={() => setSelectedTagId(t.id)}
-                      style={
-                        selectedTagId === t.id 
+                  {tags?.map(t => {
+                    const isActive = selectedTagIds.has(t.id);
+                    return (
+                      <button
+                        key={t.id}
+                        id={`filter-tag-${t.id}`}
+                        onClick={() => toggleTag(t.id)}
+                        style={isActive
                           ? { backgroundColor: t.color + '20', borderColor: t.color, color: t.color }
                           : { borderColor: 'var(--border)' }
-                      }
-                      className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${selectedTagId !== t.id && 'bg-background hover:bg-muted text-muted-foreground'}`}
-                    >
-                      {t.name}
-                    </button>
-                  ))}
+                        }
+                        className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${
+                          !isActive && 'bg-background hover:bg-muted text-muted-foreground'
+                        } ${isActive && 'ring-1'}`}
+                      >
+                        {t.name}
+                        {isActive && (
+                          <span className="ml-1 opacity-70">✓</span>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
+                {selectedTagIds.size > 0 && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Matching contacts with <em>any</em> selected tag
+                  </p>
+                )}
               </div>
 
-              {/* Reset */}
-              {(searchQuery || selectedCompanyId || selectedTagId) && (
+              {/* Clear */}
+              {hasActiveFilters && (
                 <button
-                  onClick={() => {
-                    setSearchQuery('');
-                    setSelectedCompanyId('');
-                    setSelectedTagId('');
-                  }}
+                  id="filter-clear-all"
+                  onClick={clearAllFilters}
                   className="w-full py-2 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted rounded-lg transition-colors"
                 >
-                  Clear Filters
+                  Clear All Filters
                 </button>
               )}
             </div>
@@ -149,7 +193,7 @@ function ContactsPageInner() {
 
         {/* Contact List */}
         <div className="flex-1 w-full min-w-0">
-          <div className="mb-4 flex items-center justify-between">
+          <div className="mb-4 flex items-center justify-between flex-wrap gap-3">
             <button
               onClick={() => setShowFilters(!showFilters)}
               className="inline-flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
@@ -157,8 +201,37 @@ function ContactsPageInner() {
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
               {showFilters ? 'Hide Filters' : 'Show Filters'}
             </button>
+
+            {/* Active filter chips */}
+            {activeChips.length > 0 && (
+              <div id="active-filter-chips" className="flex flex-wrap gap-1.5 items-center">
+                {activeChips.map((chip, i) => (
+                  <span
+                    key={i}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-blue-500/10 border border-blue-500/30 text-xs font-medium text-blue-600"
+                  >
+                    {chip.label}
+                    <button
+                      onClick={chip.onRemove}
+                      className="ml-0.5 hover:text-blue-800 transition-colors"
+                      aria-label={`Remove ${chip.label} filter`}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                    </button>
+                  </span>
+                ))}
+                {activeChips.length > 1 && (
+                  <button
+                    onClick={clearAllFilters}
+                    className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2"
+                  >
+                    Clear all
+                  </button>
+                )}
+              </div>
+            )}
           </div>
-          
+
           <ContactList
             filters={filters}
             onEdit={(contact) => setEditingContact(contact)}
