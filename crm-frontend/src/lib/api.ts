@@ -148,3 +148,32 @@ export async function importContacts(file: File) {
   if (!res.ok) throw new Error(json.error || 'Import failed');
   return json.data as ImportResult;
 }
+
+// ============================================================
+// Companies and Tags
+// ============================================================
+
+export interface Company {
+  id: string;
+  name: string;
+  industry?: string;
+}
+
+export interface Tag {
+  id: string;
+  name: string;
+  color: string;
+}
+
+export async function getCompanies() {
+  const res = await apiFetch('/api/companies');
+  const json = await res.json();
+  return json.data as Company[];
+}
+
+export async function getTags() {
+  const res = await apiFetch('/api/tags');
+  const json = await res.json();
+  return json.data as Tag[];
+}
+
