@@ -56,6 +56,9 @@ export default function ContactList({ filters, onEdit, onImport }: ContactListPr
       queryClient.invalidateQueries({ queryKey: ['contacts'] });
       setTimeout(() => setBulkFeedback(null), 3000);
     },
+    onError: (err: Error) => {
+      alert(`Bulk action failed: ${err.message}`);
+    },
   });
 
   const contacts = useMemo(
