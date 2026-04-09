@@ -6,15 +6,15 @@ import {
   type ColumnDef,
 } from '@tanstack/react-table';
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getContacts, deleteContact, type Contact } from '../../lib/api';
+import { getContacts, deleteContact, type Contact, type ContactFilter } from '../../lib/api';
 
 interface ContactListProps {
+  filters: ContactFilter;
   onEdit: (contact: Contact) => void;
   onImport: () => void;
-  searchQuery: string;
 }
 
-export default function ContactList({ onEdit, onImport, searchQuery }: ContactListProps) {
+export default function ContactList({ filters, onEdit, onImport }: ContactListProps) {
   const queryClient = useQueryClient();
   const observerRef = useRef<IntersectionObserver | null>(null);
 
@@ -25,9 +25,9 @@ export default function ContactList({ onEdit, onImport, searchQuery }: ContactLi
     isFetchingNextPage,
     isLoading,
   } = useInfiniteQuery({
-    queryKey: ['contacts', searchQuery],
+    queryKey: ['contacts', filters],
     queryFn: async ({ pageParam }) => {
-      return getContacts({ q: searchQuery || undefined, cursor: pageParam, limit: 25 });
+      return getContacts({ ...filters, cursor: pageParam, limit: 25 });
     },
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) =>
