@@ -147,7 +147,7 @@ type ContactUseCase interface {
 	Create(ctx context.Context, orgID uuid.UUID, input CreateContactInput) (*Contact, error)
 	Update(ctx context.Context, orgID, id uuid.UUID, input UpdateContactInput) (*Contact, error)
 	Delete(ctx context.Context, orgID, id uuid.UUID) error
-	BulkImport(ctx context.Context, orgID uuid.UUID, file multipart.File, filename string) (*ImportResult, error)
+	BulkImport(ctx context.Context, orgID uuid.UUID, file multipart.File, filename string, conflictMode string) (*ImportResult, error)
 	Count(ctx context.Context, orgID uuid.UUID) (int64, error)
 }
 

@@ -150,7 +150,7 @@ func (uc *contactUseCase) Count(ctx context.Context, orgID uuid.UUID) (int64, er
 // BulkImport — CSV / XLSX
 // ============================================================
 
-func (uc *contactUseCase) BulkImport(ctx context.Context, orgID uuid.UUID, file multipart.File, filename string) (*domain.ImportResult, error) {
+func (uc *contactUseCase) BulkImport(ctx context.Context, orgID uuid.UUID, file multipart.File, filename string, conflictMode string) (*domain.ImportResult, error) {
 	ext := strings.ToLower(filepath.Ext(filename))
 
 	var rows [][]string
@@ -238,6 +238,35 @@ func (uc *contactUseCase) BulkImport(ctx context.Context, orgID uuid.UUID, file 
 			c.CompanyID = &company.ID
 		}
 
+		// When overwrite mode: check for existing contact by email and update instead
+		if conflictMode == "overwrite" && email != "" {
+			existing, _, _ := uc.contactRepo.List(ctx, orgID, domain.ContactFilter{Q: email, Limit: 1})
+			if len(existing) > 0 && existing[0].Email != nil && strings.EqualFold(*existing[0].Email, email) {
+				// Mutate the existing contact and save via repo.Update(*Contact)
+				updated := existing[0]
+				updated.FirstName = firstName
+				updated.LastName = lastName
+				updated.Email = c.Email
+				updated.Phone = c.Phone
+				updated.CompanyID = c.CompanyID
+				err := uc.contactRepo.Update(ctx, &updated)
+				if err != nil {
+					result.Errors++
+					result.ErrorDetails = append(result.ErrorDetails, fmt.Sprintf("row %d: failed to update existing contact", lineNum))
+				} else {
+					result.Created++ // count as "processed"
+					// Handle tags for this overwritten contact
+					if tagsStr != "" {
+						tagNames := splitTags(tagsStr)
+						tagIDs, _ := uc.resolveTagIDs(ctx, orgID, tagNames)
+						_ = uc.contactRepo.ReplaceContactTags(ctx, existing[0].ID, tagIDs)
+					}
+				}
+				continue
+			}
+		}
+
+
 		contacts = append(contacts, c)
 
 		// Handle tags after bulk insert
@@ -249,7 +278,7 @@ func (uc *contactUseCase) BulkImport(ctx context.Context, orgID uuid.UUID, file 
 		if err != nil {
 			return nil, domain.ErrInternal
 		}
-		result.Created = int(created)
+		result.Created += int(created)
 		result.Skipped += len(contacts) - int(created)
 	}
 

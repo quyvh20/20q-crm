@@ -137,10 +137,10 @@ export async function deleteContact(id: string) {
   }
 }
 
-export async function importContacts(file: File) {
+export async function importContacts(file: File, conflictMode: 'skip' | 'overwrite' = 'skip') {
   const formData = new FormData();
   formData.append('file', file);
-  const res = await apiFetch('/api/contacts/import', {
+  const res = await apiFetch(`/api/contacts/import?conflict_mode=${conflictMode}`, {
     method: 'POST',
     body: formData,
   });

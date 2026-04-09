@@ -186,7 +186,13 @@ func (h *ContactHandler) Import(c *gin.Context) {
 	}
 	defer file.Close()
 
-	result, err := h.contactUC.BulkImport(c.Request.Context(), orgID, file, header.Filename)
+	// conflict_mode: "skip" (default) | "overwrite"
+	conflictMode := c.DefaultQuery("conflict_mode", "skip")
+	if conflictMode != "overwrite" {
+		conflictMode = "skip"
+	}
+
+	result, err := h.contactUC.BulkImport(c.Request.Context(), orgID, file, header.Filename, conflictMode)
 	if err != nil {
 		handleAppError(c, err)
 		return

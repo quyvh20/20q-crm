@@ -7,12 +7,15 @@ interface ImportModalProps {
   onSuccess: () => void;
 }
 
+type ConflictMode = 'skip' | 'overwrite';
+
 export default function ImportModal({ onClose, onSuccess }: ImportModalProps) {
   const [file, setFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [conflictMode, setConflictMode] = useState<ConflictMode>('skip');
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles.length > 0) {
@@ -41,7 +44,7 @@ export default function ImportModal({ onClose, onSuccess }: ImportModalProps) {
 
     try {
       setProgress(50);
-      const res = await importContacts(file);
+      const res = await importContacts(file, conflictMode);
       setProgress(100);
       setResult(res);
       onSuccess();
@@ -115,6 +118,45 @@ export default function ImportModal({ onClose, onSuccess }: ImportModalProps) {
                   </span>
                 ))}
               </div>
+            </div>
+
+            {/* On Duplicate Email — conflict mode toggle */}
+            <div className="mt-4">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
+                On duplicate email
+              </p>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  id="conflict-mode-skip"
+                  onClick={() => setConflictMode('skip')}
+                  className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border text-sm font-medium transition-all ${
+                    conflictMode === 'skip'
+                      ? 'border-blue-500 bg-blue-500/10 text-blue-600'
+                      : 'border-muted hover:border-muted-foreground/40 text-muted-foreground'
+                  }`}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>
+                  Skip duplicates
+                </button>
+                <button
+                  id="conflict-mode-overwrite"
+                  onClick={() => setConflictMode('overwrite')}
+                  className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border text-sm font-medium transition-all ${
+                    conflictMode === 'overwrite'
+                      ? 'border-amber-500 bg-amber-500/10 text-amber-600'
+                      : 'border-muted hover:border-muted-foreground/40 text-muted-foreground'
+                  }`}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                  Overwrite existing
+                </button>
+              </div>
+              {conflictMode === 'overwrite' && (
+                <p className="text-xs text-amber-500/80 mt-2 flex items-center gap-1">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                  Existing contacts with matching email will be updated with values from the file.
+                </p>
+              )}
             </div>
 
             {/* Progress */}
