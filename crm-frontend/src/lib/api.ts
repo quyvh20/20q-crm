@@ -149,6 +149,25 @@ export async function importContacts(file: File, conflictMode: 'skip' | 'overwri
   return json.data as ImportResult;
 }
 
+export interface BulkActionResult {
+  affected: number;
+  message: string;
+}
+
+export async function bulkAction(
+  action: 'delete' | 'assign_tag',
+  contactIds: string[],
+  tagId?: string,
+): Promise<BulkActionResult> {
+  const res = await apiFetch('/api/contacts/bulk-action', {
+    method: 'POST',
+    body: JSON.stringify({ action, contact_ids: contactIds, tag_id: tagId ?? null }),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Bulk action failed');
+  return json.data as BulkActionResult;
+}
+
 // ============================================================
 // Companies and Tags
 // ============================================================

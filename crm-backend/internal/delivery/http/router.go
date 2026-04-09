@@ -39,6 +39,7 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			contacts.PUT("/:id", RequireRole("admin", "manager", "sales"), contactHandler.Update)
 			contacts.DELETE("/:id", RequireRole("admin", "manager"), contactHandler.Delete)
 			contacts.POST("/import", RequireRole("admin", "manager"), contactHandler.Import)
+			contacts.POST("/bulk-action", RequireRole("admin", "manager", "sales"), contactHandler.BulkAction)
 		}
 
 		// Companies

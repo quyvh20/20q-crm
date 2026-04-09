@@ -135,11 +135,22 @@ type ContactRepository interface {
 	FindCompanyByName(ctx context.Context, orgID uuid.UUID, name string) (*Company, error)
 	CreateCompany(ctx context.Context, c *Company) error
 	ReplaceContactTags(ctx context.Context, contactID uuid.UUID, tagIDs []uuid.UUID) error
+	BulkDeleteByIDs(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID) (int64, error)
+	BulkAssignTag(ctx context.Context, orgID uuid.UUID, contactIDs []uuid.UUID, tagID uuid.UUID) (int64, error)
 }
 
-// ============================================================
-// Contact UseCase Interface
-// ============================================================
+// BulkAction DTOs
+type BulkActionInput struct {
+	Action     string      `json:"action" binding:"required"` // "delete" | "assign_tag"
+	ContactIDs []uuid.UUID `json:"contact_ids" binding:"required,min=1"`
+	TagID      *uuid.UUID  `json:"tag_id"` // required when action == "assign_tag"
+}
+
+type BulkActionResult struct {
+	Affected int    `json:"affected"`
+	Message  string `json:"message"`
+}
+
 
 type ContactUseCase interface {
 	List(ctx context.Context, orgID uuid.UUID, f ContactFilter) ([]Contact, string, error)
@@ -148,6 +159,7 @@ type ContactUseCase interface {
 	Update(ctx context.Context, orgID, id uuid.UUID, input UpdateContactInput) (*Contact, error)
 	Delete(ctx context.Context, orgID, id uuid.UUID) error
 	BulkImport(ctx context.Context, orgID uuid.UUID, file multipart.File, filename string, conflictMode string) (*ImportResult, error)
+	BulkAction(ctx context.Context, orgID uuid.UUID, input BulkActionInput) (*BulkActionResult, error)
 	Count(ctx context.Context, orgID uuid.UUID) (int64, error)
 }
 

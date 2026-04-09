@@ -313,5 +313,39 @@ func (r *contactRepository) CreateCompany(ctx context.Context, c *domain.Company
 	return r.db.WithContext(ctx).Create(c).Error
 }
 
+// ============================================================
+// Bulk Actions
+// ============================================================
+
+func (r *contactRepository) BulkDeleteByIDs(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	result := r.db.WithContext(ctx).
+		Model(&domain.Contact{}).
+		Where("org_id = ? AND id IN ? AND deleted_at IS NULL", orgID, ids).
+		Update("deleted_at", time.Now().UTC())
+	return result.RowsAffected, result.Error
+}
+
+func (r *contactRepository) BulkAssignTag(ctx context.Context, orgID uuid.UUID, contactIDs []uuid.UUID, tagID uuid.UUID) (int64, error) {
+	if len(contactIDs) == 0 {
+		return 0, nil
+	}
+	// Build multi-row INSERT INTO contact_tags ON CONFLICT DO NOTHING
+	sql := "INSERT INTO contact_tags (contact_id, tag_id) VALUES "
+	args := make([]interface{}, 0, len(contactIDs)*2)
+	for i, cid := range contactIDs {
+		if i > 0 {
+			sql += ","
+		}
+		sql += "(?,?)"
+		args = append(args, cid, tagID)
+	}
+	sql += " ON CONFLICT DO NOTHING"
+	result := r.db.WithContext(ctx).Exec(sql, args...)
+	return result.RowsAffected, result.Error
+}
+
 // Ensure unused import is used
 var _ = fmt.Sprintf

@@ -216,3 +216,26 @@ func parseIntParam(s string, out *int) (bool, error) {
 	*out = v
 	return true, nil
 }
+
+// POST /api/contacts/bulk-action
+func (h *ContactHandler) BulkAction(c *gin.Context) {
+	orgID, ok := GetOrgID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+
+	var input domain.BulkActionInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, domain.Err(err.Error()))
+		return
+	}
+
+	result, err := h.contactUC.BulkAction(c.Request.Context(), orgID, input)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, domain.Success(result))
+}

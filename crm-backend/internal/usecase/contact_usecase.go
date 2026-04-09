@@ -147,6 +147,44 @@ func (uc *contactUseCase) Count(ctx context.Context, orgID uuid.UUID) (int64, er
 }
 
 // ============================================================
+// BulkAction — delete or assign tag to multiple contacts
+// ============================================================
+
+func (uc *contactUseCase) BulkAction(ctx context.Context, orgID uuid.UUID, input domain.BulkActionInput) (*domain.BulkActionResult, error) {
+	if len(input.ContactIDs) == 0 {
+		return nil, domain.NewAppError(400, "contact_ids must not be empty")
+	}
+
+	switch input.Action {
+	case "delete":
+		n, err := uc.contactRepo.BulkDeleteByIDs(ctx, orgID, input.ContactIDs)
+		if err != nil {
+			return nil, domain.ErrInternal
+		}
+		return &domain.BulkActionResult{
+			Affected: int(n),
+			Message:  fmt.Sprintf("%d contact(s) deleted", n),
+		}, nil
+
+	case "assign_tag":
+		if input.TagID == nil {
+			return nil, domain.NewAppError(400, "tag_id is required for assign_tag action")
+		}
+		n, err := uc.contactRepo.BulkAssignTag(ctx, orgID, input.ContactIDs, *input.TagID)
+		if err != nil {
+			return nil, domain.ErrInternal
+		}
+		return &domain.BulkActionResult{
+			Affected: int(n),
+			Message:  fmt.Sprintf("tag assigned to %d contact(s)", len(input.ContactIDs)),
+		}, nil
+
+	default:
+		return nil, domain.NewAppError(400, "unsupported action: must be 'delete' or 'assign_tag'")
+	}
+}
+
+// ============================================================
 // BulkImport — CSV / XLSX
 // ============================================================
 
