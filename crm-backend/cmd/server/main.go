@@ -127,11 +127,17 @@ func main() {
 		authRepo := repository.NewAuthRepository(db)
 		authUseCase := usecase.NewAuthUseCase(authRepo, cfg)
 		authHandler := delivery.NewAuthHandler(authUseCase, cfg)
-		delivery.RegisterRoutes(router, authHandler, cfg)
-		log.Info("Auth routes registered")
+
+		contactRepo := repository.NewContactRepository(db)
+		contactUseCase := usecase.NewContactUseCase(contactRepo)
+		contactHandler := delivery.NewContactHandler(contactUseCase)
+
+		delivery.RegisterRoutes(router, authHandler, contactHandler, cfg)
+		log.Info("Auth + Contact routes registered")
 	} else {
-		log.Warn("Database not connected — auth routes skipped")
+		log.Warn("Database not connected — routes skipped")
 	}
+
 
 	// 9. Server Setup
 	srv := &http.Server{

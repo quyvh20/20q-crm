@@ -41,3 +41,6 @@ pnpm-debug.log*
 # docker
 postgres_data/
 redis_data/
+
+# Test files
+*.csv

@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"mime/multipart"
 
 	"github.com/google/uuid"
 )
@@ -73,4 +74,79 @@ type AuthUseCase interface {
 	GetMe(ctx context.Context, userID uuid.UUID) (*User, error)
 	GoogleLogin(ctx context.Context, code string) (*AuthResponse, error)
 	GetGoogleAuthURL(state string) string
+}
+
+// ============================================================
+// Contact DTOs
+// ============================================================
+
+type ContactFilter struct {
+	Q           string      `form:"q"`
+	CompanyID   *uuid.UUID  `form:"company_id"`
+	TagIDs      []uuid.UUID `form:"tag_ids"`
+	OwnerUserID *uuid.UUID  `form:"owner_user_id"`
+	Cursor      string      `form:"cursor"`
+	Limit       int         `form:"limit"`
+}
+
+type ImportResult struct {
+	Created      int      `json:"created"`
+	Skipped      int      `json:"skipped"`
+	Errors       int      `json:"errors"`
+	ErrorDetails []string `json:"error_details,omitempty"`
+}
+
+type CreateContactInput struct {
+	FirstName    string     `json:"first_name" binding:"required,min=1"`
+	LastName     string     `json:"last_name"`
+	Email        *string    `json:"email"`
+	Phone        *string    `json:"phone"`
+	CompanyID    *uuid.UUID `json:"company_id"`
+	OwnerUserID  *uuid.UUID `json:"owner_user_id"`
+	CustomFields JSON       `json:"custom_fields"`
+	TagIDs       []uuid.UUID `json:"tag_ids"`
+}
+
+type UpdateContactInput struct {
+	FirstName    *string    `json:"first_name"`
+	LastName     *string    `json:"last_name"`
+	Email        *string    `json:"email"`
+	Phone        *string    `json:"phone"`
+	CompanyID    *uuid.UUID `json:"company_id"`
+	OwnerUserID  *uuid.UUID `json:"owner_user_id"`
+	CustomFields *JSON      `json:"custom_fields"`
+	TagIDs       *[]uuid.UUID `json:"tag_ids"`
+}
+
+// ============================================================
+// Contact Repository Interface
+// ============================================================
+
+type ContactRepository interface {
+	List(ctx context.Context, orgID uuid.UUID, f ContactFilter) ([]Contact, string, error)
+	GetByID(ctx context.Context, orgID, id uuid.UUID) (*Contact, error)
+	Create(ctx context.Context, c *Contact) error
+	Update(ctx context.Context, c *Contact) error
+	SoftDelete(ctx context.Context, orgID, id uuid.UUID) error
+	BulkCreate(ctx context.Context, contacts []Contact) (int64, error)
+	Count(ctx context.Context, orgID uuid.UUID) (int64, error)
+	FindTagsByNames(ctx context.Context, orgID uuid.UUID, names []string) ([]Tag, error)
+	CreateTags(ctx context.Context, tags []Tag) error
+	FindCompanyByName(ctx context.Context, orgID uuid.UUID, name string) (*Company, error)
+	CreateCompany(ctx context.Context, c *Company) error
+	ReplaceContactTags(ctx context.Context, contactID uuid.UUID, tagIDs []uuid.UUID) error
+}
+
+// ============================================================
+// Contact UseCase Interface
+// ============================================================
+
+type ContactUseCase interface {
+	List(ctx context.Context, orgID uuid.UUID, f ContactFilter) ([]Contact, string, error)
+	GetByID(ctx context.Context, orgID, id uuid.UUID) (*Contact, error)
+	Create(ctx context.Context, orgID uuid.UUID, input CreateContactInput) (*Contact, error)
+	Update(ctx context.Context, orgID, id uuid.UUID, input UpdateContactInput) (*Contact, error)
+	Delete(ctx context.Context, orgID, id uuid.UUID) error
+	BulkImport(ctx context.Context, orgID uuid.UUID, file multipart.File, filename string) (*ImportResult, error)
+	Count(ctx context.Context, orgID uuid.UUID) (int64, error)
 }

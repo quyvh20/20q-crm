@@ -58,4 +58,14 @@ var (
 	ErrTokenExpired       = NewAppError(http.StatusUnauthorized, "token has expired")
 	ErrForbidden          = NewAppError(http.StatusForbidden, "insufficient permissions")
 	ErrInternal           = NewAppError(http.StatusInternalServerError, "internal server error")
+	ErrContactNotFound    = NewAppError(http.StatusNotFound, "contact not found")
+	ErrInvalidFile        = NewAppError(http.StatusBadRequest, "invalid file format, expected CSV or XLSX")
 )
+
+// CursorMeta holds cursor-based pagination info.
+type CursorMeta struct {
+	NextCursor string `json:"next_cursor,omitempty"`
+	HasMore    bool   `json:"has_more"`
+	Total      int64  `json:"total,omitempty"`
+}
+

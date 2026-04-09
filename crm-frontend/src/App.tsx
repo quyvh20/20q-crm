@@ -5,6 +5,7 @@ import AppLayout from './AppLayout';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import AuthCallbackPage from './pages/AuthCallbackPage';
+import ContactsPage from './pages/ContactsPage';
 
 // Initialize Sentry
 const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN;
@@ -70,9 +71,14 @@ function App() {
             <Route path="/auth/callback" element={<AuthCallbackPage />} />
 
             {/* Protected routes */}
-            <Route path="/*" element={
+            <Route path="/" element={
               <ProtectedRoute>
                 <AppLayout />
+              </ProtectedRoute>
+            } />
+            <Route path="/contacts" element={
+              <ProtectedRoute>
+                <AppLayout><ContactsPage /></AppLayout>
               </ProtectedRoute>
             } />
           </Routes>

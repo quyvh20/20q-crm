@@ -7,7 +7,7 @@ import (
 )
 
 // RegisterRoutes wires all API routes to the Gin engine.
-func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, cfg *config.Config) {
+func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, cfg *config.Config) {
 	api := router.Group("/api")
 
 	// ── Auth (public) ──────────────────────────────────
@@ -26,31 +26,19 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, cfg *config.Co
 		auth.GET("/me", AuthMiddleware(cfg.JWTSecret), authHandler.Me)
 	}
 
-	// ── Protected API routes (example structure) ───────
-	// Uncomment and add handlers as features are built:
-	//
-	// protected := api.Group("/")
-	// protected.Use(AuthMiddleware(cfg.JWTSecret))
-	// {
-	// 	// Contacts
-	// 	contacts := protected.Group("/contacts")
-	// 	{
-	// 		contacts.GET("/", contactHandler.List)
-	// 		contacts.POST("/", RequireRole("admin", "manager", "sales"), contactHandler.Create)
-	// 	}
-	//
-	// 	// Deals
-	// 	deals := protected.Group("/deals")
-	// 	{
-	// 		deals.GET("/", dealHandler.List)
-	// 		deals.POST("/", RequireRole("admin", "manager", "sales"), dealHandler.Create)
-	// 	}
-	//
-	// 	// Admin-only
-	// 	admin := protected.Group("/admin")
-	// 	admin.Use(RequireRole("admin"))
-	// 	{
-	// 		admin.GET("/users", userHandler.List)
-	// 	}
-	// }
+	// ── Protected API routes ───────────────────────────
+	protected := api.Group("/")
+	protected.Use(AuthMiddleware(cfg.JWTSecret))
+	{
+		// Contacts
+		contacts := protected.Group("/contacts")
+		{
+			contacts.GET("", contactHandler.List)
+			contacts.GET("/:id", contactHandler.GetByID)
+			contacts.POST("", RequireRole("admin", "manager", "sales"), contactHandler.Create)
+			contacts.PUT("/:id", RequireRole("admin", "manager", "sales"), contactHandler.Update)
+			contacts.DELETE("/:id", RequireRole("admin", "manager"), contactHandler.Delete)
+			contacts.POST("/import", RequireRole("admin", "manager"), contactHandler.Import)
+		}
+	}
 }

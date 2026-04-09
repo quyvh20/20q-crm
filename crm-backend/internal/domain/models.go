@@ -119,12 +119,14 @@ type Contact struct {
 	Email        *string        `gorm:"size:255" json:"email,omitempty"`
 	Phone        *string        `gorm:"size:50" json:"phone,omitempty"`
 	CompanyID    *uuid.UUID     `gorm:"type:uuid" json:"company_id,omitempty"`
+	OwnerUserID  *uuid.UUID     `gorm:"type:uuid" json:"owner_user_id,omitempty"`
 	CustomFields JSON           `gorm:"type:jsonb;default:'{}'" json:"custom_fields"`
 	CreatedAt    time.Time      `json:"created_at"`
 	UpdatedAt    time.Time      `json:"updated_at"`
 	DeletedAt    gorm.DeletedAt `gorm:"index" json:"-"`
 
 	Company *Company `gorm:"foreignKey:CompanyID" json:"company,omitempty"`
+	Owner   *User    `gorm:"foreignKey:OwnerUserID" json:"owner,omitempty"`
 	Tags    []Tag    `gorm:"many2many:contact_tags" json:"tags,omitempty"`
 }
 
