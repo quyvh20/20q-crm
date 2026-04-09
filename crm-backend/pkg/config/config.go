@@ -39,6 +39,16 @@ func LoadConfig() (*Config, error) {
 	viper.SetConfigFile(".env")
 	viper.AutomaticEnv()
 
+	// Explicitly bind env vars so Unmarshal picks them up even without a .env file
+	viper.BindEnv("DATABASE_URL")
+	viper.BindEnv("REDIS_URL")
+	viper.BindEnv("JWT_SECRET")
+	viper.BindEnv("GOOGLE_CLIENT_ID")
+	viper.BindEnv("GOOGLE_CLIENT_SECRET")
+	viper.BindEnv("GOOGLE_REDIRECT_URL")
+	viper.BindEnv("FRONTEND_URL")
+	viper.BindEnv("SENTRY_DSN")
+
 	// Default values
 	viper.SetDefault("PORT", "8080")
 	viper.SetDefault("JWT_SECRET", "dev-secret-change-me-in-production-32chars!")
