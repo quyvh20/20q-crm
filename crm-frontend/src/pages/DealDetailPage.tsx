@@ -141,6 +141,7 @@ export default function DealDetailPage() {
   const [newTaskDue, setNewTaskDue] = useState('');
   const [newTaskPriority, setNewTaskPriority] = useState('medium');
   const [newTaskAssignee, setNewTaskAssignee] = useState('');
+  const [pendingTasks, setPendingTasks] = useState<Record<string, boolean>>({});
 
   const { data: deal, isLoading } = useQuery<Deal>({
     queryKey: ['deal', id],
@@ -221,6 +222,7 @@ export default function DealDetailPage() {
     mutationFn: ({ taskId, completed }: { taskId: string; completed: boolean }) =>
       updateTask(taskId, { completed }),
     onMutate: async ({ taskId, completed }) => {
+      setPendingTasks(prev => ({ ...prev, [taskId]: true }));
       // Cancel any outgoing refetches so they don't overwrite optimistic update
       await queryClient.cancelQueries({ queryKey: ['tasks', id] });
       
@@ -240,13 +242,14 @@ export default function DealDetailPage() {
       
       return { previousTasks };
     },
-    onError: (err, variables, context) => {
+    onError: (err, { taskId }, context) => {
       // Rolling back if it fails
       if (context?.previousTasks) {
         queryClient.setQueryData(['tasks', id], context.previousTasks);
       }
     },
-    onSettled: () => {
+    onSettled: (data, err, { taskId }) => {
+      setPendingTasks(prev => ({ ...prev, [taskId]: false }));
       // Refresh to ensure server sync
       queryClient.invalidateQueries({ queryKey: ['tasks', id] });
     },
@@ -537,7 +540,7 @@ export default function DealDetailPage() {
                         </div>
                       </div>
                     </div>
-                    {toggleTaskMutation.isPending && toggleTaskMutation.variables?.taskId === task.id && (
+                    {pendingTasks[task.id] && (
                       <div className="shrink-0 flex items-center justify-center p-1">
                         <svg className="animate-spin h-4 w-4 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
