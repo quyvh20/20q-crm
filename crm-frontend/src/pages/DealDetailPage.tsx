@@ -208,7 +208,7 @@ export default function DealDetailPage() {
 
       return { previousTasks };
     },
-    onError: (err, variables, context) => {
+    onError: (_err, _variables, context) => {
       if (context?.previousTasks) {
         queryClient.setQueryData(['tasks', id], context.previousTasks);
       }
@@ -242,13 +242,13 @@ export default function DealDetailPage() {
       
       return { previousTasks };
     },
-    onError: (err, { taskId }, context) => {
+    onError: (_err, _vars, context) => {
       // Rolling back if it fails
       if (context?.previousTasks) {
         queryClient.setQueryData(['tasks', id], context.previousTasks);
       }
     },
-    onSettled: (data, err, { taskId }) => {
+    onSettled: (_data, _err, { taskId }) => {
       setPendingTasks(prev => ({ ...prev, [taskId]: false }));
       // Refresh to ensure server sync
       queryClient.invalidateQueries({ queryKey: ['tasks', id] });
