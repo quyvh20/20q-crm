@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import * as Sentry from '@sentry/react';
 import { AuthProvider, useAuth } from './lib/auth';
 import AppLayout from './AppLayout';
@@ -24,6 +25,10 @@ if (SENTRY_DSN) {
     environment: import.meta.env.MODE,
   });
 }
+
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { staleTime: 30_000, retry: 1 } },
+});
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth();
@@ -63,6 +68,7 @@ function PublicRoute({ children }: { children: React.ReactNode }) {
 
 function App() {
   return (
+    <QueryClientProvider client={queryClient}>
     <Sentry.ErrorBoundary fallback={<p className="p-8 text-red-400">Something went wrong.</p>}>
       <BrowserRouter>
         <AuthProvider>
@@ -97,6 +103,7 @@ function App() {
         </AuthProvider>
       </BrowserRouter>
     </Sentry.ErrorBoundary>
+    </QueryClientProvider>
   );
 }
 
