@@ -191,7 +191,34 @@ export default function DealDetailPage() {
   const toggleTaskMutation = useMutation({
     mutationFn: ({ taskId, completed }: { taskId: string; completed: boolean }) =>
       updateTask(taskId, { completed }),
-    onSuccess: () => {
+    onMutate: async ({ taskId, completed }) => {
+      // Cancel any outgoing refetches so they don't overwrite optimistic update
+      await queryClient.cancelQueries({ queryKey: ['tasks', id] });
+      
+      // Snapshot previous value
+      const previousTasks = queryClient.getQueryData<Task[]>(['tasks', id]);
+      
+      // Optimistically update to new value
+      if (previousTasks) {
+        queryClient.setQueryData<Task[]>(['tasks', id], prev => 
+          prev?.map(task => 
+            task.id === taskId 
+              ? { ...task, completed_at: completed ? new Date().toISOString() : undefined }
+              : task
+          )
+        );
+      }
+      
+      return { previousTasks };
+    },
+    onError: (err, variables, context) => {
+      // Rolling back if it fails
+      if (context?.previousTasks) {
+        queryClient.setQueryData(['tasks', id], context.previousTasks);
+      }
+    },
+    onSettled: () => {
+      // Refresh to ensure server sync
       queryClient.invalidateQueries({ queryKey: ['tasks', id] });
     },
   });
