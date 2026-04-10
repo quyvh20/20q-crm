@@ -198,15 +198,16 @@ export default function DealDetailPage() {
           <div className="rounded-xl border bg-card p-6">
             <div className="flex items-start justify-between mb-4">
               <div>
-                <div className="flex items-center gap-2 group">
+                <div className="flex items-center gap-4">
                   <h1 className="text-2xl font-bold">{deal.title}</h1>
                   <button
                     id="edit-deal-btn"
                     onClick={() => setShowEdit(true)}
-                    className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-muted"
+                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-blue-600/10 text-blue-600 text-xs font-semibold hover:bg-blue-600 hover:text-white transition-all border border-blue-600/20"
                     title="Edit deal"
                   >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+                    Edit
                   </button>
                 </div>
                 {deal.contact && (
