@@ -111,7 +111,15 @@ func (r *dealRepository) Create(ctx context.Context, d *domain.Deal) error {
 // ============================================================
 
 func (r *dealRepository) Update(ctx context.Context, d *domain.Deal) error {
-	return r.db.WithContext(ctx).Save(d).Error
+	return r.db.WithContext(ctx).
+		Model(d).
+		Select(
+			"title", "contact_id", "company_id", "stage_id",
+			"value", "probability", "owner_user_id",
+			"expected_close_at", "is_won", "is_lost", "closed_at",
+			"custom_fields", "updated_at",
+		).
+		Updates(d).Error
 }
 
 // ============================================================
