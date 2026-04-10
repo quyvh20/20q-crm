@@ -178,13 +178,42 @@ export default function DealDetailPage() {
       priority: newTaskPriority,
       assigned_to: newTaskAssignee || undefined,
     }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tasks', id] });
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey: ['tasks', id] });
+      const previousTasks = queryClient.getQueryData<Task[]>(['tasks', id]);
+
+      const fakeTask: Task = {
+        id: `temp-${Date.now()}`,
+        org_id: 'temp',
+        title: newTaskTitle,
+        deal_id: id,
+        assigned_to: newTaskAssignee || undefined,
+        due_at: newTaskDue ? new Date(newTaskDue).toISOString() : undefined,
+        priority: newTaskPriority,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      if (previousTasks) {
+        queryClient.setQueryData<Task[]>(['tasks', id], [fakeTask, ...previousTasks]);
+      }
+
+      // Optimistically close form and reset state instantly
       setNewTaskTitle('');
       setNewTaskDue('');
       setNewTaskPriority('medium');
       setNewTaskAssignee('');
       setShowAddTask(false);
+
+      return { previousTasks };
+    },
+    onError: (err, variables, context) => {
+      if (context?.previousTasks) {
+        queryClient.setQueryData(['tasks', id], context.previousTasks);
+      }
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['tasks', id] });
     },
   });
 
