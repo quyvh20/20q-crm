@@ -137,17 +137,16 @@ func (uc *dealUseCase) ChangeStage(ctx context.Context, orgID, dealID uuid.UUID,
 		deal.IsWon = true
 		now := time.Now()
 		deal.ClosedAt = &now
-		activityType = "won"
-		activityTitle = "Deal won!"
+		activityTitle = "Deal won! 🏆"
 	} else if stage.IsLost {
 		deal.IsLost = true
 		now := time.Now()
 		deal.ClosedAt = &now
 		if input.LostReason != nil {
-			// Store lost reason (we don't have a field, so skip or add later)
+			activityTitle = fmt.Sprintf("Deal lost: %s", *input.LostReason)
+		} else {
+			activityTitle = "Deal lost"
 		}
-		activityType = "lost"
-		activityTitle = "Deal lost"
 	}
 
 	if err := uc.dealRepo.Update(ctx, deal); err != nil {
