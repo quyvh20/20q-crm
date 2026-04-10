@@ -504,37 +504,47 @@ export default function DealDetailPage() {
                 return (
                   <div
                     key={task.id}
-                    className={`flex items-center gap-3 p-3 rounded-lg border transition-colors ${
+                    className={`flex items-start justify-between gap-3 p-3 rounded-lg border transition-colors ${
                       task.completed_at ? 'bg-muted/20 opacity-60' : 'bg-card hover:bg-muted/30'
                     }`}
                   >
-                    <input
-                      type="checkbox"
-                      checked={!!task.completed_at}
-                      onChange={() => toggleTaskMutation.mutate({ taskId: task.id, completed: !task.completed_at })}
-                      className="h-4 w-4 rounded border-2 accent-blue-600 shrink-0 cursor-pointer"
-                    />
-                    <div className="flex-1 min-w-0">
-                      <p className={`text-sm font-medium ${task.completed_at ? 'line-through text-muted-foreground' : ''}`}>
-                        {task.title}
-                      </p>
-                      <div className="flex items-center gap-2 mt-1 flex-wrap">
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${priorityColors[task.priority] || priorityColors.medium}`}>
-                          {task.priority}
-                        </span>
-                        {task.due_at && (
-                          <span className={`text-[10px] ${isOverdue ? 'text-red-500 font-bold' : 'text-muted-foreground'}`}>
-                            {isOverdue ? '⚠ ' : '📅 '}
-                            {new Date(task.due_at).toLocaleDateString()}
+                    <div className="flex items-start gap-3 flex-1 min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={!!task.completed_at}
+                        onChange={() => toggleTaskMutation.mutate({ taskId: task.id, completed: !task.completed_at })}
+                        className="h-4 w-4 mt-0.5 rounded border-2 accent-blue-600 shrink-0 cursor-pointer"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <p className={`text-sm font-medium ${task.completed_at ? 'line-through text-muted-foreground' : ''}`}>
+                          {task.title}
+                        </p>
+                        <div className="flex items-center gap-2 mt-1 flex-wrap">
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${priorityColors[task.priority] || priorityColors.medium}`}>
+                            {task.priority}
                           </span>
-                        )}
-                        {assignee && (
-                          <span className="text-[10px] text-muted-foreground">
-                            👤 {assignee.first_name} {assignee.last_name}
-                          </span>
-                        )}
+                          {task.due_at && (
+                            <span className={`text-[10px] ${isOverdue ? 'text-red-500 font-bold' : 'text-muted-foreground'}`}>
+                              {isOverdue ? '⚠ ' : '📅 '}
+                              {new Date(task.due_at).toLocaleDateString()}
+                            </span>
+                          )}
+                          {assignee && (
+                            <span className="text-[10px] text-muted-foreground">
+                              👤 {assignee.first_name} {assignee.last_name}
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
+                    {toggleTaskMutation.isPending && toggleTaskMutation.variables?.taskId === task.id && (
+                      <div className="shrink-0 flex items-center justify-center p-1">
+                        <svg className="animate-spin h-4 w-4 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                      </div>
+                    )}
                   </div>
                 );
               })}
