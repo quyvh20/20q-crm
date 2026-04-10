@@ -2,6 +2,27 @@ import { useQuery } from '@tanstack/react-query';
 import { getForecast, type ForecastRow } from '../../lib/api';
 import { Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Line, ComposedChart } from 'recharts';
 
+/** Build a full 12-month window starting from the current month */
+function buildFullYear(apiData: ForecastRow[]) {
+  const lookup = new Map(apiData.map(r => [r.month, r]));
+  const now = new Date();
+  const months: { month: string; label: string; revenue: number; deals_count: number }[] = [];
+
+  for (let i = 0; i < 12; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const label = d.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
+    const row = lookup.get(key);
+    months.push({
+      month: key,
+      label,
+      revenue: row ? Math.round(row.expected_revenue) : 0,
+      deals_count: row ? row.deals_count : 0,
+    });
+  }
+  return months;
+}
+
 export default function ForecastChart() {
   const { data: forecast = [], isLoading } = useQuery<ForecastRow[]>({
     queryKey: ['forecast'],
@@ -12,25 +33,8 @@ export default function ForecastChart() {
     return <div className="h-64 rounded-xl bg-muted/50 animate-pulse" />;
   }
 
-  if (forecast.length === 0) {
-    return (
-      <div className="h-64 rounded-xl border bg-card flex items-center justify-center">
-        <p className="text-sm text-muted-foreground">No forecast data — add deals with expected close dates</p>
-      </div>
-    );
-  }
-
-  const formatMonth = (m: string) => {
-    const [year, month] = m.split('-');
-    const date = new Date(Number(year), Number(month) - 1);
-    return date.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
-  };
-
-  const formatted = forecast.map(r => ({
-    ...r,
-    label: formatMonth(r.month),
-    revenue: Math.round(r.expected_revenue),
-  }));
+  const formatted = buildFullYear(forecast);
+  const maxRevenue = Math.max(...formatted.map(f => f.revenue), 1);
 
   return (
     <div className="rounded-xl border bg-card p-4">
@@ -44,12 +48,14 @@ export default function ForecastChart() {
             tick={{ fontSize: 11 }}
             stroke="hsl(var(--muted-foreground))"
             tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}K`}
+            domain={[0, Math.ceil(maxRevenue * 1.2 / 1000) * 1000]}
           />
           <YAxis
             yAxisId="right"
             orientation="right"
             tick={{ fontSize: 11 }}
             stroke="hsl(var(--muted-foreground))"
+            allowDecimals={false}
           />
           <Tooltip
             contentStyle={{
