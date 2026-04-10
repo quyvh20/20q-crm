@@ -23,6 +23,21 @@ export default function ContactList({ filters, onEdit, onImport }: ContactListPr
   const [showTagDropdown, setShowTagDropdown] = useState(false);
   const [bulkFeedback, setBulkFeedback] = useState<string | null>(null);
 
+  // Custom confirm dialog state
+  const [confirmDialog, setConfirmDialog] = useState<{
+    isOpen: boolean;
+    type: 'single' | 'bulk';
+    title: string;
+    message: string;
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    type: 'single',
+    title: '',
+    message: '',
+    onConfirm: () => {},
+  });
+
   const {
     data,
     fetchNextPage,
@@ -43,7 +58,10 @@ export default function ContactList({ filters, onEdit, onImport }: ContactListPr
 
   const deleteMutation = useMutation({
     mutationFn: deleteContact,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['contacts'] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['contacts'] });
+      setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+    },
   });
 
   const bulkMutation = useMutation({
@@ -53,11 +71,13 @@ export default function ContactList({ filters, onEdit, onImport }: ContactListPr
       setBulkFeedback(result.message);
       setSelectedIds(new Set());
       setShowTagDropdown(false);
+      setConfirmDialog(prev => ({ ...prev, isOpen: false }));
       queryClient.invalidateQueries({ queryKey: ['contacts'] });
       setTimeout(() => setBulkFeedback(null), 3000);
     },
     onError: (err: Error) => {
       alert(`Bulk action failed: ${err.message}`);
+      setConfirmDialog(prev => ({ ...prev, isOpen: false }));
     },
   });
 
@@ -202,7 +222,13 @@ export default function ContactList({ filters, onEdit, onImport }: ContactListPr
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                if (confirm('Delete this contact?')) deleteMutation.mutate(row.original.id);
+                setConfirmDialog({
+                  isOpen: true,
+                  type: 'single',
+                  title: 'Delete Contact',
+                  message: `Are you sure you want to delete ${row.original.first_name} ${row.original.last_name}?`,
+                  onConfirm: () => deleteMutation.mutate(row.original.id),
+                });
               }}
               className="p-1.5 rounded-md hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-colors"
               title="Delete"
@@ -258,7 +284,7 @@ export default function ContactList({ filters, onEdit, onImport }: ContactListPr
               <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
             </button>
             {showTagDropdown && (
-              <div className="absolute top-full left-0 mt-1 w-48 rounded-xl bg-popover border shadow-xl z-50 overflow-hidden py-1">
+              <div className="absolute top-full left-0 mt-1 w-48 rounded-xl bg-popover border shadow-xl z-50 overflow-hidden py-1 text-foreground">
                 {allTags.length === 0 && (
                   <p className="px-3 py-2 text-xs text-muted-foreground">No tags available</p>
                 )}
@@ -284,9 +310,13 @@ export default function ContactList({ filters, onEdit, onImport }: ContactListPr
           <button
             id="bulk-delete-btn"
             onClick={() => {
-              if (confirm(`Delete ${selectedIds.size} contact(s)? This cannot be undone.`)) {
-                bulkMutation.mutate({ action: 'delete' });
-              }
+              setConfirmDialog({
+                isOpen: true,
+                type: 'bulk',
+                title: 'Delete Contacts',
+                message: `Are you sure you want to delete ${selectedIds.size} contact(s)? This action cannot be undone.`,
+                onConfirm: () => bulkMutation.mutate({ action: 'delete' }),
+              });
             }}
             disabled={bulkMutation.isPending}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/80 hover:bg-red-500 transition-colors text-sm font-medium disabled:opacity-50"
@@ -375,6 +405,37 @@ export default function ContactList({ filters, onEdit, onImport }: ContactListPr
           <span className="ml-2 text-blue-500">&bull; {selectedIds.size} selected</span>
         )}
       </div>
+
+      {/* Custom Confirm Dialog Modal */}
+      {confirmDialog.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-card w-full max-w-md rounded-2xl shadow-xl overflow-hidden animate-in zoom-in-95 duration-200">
+            <div className="p-6">
+              <h3 className="text-lg font-semibold mb-2">{confirmDialog.title}</h3>
+              <p className="text-muted-foreground text-sm">{confirmDialog.message}</p>
+            </div>
+            <div className="px-6 py-4 bg-muted/30 flex justify-end gap-3 border-t">
+              <button
+                onClick={() => setConfirmDialog(prev => ({ ...prev, isOpen: false }))}
+                className="px-4 py-2 text-sm font-medium rounded-lg hover:bg-muted transition-colors"
+                disabled={deleteMutation.isPending || bulkMutation.isPending}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDialog.onConfirm}
+                disabled={deleteMutation.isPending || bulkMutation.isPending}
+                className="px-4 py-2 text-sm font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors flex items-center gap-2 disabled:opacity-50"
+              >
+                {(deleteMutation.isPending || bulkMutation.isPending) ? (
+                  <div className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                ) : null}
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
