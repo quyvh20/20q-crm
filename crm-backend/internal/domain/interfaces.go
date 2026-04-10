@@ -406,3 +406,62 @@ type ActivityUseCase interface {
 	Create(ctx context.Context, orgID uuid.UUID, userID uuid.UUID, input CreateActivityInput) (*Activity, error)
 }
 
+// ============================================================
+// Task DTOs
+// ============================================================
+
+type TaskFilter struct {
+	DealID     *uuid.UUID `form:"deal_id"`
+	ContactID  *uuid.UUID `form:"contact_id"`
+	AssignedTo *uuid.UUID `form:"assigned_to"`
+	Completed  *bool      `form:"completed"`
+}
+
+type CreateTaskInput struct {
+	Title      string     `json:"title" binding:"required,min=1"`
+	DealID     *uuid.UUID `json:"deal_id"`
+	ContactID  *uuid.UUID `json:"contact_id"`
+	AssignedTo *uuid.UUID `json:"assigned_to"`
+	DueAt      *string    `json:"due_at"`
+	Priority   string     `json:"priority"` // low, medium, high
+}
+
+type UpdateTaskInput struct {
+	Title      *string    `json:"title"`
+	AssignedTo *uuid.UUID `json:"assigned_to"`
+	DueAt      *string    `json:"due_at"`
+	Priority   *string    `json:"priority"`
+	Completed  *bool      `json:"completed"`
+}
+
+// ============================================================
+// Task Repository Interface
+// ============================================================
+
+type TaskRepository interface {
+	List(ctx context.Context, orgID uuid.UUID, f TaskFilter) ([]Task, error)
+	GetByID(ctx context.Context, orgID, id uuid.UUID) (*Task, error)
+	Create(ctx context.Context, t *Task) error
+	Update(ctx context.Context, t *Task) error
+	SoftDelete(ctx context.Context, orgID, id uuid.UUID) error
+}
+
+// ============================================================
+// Task UseCase Interface
+// ============================================================
+
+type TaskUseCase interface {
+	List(ctx context.Context, orgID uuid.UUID, f TaskFilter) ([]Task, error)
+	Create(ctx context.Context, orgID uuid.UUID, input CreateTaskInput) (*Task, error)
+	Update(ctx context.Context, orgID uuid.UUID, id uuid.UUID, input UpdateTaskInput) (*Task, error)
+	Delete(ctx context.Context, orgID uuid.UUID, id uuid.UUID) error
+}
+
+// ============================================================
+// User Listing (for assignee dropdowns)
+// ============================================================
+
+type UserRepository interface {
+	ListByOrgID(ctx context.Context, orgID uuid.UUID) ([]User, error)
+}
+

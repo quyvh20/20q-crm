@@ -381,3 +381,90 @@ export async function createActivity(data: {
   return json.data as Activity;
 }
 
+// ============================================================
+// Tasks
+// ============================================================
+
+export interface Task {
+  id: string;
+  org_id: string;
+  title: string;
+  deal_id?: string;
+  contact_id?: string;
+  assigned_to?: string;
+  due_at?: string;
+  completed_at?: string;
+  priority: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskFilter {
+  deal_id?: string;
+  contact_id?: string;
+  assigned_to?: string;
+  completed?: boolean;
+}
+
+export async function getTasks(filter: TaskFilter = {}): Promise<Task[]> {
+  const params = new URLSearchParams();
+  if (filter.deal_id) params.set('deal_id', filter.deal_id);
+  if (filter.contact_id) params.set('contact_id', filter.contact_id);
+  if (filter.assigned_to) params.set('assigned_to', filter.assigned_to);
+  if (filter.completed !== undefined) params.set('completed', String(filter.completed));
+  const res = await apiFetch(`/api/tasks?${params.toString()}`);
+  const json = await res.json();
+  return (json.data || []) as Task[];
+}
+
+export async function createTask(data: {
+  title: string;
+  deal_id?: string;
+  contact_id?: string;
+  assigned_to?: string;
+  due_at?: string;
+  priority?: string;
+}): Promise<Task> {
+  const res = await apiFetch('/api/tasks', { method: 'POST', body: JSON.stringify(data) });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to create task');
+  return json.data as Task;
+}
+
+export async function updateTask(id: string, data: Partial<{
+  title: string;
+  assigned_to: string;
+  due_at: string;
+  priority: string;
+  completed: boolean;
+}>): Promise<Task> {
+  const res = await apiFetch(`/api/tasks/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to update task');
+  return json.data as Task;
+}
+
+export async function deleteTask(id: string) {
+  const res = await apiFetch(`/api/tasks/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await res.json();
+    throw new Error(json.error || 'Failed to delete task');
+  }
+}
+
+// ============================================================
+// Users (for assignee dropdowns)
+// ============================================================
+
+export interface UserListItem {
+  id: string;
+  first_name: string;
+  last_name: string;
+  email: string;
+}
+
+export async function getUsers(): Promise<UserListItem[]> {
+  const res = await apiFetch('/api/users');
+  const json = await res.json();
+  return (json.data || []) as UserListItem[];
+}

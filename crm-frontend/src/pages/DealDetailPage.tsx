@@ -1,6 +1,6 @@
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getDeal, deleteDeal, getActivities, getStages, changeDealStage, updateDeal, type Deal, type Activity, type PipelineStage } from '../lib/api';
+import { getDeal, deleteDeal, getActivities, getStages, changeDealStage, updateDeal, getTasks, createTask, updateTask, getUsers, type Deal, type Activity, type PipelineStage, type Task, type UserListItem } from '../lib/api';
 import ActivityForm from '../components/deals/ActivityForm';
 import { useState } from 'react';
 
@@ -136,6 +136,11 @@ export default function DealDetailPage() {
   const queryClient = useQueryClient();
   const [showDelete, setShowDelete] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
+  const [showAddTask, setShowAddTask] = useState(false);
+  const [newTaskTitle, setNewTaskTitle] = useState('');
+  const [newTaskDue, setNewTaskDue] = useState('');
+  const [newTaskPriority, setNewTaskPriority] = useState('medium');
+  const [newTaskAssignee, setNewTaskAssignee] = useState('');
 
   const { data: deal, isLoading } = useQuery<Deal>({
     queryKey: ['deal', id],
@@ -152,6 +157,43 @@ export default function DealDetailPage() {
   const { data: stages = [] } = useQuery<PipelineStage[]>({
     queryKey: ['stages'],
     queryFn: getStages,
+  });
+
+  const { data: tasks = [] } = useQuery<Task[]>({
+    queryKey: ['tasks', id],
+    queryFn: () => getTasks({ deal_id: id }),
+    enabled: !!id,
+  });
+
+  const { data: users = [] } = useQuery<UserListItem[]>({
+    queryKey: ['users'],
+    queryFn: getUsers,
+  });
+
+  const createTaskMutation = useMutation({
+    mutationFn: () => createTask({
+      title: newTaskTitle,
+      deal_id: id,
+      due_at: newTaskDue ? new Date(newTaskDue).toISOString() : undefined,
+      priority: newTaskPriority,
+      assigned_to: newTaskAssignee || undefined,
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tasks', id] });
+      setNewTaskTitle('');
+      setNewTaskDue('');
+      setNewTaskPriority('medium');
+      setNewTaskAssignee('');
+      setShowAddTask(false);
+    },
+  });
+
+  const toggleTaskMutation = useMutation({
+    mutationFn: ({ taskId, completed }: { taskId: string; completed: boolean }) =>
+      updateTask(taskId, { completed }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tasks', id] });
+    },
   });
 
   const stageChangeMutation = useMutation({
@@ -315,6 +357,132 @@ export default function DealDetailPage() {
                 </button>
               </div>
             )}
+          </div>
+
+          {/* Tasks Section */}
+          <div className="rounded-xl border bg-card p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Tasks</h2>
+              <button
+                id="add-task-btn"
+                onClick={() => setShowAddTask(!showAddTask)}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-blue-600/10 text-blue-600 text-xs font-semibold hover:bg-blue-600 hover:text-white transition-all border border-blue-600/20"
+              >
+                {showAddTask ? '✕ Cancel' : '+ Add Task'}
+              </button>
+            </div>
+
+            {/* Add Task Form */}
+            {showAddTask && (
+              <div className="mb-4 p-4 rounded-lg border bg-muted/20 space-y-3">
+                <input
+                  id="new-task-title"
+                  placeholder="Task title..."
+                  value={newTaskTitle}
+                  onChange={e => setNewTaskTitle(e.target.value)}
+                  className="w-full rounded-lg border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <label className="text-[10px] text-muted-foreground block mb-1">Due Date</label>
+                    <input
+                      id="new-task-due"
+                      type="date"
+                      value={newTaskDue}
+                      onChange={e => setNewTaskDue(e.target.value)}
+                      className="w-full rounded-lg border bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-muted-foreground block mb-1">Priority</label>
+                    <select
+                      id="new-task-priority"
+                      value={newTaskPriority}
+                      onChange={e => setNewTaskPriority(e.target.value)}
+                      className="w-full rounded-lg border bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-muted-foreground block mb-1">Assignee</label>
+                    <select
+                      id="new-task-assignee"
+                      value={newTaskAssignee}
+                      onChange={e => setNewTaskAssignee(e.target.value)}
+                      className="w-full rounded-lg border bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="">Unassigned</option>
+                      {users.map(u => (
+                        <option key={u.id} value={u.id}>{u.first_name} {u.last_name}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <button
+                  id="save-task-btn"
+                  onClick={() => createTaskMutation.mutate()}
+                  disabled={!newTaskTitle.trim() || createTaskMutation.isPending}
+                  className="px-4 py-1.5 text-xs font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-50"
+                >
+                  {createTaskMutation.isPending ? 'Saving...' : 'Create Task'}
+                </button>
+              </div>
+            )}
+
+            {/* Task List */}
+            <div className="space-y-2">
+              {tasks.length === 0 && !showAddTask && (
+                <p className="text-sm text-muted-foreground text-center py-4">No tasks yet</p>
+              )}
+              {tasks.map(task => {
+                const assignee = users.find(u => u.id === task.assigned_to);
+                const isOverdue = task.due_at && !task.completed_at && new Date(task.due_at) < new Date();
+                const priorityColors: Record<string, string> = {
+                  high: 'bg-red-500/10 text-red-500',
+                  medium: 'bg-amber-500/10 text-amber-500',
+                  low: 'bg-emerald-500/10 text-emerald-500',
+                };
+                return (
+                  <div
+                    key={task.id}
+                    className={`flex items-center gap-3 p-3 rounded-lg border transition-colors ${
+                      task.completed_at ? 'bg-muted/20 opacity-60' : 'bg-card hover:bg-muted/30'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!!task.completed_at}
+                      onChange={() => toggleTaskMutation.mutate({ taskId: task.id, completed: !task.completed_at })}
+                      className="h-4 w-4 rounded border-2 accent-blue-600 shrink-0"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className={`text-sm font-medium ${task.completed_at ? 'line-through text-muted-foreground' : ''}`}>
+                        {task.title}
+                      </p>
+                      <div className="flex items-center gap-2 mt-1 flex-wrap">
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${priorityColors[task.priority] || priorityColors.medium}`}>
+                          {task.priority}
+                        </span>
+                        {task.due_at && (
+                          <span className={`text-[10px] ${isOverdue ? 'text-red-500 font-bold' : 'text-muted-foreground'}`}>
+                            {isOverdue ? '⚠ ' : '📅 '}
+                            {new Date(task.due_at).toLocaleDateString()}
+                          </span>
+                        )}
+                        {assignee && (
+                          <span className="text-[10px] text-muted-foreground">
+                            👤 {assignee.first_name} {assignee.last_name}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
 
