@@ -196,3 +196,188 @@ export async function getTags() {
   return json.data as Tag[];
 }
 
+// ============================================================
+// Pipeline Stages
+// ============================================================
+
+export interface PipelineStage {
+  id: string;
+  org_id: string;
+  name: string;
+  position: number;
+  color: string;
+  is_won: boolean;
+  is_lost: boolean;
+}
+
+export async function getStages(): Promise<PipelineStage[]> {
+  const res = await apiFetch('/api/pipeline/stages');
+  const json = await res.json();
+  return json.data as PipelineStage[];
+}
+
+export async function createStage(data: Partial<PipelineStage>) {
+  const res = await apiFetch('/api/pipeline/stages', { method: 'POST', body: JSON.stringify(data) });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to create stage');
+  return json.data as PipelineStage;
+}
+
+export async function updateStage(id: string, data: Partial<PipelineStage>) {
+  const res = await apiFetch(`/api/pipeline/stages/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to update stage');
+  return json.data as PipelineStage;
+}
+
+// ============================================================
+// Deals
+// ============================================================
+
+export interface Deal {
+  id: string;
+  org_id: string;
+  title: string;
+  contact_id?: string;
+  company_id?: string;
+  stage_id?: string;
+  value: number;
+  probability: number;
+  owner_user_id?: string;
+  expected_close_at?: string;
+  is_won: boolean;
+  is_lost: boolean;
+  closed_at?: string;
+  created_at: string;
+  updated_at: string;
+  contact?: { id: string; first_name: string; last_name: string; email?: string };
+  company?: { id: string; name: string };
+  stage?: PipelineStage;
+  owner?: { id: string; first_name: string; last_name: string };
+}
+
+export interface DealFilter {
+  q?: string;
+  stage_id?: string;
+  owner_user_id?: string;
+  cursor?: string;
+  limit?: number;
+}
+
+export async function getDeals(filter: DealFilter = {}) {
+  const params = new URLSearchParams();
+  if (filter.q) params.set('q', filter.q);
+  if (filter.stage_id) params.set('stage_id', filter.stage_id);
+  if (filter.cursor) params.set('cursor', filter.cursor);
+  if (filter.limit) params.set('limit', String(filter.limit));
+  const res = await apiFetch(`/api/deals?${params.toString()}`);
+  const json = await res.json();
+  return { deals: json.data as Deal[], meta: json.meta as CursorMeta };
+}
+
+export async function getDeal(id: string): Promise<Deal> {
+  const res = await apiFetch(`/api/deals/${id}`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch deal');
+  return json.data as Deal;
+}
+
+export async function createDeal(data: {
+  title: string;
+  contact_id?: string;
+  company_id?: string;
+  stage_id?: string;
+  value?: number;
+  probability?: number;
+  expected_close_at?: string;
+}): Promise<Deal> {
+  const res = await apiFetch('/api/deals', { method: 'POST', body: JSON.stringify(data) });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to create deal');
+  return json.data as Deal;
+}
+
+export async function updateDeal(id: string, data: Partial<Deal>): Promise<Deal> {
+  const res = await apiFetch(`/api/deals/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to update deal');
+  return json.data as Deal;
+}
+
+export async function deleteDeal(id: string) {
+  const res = await apiFetch(`/api/deals/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await res.json();
+    throw new Error(json.error || 'Failed to delete deal');
+  }
+}
+
+export async function changeDealStage(dealId: string, stageId: string, lostReason?: string): Promise<Deal> {
+  const res = await apiFetch(`/api/deals/${dealId}/stage`, {
+    method: 'PATCH',
+    body: JSON.stringify({ stage_id: stageId, lost_reason: lostReason }),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to change stage');
+  return json.data as Deal;
+}
+
+// ============================================================
+// Forecast
+// ============================================================
+
+export interface ForecastRow {
+  month: string;
+  expected_revenue: number;
+  deals_count: number;
+}
+
+export async function getForecast(): Promise<ForecastRow[]> {
+  const res = await apiFetch('/api/pipeline/forecast');
+  const json = await res.json();
+  return (json.data || []) as ForecastRow[];
+}
+
+// ============================================================
+// Activities
+// ============================================================
+
+export interface Activity {
+  id: string;
+  org_id: string;
+  type: string;
+  deal_id?: string;
+  contact_id?: string;
+  user_id?: string;
+  title?: string;
+  body?: string;
+  duration_minutes?: number;
+  occurred_at: string;
+  sentiment?: string;
+  created_at: string;
+}
+
+export async function getActivities(filter: { deal_id?: string; contact_id?: string }): Promise<Activity[]> {
+  const params = new URLSearchParams();
+  if (filter.deal_id) params.set('deal_id', filter.deal_id);
+  if (filter.contact_id) params.set('contact_id', filter.contact_id);
+  const res = await apiFetch(`/api/activities?${params.toString()}`);
+  const json = await res.json();
+  return (json.data || []) as Activity[];
+}
+
+export async function createActivity(data: {
+  type: string;
+  deal_id?: string;
+  contact_id?: string;
+  title: string;
+  body?: string;
+  duration_minutes?: number;
+  occurred_at?: string;
+}): Promise<Activity> {
+  const res = await apiFetch('/api/activities', { method: 'POST', body: JSON.stringify(data) });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to create activity');
+  return json.data as Activity;
+}
+

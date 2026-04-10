@@ -7,7 +7,7 @@ import (
 )
 
 // RegisterRoutes wires all API routes to the Gin engine.
-func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, cfg *config.Config) {
+func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, cfg *config.Config) {
 	api := router.Group("/api")
 
 	// ── Auth (public) ──────────────────────────────────
@@ -60,6 +60,33 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			tags.POST("", RequireRole("admin", "manager", "sales"), tagHandler.Create)
 			tags.PUT("/:id", RequireRole("admin", "manager", "sales"), tagHandler.Update)
 			tags.DELETE("/:id", RequireRole("admin", "manager"), tagHandler.Delete)
+		}
+
+		// Deals
+		deals := protected.Group("/deals")
+		{
+			deals.GET("", dealHandler.List)
+			deals.GET("/:id", dealHandler.GetByID)
+			deals.POST("", RequireRole("admin", "manager", "sales"), dealHandler.Create)
+			deals.PUT("/:id", RequireRole("admin", "manager", "sales"), dealHandler.Update)
+			deals.DELETE("/:id", RequireRole("admin", "manager"), dealHandler.Delete)
+			deals.PATCH("/:id/stage", RequireRole("admin", "manager", "sales"), dealHandler.ChangeStage)
+		}
+
+		// Pipeline
+		pipeline := protected.Group("/pipeline")
+		{
+			pipeline.GET("/stages", pipelineHandler.ListStages)
+			pipeline.POST("/stages", RequireRole("admin", "manager"), pipelineHandler.CreateStage)
+			pipeline.PUT("/stages/:id", RequireRole("admin", "manager"), pipelineHandler.UpdateStage)
+			pipeline.GET("/forecast", dealHandler.Forecast)
+		}
+
+		// Activities
+		activities := protected.Group("/activities")
+		{
+			activities.GET("", activityHandler.List)
+			activities.POST("", RequireRole("admin", "manager", "sales"), activityHandler.Create)
 		}
 	}
 }

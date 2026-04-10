@@ -140,8 +140,20 @@ func main() {
 		tagUseCase := usecase.NewTagUseCase(tagRepo)
 		tagHandler := delivery.NewTagHandler(tagUseCase)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, cfg)
-		log.Info("Auth + Contact routes registered")
+		stageRepo := repository.NewPipelineStageRepository(db)
+		stageUseCase := usecase.NewPipelineStageUseCase(stageRepo)
+		pipelineHandler := delivery.NewPipelineHandler(stageUseCase)
+
+		activityRepo := repository.NewActivityRepository(db)
+		activityUseCase := usecase.NewActivityUseCase(activityRepo)
+		activityHandler := delivery.NewActivityHandler(activityUseCase)
+
+		dealRepo := repository.NewDealRepository(db)
+		dealUseCase := usecase.NewDealUseCase(dealRepo, stageRepo, activityRepo)
+		dealHandler := delivery.NewDealHandler(dealUseCase)
+
+		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, cfg)
+		log.Info("All routes registered (auth, contacts, deals, pipeline, activities)")
 	} else {
 		log.Warn("Database not connected — routes skipped")
 	}

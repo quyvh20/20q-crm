@@ -59,6 +59,8 @@ var (
 	ErrForbidden          = NewAppError(http.StatusForbidden, "insufficient permissions")
 	ErrInternal           = NewAppError(http.StatusInternalServerError, "internal server error")
 	ErrContactNotFound    = NewAppError(http.StatusNotFound, "contact not found")
+	ErrDealNotFound       = NewAppError(http.StatusNotFound, "deal not found")
+	ErrStageNotFound      = NewAppError(http.StatusNotFound, "pipeline stage not found")
 	ErrInvalidFile        = NewAppError(http.StatusBadRequest, "invalid file format, expected CSV or XLSX")
 )
 

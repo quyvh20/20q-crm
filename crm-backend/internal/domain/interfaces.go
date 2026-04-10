@@ -251,3 +251,158 @@ type TagUseCase interface {
 	Delete(ctx context.Context, orgID, id uuid.UUID) error
 }
 
+// ============================================================
+// Deal DTOs
+// ============================================================
+
+type DealFilter struct {
+	Q           string     `form:"q"`
+	StageID     *uuid.UUID `form:"stage_id"`
+	OwnerUserID *uuid.UUID `form:"owner_user_id"`
+	ContactID   *uuid.UUID `form:"contact_id"`
+	Cursor      string     `form:"cursor"`
+	Limit       int        `form:"limit"`
+}
+
+type CreateDealInput struct {
+	Title           string     `json:"title" binding:"required,min=1"`
+	ContactID       *uuid.UUID `json:"contact_id"`
+	CompanyID       *uuid.UUID `json:"company_id"`
+	StageID         *uuid.UUID `json:"stage_id"`
+	Value           float64    `json:"value"`
+	Probability     int        `json:"probability"`
+	OwnerUserID     *uuid.UUID `json:"owner_user_id"`
+	ExpectedCloseAt *string    `json:"expected_close_at"`
+}
+
+type UpdateDealInput struct {
+	Title           *string    `json:"title"`
+	ContactID       *uuid.UUID `json:"contact_id"`
+	CompanyID       *uuid.UUID `json:"company_id"`
+	StageID         *uuid.UUID `json:"stage_id"`
+	Value           *float64   `json:"value"`
+	Probability     *int       `json:"probability"`
+	OwnerUserID     *uuid.UUID `json:"owner_user_id"`
+	ExpectedCloseAt *string    `json:"expected_close_at"`
+}
+
+type UpdateDealStageInput struct {
+	StageID    uuid.UUID `json:"stage_id" binding:"required"`
+	LostReason *string   `json:"lost_reason"`
+}
+
+type ForecastRow struct {
+	Month           string  `json:"month"`
+	ExpectedRevenue float64 `json:"expected_revenue"`
+	DealsCount      int     `json:"deals_count"`
+}
+
+// ============================================================
+// Deal Repository Interface
+// ============================================================
+
+type DealRepository interface {
+	List(ctx context.Context, orgID uuid.UUID, f DealFilter) ([]Deal, string, error)
+	GetByID(ctx context.Context, orgID, id uuid.UUID) (*Deal, error)
+	Create(ctx context.Context, d *Deal) error
+	Update(ctx context.Context, d *Deal) error
+	SoftDelete(ctx context.Context, orgID, id uuid.UUID) error
+	Count(ctx context.Context, orgID uuid.UUID) (int64, error)
+	Forecast(ctx context.Context, orgID uuid.UUID) ([]ForecastRow, error)
+}
+
+// ============================================================
+// Deal UseCase Interface
+// ============================================================
+
+type DealUseCase interface {
+	List(ctx context.Context, orgID uuid.UUID, f DealFilter) ([]Deal, string, error)
+	GetByID(ctx context.Context, orgID, id uuid.UUID) (*Deal, error)
+	Create(ctx context.Context, orgID uuid.UUID, input CreateDealInput) (*Deal, error)
+	Update(ctx context.Context, orgID, id uuid.UUID, input UpdateDealInput) (*Deal, error)
+	Delete(ctx context.Context, orgID, id uuid.UUID) error
+	ChangeStage(ctx context.Context, orgID, dealID uuid.UUID, input UpdateDealStageInput) (*Deal, error)
+	Forecast(ctx context.Context, orgID uuid.UUID) ([]ForecastRow, error)
+	Count(ctx context.Context, orgID uuid.UUID) (int64, error)
+}
+
+// ============================================================
+// PipelineStage DTOs
+// ============================================================
+
+type CreateStageInput struct {
+	Name     string `json:"name" binding:"required,min=1"`
+	Position int    `json:"position"`
+	Color    string `json:"color"`
+	IsWon    bool   `json:"is_won"`
+	IsLost   bool   `json:"is_lost"`
+}
+
+type UpdateStageInput struct {
+	Name     *string `json:"name"`
+	Position *int    `json:"position"`
+	Color    *string `json:"color"`
+	IsWon    *bool   `json:"is_won"`
+	IsLost   *bool   `json:"is_lost"`
+}
+
+// ============================================================
+// PipelineStage Repository Interface
+// ============================================================
+
+type PipelineStageRepository interface {
+	List(ctx context.Context, orgID uuid.UUID) ([]PipelineStage, error)
+	GetByID(ctx context.Context, orgID, id uuid.UUID) (*PipelineStage, error)
+	Create(ctx context.Context, s *PipelineStage) error
+	Update(ctx context.Context, s *PipelineStage) error
+	CountByOrg(ctx context.Context, orgID uuid.UUID) (int64, error)
+}
+
+// ============================================================
+// PipelineStage UseCase Interface
+// ============================================================
+
+type PipelineStageUseCase interface {
+	List(ctx context.Context, orgID uuid.UUID) ([]PipelineStage, error)
+	GetByID(ctx context.Context, orgID, id uuid.UUID) (*PipelineStage, error)
+	Create(ctx context.Context, orgID uuid.UUID, input CreateStageInput) (*PipelineStage, error)
+	Update(ctx context.Context, orgID, id uuid.UUID, input UpdateStageInput) (*PipelineStage, error)
+}
+
+// ============================================================
+// Activity DTOs
+// ============================================================
+
+type ActivityFilter struct {
+	DealID    *uuid.UUID `form:"deal_id"`
+	ContactID *uuid.UUID `form:"contact_id"`
+}
+
+type CreateActivityInput struct {
+	Type            string     `json:"type" binding:"required"`
+	DealID          *uuid.UUID `json:"deal_id"`
+	ContactID       *uuid.UUID `json:"contact_id"`
+	Title           string     `json:"title"`
+	Body            *string    `json:"body"`
+	DurationMinutes *int       `json:"duration_minutes"`
+	OccurredAt      *string    `json:"occurred_at"`
+}
+
+// ============================================================
+// Activity Repository Interface
+// ============================================================
+
+type ActivityRepository interface {
+	List(ctx context.Context, orgID uuid.UUID, f ActivityFilter) ([]Activity, error)
+	Create(ctx context.Context, a *Activity) error
+}
+
+// ============================================================
+// Activity UseCase Interface
+// ============================================================
+
+type ActivityUseCase interface {
+	List(ctx context.Context, orgID uuid.UUID, f ActivityFilter) ([]Activity, error)
+	Create(ctx context.Context, orgID uuid.UUID, userID uuid.UUID, input CreateActivityInput) (*Activity, error)
+}
+
