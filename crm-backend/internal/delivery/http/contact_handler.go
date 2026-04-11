@@ -1,6 +1,7 @@
 package http
 
 import (
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -18,6 +19,11 @@ func NewContactHandler(contactUC domain.ContactUseCase) *ContactHandler {
 	return &ContactHandler{contactUC: contactUC}
 }
 
+// countWords returns the number of whitespace-separated tokens.
+func countWords(s string) int {
+	return len(strings.Fields(s))
+}
+
 // GET /api/contacts
 func (h *ContactHandler) List(c *gin.Context) {
 	orgID, ok := GetOrgID(c)
@@ -26,13 +32,29 @@ func (h *ContactHandler) List(c *gin.Context) {
 		return
 	}
 
-	// ── Semantic search branch ──────────────────────────────────────────────
-	if c.Query("semantic") == "true" {
-		q := strings.TrimSpace(c.Query("q"))
-		if q == "" {
-			c.JSON(http.StatusBadRequest, domain.Err("q is required for semantic search"))
-			return
+	q := strings.TrimSpace(c.Query("q"))
+
+	// ── Determine search mode ──────────────────────────────────────────────
+	//   explicit: semantic=true  → always semantic
+	//   auto:     3+ word query  → semantic
+	//             1-2 word query → full-text
+	//   no query                 → full list
+	isExplicitSemantic := c.Query("semantic") == "true"
+	isAutoSemantic := q != "" && countWords(q) >= 3
+
+	if (isExplicitSemantic || isAutoSemantic) && q != "" {
+		mode := "auto(3+ words)"
+		if isExplicitSemantic {
+			mode = "explicit(semantic=true)"
 		}
+		slog.Info("hybrid_search",
+			"mode", "semantic",
+			"trigger", mode,
+			"query", q,
+			"word_count", countWords(q),
+			"org_id", orgID.String(),
+		)
+
 		limit := 20
 		if limitStr := c.Query("limit"); limitStr != "" {
 			var l int
@@ -51,9 +73,19 @@ func (h *ContactHandler) List(c *gin.Context) {
 		return
 	}
 
-	// ── Standard cursor-paginated list ─────────────────────────────────────
+	// ── Full-text / standard cursor-paginated list ─────────────────────────
+	if q != "" {
+		slog.Info("hybrid_search",
+			"mode", "fulltext",
+			"trigger", "auto(1-2 words)",
+			"query", q,
+			"word_count", countWords(q),
+			"org_id", orgID.String(),
+		)
+	}
+
 	var filter domain.ContactFilter
-	filter.Q = c.Query("q")
+	filter.Q = q
 	filter.Cursor = c.Query("cursor")
 
 	if limitStr := c.Query("limit"); limitStr != "" {
