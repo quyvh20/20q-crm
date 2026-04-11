@@ -10,13 +10,18 @@ import (
 )
 
 func main() {
-	accountID  := "2d565dd4fbeedd42f9f1cc6f6209e30f"
-	gatewayID  := "crm-ai-gateway"
+	accountID := os.Getenv("CF_ACCOUNT_ID")
+	gatewayID := "crm-ai-gateway"
 	// Account token (Workers AI + AI Gateway permissions) — for Authorization header
-	workersTok := "cfat_a4DrbblbqAj6tHN1IU7o8a7hpCXnKo7InkMgcxLt9bbd8af8"
+	workersTok := os.Getenv("CF_AI_TOKEN")
 	// Gateway-specific token (created when gateway was created) — for cf-aig-authorization header
-	gatewayTok := "cfut_5zVKDFSU3SQOysXddzSKfi1jpFRzxyT14w69ahKUadbc1947"
-	model      := "@cf/google/embeddinggemma-300m"
+	gatewayTok := os.Getenv("CF_AI_GATEWAY_TOKEN")
+
+	if accountID == "" || workersTok == "" || gatewayTok == "" {
+		fmt.Println("Missing required environment variables CF_ACCOUNT_ID, CF_AI_TOKEN, CF_AI_GATEWAY_TOKEN")
+		os.Exit(1)
+	}
+	model := "@cf/google/embeddinggemma-300m"
 
 	url := fmt.Sprintf(
 		"https://gateway.ai.cloudflare.com/v1/%s/%s/workers-ai/%s",

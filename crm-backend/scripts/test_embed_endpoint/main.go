@@ -22,10 +22,10 @@ func main() {
 	gatewayID  := os.Getenv("CF_AI_GATEWAY_ID")
 	gatewayTok := os.Getenv("CF_AI_GATEWAY_TOKEN")
 
-	if accountID == "" { accountID = "2d565dd4fbeedd42f9f1cc6f6209e30f" }
-	if token == ""     { token = "cfat_a4DrbblbqAj6tHN1IU7o8a7hpCXnKo7InkMgcxLt9bbd8af8" }
-	if gatewayID == "" { gatewayID = "crm-ai-gateway" }
-	if gatewayTok == "" { gatewayTok = "cfut_5zVKDFSU3SQOysXddzSKfi1jpFRzxyT14w69ahKUadbc1947" }
+	if accountID == "" || token == "" || gatewayID == "" || gatewayTok == "" {
+		fmt.Println("Missing required environment variables CF_ACCOUNT_ID, CF_AI_TOKEN, CF_AI_GATEWAY_ID, CF_AI_GATEWAY_TOKEN")
+		os.Exit(1)
+	}
 
 	svc := ai.NewEmbeddingService(accountID, gatewayID, token, gatewayTok)
 

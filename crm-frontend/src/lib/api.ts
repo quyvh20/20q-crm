@@ -468,3 +468,70 @@ export async function getUsers(): Promise<UserListItem[]> {
   const json = await res.json();
   return (json.data || []) as UserListItem[];
 }
+
+// ============================================================
+// AI
+// ============================================================
+
+export interface AIUsage {
+  used_tokens: number;
+  limit_tokens: number;
+  reset_at: string;
+  percent: number;
+}
+
+export async function getAIUsage(): Promise<AIUsage> {
+  const res = await apiFetch('/api/ai/usage');
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch AI usage');
+  return json.data as AIUsage;
+}
+
+export async function streamChat(
+  message: string,
+  onChunk: (chunk: string) => void,
+  onDone: () => void,
+  onError: (err: string) => void,
+  contextId?: string,
+) {
+  const API_BASE = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8080';
+  const token = localStorage.getItem('access_token');
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'text/event-stream',
+  };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/api/ai/chat`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ message, context_id: contextId }),
+  });
+
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    onError(json.error || 'AI unavailable');
+    return;
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) { onError('No stream body'); return; }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const data = line.slice(6);
+      if (data === '[DONE]') { onDone(); return; }
+      onChunk(data);
+    }
+  }
+  onDone();
+}

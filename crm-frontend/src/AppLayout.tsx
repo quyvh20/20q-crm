@@ -1,5 +1,8 @@
 import React from "react";
 import { useAuth } from "./lib/auth";
+import AIAssistant from "./components/ai/AIAssistant";
+import SearchBar from "./components/common/SearchBar";
+import AIUsageWidget from "./components/settings/AIUsageWidget";
 
 interface AppLayoutProps {
   children?: React.ReactNode;
@@ -22,6 +25,9 @@ export default function AppLayout({ children }: AppLayoutProps) {
             <a href="/deals" className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">Deals</a>
             <a href="/settings" className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">Settings</a>
           </nav>
+          <div className="mt-4">
+            <AIUsageWidget />
+          </div>
         </div>
 
         {/* User info + logout */}
@@ -56,7 +62,9 @@ export default function AppLayout({ children }: AppLayoutProps) {
           <div className="md:hidden">
             <h1 className="text-xl font-bold tracking-tight">Guerrilla CRM</h1>
           </div>
-          <div className="flex flex-1 justify-end items-center gap-4">
+          <div className="flex flex-1 items-center gap-4">
+            <SearchBar />
+            <div className="flex-1" />
             {user && (
               <span className="text-sm text-muted-foreground hidden sm:block">
                 {user.organization?.name}
@@ -80,6 +88,8 @@ export default function AppLayout({ children }: AppLayoutProps) {
           )}
         </main>
       </div>
+      {/* Global AI Assistant */}
+      <AIAssistant />
     </div>
   );
 }
