@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pgvector/pgvector-go"
 	"gorm.io/gorm"
 )
 
@@ -128,6 +129,9 @@ type Contact struct {
 	Company *Company `gorm:"foreignKey:CompanyID" json:"company,omitempty"`
 	Owner   *User    `gorm:"foreignKey:OwnerUserID" json:"owner,omitempty"`
 	Tags    []Tag    `gorm:"many2many:contact_tags" json:"tags,omitempty"`
+
+	// Vector embedding for semantic search (not serialised to JSON)
+	Embedding *pgvector.Vector `gorm:"type:vector(768)" json:"-"`
 }
 
 type PipelineStage struct {
@@ -276,4 +280,21 @@ type WorkflowRun struct {
 	ErrorMsg    *string    `gorm:"type:text" json:"error_msg,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
+// ============================================================
+// AI Token Usage (audit trail)
+// ============================================================
+
+type AITokenUsage struct {
+	ID           uuid.UUID `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
+	OrgID        uuid.UUID `gorm:"type:uuid;not null;index" json:"org_id"`
+	UserID       uuid.UUID `gorm:"type:uuid;not null" json:"user_id"`
+	Model        string    `gorm:"size:100;not null" json:"model"`
+	Provider     string    `gorm:"size:50;not null" json:"provider"`
+	Feature      string    `gorm:"size:100;not null" json:"feature"`
+	InputTokens  int       `gorm:"not null;default:0" json:"input_tokens"`
+	OutputTokens int       `gorm:"not null;default:0" json:"output_tokens"`
+	CostUSD      float64   `gorm:"type:numeric(10,6);default:0" json:"cost_usd"`
+	CreatedAt    time.Time `json:"created_at"`
 }

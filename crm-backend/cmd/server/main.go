@@ -9,8 +9,10 @@ import (
 	"time"
 
 	delivery "crm-backend/internal/delivery/http"
+	"crm-backend/internal/ai"
 	"crm-backend/internal/repository"
 	"crm-backend/internal/usecase"
+	"crm-backend/internal/worker"
 	"crm-backend/pkg/cache"
 	"crm-backend/pkg/config"
 	"crm-backend/pkg/database"
@@ -128,8 +130,18 @@ func main() {
 		authUseCase := usecase.NewAuthUseCase(authRepo, cfg)
 		authHandler := delivery.NewAuthHandler(authUseCase, cfg)
 
+		// Create AI config early to pass to contact usecase for embeddings
+		budget := ai.NewBudgetGuard(db, redisClient)
+		gateway := ai.NewAIGateway(
+			cfg.CFAccountID, cfg.CFAIGatewayID, cfg.CFAIToken, cfg.AnthropicAPIKey,
+			budget, log,
+		)
+		embedSvc := ai.NewEmbeddingService(cfg.CFAccountID, cfg.CFAIGatewayID, cfg.CFAIToken, cfg.CFAIGatewayToken)
+		embedWorker := worker.NewEmbeddingWorker(embedSvc, db, log, 200)
+		go embedWorker.Start(context.Background(), 5)
+
 		contactRepo := repository.NewContactRepository(db)
-		contactUseCase := usecase.NewContactUseCase(contactRepo)
+		contactUseCase := usecase.NewContactUseCase(contactRepo, embedWorker)
 		contactHandler := delivery.NewContactHandler(contactUseCase)
 
 		companyRepo := repository.NewCompanyRepository(db)
@@ -159,8 +171,10 @@ func main() {
 		userRepo := repository.NewUserRepository(db)
 		userHandler := delivery.NewUserHandler(userRepo)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, cfg)
-		log.Info("All routes registered (auth, contacts, deals, pipeline, activities, tasks, users)")
+		aiHandler := delivery.NewAIHandler(gateway, budget, embedSvc)
+
+		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, cfg)
+		log.Info("All routes registered (auth, contacts, deals, pipeline, activities, tasks, users, ai)")
 	} else {
 		log.Warn("Database not connected — routes skipped")
 	}

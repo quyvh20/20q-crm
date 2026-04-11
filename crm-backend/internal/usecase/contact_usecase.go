@@ -17,10 +17,11 @@ import (
 
 type contactUseCase struct {
 	contactRepo domain.ContactRepository
+	queue       domain.EmbeddingQueue
 }
 
-func NewContactUseCase(repo domain.ContactRepository) domain.ContactUseCase {
-	return &contactUseCase{contactRepo: repo}
+func NewContactUseCase(repo domain.ContactRepository, queue domain.EmbeddingQueue) domain.ContactUseCase {
+	return &contactUseCase{contactRepo: repo, queue: queue}
 }
 
 // ============================================================
@@ -74,7 +75,14 @@ func (uc *contactUseCase) Create(ctx context.Context, orgID uuid.UUID, input dom
 	}
 
 	// Re-fetch with preloads
-	return uc.contactRepo.GetByID(ctx, orgID, contact.ID)
+	result, err := uc.contactRepo.GetByID(ctx, orgID, contact.ID)
+	
+	// Queue for embedding
+	if err == nil && result != nil && uc.queue != nil {
+		uc.queue.EnqueueContact(result)
+	}
+
+	return result, err
 }
 
 // ============================================================
@@ -124,7 +132,14 @@ func (uc *contactUseCase) Update(ctx context.Context, orgID, id uuid.UUID, input
 		}
 	}
 
-	return uc.contactRepo.GetByID(ctx, orgID, contact.ID)
+	result, err := uc.contactRepo.GetByID(ctx, orgID, contact.ID)
+
+	// Queue for embedding
+	if err == nil && result != nil && uc.queue != nil {
+		uc.queue.EnqueueContact(result)
+	}
+
+	return result, err
 }
 
 // ============================================================

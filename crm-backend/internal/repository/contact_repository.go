@@ -348,3 +348,38 @@ func (r *contactRepository) BulkAssignTag(ctx context.Context, orgID uuid.UUID, 
 
 // Ensure unused import is used
 var _ = fmt.Sprintf
+
+// ============================================================
+// SemanticSearch — hybrid full-text / vector search
+// ============================================================
+
+// SemanticSearch uses the pre-computed embedding to find similar contacts.
+// threshold is max cosine distance (0.0 = identical, 2.0 = opposite).
+func (r *contactRepository) SemanticSearch(ctx context.Context, orgID uuid.UUID, vec []float32, threshold float32, limit int) ([]domain.Contact, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+
+	// Format vector as Postgres literal: '[0.1,0.2,...]'
+	vecStr := "["
+	for i, v := range vec {
+		if i > 0 {
+			vecStr += ","
+		}
+		vecStr += fmt.Sprintf("%f", v)
+	}
+	vecStr += "]"
+
+	var contacts []domain.Contact
+	err := r.db.WithContext(ctx).
+		Where("org_id = ? AND embedding IS NOT NULL", orgID).
+		Where(fmt.Sprintf("embedding <=> '%s'::vector < ?", vecStr), threshold).
+		Order(fmt.Sprintf("embedding <=> '%s'::vector", vecStr)).
+		Limit(limit).
+		Preload("Company").
+		Preload("Owner").
+		Preload("Tags").
+		Find(&contacts).Error
+
+	return contacts, err
+}

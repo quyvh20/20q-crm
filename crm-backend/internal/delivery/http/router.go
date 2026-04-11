@@ -7,7 +7,7 @@ import (
 )
 
 // RegisterRoutes wires all API routes to the Gin engine.
-func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, cfg *config.Config) {
+func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, cfg *config.Config) {
 	api := router.Group("/api")
 
 	// ── Auth (public) ──────────────────────────────────
@@ -100,5 +100,13 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 
 		// Users (for assignee dropdowns)
 		protected.GET("/users", userHandler.List)
+
+		// AI
+		aiRoutes := protected.Group("/ai")
+		{
+			aiRoutes.GET("/usage", aiHandler.GetUsage)
+			aiRoutes.POST("/chat", aiHandler.Chat)
+			aiRoutes.POST("/embed", aiHandler.Embed)
+		}
 	}
 }

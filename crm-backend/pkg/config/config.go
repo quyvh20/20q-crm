@@ -24,9 +24,14 @@ type Config struct {
 	// Monitoring
 	SentryDSN string `mapstructure:"SENTRY_DSN"`
 
-	// AI (Cloudflare)
-	CFAccountID string `mapstructure:"CF_ACCOUNT_ID"`
-	CFAIToken   string `mapstructure:"CF_AI_TOKEN"`
+	// AI (Cloudflare AI Gateway)
+	CFAccountID      string `mapstructure:"CF_ACCOUNT_ID"`
+	CFAIToken        string `mapstructure:"CF_AI_TOKEN"`
+	CFAIGatewayID    string `mapstructure:"CF_AI_GATEWAY_ID"`
+	CFAIGatewayToken string `mapstructure:"CF_AI_GATEWAY_TOKEN"`
+
+	// AI (Anthropic - Claude fallback)
+	AnthropicAPIKey string `mapstructure:"ANTHROPIC_API_KEY"`
 
 	// Payments
 	PaddleWebhookSecret string `mapstructure:"PADDLE_WEBHOOK_SECRET"`
@@ -48,9 +53,15 @@ func LoadConfig() (*Config, error) {
 	viper.BindEnv("GOOGLE_REDIRECT_URL")
 	viper.BindEnv("FRONTEND_URL")
 	viper.BindEnv("SENTRY_DSN")
+	viper.BindEnv("CF_ACCOUNT_ID")
+	viper.BindEnv("CF_AI_TOKEN")
+	viper.BindEnv("CF_AI_GATEWAY_ID")
+	viper.BindEnv("CF_AI_GATEWAY_TOKEN")
+	viper.BindEnv("ANTHROPIC_API_KEY")
 
 	// Default values
 	viper.SetDefault("PORT", "8080")
+	viper.SetDefault("CF_AI_GATEWAY_ID", "crm-ai-gateway")
 	viper.SetDefault("JWT_SECRET", "dev-secret-change-me-in-production-32chars!")
 	viper.SetDefault("FRONTEND_URL", "http://localhost:5173")
 	viper.SetDefault("GOOGLE_REDIRECT_URL", "http://localhost:8080/api/auth/google/callback")
