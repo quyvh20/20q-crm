@@ -26,6 +26,32 @@ func (h *ContactHandler) List(c *gin.Context) {
 		return
 	}
 
+	// ── Semantic search branch ──────────────────────────────────────────────
+	if c.Query("semantic") == "true" {
+		q := strings.TrimSpace(c.Query("q"))
+		if q == "" {
+			c.JSON(http.StatusBadRequest, domain.Err("q is required for semantic search"))
+			return
+		}
+		limit := 20
+		if limitStr := c.Query("limit"); limitStr != "" {
+			var l int
+			if _, err := parseIntParam(limitStr, &l); err == nil && l > 0 {
+				limit = l
+			}
+		}
+		contacts, err := h.contactUC.SemanticSearch(c.Request.Context(), orgID, q, limit)
+		if err != nil {
+			handleAppError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, domain.SuccessWithMeta(contacts, domain.CursorMeta{
+			Total: int64(len(contacts)),
+		}))
+		return
+	}
+
+	// ── Standard cursor-paginated list ─────────────────────────────────────
 	var filter domain.ContactFilter
 	filter.Q = c.Query("q")
 	filter.Cursor = c.Query("cursor")

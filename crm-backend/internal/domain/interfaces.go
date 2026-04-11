@@ -82,6 +82,7 @@ type AuthUseCase interface {
 
 type ContactFilter struct {
 	Q           string      `form:"q"`
+	Semantic    bool        `form:"semantic"`
 	CompanyID   *uuid.UUID  `form:"company_id"`
 	TagIDs      []uuid.UUID `form:"tag_ids"`
 	OwnerUserID *uuid.UUID  `form:"owner_user_id"`
@@ -137,6 +138,7 @@ type ContactRepository interface {
 	ReplaceContactTags(ctx context.Context, contactID uuid.UUID, tagIDs []uuid.UUID) error
 	BulkDeleteByIDs(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID) (int64, error)
 	BulkAssignTag(ctx context.Context, orgID uuid.UUID, contactIDs []uuid.UUID, tagID uuid.UUID) (int64, error)
+	SemanticSearch(ctx context.Context, orgID uuid.UUID, vec []float32, threshold float32, limit int) ([]Contact, error)
 }
 
 // BulkAction DTOs
@@ -154,6 +156,7 @@ type BulkActionResult struct {
 
 type ContactUseCase interface {
 	List(ctx context.Context, orgID uuid.UUID, f ContactFilter) ([]Contact, string, error)
+	SemanticSearch(ctx context.Context, orgID uuid.UUID, query string, limit int) ([]Contact, error)
 	GetByID(ctx context.Context, orgID, id uuid.UUID) (*Contact, error)
 	Create(ctx context.Context, orgID uuid.UUID, input CreateContactInput) (*Contact, error)
 	Update(ctx context.Context, orgID, id uuid.UUID, input UpdateContactInput) (*Contact, error)

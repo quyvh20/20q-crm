@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"crm-backend/internal/ai"
 	"crm-backend/internal/domain"
 
 	"github.com/google/uuid"
@@ -18,10 +19,30 @@ import (
 type contactUseCase struct {
 	contactRepo domain.ContactRepository
 	queue       domain.EmbeddingQueue
+	embedSvc    *ai.EmbeddingService
 }
 
-func NewContactUseCase(repo domain.ContactRepository, queue domain.EmbeddingQueue) domain.ContactUseCase {
-	return &contactUseCase{contactRepo: repo, queue: queue}
+func NewContactUseCase(repo domain.ContactRepository, queue domain.EmbeddingQueue, embedSvc ...*ai.EmbeddingService) domain.ContactUseCase {
+	uc := &contactUseCase{contactRepo: repo, queue: queue}
+	if len(embedSvc) > 0 {
+		uc.embedSvc = embedSvc[0]
+	}
+	return uc
+}
+
+// ============================================================
+// SemanticSearch
+// ============================================================
+
+func (uc *contactUseCase) SemanticSearch(ctx context.Context, orgID uuid.UUID, query string, limit int) ([]domain.Contact, error) {
+	if uc.embedSvc == nil {
+		return nil, domain.NewAppError(503, "semantic search not configured")
+	}
+	vec, err := uc.embedSvc.EmbedText(ctx, query)
+	if err != nil {
+		return nil, domain.NewAppError(502, "failed to embed query: "+err.Error())
+	}
+	return uc.contactRepo.SemanticSearch(ctx, orgID, vec, 0.5, limit)
 }
 
 // ============================================================

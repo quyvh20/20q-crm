@@ -141,7 +141,7 @@ func main() {
 		go embedWorker.Start(context.Background(), 5)
 
 		contactRepo := repository.NewContactRepository(db)
-		contactUseCase := usecase.NewContactUseCase(contactRepo, embedWorker)
+		contactUseCase := usecase.NewContactUseCase(contactRepo, embedWorker, embedSvc)
 		contactHandler := delivery.NewContactHandler(contactUseCase)
 
 		companyRepo := repository.NewCompanyRepository(db)
