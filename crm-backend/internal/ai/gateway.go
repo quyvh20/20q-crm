@@ -369,22 +369,16 @@ func (g *AIGateway) StreamChat(ctx context.Context, orgID, userID uuid.UUID, tas
 	model := g.modelFor(task, g.routePrimary(task))
 	url := fmt.Sprintf("%s/workers-ai/%s", g.gatewayURL, model)
 
-	// Build CF Workers AI streaming request (same format as non-streaming but stream:true)
-	var system string
-	var chatMsgs []map[string]string
+	// Build CF Workers AI streaming request.
+	// Llama 3.1 respects system-role messages in the messages array more reliably
+	// than the separate top-level "system" field.
+	var allMsgs []map[string]string
 	for _, m := range messages {
-		if m.Role == "system" {
-			system = m.Content
-		} else {
-			chatMsgs = append(chatMsgs, map[string]string{"role": m.Role, "content": m.Content})
-		}
+		allMsgs = append(allMsgs, map[string]string{"role": m.Role, "content": m.Content})
 	}
 	body := map[string]interface{}{
-		"messages": chatMsgs,
+		"messages": allMsgs,
 		"stream":   true,
-	}
-	if system != "" {
-		body["system"] = system
 	}
 
 	bodyBytes, err := json.Marshal(body)
@@ -418,6 +412,7 @@ func (g *AIGateway) StreamChat(ctx context.Context, orgID, userID uuid.UUID, tas
 	// CF Workers AI sends: data: {"response":"token"}\n\n
 	// We re-emit: data: token\n\n   (extract just the text)
 	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 512*1024), 512*1024)
 	var totalOutput int
 	for scanner.Scan() {
 		line := scanner.Text()
