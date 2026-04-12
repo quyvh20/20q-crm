@@ -171,7 +171,7 @@ func main() {
 		userRepo := repository.NewUserRepository(db)
 		userHandler := delivery.NewUserHandler(userRepo)
 
-		aiHandler := delivery.NewAIHandler(gateway, budget, embedSvc)
+		aiHandler := delivery.NewAIHandler(gateway, budget, embedSvc, contactUseCase)
 
 		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, cfg)
 		log.Info("All routes registered (auth, contacts, deals, pipeline, activities, tasks, users, ai)")

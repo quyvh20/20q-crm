@@ -1,25 +1,33 @@
 package http
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"crm-backend/internal/ai"
 	"crm-backend/internal/domain"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // AIHandler handles /api/ai routes.
 type AIHandler struct {
-	gateway  *ai.AIGateway
-	budget   *ai.BudgetGuard
-	embedSvc *ai.EmbeddingService
+	gateway   *ai.AIGateway
+	budget    *ai.BudgetGuard
+	embedSvc  *ai.EmbeddingService
+	contactUC domain.ContactUseCase
 }
 
-func NewAIHandler(gateway *ai.AIGateway, budget *ai.BudgetGuard, embedSvc *ai.EmbeddingService) *AIHandler {
-	return &AIHandler{gateway: gateway, budget: budget, embedSvc: embedSvc}
+func NewAIHandler(gateway *ai.AIGateway, budget *ai.BudgetGuard, embedSvc *ai.EmbeddingService, contactUC ...domain.ContactUseCase) *AIHandler {
+	h := &AIHandler{gateway: gateway, budget: budget, embedSvc: embedSvc}
+	if len(contactUC) > 0 {
+		h.contactUC = contactUC[0]
+	}
+	return h
 }
 
 // ============================================================
@@ -82,7 +90,7 @@ func (h *AIHandler) Chat(c *gin.Context) {
 	}
 
 	messages := []ai.Message{
-		{Role: "system", Content: "You are a helpful CRM assistant. Be concise and professional."},
+		{Role: "system", Content: h.buildSystemPrompt(c.Request.Context(), req.ContextID, orgID)},
 		{Role: "user", Content: req.Message},
 	}
 
@@ -188,4 +196,58 @@ func (h *AIHandler) Embed(c *gin.Context) {
 	}))
 }
 
+// ============================================================
+// buildSystemPrompt — injects contact context when context_id is provided
+// ============================================================
 
+func (h *AIHandler) buildSystemPrompt(ctx context.Context, contextID *string, orgID uuid.UUID) string {
+	base := "You are a helpful CRM assistant. Be concise and professional."
+
+	if contextID == nil || *contextID == "" || h.contactUC == nil {
+		return base
+	}
+
+	contactID, err := uuid.Parse(*contextID)
+	if err != nil {
+		return base // not a UUID — silently fall back
+	}
+
+	contact, err := h.contactUC.GetByID(ctx, orgID, contactID)
+	if err != nil || contact == nil {
+		return base // contact not found or access denied — fall back
+	}
+
+	// ── Build rich context block injected into system prompt ───────────────
+	var b strings.Builder
+	b.WriteString(base)
+	b.WriteString("\n\n--- CONTACT CONTEXT ---\n")
+	b.WriteString(fmt.Sprintf("Name: %s %s\n", contact.FirstName, contact.LastName))
+
+	if contact.Email != nil {
+		b.WriteString(fmt.Sprintf("Email: %s\n", *contact.Email))
+	}
+	if contact.Phone != nil {
+		b.WriteString(fmt.Sprintf("Phone: %s\n", *contact.Phone))
+	}
+	if contact.Company != nil {
+		b.WriteString(fmt.Sprintf("Company: %s\n", contact.Company.Name))
+	}
+	if contact.Owner != nil {
+		b.WriteString(fmt.Sprintf("Account Owner: %s %s\n", contact.Owner.FirstName, contact.Owner.LastName))
+	}
+	if len(contact.Tags) > 0 {
+		tagNames := make([]string, len(contact.Tags))
+		for i, t := range contact.Tags {
+			tagNames[i] = t.Name
+		}
+		b.WriteString(fmt.Sprintf("Tags: %s\n", strings.Join(tagNames, ", ")))
+	}
+	if len(contact.CustomFields) > 0 {
+		b.WriteString(fmt.Sprintf("Custom Fields: %s\n", string(contact.CustomFields)))
+	}
+	b.WriteString(fmt.Sprintf("Contact Since: %s\n", contact.CreatedAt.Format("2006-01-02")))
+	b.WriteString("--- END CONTEXT ---\n\n")
+	b.WriteString("Use the above contact data when answering questions. Reference the contact by their full name.")
+
+	return b.String()
+}
