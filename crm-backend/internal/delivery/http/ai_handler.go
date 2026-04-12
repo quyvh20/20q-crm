@@ -95,14 +95,24 @@ func (h *AIHandler) Chat(c *gin.Context) {
 		{Role: "user", Content: req.Message},
 	}
 
-	// ── Set SSE headers before writing any body ────────────────────────────
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
-	c.Header("Transfer-Encoding", "chunked")
-
 	flusher, canFlush := c.Writer.(http.Flusher)
+
+	// writeSSEHeaders is called by StreamChat the moment the upstream
+	// HTTP connection is established — BEFORE any body bytes are written.
+	// This way, if the upstream times out, no headers have been committed
+	// and we can still return a proper HTTP 503.
+	headerWritten := false
+	writeSSEHeaders := func() {
+		if headerWritten {
+			return
+		}
+		headerWritten = true
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		c.Header("X-Accel-Buffering", "no")
+		c.Header("Transfer-Encoding", "chunked")
+	}
 	flush := func() {
 		if canFlush {
 			flusher.Flush()
@@ -110,25 +120,65 @@ func (h *AIHandler) Chat(c *gin.Context) {
 	}
 
 	// ── Real streaming via CF Workers AI ──────────────────────────────────
-	err := h.gateway.StreamChat(c.Request.Context(), orgID, userID, ai.TaskAssistantChat, messages, c.Writer, flush)
+	err := h.gateway.StreamChat(
+		c.Request.Context(), orgID, userID, ai.TaskAssistantChat,
+		messages, c.Writer, writeSSEHeaders, flush,
+	)
 	if err != nil {
-		// If streaming failed before any bytes were sent, try non-streaming fallback
+		var timeoutErr ai.ErrAITimeout
 		var budgetErr ai.ErrBudgetExceeded
 		var planErr ai.ErrFeatureNotInPlan
 		switch {
+		case errors.As(err, &timeoutErr):
+			if !headerWritten {
+				// Headers not committed — return proper HTTP 503
+				c.Header("Retry-After", fmt.Sprintf("%d", timeoutErr.After))
+				c.JSON(http.StatusServiceUnavailable, domain.Err(timeoutErr.Error()))
+			} else {
+				// Headers already sent — emit SSE error event
+				fmt.Fprintf(c.Writer, "event: error\ndata: {\"code\":\"timeout\",\"retry_after\":%d}\n\n", timeoutErr.After)
+				flush()
+			}
 		case errors.As(err, &budgetErr):
-			fmt.Fprintf(c.Writer, "event: error\ndata: {\"code\":\"budget_exceeded\",\"reset_at\":\"%s\"}\n\n", budgetErr.ResetAt)
+			if !headerWritten {
+				c.JSON(http.StatusTooManyRequests, gin.H{
+					"error": budgetErr.Error(), "code": "budget_exceeded",
+					"reset_at": budgetErr.ResetAt,
+				})
+			} else {
+				fmt.Fprintf(c.Writer, "event: error\ndata: {\"code\":\"budget_exceeded\",\"reset_at\":\"%s\"}\n\n", budgetErr.ResetAt)
+				flush()
+			}
 		case errors.As(err, &planErr):
-			fmt.Fprintf(c.Writer, "event: error\ndata: {\"code\":\"feature_not_in_plan\",\"requires_plan\":\"%s\"}\n\n", planErr.RequiresPlan)
+			if !headerWritten {
+				c.JSON(http.StatusPaymentRequired, gin.H{
+					"error": planErr.Error(), "code": "feature_not_in_plan",
+					"requires_plan": planErr.RequiresPlan,
+				})
+			} else {
+				fmt.Fprintf(c.Writer, "event: error\ndata: {\"code\":\"feature_not_in_plan\",\"requires_plan\":\"%s\"}\n\n", planErr.RequiresPlan)
+				flush()
+			}
 		default:
-			// Fallback: call non-streaming Complete
+			// Generic fallback: call non-streaming Complete
 			result, ferr := h.gateway.Complete(c.Request.Context(), orgID, userID, ai.TaskAssistantChat, messages)
 			if ferr != nil {
-				fmt.Fprintf(c.Writer, "event: error\ndata: {\"code\":\"ai_unavailable\"}\n\n")
-				flush()
+				var fTimeoutErr ai.ErrAITimeout
+				if errors.As(ferr, &fTimeoutErr) && !headerWritten {
+					c.Header("Retry-After", fmt.Sprintf("%d", fTimeoutErr.After))
+					c.JSON(http.StatusServiceUnavailable, domain.Err(ferr.Error()))
+					return
+				}
+				if !headerWritten {
+					c.JSON(http.StatusServiceUnavailable, domain.Err("ai_unavailable"))
+				} else {
+					fmt.Fprintf(c.Writer, "event: error\ndata: {\"code\":\"ai_unavailable\"}\n\n")
+					flush()
+				}
 				return
 			}
 			// Stream the complete response in chunks
+			writeSSEHeaders()
 			chunkSize := 10
 			content := result.Content
 			for i := 0; i < len(content); i += chunkSize {

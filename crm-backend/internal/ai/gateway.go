@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -128,8 +130,10 @@ func NewAIGateway(cfAccountID, cfAIGatewayID, cfToken, anthropicKey string, budg
 func (g *AIGateway) Complete(ctx context.Context, orgID, userID uuid.UUID, task AITask, messages []Message) (AIResponse, error) {
 	estimated := estimateTokens(messages)
 
-	if err := g.Budget.Check(ctx, orgID, task, estimated); err != nil {
-		return AIResponse{}, err
+	if g.Budget != nil {
+		if err := g.Budget.Check(ctx, orgID, task, estimated); err != nil {
+			return AIResponse{}, err
+		}
 	}
 
 	primaryP := g.routePrimary(task)
@@ -150,7 +154,9 @@ func (g *AIGateway) Complete(ctx context.Context, orgID, userID uuid.UUID, task 
 	}
 
 	// Persist usage asynchronously
-	go g.Budget.Record(ctx, orgID, userID, task, result.Model, result.Provider, result.InputTokens, result.OutputTokens)
+	if g.Budget != nil {
+		go g.Budget.Record(ctx, orgID, userID, task, result.Model, result.Provider, result.InputTokens, result.OutputTokens)
+	}
 
 	return result, nil
 }
@@ -336,6 +342,9 @@ func (g *AIGateway) doRequest(ctx context.Context, url, method string, headers m
 
 	res, err := g.httpClient.Do(req)
 	if err != nil {
+		if isTimeoutErr(err) {
+			return nil, ErrAITimeout{Provider: url, After: 5}
+		}
 		return nil, err
 	}
 	defer res.Body.Close()
@@ -352,6 +361,15 @@ func (g *AIGateway) doRequest(ctx context.Context, url, method string, headers m
 	return data, nil
 }
 
+// isTimeoutErr reports whether err represents a network or context timeout.
+func isTimeoutErr(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
 // ============================================================
 // StreamChat — real SSE streaming via CF Workers AI
 // ============================================================
@@ -359,11 +377,14 @@ func (g *AIGateway) doRequest(ctx context.Context, url, method string, headers m
 // StreamChat starts a streaming inference call and writes raw SSE chunks
 // ("data: ...\n\n") to w as they arrive from the provider.
 // Budget check is performed before the call; usage is estimated post-call.
-// Callers MUST set Content-Type: text/event-stream and disable buffering before calling.
-func (g *AIGateway) StreamChat(ctx context.Context, orgID, userID uuid.UUID, task AITask, messages []Message, w io.Writer, flush func()) error {
+// writeSSEHeaders is called exactly once when the upstream connection is
+// established — before any bytes reach the client. flush drains the buffer.
+func (g *AIGateway) StreamChat(ctx context.Context, orgID, userID uuid.UUID, task AITask, messages []Message, w io.Writer, writeSSEHeaders func(), flush func()) error {
 	estimated := estimateTokens(messages)
-	if err := g.Budget.Check(ctx, orgID, task, estimated); err != nil {
-		return err
+	if g.Budget != nil {
+		if err := g.Budget.Check(ctx, orgID, task, estimated); err != nil {
+			return err
+		}
 	}
 
 	model := g.modelFor(task, g.routePrimary(task))
@@ -399,6 +420,9 @@ func (g *AIGateway) StreamChat(ctx context.Context, orgID, userID uuid.UUID, tas
 
 	resp, err := g.httpClient.Do(req)
 	if err != nil {
+		if isTimeoutErr(err) {
+			return ErrAITimeout{Provider: g.gatewayURL, After: 5}
+		}
 		return fmt.Errorf("stream request failed: %w", err)
 	}
 	defer resp.Body.Close()
@@ -407,6 +431,9 @@ func (g *AIGateway) StreamChat(ctx context.Context, orgID, userID uuid.UUID, tas
 		data, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("stream provider returned %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
+
+	// Connection established successfully — commit SSE headers BEFORE first write.
+	writeSSEHeaders()
 
 	// Relay each SSE line from the provider straight to the client.
 	// CF Workers AI sends: data: {"response":"token"}\n\n
@@ -443,8 +470,10 @@ func (g *AIGateway) StreamChat(ctx context.Context, orgID, userID uuid.UUID, tas
 	}
 
 	// Record approximate usage asynchronously
-	go g.Budget.Record(ctx, orgID, userID, task, model, string(providerCFWorkers),
-		estimated, totalOutput/4)
+	if g.Budget != nil {
+		go g.Budget.Record(ctx, orgID, userID, task, model, string(providerCFWorkers),
+			estimated, totalOutput/4)
+	}
 
 	return nil
 }

@@ -53,6 +53,18 @@ func (e ErrFeatureNotInPlan) Error() string {
 	return fmt.Sprintf("feature '%s' requires %s plan or higher", e.Feature, e.RequiresPlan)
 }
 
+// ErrAITimeout is returned when the upstream AI provider does not respond
+// within the configured deadline. Callers should respond with HTTP 503 and
+// a Retry-After header so clients can back off gracefully.
+type ErrAITimeout struct {
+	Provider string
+	After    int // suggested retry delay in seconds
+}
+
+func (e ErrAITimeout) Error() string {
+	return fmt.Sprintf("AI provider %q timed out; retry after %ds", e.Provider, e.After)
+}
+
 // ============================================================
 // BudgetGuard
 // ============================================================
