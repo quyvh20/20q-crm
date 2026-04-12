@@ -1,16 +1,14 @@
 package http
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 
 	"crm-backend/internal/ai"
+	"crm-backend/internal/domain"
 
 	"github.com/gin-gonic/gin"
-	"crm-backend/internal/domain"
 )
 
 // AIHandler handles /api/ai routes.
@@ -88,47 +86,53 @@ func (h *AIHandler) Chat(c *gin.Context) {
 		{Role: "user", Content: req.Message},
 	}
 
-	result, err := h.gateway.Complete(c.Request.Context(), orgID, userID, ai.TaskAssistantChat, messages)
-	if err != nil {
-		var budgetErr ai.ErrBudgetExceeded
-		var planErr ai.ErrFeatureNotInPlan
-		switch {
-		case errors.As(err, &budgetErr):
-			c.JSON(http.StatusTooManyRequests, gin.H{"error": budgetErr.Error(), "code": "budget_exceeded", "reset_at": budgetErr.ResetAt})
-		case errors.As(err, &planErr):
-			c.JSON(http.StatusPaymentRequired, gin.H{"error": planErr.Error(), "code": "feature_not_in_plan", "requires_plan": planErr.RequiresPlan})
-		default:
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ai_unavailable"})
-		}
-		return
-	}
-
-	// Stream response as SSE
+	// ── Set SSE headers before writing any body ────────────────────────────
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
+	c.Header("Transfer-Encoding", "chunked")
 
 	flusher, canFlush := c.Writer.(http.Flusher)
-
-	// Simulate token streaming by writing chunks of the response
-	chunkSize := 10
-	content := result.Content
-	for i := 0; i < len(content); i += chunkSize {
-		end := i + chunkSize
-		if end > len(content) {
-			end = len(content)
-		}
-		chunk := content[i:end]
-		fmt.Fprintf(c.Writer, "data: %s\n\n", chunk)
+	flush := func() {
 		if canFlush {
 			flusher.Flush()
 		}
 	}
 
-	// Send done event
-	fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
-	if canFlush {
-		flusher.Flush()
+	// ── Real streaming via CF Workers AI ──────────────────────────────────
+	err := h.gateway.StreamChat(c.Request.Context(), orgID, userID, ai.TaskAssistantChat, messages, c.Writer, flush)
+	if err != nil {
+		// If streaming failed before any bytes were sent, try non-streaming fallback
+		var budgetErr ai.ErrBudgetExceeded
+		var planErr ai.ErrFeatureNotInPlan
+		switch {
+		case errors.As(err, &budgetErr):
+			fmt.Fprintf(c.Writer, "event: error\ndata: {\"code\":\"budget_exceeded\",\"reset_at\":\"%s\"}\n\n", budgetErr.ResetAt)
+		case errors.As(err, &planErr):
+			fmt.Fprintf(c.Writer, "event: error\ndata: {\"code\":\"feature_not_in_plan\",\"requires_plan\":\"%s\"}\n\n", planErr.RequiresPlan)
+		default:
+			// Fallback: call non-streaming Complete
+			result, ferr := h.gateway.Complete(c.Request.Context(), orgID, userID, ai.TaskAssistantChat, messages)
+			if ferr != nil {
+				fmt.Fprintf(c.Writer, "event: error\ndata: {\"code\":\"ai_unavailable\"}\n\n")
+				flush()
+				return
+			}
+			// Stream the complete response in chunks
+			chunkSize := 10
+			content := result.Content
+			for i := 0; i < len(content); i += chunkSize {
+				end := i + chunkSize
+				if end > len(content) {
+					end = len(content)
+				}
+				fmt.Fprintf(c.Writer, "data: %s\n\n", content[i:end])
+				flush()
+			}
+			fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
+			flush()
+		}
 	}
 }
 
@@ -184,10 +188,4 @@ func (h *AIHandler) Embed(c *gin.Context) {
 	}))
 }
 
-// ============================================================
-// Suppress unused import warning
-// ============================================================
-var (
-	_ = bufio.NewScanner
-	_ = io.EOF
-)
+

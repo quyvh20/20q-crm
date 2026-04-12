@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -111,7 +112,7 @@ func NewAIGateway(cfAccountID, cfAIGatewayID, cfToken, anthropicKey string, budg
 		gatewayURL:   fmt.Sprintf("https://gateway.ai.cloudflare.com/v1/%s/%s", cfAccountID, cfAIGatewayID),
 		cfToken:      cfToken,
 		anthropicKey: anthropicKey,
-		httpClient:   &http.Client{Timeout: 60 * time.Second},
+		httpClient:   &http.Client{Timeout: 120 * time.Second},
 		Budget:       budget,
 		logger:       logger,
 	}
@@ -343,6 +344,105 @@ func (g *AIGateway) doRequest(ctx context.Context, url, method string, headers m
 	}
 
 	return data, nil
+}
+
+// ============================================================
+// StreamChat — real SSE streaming via CF Workers AI
+// ============================================================
+
+// StreamChat starts a streaming inference call and writes raw SSE chunks
+// ("data: ...\n\n") to w as they arrive from the provider.
+// Budget check is performed before the call; usage is estimated post-call.
+// Callers MUST set Content-Type: text/event-stream and disable buffering before calling.
+func (g *AIGateway) StreamChat(ctx context.Context, orgID, userID uuid.UUID, task AITask, messages []Message, w io.Writer, flush func()) error {
+	estimated := estimateTokens(messages)
+	if err := g.Budget.Check(ctx, orgID, task, estimated); err != nil {
+		return err
+	}
+
+	model := g.modelFor(task, g.routePrimary(task))
+	url := fmt.Sprintf("%s/workers-ai/%s", g.gatewayURL, model)
+
+	// Build CF Workers AI streaming request (same format as non-streaming but stream:true)
+	var system string
+	var chatMsgs []map[string]string
+	for _, m := range messages {
+		if m.Role == "system" {
+			system = m.Content
+		} else {
+			chatMsgs = append(chatMsgs, map[string]string{"role": m.Role, "content": m.Content})
+		}
+	}
+	body := map[string]interface{}{
+		"messages": chatMsgs,
+		"stream":   true,
+	}
+	if system != "" {
+		body["system"] = system
+	}
+
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+g.cfToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := g.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("stream request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		data, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("stream provider returned %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+
+	// Relay each SSE line from the provider straight to the client.
+	// CF Workers AI sends: data: {"response":"token"}\n\n
+	// We re-emit: data: token\n\n   (extract just the text)
+	scanner := bufio.NewScanner(resp.Body)
+	var totalOutput int
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		payload := strings.TrimPrefix(line, "data: ")
+		if payload == "[DONE]" {
+			fmt.Fprintf(w, "data: [DONE]\n\n")
+			flush()
+			break
+		}
+		// CF streaming payload: {"response":"...","p":"..."}
+		var chunk struct {
+			Response string `json:"response"`
+		}
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			// Pass raw payload through if JSON doesn't match expected shape
+			fmt.Fprintf(w, "data: %s\n\n", payload)
+		} else {
+			fmt.Fprintf(w, "data: %s\n\n", chunk.Response)
+			totalOutput += len(chunk.Response)
+		}
+		flush()
+	}
+	if err := scanner.Err(); err != nil && err != io.EOF {
+		return fmt.Errorf("stream read error: %w", err)
+	}
+
+	// Record approximate usage asynchronously
+	go g.Budget.Record(ctx, orgID, userID, task, model, string(providerCFWorkers),
+		estimated, totalOutput/4)
+
+	return nil
 }
 
 // ============================================================
