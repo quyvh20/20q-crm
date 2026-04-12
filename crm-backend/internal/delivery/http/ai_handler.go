@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -204,20 +205,29 @@ func (h *AIHandler) buildSystemPrompt(ctx context.Context, contextID *string, or
 	base := "You are a helpful CRM assistant. Be concise and professional."
 
 	if contextID == nil || *contextID == "" || h.contactUC == nil {
+		slog.Info("ai_chat_context", "status", "no_context_id", "has_uc", h.contactUC != nil)
 		return base
 	}
 
+	slog.Info("ai_chat_context", "status", "resolving", "context_id", *contextID, "org_id", orgID.String())
+
 	contactID, err := uuid.Parse(*contextID)
 	if err != nil {
+		slog.Info("ai_chat_context", "status", "invalid_uuid", "context_id", *contextID)
 		return base // not a UUID — silently fall back
 	}
 
 	contact, err := h.contactUC.GetByID(ctx, orgID, contactID)
 	if err != nil || contact == nil {
+		slog.Info("ai_chat_context", "status", "contact_not_found", "contact_id", contactID.String(), "err", err)
 		return base // contact not found or access denied — fall back
 	}
 
-	// ── Build rich context block injected into system prompt ───────────────
+	slog.Info("ai_chat_context", "status", "found",
+		"contact_id", contact.ID.String(),
+		"name", contact.FirstName+" "+contact.LastName,
+	)
+
 	var b strings.Builder
 	b.WriteString(base)
 	b.WriteString("\n\n--- CONTACT CONTEXT ---\n")
