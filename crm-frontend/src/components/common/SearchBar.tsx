@@ -12,6 +12,7 @@ export default function SearchBar({ onSelectContact }: SearchBarProps) {
   const [results, setResults] = useState<Contact[]>([]);
   const [loading, setLoading] = useState(false);
   const [semanticMode, setSemanticMode] = useState(false);
+  const [isSemanticResults, setIsSemanticResults] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -33,14 +34,24 @@ export default function SearchBar({ onSelectContact }: SearchBarProps) {
     if (isOpen) setTimeout(() => inputRef.current?.focus(), 50);
   }, [isOpen]);
 
-  // Debounced search
+  // Hybrid debounced search:
+  //   explicit semanticMode ON → always semantic
+  //   3+ words → auto semantic (mirrors backend hybrid logic)
+  //   otherwise → full-text
   useEffect(() => {
-    if (!query.trim()) { setResults([]); return; }
+    if (!query.trim()) { setResults([]); setIsSemanticResults(false); return; }
     clearTimeout(timeoutRef.current);
     timeoutRef.current = setTimeout(async () => {
       setLoading(true);
+      const autoSemantic = query.trim().split(/\s+/).length >= 3;
+      const useSemantic = semanticMode || autoSemantic;
+      setIsSemanticResults(useSemantic);
       try {
-        const { contacts } = await getContacts({ q: query, limit: 8 });
+        const { contacts } = await getContacts({
+          q: query,
+          limit: 8,
+          semantic: useSemantic,
+        });
         setResults(contacts);
       } catch {
         setResults([]);
@@ -58,7 +69,7 @@ export default function SearchBar({ onSelectContact }: SearchBarProps) {
     setResults([]);
   };
 
-  const isSemanticQuery = query.trim().split(/\s+/).length > 2;
+  const isAutoSemantic = query.trim().split(/\s+/).length >= 3;
 
   if (!isOpen) {
     return (
@@ -108,6 +119,12 @@ export default function SearchBar({ onSelectContact }: SearchBarProps) {
             <span>AI Semantic mode — describe what you're looking for naturally</span>
           </div>
         )}
+        {!semanticMode && isAutoSemantic && query && (
+          <div className="semantic-banner" style={{ background: 'linear-gradient(to right, #f0fdf4, #ecfdf5)', color: '#059669', borderBottom: '1px solid #bbf7d0' }}>
+            <span>⚡</span>
+            <span>Auto AI Search — 3+ words triggers semantic ranking</span>
+          </div>
+        )}
 
         {results.length > 0 && (
           <ul className="search-results">
@@ -122,8 +139,10 @@ export default function SearchBar({ onSelectContact }: SearchBarProps) {
                     {contact.email && <span className="search-result-sub">{contact.email}</span>}
                     {contact.company && <span className="search-result-company">{contact.company.name}</span>}
                   </div>
-                  {isSemanticQuery && semanticMode && (
-                    <span className="ai-badge">AI</span>
+                  {isSemanticResults && (
+                    <span className="ai-badge" title="Ranked by AI semantic similarity">
+                      ✦ AI Search
+                    </span>
                   )}
                 </button>
               </li>
@@ -174,7 +193,7 @@ export default function SearchBar({ onSelectContact }: SearchBarProps) {
         }
         .semantic-toggle.active { background: #eef2ff; border-color: #6366f1; color: #6366f1; }
 
-        .semantic-banner { display: flex; align-items: center; gap: 8px; padding: 8px 16px; background: #eef2ff; font-size: 12px; color: #4f46e5; }
+        .semantic-banner { display: flex; align-items: center; gap: 8px; padding: 8px 16px; background: linear-gradient(to right, #eef2ff, #faf5ff); font-size: 12px; color: #4f46e5; border-bottom: 1px solid #e0e7ff; }
 
         .search-results { list-style: none; margin: 0; padding: 8px; max-height: 360px; overflow-y: auto; }
         .search-result-item {
@@ -188,8 +207,20 @@ export default function SearchBar({ onSelectContact }: SearchBarProps) {
         .search-result-name { font-size: 13px; font-weight: 500; color: var(--foreground, #111); }
         .search-result-sub { font-size: 11px; color: #6b7280; }
         .search-result-company { font-size: 11px; color: #9ca3af; }
-        .ai-badge { padding: 2px 6px; background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; border-radius: 99px; font-size: 9px; font-weight: 700; letter-spacing: 0.05em; }
+        .ai-badge {
+          display: inline-flex; align-items: center; gap: 3px;
+          padding: 3px 8px; background: linear-gradient(135deg, #6366f1, #8b5cf6);
+          color: white; border-radius: 99px; font-size: 10px; font-weight: 700;
+          letter-spacing: 0.03em; white-space: nowrap;
+          box-shadow: 0 1px 6px rgba(99,102,241,0.35);
+          animation: badgePop 0.2s ease;
+        }
+        @keyframes badgePop { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
         .search-empty { padding: 20px; text-align: center; color: #9ca3af; font-size: 13px; }
+        .search-semantic-hint {
+          padding: 6px 16px 10px; font-size: 11px; color: #6366f1;
+          display: flex; align-items: center; gap: 5px;
+        }
       `}</style>
     </div>
   );

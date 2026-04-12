@@ -24,6 +24,7 @@ function ContactsPageInner() {
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
+  const [semanticMode, setSemanticMode] = useState(false);
 
   // Fetch filter metadata
   const { data: companies } = useQuery({ queryKey: ['companies'], queryFn: getCompanies });
@@ -51,16 +52,23 @@ function ContactsPageInner() {
 
   const hasActiveFilters = !!(searchQuery || selectedCompanyId || selectedTagIds.size > 0);
 
+  const autoSemantic = debouncedQuery.trim().split(/\s+/).filter(Boolean).length >= 3;
+  const useSemantic = semanticMode || autoSemantic;
+
   const filters: ContactFilter = {
     q: debouncedQuery || undefined,
     company_id: selectedCompanyId || undefined,
     tag_ids: selectedTagIds.size > 0 ? Array.from(selectedTagIds) : undefined,
+    semantic: useSemantic || undefined,
   };
 
   // Active filter chips data
   const activeChips: { label: string; onRemove: () => void }[] = [];
   if (searchQuery) {
-    activeChips.push({ label: `Search: "${searchQuery}"`, onRemove: () => setSearchQuery('') });
+    const label = useSemantic
+      ? `✦ AI Search: "${searchQuery}"`
+      : `Search: "${searchQuery}"`;
+    activeChips.push({ label, onRemove: () => setSearchQuery('') });
   }
   if (selectedCompanyId) {
     const co = companies?.find(c => c.id === selectedCompanyId);
@@ -114,10 +122,26 @@ function ContactsPageInner() {
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Name or email..."
+                    placeholder={semanticMode ? 'Describe who you\'re looking for…' : 'Name or email...'}
                     className="w-full pl-9 pr-3 py-2 rounded-lg border bg-background text-sm outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-all"
                   />
                 </div>
+                <button
+                  id="contacts-semantic-toggle"
+                  onClick={() => setSemanticMode(v => !v)}
+                  title={semanticMode ? 'Disable AI Semantic Search' : 'Enable AI Semantic Search'}
+                  className="mt-1 w-full flex items-center justify-center gap-2 py-1.5 rounded-lg border text-xs font-medium transition-all"
+                  style={semanticMode
+                    ? { background: 'linear-gradient(135deg,#eef2ff,#faf5ff)', borderColor: '#6366f1', color: '#6366f1' }
+                    : { borderColor: 'var(--border)', color: 'var(--muted-foreground)' }
+                  }
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2a8 8 0 0 1 8 8c0 5.25-8 12-8 12S4 15.25 4 10a8 8 0 0 1 8-8z"/><circle cx="12" cy="10" r="3"/></svg>
+                  {semanticMode ? '🔮 AI Search ON' : 'AI Search'}
+                </button>
+                {autoSemantic && searchQuery && !semanticMode && (
+                  <p className="text-xs" style={{ color: '#059669' }}>⚡ Auto AI Search active</p>
+                )}
               </div>
 
               {/* Company Filter */}
@@ -201,6 +225,23 @@ function ContactsPageInner() {
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
               {showFilters ? 'Hide Filters' : 'Show Filters'}
             </button>
+
+            {/* AI Search badge — shown when semantic results are active */}
+            {useSemantic && debouncedQuery && (
+              <span
+                id="ai-search-badge"
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: '5px',
+                  padding: '3px 10px',
+                  background: 'linear-gradient(135deg,#6366f1,#8b5cf6)',
+                  color: 'white', borderRadius: '99px',
+                  fontSize: '11px', fontWeight: 700,
+                  boxShadow: '0 1px 8px rgba(99,102,241,0.35)',
+                }}
+              >
+                ✦ AI Search Active
+              </span>
+            )}
 
             {/* Active filter chips */}
             {activeChips.length > 0 && (

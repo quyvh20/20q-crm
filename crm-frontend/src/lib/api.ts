@@ -70,6 +70,7 @@ export interface ContactFilter {
   company_id?: string;
   owner_user_id?: string;
   tag_ids?: string[];
+  semantic?: boolean;
 }
 
 export interface CursorMeta {
@@ -97,6 +98,7 @@ export async function getContacts(filter: ContactFilter = {}) {
   if (filter.company_id) params.set('company_id', filter.company_id);
   if (filter.owner_user_id) params.set('owner_user_id', filter.owner_user_id);
   if (filter.tag_ids?.length) params.set('tag_ids', filter.tag_ids.join(','));
+  if (filter.semantic) params.set('semantic', 'true');
 
   const res = await apiFetch(`/api/contacts?${params.toString()}`);
   const json = await res.json();
