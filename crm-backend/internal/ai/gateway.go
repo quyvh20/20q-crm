@@ -99,22 +99,28 @@ type AIResponse struct {
 // ============================================================
 
 type AIGateway struct {
-	gatewayURL   string
-	cfToken      string
-	anthropicKey string
-	httpClient   *http.Client
-	Budget       *BudgetGuard
-	logger       *zap.Logger
+	gatewayURL     string
+	cfToken        string
+	cfGatewayToken string
+	anthropicKey   string
+	httpClient     *http.Client
+	Budget         *BudgetGuard
+	logger         *zap.Logger
 }
 
-func NewAIGateway(cfAccountID, cfAIGatewayID, cfToken, anthropicKey string, budget *BudgetGuard, logger *zap.Logger) *AIGateway {
+func NewAIGateway(cfAccountID, cfAIGatewayID, cfToken, anthropicKey string, budget *BudgetGuard, logger *zap.Logger, cfGatewayToken ...string) *AIGateway {
+	gwTok := ""
+	if len(cfGatewayToken) > 0 {
+		gwTok = cfGatewayToken[0]
+	}
 	return &AIGateway{
-		gatewayURL:   fmt.Sprintf("https://gateway.ai.cloudflare.com/v1/%s/%s", cfAccountID, cfAIGatewayID),
-		cfToken:      cfToken,
-		anthropicKey: anthropicKey,
-		httpClient:   &http.Client{Timeout: 120 * time.Second},
-		Budget:       budget,
-		logger:       logger,
+		gatewayURL:     fmt.Sprintf("https://gateway.ai.cloudflare.com/v1/%s/%s", cfAccountID, cfAIGatewayID),
+		cfToken:        cfToken,
+		cfGatewayToken: gwTok,
+		anthropicKey:   anthropicKey,
+		httpClient:     &http.Client{Timeout: 120 * time.Second},
+		Budget:         budget,
+		logger:         logger,
 	}
 }
 
@@ -391,6 +397,9 @@ func (g *AIGateway) StreamChat(ctx context.Context, orgID, userID uuid.UUID, tas
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+g.cfToken)
+	if g.cfGatewayToken != "" {
+		req.Header.Set("cf-aig-authorization", "Bearer "+g.cfGatewayToken)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 

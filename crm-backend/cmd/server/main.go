@@ -134,7 +134,7 @@ func main() {
 		budget := ai.NewBudgetGuard(db, redisClient)
 		gateway := ai.NewAIGateway(
 			cfg.CFAccountID, cfg.CFAIGatewayID, cfg.CFAIToken, cfg.AnthropicAPIKey,
-			budget, log,
+			budget, log, cfg.CFAIGatewayToken,
 		)
 		embedSvc := ai.NewEmbeddingService(cfg.CFAccountID, cfg.CFAIGatewayID, cfg.CFAIToken, cfg.CFAIGatewayToken)
 		embedWorker := worker.NewEmbeddingWorker(embedSvc, db, log, 200)
