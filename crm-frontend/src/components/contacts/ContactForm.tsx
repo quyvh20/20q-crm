@@ -1,8 +1,10 @@
+import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { createContact, updateContact, type Contact } from '../../lib/api';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import DynamicCustomFields from '../common/DynamicCustomFields';
 
 const contactSchema = z.object({
   first_name: z.string().min(1, 'First name is required'),
@@ -23,6 +25,11 @@ interface ContactFormProps {
 export default function ContactForm({ contact, onClose }: ContactFormProps) {
   const queryClient = useQueryClient();
   const isEditing = !!contact;
+
+  // Custom fields state (managed outside react-hook-form since they're dynamic)
+  const [customFields, setCustomFields] = useState<Record<string, unknown>>(
+    contact?.custom_fields || {}
+  );
 
   const {
     register,
@@ -47,6 +54,7 @@ export default function ContactForm({ contact, onClose }: ContactFormProps) {
         last_name: data.last_name,
         email: data.email || undefined,
         phone: data.phone || undefined,
+        custom_fields: customFields,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['contacts'] });
@@ -61,6 +69,7 @@ export default function ContactForm({ contact, onClose }: ContactFormProps) {
         last_name: data.last_name,
         email: data.email || undefined,
         phone: data.phone || undefined,
+        custom_fields: customFields,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['contacts'] });
@@ -153,6 +162,14 @@ export default function ContactForm({ contact, onClose }: ContactFormProps) {
               placeholder="+84 123 456 789"
             />
           </div>
+
+          {/* Dynamic Custom Fields */}
+          <DynamicCustomFields
+            entityType="contact"
+            values={customFields}
+            onChange={setCustomFields}
+            disabled={isSubmitting}
+          />
 
           {/* Submit */}
           <div className="flex gap-3 pt-4 border-t">

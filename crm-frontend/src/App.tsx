@@ -9,6 +9,7 @@ import AuthCallbackPage from './pages/AuthCallbackPage';
 import ContactsPage from './pages/ContactsPage';
 import DealsPage from './pages/DealsPage';
 import DealDetailPage from './pages/DealDetailPage';
+import SettingsPage from './pages/SettingsPage';
 
 // Initialize Sentry
 const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN;
@@ -97,6 +98,11 @@ function App() {
             <Route path="/deals/:id" element={
               <ProtectedRoute>
                 <AppLayout><DealDetailPage /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/settings" element={
+              <ProtectedRoute>
+                <AppLayout><SettingsPage /></AppLayout>
               </ProtectedRoute>
             } />
           </Routes>

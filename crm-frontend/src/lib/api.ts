@@ -537,3 +537,68 @@ export async function streamChat(
   }
   onDone();
 }
+
+// ============================================================
+// Custom Field Definitions (Settings)
+// ============================================================
+
+export interface CustomFieldDef {
+  key: string;
+  label: string;
+  type: 'text' | 'number' | 'date' | 'select' | 'boolean' | 'url';
+  entity_type: 'contact' | 'company' | 'deal';
+  options?: string[];
+  required: boolean;
+  position: number;
+}
+
+export async function getFieldDefs(entityType?: string): Promise<CustomFieldDef[]> {
+  const params = new URLSearchParams();
+  if (entityType) params.set('entity_type', entityType);
+  const res = await apiFetch(`/api/settings/fields?${params.toString()}`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch field definitions');
+  return json.data as CustomFieldDef[];
+}
+
+export async function createFieldDef(data: {
+  key: string;
+  label: string;
+  type: string;
+  entity_type: string;
+  options?: string[];
+  required?: boolean;
+  position?: number;
+}): Promise<CustomFieldDef> {
+  const res = await apiFetch('/api/settings/fields', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to create field definition');
+  return json.data as CustomFieldDef;
+}
+
+export async function updateFieldDef(key: string, data: {
+  label?: string;
+  type?: string;
+  options?: string[];
+  required?: boolean;
+  position?: number;
+}): Promise<CustomFieldDef> {
+  const res = await apiFetch(`/api/settings/fields/${key}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to update field definition');
+  return json.data as CustomFieldDef;
+}
+
+export async function deleteFieldDef(key: string): Promise<void> {
+  const res = await apiFetch(`/api/settings/fields/${key}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await res.json();
+    throw new Error(json.error || 'Failed to delete field definition');
+  }
+}

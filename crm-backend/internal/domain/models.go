@@ -232,6 +232,31 @@ type VoiceNote struct {
 }
 
 // ============================================================
+// Custom Field Definitions (stored as JSONB in OrgSettings)
+// ============================================================
+
+type CustomFieldDef struct {
+	Key        string   `json:"key"`                    // machine key, e.g. "budget"
+	Label      string   `json:"label"`                  // display label, e.g. "Budget ($)"
+	Type       string   `json:"type"`                   // "text" | "number" | "date" | "select" | "boolean" | "url"
+	EntityType string   `json:"entity_type"`            // "contact" | "company" | "deal"
+	Options    []string `json:"options,omitempty"`       // for "select" type only
+	Required   bool     `json:"required"`               // whether field is mandatory
+	Position   int      `json:"position"`               // display order
+}
+
+// ValidFieldTypes lists the allowed custom field types.
+var ValidFieldTypes = map[string]bool{
+	"text": true, "number": true, "date": true,
+	"select": true, "boolean": true, "url": true,
+}
+
+// ValidEntityTypes lists the entity types that support custom fields.
+var ValidEntityTypes = map[string]bool{
+	"contact": true, "company": true, "deal": true,
+}
+
+// ============================================================
 // System / Configuration Entities
 // ============================================================
 

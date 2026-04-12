@@ -7,7 +7,7 @@ import (
 )
 
 // RegisterRoutes wires all API routes to the Gin engine.
-func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, cfg *config.Config) {
+func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, cfg *config.Config) {
 	api := router.Group("/api")
 
 	// ── Auth (public) ──────────────────────────────────
@@ -107,6 +107,16 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			aiRoutes.GET("/usage", aiHandler.GetUsage)
 			aiRoutes.POST("/chat", aiHandler.Chat)
 			aiRoutes.POST("/embed", aiHandler.Embed)
+		}
+
+		// Settings (Custom Fields)
+		settings := protected.Group("/settings")
+		{
+			// Field definitions — read access for all, write for admin only
+			settings.GET("/fields", settingsHandler.ListFieldDefs)
+			settings.POST("/fields", RequireRole("admin"), settingsHandler.CreateFieldDef)
+			settings.PUT("/fields/:key", RequireRole("admin"), settingsHandler.UpdateFieldDef)
+			settings.DELETE("/fields/:key", RequireRole("admin"), settingsHandler.DeleteFieldDef)
 		}
 	}
 }

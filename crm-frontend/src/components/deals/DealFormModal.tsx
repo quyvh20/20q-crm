@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createDeal, getContacts, getCompanies, type PipelineStage, type Contact, type Company } from '../../lib/api';
+import DynamicCustomFields from '../common/DynamicCustomFields';
 
 interface DealFormModalProps {
   isOpen: boolean;
@@ -18,6 +19,7 @@ export default function DealFormModal({ isOpen, onClose, stages, defaultStageId 
   const [contactId, setContactId] = useState('');
   const [companyId, setCompanyId] = useState('');
   const [expectedCloseAt, setExpectedCloseAt] = useState('');
+  const [customFields, setCustomFields] = useState<Record<string, unknown>>({});
 
   const { data: contacts = [] } = useQuery<Contact[]>({
     queryKey: ['contacts-dropdown'],
@@ -51,6 +53,7 @@ export default function DealFormModal({ isOpen, onClose, stages, defaultStageId 
     setContactId('');
     setCompanyId('');
     setExpectedCloseAt('');
+    setCustomFields({});
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -169,6 +172,14 @@ export default function DealFormModal({ isOpen, onClose, stages, defaultStageId 
                   className="w-full px-3 py-2 rounded-lg border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
+
+              {/* Custom Fields */}
+              <DynamicCustomFields
+                entityType="deal"
+                values={customFields}
+                onChange={setCustomFields}
+                disabled={mutation.isPending}
+              />
             </div>
           </div>
 

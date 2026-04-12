@@ -476,3 +476,45 @@ type UserRepository interface {
 	ListByOrgID(ctx context.Context, orgID uuid.UUID) ([]User, error)
 }
 
+// ============================================================
+// OrgSettings / Custom Field Definitions DTOs
+// ============================================================
+
+type CreateFieldDefInput struct {
+	Key        string   `json:"key" binding:"required,min=1"`
+	Label      string   `json:"label" binding:"required,min=1"`
+	Type       string   `json:"type" binding:"required"`
+	EntityType string   `json:"entity_type" binding:"required"`
+	Options    []string `json:"options"`
+	Required   bool     `json:"required"`
+	Position   *int     `json:"position"`
+}
+
+type UpdateFieldDefInput struct {
+	Label    *string  `json:"label"`
+	Type     *string  `json:"type"`
+	Options  []string `json:"options"`
+	Required *bool    `json:"required"`
+	Position *int     `json:"position"`
+}
+
+// ============================================================
+// OrgSettings Repository Interface
+// ============================================================
+
+type OrgSettingsRepository interface {
+	GetByOrgID(ctx context.Context, orgID uuid.UUID) (*OrgSettings, error)
+	Upsert(ctx context.Context, settings *OrgSettings) error
+}
+
+// ============================================================
+// OrgSettings UseCase Interface
+// ============================================================
+
+type OrgSettingsUseCase interface {
+	GetFieldDefs(ctx context.Context, orgID uuid.UUID, entityType string) ([]CustomFieldDef, error)
+	CreateFieldDef(ctx context.Context, orgID uuid.UUID, input CreateFieldDefInput) (*CustomFieldDef, error)
+	UpdateFieldDef(ctx context.Context, orgID uuid.UUID, key string, input UpdateFieldDefInput) (*CustomFieldDef, error)
+	DeleteFieldDef(ctx context.Context, orgID uuid.UUID, key string) error
+	ValidateCustomFields(ctx context.Context, orgID uuid.UUID, entityType string, fields JSON) error
+}

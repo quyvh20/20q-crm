@@ -140,6 +140,11 @@ func main() {
 		embedWorker := worker.NewEmbeddingWorker(embedSvc, db, log, 200)
 		go embedWorker.Start(context.Background(), 5)
 
+		// OrgSettings (custom field definitions)
+		orgSettingsRepo := repository.NewOrgSettingsRepository(db)
+		orgSettingsUC := usecase.NewOrgSettingsUseCase(orgSettingsRepo)
+		settingsHandler := delivery.NewSettingsHandler(orgSettingsUC)
+
 		contactRepo := repository.NewContactRepository(db)
 		contactUseCase := usecase.NewContactUseCase(contactRepo, embedWorker, embedSvc)
 		contactHandler := delivery.NewContactHandler(contactUseCase)
@@ -173,8 +178,8 @@ func main() {
 
 		aiHandler := delivery.NewAIHandler(gateway, budget, embedSvc, contactUseCase)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, cfg)
-		log.Info("All routes registered (auth, contacts, deals, pipeline, activities, tasks, users, ai)")
+		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, cfg)
+		log.Info("All routes registered (auth, contacts, deals, pipeline, activities, tasks, users, ai, settings)")
 	} else {
 		log.Warn("Database not connected — routes skipped")
 	}
