@@ -542,11 +542,14 @@ export async function streamChat(
 // Custom Field Definitions (Settings)
 // ============================================================
 
+export type FieldType = 'text' | 'number' | 'date' | 'select' | 'boolean' | 'url';
+export type EntityType = 'contact' | 'company' | 'deal';
+
 export interface CustomFieldDef {
   key: string;
   label: string;
-  type: 'text' | 'number' | 'date' | 'select' | 'boolean' | 'url';
-  entity_type: 'contact' | 'company' | 'deal';
+  type: FieldType;
+  entity_type?: EntityType;
   options?: string[];
   required: boolean;
   position: number;

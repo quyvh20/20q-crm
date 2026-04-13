@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   getObjectDefs, createObjectDef, updateObjectDef, deleteObjectDef,
-  type CustomObjectDef, type CustomFieldDef,
+  type CustomObjectDef, type CustomFieldDef, type FieldType,
 } from '../../lib/api';
 
 const ICONS = ['📦', '🏗️', '🚗', '📋', '🎯', '💼', '🏠', '📊', '🔧', '📝', '🎪', '🧩', '📁', '🗂️', '⚙️', '🛒'];
@@ -65,8 +65,8 @@ export default function ObjectDefManager() {
     const key = newFieldKey || autoSlug(newFieldLabel);
     if (fields.some(f => f.key === key)) { setError(`Duplicate field key: ${key}`); return; }
     const field: CustomFieldDef = {
-      key, label: newFieldLabel.trim(), type: newFieldType,
-      entity_type: '', required: newFieldRequired, position: fields.length,
+      key, label: newFieldLabel.trim(), type: newFieldType as FieldType,
+      required: newFieldRequired, position: fields.length,
     };
     if (newFieldType === 'select') field.options = [...newFieldOptions];
     setFields([...fields, field]);
