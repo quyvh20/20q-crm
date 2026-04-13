@@ -98,7 +98,7 @@ export default function CustomFieldManager() {
       key: def.key,
       label: def.label,
       type: def.type,
-      entity_type: def.entity_type,
+      entity_type: def.entity_type || activeEntity,
       options: def.options || [],
       required: def.required,
     });
