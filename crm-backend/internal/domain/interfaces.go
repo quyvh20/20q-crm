@@ -518,3 +518,83 @@ type OrgSettingsUseCase interface {
 	DeleteFieldDef(ctx context.Context, orgID uuid.UUID, key string) error
 	ValidateCustomFields(ctx context.Context, orgID uuid.UUID, entityType string, fields JSON) error
 }
+
+// ============================================================
+// Custom Object Definitions & Records DTOs
+// ============================================================
+
+type CreateObjectDefInput struct {
+	Slug        string `json:"slug" binding:"required,min=1"`
+	Label       string `json:"label" binding:"required,min=1"`
+	LabelPlural string `json:"label_plural" binding:"required,min=1"`
+	Icon        string `json:"icon"`
+	Fields      JSON   `json:"fields"` // array of CustomFieldDef (without entity_type)
+}
+
+type UpdateObjectDefInput struct {
+	Label       *string `json:"label"`
+	LabelPlural *string `json:"label_plural"`
+	Icon        *string `json:"icon"`
+	Fields      JSON    `json:"fields"`
+}
+
+type CreateRecordInput struct {
+	Data      JSON       `json:"data" binding:"required"`
+	ContactID *uuid.UUID `json:"contact_id"`
+	DealID    *uuid.UUID `json:"deal_id"`
+}
+
+type UpdateRecordInput struct {
+	Data        JSON       `json:"data"`
+	DisplayName *string    `json:"display_name"`
+	ContactID   *uuid.UUID `json:"contact_id"`
+	DealID      *uuid.UUID `json:"deal_id"`
+}
+
+type RecordFilter struct {
+	Limit  int    `json:"limit"`
+	Offset int    `json:"offset"`
+	Q      string `json:"q"`
+}
+
+// ============================================================
+// Custom Object Repository Interface
+// ============================================================
+
+type CustomObjectRepository interface {
+	// Definitions
+	ListDefs(ctx context.Context, orgID uuid.UUID) ([]CustomObjectDef, error)
+	GetDefBySlug(ctx context.Context, orgID uuid.UUID, slug string) (*CustomObjectDef, error)
+	GetDefByID(ctx context.Context, orgID uuid.UUID, id uuid.UUID) (*CustomObjectDef, error)
+	CreateDef(ctx context.Context, def *CustomObjectDef) error
+	UpdateDef(ctx context.Context, def *CustomObjectDef) error
+	SoftDeleteDef(ctx context.Context, orgID uuid.UUID, id uuid.UUID) error
+
+	// Records
+	ListRecords(ctx context.Context, orgID uuid.UUID, defID uuid.UUID, f RecordFilter) ([]CustomObjectRecord, int64, error)
+	GetRecord(ctx context.Context, orgID uuid.UUID, id uuid.UUID) (*CustomObjectRecord, error)
+	CreateRecord(ctx context.Context, r *CustomObjectRecord) error
+	UpdateRecord(ctx context.Context, r *CustomObjectRecord) error
+	SoftDeleteRecord(ctx context.Context, orgID uuid.UUID, id uuid.UUID) error
+}
+
+// ============================================================
+// Custom Object UseCase Interface
+// ============================================================
+
+type CustomObjectUseCase interface {
+	// Definitions
+	ListDefs(ctx context.Context, orgID uuid.UUID) ([]CustomObjectDef, error)
+	GetDefBySlug(ctx context.Context, orgID uuid.UUID, slug string) (*CustomObjectDef, error)
+	CreateDef(ctx context.Context, orgID uuid.UUID, input CreateObjectDefInput) (*CustomObjectDef, error)
+	UpdateDef(ctx context.Context, orgID uuid.UUID, slug string, input UpdateObjectDefInput) (*CustomObjectDef, error)
+	DeleteDef(ctx context.Context, orgID uuid.UUID, slug string) error
+
+	// Records
+	ListRecords(ctx context.Context, orgID uuid.UUID, slug string, f RecordFilter) ([]CustomObjectRecord, int64, error)
+	GetRecord(ctx context.Context, orgID uuid.UUID, id uuid.UUID) (*CustomObjectRecord, error)
+	CreateRecord(ctx context.Context, orgID uuid.UUID, userID uuid.UUID, slug string, input CreateRecordInput) (*CustomObjectRecord, error)
+	UpdateRecord(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID, input UpdateRecordInput) (*CustomObjectRecord, error)
+	DeleteRecord(ctx context.Context, orgID uuid.UUID, id uuid.UUID) error
+}
+

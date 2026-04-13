@@ -10,6 +10,7 @@ import ContactsPage from './pages/ContactsPage';
 import DealsPage from './pages/DealsPage';
 import DealDetailPage from './pages/DealDetailPage';
 import SettingsPage from './pages/SettingsPage';
+import CustomObjectPage from './pages/CustomObjectPage';
 
 // Initialize Sentry
 const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN;
@@ -103,6 +104,11 @@ function App() {
             <Route path="/settings" element={
               <ProtectedRoute>
                 <AppLayout><SettingsPage /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/objects/:slug" element={
+              <ProtectedRoute>
+                <AppLayout><CustomObjectPage /></AppLayout>
               </ProtectedRoute>
             } />
           </Routes>

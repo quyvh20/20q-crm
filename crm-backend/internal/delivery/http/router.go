@@ -7,7 +7,7 @@ import (
 )
 
 // RegisterRoutes wires all API routes to the Gin engine.
-func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, cfg *config.Config) {
+func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, cfg *config.Config) {
 	api := router.Group("/api")
 
 	// ── Auth (public) ──────────────────────────────────
@@ -117,6 +117,22 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			settings.POST("/fields", RequireRole("admin"), settingsHandler.CreateFieldDef)
 			settings.PUT("/fields/:key", RequireRole("admin"), settingsHandler.UpdateFieldDef)
 			settings.DELETE("/fields/:key", RequireRole("admin"), settingsHandler.DeleteFieldDef)
+		}
+
+		// Custom Objects
+		objects := protected.Group("/objects")
+		{
+			objects.GET("", customObjectHandler.ListDefs)
+			objects.GET("/:slug", customObjectHandler.GetDef)
+			objects.POST("", RequireRole("admin"), customObjectHandler.CreateDef)
+			objects.PUT("/:slug", RequireRole("admin"), customObjectHandler.UpdateDef)
+			objects.DELETE("/:slug", RequireRole("admin"), customObjectHandler.DeleteDef)
+
+			objects.GET("/:slug/records", customObjectHandler.ListRecords)
+			objects.GET("/:slug/records/:id", customObjectHandler.GetRecord)
+			objects.POST("/:slug/records", RequireRole("admin", "manager", "sales"), customObjectHandler.CreateRecord)
+			objects.PUT("/:slug/records/:id", RequireRole("admin", "manager", "sales"), customObjectHandler.UpdateRecord)
+			objects.DELETE("/:slug/records/:id", RequireRole("admin", "manager"), customObjectHandler.DeleteRecord)
 		}
 	}
 }

@@ -145,6 +145,11 @@ func main() {
 		orgSettingsUC := usecase.NewOrgSettingsUseCase(orgSettingsRepo)
 		settingsHandler := delivery.NewSettingsHandler(orgSettingsUC)
 
+		// Custom Objects
+		customObjRepo := repository.NewCustomObjectRepository(db)
+		customObjUC := usecase.NewCustomObjectUseCase(customObjRepo)
+		customObjHandler := delivery.NewCustomObjectHandler(customObjUC)
+
 		contactRepo := repository.NewContactRepository(db)
 		contactUseCase := usecase.NewContactUseCase(contactRepo, embedWorker, embedSvc)
 		contactHandler := delivery.NewContactHandler(contactUseCase)
@@ -178,8 +183,8 @@ func main() {
 
 		aiHandler := delivery.NewAIHandler(gateway, budget, embedSvc, contactUseCase)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, cfg)
-		log.Info("All routes registered (auth, contacts, deals, pipeline, activities, tasks, users, ai, settings)")
+		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, cfg)
+		log.Info("All routes registered (auth, contacts, deals, pipeline, activities, tasks, users, ai, settings, objects)")
 	} else {
 		log.Warn("Database not connected — routes skipped")
 	}

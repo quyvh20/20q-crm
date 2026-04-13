@@ -1,8 +1,9 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { useAuth } from "./lib/auth";
 import AIAssistant from "./components/ai/AIAssistant";
 import SearchBar from "./components/common/SearchBar";
 import AIUsageWidget from "./components/settings/AIUsageWidget";
+import { getObjectDefs, type CustomObjectDef } from "./lib/api";
 
 interface AppLayoutProps {
   children?: React.ReactNode;
@@ -10,6 +11,11 @@ interface AppLayoutProps {
 
 export default function AppLayout({ children }: AppLayoutProps) {
   const { user, logout } = useAuth();
+  const [customObjects, setCustomObjects] = useState<CustomObjectDef[]>([]);
+
+  useEffect(() => {
+    getObjectDefs().then(setCustomObjects).catch(() => {});
+  }, []);
 
   return (
     <div className="flex h-screen w-full bg-background overflow-hidden">
@@ -23,6 +29,12 @@ export default function AppLayout({ children }: AppLayoutProps) {
             <a href="/" className="block px-3 py-2 rounded-md bg-accent text-accent-foreground font-medium">Dashboard</a>
             <a href="/contacts" className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">Contacts</a>
             <a href="/deals" className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">Deals</a>
+            {customObjects.map(obj => (
+              <a key={obj.slug} href={`/objects/${obj.slug}`}
+                className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">
+                <span style={{ marginRight: 6 }}>{obj.icon}</span>{obj.label_plural}
+              </a>
+            ))}
             <a href="/settings" className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">Settings</a>
           </nav>
           <div className="mt-4">

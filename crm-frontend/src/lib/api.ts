@@ -602,3 +602,148 @@ export async function deleteFieldDef(key: string): Promise<void> {
     throw new Error(json.error || 'Failed to delete field definition');
   }
 }
+
+// ============================================================
+// Custom Object types
+// ============================================================
+
+export interface CustomObjectDef {
+  id: string;
+  org_id: string;
+  slug: string;
+  label: string;
+  label_plural: string;
+  icon: string;
+  fields: CustomFieldDef[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CustomObjectRecord {
+  id: string;
+  org_id: string;
+  object_def_id: string;
+  display_name: string;
+  data: Record<string, unknown>;
+  contact_id?: string;
+  deal_id?: string;
+  created_by?: string;
+  contact?: Contact;
+  deal?: { id: string; title: string };
+  created_at: string;
+  updated_at: string;
+}
+
+// ============================================================
+// Custom Object Definition API
+// ============================================================
+
+export async function getObjectDefs(): Promise<CustomObjectDef[]> {
+  const res = await apiFetch('/api/objects');
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch object definitions');
+  return (json.data || []) as CustomObjectDef[];
+}
+
+export async function getObjectDef(slug: string): Promise<CustomObjectDef> {
+  const res = await apiFetch(`/api/objects/${slug}`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch object definition');
+  return json.data as CustomObjectDef;
+}
+
+export async function createObjectDef(data: {
+  slug: string;
+  label: string;
+  label_plural: string;
+  icon?: string;
+  fields?: CustomFieldDef[];
+}): Promise<CustomObjectDef> {
+  const res = await apiFetch('/api/objects', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to create object');
+  return json.data as CustomObjectDef;
+}
+
+export async function updateObjectDef(slug: string, data: {
+  label?: string;
+  label_plural?: string;
+  icon?: string;
+  fields?: CustomFieldDef[];
+}): Promise<CustomObjectDef> {
+  const res = await apiFetch(`/api/objects/${slug}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to update object');
+  return json.data as CustomObjectDef;
+}
+
+export async function deleteObjectDef(slug: string): Promise<void> {
+  const res = await apiFetch(`/api/objects/${slug}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await res.json();
+    throw new Error(json.error || 'Failed to delete object');
+  }
+}
+
+// ============================================================
+// Custom Object Record API
+// ============================================================
+
+export async function getObjectRecords(slug: string, params?: {
+  limit?: number;
+  offset?: number;
+  q?: string;
+}): Promise<{ records: CustomObjectRecord[]; total: number }> {
+  const search = new URLSearchParams();
+  if (params?.limit) search.set('limit', String(params.limit));
+  if (params?.offset) search.set('offset', String(params.offset));
+  if (params?.q) search.set('q', params.q);
+  const qs = search.toString();
+  const res = await apiFetch(`/api/objects/${slug}/records${qs ? '?' + qs : ''}`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch records');
+  return { records: (json.data || []) as CustomObjectRecord[], total: json.total || 0 };
+}
+
+export async function createObjectRecord(slug: string, data: {
+  data: Record<string, unknown>;
+  contact_id?: string;
+  deal_id?: string;
+}): Promise<CustomObjectRecord> {
+  const res = await apiFetch(`/api/objects/${slug}/records`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to create record');
+  return json.data as CustomObjectRecord;
+}
+
+export async function updateObjectRecord(slug: string, id: string, data: {
+  data?: Record<string, unknown>;
+  display_name?: string;
+  contact_id?: string;
+  deal_id?: string;
+}): Promise<CustomObjectRecord> {
+  const res = await apiFetch(`/api/objects/${slug}/records/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to update record');
+  return json.data as CustomObjectRecord;
+}
+
+export async function deleteObjectRecord(slug: string, id: string): Promise<void> {
+  const res = await apiFetch(`/api/objects/${slug}/records/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await res.json();
+    throw new Error(json.error || 'Failed to delete record');
+  }
+}

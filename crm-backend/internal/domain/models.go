@@ -257,6 +257,40 @@ var ValidEntityTypes = map[string]bool{
 }
 
 // ============================================================
+// Custom Object Definitions & Records
+// ============================================================
+
+type CustomObjectDef struct {
+	ID          uuid.UUID      `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
+	OrgID       uuid.UUID      `gorm:"type:uuid;not null" json:"org_id"`
+	Slug        string         `gorm:"size:100;not null" json:"slug"`
+	Label       string         `gorm:"size:255;not null" json:"label"`
+	LabelPlural string         `gorm:"size:255;not null" json:"label_plural"`
+	Icon        string         `gorm:"size:50;default:'📦'" json:"icon"`
+	Fields      JSON           `gorm:"type:jsonb;default:'[]'" json:"fields"`
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
+	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+type CustomObjectRecord struct {
+	ID          uuid.UUID      `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
+	OrgID       uuid.UUID      `gorm:"type:uuid;not null" json:"org_id"`
+	ObjectDefID uuid.UUID      `gorm:"type:uuid;not null" json:"object_def_id"`
+	DisplayName string         `gorm:"size:500" json:"display_name"`
+	Data        JSON           `gorm:"type:jsonb;default:'{}'" json:"data"`
+	ContactID   *uuid.UUID     `gorm:"type:uuid" json:"contact_id,omitempty"`
+	DealID      *uuid.UUID     `gorm:"type:uuid" json:"deal_id,omitempty"`
+	CreatedBy   *uuid.UUID     `gorm:"type:uuid" json:"created_by,omitempty"`
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
+	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
+	// Preloaded relations
+	Contact *Contact `gorm:"foreignKey:ContactID" json:"contact,omitempty"`
+	Deal    *Deal    `gorm:"foreignKey:DealID" json:"deal,omitempty"`
+}
+
+// ============================================================
 // System / Configuration Entities
 // ============================================================
 
