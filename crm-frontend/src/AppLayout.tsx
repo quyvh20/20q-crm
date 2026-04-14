@@ -3,7 +3,8 @@ import { useAuth } from "./lib/auth";
 import AIAssistant from "./components/ai/AIAssistant";
 import SearchBar from "./components/common/SearchBar";
 import AIUsageWidget from "./components/settings/AIUsageWidget";
-import { getObjectDefs, type CustomObjectDef } from "./lib/api";
+import WelcomeModal from "./components/onboarding/WelcomeModal";
+import { getObjectDefs, getFieldDefs, type CustomObjectDef } from "./lib/api";
 
 interface AppLayoutProps {
   children?: React.ReactNode;
@@ -12,9 +13,24 @@ interface AppLayoutProps {
 export default function AppLayout({ children }: AppLayoutProps) {
   const { user, logout } = useAuth();
   const [customObjects, setCustomObjects] = useState<CustomObjectDef[]>([]);
+  const [showWelcome, setShowWelcome] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    getObjectDefs().then(setCustomObjects).catch(() => {});
+    Promise.all([
+      getObjectDefs().catch(() => []),
+      getFieldDefs().catch(() => [])
+    ])
+      .then(([objects, fields]) => {
+        setCustomObjects(objects);
+        
+        // Onboarding Check: If they have 0 setup items and haven't acknowledged the modal, show it
+        const hasCompletedOnboarding = localStorage.getItem('onboarding_completed') === 'true';
+        if (objects.length === 0 && fields.length === 0 && !hasCompletedOnboarding) {
+          setShowWelcome(true);
+        }
+      })
+      .finally(() => setIsLoading(false));
   }, []);
 
   return (
@@ -102,6 +118,11 @@ export default function AppLayout({ children }: AppLayoutProps) {
       </div>
       {/* Global AI Assistant */}
       <AIAssistant />
+
+      {/* Onboarding Flow */}
+      {showWelcome && !isLoading && (
+        <WelcomeModal onComplete={() => setShowWelcome(false)} />
+      )}
     </div>
   );
 }
