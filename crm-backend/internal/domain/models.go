@@ -367,13 +367,12 @@ type KnowledgeBaseEntry struct {
 	ID        uuid.UUID      `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
 	OrgID     uuid.UUID      `gorm:"type:uuid;not null" json:"org_id"`
 	Section   string         `gorm:"type:text;not null" json:"section"`
-	Title     string         `gorm:"type:text;not null" json:"title"`
-	Content   string         `gorm:"type:text;not null" json:"content"`
-	IsActive  bool           `gorm:"default:true" json:"is_active"`
-	CreatedBy *uuid.UUID     `gorm:"type:uuid" json:"created_by,omitempty"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
-	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+	Title     string     `gorm:"type:text;not null" json:"title"`
+	Content   string     `gorm:"type:text;not null" json:"content"`
+	IsActive  bool       `gorm:"default:true" json:"is_active"`
+	CreatedBy *uuid.UUID `gorm:"type:uuid" json:"created_by,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
 }
 
 func (KnowledgeBaseEntry) TableName() string { return "knowledge_base" }
