@@ -281,16 +281,14 @@ func (g *AIGateway) callCFWorkersWithTools(ctx context.Context, model string, me
 
 	// CF Workers AI response with tool_calls follows OpenAI format:
 	// { "result": { "response": "...", "tool_calls": [{"id":"..","type":"function","function":{"name":"..","arguments":"{...}"}}], "usage":{...} } }
+	// Actual CF Workers AI response shape (NOT standard OpenAI format):
+	// {"result":{"response":null,"tool_calls":[{"name":"fn","arguments":{...}}],"usage":{...}}}
 	var cfResp struct {
 		Result struct {
-			Response  string `json:"response"`
+			Response  interface{} `json:"response"` // null or string
 			ToolCalls []struct {
-				ID       string `json:"id"`
-				Type     string `json:"type"`
-				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"` // JSON string
-				} `json:"function"`
+				Name      string          `json:"name"`
+				Arguments json.RawMessage `json:"arguments"` // already a JSON object
 			} `json:"tool_calls"`
 			Usage struct {
 				InputTokens  int `json:"prompt_tokens"`
@@ -303,27 +301,31 @@ func (g *AIGateway) callCFWorkersWithTools(ctx context.Context, model string, me
 		return AIResponse{}, fmt.Errorf("cf workers tool unmarshal: %w (body: %s)", err, string(resp))
 	}
 
+	// response is null when tool_calls are returned
+	responseText := ""
+	if cfResp.Result.Response != nil {
+		if s, ok := cfResp.Result.Response.(string); ok {
+			responseText = s
+		}
+	}
+
 	result := AIResponse{
-		Content:      cfResp.Result.Response,
+		Content:      responseText,
 		Model:        model,
 		Provider:     string(providerCFWorkers),
 		InputTokens:  cfResp.Result.Usage.InputTokens,
 		OutputTokens: cfResp.Result.Usage.OutputTokens,
 	}
 
-	// Parse tool calls — CF returns arguments as a JSON string, we normalise to RawMessage
-	for _, tc := range cfResp.Result.ToolCalls {
-		params := json.RawMessage(tc.Function.Arguments)
-		if !json.Valid(params) {
+	// arguments is already a decoded JSON object (RawMessage), not a string
+	for i, tc := range cfResp.Result.ToolCalls {
+		params := tc.Arguments
+		if !json.Valid(params) || len(params) == 0 {
 			params = json.RawMessage("{}")
 		}
-		id := tc.ID
-		if id == "" {
-			id = fmt.Sprintf("call_%s", tc.Function.Name)
-		}
 		result.ToolCalls = append(result.ToolCalls, ToolCall{
-			ID:     id,
-			Name:   tc.Function.Name,
+			ID:     fmt.Sprintf("call_%d_%s", i, tc.Name),
+			Name:   tc.Name,
 			Params: params,
 		})
 	}
