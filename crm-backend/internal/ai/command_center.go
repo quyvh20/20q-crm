@@ -125,7 +125,7 @@ func (cc *CommandCenter) Execute(
 		}
 		wg.Wait()
 
-		// 5. Send tool results back to AI for final response
+		// 5. Build final messages — include assistant tool-call turn + tool results
 		messages = append(messages, Message{
 			Role:      "assistant",
 			Content:   response.Content,
@@ -140,7 +140,10 @@ func (cc *CommandCenter) Execute(
 			})
 		}
 
-		finalResp, err := cc.gateway.CompleteWithTools(ctx, orgID, userID, TaskCommandCenter, messages, CRMTools)
+		// 6. Final call: ask AI to summarise results in plain language.
+		//    We intentionally use Complete() (no tools) so the model writes a
+		//    natural response instead of triggering another round of tool calls.
+		finalResp, err := cc.gateway.Complete(ctx, orgID, userID, TaskCommandCenter, messages)
 		if err != nil {
 			events <- CommandEvent{Type: "error", Message: fmt.Sprintf("AI error: %v", err)}
 			events <- CommandEvent{Type: "done", Done: true}

@@ -493,25 +493,53 @@ func (g *AIGateway) modelFor(task AITask, p provider) string {
 
 // callCFWorkers — CF AI Gateway → Cloudflare Workers AI
 func (g *AIGateway) callCFWorkers(ctx context.Context, model string, messages []Message) (AIResponse, error) {
-	// Correct gateway path: {gatewayURL}/workers-ai/{model}
 	url := fmt.Sprintf("%s/workers-ai/%s", g.gatewayURL, model)
 
-	// Split system from user messages (CF Workers AI has separate system field)
-	var system string
-	var chatMsgs []map[string]string
+	// Build messages in the format CF expects, handling all roles including tool results.
+	var chatMsgs []map[string]interface{}
 	for _, m := range messages {
-		if m.Role == "system" {
-			system = m.Content
-		} else {
-			chatMsgs = append(chatMsgs, map[string]string{"role": m.Role, "content": m.Content})
+		switch m.Role {
+		case "system", "user":
+			chatMsgs = append(chatMsgs, map[string]interface{}{
+				"role":    m.Role,
+				"content": m.Content,
+			})
+		case "assistant":
+			if len(m.ToolCalls) > 0 {
+				cfToolCalls := make([]map[string]interface{}, len(m.ToolCalls))
+				for i, tc := range m.ToolCalls {
+					cfToolCalls[i] = map[string]interface{}{
+						"id":   tc.ID,
+						"type": "function",
+						"function": map[string]interface{}{
+							"name":      tc.Name,
+							"arguments": string(tc.Params),
+						},
+					}
+				}
+				msg := map[string]interface{}{
+					"role":       "assistant",
+					"content":    m.Content, // empty string is fine, not null
+					"tool_calls": cfToolCalls,
+				}
+				chatMsgs = append(chatMsgs, msg)
+			} else {
+				chatMsgs = append(chatMsgs, map[string]interface{}{
+					"role":    "assistant",
+					"content": m.Content,
+				})
+			}
+		case "tool":
+			chatMsgs = append(chatMsgs, map[string]interface{}{
+				"role":         "tool",
+				"tool_call_id": m.ToolUseID,
+				"content":      m.Content,
+			})
 		}
 	}
 
 	body := map[string]interface{}{
 		"messages": chatMsgs,
-	}
-	if system != "" {
-		body["system"] = system
 	}
 
 	resp, err := g.doRequest(ctx, url, "POST", map[string]string{
@@ -522,13 +550,13 @@ func (g *AIGateway) callCFWorkers(ctx context.Context, model string, messages []
 		return AIResponse{}, err
 	}
 
-	// CF response: { "result": { "response": "...", "usage": { "input_tokens": N, "output_tokens": M } } }
+	// CF response: { "result": { "response": "...", "usage": { "prompt_tokens": N, "completion_tokens": M } } }
 	var cfResp struct {
 		Result struct {
-			Response string `json:"response"`
+			Response interface{} `json:"response"` // null or string
 			Usage    struct {
-				InputTokens  int `json:"input_tokens"`
-				OutputTokens int `json:"output_tokens"`
+				InputTokens  int `json:"prompt_tokens"`
+				OutputTokens int `json:"completion_tokens"`
 			} `json:"usage"`
 		} `json:"result"`
 		Success bool `json:"success"`
@@ -537,8 +565,15 @@ func (g *AIGateway) callCFWorkers(ctx context.Context, model string, messages []
 		return AIResponse{}, fmt.Errorf("cf workers unmarshal: %w", err)
 	}
 
+	responseText := ""
+	if cfResp.Result.Response != nil {
+		if s, ok := cfResp.Result.Response.(string); ok {
+			responseText = s
+		}
+	}
+
 	return AIResponse{
-		Content:      cfResp.Result.Response,
+		Content:      responseText,
 		Model:        model,
 		Provider:     string(providerCFWorkers),
 		InputTokens:  cfResp.Result.Usage.InputTokens,
