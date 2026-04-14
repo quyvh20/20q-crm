@@ -181,13 +181,14 @@ func main() {
 		userRepo := repository.NewUserRepository(db)
 		userHandler := delivery.NewUserHandler(userRepo)
 
-		aiHandler := delivery.NewAIHandler(gateway, budget, embedSvc, contactUseCase)
 
 		// Knowledge Base
 		kbRepo := repository.NewKnowledgeBaseRepository(db)
 		kbBuilder := ai.NewKnowledgeBuilder(kbRepo, redisClient)
 		kbUseCase := usecase.NewKnowledgeBaseUseCase(kbRepo, kbBuilder)
 		kbHandler := delivery.NewKnowledgeHandler(kbUseCase)
+
+		aiHandler := delivery.NewAIHandler(gateway, budget, embedSvc, kbBuilder, contactUseCase)
 
 		// Command Center
 		commandCenter := ai.NewCommandCenter(gateway, kbBuilder, contactRepo, dealRepo, taskRepo, activityRepo, log)

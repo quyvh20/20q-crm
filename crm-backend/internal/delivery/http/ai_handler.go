@@ -21,10 +21,11 @@ type AIHandler struct {
 	budget    *ai.BudgetGuard
 	embedSvc  *ai.EmbeddingService
 	contactUC domain.ContactUseCase
+	kbBuilder *ai.KnowledgeBuilder
 }
 
-func NewAIHandler(gateway *ai.AIGateway, budget *ai.BudgetGuard, embedSvc *ai.EmbeddingService, contactUC ...domain.ContactUseCase) *AIHandler {
-	h := &AIHandler{gateway: gateway, budget: budget, embedSvc: embedSvc}
+func NewAIHandler(gateway *ai.AIGateway, budget *ai.BudgetGuard, embedSvc *ai.EmbeddingService, kbBuilder *ai.KnowledgeBuilder, contactUC ...domain.ContactUseCase) *AIHandler {
+	h := &AIHandler{gateway: gateway, budget: budget, embedSvc: embedSvc, kbBuilder: kbBuilder}
 	if len(contactUC) > 0 {
 		h.contactUC = contactUC[0]
 	}
@@ -252,7 +253,13 @@ func (h *AIHandler) Embed(c *gin.Context) {
 // ============================================================
 
 func (h *AIHandler) buildSystemPrompt(ctx context.Context, contextID *string, orgID uuid.UUID) string {
+	// Use the compiled KB prompt as base if available, fall back to generic
 	base := "You are a helpful CRM assistant. Be concise and professional."
+	if h.kbBuilder != nil {
+		if kbPrompt, err := h.kbBuilder.BuildSystemPrompt(ctx, orgID); err == nil && kbPrompt != "" {
+			base = kbPrompt
+		}
+	}
 
 	if contextID == nil || *contextID == "" || h.contactUC == nil {
 		slog.Info("ai_chat_context", "status", "no_context_id", "has_uc", h.contactUC != nil)
