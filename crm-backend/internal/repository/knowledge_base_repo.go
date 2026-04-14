@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 type knowledgeBaseRepository struct {
@@ -41,30 +40,23 @@ func (r *knowledgeBaseRepository) GetBySection(ctx context.Context, orgID uuid.U
 
 func (r *knowledgeBaseRepository) Upsert(ctx context.Context, entry *domain.KnowledgeBaseEntry) error {
 	entry.UpdatedAt = time.Now()
-	return r.db.WithContext(ctx).
-		Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "org_id"}, {Name: "section"}},
-			DoUpdates: clause.AssignmentColumns([]string{"title", "content", "updated_at", "created_by"}),
-		}).
-		// Since we don't have a real unique constraint on (org_id, section),
-		// use the manual upsert approach instead
-		Transaction(func(tx *gorm.DB) error {
-			var existing domain.KnowledgeBaseEntry
-			err := tx.Where("org_id = ? AND section = ? AND is_active = true", entry.OrgID, entry.Section).
-				First(&existing).Error
-			if err == nil {
-				// Update existing
-				existing.Title = entry.Title
-				existing.Content = entry.Content
-				existing.UpdatedAt = time.Now()
-				existing.CreatedBy = entry.CreatedBy
-				if err := tx.Save(&existing).Error; err != nil {
-					return err
-				}
-				*entry = existing
-				return nil
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing domain.KnowledgeBaseEntry
+		err := tx.Where("org_id = ? AND section = ? AND is_active = true", entry.OrgID, entry.Section).
+			First(&existing).Error
+		if err == nil {
+			// Update existing
+			existing.Title = entry.Title
+			existing.Content = entry.Content
+			existing.UpdatedAt = time.Now()
+			existing.CreatedBy = entry.CreatedBy
+			if err := tx.Save(&existing).Error; err != nil {
+				return err
 			}
-			// Create new
-			return tx.Create(entry).Error
-		})
+			*entry = existing
+			return nil
+		}
+		// Create new
+		return tx.Create(entry).Error
+	})
 }
