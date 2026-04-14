@@ -482,6 +482,10 @@ func (g *AIGateway) doRequest(ctx context.Context, url, method string, headers m
 		req.Header.Set(k, v)
 	}
 
+	if g.cfGatewayToken != "" {
+		req.Header.Set("cf-aig-authorization", "Bearer "+g.cfGatewayToken)
+	}
+
 	res, err := g.httpClient.Do(req)
 	if err != nil {
 		if isTimeoutErr(err) {
