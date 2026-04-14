@@ -750,3 +750,119 @@ export async function deleteObjectRecord(slug: string, id: string): Promise<void
     throw new Error(json.error || 'Failed to delete record');
   }
 }
+
+// ============================================================
+// Knowledge Base
+// ============================================================
+
+export interface KBEntry {
+  id: string;
+  org_id: string;
+  section: string;
+  title: string;
+  content: string;
+  is_active: boolean;
+  updated_at: string;
+  created_at: string;
+}
+
+export async function getKBSections(): Promise<KBEntry[]> {
+  const res = await apiFetch('/api/knowledge-base');
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch KB sections');
+  return json.data || [];
+}
+
+export async function getKBSection(section: string): Promise<KBEntry> {
+  const res = await apiFetch(`/api/knowledge-base/${section}`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Section not found');
+  return json.data as KBEntry;
+}
+
+export async function upsertKBSection(section: string, data: { title: string; content: string }): Promise<KBEntry> {
+  const res = await apiFetch(`/api/knowledge-base/${section}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to save section');
+  return json.data as KBEntry;
+}
+
+export async function getKBAIPrompt(): Promise<string> {
+  const res = await apiFetch('/api/knowledge-base/ai-prompt');
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch AI prompt');
+  return json.data?.prompt || '';
+}
+
+// ============================================================
+// AI Command Center
+// ============================================================
+
+export interface CommandEvent {
+  type: 'thinking' | 'planning' | 'tool_result' | 'response' | 'error' | 'done';
+  message?: string;
+  tool?: string;
+  data?: unknown;
+  done?: boolean;
+}
+
+export async function sendCommand(
+  message: string,
+  context: { page: string; entity_id?: string } | undefined,
+  onEvent: (event: CommandEvent) => void,
+  onDone: () => void,
+  onError: (err: string) => void,
+): Promise<void> {
+  try {
+    const token = localStorage.getItem('access_token');
+    const res = await fetch(`${getBaseUrl()}/api/ai/command`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ message, context }),
+    });
+
+    if (!res.ok) {
+      const json = await res.json();
+      onError(json.error || `HTTP ${res.status}`);
+      return;
+    }
+
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const event: CommandEvent = JSON.parse(line.slice(6));
+            onEvent(event);
+            if (event.type === 'done') {
+              onDone();
+              return;
+            }
+          } catch {
+            // skip malformed lines
+          }
+        }
+      }
+    }
+    onDone();
+  } catch (err) {
+    onError(err instanceof Error ? err.message : 'Command failed');
+  }
+}

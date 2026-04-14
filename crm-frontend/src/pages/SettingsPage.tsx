@@ -1,10 +1,12 @@
 import { useState } from 'react';
 import CustomFieldManager from '../components/settings/CustomFieldManager';
 import ObjectDefManager from '../components/settings/ObjectDefManager';
+import KnowledgeBase from '../components/settings/KnowledgeBase';
 
 const TABS = [
   { id: 'fields', label: 'Custom Fields', icon: '📋' },
   { id: 'objects', label: 'Custom Objects', icon: '📦' },
+  { id: 'knowledge', label: 'Knowledge Base', icon: '🧠' },
   { id: 'templates', label: 'Templates', icon: '🏗️' },
 ] as const;
 
@@ -46,6 +48,8 @@ export default function SettingsPage() {
         {activeTab === 'fields' && <CustomFieldManager />}
 
         {activeTab === 'objects' && <ObjectDefManager />}
+
+        {activeTab === 'knowledge' && <KnowledgeBase />}
 
         {activeTab === 'templates' && (
           <div className="text-center py-16 text-muted-foreground">

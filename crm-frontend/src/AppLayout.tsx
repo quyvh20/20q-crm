@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useAuth } from "./lib/auth";
-import AIAssistant from "./components/ai/AIAssistant";
+import CommandCenter from "./components/ai/CommandCenter";
 import SearchBar from "./components/common/SearchBar";
 import AIUsageWidget from "./components/settings/AIUsageWidget";
 import WelcomeModal from "./components/onboarding/WelcomeModal";
@@ -116,8 +116,8 @@ export default function AppLayout({ children }: AppLayoutProps) {
           )}
         </main>
       </div>
-      {/* Global AI Assistant */}
-      <AIAssistant />
+      {/* AI Command Center */}
+      <CommandCenter />
 
       {/* Onboarding Flow */}
       {showWelcome && !isLoading && (

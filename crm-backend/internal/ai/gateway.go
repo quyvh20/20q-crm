@@ -24,15 +24,16 @@ import (
 type AITask string
 
 const (
-	TaskEmailCompose   AITask = "email_compose"
-	TaskAssistantChat  AITask = "assistant_chat"
-	TaskMeetingSummary AITask = "meeting_summary"
-	TaskDealScore      AITask = "deal_score"
-	TaskAnalytics      AITask = "analytics_insight"
-	TaskEmbedding      AITask = "embedding"
-	TaskVoiceSTT       AITask = "voice_stt"
-	TaskSentiment      AITask = "sentiment"
-	TaskFollowup       AITask = "followup_suggest"
+	TaskEmailCompose    AITask = "email_compose"
+	TaskAssistantChat   AITask = "assistant_chat"
+	TaskMeetingSummary  AITask = "meeting_summary"
+	TaskDealScore       AITask = "deal_score"
+	TaskAnalytics       AITask = "analytics_insight"
+	TaskEmbedding       AITask = "embedding"
+	TaskVoiceSTT        AITask = "voice_stt"
+	TaskSentiment       AITask = "sentiment"
+	TaskFollowup        AITask = "followup_suggest"
+	TaskCommandCenter   AITask = "command_center"
 )
 
 // advancedTasks are only available to pro+ plans
@@ -66,6 +67,7 @@ var taskPrimaryProvider = map[AITask]provider{
 	TaskAnalytics:      providerAnthropic,
 	TaskSentiment:      providerCFWorkers,
 	TaskFollowup:       providerAnthropic,
+	TaskCommandCenter:  providerAnthropic,
 }
 
 // Task → model mapping per provider
@@ -84,8 +86,10 @@ var taskModels = map[AITask]map[provider]string{
 // ============================================================
 
 type Message struct {
-	Role    string `json:"role"`    // "system" | "user" | "assistant"
-	Content string `json:"content"`
+	Role      string     `json:"role"`    // "system" | "user" | "assistant" | "tool"
+	Content   string     `json:"content"`
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	ToolUseID string     `json:"tool_use_id,omitempty"` // for tool result messages
 }
 
 type AIResponse struct {
@@ -94,6 +98,7 @@ type AIResponse struct {
 	Provider     string
 	InputTokens  int
 	OutputTokens int
+	ToolCalls    []ToolCall // populated when model returns tool_use blocks
 }
 
 // ============================================================
@@ -156,6 +161,143 @@ func (g *AIGateway) Complete(ctx context.Context, orgID, userID uuid.UUID, task 
 	// Persist usage asynchronously
 	if g.Budget != nil {
 		go g.Budget.Record(ctx, orgID, userID, task, result.Model, result.Provider, result.InputTokens, result.OutputTokens)
+	}
+
+	return result, nil
+}
+
+// CompleteWithTools runs inference with tool definitions (Anthropic tool_use).
+func (g *AIGateway) CompleteWithTools(ctx context.Context, orgID, userID uuid.UUID, task AITask, messages []Message, tools []Tool) (AIResponse, error) {
+	estimated := 5000 // generous estimate for tool calls
+	if g.Budget != nil {
+		if err := g.Budget.Check(ctx, orgID, task, estimated); err != nil {
+			return AIResponse{}, err
+		}
+	}
+
+	result, err := g.callAnthropicWithTools(ctx, g.modelFor(task, providerAnthropic), messages, tools)
+	if err != nil {
+		return AIResponse{}, fmt.Errorf("tool call failed: %w", err)
+	}
+
+	if g.Budget != nil {
+		go g.Budget.Record(ctx, orgID, userID, task, result.Model, result.Provider, result.InputTokens, result.OutputTokens)
+	}
+
+	return result, nil
+}
+
+// callAnthropicWithTools sends tool definitions to Anthropic and parses tool_use blocks.
+func (g *AIGateway) callAnthropicWithTools(ctx context.Context, model string, messages []Message, tools []Tool) (AIResponse, error) {
+	url := fmt.Sprintf("%s/anthropic/v1/messages", g.gatewayURL)
+
+	var system string
+	var chatMsgs []map[string]interface{}
+	for _, m := range messages {
+		if m.Role == "system" {
+			system = m.Content
+		} else if m.Role == "tool" {
+			// Tool result message
+			chatMsgs = append(chatMsgs, map[string]interface{}{
+				"role": "user",
+				"content": []map[string]interface{}{
+					{
+						"type":        "tool_result",
+						"tool_use_id": m.ToolUseID,
+						"content":     m.Content,
+					},
+				},
+			})
+		} else if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			// Assistant message with tool_use blocks
+			var contentBlocks []map[string]interface{}
+			if m.Content != "" {
+				contentBlocks = append(contentBlocks, map[string]interface{}{
+					"type": "text",
+					"text": m.Content,
+				})
+			}
+			for _, tc := range m.ToolCalls {
+				var input interface{}
+				json.Unmarshal(tc.Params, &input)
+				contentBlocks = append(contentBlocks, map[string]interface{}{
+					"type":  "tool_use",
+					"id":    tc.ID,
+					"name":  tc.Name,
+					"input": input,
+				})
+			}
+			chatMsgs = append(chatMsgs, map[string]interface{}{
+				"role":    "assistant",
+				"content": contentBlocks,
+			})
+		} else {
+			chatMsgs = append(chatMsgs, map[string]interface{}{
+				"role":    m.Role,
+				"content": m.Content,
+			})
+		}
+	}
+
+	// Build Anthropic tool definitions
+	anthropicTools := BuildToolsForAnthropic()
+
+	reqBody := map[string]interface{}{
+		"model":      model,
+		"max_tokens": 4096,
+		"messages":   chatMsgs,
+		"tools":      anthropicTools,
+	}
+	if system != "" {
+		reqBody["system"] = system
+	}
+
+	resp, err := g.doRequest(ctx, url, "POST", map[string]string{
+		"x-api-key":         g.anthropicKey,
+		"anthropic-version": "2023-06-01",
+		"Content-Type":      "application/json",
+	}, reqBody)
+	if err != nil {
+		return AIResponse{}, err
+	}
+
+	// Parse Anthropic response with potential tool_use blocks
+	var anthResp struct {
+		Content []struct {
+			Type  string          `json:"type"`
+			Text  string          `json:"text,omitempty"`
+			ID    string          `json:"id,omitempty"`
+			Name  string          `json:"name,omitempty"`
+			Input json.RawMessage `json:"input,omitempty"`
+		} `json:"content"`
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+		StopReason string `json:"stop_reason"`
+	}
+	if err := json.Unmarshal(resp, &anthResp); err != nil {
+		return AIResponse{}, fmt.Errorf("anthropic tool unmarshal: %w", err)
+	}
+
+	result := AIResponse{
+		Model:        model,
+		Provider:     string(providerAnthropic),
+		InputTokens:  anthResp.Usage.InputTokens,
+		OutputTokens: anthResp.Usage.OutputTokens,
+	}
+
+	for _, block := range anthResp.Content {
+		switch block.Type {
+		case "text":
+			result.Content += block.Text
+		case "tool_use":
+			result.ToolCalls = append(result.ToolCalls, ToolCall{
+				ID:     block.ID,
+				Name:   block.Name,
+				Params: block.Input,
+			})
+		}
 	}
 
 	return result, nil

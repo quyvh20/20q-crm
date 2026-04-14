@@ -598,3 +598,34 @@ type CustomObjectUseCase interface {
 	DeleteRecord(ctx context.Context, orgID uuid.UUID, id uuid.UUID) error
 }
 
+// ============================================================
+// Knowledge Base DTOs
+// ============================================================
+
+type UpsertKBInput struct {
+	Title   string `json:"title" binding:"required,min=1"`
+	Content string `json:"content" binding:"required"`
+}
+
+// ============================================================
+// Knowledge Base Repository Interface
+// ============================================================
+
+type KnowledgeBaseRepository interface {
+	GetAllActive(ctx context.Context, orgID uuid.UUID) ([]KnowledgeBaseEntry, error)
+	GetBySection(ctx context.Context, orgID uuid.UUID, section string) (*KnowledgeBaseEntry, error)
+	Upsert(ctx context.Context, entry *KnowledgeBaseEntry) error
+}
+
+// ============================================================
+// Knowledge Base UseCase Interface
+// ============================================================
+
+type KnowledgeBaseUseCase interface {
+	ListSections(ctx context.Context, orgID uuid.UUID) ([]KnowledgeBaseEntry, error)
+	GetSection(ctx context.Context, orgID uuid.UUID, section string) (*KnowledgeBaseEntry, error)
+	UpsertSection(ctx context.Context, orgID uuid.UUID, userID uuid.UUID, section string, input UpsertKBInput) (*KnowledgeBaseEntry, error)
+	GetAIPrompt(ctx context.Context, orgID uuid.UUID) (string, error)
+}
+
+

@@ -183,8 +183,18 @@ func main() {
 
 		aiHandler := delivery.NewAIHandler(gateway, budget, embedSvc, contactUseCase)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, cfg)
-		log.Info("All routes registered (auth, contacts, deals, pipeline, activities, tasks, users, ai, settings, objects)")
+		// Knowledge Base
+		kbRepo := repository.NewKnowledgeBaseRepository(db)
+		kbBuilder := ai.NewKnowledgeBuilder(kbRepo, redisClient)
+		kbUseCase := usecase.NewKnowledgeBaseUseCase(kbRepo, kbBuilder)
+		kbHandler := delivery.NewKnowledgeHandler(kbUseCase)
+
+		// Command Center
+		commandCenter := ai.NewCommandCenter(gateway, kbBuilder, contactRepo, dealRepo, taskRepo, activityRepo, log)
+		commandHandler := delivery.NewCommandHandler(commandCenter)
+
+		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, kbHandler, commandHandler, cfg)
+		log.Info("All routes registered (auth, contacts, deals, pipeline, activities, tasks, users, ai, settings, objects, knowledge-base, command)")
 	} else {
 		log.Warn("Database not connected — routes skipped")
 	}

@@ -7,7 +7,7 @@ import (
 )
 
 // RegisterRoutes wires all API routes to the Gin engine.
-func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, cfg *config.Config) {
+func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, cfg *config.Config) {
 	api := router.Group("/api")
 
 	// ── Auth (public) ──────────────────────────────────
@@ -107,12 +107,12 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			aiRoutes.GET("/usage", aiHandler.GetUsage)
 			aiRoutes.POST("/chat", aiHandler.Chat)
 			aiRoutes.POST("/embed", aiHandler.Embed)
+			aiRoutes.POST("/command", commandHandler.Command)
 		}
 
 		// Settings (Custom Fields)
 		settings := protected.Group("/settings")
 		{
-			// Field definitions — read access for all, write for admin only
 			settings.GET("/fields", settingsHandler.ListFieldDefs)
 			settings.POST("/fields", RequireRole("admin"), settingsHandler.CreateFieldDef)
 			settings.PUT("/fields/:key", RequireRole("admin"), settingsHandler.UpdateFieldDef)
@@ -133,6 +133,15 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			objects.POST("/:slug/records", RequireRole("admin", "manager", "sales"), customObjectHandler.CreateRecord)
 			objects.PUT("/:slug/records/:id", RequireRole("admin", "manager", "sales"), customObjectHandler.UpdateRecord)
 			objects.DELETE("/:slug/records/:id", RequireRole("admin", "manager"), customObjectHandler.DeleteRecord)
+		}
+
+		// Knowledge Base
+		kb := protected.Group("/knowledge-base")
+		{
+			kb.GET("", knowledgeHandler.ListSections)
+			kb.GET("/ai-prompt", knowledgeHandler.GetAIPrompt)
+			kb.GET("/:section", knowledgeHandler.GetSection)
+			kb.PUT("/:section", RequireRole("admin", "manager"), knowledgeHandler.UpsertSection)
 		}
 	}
 }

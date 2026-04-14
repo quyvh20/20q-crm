@@ -302,6 +302,7 @@ type SystemTemplate struct {
 	CustomFieldDefs JSON      `gorm:"type:jsonb;default:'[]'" json:"custom_field_defs"`
 	AIContext       *string   `gorm:"type:text" json:"ai_context,omitempty"`
 	AutomationRules JSON      `gorm:"type:jsonb;default:'[]'" json:"automation_rules"`
+	KBTemplates     JSON      `gorm:"type:jsonb;default:'{}'" json:"kb_templates"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }
@@ -356,4 +357,32 @@ type AITokenUsage struct {
 	OutputTokens int       `gorm:"not null;default:0" json:"output_tokens"`
 	CostUSD      float64   `gorm:"type:numeric(10,6);default:0" json:"cost_usd"`
 	CreatedAt    time.Time `json:"created_at"`
+}
+
+// ============================================================
+// Knowledge Base
+// ============================================================
+
+type KnowledgeBaseEntry struct {
+	ID        uuid.UUID      `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
+	OrgID     uuid.UUID      `gorm:"type:uuid;not null" json:"org_id"`
+	Section   string         `gorm:"type:text;not null" json:"section"`
+	Title     string         `gorm:"type:text;not null" json:"title"`
+	Content   string         `gorm:"type:text;not null" json:"content"`
+	IsActive  bool           `gorm:"default:true" json:"is_active"`
+	CreatedBy *uuid.UUID     `gorm:"type:uuid" json:"created_by,omitempty"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+func (KnowledgeBaseEntry) TableName() string { return "knowledge_base" }
+
+// ValidKBSections lists the allowed knowledge base section keys.
+var ValidKBSections = map[string]string{
+	"company":     "Company Info",
+	"products":    "Products & Services",
+	"playbook":    "Sales Playbook",
+	"process":     "Our Process",
+	"competitors": "Competitive Advantages",
 }
