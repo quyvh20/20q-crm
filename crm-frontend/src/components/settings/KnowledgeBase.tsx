@@ -72,11 +72,20 @@ export default function KnowledgeBase() {
     setContent(newContent);
     setSaveStatus('idle');
 
-    // Debounce auto-save
+    // Debounce auto-save (fallback if user doesn't blur)
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       doSave(activeSection, title || activeSection, newContent);
     }, 1500);
+  };
+
+  // Save immediately on blur — cancels the pending debounce
+  const handleBlur = () => {
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
+    doSave(activeSection, title || activeSection, content);
   };
 
   const handlePreviewPrompt = async () => {
@@ -173,6 +182,7 @@ export default function KnowledgeBase() {
             <MDEditor
               value={content}
               onChange={handleContentChange}
+              onBlur={handleBlur}
               height={420}
               preview="edit"
             />
