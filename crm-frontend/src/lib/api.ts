@@ -819,7 +819,7 @@ export async function sendCommand(
 ): Promise<void> {
   try {
     const token = localStorage.getItem('access_token');
-    const res = await fetch(`${getBaseUrl()}/api/ai/command`, {
+    const res = await fetch(`${API_URL}/api/ai/command`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
