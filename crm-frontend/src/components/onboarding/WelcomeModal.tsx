@@ -1,11 +1,15 @@
 import { useState } from 'react';
 import { createObjectDef, createFieldDef } from '../../lib/api';
+import KBQuickFillStep from './KBQuickFillStep';
 
 interface WelcomeModalProps {
   onComplete: () => void;
 }
 
+type Step = 'templates' | 'kb-fill';
+
 export default function WelcomeModal({ onComplete }: WelcomeModalProps) {
+  const [step, setStep] = useState<Step>('templates');
   const [isDeploying, setIsDeploying] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -14,9 +18,7 @@ export default function WelcomeModal({ onComplete }: WelcomeModalProps) {
     onComplete();
   };
 
-  const handleSkip = () => {
-    completeOnboarding();
-  };
+  const advanceToKBFill = () => setStep('kb-fill');
 
   const deployTemplate = async (templateId: string) => {
     setIsDeploying(true);
@@ -71,14 +73,34 @@ export default function WelcomeModal({ onComplete }: WelcomeModalProps) {
         });
       }
       
-      completeOnboarding();
-      window.location.reload(); // Reload to refresh sidebar and layout
+      // Move to Step 2.5 — KB quick-fill
+      setIsDeploying(false);
+      advanceToKBFill();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to deploy template');
       setIsDeploying(false);
     }
   };
 
+  // ── Step 2.5 — KB Quick Fill ─────────────────────────────────────────────
+  if (step === 'kb-fill') {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+        <KBQuickFillStep
+          onComplete={() => {
+            completeOnboarding();
+            window.location.reload();
+          }}
+          onSkip={() => {
+            completeOnboarding();
+            window.location.reload();
+          }}
+        />
+      </div>
+    );
+  }
+
+  // ── Step 2 — Template Selection ───────────────────────────────────────────
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
       <div className="w-full max-w-3xl overflow-hidden rounded-2xl bg-card shadow-2xl border">
@@ -105,6 +127,7 @@ export default function WelcomeModal({ onComplete }: WelcomeModalProps) {
           <div className="grid md:grid-cols-2 gap-6 mb-8">
             {/* Real Estate Card */}
             <button
+              id="template-real-estate"
               onClick={() => deployTemplate('real-estate')}
               disabled={isDeploying}
               className="flex flex-col text-left border-2 rounded-xl p-6 hover:border-blue-500 hover:shadow-md transition-all group disabled:opacity-50"
@@ -121,6 +144,7 @@ export default function WelcomeModal({ onComplete }: WelcomeModalProps) {
 
             {/* SaaS Card */}
             <button
+              id="template-saas"
               onClick={() => deployTemplate('saas')}
               disabled={isDeploying}
               className="flex flex-col text-left border-2 rounded-xl p-6 hover:border-blue-500 hover:shadow-md transition-all group disabled:opacity-50"
@@ -141,11 +165,12 @@ export default function WelcomeModal({ onComplete }: WelcomeModalProps) {
               Prefer to build your own generic architecture?
             </p>
             <button
-              onClick={handleSkip}
+              id="skip-template-btn"
+              onClick={advanceToKBFill}
               disabled={isDeploying}
               className="px-6 py-2 border-2 border-transparent text-muted-foreground hover:text-foreground font-medium rounded-lg hover:bg-accent transition-colors disabled:opacity-50"
             >
-              Skip & Start Blank
+              Skip &amp; Start Blank
             </button>
           </div>
         </div>
