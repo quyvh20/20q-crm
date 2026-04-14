@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { createObjectDef, createFieldDef, type FieldType } from '../../lib/api';
+import { createObjectDef, createFieldDef } from '../../lib/api';
 
 interface WelcomeModalProps {
   onComplete: () => void;
