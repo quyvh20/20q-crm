@@ -73,7 +73,7 @@ var taskPrimaryProvider = map[AITask]provider{
 // Task → model mapping per provider
 var taskModels = map[AITask]map[provider]string{
 	TaskEmailCompose:   {providerAnthropic: "claude-3-5-haiku-20241022", providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct"},
-	TaskAssistantChat:  {providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct", providerAnthropic: "claude-3-5-haiku-20241022"},
+	TaskAssistantChat:  {providerCFWorkers: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", providerAnthropic: "claude-3-5-haiku-20241022"},
 	TaskMeetingSummary: {providerAnthropic: "claude-3-5-haiku-20241022", providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct"},
 	TaskDealScore:      {providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct", providerAnthropic: "claude-3-5-haiku-20241022"},
 	TaskAnalytics:      {providerAnthropic: "claude-3-5-haiku-20241022", providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct"},
