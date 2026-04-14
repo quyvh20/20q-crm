@@ -10,10 +10,12 @@ type Tool struct {
 }
 
 // ToolCall is what the AI model returns when it wants to invoke a tool.
+// Params holds the raw JSON arguments (Anthropic calls it "input",
+// OpenAI/CF calls it "arguments" — we normalise at parse time).
 type ToolCall struct {
 	ID     string          `json:"id"`
 	Name   string          `json:"name"`
-	Params json.RawMessage `json:"input"` // Anthropic calls it "input"
+	Params json.RawMessage `json:"input"` // normalised to this field internally
 }
 
 // ToolResult is sent back to the model after executing a tool.
@@ -129,6 +131,23 @@ func BuildToolsForAnthropic() []map[string]any {
 			"name":         t.Name,
 			"description":  t.Desc,
 			"input_schema": t.Params,
+		}
+	}
+	return tools
+}
+
+// BuildToolsForCFWorkers converts CRMTools to the OpenAI-compatible format
+// used by Cloudflare Workers AI function-calling models.
+func BuildToolsForCFWorkers() []map[string]any {
+	tools := make([]map[string]any, len(CRMTools))
+	for i, t := range CRMTools {
+		tools[i] = map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        t.Name,
+				"description": t.Desc,
+				"parameters":  t.Params,
+			},
 		}
 	}
 	return tools

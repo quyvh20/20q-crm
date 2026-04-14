@@ -67,7 +67,7 @@ var taskPrimaryProvider = map[AITask]provider{
 	TaskAnalytics:      providerAnthropic,
 	TaskSentiment:      providerCFWorkers,
 	TaskFollowup:       providerAnthropic,
-	TaskCommandCenter:  providerAnthropic,
+	TaskCommandCenter:  providerCFWorkers, // CF primary, Anthropic fallback
 }
 
 // Task → model mapping per provider
@@ -79,6 +79,8 @@ var taskModels = map[AITask]map[provider]string{
 	TaskAnalytics:      {providerAnthropic: "claude-3-5-haiku-20241022", providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct"},
 	TaskSentiment:      {providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct", providerAnthropic: "claude-3-5-haiku-20241022"},
 	TaskFollowup:       {providerAnthropic: "claude-3-5-haiku-20241022", providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct"},
+	// CommandCenter: use the large 70B model for reliable tool calling
+	TaskCommandCenter:  {providerCFWorkers: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", providerAnthropic: "claude-3-5-haiku-20241022"},
 }
 
 // ============================================================
@@ -166,7 +168,8 @@ func (g *AIGateway) Complete(ctx context.Context, orgID, userID uuid.UUID, task 
 	return result, nil
 }
 
-// CompleteWithTools runs inference with tool definitions (Anthropic tool_use).
+// CompleteWithTools runs inference with tool definitions.
+// Primary: Cloudflare Workers AI (llama-3.3-70b). Fallback: Anthropic (Claude).
 func (g *AIGateway) CompleteWithTools(ctx context.Context, orgID, userID uuid.UUID, task AITask, messages []Message, tools []Tool) (AIResponse, error) {
 	estimated := 5000 // generous estimate for tool calls
 	if g.Budget != nil {
@@ -175,13 +178,154 @@ func (g *AIGateway) CompleteWithTools(ctx context.Context, orgID, userID uuid.UU
 		}
 	}
 
-	result, err := g.callAnthropicWithTools(ctx, g.modelFor(task, providerAnthropic), messages, tools)
+	primaryP := g.routePrimary(task)
+	var result AIResponse
+	var err error
+
+	if primaryP == providerCFWorkers {
+		result, err = g.callCFWorkersWithTools(ctx, g.modelFor(task, providerCFWorkers), messages, tools)
+		if err != nil {
+			g.logger.Warn("CF Workers tool call failed, falling back to Anthropic",
+				zap.String("task", string(task)),
+				zap.Error(err))
+			// Fallback to Anthropic
+			result, err = g.callAnthropicWithTools(ctx, g.modelFor(task, providerAnthropic), messages, tools)
+		}
+	} else {
+		// Primary is Anthropic; try Anthropic first, then CF as fallback
+		result, err = g.callAnthropicWithTools(ctx, g.modelFor(task, providerAnthropic), messages, tools)
+		if err != nil {
+			g.logger.Warn("Anthropic tool call failed, falling back to CF Workers",
+				zap.String("task", string(task)),
+				zap.Error(err))
+			result, err = g.callCFWorkersWithTools(ctx, g.modelFor(task, providerCFWorkers), messages, tools)
+		}
+	}
+
 	if err != nil {
-		return AIResponse{}, fmt.Errorf("tool call failed: %w", err)
+		return AIResponse{}, fmt.Errorf("all tool-call providers failed: %w", err)
 	}
 
 	if g.Budget != nil {
 		go g.Budget.Record(ctx, orgID, userID, task, result.Model, result.Provider, result.InputTokens, result.OutputTokens)
+	}
+
+	return result, nil
+}
+
+// callCFWorkersWithTools calls Cloudflare Workers AI using the OpenAI-compatible
+// function-calling protocol and parses the tool_calls from the response.
+func (g *AIGateway) callCFWorkersWithTools(ctx context.Context, model string, messages []Message, tools []Tool) (AIResponse, error) {
+	url := fmt.Sprintf("%s/workers-ai/%s", g.gatewayURL, model)
+
+	// Build the messages array in OpenAI format.
+	// CF Workers AI expects: [{"role":"system","content":"..."},{"role":"user","content":"..."},...]
+	var chatMsgs []map[string]interface{}
+	for _, m := range messages {
+		switch m.Role {
+		case "system", "user":
+			chatMsgs = append(chatMsgs, map[string]interface{}{
+				"role":    m.Role,
+				"content": m.Content,
+			})
+		case "assistant":
+			if len(m.ToolCalls) > 0 {
+				// Format tool calls in the OpenAI assistant message format
+				cfToolCalls := make([]map[string]interface{}, len(m.ToolCalls))
+				for i, tc := range m.ToolCalls {
+					cfToolCalls[i] = map[string]interface{}{
+						"id":   tc.ID,
+						"type": "function",
+						"function": map[string]interface{}{
+							"name":      tc.Name,
+							"arguments": string(tc.Params),
+						},
+					}
+				}
+				msg := map[string]interface{}{
+					"role":       "assistant",
+					"tool_calls": cfToolCalls,
+				}
+				if m.Content != "" {
+					msg["content"] = m.Content
+				}
+				chatMsgs = append(chatMsgs, msg)
+			} else {
+				chatMsgs = append(chatMsgs, map[string]interface{}{
+					"role":    "assistant",
+					"content": m.Content,
+				})
+			}
+		case "tool":
+			// Tool result message in OpenAI format
+			chatMsgs = append(chatMsgs, map[string]interface{}{
+				"role":         "tool",
+				"tool_call_id": m.ToolUseID,
+				"content":      m.Content,
+			})
+		}
+	}
+
+	reqBody := map[string]interface{}{
+		"messages": chatMsgs,
+		"tools":    BuildToolsForCFWorkers(),
+	}
+
+	resp, err := g.doRequest(ctx, url, "POST", map[string]string{
+		"Authorization": "Bearer " + g.cfToken,
+		"Content-Type":  "application/json",
+	}, reqBody)
+	if err != nil {
+		return AIResponse{}, fmt.Errorf("cf workers tool call: %w", err)
+	}
+
+	// CF Workers AI response with tool_calls follows OpenAI format:
+	// { "result": { "response": "...", "tool_calls": [{"id":"..","type":"function","function":{"name":"..","arguments":"{...}"}}], "usage":{...} } }
+	var cfResp struct {
+		Result struct {
+			Response  string `json:"response"`
+			ToolCalls []struct {
+				ID       string `json:"id"`
+				Type     string `json:"type"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"` // JSON string
+				} `json:"function"`
+			} `json:"tool_calls"`
+			Usage struct {
+				InputTokens  int `json:"prompt_tokens"`
+				OutputTokens int `json:"completion_tokens"`
+			} `json:"usage"`
+		} `json:"result"`
+		Success bool `json:"success"`
+	}
+	if err := json.Unmarshal(resp, &cfResp); err != nil {
+		return AIResponse{}, fmt.Errorf("cf workers tool unmarshal: %w (body: %s)", err, string(resp))
+	}
+
+	result := AIResponse{
+		Content:      cfResp.Result.Response,
+		Model:        model,
+		Provider:     string(providerCFWorkers),
+		InputTokens:  cfResp.Result.Usage.InputTokens,
+		OutputTokens: cfResp.Result.Usage.OutputTokens,
+	}
+
+	// Parse tool calls — CF returns arguments as a JSON string, we normalise to RawMessage
+	for _, tc := range cfResp.Result.ToolCalls {
+		params := json.RawMessage(tc.Function.Arguments)
+		if !json.Valid(params) {
+			params = json.RawMessage("{}")
+		}
+		id := tc.ID
+		if id == "" {
+			id = fmt.Sprintf("call_%s", tc.Function.Name)
+		}
+		result.ToolCalls = append(result.ToolCalls, ToolCall{
+			ID:     id,
+			Name:   tc.Function.Name,
+			Params: params,
+		})
 	}
 
 	return result, nil
