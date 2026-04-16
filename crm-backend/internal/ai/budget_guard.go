@@ -235,4 +235,20 @@ func estimateCost(model string, in, out, cachedRead, cacheCreation int) float64 
 	}
 }
 
+// GetTopUsages retrieves the most expensive queries for the org within the last 24h
+func (g *BudgetGuard) GetTopUsages(ctx context.Context, orgID uuid.UUID, limit int) ([]domain.AITokenUsage, error) {
+	var usages []domain.AITokenUsage
+	if g.db == nil {
+		return usages, nil
+	}
+	
+	err := g.db.WithContext(ctx).
+		Where("org_id = ? AND created_at > ?", orgID, time.Now().Add(-24*time.Hour)).
+		Order("cost_usd DESC").
+		Limit(limit).
+		Find(&usages).Error
+		
+	return usages, err
+}
+
 var _ = errors.New // silence unused import

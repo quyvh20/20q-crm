@@ -105,6 +105,7 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 		aiRoutes := protected.Group("/ai")
 		{
 			aiRoutes.GET("/usage", aiHandler.GetUsage)
+			aiRoutes.GET("/usage/top", aiHandler.GetTopUsage)
 			aiRoutes.POST("/chat", aiHandler.Chat)
 			aiRoutes.POST("/embed", aiHandler.Embed)
 			aiRoutes.POST("/command", commandHandler.Command)

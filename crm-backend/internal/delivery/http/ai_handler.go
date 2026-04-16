@@ -64,6 +64,23 @@ func (h *AIHandler) GetUsage(c *gin.Context) {
 	}))
 }
 
+func (h *AIHandler) GetTopUsage(c *gin.Context) {
+	orgID, ok := GetOrgID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+
+	usages, err := h.budget.GetTopUsages(c.Request.Context(), orgID, 10)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, domain.Err(err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, domain.Success(usages))
+}
+
+
 // ============================================================
 // POST /api/ai/chat  — SSE streaming response
 // ============================================================
