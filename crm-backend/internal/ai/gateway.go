@@ -85,16 +85,16 @@ var taskModels = map[AITask]map[provider]string{
 	TaskCommandCenter:  {providerVercelGateway: "anthropic/claude-haiku-4.5", providerCFWorkers: "@cf/meta/llama-3.3-70b-instruct-fp8-fast"},
 }
 
-// Task → max output tokens. Output costs 5x input on Haiku 4.5, so keep tight.
+// taskMaxTokens enforces strict output boundaries based on empirically measured p99 usage
 var taskMaxTokens = map[AITask]int{
-	TaskCommandCenter:  1024,
-	TaskEmailCompose:   2048,
-	TaskAssistantChat:  1024,
-	TaskSentiment:      256,
-	TaskDealScore:      256,
-	TaskFollowup:       1024,
-	TaskAnalytics:      512,
-	TaskMeetingSummary: 2048,
+	TaskSentiment:      50,
+	TaskDealScore:      300,
+	TaskFollowup:       200,
+	TaskEmailCompose:   400,
+	TaskAssistantChat:  500,
+	TaskCommandCenter:  512,
+	TaskMeetingSummary: 1000,
+	TaskAnalytics:      1000,
 }
 
 func maxTokensFor(task AITask) int {
@@ -222,28 +222,28 @@ func (g *AIGateway) CompleteWithTools(ctx context.Context, orgID, userID uuid.UU
 
 	switch primaryP {
 	case providerVercelGateway:
-		result, err = g.callVercelGatewayWithTools(ctx, g.modelFor(task, providerVercelGateway), messages, tools)
+		result, err = g.callVercelGatewayWithTools(ctx, task, g.modelFor(task, providerVercelGateway), messages, tools)
 		if err != nil {
 			g.logger.Warn("Vercel Gateway tool call failed, falling back to CF Workers",
 				zap.String("task", string(task)),
 				zap.Error(err))
-			result, err = g.callCFWorkersWithTools(ctx, g.modelFor(task, providerCFWorkers), messages, tools)
+			result, err = g.callCFWorkersWithTools(ctx, task, g.modelFor(task, providerCFWorkers), messages, tools)
 		}
 	case providerCFWorkers:
-		result, err = g.callCFWorkersWithTools(ctx, g.modelFor(task, providerCFWorkers), messages, tools)
+		result, err = g.callCFWorkersWithTools(ctx, task, g.modelFor(task, providerCFWorkers), messages, tools)
 		if err != nil {
 			g.logger.Warn("CF Workers tool call failed, falling back to Anthropic",
 				zap.String("task", string(task)),
 				zap.Error(err))
-			result, err = g.callAnthropicWithTools(ctx, g.modelFor(task, providerAnthropic), messages, tools)
+			result, err = g.callAnthropicWithTools(ctx, task, g.modelFor(task, providerAnthropic), messages, tools)
 		}
 	default:
-		result, err = g.callAnthropicWithTools(ctx, g.modelFor(task, providerAnthropic), messages, tools)
+		result, err = g.callAnthropicWithTools(ctx, task, g.modelFor(task, providerAnthropic), messages, tools)
 		if err != nil {
 			g.logger.Warn("Anthropic tool call failed, falling back to CF Workers",
 				zap.String("task", string(task)),
 				zap.Error(err))
-			result, err = g.callCFWorkersWithTools(ctx, g.modelFor(task, providerCFWorkers), messages, tools)
+			result, err = g.callCFWorkersWithTools(ctx, task, g.modelFor(task, providerCFWorkers), messages, tools)
 		}
 	}
 
@@ -265,7 +265,7 @@ func (g *AIGateway) CompleteWithTools(ctx context.Context, orgID, userID uuid.UU
 
 // callCFWorkersWithTools calls Cloudflare Workers AI using the OpenAI-compatible
 // function-calling protocol and parses the tool_calls from the response.
-func (g *AIGateway) callCFWorkersWithTools(ctx context.Context, model string, messages []Message, tools []Tool) (AIResponse, error) {
+func (g *AIGateway) callCFWorkersWithTools(ctx context.Context, task AITask, model string, messages []Message, tools []Tool) (AIResponse, error) {
 	url := fmt.Sprintf("%s/workers-ai/%s", g.gatewayURL, model)
 
 	// Build the messages array in OpenAI format.
@@ -384,7 +384,7 @@ func (g *AIGateway) callCFWorkersWithTools(ctx context.Context, model string, me
 }
 
 // callAnthropicWithTools sends tool definitions to Anthropic and parses tool_use blocks.
-func (g *AIGateway) callAnthropicWithTools(ctx context.Context, model string, messages []Message, tools []Tool) (AIResponse, error) {
+func (g *AIGateway) callAnthropicWithTools(ctx context.Context, task AITask, model string, messages []Message, tools []Tool) (AIResponse, error) {
 	url := fmt.Sprintf("%s/anthropic/v1/messages", g.gatewayURL)
 
 	var system string
@@ -440,7 +440,7 @@ func (g *AIGateway) callAnthropicWithTools(ctx context.Context, model string, me
 
 	reqBody := map[string]interface{}{
 		"model":      model,
-		"max_tokens": 4096,
+		"max_tokens": maxTokensFor(task),
 		"messages":   chatMsgs,
 		"tools":      anthropicTools,
 	}
@@ -525,11 +525,11 @@ func (g *AIGateway) callProvider(ctx context.Context, task AITask, p provider, m
 	model := g.modelFor(task, p)
 	switch p {
 	case providerVercelGateway:
-		return g.callVercelGateway(ctx, model, messages)
+		return g.callVercelGateway(ctx, task, model, messages)
 	case providerAnthropic:
-		return g.callAnthropic(ctx, model, messages)
+		return g.callAnthropic(ctx, task, model, messages)
 	case providerCFWorkers:
-		return g.callCFWorkers(ctx, model, messages)
+		return g.callCFWorkers(ctx, task, model, messages)
 	default:
 		return AIResponse{}, fmt.Errorf("unknown provider: %s", p)
 	}
@@ -552,7 +552,7 @@ func (g *AIGateway) modelFor(task AITask, p provider) string {
 }
 
 // callCFWorkers — CF AI Gateway → Cloudflare Workers AI
-func (g *AIGateway) callCFWorkers(ctx context.Context, model string, messages []Message) (AIResponse, error) {
+func (g *AIGateway) callCFWorkers(ctx context.Context, task AITask, model string, messages []Message) (AIResponse, error) {
 	url := fmt.Sprintf("%s/workers-ai/%s", g.gatewayURL, model)
 
 	// Build messages in the format CF expects, handling all roles including tool results.
@@ -642,7 +642,7 @@ func (g *AIGateway) callCFWorkers(ctx context.Context, model string, messages []
 }
 
 // callAnthropic — CF AI Gateway → Anthropic (Claude)
-func (g *AIGateway) callAnthropic(ctx context.Context, model string, messages []Message) (AIResponse, error) {
+func (g *AIGateway) callAnthropic(ctx context.Context, task AITask, model string, messages []Message) (AIResponse, error) {
 	url := fmt.Sprintf("%s/anthropic/v1/messages", g.gatewayURL)
 
 	var system string
@@ -657,7 +657,7 @@ func (g *AIGateway) callAnthropic(ctx context.Context, model string, messages []
 
 	reqBody := map[string]interface{}{
 		"model":      model,
-		"max_tokens": 2048,
+		"max_tokens": maxTokensFor(task),
 		"messages":   chatMsgs,
 	}
 	if system != "" {
@@ -1012,7 +1012,7 @@ func hashMessages(messages []Message) string {
 
 // callVercelGateway sends a completion via the Vercel AI Gateway Anthropic
 // Messages API (POST /v1/messages). Supports prompt caching via cache_control.
-func (g *AIGateway) callVercelGateway(ctx context.Context, model string, messages []Message) (AIResponse, error) {
+func (g *AIGateway) callVercelGateway(ctx context.Context, task AITask, model string, messages []Message) (AIResponse, error) {
 	start := time.Now()
 	url := fmt.Sprintf("%s/messages", g.vercelGatewayURL)
 
@@ -1020,7 +1020,7 @@ func (g *AIGateway) callVercelGateway(ctx context.Context, model string, message
 
 	reqBody := map[string]interface{}{
 		"model":      model,
-		"max_tokens": 2048,
+		"max_tokens": maxTokensFor(task),
 		"messages":   chatMsgs,
 	}
 	if len(system) > 0 {
@@ -1042,7 +1042,7 @@ func (g *AIGateway) callVercelGateway(ctx context.Context, model string, message
 
 // callVercelGatewayWithTools sends a tool-calling request via the Vercel AI
 // Gateway Anthropic Messages API with tool definitions and prompt caching.
-func (g *AIGateway) callVercelGatewayWithTools(ctx context.Context, model string, messages []Message, tools []Tool) (AIResponse, error) {
+func (g *AIGateway) callVercelGatewayWithTools(ctx context.Context, task AITask, model string, messages []Message, tools []Tool) (AIResponse, error) {
 	start := time.Now()
 	url := fmt.Sprintf("%s/messages", g.vercelGatewayURL)
 
@@ -1057,7 +1057,7 @@ func (g *AIGateway) callVercelGatewayWithTools(ctx context.Context, model string
 
 	reqBody := map[string]interface{}{
 		"model":      model,
-		"max_tokens": 1024, // tool-calling round: only need the tool_use blocks
+		"max_tokens": maxTokensFor(task),
 		"messages":   chatMsgs,
 		"tools":      anthropicTools,
 	}
