@@ -57,3 +57,16 @@ FROM ai_token_usages a
 JOIN organizations o ON a.org_id = o.id
 GROUP BY o.plan_tier
 ORDER BY total_cost_usd DESC;
+
+-- 6. "Empirical Average Cost Baseline per Endpoint"
+CREATE OR REPLACE VIEW v_ai_endpoint_cost_baselines AS
+SELECT 
+    feature AS endpoint,
+    COUNT(id) AS sample_size,
+    AVG(cost_usd) AS avg_cost_usd_baseline,
+    AVG(input_tokens) AS avg_input_tokens,
+    AVG(output_tokens) AS avg_output_tokens,
+    AVG(cached_input_tokens) AS avg_cached_input_tokens
+FROM ai_token_usages
+GROUP BY feature
+HAVING COUNT(id) >= 5;
