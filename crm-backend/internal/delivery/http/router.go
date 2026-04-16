@@ -106,6 +106,7 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 		{
 			aiRoutes.GET("/usage", aiHandler.GetUsage)
 			aiRoutes.GET("/usage/top", aiHandler.GetTopUsage)
+			aiRoutes.GET("/usage/stats", aiHandler.GetUsageStats)
 			aiRoutes.POST("/chat", aiHandler.Chat)
 			aiRoutes.POST("/embed", aiHandler.Embed)
 			aiRoutes.POST("/command", commandHandler.Command)

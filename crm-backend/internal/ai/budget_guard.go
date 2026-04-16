@@ -278,4 +278,42 @@ func (g *BudgetGuard) GetTopUsages(ctx context.Context, orgID uuid.UUID, limit i
 	return usages, nil
 }
 
+// GetUsageStats calculates stop_reason metrics to verify max_token boundaries.
+func (g *BudgetGuard) GetUsageStats(ctx context.Context, orgID uuid.UUID) (map[string]interface{}, error) {
+	if g.db == nil {
+		return nil, errors.New("database not enabled")
+	}
+
+	type statsRow struct {
+		Feature   string
+		Total     int
+		MaxTokens int
+	}
+	var rows []statsRow
+
+	err := g.db.WithContext(ctx).Table("ai_token_usages").
+		Select("feature, count(*) as total, sum(case when stop_reason ilike '%max_tokens%' then 1 else 0 end) as max_tokens").
+		Where("org_id = ?", orgID).
+		Group("feature").
+		Scan(&rows).Error
+
+	if err != nil {
+		return nil, err
+	}
+
+	res := make(map[string]interface{})
+	for _, r := range rows {
+		pct := 0.0
+		if r.Total > 0 {
+			pct = float64(r.MaxTokens) / float64(r.Total) * 100.0
+		}
+		res[r.Feature] = map[string]interface{}{
+			"total":      r.Total,
+			"max_tokens": r.MaxTokens,
+			"percent":    pct,
+		}
+	}
+	return res, nil
+}
+
 var _ = errors.New // silence unused import
