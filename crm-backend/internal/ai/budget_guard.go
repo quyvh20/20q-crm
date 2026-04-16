@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"time"
 
 	"crm-backend/internal/domain"
@@ -103,7 +105,12 @@ func (g *BudgetGuard) Check(ctx context.Context, orgID uuid.UUID, task AITask, e
 }
 
 // Record increments Redis counter and asynchronously writes an audit row.
-func (g *BudgetGuard) Record(ctx context.Context, orgID, userID uuid.UUID, task AITask, model, prov string, in, out int) {
+func (g *BudgetGuard) Record(ctx context.Context, orgID, userID uuid.UUID, task AITask, model, prov string, in, out int, opts ...RecordOption) {
+	cfg := recordConfig{}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
 	total := in + out
 
 	if g.redis != nil {
@@ -114,19 +121,57 @@ func (g *BudgetGuard) Record(ctx context.Context, orgID, userID uuid.UUID, task 
 		pipe.Exec(ctx) //nolint:errcheck
 	}
 
+	// Structured token accounting log (item 2)
+	slog.Info("ai_usage_record",
+		"org_id", orgID.String(),
+		"user_id", userID.String(),
+		"task", string(task),
+		"model", model,
+		"provider", prov,
+		"input_tokens", in,
+		"output_tokens", out,
+		"cached_input_tokens", cfg.CachedInputTokens,
+		"latency_ms", cfg.LatencyMs,
+		"stop_reason", cfg.StopReason,
+		"cache_hit", cfg.CachedInputTokens > 0,
+	)
+
 	if g.db != nil {
-		costUSD := estimateCost(model, in, out)
+		costUSD := estimateCost(model, in, out, cfg.CachedInputTokens, cfg.CacheCreationTokens)
 		g.db.WithContext(ctx).Create(&domain.AITokenUsage{
-			OrgID:        orgID,
-			UserID:       userID,
-			Model:        model,
-			Provider:     prov,
-			Feature:      string(task),
-			InputTokens:  in,
-			OutputTokens: out,
-			CostUSD:      costUSD,
+			OrgID:             orgID,
+			UserID:            userID,
+			Model:             model,
+			Provider:          prov,
+			Feature:           string(task),
+			InputTokens:       in,
+			OutputTokens:      out,
+			CachedInputTokens: cfg.CachedInputTokens,
+			LatencyMs:         cfg.LatencyMs,
+			StopReason:        cfg.StopReason,
+			CacheHit:          cfg.CachedInputTokens > 0,
+			CostUSD:           costUSD,
 		})
 	}
+}
+
+// RecordOption configures optional fields for Record.
+type RecordOption func(*recordConfig)
+type recordConfig struct {
+	CachedInputTokens   int
+	CacheCreationTokens int
+	LatencyMs           int64
+	StopReason          string
+}
+
+func WithCache(cached, created int) RecordOption {
+	return func(c *recordConfig) { c.CachedInputTokens = cached; c.CacheCreationTokens = created }
+}
+func WithLatency(ms int64) RecordOption {
+	return func(c *recordConfig) { c.LatencyMs = ms }
+}
+func WithStopReason(s string) RecordOption {
+	return func(c *recordConfig) { c.StopReason = s }
 }
 
 // GetUsage returns current month's usage for an org.
@@ -171,11 +216,19 @@ func firstDayNextMonth() time.Time {
 }
 
 // estimateCost returns approximate USD cost based on known pricing.
-func estimateCost(model string, in, out int) float64 {
-	// Anthropic claude-3-5-haiku: $0.80/$4.00 per 1M tokens in/out
-	// CF Workers AI llama: effectively free up to included quota
+// Haiku 4.5: $1/M input, $5/M output, $0.10/M cached-read, $1.25/M cache-creation
+// Claude 3.5 Haiku: $0.80/$4.00 per 1M tokens in/out
+func estimateCost(model string, in, out, cachedRead, cacheCreation int) float64 {
 	switch {
-	case len(model) > 0 && model[:6] == "claude":
+	case strings.Contains(model, "haiku-4.5") || strings.Contains(model, "claude-haiku-4"):
+		// Haiku 4.5 pricing
+		inputCost := float64(in) * 1.00 / 1_000_000
+		outputCost := float64(out) * 5.00 / 1_000_000
+		cachedCost := float64(cachedRead) * 0.10 / 1_000_000
+		creationCost := float64(cacheCreation) * 1.25 / 1_000_000
+		return inputCost + outputCost + cachedCost + creationCost
+	case strings.Contains(model, "claude"):
+		// Claude 3.5 Haiku fallback pricing
 		return float64(in)*0.80/1_000_000 + float64(out)*4.00/1_000_000
 	default:
 		return 0

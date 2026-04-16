@@ -347,16 +347,20 @@ type WorkflowRun struct {
 // ============================================================
 
 type AITokenUsage struct {
-	ID           uuid.UUID `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
-	OrgID        uuid.UUID `gorm:"type:uuid;not null;index" json:"org_id"`
-	UserID       uuid.UUID `gorm:"type:uuid;not null" json:"user_id"`
-	Model        string    `gorm:"size:100;not null" json:"model"`
-	Provider     string    `gorm:"size:50;not null" json:"provider"`
-	Feature      string    `gorm:"size:100;not null" json:"feature"`
-	InputTokens  int       `gorm:"not null;default:0" json:"input_tokens"`
-	OutputTokens int       `gorm:"not null;default:0" json:"output_tokens"`
-	CostUSD      float64   `gorm:"type:numeric(10,6);default:0" json:"cost_usd"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID                uuid.UUID `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
+	OrgID             uuid.UUID `gorm:"type:uuid;not null;index" json:"org_id"`
+	UserID            uuid.UUID `gorm:"type:uuid;not null" json:"user_id"`
+	Model             string    `gorm:"size:100;not null" json:"model"`
+	Provider          string    `gorm:"size:50;not null" json:"provider"`
+	Feature           string    `gorm:"size:100;not null" json:"feature"`
+	InputTokens       int       `gorm:"not null;default:0" json:"input_tokens"`
+	OutputTokens      int       `gorm:"not null;default:0" json:"output_tokens"`
+	CachedInputTokens int       `gorm:"not null;default:0" json:"cached_input_tokens"`
+	LatencyMs         int64     `gorm:"not null;default:0" json:"latency_ms"`
+	StopReason        string    `gorm:"size:50" json:"stop_reason"`
+	CacheHit          bool      `gorm:"default:false" json:"cache_hit"`
+	CostUSD           float64   `gorm:"type:numeric(10,6);default:0" json:"cost_usd"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 
 // ============================================================
