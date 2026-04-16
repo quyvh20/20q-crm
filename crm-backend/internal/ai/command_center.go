@@ -59,6 +59,13 @@ func (cc *CommandCenter) Execute(
 	orgID, userID uuid.UUID,
 	userMessage string,
 ) (<-chan CommandEvent, error) {
+	// 0. Synchronously check budget before opening stream
+	if cc.gateway.Budget != nil {
+		if err := cc.gateway.Budget.Check(ctx, orgID, TaskCommandCenter, 5000); err != nil {
+			return nil, err
+		}
+	}
+
 	events := make(chan CommandEvent, 100)
 
 	go func() {

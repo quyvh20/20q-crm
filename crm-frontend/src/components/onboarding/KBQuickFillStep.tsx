@@ -2,11 +2,12 @@ import { useState } from 'react';
 import { upsertKBSection } from '../../lib/api';
 
 interface KBQuickFillStepProps {
+  templateId?: string | null;
   onComplete: () => void;
   onSkip: () => void;
 }
 
-export default function KBQuickFillStep({ onComplete, onSkip }: KBQuickFillStepProps) {
+export default function KBQuickFillStep({ templateId, onComplete, onSkip }: KBQuickFillStepProps) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -20,6 +21,32 @@ export default function KBQuickFillStep({ onComplete, onSkip }: KBQuickFillStepP
     topObjection: '',
     usp: '',
   });
+
+  const placeholders = {
+    'real-estate': {
+      company: 'e.g. Prestige Realty',
+      industry: 'e.g. Real Estate Brokerage',
+      usp: 'e.g. Top 1% in sales volume, exclusive luxury listings',
+      products: 'e.g. - Buyer representation: 3% commission\n- Listing services: 2.5% commission, full marketing suite',
+      objection: 'e.g. "Commission is too high" → We sell homes 14 days faster on average and for 2% more money.',
+    },
+    'saas': {
+      company: 'e.g. CloudFlow SaaS',
+      industry: 'e.g. B2B SaaS',
+      usp: 'e.g. 10x cheaper than Salesforce, AI-native',
+      products: 'e.g. - Starter: $29/mo — 3 users\n- Pro: $79/mo — unlimited users, AI features',
+      objection: `e.g. "Too expensive" → Our ROI pays back in 3 months. Annual plan saves 20%.`,
+    },
+    'default': {
+      company: 'e.g. Acme Corp',
+      industry: 'e.g. B2B SaaS, Professional Services',
+      usp: 'e.g. 10x faster execution, amazing support',
+      products: 'e.g. - Basic Tier: $500\n- Enterprise: $2000 custom setup',
+      objection: `e.g. "Too expensive" → Our ROI pays back in 3 months.`,
+    }
+  };
+
+  const currentPlaceholders = placeholders[templateId as keyof typeof placeholders] || placeholders.default;
 
   const set = (k: keyof typeof form, v: string) => setForm(f => ({ ...f, [k]: v }));
 
@@ -76,7 +103,7 @@ export default function KBQuickFillStep({ onComplete, onSkip }: KBQuickFillStepP
       </div>
 
       {/* Form */}
-      <div className="p-8 space-y-5">
+      <div className="p-8 space-y-5 flex-1 max-h-[60vh] overflow-y-auto">
         {error && (
           <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-500 text-sm">{error}</div>
         )}
@@ -88,7 +115,7 @@ export default function KBQuickFillStep({ onComplete, onSkip }: KBQuickFillStepP
             id="kb-company-name"
             value={form.companyName}
             onChange={e => set('companyName', e.target.value)}
-            placeholder="e.g. Acme Corp"
+            placeholder={currentPlaceholders.company}
             className="w-full px-3 py-2 rounded-lg border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </div>
@@ -101,7 +128,7 @@ export default function KBQuickFillStep({ onComplete, onSkip }: KBQuickFillStepP
               id="kb-industry"
               value={form.industry}
               onChange={e => set('industry', e.target.value)}
-              placeholder="e.g. B2B SaaS, Real Estate"
+              placeholder={currentPlaceholders.industry}
               className="w-full px-3 py-2 rounded-lg border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
@@ -130,7 +157,7 @@ export default function KBQuickFillStep({ onComplete, onSkip }: KBQuickFillStepP
             id="kb-usp"
             value={form.usp}
             onChange={e => set('usp', e.target.value)}
-            placeholder="e.g. 10x cheaper than Salesforce, AI-native from day one"
+            placeholder={currentPlaceholders.usp}
             className="w-full px-3 py-2 rounded-lg border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </div>
@@ -142,7 +169,7 @@ export default function KBQuickFillStep({ onComplete, onSkip }: KBQuickFillStepP
             id="kb-products"
             value={form.products}
             onChange={e => set('products', e.target.value)}
-            placeholder="e.g. - Starter: $29/mo — 3 users&#10;- Pro: $79/mo — unlimited users, AI features"
+            placeholder={currentPlaceholders.products}
             rows={3}
             className="w-full px-3 py-2 rounded-lg border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
           />
@@ -179,7 +206,7 @@ export default function KBQuickFillStep({ onComplete, onSkip }: KBQuickFillStepP
             id="kb-objection"
             value={form.topObjection}
             onChange={e => set('topObjection', e.target.value)}
-            placeholder={`e.g. "Too expensive" → Our ROI pays back in 3 months. Annual plan saves 20%.`}
+            placeholder={currentPlaceholders.objection}
             rows={2}
             className="w-full px-3 py-2 rounded-lg border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
           />
@@ -187,7 +214,7 @@ export default function KBQuickFillStep({ onComplete, onSkip }: KBQuickFillStepP
       </div>
 
       {/* Footer */}
-      <div className="flex items-center justify-between px-8 pb-8 pt-0">
+      <div className="flex bg-card items-center justify-between px-8 py-4 border-t">
         <button
           id="kb-skip-btn"
           onClick={onSkip}
@@ -204,7 +231,7 @@ export default function KBQuickFillStep({ onComplete, onSkip }: KBQuickFillStepP
         >
           {saving ? (
             <>
-              <span className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
+              <span className="animate-spin h-4 w-4 border-2 border-white border-t-transparent flex-shrink-0 rounded-full" />
               Saving…
             </>
           ) : (

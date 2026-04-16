@@ -2,6 +2,7 @@ package http
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -49,11 +50,33 @@ func (h *CommandHandler) Command(c *gin.Context) {
 
 	events, err := h.commandCenter.Execute(c.Request.Context(), orgID, userID, req.Message)
 	if err != nil {
+		var budgetErr ai.ErrBudgetExceeded
+		var timeoutErr ai.ErrAITimeout
+		var planErr ai.ErrFeatureNotInPlan
+
+		if errors.As(err, &budgetErr) {
+			c.JSON(http.StatusTooManyRequests, gin.H{
+				"error": budgetErr.Error(), "code": "budget_exceeded",
+				"reset_at": budgetErr.ResetAt,
+			})
+			return
+		}
+		if errors.As(err, &timeoutErr) {
+			c.Header("Retry-After", fmt.Sprintf("%d", timeoutErr.After))
+			c.JSON(http.StatusServiceUnavailable, domain.Err(timeoutErr.Error()))
+			return
+		}
+		if errors.As(err, &planErr) {
+			c.JSON(http.StatusPaymentRequired, gin.H{
+				"error": planErr.Error(), "code": "feature_not_in_plan",
+				"requires_plan": planErr.RequiresPlan,
+			})
+			return
+		}
+
 		c.JSON(http.StatusInternalServerError, domain.Err(err.Error()))
 		return
 	}
-
-	// Set SSE headers
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")

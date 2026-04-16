@@ -10,6 +10,7 @@ type Step = 'templates' | 'kb-fill';
 
 export default function WelcomeModal({ onComplete }: WelcomeModalProps) {
   const [step, setStep] = useState<Step>('templates');
+  const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null);
   const [isDeploying, setIsDeploying] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -23,6 +24,7 @@ export default function WelcomeModal({ onComplete }: WelcomeModalProps) {
   const deployTemplate = async (templateId: string) => {
     setIsDeploying(true);
     setError(null);
+    setSelectedTemplate(templateId);
     try {
       if (templateId === 'real-estate') {
         // Create Properties Custom Object
@@ -87,6 +89,7 @@ export default function WelcomeModal({ onComplete }: WelcomeModalProps) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
         <KBQuickFillStep
+          templateId={selectedTemplate}
           onComplete={() => {
             completeOnboarding();
             window.location.reload();
