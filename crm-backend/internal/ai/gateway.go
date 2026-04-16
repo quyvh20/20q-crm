@@ -193,9 +193,9 @@ func (g *AIGateway) Complete(ctx context.Context, orgID, userID uuid.UUID, task 
 		return AIResponse{}, fmt.Errorf("all providers failed: %w", err)
 	}
 
-	// Persist usage asynchronously with cache/latency metadata
+	// Persist usage synchronously to prevent context cancellation races
 	if g.Budget != nil {
-		go g.Budget.Record(ctx, orgID, userID, task, result.Model, result.Provider, result.InputTokens, result.OutputTokens,
+		g.Budget.Record(ctx, orgID, userID, task, result.Model, result.Provider, result.InputTokens, result.OutputTokens,
 			WithCache(result.CachedInputTokens, result.CacheCreationTokens),
 			WithLatency(result.LatencyMs),
 			WithStopReason(result.StopReason),
@@ -252,7 +252,7 @@ func (g *AIGateway) CompleteWithTools(ctx context.Context, orgID, userID uuid.UU
 	}
 
 	if g.Budget != nil {
-		go g.Budget.Record(ctx, orgID, userID, task, result.Model, result.Provider, result.InputTokens, result.OutputTokens,
+		g.Budget.Record(ctx, orgID, userID, task, result.Model, result.Provider, result.InputTokens, result.OutputTokens,
 			WithCache(result.CachedInputTokens, result.CacheCreationTokens),
 			WithLatency(result.LatencyMs),
 			WithStopReason(result.StopReason),
