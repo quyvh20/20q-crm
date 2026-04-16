@@ -256,20 +256,26 @@ func estimateCost(model string, in, out, cachedRead, cacheCreation int) float64 
 	}
 }
 
-// GetTopUsages retrieves the most expensive queries for the org within the last 24h
-func (g *BudgetGuard) GetTopUsages(ctx context.Context, orgID uuid.UUID, limit int) ([]domain.AITokenUsage, error) {
-	var usages []domain.AITokenUsage
+// GetTopUsages returns the most expensive recent usages by default, or most recent if requested.
+func (g *BudgetGuard) GetTopUsages(ctx context.Context, orgID uuid.UUID, limit int, sortOption string) ([]domain.AITokenUsage, error) {
 	if g.db == nil {
-		return usages, nil
+		return nil, errors.New("database not enabled")
 	}
-	
-	err := g.db.WithContext(ctx).
-		Where("org_id = ? AND created_at > ?", orgID, time.Now().Add(-24*time.Hour)).
-		Order("cost_usd DESC").
-		Limit(limit).
-		Find(&usages).Error
-		
-	return usages, err
+
+	var usages []domain.AITokenUsage
+	query := g.db.WithContext(ctx).Where("org_id = ? AND created_at >= ?", orgID, time.Now().Add(-24*time.Hour)).Limit(limit)
+
+	if sortOption == "recent" {
+		query = query.Order("created_at DESC")
+	} else {
+		query = query.Order("cost_usd DESC")
+	}
+
+	if err := query.Find(&usages).Error; err != nil {
+		return nil, fmt.Errorf("failed to fetch top usages: %w", err)
+	}
+
+	return usages, nil
 }
 
 var _ = errors.New // silence unused import

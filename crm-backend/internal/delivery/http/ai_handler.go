@@ -70,8 +70,9 @@ func (h *AIHandler) GetTopUsage(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
 		return
 	}
+	sortOpt := c.DefaultQuery("sort", "cost")
 
-	usages, err := h.budget.GetTopUsages(c.Request.Context(), orgID, 10)
+	usages, err := h.budget.GetTopUsages(c.Request.Context(), orgID, 10, sortOpt)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, domain.Err(err.Error()))
 		return
