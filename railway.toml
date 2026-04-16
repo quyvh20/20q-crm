@@ -3,7 +3,7 @@ builder = "NIXPACKS"
 buildCommand = "cd crm-backend && go build -o bin/server cmd/server/main.go"
 
 [deploy]
-startCommand = "cd crm-backend && ./bin/server"
+startCommand = "cd crm-backend && bash scripts/run.sh"
 healthcheckPath = "/health"
 healthcheckTimeout = 100
 restartPolicyType = "ON_FAILURE"
