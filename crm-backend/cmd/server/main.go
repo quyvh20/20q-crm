@@ -17,6 +17,7 @@ import (
 	"crm-backend/pkg/config"
 	"crm-backend/pkg/database"
 	"crm-backend/pkg/logger"
+	"crm-backend/internal/domain"
 
 	"github.com/getsentry/sentry-go"
 	sentrygin "github.com/getsentry/sentry-go/gin"
@@ -64,6 +65,8 @@ func main() {
 	}
 	if db != nil {
 		log.Info("Database connection established")
+		// Force missing tables explicitly
+		db.AutoMigrate(&domain.KnowledgeBaseEntry{}, &domain.AITokenUsage{})
 	}
 
 	// 5. Init Redis
