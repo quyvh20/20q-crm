@@ -200,6 +200,7 @@ func (g *AIGateway) Complete(ctx context.Context, orgID, userID uuid.UUID, task 
 			WithCache(result.CachedInputTokens, result.CacheCreationTokens),
 			WithLatency(result.LatencyMs),
 			WithStopReason(result.StopReason),
+			WithPromptHash(hashMessages(messages)),
 		)
 	}
 
@@ -256,6 +257,7 @@ func (g *AIGateway) CompleteWithTools(ctx context.Context, orgID, userID uuid.UU
 			WithCache(result.CachedInputTokens, result.CacheCreationTokens),
 			WithLatency(result.LatencyMs),
 			WithStopReason(result.StopReason),
+			WithPromptHash(hashMessages(messages)),
 		)
 	}
 
@@ -998,24 +1000,6 @@ func (g *AIGateway) vercelAnthropicHeaders() map[string]string {
 	}
 }
 
-// logLLMCall emits a structured log line for every LLM call (item 2).
-func logLLMCall(task AITask, result AIResponse, promptHash string) {
-	cacheHit := result.CachedInputTokens > 0
-	slog.Info("llm_call",
-		"model", result.Model,
-		"provider", result.Provider,
-		"task", string(task),
-		"input_tokens", result.InputTokens,
-		"output_tokens", result.OutputTokens,
-		"cached_input_tokens", result.CachedInputTokens,
-		"cache_creation_tokens", result.CacheCreationTokens,
-		"cache_hit", cacheHit,
-		"latency_ms", result.LatencyMs,
-		"stop_reason", result.StopReason,
-		"prompt_hash", promptHash,
-	)
-}
-
 // hashMessages returns a SHA-256 hex digest of message contents for cache keying.
 func hashMessages(messages []Message) string {
 	h := sha256.New()
@@ -1053,7 +1037,6 @@ func (g *AIGateway) callVercelGateway(ctx context.Context, model string, message
 		return AIResponse{}, err
 	}
 
-	logLLMCall(TaskCommandCenter, result, hashMessages(messages))
 	return result, nil
 }
 
@@ -1092,7 +1075,6 @@ func (g *AIGateway) callVercelGatewayWithTools(ctx context.Context, model string
 		return AIResponse{}, err
 	}
 
-	logLLMCall(TaskCommandCenter, result, hashMessages(messages))
 	return result, nil
 }
 

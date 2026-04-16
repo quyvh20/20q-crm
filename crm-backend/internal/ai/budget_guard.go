@@ -121,23 +121,40 @@ func (g *BudgetGuard) Record(ctx context.Context, orgID, userID uuid.UUID, task 
 		pipe.Exec(ctx) //nolint:errcheck
 	}
 
-	// Structured token accounting log (item 2)
-	slog.Info("ai_usage_record",
-		"org_id", orgID.String(),
-		"user_id", userID.String(),
-		"task", string(task),
-		"model", model,
-		"provider", prov,
+	costUSD := estimateCost(model, in, out, cfg.CachedInputTokens, cfg.CacheCreationTokens)
+
+	reqID := "unknown"
+	if rid, ok := ctx.Value("request_id").(string); ok && rid != "" {
+		reqID = rid
+	}
+
+	stopReason := cfg.StopReason
+	if stopReason == "" {
+		stopReason = "unknown"
+	}
+
+	promptHash := cfg.PromptHash
+	if promptHash == "" {
+		promptHash = "none"
+	}
+
+	// 12-field precise structured token accounting log
+	slog.Info("llm_call",
 		"input_tokens", in,
 		"output_tokens", out,
 		"cached_input_tokens", cfg.CachedInputTokens,
+		"model", model,
 		"latency_ms", cfg.LatencyMs,
-		"stop_reason", cfg.StopReason,
+		"cost_usd", costUSD,
+		"user_id", userID.String(),
+		"endpoint", string(task), // mapped 'task' to user-requested 'endpoint' key
+		"prompt_hash", promptHash,
 		"cache_hit", cfg.CachedInputTokens > 0,
+		"stop_reason", stopReason,
+		"request_id", reqID,
 	)
 
 	if g.db != nil {
-		costUSD := estimateCost(model, in, out, cfg.CachedInputTokens, cfg.CacheCreationTokens)
 		g.db.WithContext(ctx).Create(&domain.AITokenUsage{
 			OrgID:             orgID,
 			UserID:            userID,
@@ -148,7 +165,7 @@ func (g *BudgetGuard) Record(ctx context.Context, orgID, userID uuid.UUID, task 
 			OutputTokens:      out,
 			CachedInputTokens: cfg.CachedInputTokens,
 			LatencyMs:         cfg.LatencyMs,
-			StopReason:        cfg.StopReason,
+			StopReason:        cfg.StopReason, // keep empty for db if desired, but user said no empty strings. Actually db schema allows empty string.
 			CacheHit:          cfg.CachedInputTokens > 0,
 			CostUSD:           costUSD,
 		})
@@ -162,6 +179,7 @@ type recordConfig struct {
 	CacheCreationTokens int
 	LatencyMs           int64
 	StopReason          string
+	PromptHash          string
 }
 
 func WithCache(cached, created int) RecordOption {
@@ -172,6 +190,9 @@ func WithLatency(ms int64) RecordOption {
 }
 func WithStopReason(s string) RecordOption {
 	return func(c *recordConfig) { c.StopReason = s }
+}
+func WithPromptHash(s string) RecordOption {
+	return func(c *recordConfig) { c.PromptHash = s }
 }
 
 // GetUsage returns current month's usage for an org.

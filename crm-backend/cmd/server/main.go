@@ -92,20 +92,29 @@ func main() {
 
 	// Custom Zap Logger Middleware
 	router.Use(func(c *gin.Context) {
-		start := time.Now()
-		path := c.Request.URL.Path
-		query := c.Request.URL.RawQuery
+		reqID := c.GetHeader("X-Request-ID")
+		if reqID == "" {
+			reqID = uuid.NewString()
+		}
+		c.Set("request_id", reqID)
+		c.Header("X-Request-ID", reqID)
+		
+		// Inject into standard context for lower layers
+		ctx := context.WithValue(c.Request.Context(), "request_id", reqID)
+		c.Request = c.Request.WithContext(ctx)
 
+		start := time.Now()
 		c.Next()
 
 		log.Info("HTTP Request",
 			zap.Int("status", c.Writer.Status()),
 			zap.String("method", c.Request.Method),
-			zap.String("path", path),
-			zap.String("query", query),
+			zap.String("path", c.Request.URL.Path),
+			zap.String("query", c.Request.URL.RawQuery),
 			zap.String("ip", c.ClientIP()),
 			zap.String("user-agent", c.Request.UserAgent()),
 			zap.Duration("latency", time.Since(start)),
+			zap.String("request_id", reqID),
 		)
 	})
 
