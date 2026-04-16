@@ -691,6 +691,7 @@ func isTimeoutErr(err error) bool {
 // writeSSEHeaders is called exactly once when the upstream connection is
 // established — before any bytes reach the client. flush drains the buffer.
 func (g *AIGateway) StreamChat(ctx context.Context, orgID, userID uuid.UUID, task AITask, messages []Message, w io.Writer, writeSSEHeaders func(), flush func()) error {
+	start := time.Now()
 	estimated := estimateTokens(messages)
 	if g.Budget != nil {
 		if err := g.Budget.Check(ctx, orgID, task, estimated); err != nil {
@@ -749,9 +750,28 @@ func (g *AIGateway) StreamChat(ctx context.Context, orgID, userID uuid.UUID, tas
 	// Relay each SSE line from the provider straight to the client.
 	// CF Workers AI sends: data: {"response":"token"}\n\n
 	// We re-emit: data: token\n\n   (extract just the text)
+	// Relaying loop
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 512*1024), 512*1024)
 	var totalOutput int
+
+	// Persist usage synchronously without client cancellation destroying the DB context
+	defer func() {
+		if g.Budget != nil {
+			telemetryCtx := context.WithoutCancel(ctx)
+			latencyMs := time.Since(start).Milliseconds()
+			stopReason := "end_turn"
+			if ctx.Err() != nil {
+				stopReason = "client_aborted"
+			}
+			
+			g.Budget.Record(telemetryCtx, orgID, userID, task, model, string(providerCFWorkers), estimated, totalOutput/4,
+				WithLatency(latencyMs),
+				WithStopReason(stopReason),
+			)
+		}
+	}()
+
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
@@ -763,12 +783,11 @@ func (g *AIGateway) StreamChat(ctx context.Context, orgID, userID uuid.UUID, tas
 			flush()
 			break
 		}
-		// CF streaming payload: {"response":"...","p":"..."}
+		
 		var chunk struct {
 			Response string `json:"response"`
 		}
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-			// Pass raw payload through if JSON doesn't match expected shape
 			fmt.Fprintf(w, "data: %s\n\n", payload)
 		} else {
 			fmt.Fprintf(w, "data: %s\n\n", chunk.Response)
@@ -776,14 +795,9 @@ func (g *AIGateway) StreamChat(ctx context.Context, orgID, userID uuid.UUID, tas
 		}
 		flush()
 	}
+	
 	if err := scanner.Err(); err != nil && err != io.EOF {
-		return fmt.Errorf("stream read error: %w", err)
-	}
-
-	// Record approximate usage asynchronously
-	if g.Budget != nil {
-		go g.Budget.Record(ctx, orgID, userID, task, model, string(providerCFWorkers),
-			estimated, totalOutput/4)
+		return fmt.Errorf("stream read error (aborted): %w", err)
 	}
 
 	return nil
