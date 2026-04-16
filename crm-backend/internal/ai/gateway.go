@@ -387,66 +387,7 @@ func (g *AIGateway) callCFWorkersWithTools(ctx context.Context, task AITask, mod
 func (g *AIGateway) callAnthropicWithTools(ctx context.Context, task AITask, model string, messages []Message, tools []Tool) (AIResponse, error) {
 	url := fmt.Sprintf("%s/anthropic/v1/messages", g.gatewayURL)
 
-	var system string
-	var chatMsgs []map[string]interface{}
-	for _, m := range messages {
-		if m.Role == "system" {
-			system = m.Content
-		} else if m.Role == "tool" {
-			// Tool result message
-			chatMsgs = append(chatMsgs, map[string]interface{}{
-				"role": "user",
-				"content": []map[string]interface{}{
-					{
-						"type":        "tool_result",
-						"tool_use_id": m.ToolUseID,
-						"content":     m.Content,
-					},
-				},
-			})
-		} else if m.Role == "assistant" && len(m.ToolCalls) > 0 {
-			// Assistant message with tool_use blocks
-			var contentBlocks []map[string]interface{}
-			if m.Content != "" {
-				contentBlocks = append(contentBlocks, map[string]interface{}{
-					"type": "text",
-					"text": m.Content,
-				})
-			}
-			for _, tc := range m.ToolCalls {
-				var input interface{}
-				json.Unmarshal(tc.Params, &input)
-				contentBlocks = append(contentBlocks, map[string]interface{}{
-					"type":  "tool_use",
-					"id":    tc.ID,
-					"name":  tc.Name,
-					"input": input,
-				})
-			}
-			chatMsgs = append(chatMsgs, map[string]interface{}{
-				"role":    "assistant",
-				"content": contentBlocks,
-			})
-		} else {
-			chatMsgs = append(chatMsgs, map[string]interface{}{
-				"role":    m.Role,
-				"content": m.Content,
-			})
-		}
-	}
-
-	// Build Anthropic tool definitions
-	anthropicTools := BuildToolsForAnthropic()
-
-	reqBody := map[string]interface{}{
-		"model":      model,
-		"max_tokens": maxTokensFor(task),
-		"messages":   chatMsgs,
-		"tools":      anthropicTools,
-	}
-	if system != "" {
-		reqBody["system"] = system
-	}
+	reqBody := BuildAnthropicRequestBody(model, maxTokensFor(task), messages, tools)
 
 	resp, err := g.doRequest(ctx, url, "POST", map[string]string{
 		"x-api-key":         g.anthropicKey,
@@ -645,24 +586,7 @@ func (g *AIGateway) callCFWorkers(ctx context.Context, task AITask, model string
 func (g *AIGateway) callAnthropic(ctx context.Context, task AITask, model string, messages []Message) (AIResponse, error) {
 	url := fmt.Sprintf("%s/anthropic/v1/messages", g.gatewayURL)
 
-	var system string
-	var chatMsgs []map[string]string
-	for _, m := range messages {
-		if m.Role == "system" {
-			system = m.Content
-		} else {
-			chatMsgs = append(chatMsgs, map[string]string{"role": m.Role, "content": m.Content})
-		}
-	}
-
-	reqBody := map[string]interface{}{
-		"model":      model,
-		"max_tokens": maxTokensFor(task),
-		"messages":   chatMsgs,
-	}
-	if system != "" {
-		reqBody["system"] = system
-	}
+	reqBody := BuildAnthropicRequestBody(model, maxTokensFor(task), messages, nil)
 
 	resp, err := g.doRequest(ctx, url, "POST", map[string]string{
 		"x-api-key":         g.anthropicKey,
@@ -927,14 +851,17 @@ func parseAnthropicResponse(raw []byte, model string, latencyMs int64) (AIRespon
 
 // buildAnthropicMessages converts our internal Message format to Anthropic
 // Messages API format, extracting system prompt separately.
-func buildAnthropicMessages(messages []Message) ([]map[string]interface{}, []map[string]interface{}) {
+// BuildAnthropicRequestBody standardizes the construction of the JSON payload for Anthropic's Messages API.
+// CRITICAL: It explicitly injects Anthropic Prompt Caching markers `cache_control: {"type": "ephemeral"}`
+// onto the system prompt block and the final tool definition to enforce massive cost reductions.
+func BuildAnthropicRequestBody(model string, maxTokens int, messages []Message, tools []Tool) map[string]interface{} {
 	var system []map[string]interface{}
 	var chatMsgs []map[string]interface{}
 
 	for _, m := range messages {
 		switch m.Role {
 		case "system":
-			// System prompt with prompt caching — mark last block cacheable
+			// 1. Prompt Caching: Inject cache_control on the System Prompt
 			system = append(system, map[string]interface{}{
 				"type":          "text",
 				"text":          m.Content,
@@ -987,7 +914,27 @@ func buildAnthropicMessages(messages []Message) ([]map[string]interface{}, []map
 			})
 		}
 	}
-	return system, chatMsgs
+
+	reqBody := map[string]interface{}{
+		"model":      model,
+		"max_tokens": maxTokens,
+		"messages":   chatMsgs,
+	}
+
+	if len(system) > 0 {
+		reqBody["system"] = system
+	}
+
+	if len(tools) > 0 {
+		anthropicTools := BuildToolsForAnthropic()
+		// 2. Prompt Caching: Inject cache_control on the final Tool definition block
+		if len(anthropicTools) > 0 {
+			anthropicTools[len(anthropicTools)-1]["cache_control"] = map[string]string{"type": "ephemeral"}
+		}
+		reqBody["tools"] = anthropicTools
+	}
+
+	return reqBody
 }
 
 // vercelAnthropicHeaders returns auth headers for Vercel Gateway Anthropic endpoint.
@@ -1016,16 +963,7 @@ func (g *AIGateway) callVercelGateway(ctx context.Context, task AITask, model st
 	start := time.Now()
 	url := fmt.Sprintf("%s/messages", g.vercelGatewayURL)
 
-	system, chatMsgs := buildAnthropicMessages(messages)
-
-	reqBody := map[string]interface{}{
-		"model":      model,
-		"max_tokens": maxTokensFor(task),
-		"messages":   chatMsgs,
-	}
-	if len(system) > 0 {
-		reqBody["system"] = system
-	}
+	reqBody := BuildAnthropicRequestBody(model, maxTokensFor(task), messages, nil)
 
 	resp, err := g.doRequest(ctx, url, "POST", g.vercelAnthropicHeaders(), reqBody)
 	if err != nil {
@@ -1046,24 +984,7 @@ func (g *AIGateway) callVercelGatewayWithTools(ctx context.Context, task AITask,
 	start := time.Now()
 	url := fmt.Sprintf("%s/messages", g.vercelGatewayURL)
 
-	system, chatMsgs := buildAnthropicMessages(messages)
-
-	// Build Anthropic tool definitions with cache_control on last tool
-	anthropicTools := BuildToolsForAnthropic()
-	if len(anthropicTools) > 0 {
-		// Mark last tool definition as cacheable (stable across requests)
-		anthropicTools[len(anthropicTools)-1]["cache_control"] = map[string]string{"type": "ephemeral"}
-	}
-
-	reqBody := map[string]interface{}{
-		"model":      model,
-		"max_tokens": maxTokensFor(task),
-		"messages":   chatMsgs,
-		"tools":      anthropicTools,
-	}
-	if len(system) > 0 {
-		reqBody["system"] = system
-	}
+	reqBody := BuildAnthropicRequestBody(model, maxTokensFor(task), messages, tools)
 
 	resp, err := g.doRequest(ctx, url, "POST", g.vercelAnthropicHeaders(), reqBody)
 	if err != nil {
