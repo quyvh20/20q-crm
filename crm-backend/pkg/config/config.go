@@ -33,6 +33,10 @@ type Config struct {
 	// AI (Anthropic - Claude fallback)
 	AnthropicAPIKey string `mapstructure:"ANTHROPIC_API_KEY"`
 
+	// AI (Vercel AI Gateway - Haiku primary for Command Center)
+	VercelAIGatewayURL string `mapstructure:"VERCEL_AI_GATEWAY_URL"`
+	VercelAIGatewayKey string `mapstructure:"VERCEL_AI_GATEWAY_KEY"`
+
 	// Payments
 	PaddleWebhookSecret string `mapstructure:"PADDLE_WEBHOOK_SECRET"`
 
@@ -58,6 +62,8 @@ func LoadConfig() (*Config, error) {
 	viper.BindEnv("CF_AI_GATEWAY_ID")
 	viper.BindEnv("CF_AI_GATEWAY_TOKEN")
 	viper.BindEnv("ANTHROPIC_API_KEY")
+	viper.BindEnv("VERCEL_AI_GATEWAY_URL")
+	viper.BindEnv("VERCEL_AI_GATEWAY_KEY")
 
 	// Default values
 	viper.SetDefault("PORT", "8080")

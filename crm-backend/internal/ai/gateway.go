@@ -54,8 +54,9 @@ func IsAdvancedTask(t AITask) bool { return advancedTasks[t] }
 type provider string
 
 const (
-	providerCFWorkers provider = "cloudflare"
-	providerAnthropic provider = "anthropic"
+	providerCFWorkers     provider = "cloudflare"
+	providerAnthropic     provider = "anthropic"
+	providerVercelGateway provider = "vercel_gateway"
 )
 
 // Task → primary provider mapping
@@ -67,7 +68,7 @@ var taskPrimaryProvider = map[AITask]provider{
 	TaskAnalytics:      providerAnthropic,
 	TaskSentiment:      providerCFWorkers,
 	TaskFollowup:       providerAnthropic,
-	TaskCommandCenter:  providerCFWorkers, // CF primary, Anthropic fallback
+	TaskCommandCenter:  providerVercelGateway, // Haiku via Vercel, CF fallback
 }
 
 // Task → model mapping per provider
@@ -79,8 +80,8 @@ var taskModels = map[AITask]map[provider]string{
 	TaskAnalytics:      {providerAnthropic: "claude-3-5-haiku-20241022", providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct"},
 	TaskSentiment:      {providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct", providerAnthropic: "claude-3-5-haiku-20241022"},
 	TaskFollowup:       {providerAnthropic: "claude-3-5-haiku-20241022", providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct"},
-	// CommandCenter: use the large 70B model for reliable tool calling
-	TaskCommandCenter:  {providerCFWorkers: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", providerAnthropic: "claude-3-5-haiku-20241022"},
+	// CommandCenter: Haiku via Vercel AI Gateway (cheapest + best tool calling)
+	TaskCommandCenter:  {providerVercelGateway: "anthropic/claude-3-haiku", providerCFWorkers: "@cf/meta/llama-3.3-70b-instruct-fp8-fast"},
 }
 
 // ============================================================
@@ -108,13 +109,15 @@ type AIResponse struct {
 // ============================================================
 
 type AIGateway struct {
-	gatewayURL     string
-	cfToken        string
-	cfGatewayToken string
-	anthropicKey   string
-	httpClient     *http.Client
-	Budget         *BudgetGuard
-	logger         *zap.Logger
+	gatewayURL        string
+	cfToken           string
+	cfGatewayToken    string
+	anthropicKey      string
+	vercelGatewayURL  string // https://ai-gateway.vercel.sh/v1
+	vercelGatewayKey  string // vck_... API key
+	httpClient        *http.Client
+	Budget            *BudgetGuard
+	logger            *zap.Logger
 }
 
 func NewAIGateway(cfAccountID, cfAIGatewayID, cfToken, anthropicKey string, budget *BudgetGuard, logger *zap.Logger, cfGatewayToken ...string) *AIGateway {
@@ -131,6 +134,12 @@ func NewAIGateway(cfAccountID, cfAIGatewayID, cfToken, anthropicKey string, budg
 		Budget:         budget,
 		logger:         logger,
 	}
+}
+
+// SetVercelGateway configures the Vercel AI Gateway provider.
+func (g *AIGateway) SetVercelGateway(url, key string) {
+	g.vercelGatewayURL = url
+	g.vercelGatewayKey = key
 }
 
 // Complete runs a full inference call with budget check + fallback.
@@ -182,17 +191,24 @@ func (g *AIGateway) CompleteWithTools(ctx context.Context, orgID, userID uuid.UU
 	var result AIResponse
 	var err error
 
-	if primaryP == providerCFWorkers {
+	switch primaryP {
+	case providerVercelGateway:
+		result, err = g.callVercelGatewayWithTools(ctx, g.modelFor(task, providerVercelGateway), messages, tools)
+		if err != nil {
+			g.logger.Warn("Vercel Gateway tool call failed, falling back to CF Workers",
+				zap.String("task", string(task)),
+				zap.Error(err))
+			result, err = g.callCFWorkersWithTools(ctx, g.modelFor(task, providerCFWorkers), messages, tools)
+		}
+	case providerCFWorkers:
 		result, err = g.callCFWorkersWithTools(ctx, g.modelFor(task, providerCFWorkers), messages, tools)
 		if err != nil {
 			g.logger.Warn("CF Workers tool call failed, falling back to Anthropic",
 				zap.String("task", string(task)),
 				zap.Error(err))
-			// Fallback to Anthropic
 			result, err = g.callAnthropicWithTools(ctx, g.modelFor(task, providerAnthropic), messages, tools)
 		}
-	} else {
-		// Primary is Anthropic; try Anthropic first, then CF as fallback
+	default:
 		result, err = g.callAnthropicWithTools(ctx, g.modelFor(task, providerAnthropic), messages, tools)
 		if err != nil {
 			g.logger.Warn("Anthropic tool call failed, falling back to CF Workers",
@@ -451,6 +467,10 @@ func (g *AIGateway) callAnthropicWithTools(ctx context.Context, model string, me
 
 func (g *AIGateway) routePrimary(task AITask) provider {
 	if p, ok := taskPrimaryProvider[task]; ok {
+		// If Vercel Gateway is configured, use it; otherwise fall back to CF
+		if p == providerVercelGateway && (g.vercelGatewayURL == "" || g.vercelGatewayKey == "") {
+			return providerCFWorkers
+		}
 		return p
 	}
 	return providerCFWorkers
@@ -470,6 +490,8 @@ func (g *AIGateway) routeFallback(task AITask, used provider) provider {
 func (g *AIGateway) callProvider(ctx context.Context, task AITask, p provider, messages []Message) (AIResponse, error) {
 	model := g.modelFor(task, p)
 	switch p {
+	case providerVercelGateway:
+		return g.callVercelGateway(ctx, model, messages)
 	case providerAnthropic:
 		return g.callAnthropic(ctx, model, messages)
 	case providerCFWorkers:
@@ -485,10 +507,14 @@ func (g *AIGateway) modelFor(task AITask, p provider) string {
 			return m
 		}
 	}
-	if p == providerAnthropic {
+	switch p {
+	case providerVercelGateway:
+		return "anthropic/claude-3-haiku"
+	case providerAnthropic:
 		return "claude-3-5-haiku-20241022"
+	default:
+		return "@cf/meta/llama-3.1-8b-instruct"
 	}
-	return "@cf/meta/llama-3.1-8b-instruct"
 }
 
 // callCFWorkers — CF AI Gateway → Cloudflare Workers AI
@@ -803,6 +829,224 @@ func (g *AIGateway) StreamChat(ctx context.Context, orgID, userID uuid.UUID, tas
 	}
 
 	return nil
+}
+
+// ============================================================
+// Vercel AI Gateway — OpenAI-compatible endpoint
+// ============================================================
+
+// callVercelGateway sends a simple completion (no tools) via the Vercel AI
+// Gateway OpenAI-compatible chat/completions endpoint.
+func (g *AIGateway) callVercelGateway(ctx context.Context, model string, messages []Message) (AIResponse, error) {
+	url := fmt.Sprintf("%s/chat/completions", g.vercelGatewayURL)
+
+	// Build messages with full structure (handles tool result messages)
+	var chatMsgs []map[string]interface{}
+	for _, m := range messages {
+		switch m.Role {
+		case "system", "user":
+			chatMsgs = append(chatMsgs, map[string]interface{}{
+				"role":    m.Role,
+				"content": m.Content,
+			})
+		case "assistant":
+			if len(m.ToolCalls) > 0 {
+				oaiToolCalls := make([]map[string]interface{}, len(m.ToolCalls))
+				for i, tc := range m.ToolCalls {
+					oaiToolCalls[i] = map[string]interface{}{
+						"id":   tc.ID,
+						"type": "function",
+						"function": map[string]interface{}{
+							"name":      tc.Name,
+							"arguments": string(tc.Params),
+						},
+					}
+				}
+				msg := map[string]interface{}{
+					"role":       "assistant",
+					"tool_calls": oaiToolCalls,
+				}
+				if m.Content != "" {
+					msg["content"] = m.Content
+				}
+				chatMsgs = append(chatMsgs, msg)
+			} else {
+				chatMsgs = append(chatMsgs, map[string]interface{}{
+					"role":    "assistant",
+					"content": m.Content,
+				})
+			}
+		case "tool":
+			chatMsgs = append(chatMsgs, map[string]interface{}{
+				"role":         "tool",
+				"tool_call_id": m.ToolUseID,
+				"content":      m.Content,
+			})
+		}
+	}
+
+	reqBody := map[string]interface{}{
+		"model":      model,
+		"messages":   chatMsgs,
+		"max_tokens": 2048, // economical limit for summaries
+	}
+
+	resp, err := g.doRequest(ctx, url, "POST", map[string]string{
+		"Authorization": "Bearer " + g.vercelGatewayKey,
+		"Content-Type":  "application/json",
+	}, reqBody)
+	if err != nil {
+		return AIResponse{}, fmt.Errorf("vercel gateway: %w", err)
+	}
+
+	var oaiResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(resp, &oaiResp); err != nil {
+		return AIResponse{}, fmt.Errorf("vercel gateway unmarshal: %w (body: %s)", err, string(resp))
+	}
+
+	text := ""
+	if len(oaiResp.Choices) > 0 {
+		text = oaiResp.Choices[0].Message.Content
+	}
+
+	return AIResponse{
+		Content:      text,
+		Model:        model,
+		Provider:     string(providerVercelGateway),
+		InputTokens:  oaiResp.Usage.PromptTokens,
+		OutputTokens: oaiResp.Usage.CompletionTokens,
+	}, nil
+}
+
+// callVercelGatewayWithTools sends a tool-calling request using OpenAI
+// function-calling format to the Vercel AI Gateway.
+func (g *AIGateway) callVercelGatewayWithTools(ctx context.Context, model string, messages []Message, tools []Tool) (AIResponse, error) {
+	url := fmt.Sprintf("%s/chat/completions", g.vercelGatewayURL)
+
+	var chatMsgs []map[string]interface{}
+	for _, m := range messages {
+		switch m.Role {
+		case "system", "user":
+			chatMsgs = append(chatMsgs, map[string]interface{}{
+				"role":    m.Role,
+				"content": m.Content,
+			})
+		case "assistant":
+			if len(m.ToolCalls) > 0 {
+				oaiToolCalls := make([]map[string]interface{}, len(m.ToolCalls))
+				for i, tc := range m.ToolCalls {
+					oaiToolCalls[i] = map[string]interface{}{
+						"id":   tc.ID,
+						"type": "function",
+						"function": map[string]interface{}{
+							"name":      tc.Name,
+							"arguments": string(tc.Params),
+						},
+					}
+				}
+				msg := map[string]interface{}{
+					"role":       "assistant",
+					"tool_calls": oaiToolCalls,
+				}
+				if m.Content != "" {
+					msg["content"] = m.Content
+				}
+				chatMsgs = append(chatMsgs, msg)
+			} else {
+				chatMsgs = append(chatMsgs, map[string]interface{}{
+					"role":    "assistant",
+					"content": m.Content,
+				})
+			}
+		case "tool":
+			chatMsgs = append(chatMsgs, map[string]interface{}{
+				"role":         "tool",
+				"tool_call_id": m.ToolUseID,
+				"content":      m.Content,
+			})
+		}
+	}
+
+	// Build OpenAI-format tool definitions
+	oaiTools := BuildToolsForCFWorkers() // same format — OpenAI function calling
+
+	reqBody := map[string]interface{}{
+		"model":      model,
+		"messages":   chatMsgs,
+		"tools":      oaiTools,
+		"max_tokens": 1024, // economical: tool-calling round only needs the calls
+	}
+
+	resp, err := g.doRequest(ctx, url, "POST", map[string]string{
+		"Authorization": "Bearer " + g.vercelGatewayKey,
+		"Content-Type":  "application/json",
+	}, reqBody)
+	if err != nil {
+		return AIResponse{}, fmt.Errorf("vercel gateway tool call: %w", err)
+	}
+
+	// Parse standard OpenAI-format response
+	var oaiResp struct {
+		Choices []struct {
+			Message struct {
+				Content   *string `json:"content"`
+				ToolCalls []struct {
+					ID       string `json:"id"`
+					Type     string `json:"type"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"message"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(resp, &oaiResp); err != nil {
+		return AIResponse{}, fmt.Errorf("vercel gateway tool unmarshal: %w (body: %s)", err, string(resp))
+	}
+
+	result := AIResponse{
+		Model:        model,
+		Provider:     string(providerVercelGateway),
+		InputTokens:  oaiResp.Usage.PromptTokens,
+		OutputTokens: oaiResp.Usage.CompletionTokens,
+	}
+
+	if len(oaiResp.Choices) > 0 {
+		choice := oaiResp.Choices[0]
+		if choice.Message.Content != nil {
+			result.Content = *choice.Message.Content
+		}
+		for _, tc := range choice.Message.ToolCalls {
+			params := json.RawMessage(tc.Function.Arguments)
+			if !json.Valid(params) || len(params) == 0 {
+				params = json.RawMessage("{}")
+			}
+			result.ToolCalls = append(result.ToolCalls, ToolCall{
+				ID:     tc.ID,
+				Name:   tc.Function.Name,
+				Params: params,
+			})
+		}
+	}
+
+	return result, nil
 }
 
 // ============================================================
