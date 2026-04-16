@@ -58,14 +58,14 @@ async function run() {
   await new Promise(r => setTimeout(r, 2000));
 
   console.log("\n4. Fetching Top 10 Usages...");
-  const usages = await request('/api/ai/usage/top', null, token, 'GET');
+  const usages = await request('/api/ai/usage/top?sort=recent', null, token, 'GET');
   if (usages.status !== 200) {
     console.error("   ❌ Failed to fetch:", usages.raw);
     return;
   }
 
   const ds = usages.body?.data || [];
-  console.log(`\n=== TOP ${ds.length} MOST EXPENSIVE REQUESTS (Last 24h) ===`);
+  console.log(`\n=== TOP ${ds.length} MOST RECENT REQUESTS (Last 24h) ===`);
   console.table(ds.map(d => ({
     endpoint: d.feature,
     input_tokens: d.input_tokens,

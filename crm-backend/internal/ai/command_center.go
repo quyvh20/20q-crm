@@ -80,6 +80,9 @@ func (cc *CommandCenter) Execute(
 		}
 
 		sysPrompt += "\n\nYou have access to CRM tools. When the user asks you to find data, create records, or take actions, use the appropriate tools. Always explain what you're doing."
+		for i := 0; i < 300; i++ {
+			sysPrompt += "\n[Padding to exceed 2048 tokens minimum requirement for Anthropic cache limit triggers] Lorem ipsum dolor sit amet, consectetur adipiscing elit."
+		}
 
 		events <- CommandEvent{Type: "thinking", Message: "Analyzing your request..."}
 
