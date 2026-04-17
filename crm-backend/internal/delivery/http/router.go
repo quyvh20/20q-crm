@@ -6,11 +6,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// RegisterRoutes wires all API routes to the Gin engine.
-func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, cfg *config.Config) {
+func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, cfg *config.Config) {
 	api := router.Group("/api")
 
-	// ── Auth (public) ──────────────────────────────────
 	auth := api.Group("/auth")
 	{
 		auth.POST("/register", authHandler.Register)
@@ -18,19 +16,25 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 		auth.POST("/refresh", authHandler.Refresh)
 		auth.POST("/logout", authHandler.Logout)
 
-		// Google OAuth
 		auth.GET("/google", authHandler.GoogleLogin)
 		auth.GET("/google/callback", authHandler.GoogleCallback)
 
-		// Protected
 		auth.GET("/me", AuthMiddleware(cfg.JWTSecret), authHandler.Me)
+		auth.POST("/switch-workspace", AuthMiddleware(cfg.JWTSecret), authHandler.SwitchWorkspace)
 	}
 
-	// ── Protected API routes ───────────────────────────
 	protected := api.Group("/")
 	protected.Use(AuthMiddleware(cfg.JWTSecret))
 	{
-		// Contacts
+		workspaces := protected.Group("/workspaces")
+		{
+			workspaces.GET("", authHandler.ListWorkspaces)
+			workspaces.GET("/members", workspaceHandler.ListMembers)
+			workspaces.POST("/invites", RequireRole("admin", "manager"), workspaceHandler.InviteMember)
+			workspaces.PATCH("/members/:user_id", RequireRole("admin"), workspaceHandler.UpdateMemberRole)
+			workspaces.DELETE("/members/:user_id", RequireRole("admin"), workspaceHandler.RemoveMember)
+		}
+
 		contacts := protected.Group("/contacts")
 		{
 			contacts.GET("", contactHandler.List)
@@ -42,7 +46,6 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			contacts.POST("/bulk-action", RequireRole("admin", "manager", "sales"), contactHandler.BulkAction)
 		}
 
-		// Companies
 		companies := protected.Group("/companies")
 		{
 			companies.GET("", companyHandler.List)
@@ -52,7 +55,6 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			companies.DELETE("/:id", RequireRole("admin", "manager"), companyHandler.Delete)
 		}
 
-		// Tags
 		tags := protected.Group("/tags")
 		{
 			tags.GET("", tagHandler.List)
@@ -62,7 +64,6 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			tags.DELETE("/:id", RequireRole("admin", "manager"), tagHandler.Delete)
 		}
 
-		// Deals
 		deals := protected.Group("/deals")
 		{
 			deals.GET("", dealHandler.List)
@@ -73,7 +74,6 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			deals.PATCH("/:id/stage", RequireRole("admin", "manager", "sales"), dealHandler.ChangeStage)
 		}
 
-		// Pipeline
 		pipeline := protected.Group("/pipeline")
 		{
 			pipeline.GET("/stages", pipelineHandler.ListStages)
@@ -82,14 +82,12 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			pipeline.GET("/forecast", dealHandler.Forecast)
 		}
 
-		// Activities
 		activities := protected.Group("/activities")
 		{
 			activities.GET("", activityHandler.List)
 			activities.POST("", RequireRole("admin", "manager", "sales"), activityHandler.Create)
 		}
 
-		// Tasks
 		tasks := protected.Group("/tasks")
 		{
 			tasks.GET("", taskHandler.List)
@@ -98,10 +96,8 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			tasks.DELETE("/:id", RequireRole("admin", "manager"), taskHandler.Delete)
 		}
 
-		// Users (for assignee dropdowns)
 		protected.GET("/users", userHandler.List)
 
-		// AI
 		aiRoutes := protected.Group("/ai")
 		{
 			aiRoutes.GET("/usage", aiHandler.GetUsage)
@@ -110,9 +106,15 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			aiRoutes.POST("/chat", aiHandler.Chat)
 			aiRoutes.POST("/embed", aiHandler.Embed)
 			aiRoutes.POST("/command", commandHandler.Command)
+
+			aiRoutes.GET("/jobs/:id", aiHandler.GetJobStatus)
+			aiRoutes.POST("/email/compose", aiHandler.ComposeEmail)
+			aiRoutes.POST("/meeting/summarize", aiHandler.SummarizeMeeting)
 		}
 
-		// Settings (Custom Fields)
+		deals.GET("/:id/score", aiHandler.ScoreDeal)
+		protected.GET("/events", eventsHandler.Stream)
+
 		settings := protected.Group("/settings")
 		{
 			settings.GET("/fields", settingsHandler.ListFieldDefs)
@@ -121,7 +123,6 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			settings.DELETE("/fields/:key", RequireRole("admin"), settingsHandler.DeleteFieldDef)
 		}
 
-		// Custom Objects
 		objects := protected.Group("/objects")
 		{
 			objects.GET("", customObjectHandler.ListDefs)
@@ -137,7 +138,6 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			objects.DELETE("/:slug/records/:id", RequireRole("admin", "manager"), customObjectHandler.DeleteRecord)
 		}
 
-		// Knowledge Base
 		kb := protected.Group("/knowledge-base")
 		{
 			kb.GET("", knowledgeHandler.ListSections)

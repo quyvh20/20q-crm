@@ -2,15 +2,18 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"crm-backend/internal/ai"
 	"crm-backend/internal/domain"
 
+	"crm-backend/internal/worker"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -22,10 +25,11 @@ type AIHandler struct {
 	embedSvc  *ai.EmbeddingService
 	contactUC domain.ContactUseCase
 	kbBuilder *ai.KnowledgeBuilder
+	queue     *worker.AIJobQueue
 }
 
-func NewAIHandler(gateway *ai.AIGateway, budget *ai.BudgetGuard, embedSvc *ai.EmbeddingService, kbBuilder *ai.KnowledgeBuilder, contactUC ...domain.ContactUseCase) *AIHandler {
-	h := &AIHandler{gateway: gateway, budget: budget, embedSvc: embedSvc, kbBuilder: kbBuilder}
+func NewAIHandler(gateway *ai.AIGateway, budget *ai.BudgetGuard, embedSvc *ai.EmbeddingService, kbBuilder *ai.KnowledgeBuilder, queue *worker.AIJobQueue, contactUC ...domain.ContactUseCase) *AIHandler {
+	h := &AIHandler{gateway: gateway, budget: budget, embedSvc: embedSvc, kbBuilder: kbBuilder, queue: queue}
 	if len(contactUC) > 0 {
 		h.contactUC = contactUC[0]
 	}
@@ -238,14 +242,8 @@ type embedRequest struct {
 	Text string `json:"text" binding:"required"`
 }
 
-type embedResponse struct {
-	Vector     []float32 `json:"vector"`
-	Dimensions int       `json:"dimensions"`
-	Model      string    `json:"model"`
-}
-
 func (h *AIHandler) Embed(c *gin.Context) {
-	_, ok := GetOrgID(c)
+	orgID, ok := GetOrgID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
 		return
@@ -257,29 +255,20 @@ func (h *AIHandler) Embed(c *gin.Context) {
 		return
 	}
 
-	if h.embedSvc == nil {
-		c.JSON(http.StatusServiceUnavailable, domain.Err("embedding service not configured"))
-		return
+	text := req.Text
+	if len(text) > 20000 {
+		text = text[:20000]
 	}
 
-	vec, err := h.embedSvc.EmbedText(c.Request.Context(), req.Text)
+	vec, err := h.embedSvc.EmbedText(c.Request.Context(), text)
 	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, domain.Err("embedding failed: "+err.Error()))
+		c.JSON(http.StatusInternalServerError, domain.Err(err.Error()))
 		return
 	}
 
-	if len(vec) != 768 {
-		c.JSON(http.StatusInternalServerError, domain.Err(
-			fmt.Sprintf("unexpected embedding dimensions: got %d, want 768", len(vec)),
-		))
-		return
-	}
+	_ = orgID
 
-	c.JSON(http.StatusOK, domain.Success(embedResponse{
-		Vector:     vec,
-		Dimensions: len(vec),
-		Model:      "@cf/google/embeddinggemma-300m",
-	}))
+	c.JSON(http.StatusOK, domain.Success(vec))
 }
 
 // ============================================================
@@ -351,4 +340,182 @@ func (h *AIHandler) buildSystemPrompt(ctx context.Context, contextID *string, or
 	b.WriteString("Use the above contact data when answering questions. Reference the contact by their full name.")
 
 	return b.String()
+}
+
+// ============================================================
+// Async / Job Queue Endpoints
+// ============================================================
+
+func (h *AIHandler) GetJobStatus(c *gin.Context) {
+	_, ok := GetOrgID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+
+	jobID := c.Param("id")
+	if jobID == "" {
+		c.JSON(http.StatusBadRequest, domain.Err("missing job id"))
+		return
+	}
+
+	job, err := h.queue.GetStatus(c.Request.Context(), jobID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, domain.Err("job not found"))
+		return
+	}
+
+	c.JSON(http.StatusOK, domain.Success(job))
+}
+
+func (h *AIHandler) ScoreDeal(c *gin.Context) {
+	orgID, ok := GetOrgID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+
+	userID, _ := GetUserID(c)
+	dealIDStr := c.Param("id")
+	dealID, err := uuid.Parse(dealIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, domain.Err("invalid deal id"))
+		return
+	}
+
+	// Instantly bypass worker if cached
+	cacheKey := fmt.Sprintf("deal_score:%s", dealID.String())
+	if cachedData, err := h.queue.GetRedis().Get(c.Request.Context(), cacheKey).Result(); err == nil && cachedData != "" {
+		var result map[string]interface{}
+		if json.Unmarshal([]byte(cachedData), &result) == nil {
+			c.JSON(http.StatusOK, domain.Success(map[string]interface{}{
+				"status": "completed",
+				"result": result,
+			}))
+			return
+		}
+	}
+
+	// Enqueue job map
+	payloadBytes, _ := json.Marshal(map[string]interface{}{"deal_id": dealID})
+	job := &worker.AIJob{
+		JobID:    uuid.New(),
+		OrgID:    orgID,
+		UserID:   userID,
+		TaskType: string(ai.TaskDealScore),
+		Payload:  payloadBytes,
+	}
+
+	if err := h.queue.Enqueue(c.Request.Context(), job); err != nil {
+		c.JSON(http.StatusInternalServerError, domain.Err("failed to enqueue job: "+err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusAccepted, domain.Success(map[string]string{
+		"status": "processing",
+		"job_id": job.JobID.String(),
+	}))
+}
+
+type summarizeRequest struct {
+	Transcript string      `json:"transcript" binding:"required"`
+	DealID     *uuid.UUID  `json:"deal_id,omitempty"`
+	ContactID  *uuid.UUID  `json:"contact_id,omitempty"`
+}
+
+func (h *AIHandler) SummarizeMeeting(c *gin.Context) {
+	orgID, ok := GetOrgID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	userID, _ := GetUserID(c)
+
+	var req summarizeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, domain.Err(err.Error()))
+		return
+	}
+
+	payloadBytes, _ := json.Marshal(req)
+	job := &worker.AIJob{
+		JobID:    uuid.New(),
+		OrgID:    orgID,
+		UserID:   userID,
+		TaskType: string(ai.TaskMeetingSummary),
+		Payload:  payloadBytes,
+	}
+
+	if err := h.queue.Enqueue(c.Request.Context(), job); err != nil {
+		c.JSON(http.StatusInternalServerError, domain.Err("failed to enqueue job: "+err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusAccepted, domain.Success(map[string]string{
+		"status": "processing",
+		"job_id": job.JobID.String(),
+	}))
+}
+
+// ============================================================
+// Sync Endpoints
+// ============================================================
+
+type emailComposeRequest struct {
+	Instruction string     `json:"instruction" binding:"required"`
+	Tone        string     `json:"tone" binding:"required"`
+	ContactID   *uuid.UUID `json:"contact_id,omitempty"`
+	DealID      *uuid.UUID `json:"deal_id,omitempty"`
+}
+
+func (h *AIHandler) ComposeEmail(c *gin.Context) {
+	orgID, ok := GetOrgID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	userID, _ := GetUserID(c)
+
+	var req emailComposeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, domain.Err(err.Error()))
+		return
+	}
+
+	prompt := fmt.Sprintf(`Write an email. Tone: %s. Instruction: %s
+Ensure the email has absolutely no markdown wrapping blocks (like '''email). Just output the raw text of the email cleanly.`, req.Tone, req.Instruction)
+
+	msgs := []ai.Message{{Role: "user", Content: prompt}}
+
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	if f, ok := c.Writer.(http.Flusher); ok {
+		f.Flush()
+	}
+
+	// Pseudo streaming: We just do synchronous fetch, then stream back chunks.
+	resp, err := h.gateway.Complete(c.Request.Context(), orgID, userID, ai.TaskEmailCompose, msgs)
+	if err != nil {
+		c.Writer.Write([]byte(fmt.Sprintf("event: error\ndata: {\"code\": \"error\", \"message\": \"%s\"}\n\n", err.Error())))
+		return
+	}
+
+	// Stream chunks pseudo-live to user
+	chunkSize := 15
+	for i := 0; i < len(resp.Content); i += chunkSize {
+		end := i + chunkSize
+		if end > len(resp.Content) {
+			end = len(resp.Content)
+		}
+
+		encodedChunk, _ := json.Marshal(resp.Content[i:end])
+		fmt.Fprintf(c.Writer, "data: %s\n\n", encodedChunk)
+		if f, ok := c.Writer.(http.Flusher); ok {
+			f.Flush()
+		}
+		time.Sleep(20 * time.Millisecond) // Give browser time to paint
+	}
+
+	fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
 }

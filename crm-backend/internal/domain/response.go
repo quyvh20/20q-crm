@@ -2,14 +2,12 @@ package domain
 
 import "net/http"
 
-// APIResponse is the standard JSON envelope for all API responses.
 type APIResponse struct {
 	Data  interface{} `json:"data"`
 	Error *string     `json:"error"`
 	Meta  interface{} `json:"meta,omitempty"`
 }
 
-// PaginationMeta holds pagination info for list endpoints.
 type PaginationMeta struct {
 	Page       int   `json:"page"`
 	PerPage    int   `json:"per_page"`
@@ -17,24 +15,17 @@ type PaginationMeta struct {
 	TotalPages int   `json:"total_pages"`
 }
 
-// Success returns a standard success response.
 func Success(data interface{}) APIResponse {
 	return APIResponse{Data: data, Error: nil}
 }
 
-// SuccessWithMeta returns a standard success response with metadata.
 func SuccessWithMeta(data interface{}, meta interface{}) APIResponse {
 	return APIResponse{Data: data, Error: nil, Meta: meta}
 }
 
-// Err returns a standard error response.
 func Err(message string) APIResponse {
 	return APIResponse{Data: nil, Error: &message}
 }
-
-// ============================================================
-// Application Errors
-// ============================================================
 
 type AppError struct {
 	Code    int    `json:"-"`
@@ -50,24 +41,26 @@ func NewAppError(code int, message string) *AppError {
 }
 
 var (
-	ErrInvalidCredentials = NewAppError(http.StatusUnauthorized, "invalid email or password")
-	ErrEmailAlreadyExists = NewAppError(http.StatusConflict, "email already registered")
-	ErrUserNotFound       = NewAppError(http.StatusNotFound, "user not found")
-	ErrInvalidToken       = NewAppError(http.StatusUnauthorized, "invalid or expired token")
-	ErrTokenRevoked       = NewAppError(http.StatusUnauthorized, "token has been revoked")
-	ErrTokenExpired       = NewAppError(http.StatusUnauthorized, "token has expired")
-	ErrForbidden          = NewAppError(http.StatusForbidden, "insufficient permissions")
-	ErrInternal           = NewAppError(http.StatusInternalServerError, "internal server error")
-	ErrContactNotFound    = NewAppError(http.StatusNotFound, "contact not found")
-	ErrDealNotFound       = NewAppError(http.StatusNotFound, "deal not found")
-	ErrStageNotFound      = NewAppError(http.StatusNotFound, "pipeline stage not found")
-	ErrInvalidFile        = NewAppError(http.StatusBadRequest, "invalid file format, expected CSV or XLSX")
+	ErrInvalidCredentials    = NewAppError(http.StatusUnauthorized, "invalid email or password")
+	ErrEmailAlreadyExists    = NewAppError(http.StatusConflict, "email already registered")
+	ErrUserNotFound          = NewAppError(http.StatusNotFound, "user not found")
+	ErrInvalidToken          = NewAppError(http.StatusUnauthorized, "invalid or expired token")
+	ErrTokenRevoked          = NewAppError(http.StatusUnauthorized, "token has been revoked")
+	ErrTokenExpired          = NewAppError(http.StatusUnauthorized, "token has expired")
+	ErrForbidden             = NewAppError(http.StatusForbidden, "insufficient permissions")
+	ErrInternal              = NewAppError(http.StatusInternalServerError, "internal server error")
+	ErrContactNotFound       = NewAppError(http.StatusNotFound, "contact not found")
+	ErrDealNotFound          = NewAppError(http.StatusNotFound, "deal not found")
+	ErrStageNotFound         = NewAppError(http.StatusNotFound, "pipeline stage not found")
+	ErrInvalidFile           = NewAppError(http.StatusBadRequest, "invalid file format, expected CSV or XLSX")
+	ErrOrgNotFound           = NewAppError(http.StatusNotFound, "organization not found")
+	ErrNotMember             = NewAppError(http.StatusForbidden, "you are not a member of this workspace")
+	ErrAlreadyMember         = NewAppError(http.StatusConflict, "user is already a member of this workspace")
+	ErrCannotRemoveSuperAdmin = NewAppError(http.StatusForbidden, "cannot remove or demote the workspace creator")
 )
 
-// CursorMeta holds cursor-based pagination info.
 type CursorMeta struct {
 	NextCursor string `json:"next_cursor,omitempty"`
 	HasMore    bool   `json:"has_more"`
 	Total      int64  `json:"total,omitempty"`
 }
-

@@ -10,6 +10,7 @@ import (
 
 	delivery "crm-backend/internal/delivery/http"
 	"crm-backend/internal/ai"
+	"crm-backend/internal/domain"
 	"crm-backend/internal/repository"
 	"crm-backend/internal/usecase"
 	"crm-backend/internal/worker"
@@ -17,7 +18,6 @@ import (
 	"crm-backend/pkg/config"
 	"crm-backend/pkg/database"
 	"crm-backend/pkg/logger"
-	"crm-backend/internal/domain"
 
 	"github.com/getsentry/sentry-go"
 	sentrygin "github.com/getsentry/sentry-go/gin"
@@ -28,7 +28,6 @@ import (
 )
 
 func main() {
-	// 1. Initialize Logger
 	if err := logger.InitLogger(); err != nil {
 		panic(err)
 	}
@@ -37,13 +36,11 @@ func main() {
 
 	log.Info("Starting CRM backend")
 
-	// 2. Load Config
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		log.Fatal("Failed to load config", zap.Error(err))
 	}
 
-	// 3. Init Sentry
 	if cfg.SentryDSN != "" {
 		err := sentry.Init(sentry.ClientOptions{
 			Dsn:              cfg.SentryDSN,
@@ -59,18 +56,15 @@ func main() {
 		}
 	}
 
-	// 4. Init Database
 	db, err := database.NewConnection(cfg.DatabaseURL)
 	if err != nil {
 		log.Fatal("Failed to connect to database", zap.Error(err))
 	}
 	if db != nil {
 		log.Info("Database connection established")
-		// Force missing tables explicitly
-		db.AutoMigrate(&domain.KnowledgeBaseEntry{}, &domain.AITokenUsage{})
+		db.AutoMigrate(&domain.KnowledgeBaseEntry{}, &domain.AITokenUsage{}, &domain.OrgUser{})
 	}
 
-	// 5. Init Redis
 	redisClient, err := cache.NewRedisClient(cfg.RedisURL)
 	if err != nil {
 		log.Fatal("Failed to connect to Redis", zap.Error(err))
@@ -79,19 +73,15 @@ func main() {
 		log.Info("Redis connection established")
 	}
 
-	// 6. Setup Gin Router
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 
-	// Middleware
 	router.Use(gin.Recovery())
 
-	// Sentry middleware
 	if cfg.SentryDSN != "" {
 		router.Use(sentrygin.New(sentrygin.Options{Repanic: true}))
 	}
 
-	// Custom Zap Logger Middleware
 	router.Use(func(c *gin.Context) {
 		reqID := c.GetHeader("X-Request-ID")
 		if reqID == "" {
@@ -100,7 +90,6 @@ func main() {
 		c.Set("request_id", reqID)
 		c.Header("X-Request-ID", reqID)
 		
-		// Inject into standard context for lower layers
 		ctx := context.WithValue(c.Request.Context(), "request_id", reqID)
 		c.Request = c.Request.WithContext(ctx)
 
@@ -119,7 +108,6 @@ func main() {
 		)
 	})
 
-	// CORS Middleware
 	router.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{cfg.FrontendURL, "http://localhost:5173", "https://20q-crm.vercel.app"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
@@ -129,21 +117,21 @@ func main() {
 		MaxAge:           12 * time.Hour,
 	}))
 
-	// 7. Health Check
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"status":  "ok",
-			"version": "0.2.0",
+			"version": "0.3.0",
 		})
 	})
 
-	// 8. Wire Clean Architecture
 	if db != nil {
 		authRepo := repository.NewAuthRepository(db)
 		authUseCase := usecase.NewAuthUseCase(authRepo, cfg)
 		authHandler := delivery.NewAuthHandler(authUseCase, cfg)
 
-		// Create AI config early to pass to contact usecase for embeddings
+		workspaceUseCase := usecase.NewWorkspaceUseCase(authRepo)
+		workspaceHandler := delivery.NewWorkspaceHandler(workspaceUseCase)
+
 		budget := ai.NewBudgetGuard(db, redisClient)
 		gateway := ai.NewAIGateway(
 			cfg.CFAccountID, cfg.CFAIGatewayID, cfg.CFAIToken, cfg.AnthropicAPIKey,
@@ -157,12 +145,10 @@ func main() {
 		embedWorker := worker.NewEmbeddingWorker(embedSvc, db, log, 200)
 		go embedWorker.Start(context.Background(), 5)
 
-		// OrgSettings (custom field definitions)
 		orgSettingsRepo := repository.NewOrgSettingsRepository(db)
 		orgSettingsUC := usecase.NewOrgSettingsUseCase(orgSettingsRepo)
 		settingsHandler := delivery.NewSettingsHandler(orgSettingsUC)
 
-		// Custom Objects
 		customObjRepo := repository.NewCustomObjectRepository(db)
 		customObjUC := usecase.NewCustomObjectUseCase(customObjRepo)
 		customObjHandler := delivery.NewCustomObjectHandler(customObjUC)
@@ -183,9 +169,12 @@ func main() {
 		stageUseCase := usecase.NewPipelineStageUseCase(stageRepo)
 		pipelineHandler := delivery.NewPipelineHandler(stageUseCase)
 
+		aiJobQueue := worker.NewAIJobQueue(redisClient, gateway, db, log)
+		go aiJobQueue.Start(context.Background(), 3)
+
 		activityRepo := repository.NewActivityRepository(db)
 		activityUseCase := usecase.NewActivityUseCase(activityRepo)
-		activityHandler := delivery.NewActivityHandler(activityUseCase)
+		activityHandler := delivery.NewActivityHandler(activityUseCase, aiJobQueue)
 
 		dealRepo := repository.NewDealRepository(db)
 		dealUseCase := usecase.NewDealUseCase(dealRepo, stageRepo, activityRepo)
@@ -198,27 +187,25 @@ func main() {
 		userRepo := repository.NewUserRepository(db)
 		userHandler := delivery.NewUserHandler(userRepo)
 
-
-		// Knowledge Base
 		kbRepo := repository.NewKnowledgeBaseRepository(db)
 		kbBuilder := ai.NewKnowledgeBuilder(kbRepo, redisClient)
 		kbUseCase := usecase.NewKnowledgeBaseUseCase(kbRepo, kbBuilder)
 		kbHandler := delivery.NewKnowledgeHandler(kbUseCase)
 
-		aiHandler := delivery.NewAIHandler(gateway, budget, embedSvc, kbBuilder, contactUseCase)
+		aiHandler := delivery.NewAIHandler(gateway, budget, embedSvc, kbBuilder, aiJobQueue, contactUseCase)
 
-		// Command Center
 		commandCenter := ai.NewCommandCenter(gateway, kbBuilder, contactRepo, dealRepo, taskRepo, activityRepo, log)
 		commandHandler := delivery.NewCommandHandler(commandCenter)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, kbHandler, commandHandler, cfg)
-		log.Info("All routes registered (auth, contacts, deals, pipeline, activities, tasks, users, ai, settings, objects, knowledge-base, command)")
+		eventsHandler := delivery.NewEventsHandler(redisClient)
+
+		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, cfg)
+		log.Info("All routes registered")
 	} else {
 		log.Warn("Database not connected — routes skipped")
 	}
 
 
-	// 9. Server Setup
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,
 		Handler: router,
@@ -231,7 +218,6 @@ func main() {
 	}()
 	log.Info("Server listening", zap.String("port", cfg.Port))
 
-	// 10. Graceful Shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit

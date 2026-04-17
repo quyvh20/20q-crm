@@ -4,6 +4,7 @@ import CommandCenter from "./components/ai/CommandCenter";
 import SearchBar from "./components/common/SearchBar";
 import AIUsageWidget from "./components/settings/AIUsageWidget";
 import WelcomeModal from "./components/onboarding/WelcomeModal";
+import WorkspaceSwitcher from "./components/common/WorkspaceSwitcher";
 import { getObjectDefs, getFieldDefs, type CustomObjectDef } from "./lib/api";
 
 interface AppLayoutProps {
@@ -11,7 +12,7 @@ interface AppLayoutProps {
 }
 
 export default function AppLayout({ children }: AppLayoutProps) {
-  const { user, logout } = useAuth();
+  const { user, logout, activeWorkspace } = useAuth();
   const [customObjects, setCustomObjects] = useState<CustomObjectDef[]>([]);
   const [showWelcome, setShowWelcome] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -24,7 +25,6 @@ export default function AppLayout({ children }: AppLayoutProps) {
       .then(([objects, fields]) => {
         setCustomObjects(objects);
         
-        // Onboarding Check: If they have 0 setup items and haven't acknowledged the modal, show it
         const hasCompletedOnboarding = localStorage.getItem('onboarding_completed') === 'true';
         if (objects.length === 0 && fields.length === 0 && !hasCompletedOnboarding) {
           setShowWelcome(true);
@@ -35,10 +35,9 @@ export default function AppLayout({ children }: AppLayoutProps) {
 
   return (
     <div className="flex h-screen w-full bg-background overflow-hidden">
-      {/* Sidebar */}
       <aside className="w-64 border-r bg-card text-card-foreground hidden md:flex flex-col">
-        <div className="h-16 border-b flex items-center px-6">
-          <h1 className="text-xl font-bold tracking-tight">Guerrilla CRM</h1>
+        <div className="h-16 border-b flex items-center px-4">
+          <WorkspaceSwitcher />
         </div>
         <div className="flex-1 p-4">
           <nav className="space-y-2">
@@ -52,13 +51,13 @@ export default function AppLayout({ children }: AppLayoutProps) {
               </a>
             ))}
             <a href="/settings" className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">Settings</a>
+            <a href="/settings/workspace" className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">Members</a>
           </nav>
           <div className="mt-4">
             <AIUsageWidget />
           </div>
         </div>
 
-        {/* User info + logout */}
         {user && (
           <div className="p-4 border-t">
             <div className="flex items-center gap-3 mb-3">
@@ -84,7 +83,6 @@ export default function AppLayout({ children }: AppLayoutProps) {
         )}
       </aside>
 
-      {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0">
         <header className="h-16 border-b bg-card flex items-center justify-between px-6">
           <div className="md:hidden">
@@ -93,9 +91,9 @@ export default function AppLayout({ children }: AppLayoutProps) {
           <div className="flex flex-1 items-center gap-4">
             <SearchBar />
             <div className="flex-1" />
-            {user && (
+            {activeWorkspace && (
               <span className="text-sm text-muted-foreground hidden sm:block">
-                {user.organization?.name}
+                {activeWorkspace.org_name}
               </span>
             )}
             {user?.avatar_url ? (
@@ -116,10 +114,8 @@ export default function AppLayout({ children }: AppLayoutProps) {
           )}
         </main>
       </div>
-      {/* AI Command Center */}
       <CommandCenter />
 
-      {/* Onboarding Flow */}
       {showWelcome && !isLoading && (
         <WelcomeModal onComplete={() => setShowWelcome(false)} />
       )}

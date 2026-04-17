@@ -30,8 +30,7 @@ func (r *dealRepository) List(ctx context.Context, orgID uuid.UUID, f domain.Dea
 		limit = 50
 	}
 
-	query := r.db.WithContext(ctx).
-		Where("deals.org_id = ?", orgID).
+	query := applyScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "deals").
 		Preload("Contact").
 		Preload("Company").
 		Preload("Stage").
@@ -82,8 +81,8 @@ func (r *dealRepository) List(ctx context.Context, orgID uuid.UUID, f domain.Dea
 
 func (r *dealRepository) GetByID(ctx context.Context, orgID, id uuid.UUID) (*domain.Deal, error) {
 	var deal domain.Deal
-	err := r.db.WithContext(ctx).
-		Where("id = ? AND org_id = ?", id, orgID).
+	err := applyScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "deals").
+		Where("deals.id = ?", id).
 		Preload("Contact").
 		Preload("Company").
 		Preload("Stage").
@@ -127,8 +126,8 @@ func (r *dealRepository) Update(ctx context.Context, d *domain.Deal) error {
 // ============================================================
 
 func (r *dealRepository) SoftDelete(ctx context.Context, orgID, id uuid.UUID) error {
-	result := r.db.WithContext(ctx).
-		Where("id = ? AND org_id = ?", id, orgID).
+	result := applyScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "deals").
+		Where("deals.id = ?", id).
 		Delete(&domain.Deal{})
 	if result.Error != nil {
 		return result.Error
@@ -145,8 +144,7 @@ func (r *dealRepository) SoftDelete(ctx context.Context, orgID, id uuid.UUID) er
 
 func (r *dealRepository) Count(ctx context.Context, orgID uuid.UUID) (int64, error) {
 	var count int64
-	err := r.db.WithContext(ctx).Model(&domain.Deal{}).
-		Where("org_id = ?", orgID).
+	err := applyScopeFromCtx(r.db.WithContext(ctx).Model(&domain.Deal{}), ctx, orgID, "deals").
 		Count(&count).Error
 	return count, err
 }

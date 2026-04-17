@@ -1,8 +1,10 @@
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getDeal, deleteDeal, getActivities, getStages, changeDealStage, updateDeal, getTasks, createTask, updateTask, getUsers, type Deal, type Activity, type PipelineStage, type Task, type UserListItem } from '../lib/api';
+import { getDeal, deleteDeal, getActivities, getStages, changeDealStage, updateDeal, getTasks, createTask, updateTask, getUsers, submitScoreDeal, type Deal, type Activity, type PipelineStage, type Task, type UserListItem } from '../lib/api';
 import ActivityForm from '../components/deals/ActivityForm';
-import { useState } from 'react';
+import EmailComposer from '../components/ai/EmailComposer';
+import MeetingSummary from '../components/ai/MeetingSummary';
+import { useState, useEffect } from 'react';
 
 const ACTIVITY_ICONS: Record<string, string> = {
   call: '📞',
@@ -142,6 +144,87 @@ export default function DealDetailPage() {
   const [newTaskPriority, setNewTaskPriority] = useState('medium');
   const [newTaskAssignee, setNewTaskAssignee] = useState('');
   const [pendingTasks, setPendingTasks] = useState<Record<string, boolean>>({});
+
+  // AI State
+  const [showEmailComposer, setShowEmailComposer] = useState(false);
+  const [showMeetingSummary, setShowMeetingSummary] = useState(false);
+  const [scoreJobId, setScoreJobId] = useState<string | null>(null);
+  const [scoreStatus, setScoreStatus] = useState<'idle' | 'processing' | 'done' | 'error'>('idle');
+  const [dealScore, setDealScore] = useState<any>(null);
+
+  // SSE for Deal Score Job
+  useEffect(() => {
+    if (!scoreJobId || scoreStatus !== 'processing') return;
+
+    const token = localStorage.getItem('access_token');
+    if (!token) return;
+
+    const API_BASE = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8080';
+    const abort = new AbortController();
+
+    const pullEvents = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/api/events`, {
+          headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'text/event-stream' },
+          signal: abort.signal
+        });
+        
+        if (!response.ok) throw new Error('SSE failed');
+        if (!response.body) return;
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const str = line.slice(6);
+              if (str === '') continue;
+              try {
+                const data = JSON.parse(str);
+                if (data.type === 'job_complete' && data.job_id === scoreJobId) {
+                  if (data.status === 'completed') {
+                    setDealScore(data.result);
+                    setScoreStatus('done');
+                  } else {
+                    setScoreStatus('error');
+                  }
+                  abort.abort();
+                  return;
+                }
+              } catch (e) {}
+            }
+          }
+        }
+      } catch (e: any) {
+        if (e.name !== 'AbortError') setScoreStatus('error');
+      }
+    };
+    pullEvents();
+    return () => abort.abort();
+  }, [scoreJobId, scoreStatus]);
+
+  const handleScoreDeal = async () => {
+    if (!deal) return;
+    setScoreStatus('processing');
+    try {
+      const res = await submitScoreDeal(deal.id) as any;
+      if (res.status === 'completed') {
+        setDealScore(res.result);
+        setScoreStatus('done');
+        return;
+      }
+      setScoreJobId(res.job_id);
+    } catch {
+      setScoreStatus('error');
+    }
+  };
 
   const { data: deal, isLoading } = useQuery<Deal>({
     queryKey: ['deal', id],
@@ -299,7 +382,7 @@ export default function DealDetailPage() {
           <div className="rounded-xl border bg-card p-6">
             <div className="flex items-start justify-between mb-4">
               <div>
-                <div className="flex items-center gap-4">
+                <div className="flex flex-wrap items-center gap-3">
                   <h1 className="text-2xl font-bold">{deal.title}</h1>
                   <button
                     id="edit-deal-btn"
@@ -322,8 +405,33 @@ export default function DealDetailPage() {
                     Company: {deal.company.name}
                   </p>
                 )}
+                
+                {/* AI Actions Row */}
+                <div className="flex flex-wrap gap-2 mt-4">
+                  <button
+                    onClick={handleScoreDeal}
+                    disabled={scoreStatus === 'processing'}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600/10 text-violet-600 text-xs font-semibold hover:bg-violet-600 hover:text-white transition-all border border-violet-600/20 disabled:opacity-50"
+                  >
+                    {scoreStatus === 'processing' ? (
+                      <><svg className="h-3 w-3 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> Scoring...</>
+                    ) : '🧠 Score Deal'}
+                  </button>
+                  <button
+                    onClick={() => setShowEmailComposer(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600/10 text-blue-600 text-xs font-semibold hover:bg-blue-600 hover:text-white transition-all border border-blue-600/20"
+                  >
+                    ✉️ Draft Email
+                  </button>
+                  <button
+                    onClick={() => setShowMeetingSummary(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600/10 text-emerald-600 text-xs font-semibold hover:bg-emerald-600 hover:text-white transition-all border border-emerald-600/20"
+                  >
+                    🎙 Summarize Meeting
+                  </button>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-col items-end gap-2">
                 {deal.is_won && (
                   <span className="px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-500 text-xs font-bold">WON</span>
                 )}
@@ -340,6 +448,45 @@ export default function DealDetailPage() {
                 )}
               </div>
             </div>
+
+            {/* AI Deal Score Widget */}
+            {scoreStatus === 'error' && (
+              <div className="mb-6 p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-600 text-sm">
+                ⚠️ Failed to calculate deal score. Please try again later.
+              </div>
+            )}
+            {dealScore && scoreStatus === 'done' && (
+              <div className="mb-6 p-5 rounded-xl border bg-violet-500/5 animate-in fade-in slide-in-from-top-4">
+                <div className="flex items-start gap-5">
+                  <div className="flex flex-col items-center justify-center h-20 w-20 rounded-full border-4 border-violet-500 shrink-0 bg-background text-violet-600">
+                    <span className="text-2xl font-bold">{dealScore.score}</span>
+                    <span className="text-[10px] uppercase font-semibold">Score</span>
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="font-semibold text-violet-700 dark:text-violet-400 mb-2 border-b border-violet-500/20 pb-1">AI Recommendation</h3>
+                    <p className="text-sm text-foreground mb-3">{dealScore.recommendation}</p>
+                    <div className="grid grid-cols-2 gap-3 text-xs">
+                      <div>
+                        <span className="text-emerald-600 font-semibold block mb-1">Positives</span>
+                        <ul className="space-y-1">
+                          {dealScore.factors.filter((f: string) => f.startsWith('+')).map((f: string, i: number) => (
+                            <li key={i} className="flex gap-1.5 items-start text-muted-foreground"><span className="text-emerald-500">✓</span> <span>{f.substring(1).trim()}</span></li>
+                          ))}
+                        </ul>
+                      </div>
+                      <div>
+                        <span className="text-red-500 font-semibold block mb-1">Risks</span>
+                        <ul className="space-y-1">
+                          {dealScore.factors.filter((f: string) => f.startsWith('-')).map((f: string, i: number) => (
+                            <li key={i} className="flex gap-1.5 items-start text-muted-foreground"><span className="text-red-500">✗</span> <span>{f.substring(1).trim()}</span></li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Value + Probability */}
             <div className="grid grid-cols-3 gap-4 mb-6">
@@ -583,6 +730,11 @@ export default function DealDetailPage() {
                       <span className="text-[10px] text-muted-foreground">· {a.duration_minutes}min</span>
                     )}
                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted/50 text-muted-foreground capitalize">{a.type}</span>
+                    {a.sentiment && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted/50" title={`Sentiment: ${a.sentiment}`}>
+                        {a.sentiment === 'positive' ? '🟢' : a.sentiment === 'neutral' ? '🟡' : a.sentiment === 'negative' ? '🔴' : '⚪'}
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -621,6 +773,25 @@ export default function DealDetailPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* AI Modals */}
+      {showEmailComposer && deal && (
+        <EmailComposer
+          dealId={deal.id}
+          contactId={deal.contact_id}
+          contactName={deal.contact ? `${deal.contact.first_name} ${deal.contact.last_name}` : undefined}
+          onClose={() => setShowEmailComposer(false)}
+        />
+      )}
+
+      {showMeetingSummary && deal && (
+        <MeetingSummary
+          dealId={deal.id}
+          contactId={deal.contact_id}
+          onClose={() => setShowMeetingSummary(false)}
+          onTasksCreated={() => queryClient.invalidateQueries({ queryKey: ['tasks', id] })}
+        />
       )}
     </div>
   );

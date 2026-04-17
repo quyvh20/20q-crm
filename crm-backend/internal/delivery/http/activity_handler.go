@@ -7,14 +7,18 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"encoding/json"
+	"crm-backend/internal/ai"
+	"crm-backend/internal/worker"
 )
 
 type ActivityHandler struct {
 	activityUC domain.ActivityUseCase
+	queue      *worker.AIJobQueue
 }
 
-func NewActivityHandler(activityUC domain.ActivityUseCase) *ActivityHandler {
-	return &ActivityHandler{activityUC: activityUC}
+func NewActivityHandler(activityUC domain.ActivityUseCase, queue *worker.AIJobQueue) *ActivityHandler {
+	return &ActivityHandler{activityUC: activityUC, queue: queue}
 }
 
 // GET /api/activities?deal_id=...&contact_id=...
@@ -69,5 +73,19 @@ func (h *ActivityHandler) Create(c *gin.Context) {
 		handleAppError(c, err)
 		return
 	}
+
+	// Trigger sentiment analysis asynchronously if note has body
+	if activity.Body != nil && *activity.Body != "" {
+		payloadBytes, _ := json.Marshal(worker.SentimentPayload{ActivityID: activity.ID})
+		job := &worker.AIJob{
+			JobID:    uuid.New(),
+			OrgID:    orgID,
+			UserID:   userID.(uuid.UUID),
+			TaskType: string(ai.TaskSentiment),
+			Payload:  payloadBytes,
+		}
+		_ = h.queue.Enqueue(c.Request.Context(), job) // ignore err, non-critical background task
+	}
+
 	c.JSON(http.StatusCreated, domain.Success(activity))
 }

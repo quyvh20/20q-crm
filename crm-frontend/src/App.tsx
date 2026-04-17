@@ -10,6 +10,7 @@ import ContactsPage from './pages/ContactsPage';
 import DealsPage from './pages/DealsPage';
 import DealDetailPage from './pages/DealDetailPage';
 import SettingsPage from './pages/SettingsPage';
+import WorkspaceSettingsPage from './pages/WorkspaceSettingsPage';
 import CustomObjectPage from './pages/CustomObjectPage';
 
 // Initialize Sentry
@@ -104,6 +105,11 @@ function App() {
             <Route path="/settings" element={
               <ProtectedRoute>
                 <AppLayout><SettingsPage /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/settings/workspace" element={
+              <ProtectedRoute>
+                <AppLayout><WorkspaceSettingsPage /></AppLayout>
               </ProtectedRoute>
             } />
             <Route path="/objects/:slug" element={

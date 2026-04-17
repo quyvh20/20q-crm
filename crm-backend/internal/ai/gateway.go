@@ -630,46 +630,83 @@ func (g *AIGateway) callAnthropic(ctx context.Context, task AITask, model string
 // ============================================================
 
 func (g *AIGateway) doRequest(ctx context.Context, url, method string, headers map[string]string, body interface{}) ([]byte, error) {
-	var bodyReader io.Reader
+	var bodyBytes []byte
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
 			return nil, err
 		}
-		bodyReader = bytes.NewReader(b)
+		bodyBytes = b
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
-	if err != nil {
-		return nil, err
-	}
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
+	maxRetries := 3
+	var lastData []byte
+	var lastStatus int
 
-	if g.cfGatewayToken != "" {
-		req.Header.Set("cf-aig-authorization", "Bearer "+g.cfGatewayToken)
-	}
-
-	res, err := g.httpClient.Do(req)
-	if err != nil {
-		if isTimeoutErr(err) {
-			return nil, ErrAITimeout{Provider: url, After: 5}
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		var bodyReader io.Reader
+		if bodyBytes != nil {
+			bodyReader = bytes.NewReader(bodyBytes)
 		}
-		return nil, err
-	}
-	defer res.Body.Close()
 
-	data, err := io.ReadAll(res.Body)
-	if err != nil {
-		return nil, err
+		req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		if g.cfGatewayToken != "" {
+			req.Header.Set("cf-aig-authorization", "Bearer "+g.cfGatewayToken)
+		}
+
+		res, err := g.httpClient.Do(req)
+		
+		// Handle timeout or connectivity errors
+		if err != nil {
+			if isTimeoutErr(err) && attempt < maxRetries {
+				g.logger.Warn("AI API Timeout, retrying...", zap.Int("attempt", attempt+1))
+				time.Sleep(time.Duration(1<<attempt) * time.Second) // exponential backoff
+				continue
+			}
+			if isTimeoutErr(err) {
+				return nil, ErrAITimeout{Provider: url, After: 120}
+			}
+			return nil, err
+		}
+
+		data, err := io.ReadAll(res.Body)
+		res.Body.Close()
+		if err != nil {
+
+			return nil, err
+		}
+
+		// Handle 502 / 504 timeouts gracefully with retries
+		if res.StatusCode == http.StatusBadGateway || res.StatusCode == http.StatusGatewayTimeout {
+			lastStatus = res.StatusCode
+			lastData = data
+			if attempt < maxRetries {
+				g.logger.Warn("CF Gateway 502/504 timeout, retrying...", zap.Int("attempt", attempt+1), zap.Int("status", res.StatusCode))
+				time.Sleep(time.Duration(1<<attempt) * time.Second) // exponential backoff
+				continue
+			} else {
+				// Break out of loop to return final exhaustion error
+				break
+			}
+		}
+
+		// Any other bad statusCode without retry
+		if res.StatusCode >= 400 {
+			return nil, fmt.Errorf("provider returned %d: %s", res.StatusCode, strings.TrimSpace(string(data)))
+		}
+
+		// Success scenario
+		return data, nil
 	}
 
-	if res.StatusCode >= 400 {
-		return nil, fmt.Errorf("provider returned %d: %s", res.StatusCode, strings.TrimSpace(string(data)))
-	}
-
-	return data, nil
+	// If we exhausted all 3 retries because of 502/504:
+	return nil, fmt.Errorf("provider returned %d: %s after %d retries", lastStatus, strings.TrimSpace(string(lastData)), maxRetries)
 }
 
 // isTimeoutErr reports whether err represents a network or context timeout.

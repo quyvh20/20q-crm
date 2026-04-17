@@ -538,6 +538,98 @@ export async function streamChat(
   onDone();
 }
 
+export async function composeEmail(
+  instruction: string,
+  tone: string,
+  onChunk: (chunk: string) => void,
+  onDone: () => void,
+  onError: (err: string) => void,
+  contactId?: string,
+  dealId?: string,
+) {
+  const API_BASE = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8080';
+  const token = localStorage.getItem('access_token');
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'text/event-stream',
+  };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/api/ai/email/compose`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ instruction, tone, contact_id: contactId, deal_id: dealId }),
+  });
+
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    onError(json.error || 'AI unavailable');
+    return;
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) { onError('No stream body'); return; }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const data = line.slice(6);
+      if (data === '[DONE]') { onDone(); return; }
+      try {
+        const textChunk = JSON.parse(data);
+        if (typeof textChunk === 'string') {
+          onChunk(textChunk);
+        }
+      } catch (e) {
+        // Parsing error, ignore invalid chunks.
+      }
+    }
+  }
+  onDone();
+}
+
+// Async Background Queue Commands
+export interface AIJobStatus {
+  job_id: string;
+  task_type: string;
+  status: string;
+  result?: any;
+  error?: string;
+  created_at: string;
+}
+
+export async function getJobStatus(jobId: string): Promise<AIJobStatus> {
+  const res = await apiFetch(`/api/ai/jobs/${jobId}`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch job status');
+  return json.data as AIJobStatus;
+}
+
+export async function submitScoreDeal(dealId: string): Promise<{ status: string; job_id: string }> {
+  const res = await apiFetch(`/api/deals/${dealId}/score`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to start scoring job');
+  return json.data as { status: string; job_id: string };
+}
+
+export async function submitSummarizeMeeting(transcript: string, dealId?: string, contactId?: string): Promise<{ status: string; job_id: string }> {
+  const res = await apiFetch('/api/ai/meeting/summarize', {
+    method: 'POST',
+    body: JSON.stringify({ transcript, deal_id: dealId, contact_id: contactId }),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to start summary job');
+  return json.data as { status: string; job_id: string };
+}
+
 // ============================================================
 // Custom Field Definitions (Settings)
 // ============================================================
@@ -864,5 +956,82 @@ export async function sendCommand(
     onDone();
   } catch (err) {
     onError(err instanceof Error ? err.message : 'Command failed');
+  }
+}
+
+export interface Workspace {
+  org_id: string;
+  org_name: string;
+  org_type: string;
+  role: string;
+  status: string;
+}
+
+export interface WorkspaceMember {
+  user_id: string;
+  email: string;
+  first_name: string;
+  last_name: string;
+  full_name: string;
+  avatar_url?: string;
+  role: string;
+  status: string;
+}
+
+export async function switchWorkspace(orgId: string): Promise<{
+  access_token: string;
+  refresh_token: string;
+  user: UserListItem;
+  workspaces: Workspace[];
+}> {
+  const res = await apiFetch('/api/auth/switch-workspace', {
+    method: 'POST',
+    body: JSON.stringify({ org_id: orgId }),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to switch workspace');
+  return json.data;
+}
+
+export async function getWorkspaces(): Promise<Workspace[]> {
+  const res = await apiFetch('/api/workspaces');
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch workspaces');
+  return (json.data || []) as Workspace[];
+}
+
+export async function getWorkspaceMembers(): Promise<WorkspaceMember[]> {
+  const res = await apiFetch('/api/workspaces/members');
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch members');
+  return (json.data || []) as WorkspaceMember[];
+}
+
+export async function inviteMember(email: string, role: string): Promise<WorkspaceMember> {
+  const res = await apiFetch('/api/workspaces/invites', {
+    method: 'POST',
+    body: JSON.stringify({ email, role }),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to invite member');
+  return json.data as WorkspaceMember;
+}
+
+export async function updateMemberRole(userId: string, role: string): Promise<void> {
+  const res = await apiFetch(`/api/workspaces/members/${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ role }),
+  });
+  if (!res.ok) {
+    const json = await res.json();
+    throw new Error(json.error || 'Failed to update role');
+  }
+}
+
+export async function removeMember(userId: string): Promise<void> {
+  const res = await apiFetch(`/api/workspaces/members/${userId}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await res.json();
+    throw new Error(json.error || 'Failed to remove member');
   }
 }

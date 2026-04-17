@@ -1,35 +1,36 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { switchWorkspace as apiSwitchWorkspace, type Workspace } from './api';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 
 interface User {
   id: string;
-  org_id: string;
   email: string;
   first_name: string;
   last_name: string;
-  role: string;
+  full_name?: string;
+  role?: string;
   avatar_url?: string;
-  organization?: {
-    id: string;
-    name: string;
-    plan_tier: string;
-  };
 }
 
 interface AuthContextType {
   user: User | null;
   accessToken: string | null;
+  activeWorkspace: Workspace | null;
+  workspaces: Workspace[];
+  currentRole: string;
   isLoading: boolean;
   isAuthenticated: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (data: RegisterData) => Promise<void>;
   logout: () => Promise<void>;
   refreshAuth: () => Promise<void>;
+  switchWorkspace: (orgId: string) => Promise<void>;
 }
 
 interface RegisterData {
   org_name: string;
+  org_type?: string;
   email: string;
   password: string;
   first_name: string;
@@ -41,24 +42,49 @@ interface AuthResponse {
     access_token: string;
     refresh_token: string;
     user: User;
+    workspaces?: Workspace[];
+  };
+  error: string | null;
+}
+
+interface MeResponse {
+  data: {
+    user: User;
+    workspaces?: Workspace[];
   };
   error: string | null;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+function findActiveWorkspace(workspaces: Workspace[]): Workspace | null {
+  const savedId = localStorage.getItem('active_workspace_id');
+  if (savedId) {
+    const found = workspaces.find(w => w.org_id === savedId);
+    if (found) return found;
+  }
+  return workspaces.length > 0 ? workspaces[0] : null;
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(
     localStorage.getItem('access_token')
   );
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [activeWorkspace, setActiveWorkspace] = useState<Workspace | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  const currentRole = activeWorkspace?.role || '';
 
   const clearAuth = useCallback(() => {
     setUser(null);
     setAccessToken(null);
+    setWorkspaces([]);
+    setActiveWorkspace(null);
     localStorage.removeItem('access_token');
     localStorage.removeItem('refresh_token');
+    localStorage.removeItem('active_workspace_id');
   }, []);
 
   const saveAuth = useCallback((data: AuthResponse['data']) => {
@@ -66,6 +92,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(data.user);
     localStorage.setItem('access_token', data.access_token);
     localStorage.setItem('refresh_token', data.refresh_token);
+    if (data.workspaces) {
+      setWorkspaces(data.workspaces);
+      const active = findActiveWorkspace(data.workspaces);
+      setActiveWorkspace(active);
+      if (active) {
+        localStorage.setItem('active_workspace_id', active.org_id);
+      }
+    }
   }, []);
 
   const refreshAuth = useCallback(async () => {
@@ -98,7 +132,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [clearAuth, saveAuth]);
 
-  // Load user on mount
   useEffect(() => {
     const loadUser = async () => {
       const token = localStorage.getItem('access_token');
@@ -113,9 +146,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         });
 
         if (res.ok) {
-          const json = await res.json();
-          setUser(json.data);
-          setAccessToken(token);
+          const json: MeResponse = await res.json();
+          if (json.data) {
+            setUser(json.data.user);
+            setAccessToken(token);
+            if (json.data.workspaces) {
+              setWorkspaces(json.data.workspaces);
+              const active = findActiveWorkspace(json.data.workspaces);
+              setActiveWorkspace(active);
+            }
+          }
         } else if (res.status === 401) {
           await refreshAuth();
         } else {
@@ -171,10 +211,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           body: JSON.stringify({ refresh_token: refreshToken }),
         });
       } catch {
-        // Silent fail on logout
+        // pass
       }
     }
     clearAuth();
+  };
+
+  const doSwitchWorkspace = async (orgId: string) => {
+    const result = await apiSwitchWorkspace(orgId);
+    localStorage.setItem('access_token', result.access_token);
+    localStorage.setItem('refresh_token', result.refresh_token);
+    localStorage.setItem('active_workspace_id', orgId);
+    setAccessToken(result.access_token);
+    if (result.workspaces) {
+      setWorkspaces(result.workspaces);
+      const active = result.workspaces.find(w => w.org_id === orgId) || null;
+      setActiveWorkspace(active);
+    }
+    window.location.reload();
   };
 
   return (
@@ -182,12 +236,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       value={{
         user,
         accessToken,
+        activeWorkspace,
+        workspaces,
+        currentRole,
         isLoading,
         isAuthenticated: !!user,
         login,
         register,
         logout,
         refreshAuth,
+        switchWorkspace: doSwitchWorkspace,
       }}
     >
       {children}

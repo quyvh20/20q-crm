@@ -22,10 +22,10 @@ import (
 )
 
 const (
-	bcryptCost          = 12
-	accessTokenDuration = 15 * time.Minute
+	bcryptCost           = 12
+	accessTokenDuration  = 15 * time.Minute
 	refreshTokenDuration = 7 * 24 * time.Hour
-	refreshTokenBytes   = 32
+	refreshTokenBytes    = 32
 )
 
 type authUseCase struct {
@@ -52,12 +52,7 @@ func NewAuthUseCase(repo domain.AuthRepository, cfg *config.Config) domain.AuthU
 	}
 }
 
-// ============================================================
-// Register
-// ============================================================
-
 func (uc *authUseCase) Register(ctx context.Context, input domain.RegisterInput) (*domain.AuthResponse, error) {
-	// Check if email already exists
 	existing, err := uc.authRepo.GetUserByEmail(ctx, input.Email)
 	if err != nil {
 		return nil, domain.ErrInternal
@@ -66,34 +61,50 @@ func (uc *authUseCase) Register(ctx context.Context, input domain.RegisterInput)
 		return nil, domain.ErrEmailAlreadyExists
 	}
 
-	// Create organization
-	org := &domain.Organization{Name: input.OrgName}
+	orgType := input.OrgType
+	if orgType == "" {
+		orgType = "company"
+	}
+	org := &domain.Organization{Name: input.OrgName, Type: orgType}
 	if err := uc.authRepo.CreateOrganization(ctx, org); err != nil {
 		return nil, domain.ErrInternal
 	}
 
-	// Hash password
 	hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcryptCost)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
 	hashStr := string(hash)
 
-	// Create admin user
+	fullName := input.FirstName
+	if input.LastName != "" {
+		fullName = input.FirstName + " " + input.LastName
+	}
+
 	user := &domain.User{
 		OrgID:        org.ID,
 		Email:        input.Email,
 		PasswordHash: &hashStr,
 		FirstName:    input.FirstName,
 		LastName:     input.LastName,
+		FullName:     fullName,
 		Role:         "admin",
 	}
 	if err := uc.authRepo.CreateUser(ctx, user); err != nil {
 		return nil, domain.ErrInternal
 	}
 
-	// Generate tokens
-	accessToken, err := uc.generateAccessToken(user)
+	ou := &domain.OrgUser{
+		UserID: user.ID,
+		OrgID:  org.ID,
+		Role:   "super_admin",
+		Status: "active",
+	}
+	if err := uc.authRepo.CreateOrgUser(ctx, ou); err != nil {
+		return nil, domain.ErrInternal
+	}
+
+	accessToken, err := uc.generateAccessToken(user.ID, org.ID, "super_admin")
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
@@ -103,18 +114,23 @@ func (uc *authUseCase) Register(ctx context.Context, input domain.RegisterInput)
 		return nil, domain.ErrInternal
 	}
 
-	user.Organization = *org
+	workspaces := []domain.WorkspaceInfo{
+		{
+			OrgID:   org.ID,
+			OrgName: org.Name,
+			OrgType: org.Type,
+			Role:    "super_admin",
+			Status:  "active",
+		},
+	}
 
 	return &domain.AuthResponse{
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 		User:         *user,
+		Workspaces:   workspaces,
 	}, nil
 }
-
-// ============================================================
-// Login
-// ============================================================
 
 func (uc *authUseCase) Login(ctx context.Context, input domain.LoginInput) (*domain.AuthResponse, error) {
 	user, err := uc.authRepo.GetUserByEmail(ctx, input.Email)
@@ -129,7 +145,36 @@ func (uc *authUseCase) Login(ctx context.Context, input domain.LoginInput) (*dom
 		return nil, domain.ErrInvalidCredentials
 	}
 
-	accessToken, err := uc.generateAccessToken(user)
+	orgUsers, err := uc.authRepo.ListOrgsByUserID(ctx, user.ID)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+
+	workspaces := make([]domain.WorkspaceInfo, 0, len(orgUsers))
+	for _, ou := range orgUsers {
+		name := ""
+		orgType := "company"
+		if ou.Org != nil {
+			name = ou.Org.Name
+			orgType = ou.Org.Type
+		}
+		workspaces = append(workspaces, domain.WorkspaceInfo{
+			OrgID:   ou.OrgID,
+			OrgName: name,
+			OrgType: orgType,
+			Role:    ou.Role,
+			Status:  ou.Status,
+		})
+	}
+
+	var activeOrgID uuid.UUID
+	var activeRole string
+	if len(orgUsers) > 0 {
+		activeOrgID = orgUsers[0].OrgID
+		activeRole = orgUsers[0].Role
+	}
+
+	accessToken, err := uc.generateAccessToken(user.ID, activeOrgID, activeRole)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
@@ -139,25 +184,89 @@ func (uc *authUseCase) Login(ctx context.Context, input domain.LoginInput) (*dom
 		return nil, domain.ErrInternal
 	}
 
-	// Load org
-	fullUser, _ := uc.authRepo.GetUserByID(ctx, user.ID)
-	if fullUser != nil {
-		user = fullUser
+	return &domain.AuthResponse{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		User:         *user,
+		Workspaces:   workspaces,
+	}, nil
+}
+
+func (uc *authUseCase) SwitchWorkspace(ctx context.Context, userID uuid.UUID, input domain.SwitchWorkspaceInput) (*domain.AuthResponse, error) {
+	ou, err := uc.authRepo.GetOrgUser(ctx, userID, input.OrgID)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+	if ou == nil || ou.Status != "active" {
+		return nil, domain.ErrNotMember
+	}
+
+	user, err := uc.authRepo.GetUserByID(ctx, userID)
+	if err != nil || user == nil {
+		return nil, domain.ErrUserNotFound
+	}
+
+	accessToken, err := uc.generateAccessToken(userID, input.OrgID, ou.Role)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+
+	refreshToken, err := uc.createRefreshToken(ctx, userID)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+
+	orgUsers, _ := uc.authRepo.ListOrgsByUserID(ctx, userID)
+	workspaces := make([]domain.WorkspaceInfo, 0, len(orgUsers))
+	for _, o := range orgUsers {
+		name := ""
+		orgType := "company"
+		if o.Org != nil {
+			name = o.Org.Name
+			orgType = o.Org.Type
+		}
+		workspaces = append(workspaces, domain.WorkspaceInfo{
+			OrgID:   o.OrgID,
+			OrgName: name,
+			OrgType: orgType,
+			Role:    o.Role,
+			Status:  o.Status,
+		})
 	}
 
 	return &domain.AuthResponse{
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 		User:         *user,
+		Workspaces:   workspaces,
 	}, nil
 }
 
-// ============================================================
-// Refresh Token
-// ============================================================
+func (uc *authUseCase) ListWorkspaces(ctx context.Context, userID uuid.UUID) ([]domain.WorkspaceInfo, error) {
+	orgUsers, err := uc.authRepo.ListOrgsByUserID(ctx, userID)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+	workspaces := make([]domain.WorkspaceInfo, 0, len(orgUsers))
+	for _, ou := range orgUsers {
+		name := ""
+		orgType := "company"
+		if ou.Org != nil {
+			name = ou.Org.Name
+			orgType = ou.Org.Type
+		}
+		workspaces = append(workspaces, domain.WorkspaceInfo{
+			OrgID:   ou.OrgID,
+			OrgName: name,
+			OrgType: orgType,
+			Role:    ou.Role,
+			Status:  ou.Status,
+		})
+	}
+	return workspaces, nil
+}
 
 func (uc *authUseCase) RefreshToken(ctx context.Context, refreshToken string) (*domain.AuthResponse, error) {
-	// Hash the incoming token to find it in DB
 	tokenHash := hashToken(refreshToken)
 
 	storedToken, err := uc.authRepo.GetRefreshTokenByHash(ctx, tokenHash)
@@ -176,17 +285,22 @@ func (uc *authUseCase) RefreshToken(ctx context.Context, refreshToken string) (*
 		return nil, domain.ErrTokenExpired
 	}
 
-	// Revoke old token (rotation)
 	_ = uc.authRepo.RevokeRefreshToken(ctx, storedToken.ID)
 
-	// Get user
 	user, err := uc.authRepo.GetUserByID(ctx, storedToken.UserID)
 	if err != nil || user == nil {
 		return nil, domain.ErrUserNotFound
 	}
 
-	// Issue new tokens
-	accessToken, err := uc.generateAccessToken(user)
+	orgUsers, _ := uc.authRepo.ListOrgsByUserID(ctx, user.ID)
+	var activeOrgID uuid.UUID
+	var activeRole string
+	if len(orgUsers) > 0 {
+		activeOrgID = orgUsers[0].OrgID
+		activeRole = orgUsers[0].Role
+	}
+
+	accessToken, err := uc.generateAccessToken(user.ID, activeOrgID, activeRole)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
@@ -196,29 +310,39 @@ func (uc *authUseCase) RefreshToken(ctx context.Context, refreshToken string) (*
 		return nil, domain.ErrInternal
 	}
 
+	workspaces := make([]domain.WorkspaceInfo, 0, len(orgUsers))
+	for _, ou := range orgUsers {
+		name := ""
+		orgType := "company"
+		if ou.Org != nil {
+			name = ou.Org.Name
+			orgType = ou.Org.Type
+		}
+		workspaces = append(workspaces, domain.WorkspaceInfo{
+			OrgID:   ou.OrgID,
+			OrgName: name,
+			OrgType: orgType,
+			Role:    ou.Role,
+			Status:  ou.Status,
+		})
+	}
+
 	return &domain.AuthResponse{
 		AccessToken:  accessToken,
 		RefreshToken: newRefreshToken,
 		User:         *user,
+		Workspaces:   workspaces,
 	}, nil
 }
-
-// ============================================================
-// Logout
-// ============================================================
 
 func (uc *authUseCase) Logout(ctx context.Context, refreshToken string) error {
 	tokenHash := hashToken(refreshToken)
 	storedToken, err := uc.authRepo.GetRefreshTokenByHash(ctx, tokenHash)
 	if err != nil || storedToken == nil {
-		return nil // silently succeed even if token not found
+		return nil
 	}
 	return uc.authRepo.RevokeRefreshToken(ctx, storedToken.ID)
 }
-
-// ============================================================
-// Get Me
-// ============================================================
 
 func (uc *authUseCase) GetMe(ctx context.Context, userID uuid.UUID) (*domain.User, error) {
 	user, err := uc.authRepo.GetUserByID(ctx, userID)
@@ -230,10 +354,6 @@ func (uc *authUseCase) GetMe(ctx context.Context, userID uuid.UUID) (*domain.Use
 	}
 	return user, nil
 }
-
-// ============================================================
-// Google OAuth
-// ============================================================
 
 func (uc *authUseCase) GetGoogleAuthURL(state string) string {
 	if uc.oauthConfig == nil {
@@ -247,13 +367,11 @@ func (uc *authUseCase) GoogleLogin(ctx context.Context, code string) (*domain.Au
 		return nil, domain.NewAppError(http.StatusServiceUnavailable, "Google OAuth not configured")
 	}
 
-	// Exchange code for token
 	token, err := uc.oauthConfig.Exchange(ctx, code)
 	if err != nil {
 		return nil, domain.NewAppError(http.StatusBadRequest, "failed to exchange authorization code")
 	}
 
-	// Get user info from Google
 	client := uc.oauthConfig.Client(ctx, token)
 	resp, err := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
 	if err != nil {
@@ -271,21 +389,18 @@ func (uc *authUseCase) GoogleLogin(ctx context.Context, code string) (*domain.Au
 		return nil, domain.ErrInternal
 	}
 
-	// Try to find existing user by Google ID
 	user, err := uc.authRepo.GetUserByGoogleID(ctx, googleUser.ID)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
 
 	if user == nil {
-		// Try to find by email (link accounts)
 		user, err = uc.authRepo.GetUserByEmail(ctx, googleUser.Email)
 		if err != nil {
 			return nil, domain.ErrInternal
 		}
 
 		if user != nil {
-			// Link Google account to existing user
 			user.GoogleID = &googleUser.ID
 			if googleUser.Picture != "" {
 				user.AvatarURL = &googleUser.Picture
@@ -294,10 +409,17 @@ func (uc *authUseCase) GoogleLogin(ctx context.Context, code string) (*domain.Au
 				return nil, domain.ErrInternal
 			}
 		} else {
-			// Create new org + user
-			org := &domain.Organization{Name: fmt.Sprintf("%s's Org", googleUser.GivenName)}
+			org := &domain.Organization{
+				Name: fmt.Sprintf("%s's Workspace", googleUser.GivenName),
+				Type: "personal",
+			}
 			if err := uc.authRepo.CreateOrganization(ctx, org); err != nil {
 				return nil, domain.ErrInternal
+			}
+
+			fullName := googleUser.GivenName
+			if googleUser.FamilyName != "" {
+				fullName = googleUser.GivenName + " " + googleUser.FamilyName
 			}
 
 			user = &domain.User{
@@ -305,6 +427,7 @@ func (uc *authUseCase) GoogleLogin(ctx context.Context, code string) (*domain.Au
 				Email:     googleUser.Email,
 				FirstName: googleUser.GivenName,
 				LastName:  googleUser.FamilyName,
+				FullName:  fullName,
 				Role:      "admin",
 				GoogleID:  &googleUser.ID,
 				AvatarURL: &googleUser.Picture,
@@ -312,16 +435,33 @@ func (uc *authUseCase) GoogleLogin(ctx context.Context, code string) (*domain.Au
 			if err := uc.authRepo.CreateUser(ctx, user); err != nil {
 				return nil, domain.ErrInternal
 			}
+
+			ou := &domain.OrgUser{
+				UserID: user.ID,
+				OrgID:  org.ID,
+				Role:   "super_admin",
+				Status: "active",
+			}
+			if err := uc.authRepo.CreateOrgUser(ctx, ou); err != nil {
+				return nil, domain.ErrInternal
+			}
 		}
 	}
 
-	// Generate tokens
 	fullUser, _ := uc.authRepo.GetUserByID(ctx, user.ID)
 	if fullUser != nil {
 		user = fullUser
 	}
 
-	accessToken, err := uc.generateAccessToken(user)
+	orgUsers, _ := uc.authRepo.ListOrgsByUserID(ctx, user.ID)
+	var activeOrgID uuid.UUID
+	var activeRole string
+	if len(orgUsers) > 0 {
+		activeOrgID = orgUsers[0].OrgID
+		activeRole = orgUsers[0].Role
+	}
+
+	accessToken, err := uc.generateAccessToken(user.ID, activeOrgID, activeRole)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
@@ -331,16 +471,30 @@ func (uc *authUseCase) GoogleLogin(ctx context.Context, code string) (*domain.Au
 		return nil, domain.ErrInternal
 	}
 
+	workspaces := make([]domain.WorkspaceInfo, 0, len(orgUsers))
+	for _, o := range orgUsers {
+		name := ""
+		orgType := "company"
+		if o.Org != nil {
+			name = o.Org.Name
+			orgType = o.Org.Type
+		}
+		workspaces = append(workspaces, domain.WorkspaceInfo{
+			OrgID:   o.OrgID,
+			OrgName: name,
+			OrgType: orgType,
+			Role:    o.Role,
+			Status:  o.Status,
+		})
+	}
+
 	return &domain.AuthResponse{
 		AccessToken:  accessToken,
 		RefreshToken: refreshTokenStr,
 		User:         *user,
+		Workspaces:   workspaces,
 	}, nil
 }
-
-// ============================================================
-// Token Helpers
-// ============================================================
 
 type JWTClaims struct {
 	UserID uuid.UUID `json:"user_id"`
@@ -349,11 +503,11 @@ type JWTClaims struct {
 	jwt.RegisteredClaims
 }
 
-func (uc *authUseCase) generateAccessToken(user *domain.User) (string, error) {
+func (uc *authUseCase) generateAccessToken(userID, orgID uuid.UUID, role string) (string, error) {
 	claims := JWTClaims{
-		UserID: user.ID,
-		OrgID:  user.OrgID,
-		Role:   user.Role,
+		UserID: userID,
+		OrgID:  orgID,
+		Role:   role,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(accessTokenDuration)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -365,14 +519,12 @@ func (uc *authUseCase) generateAccessToken(user *domain.User) (string, error) {
 }
 
 func (uc *authUseCase) createRefreshToken(ctx context.Context, userID uuid.UUID) (string, error) {
-	// Generate random token
 	b := make([]byte, refreshTokenBytes)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
 	rawToken := hex.EncodeToString(b)
 
-	// Store hash in DB
 	tokenHash := hashToken(rawToken)
 	rt := &domain.RefreshToken{
 		UserID:    userID,

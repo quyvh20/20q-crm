@@ -70,8 +70,10 @@ export default function DealsPage() {
     const map: Record<string, Deal[]> = {};
     stages.forEach(s => { map[s.id] = []; });
     deals.forEach(d => {
-      if (d.stage_id && map[d.stage_id]) {
-        map[d.stage_id].push(d);
+      // Fall back to the first available stage if stage_id is missing
+      const stageId = d.stage_id || (stages.length > 0 ? stages[0].id : null);
+      if (stageId && map[stageId]) {
+        map[stageId].push(d);
       }
     });
     return map;

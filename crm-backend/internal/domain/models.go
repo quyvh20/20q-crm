@@ -11,10 +11,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// ============================================================
-// JSON type for GORM JSONB support
-// ============================================================
-
 type JSON json.RawMessage
 
 func (j JSON) Value() (driver.Value, error) {
@@ -55,13 +51,10 @@ func (j *JSON) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// ============================================================
-// Core Entities
-// ============================================================
-
 type Organization struct {
 	ID                   uuid.UUID      `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
 	Name                 string         `gorm:"size:255;not null" json:"name"`
+	Type                 string         `gorm:"size:50;default:'company'" json:"type"`
 	PlanTier             string         `gorm:"size:50;not null;default:'free'" json:"plan_tier"`
 	PaddleSubscriptionID *string        `gorm:"size:255" json:"paddle_subscription_id,omitempty"`
 	CreatedAt            time.Time      `json:"created_at"`
@@ -71,11 +64,12 @@ type Organization struct {
 
 type User struct {
 	ID           uuid.UUID      `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
-	OrgID        uuid.UUID      `gorm:"type:uuid;not null" json:"org_id"`
+	OrgID        uuid.UUID      `gorm:"type:uuid" json:"org_id,omitempty"`
 	Email        string         `gorm:"size:255;uniqueIndex;not null" json:"email"`
 	PasswordHash *string        `gorm:"size:255" json:"-"`
 	FirstName    string         `gorm:"size:100;not null" json:"first_name"`
 	LastName     string         `gorm:"size:100;not null;default:''" json:"last_name"`
+	FullName     string         `gorm:"size:255" json:"full_name"`
 	Role         string         `gorm:"type:user_role;not null;default:'viewer'" json:"role"`
 	AvatarURL    *string        `gorm:"type:text" json:"avatar_url,omitempty"`
 	GoogleID     *string        `gorm:"size:255" json:"-"`
@@ -83,8 +77,21 @@ type User struct {
 	UpdatedAt    time.Time      `json:"updated_at"`
 	DeletedAt    gorm.DeletedAt `gorm:"index" json:"-"`
 
-	Organization Organization `gorm:"foreignKey:OrgID" json:"organization,omitempty"`
+	Organization *Organization `gorm:"foreignKey:OrgID" json:"organization,omitempty"`
 }
+
+type OrgUser struct {
+	UserID   uuid.UUID `gorm:"type:uuid;primaryKey" json:"user_id"`
+	OrgID    uuid.UUID `gorm:"type:uuid;primaryKey" json:"org_id"`
+	Role     string    `gorm:"size:50;not null;default:'viewer'" json:"role"`
+	Status   string    `gorm:"size:50;not null;default:'active'" json:"status"`
+	JoinedAt time.Time `gorm:"not null;default:now()" json:"joined_at"`
+
+	User *User         `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	Org  *Organization `gorm:"foreignKey:OrgID" json:"org,omitempty"`
+}
+
+func (OrgUser) TableName() string { return "org_users" }
 
 type RefreshToken struct {
 	ID        uuid.UUID  `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
@@ -95,10 +102,6 @@ type RefreshToken struct {
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
 }
-
-// ============================================================
-// CRM Entities
-// ============================================================
 
 type Company struct {
 	ID           uuid.UUID      `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
@@ -130,7 +133,6 @@ type Contact struct {
 	Owner   *User    `gorm:"foreignKey:OwnerUserID" json:"owner,omitempty"`
 	Tags    []Tag    `gorm:"many2many:contact_tags" json:"tags,omitempty"`
 
-	// Vector embedding for semantic search (not serialised to JSON)
 	Embedding *pgvector.Vector `gorm:"type:vector(768)" json:"-"`
 }
 
@@ -231,34 +233,24 @@ type VoiceNote struct {
 	DeletedAt       gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
-// ============================================================
-// Custom Field Definitions (stored as JSONB in OrgSettings)
-// ============================================================
-
 type CustomFieldDef struct {
-	Key        string   `json:"key"`                    // machine key, e.g. "budget"
-	Label      string   `json:"label"`                  // display label, e.g. "Budget ($)"
-	Type       string   `json:"type"`                   // "text" | "number" | "date" | "select" | "boolean" | "url"
-	EntityType string   `json:"entity_type"`            // "contact" | "company" | "deal"
-	Options    []string `json:"options,omitempty"`       // for "select" type only
-	Required   bool     `json:"required"`               // whether field is mandatory
-	Position   int      `json:"position"`               // display order
+	Key        string   `json:"key"`
+	Label      string   `json:"label"`
+	Type       string   `json:"type"`
+	EntityType string   `json:"entity_type"`
+	Options    []string `json:"options,omitempty"`
+	Required   bool     `json:"required"`
+	Position   int      `json:"position"`
 }
 
-// ValidFieldTypes lists the allowed custom field types.
 var ValidFieldTypes = map[string]bool{
 	"text": true, "number": true, "date": true,
 	"select": true, "boolean": true, "url": true,
 }
 
-// ValidEntityTypes lists the entity types that support custom fields.
 var ValidEntityTypes = map[string]bool{
 	"contact": true, "company": true, "deal": true,
 }
-
-// ============================================================
-// Custom Object Definitions & Records
-// ============================================================
 
 type CustomObjectDef struct {
 	ID          uuid.UUID      `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
@@ -285,14 +277,9 @@ type CustomObjectRecord struct {
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
 	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
-	// Preloaded relations
-	Contact *Contact `gorm:"foreignKey:ContactID" json:"contact,omitempty"`
-	Deal    *Deal    `gorm:"foreignKey:DealID" json:"deal,omitempty"`
+	Contact     *Contact       `gorm:"foreignKey:ContactID" json:"contact,omitempty"`
+	Deal        *Deal          `gorm:"foreignKey:DealID" json:"deal,omitempty"`
 }
-
-// ============================================================
-// System / Configuration Entities
-// ============================================================
 
 type SystemTemplate struct {
 	ID              uuid.UUID `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
@@ -342,10 +329,6 @@ type WorkflowRun struct {
 	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
-// ============================================================
-// AI Token Usage (audit trail)
-// ============================================================
-
 type AITokenUsage struct {
 	ID                uuid.UUID `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
 	OrgID             uuid.UUID `gorm:"type:uuid;not null;index" json:"org_id"`
@@ -363,10 +346,6 @@ type AITokenUsage struct {
 	CreatedAt         time.Time `json:"created_at"`
 }
 
-// ============================================================
-// Knowledge Base
-// ============================================================
-
 type KnowledgeBaseEntry struct {
 	ID        uuid.UUID      `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
 	OrgID     uuid.UUID      `gorm:"type:uuid;not null" json:"org_id"`
@@ -381,7 +360,6 @@ type KnowledgeBaseEntry struct {
 
 func (KnowledgeBaseEntry) TableName() string { return "knowledge_base" }
 
-// ValidKBSections lists the allowed knowledge base section keys.
 var ValidKBSections = map[string]string{
 	"company":     "Company Info",
 	"products":    "Products & Services",

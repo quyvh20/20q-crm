@@ -55,8 +55,7 @@ func (r *contactRepository) List(ctx context.Context, orgID uuid.UUID, f domain.
 		limit = 25
 	}
 
-	query := r.db.WithContext(ctx).
-		Where("contacts.org_id = ?", orgID).
+	query := applyScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "contacts").
 		Preload("Company").
 		Preload("Tags").
 		Preload("Owner")
@@ -119,8 +118,8 @@ func (r *contactRepository) List(ctx context.Context, orgID uuid.UUID, f domain.
 
 func (r *contactRepository) GetByID(ctx context.Context, orgID, id uuid.UUID) (*domain.Contact, error) {
 	var contact domain.Contact
-	err := r.db.WithContext(ctx).
-		Where("org_id = ? AND id = ?", orgID, id).
+	err := applyScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "contacts").
+		Where("contacts.id = ?", id).
 		Preload("Company").
 		Preload("Tags").
 		Preload("Owner").
@@ -155,8 +154,8 @@ func (r *contactRepository) Update(ctx context.Context, c *domain.Contact) error
 // ============================================================
 
 func (r *contactRepository) SoftDelete(ctx context.Context, orgID, id uuid.UUID) error {
-	result := r.db.WithContext(ctx).
-		Where("org_id = ? AND id = ?", orgID, id).
+	result := applyScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "contacts").
+		Where("contacts.id = ?", id).
 		Delete(&domain.Contact{})
 	if result.Error != nil {
 		return result.Error
@@ -241,9 +240,7 @@ func (r *contactRepository) BulkCreate(ctx context.Context, contacts []domain.Co
 
 func (r *contactRepository) Count(ctx context.Context, orgID uuid.UUID) (int64, error) {
 	var count int64
-	err := r.db.WithContext(ctx).
-		Model(&domain.Contact{}).
-		Where("org_id = ?", orgID).
+	err := applyScopeFromCtx(r.db.WithContext(ctx).Model(&domain.Contact{}), ctx, orgID, "contacts").
 		Count(&count).Error
 	return count, err
 }
@@ -321,8 +318,8 @@ func (r *contactRepository) BulkDeleteByIDs(ctx context.Context, orgID uuid.UUID
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	result := r.db.WithContext(ctx).
-		Where("org_id = ? AND id IN ?", orgID, ids).
+	result := applyScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "contacts").
+		Where("contacts.id IN ?", ids).
 		Delete(&domain.Contact{})
 	return result.RowsAffected, result.Error
 }
@@ -371,9 +368,9 @@ func (r *contactRepository) SemanticSearch(ctx context.Context, orgID uuid.UUID,
 	vecStr += "]"
 
 	var contacts []domain.Contact
-	err := r.db.WithContext(ctx).
-		Where("org_id = ? AND embedding IS NOT NULL", orgID).
-		Where(fmt.Sprintf("embedding <=> '%s'::vector < ?", vecStr), threshold).
+	err := applyScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "contacts").
+		Where("contacts.embedding IS NOT NULL").
+		Where(fmt.Sprintf("contacts.embedding <=> '%s'::vector < ?", vecStr), threshold).
 		Order(fmt.Sprintf("embedding <=> '%s'::vector", vecStr)).
 		Limit(limit).
 		Preload("Company").

@@ -7,12 +7,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// ============================================================
-// Auth DTOs (Data Transfer Objects)
-// ============================================================
-
 type RegisterInput struct {
 	OrgName   string `json:"org_name" binding:"required,min=2"`
+	OrgType   string `json:"org_type"`
 	Email     string `json:"email" binding:"required,email"`
 	Password  string `json:"password" binding:"required,min=8"`
 	FirstName string `json:"first_name" binding:"required,min=1"`
@@ -28,10 +25,43 @@ type RefreshInput struct {
 	RefreshToken string `json:"refresh_token" binding:"required"`
 }
 
+type SwitchWorkspaceInput struct {
+	OrgID uuid.UUID `json:"org_id" binding:"required"`
+}
+
+type WorkspaceInfo struct {
+	OrgID   uuid.UUID `json:"org_id"`
+	OrgName string    `json:"org_name"`
+	OrgType string    `json:"org_type"`
+	Role    string    `json:"role"`
+	Status  string    `json:"status"`
+}
+
 type AuthResponse struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	User         User   `json:"user"`
+	AccessToken  string          `json:"access_token"`
+	RefreshToken string          `json:"refresh_token"`
+	User         User            `json:"user"`
+	Workspaces   []WorkspaceInfo `json:"workspaces"`
+}
+
+type InviteMemberInput struct {
+	Email string `json:"email" binding:"required,email"`
+	Role  string `json:"role" binding:"required"`
+}
+
+type UpdateMemberRoleInput struct {
+	Role string `json:"role" binding:"required"`
+}
+
+type MemberInfo struct {
+	UserID    uuid.UUID `json:"user_id"`
+	Email     string    `json:"email"`
+	FirstName string    `json:"first_name"`
+	LastName  string    `json:"last_name"`
+	FullName  string    `json:"full_name"`
+	AvatarURL *string   `json:"avatar_url,omitempty"`
+	Role      string    `json:"role"`
+	Status    string    `json:"status"`
 }
 
 type GoogleUserInfo struct {
@@ -43,10 +73,6 @@ type GoogleUserInfo struct {
 	FamilyName    string `json:"family_name"`
 	Picture       string `json:"picture"`
 }
-
-// ============================================================
-// Repository Interfaces
-// ============================================================
 
 type AuthRepository interface {
 	CreateOrganization(ctx context.Context, org *Organization) error
@@ -60,11 +86,15 @@ type AuthRepository interface {
 	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (*RefreshToken, error)
 	RevokeRefreshToken(ctx context.Context, tokenID uuid.UUID) error
 	RevokeAllUserRefreshTokens(ctx context.Context, userID uuid.UUID) error
-}
 
-// ============================================================
-// UseCase Interfaces
-// ============================================================
+	CreateOrgUser(ctx context.Context, ou *OrgUser) error
+	GetOrgUser(ctx context.Context, userID, orgID uuid.UUID) (*OrgUser, error)
+	ListOrgsByUserID(ctx context.Context, userID uuid.UUID) ([]OrgUser, error)
+	ListMembersByOrgID(ctx context.Context, orgID uuid.UUID) ([]OrgUser, error)
+	UpdateOrgUserRole(ctx context.Context, userID, orgID uuid.UUID, role string) error
+	DeleteOrgUser(ctx context.Context, userID, orgID uuid.UUID) error
+	GetOrgUserByEmail(ctx context.Context, email string, orgID uuid.UUID) (*OrgUser, error)
+}
 
 type AuthUseCase interface {
 	Register(ctx context.Context, input RegisterInput) (*AuthResponse, error)
@@ -74,11 +104,16 @@ type AuthUseCase interface {
 	GetMe(ctx context.Context, userID uuid.UUID) (*User, error)
 	GoogleLogin(ctx context.Context, code string) (*AuthResponse, error)
 	GetGoogleAuthURL(state string) string
+	SwitchWorkspace(ctx context.Context, userID uuid.UUID, input SwitchWorkspaceInput) (*AuthResponse, error)
+	ListWorkspaces(ctx context.Context, userID uuid.UUID) ([]WorkspaceInfo, error)
 }
 
-// ============================================================
-// Contact DTOs
-// ============================================================
+type WorkspaceUseCase interface {
+	ListMembers(ctx context.Context, orgID uuid.UUID) ([]MemberInfo, error)
+	InviteMember(ctx context.Context, orgID uuid.UUID, input InviteMemberInput) (*MemberInfo, error)
+	UpdateMemberRole(ctx context.Context, orgID uuid.UUID, targetUserID uuid.UUID, input UpdateMemberRoleInput) error
+	RemoveMember(ctx context.Context, orgID uuid.UUID, targetUserID uuid.UUID) error
+}
 
 type ContactFilter struct {
 	Q           string      `form:"q"`
@@ -98,30 +133,26 @@ type ImportResult struct {
 }
 
 type CreateContactInput struct {
-	FirstName    string     `json:"first_name" binding:"required,min=1"`
-	LastName     string     `json:"last_name"`
-	Email        *string    `json:"email"`
-	Phone        *string    `json:"phone"`
-	CompanyID    *uuid.UUID `json:"company_id"`
-	OwnerUserID  *uuid.UUID `json:"owner_user_id"`
-	CustomFields JSON       `json:"custom_fields"`
+	FirstName    string      `json:"first_name" binding:"required,min=1"`
+	LastName     string      `json:"last_name"`
+	Email        *string     `json:"email"`
+	Phone        *string     `json:"phone"`
+	CompanyID    *uuid.UUID  `json:"company_id"`
+	OwnerUserID  *uuid.UUID  `json:"owner_user_id"`
+	CustomFields JSON        `json:"custom_fields"`
 	TagIDs       []uuid.UUID `json:"tag_ids"`
 }
 
 type UpdateContactInput struct {
-	FirstName    *string    `json:"first_name"`
-	LastName     *string    `json:"last_name"`
-	Email        *string    `json:"email"`
-	Phone        *string    `json:"phone"`
-	CompanyID    *uuid.UUID `json:"company_id"`
-	OwnerUserID  *uuid.UUID `json:"owner_user_id"`
-	CustomFields *JSON      `json:"custom_fields"`
+	FirstName    *string      `json:"first_name"`
+	LastName     *string      `json:"last_name"`
+	Email        *string      `json:"email"`
+	Phone        *string      `json:"phone"`
+	CompanyID    *uuid.UUID   `json:"company_id"`
+	OwnerUserID  *uuid.UUID   `json:"owner_user_id"`
+	CustomFields *JSON        `json:"custom_fields"`
 	TagIDs       *[]uuid.UUID `json:"tag_ids"`
 }
-
-// ============================================================
-// Contact Repository Interface
-// ============================================================
 
 type ContactRepository interface {
 	List(ctx context.Context, orgID uuid.UUID, f ContactFilter) ([]Contact, string, error)
@@ -141,18 +172,16 @@ type ContactRepository interface {
 	SemanticSearch(ctx context.Context, orgID uuid.UUID, vec []float32, threshold float32, limit int) ([]Contact, error)
 }
 
-// BulkAction DTOs
 type BulkActionInput struct {
-	Action     string      `json:"action" binding:"required"` // "delete" | "assign_tag"
+	Action     string      `json:"action" binding:"required"`
 	ContactIDs []uuid.UUID `json:"contact_ids" binding:"required,min=1"`
-	TagID      *uuid.UUID  `json:"tag_id"` // required when action == "assign_tag"
+	TagID      *uuid.UUID  `json:"tag_id"`
 }
 
 type BulkActionResult struct {
 	Affected int    `json:"affected"`
 	Message  string `json:"message"`
 }
-
 
 type ContactUseCase interface {
 	List(ctx context.Context, orgID uuid.UUID, f ContactFilter) ([]Contact, string, error)
@@ -166,17 +195,9 @@ type ContactUseCase interface {
 	Count(ctx context.Context, orgID uuid.UUID) (int64, error)
 }
 
-// ============================================================
-// Queues / Workers Interfaces
-// ============================================================
-
 type EmbeddingQueue interface {
 	EnqueueContact(c *Contact)
 }
-
-// ============================================================
-// Company DTOs
-// ============================================================
 
 type CompanyFilter struct {
 	Q      string `form:"q"`
@@ -185,22 +206,18 @@ type CompanyFilter struct {
 }
 
 type CreateCompanyInput struct {
-	Name         string     `json:"name" binding:"required,min=1"`
-	Industry     *string    `json:"industry"`
-	Website      *string    `json:"website"`
-	CustomFields JSON       `json:"custom_fields"`
+	Name         string  `json:"name" binding:"required,min=1"`
+	Industry     *string `json:"industry"`
+	Website      *string `json:"website"`
+	CustomFields JSON    `json:"custom_fields"`
 }
 
 type UpdateCompanyInput struct {
-	Name         *string    `json:"name"`
-	Industry     *string    `json:"industry"`
-	Website      *string    `json:"website"`
-	CustomFields *JSON      `json:"custom_fields"`
+	Name         *string `json:"name"`
+	Industry     *string `json:"industry"`
+	Website      *string `json:"website"`
+	CustomFields *JSON   `json:"custom_fields"`
 }
-
-// ============================================================
-// Company Repository Interface
-// ============================================================
 
 type CompanyRepository interface {
 	List(ctx context.Context, orgID uuid.UUID, f CompanyFilter) ([]Company, string, error)
@@ -211,10 +228,6 @@ type CompanyRepository interface {
 	Count(ctx context.Context, orgID uuid.UUID) (int64, error)
 }
 
-// ============================================================
-// Company UseCase Interface
-// ============================================================
-
 type CompanyUseCase interface {
 	List(ctx context.Context, orgID uuid.UUID, f CompanyFilter) ([]Company, string, error)
 	GetByID(ctx context.Context, orgID, id uuid.UUID) (*Company, error)
@@ -223,10 +236,6 @@ type CompanyUseCase interface {
 	Delete(ctx context.Context, orgID, id uuid.UUID) error
 	Count(ctx context.Context, orgID uuid.UUID) (int64, error)
 }
-
-// ============================================================
-// Tag DTOs
-// ============================================================
 
 type CreateTagInput struct {
 	Name  string `json:"name" binding:"required,min=1"`
@@ -238,10 +247,6 @@ type UpdateTagInput struct {
 	Color *string `json:"color"`
 }
 
-// ============================================================
-// Tag Repository Interface
-// ============================================================
-
 type TagRepository interface {
 	List(ctx context.Context, orgID uuid.UUID) ([]Tag, error)
 	GetByID(ctx context.Context, orgID, id uuid.UUID) (*Tag, error)
@@ -250,10 +255,6 @@ type TagRepository interface {
 	Delete(ctx context.Context, orgID, id uuid.UUID) error
 }
 
-// ============================================================
-// Tag UseCase Interface
-// ============================================================
-
 type TagUseCase interface {
 	List(ctx context.Context, orgID uuid.UUID) ([]Tag, error)
 	GetByID(ctx context.Context, orgID, id uuid.UUID) (*Tag, error)
@@ -261,10 +262,6 @@ type TagUseCase interface {
 	Update(ctx context.Context, orgID, id uuid.UUID, input UpdateTagInput) (*Tag, error)
 	Delete(ctx context.Context, orgID, id uuid.UUID) error
 }
-
-// ============================================================
-// Deal DTOs
-// ============================================================
 
 type DealFilter struct {
 	Q           string     `form:"q"`
@@ -308,10 +305,6 @@ type ForecastRow struct {
 	DealsCount      int     `json:"deals_count"`
 }
 
-// ============================================================
-// Deal Repository Interface
-// ============================================================
-
 type DealRepository interface {
 	List(ctx context.Context, orgID uuid.UUID, f DealFilter) ([]Deal, string, error)
 	GetByID(ctx context.Context, orgID, id uuid.UUID) (*Deal, error)
@@ -321,10 +314,6 @@ type DealRepository interface {
 	Count(ctx context.Context, orgID uuid.UUID) (int64, error)
 	Forecast(ctx context.Context, orgID uuid.UUID) ([]ForecastRow, error)
 }
-
-// ============================================================
-// Deal UseCase Interface
-// ============================================================
 
 type DealUseCase interface {
 	List(ctx context.Context, orgID uuid.UUID, f DealFilter) ([]Deal, string, error)
@@ -336,10 +325,6 @@ type DealUseCase interface {
 	Forecast(ctx context.Context, orgID uuid.UUID) ([]ForecastRow, error)
 	Count(ctx context.Context, orgID uuid.UUID) (int64, error)
 }
-
-// ============================================================
-// PipelineStage DTOs
-// ============================================================
 
 type CreateStageInput struct {
 	Name     string `json:"name" binding:"required,min=1"`
@@ -357,10 +342,6 @@ type UpdateStageInput struct {
 	IsLost   *bool   `json:"is_lost"`
 }
 
-// ============================================================
-// PipelineStage Repository Interface
-// ============================================================
-
 type PipelineStageRepository interface {
 	List(ctx context.Context, orgID uuid.UUID) ([]PipelineStage, error)
 	GetByID(ctx context.Context, orgID, id uuid.UUID) (*PipelineStage, error)
@@ -369,20 +350,12 @@ type PipelineStageRepository interface {
 	CountByOrg(ctx context.Context, orgID uuid.UUID) (int64, error)
 }
 
-// ============================================================
-// PipelineStage UseCase Interface
-// ============================================================
-
 type PipelineStageUseCase interface {
 	List(ctx context.Context, orgID uuid.UUID) ([]PipelineStage, error)
 	GetByID(ctx context.Context, orgID, id uuid.UUID) (*PipelineStage, error)
 	Create(ctx context.Context, orgID uuid.UUID, input CreateStageInput) (*PipelineStage, error)
 	Update(ctx context.Context, orgID, id uuid.UUID, input UpdateStageInput) (*PipelineStage, error)
 }
-
-// ============================================================
-// Activity DTOs
-// ============================================================
 
 type ActivityFilter struct {
 	DealID    *uuid.UUID `form:"deal_id"`
@@ -399,27 +372,15 @@ type CreateActivityInput struct {
 	OccurredAt      *string    `json:"occurred_at"`
 }
 
-// ============================================================
-// Activity Repository Interface
-// ============================================================
-
 type ActivityRepository interface {
 	List(ctx context.Context, orgID uuid.UUID, f ActivityFilter) ([]Activity, error)
 	Create(ctx context.Context, a *Activity) error
 }
 
-// ============================================================
-// Activity UseCase Interface
-// ============================================================
-
 type ActivityUseCase interface {
 	List(ctx context.Context, orgID uuid.UUID, f ActivityFilter) ([]Activity, error)
 	Create(ctx context.Context, orgID uuid.UUID, userID uuid.UUID, input CreateActivityInput) (*Activity, error)
 }
-
-// ============================================================
-// Task DTOs
-// ============================================================
 
 type TaskFilter struct {
 	DealID     *uuid.UUID `form:"deal_id"`
@@ -434,7 +395,7 @@ type CreateTaskInput struct {
 	ContactID  *uuid.UUID `json:"contact_id"`
 	AssignedTo *uuid.UUID `json:"assigned_to"`
 	DueAt      *string    `json:"due_at"`
-	Priority   string     `json:"priority"` // low, medium, high
+	Priority   string     `json:"priority"`
 }
 
 type UpdateTaskInput struct {
@@ -445,10 +406,6 @@ type UpdateTaskInput struct {
 	Completed  *bool      `json:"completed"`
 }
 
-// ============================================================
-// Task Repository Interface
-// ============================================================
-
 type TaskRepository interface {
 	List(ctx context.Context, orgID uuid.UUID, f TaskFilter) ([]Task, error)
 	GetByID(ctx context.Context, orgID, id uuid.UUID) (*Task, error)
@@ -457,10 +414,6 @@ type TaskRepository interface {
 	SoftDelete(ctx context.Context, orgID, id uuid.UUID) error
 }
 
-// ============================================================
-// Task UseCase Interface
-// ============================================================
-
 type TaskUseCase interface {
 	List(ctx context.Context, orgID uuid.UUID, f TaskFilter) ([]Task, error)
 	Create(ctx context.Context, orgID uuid.UUID, input CreateTaskInput) (*Task, error)
@@ -468,17 +421,9 @@ type TaskUseCase interface {
 	Delete(ctx context.Context, orgID uuid.UUID, id uuid.UUID) error
 }
 
-// ============================================================
-// User Listing (for assignee dropdowns)
-// ============================================================
-
 type UserRepository interface {
 	ListByOrgID(ctx context.Context, orgID uuid.UUID) ([]User, error)
 }
-
-// ============================================================
-// OrgSettings / Custom Field Definitions DTOs
-// ============================================================
 
 type CreateFieldDefInput struct {
 	Key        string   `json:"key" binding:"required,min=1"`
@@ -498,18 +443,10 @@ type UpdateFieldDefInput struct {
 	Position *int     `json:"position"`
 }
 
-// ============================================================
-// OrgSettings Repository Interface
-// ============================================================
-
 type OrgSettingsRepository interface {
 	GetByOrgID(ctx context.Context, orgID uuid.UUID) (*OrgSettings, error)
 	Upsert(ctx context.Context, settings *OrgSettings) error
 }
-
-// ============================================================
-// OrgSettings UseCase Interface
-// ============================================================
 
 type OrgSettingsUseCase interface {
 	GetFieldDefs(ctx context.Context, orgID uuid.UUID, entityType string) ([]CustomFieldDef, error)
@@ -519,16 +456,12 @@ type OrgSettingsUseCase interface {
 	ValidateCustomFields(ctx context.Context, orgID uuid.UUID, entityType string, fields JSON) error
 }
 
-// ============================================================
-// Custom Object Definitions & Records DTOs
-// ============================================================
-
 type CreateObjectDefInput struct {
 	Slug        string `json:"slug" binding:"required,min=1"`
 	Label       string `json:"label" binding:"required,min=1"`
 	LabelPlural string `json:"label_plural" binding:"required,min=1"`
 	Icon        string `json:"icon"`
-	Fields      JSON   `json:"fields"` // array of CustomFieldDef (without entity_type)
+	Fields      JSON   `json:"fields"`
 }
 
 type UpdateObjectDefInput struct {
@@ -557,12 +490,7 @@ type RecordFilter struct {
 	Q      string `json:"q"`
 }
 
-// ============================================================
-// Custom Object Repository Interface
-// ============================================================
-
 type CustomObjectRepository interface {
-	// Definitions
 	ListDefs(ctx context.Context, orgID uuid.UUID) ([]CustomObjectDef, error)
 	GetDefBySlug(ctx context.Context, orgID uuid.UUID, slug string) (*CustomObjectDef, error)
 	GetDefByID(ctx context.Context, orgID uuid.UUID, id uuid.UUID) (*CustomObjectDef, error)
@@ -570,7 +498,6 @@ type CustomObjectRepository interface {
 	UpdateDef(ctx context.Context, def *CustomObjectDef) error
 	SoftDeleteDef(ctx context.Context, orgID uuid.UUID, id uuid.UUID) error
 
-	// Records
 	ListRecords(ctx context.Context, orgID uuid.UUID, defID uuid.UUID, f RecordFilter) ([]CustomObjectRecord, int64, error)
 	GetRecord(ctx context.Context, orgID uuid.UUID, id uuid.UUID) (*CustomObjectRecord, error)
 	CreateRecord(ctx context.Context, r *CustomObjectRecord) error
@@ -578,19 +505,13 @@ type CustomObjectRepository interface {
 	SoftDeleteRecord(ctx context.Context, orgID uuid.UUID, id uuid.UUID) error
 }
 
-// ============================================================
-// Custom Object UseCase Interface
-// ============================================================
-
 type CustomObjectUseCase interface {
-	// Definitions
 	ListDefs(ctx context.Context, orgID uuid.UUID) ([]CustomObjectDef, error)
 	GetDefBySlug(ctx context.Context, orgID uuid.UUID, slug string) (*CustomObjectDef, error)
 	CreateDef(ctx context.Context, orgID uuid.UUID, input CreateObjectDefInput) (*CustomObjectDef, error)
 	UpdateDef(ctx context.Context, orgID uuid.UUID, slug string, input UpdateObjectDefInput) (*CustomObjectDef, error)
 	DeleteDef(ctx context.Context, orgID uuid.UUID, slug string) error
 
-	// Records
 	ListRecords(ctx context.Context, orgID uuid.UUID, slug string, f RecordFilter) ([]CustomObjectRecord, int64, error)
 	GetRecord(ctx context.Context, orgID uuid.UUID, id uuid.UUID) (*CustomObjectRecord, error)
 	CreateRecord(ctx context.Context, orgID uuid.UUID, userID uuid.UUID, slug string, input CreateRecordInput) (*CustomObjectRecord, error)
@@ -598,18 +519,10 @@ type CustomObjectUseCase interface {
 	DeleteRecord(ctx context.Context, orgID uuid.UUID, id uuid.UUID) error
 }
 
-// ============================================================
-// Knowledge Base DTOs
-// ============================================================
-
 type UpsertKBInput struct {
 	Title   string `json:"title" binding:"required,min=1"`
 	Content string `json:"content" binding:"required"`
 }
-
-// ============================================================
-// Knowledge Base Repository Interface
-// ============================================================
 
 type KnowledgeBaseRepository interface {
 	GetAllActive(ctx context.Context, orgID uuid.UUID) ([]KnowledgeBaseEntry, error)
@@ -617,15 +530,9 @@ type KnowledgeBaseRepository interface {
 	Upsert(ctx context.Context, entry *KnowledgeBaseEntry) error
 }
 
-// ============================================================
-// Knowledge Base UseCase Interface
-// ============================================================
-
 type KnowledgeBaseUseCase interface {
 	ListSections(ctx context.Context, orgID uuid.UUID) ([]KnowledgeBaseEntry, error)
 	GetSection(ctx context.Context, orgID uuid.UUID, section string) (*KnowledgeBaseEntry, error)
 	UpsertSection(ctx context.Context, orgID uuid.UUID, userID uuid.UUID, section string, input UpsertKBInput) (*KnowledgeBaseEntry, error)
 	GetAIPrompt(ctx context.Context, orgID uuid.UUID) (string, error)
 }
-
-

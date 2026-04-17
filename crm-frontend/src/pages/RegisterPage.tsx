@@ -7,6 +7,7 @@ export default function RegisterPage() {
   const { register } = useAuth();
   const [form, setForm] = useState({
     org_name: '',
+    org_type: 'company',
     email: '',
     password: '',
     first_name: '',
@@ -15,7 +16,7 @@ export default function RegisterPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     setForm((prev) => ({ ...prev, [e.target.name]: e.target.value }));
   };
 
@@ -39,7 +40,6 @@ export default function RegisterPage() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
       <div className="w-full max-w-md">
-        {/* Logo */}
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-white tracking-tight">
             Guerrilla <span className="text-blue-400">CRM</span>
@@ -47,9 +47,7 @@ export default function RegisterPage() {
           <p className="text-slate-400 mt-2">Create your account</p>
         </div>
 
-        {/* Card */}
         <div className="bg-slate-800/50 backdrop-blur-xl border border-slate-700/50 rounded-2xl p-8 shadow-2xl">
-          {/* Google Button */}
           <button
             type="button"
             onClick={handleGoogleLogin}
@@ -64,25 +62,22 @@ export default function RegisterPage() {
             Continue with Google
           </button>
 
-          {/* Divider */}
           <div className="flex items-center my-6">
             <div className="flex-1 h-px bg-slate-700"></div>
             <span className="px-4 text-sm text-slate-500">or register with email</span>
             <div className="flex-1 h-px bg-slate-700"></div>
           </div>
 
-          {/* Error */}
           {error && (
             <div className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
               {error}
             </div>
           )}
 
-          {/* Form */}
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label htmlFor="reg-orgname" className="block text-sm font-medium text-slate-300 mb-1.5">
-                Organization Name
+                Workspace Name
               </label>
               <input
                 id="reg-orgname"
@@ -94,6 +89,36 @@ export default function RegisterPage() {
                 className="w-full px-4 py-3 bg-slate-900/50 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all"
                 placeholder="Acme Inc."
               />
+            </div>
+
+            <div>
+              <label htmlFor="reg-orgtype" className="block text-sm font-medium text-slate-300 mb-1.5">
+                Workspace Type
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setForm(f => ({ ...f, org_type: 'company' }))}
+                  className={`px-4 py-3 rounded-xl border text-sm font-medium transition-all ${
+                    form.org_type === 'company'
+                      ? 'border-blue-500 bg-blue-500/10 text-blue-400'
+                      : 'border-slate-700 text-slate-400 hover:border-slate-600'
+                  }`}
+                >
+                  🏢 Company
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setForm(f => ({ ...f, org_type: 'personal' }))}
+                  className={`px-4 py-3 rounded-xl border text-sm font-medium transition-all ${
+                    form.org_type === 'personal'
+                      ? 'border-blue-500 bg-blue-500/10 text-blue-400'
+                      : 'border-slate-700 text-slate-400 hover:border-slate-600'
+                  }`}
+                >
+                  👤 Personal
+                </button>
+              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -170,7 +195,6 @@ export default function RegisterPage() {
             </button>
           </form>
 
-          {/* Login link */}
           <p className="text-center text-sm text-slate-400 mt-6">
             Already have an account?{' '}
             <a href="/login" className="text-blue-400 hover:text-blue-300 font-medium transition-colors">
