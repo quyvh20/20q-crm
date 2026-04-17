@@ -100,12 +100,22 @@ func (q *AIJobQueue) Start(ctx context.Context, workers int) {
 }
 
 func (q *AIJobQueue) runWorker(ctx context.Context, id int) {
+	defer func() {
+		if r := recover(); r != nil {
+			q.logger.Error("AI worker panic recovered", zap.Any("panic", r), zap.Int("worker_id", id))
+		}
+	}()
+
+	if q.redis == nil {
+		q.logger.Warn("AI worker skipped: redis client is nil", zap.Int("worker_id", id))
+		return
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
-			// Block for up to 5 seconds waiting for a job
 			res, err := q.redis.BRPop(ctx, 5*time.Second, "ai:jobs").Result()
 			if err != nil {
 				if err != redis.Nil {
