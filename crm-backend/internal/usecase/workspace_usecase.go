@@ -79,7 +79,7 @@ func (uc *workspaceUseCase) InviteMember(ctx context.Context, orgID uuid.UUID, i
 		UserID: user.ID,
 		OrgID:  orgID,
 		Role:   input.Role,
-		Status: "pending",
+		Status: "active",
 	}
 	if err := uc.authRepo.CreateOrgUser(ctx, ou); err != nil {
 		return nil, domain.ErrInternal
@@ -93,7 +93,7 @@ func (uc *workspaceUseCase) InviteMember(ctx context.Context, orgID uuid.UUID, i
 		FullName:  user.FullName,
 		AvatarURL: user.AvatarURL,
 		Role:      input.Role,
-		Status:    "pending",
+		Status:    "active",
 	}, nil
 }
 
