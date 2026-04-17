@@ -106,7 +106,7 @@ func RequireRole(roles ...string) gin.HandlerFunc {
 			return
 		}
 
-		if roleStr == "super_admin" {
+		if roleStr == "owner" {
 			c.Next()
 			return
 		}
