@@ -143,7 +143,7 @@ func main() {
 
 		var mailerSvc domain.Mailer
 		if cfg.ResendAPIKey != "" {
-			mailerSvc = mailer.NewResendMailer(cfg.ResendAPIKey, "noreply@20q-crm.com")
+			mailerSvc = mailer.NewResendMailer(cfg.ResendAPIKey, "onboarding@resend.dev")
 		} else {
 			mailerSvc = mailer.NewLogMailer()
 		}

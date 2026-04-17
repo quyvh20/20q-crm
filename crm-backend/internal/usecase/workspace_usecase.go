@@ -90,7 +90,7 @@ func (uc *workspaceUseCase) InviteMember(ctx context.Context, orgID uuid.UUID, i
 		return nil, nil, domain.ErrInternal
 	}
 
-	link := fmt.Sprintf("%s/accept-invite?token=%s", "http://localhost:5173", rawToken)
+	link := fmt.Sprintf("%s/accept-invite?token=%s", "https://20q-crm.vercel.app", rawToken)
 	if err := uc.mailer.SendInvite(ctx, input.Email, link, orgID.String()); err != nil {
 		return nil, nil, domain.NewAppError(500, "failed to send email")
 	}
