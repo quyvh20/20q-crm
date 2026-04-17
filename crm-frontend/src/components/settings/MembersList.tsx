@@ -3,7 +3,7 @@ import { getWorkspaceMembers, updateMemberRole, removeMember, suspendMember, rei
 import { useAuth } from '../../lib/auth';
 import { ShieldAlert, PauseCircle, PlayCircle, UserMinus, Crown, Shield } from 'lucide-react';
 
-const ROLE_OPTIONS = ['admin', 'manager', 'sales', 'viewer'];
+const ROLE_OPTIONS = ['admin', 'manager', 'sales_rep', 'viewer'];
 
 export default function MembersList() {
   const { currentRole, user } = useAuth();
@@ -29,11 +29,14 @@ export default function MembersList() {
   }, []);
 
   const handleRoleChange = async (userId: string, newRole: string) => {
+    // Optimistic UI update
+    setMembers(prev => prev.map(m => m.user_id === userId ? { ...m, role: newRole } : m));
     try {
       await updateMemberRole(userId, newRole);
-      fetchMembers();
+      getWorkspaceMembers().then(setMembers);
     } catch {
-      // silent
+      // Revert if failed
+      getWorkspaceMembers().then(setMembers);
     }
   };
 
@@ -56,20 +59,26 @@ export default function MembersList() {
 
   const handleSuspend = async (userId: string) => {
     if (!confirm('Suspend this member? They will lose access immediately.')) return;
+    // Optimistic update
+    setMembers(prev => prev.map(m => m.user_id === userId ? { ...m, status: 'suspended' } : m));
     try {
       await suspendMember(userId);
-      fetchMembers();
+      getWorkspaceMembers().then(setMembers);
     } catch (err: any) {
       setErrorMsg(err.message);
+      getWorkspaceMembers().then(setMembers);
     }
   };
 
   const handleReinstate = async (userId: string) => {
+    // Optimistic update
+    setMembers(prev => prev.map(m => m.user_id === userId ? { ...m, status: 'active' } : m));
     try {
       await reinstateMember(userId);
-      fetchMembers();
+      getWorkspaceMembers().then(setMembers);
     } catch (err: any) {
       setErrorMsg(err.message);
+      getWorkspaceMembers().then(setMembers);
     }
   };
 
@@ -140,7 +149,7 @@ export default function MembersList() {
                       className="px-2 py-1 flex items-center text-sm bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
                     >
                       {ROLE_OPTIONS.map(r => (
-                        <option key={r} value={r}>{r.charAt(0).toUpperCase() + r.slice(1)}</option>
+                        <option key={r} value={r}>{r.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}</option>
                       ))}
                     </select>
                   ) : (

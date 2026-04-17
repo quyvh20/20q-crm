@@ -30,11 +30,26 @@ const (
 
 type authUseCase struct {
 	authRepo    domain.AuthRepository
+	stageRepo   domain.PipelineStageRepository
 	cfg         *config.Config
 	oauthConfig *oauth2.Config
 }
 
-func NewAuthUseCase(repo domain.AuthRepository, cfg *config.Config) domain.AuthUseCase {
+var defaultPipelineStages = []struct {
+	Name  string
+	Color string
+	IsWon bool
+	IsLost bool
+	Pos  int
+}{
+	{"Lead In",     "#6366F1", false, false, 0},
+	{"Qualified",   "#3B82F6", false, false, 1},
+	{"Proposal",    "#F59E0B", false, false, 2},
+	{"Negotiation", "#EF4444", false, false, 3},
+	{"Closed Won",  "#10B981", true,  false, 4},
+}
+
+func NewAuthUseCase(repo domain.AuthRepository, stageRepo domain.PipelineStageRepository, cfg *config.Config) domain.AuthUseCase {
 	var oauthCfg *oauth2.Config
 	if cfg.GoogleClientID != "" {
 		oauthCfg = &oauth2.Config{
@@ -47,8 +62,28 @@ func NewAuthUseCase(repo domain.AuthRepository, cfg *config.Config) domain.AuthU
 	}
 	return &authUseCase{
 		authRepo:    repo,
+		stageRepo:   stageRepo,
 		cfg:         cfg,
 		oauthConfig: oauthCfg,
+	}
+}
+
+func (uc *authUseCase) seedDefaultStages(ctx context.Context, orgID uuid.UUID) {
+	// Only seed if no stages exist
+	count, err := uc.stageRepo.CountByOrg(ctx, orgID)
+	if err != nil || count > 0 {
+		return
+	}
+	for _, s := range defaultPipelineStages {
+		stage := &domain.PipelineStage{
+			OrgID:    orgID,
+			Name:     s.Name,
+			Color:    s.Color,
+			Position: s.Pos,
+			IsWon:    s.IsWon,
+			IsLost:   s.IsLost,
+		}
+		_ = uc.stageRepo.Create(ctx, stage)
 	}
 }
 
@@ -69,6 +104,9 @@ func (uc *authUseCase) Register(ctx context.Context, input domain.RegisterInput)
 	if err := uc.authRepo.CreateOrganization(ctx, org); err != nil {
 		return nil, domain.NewAppError(500, "Create org err: " + err.Error())
 	}
+
+	// Seed default pipeline stages for the new organization
+	uc.seedDefaultStages(ctx, org.ID)
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcryptCost)
 	if err != nil {

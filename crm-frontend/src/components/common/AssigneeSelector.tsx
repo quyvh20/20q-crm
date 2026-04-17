@@ -12,7 +12,7 @@ export default function AssigneeSelector({ value, onChange, disabled }: Props) {
   const { user, currentRole } = useAuth();
   const [users, setUsers] = useState<UserListItem[]>([]);
 
-  const isSales = currentRole === 'sales';
+  const isSales = currentRole === 'sales_rep';
 
   useEffect(() => {
     if (isSales) {

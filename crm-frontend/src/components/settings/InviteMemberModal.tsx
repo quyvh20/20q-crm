@@ -8,7 +8,7 @@ interface Props {
 
 const ROLES = [
   { value: 'manager', label: 'Manager' },
-  { value: 'sales', label: 'Sales' },
+  { value: 'sales_rep', label: 'Sales' },
   { value: 'viewer', label: 'Viewer' },
 ];
 
