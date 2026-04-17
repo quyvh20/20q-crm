@@ -8,7 +8,7 @@ export default function WorkspaceSettingsPage() {
   const [showInvite, setShowInvite] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
-  const canInvite = currentRole === 'super_admin' || currentRole === 'admin' || currentRole === 'manager';
+  const canInvite = currentRole === 'owner' || currentRole === 'admin' || currentRole === 'manager';
 
   return (
     <div className="max-w-4xl mx-auto">
