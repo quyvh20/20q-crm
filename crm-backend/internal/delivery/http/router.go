@@ -3,6 +3,7 @@ package http
 import (
 	"fmt"
 	"crm-backend/internal/domain"
+	"crm-backend/internal/repository"
 	"crm-backend/pkg/config"
 
 	"github.com/gin-gonic/gin"
@@ -15,9 +16,13 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 	router.GET("/api/test/db-fix", func(c *gin.Context) {
 		err1 := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(255) DEFAULT ''`).Error
 		err2 := db.Exec(`UPDATE users SET full_name = TRIM(first_name || ' ' || last_name) WHERE full_name = '' OR full_name IS NULL`).Error
+		
+		err3 := repository.SeedSystemRoles(db)
+
 		c.JSON(200, gin.H{
 			"err1": fmt.Sprintf("%v", err1),
 			"err2": fmt.Sprintf("%v", err2),
+			"seed_err": fmt.Sprintf("%v", err3),
 		})
 	})
 
