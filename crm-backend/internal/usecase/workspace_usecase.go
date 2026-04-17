@@ -64,6 +64,7 @@ func (uc *workspaceUseCase) InviteMember(ctx context.Context, orgID uuid.UUID, i
 
 	if user == nil {
 		user = &domain.User{
+			OrgID:     orgID,
 			Email:     input.Email,
 			FirstName: input.Email,
 			FullName:  input.Email,
