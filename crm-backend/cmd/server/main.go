@@ -62,7 +62,7 @@ func main() {
 	}
 	if db != nil {
 		log.Info("Database connection established")
-		db.AutoMigrate(&domain.KnowledgeBaseEntry{}, &domain.AITokenUsage{}, &domain.OrgUser{})
+		db.AutoMigrate(&domain.KnowledgeBaseEntry{}, &domain.AITokenUsage{}, &domain.OrgUser{}, &domain.User{})
 	}
 
 	redisClient, err := cache.NewRedisClient(cfg.RedisURL)
