@@ -18,6 +18,7 @@ import (
 	"crm-backend/pkg/config"
 	"crm-backend/pkg/database"
 	"crm-backend/pkg/logger"
+	"crm-backend/pkg/mailer"
 
 	"github.com/getsentry/sentry-go"
 	sentrygin "github.com/getsentry/sentry-go/gin"
@@ -65,29 +66,15 @@ func main() {
 		db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(255) DEFAULT ''`)
 		db.Exec(`UPDATE users SET full_name = TRIM(first_name || ' ' || last_name) WHERE full_name = '' OR full_name IS NULL`)
 		db.Exec(`ALTER TABLE organizations ADD COLUMN IF NOT EXISTS type VARCHAR(50) DEFAULT 'company'`)
-		db.Exec(`
-			CREATE TABLE IF NOT EXISTS org_users (
-				user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-				org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-				role VARCHAR(50) NOT NULL DEFAULT 'viewer',
-				status VARCHAR(50) NOT NULL DEFAULT 'active',
-				joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-				PRIMARY KEY (user_id, org_id)
-			)
-		`)
-		db.Exec(`CREATE INDEX IF NOT EXISTS idx_org_users_org_id ON org_users(org_id)`)
-		db.Exec(`CREATE INDEX IF NOT EXISTS idx_org_users_user_id ON org_users(user_id)`)
-		db.Exec(`
-			INSERT INTO org_users (user_id, org_id, role, status, joined_at)
-			SELECT id, org_id, role::text, 'active', created_at
-			FROM users
-			WHERE org_id IS NOT NULL
-			ON CONFLICT (user_id, org_id) DO NOTHING
-		`)
 		db.Exec(`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS owner_user_id UUID REFERENCES users(id) ON DELETE SET NULL`)
 		db.Exec(`CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts(owner_user_id)`)
 
-		db.AutoMigrate(&domain.KnowledgeBaseEntry{}, &domain.AITokenUsage{})
+		db.AutoMigrate(&domain.Role{}, &domain.RolePermission{}, &domain.OrgUser{}, &domain.KnowledgeBaseEntry{}, &domain.AITokenUsage{}, &domain.RecordShare{}, &domain.OrgInvitation{})
+
+		log.Info("Seeding system roles...")
+		if err := repository.SeedSystemRoles(db); err != nil {
+			log.Error("Failed to seed system roles", zap.Error(err))
+		}
 	}
 
 	redisClient, err := cache.NewRedisClient(cfg.RedisURL)
@@ -154,7 +141,16 @@ func main() {
 		authUseCase := usecase.NewAuthUseCase(authRepo, cfg)
 		authHandler := delivery.NewAuthHandler(authUseCase, cfg)
 
-		workspaceUseCase := usecase.NewWorkspaceUseCase(authRepo)
+		var mailerSvc domain.Mailer
+		if cfg.ResendAPIKey != "" {
+			mailerSvc = mailer.NewResendMailer(cfg.ResendAPIKey, "noreply@20q-crm.com")
+		} else {
+			mailerSvc = mailer.NewLogMailer()
+		}
+
+		appEnv := os.Getenv("APP_ENV")
+
+		workspaceUseCase := usecase.NewWorkspaceUseCase(authRepo, mailerSvc, appEnv)
 		workspaceHandler := delivery.NewWorkspaceHandler(workspaceUseCase)
 
 		budget := ai.NewBudgetGuard(db, redisClient)
@@ -224,7 +220,7 @@ func main() {
 
 		eventsHandler := delivery.NewEventsHandler(redisClient)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, cfg, db)
+		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, cfg, db, redisClient, authRepo)
 		log.Info("All routes registered")
 	} else {
 		log.Warn("Database not connected — routes skipped")

@@ -108,6 +108,7 @@ func (r *authRepository) CreateOrgUser(ctx context.Context, ou *domain.OrgUser) 
 func (r *authRepository) GetOrgUser(ctx context.Context, userID, orgID uuid.UUID) (*domain.OrgUser, error) {
 	var ou domain.OrgUser
 	err := r.db.WithContext(ctx).
+		Preload("Role").
 		Where("user_id = ? AND org_id = ?", userID, orgID).
 		First(&ou).Error
 	if err != nil {
@@ -123,6 +124,7 @@ func (r *authRepository) ListOrgsByUserID(ctx context.Context, userID uuid.UUID)
 	var orgUsers []domain.OrgUser
 	err := r.db.WithContext(ctx).
 		Preload("Org").
+		Preload("Role").
 		Where("user_id = ? AND status = 'active'", userID).
 		Find(&orgUsers).Error
 	return orgUsers, err
@@ -132,23 +134,31 @@ func (r *authRepository) ListMembersByOrgID(ctx context.Context, orgID uuid.UUID
 	var orgUsers []domain.OrgUser
 	err := r.db.WithContext(ctx).
 		Preload("User").
+		Preload("Role").
 		Where("org_id = ?", orgID).
 		Order("joined_at ASC").
 		Find(&orgUsers).Error
 	return orgUsers, err
 }
 
-func (r *authRepository) UpdateOrgUserRole(ctx context.Context, userID, orgID uuid.UUID, role string) error {
+func (r *authRepository) UpdateOrgUserRole(ctx context.Context, userID, orgID, roleID uuid.UUID) error {
 	return r.db.WithContext(ctx).
 		Model(&domain.OrgUser{}).
 		Where("user_id = ? AND org_id = ?", userID, orgID).
-		Update("role", role).Error
+		Update("role_id", roleID).Error
+}
+
+func (r *authRepository) UpdateOrgUserStatus(ctx context.Context, userID, orgID uuid.UUID, status string) error {
+	return r.db.WithContext(ctx).
+		Model(&domain.OrgUser{}).
+		Where("user_id = ? AND org_id = ?", userID, orgID).
+		Update("status", status).Error
 }
 
 func (r *authRepository) DeleteOrgUser(ctx context.Context, userID, orgID uuid.UUID) error {
 	return r.db.WithContext(ctx).
 		Where("user_id = ? AND org_id = ?", userID, orgID).
-		Delete(&domain.OrgUser{}).Error
+		Delete(&domain.OrgUser{}).Error // GORM will soft-delete if DeletedAt exists
 }
 
 func (r *authRepository) GetOrgUserByEmail(ctx context.Context, email string, orgID uuid.UUID) (*domain.OrgUser, error) {
@@ -161,4 +171,49 @@ func (r *authRepository) GetOrgUserByEmail(ctx context.Context, email string, or
 		return nil, err
 	}
 	return r.GetOrgUser(ctx, user.ID, orgID)
+}
+
+func (r *authRepository) CountOrgUsersByRole(ctx context.Context, orgID, roleID uuid.UUID, status string) (int64, error) {
+	var count int64
+	query := r.db.WithContext(ctx).Model(&domain.OrgUser{}).Where("org_id = ? AND role_id = ?", orgID, roleID)
+	if status != "" {
+		query = query.Where("status = ?", status)
+	}
+	err := query.Count(&count).Error
+	return count, err
+}
+
+func (r *authRepository) GetRoleByName(ctx context.Context, name string, orgID *uuid.UUID) (*domain.Role, error) {
+	var role domain.Role
+	query := r.db.WithContext(ctx).Where("name = ?", name)
+	if orgID == nil {
+		query = query.Where("org_id IS NULL AND is_system = true")
+	} else {
+		query = query.Where("org_id = ? OR (org_id IS NULL AND is_system = true)", orgID)
+	}
+	err := query.Preload("Permissions").First(&role).Error
+	return &role, err
+}
+
+func (r *authRepository) GetRoleByID(ctx context.Context, id uuid.UUID) (*domain.Role, error) {
+	var role domain.Role
+	err := r.db.WithContext(ctx).Preload("Permissions").Where("id = ?", id).First(&role).Error
+	return &role, err
+}
+
+func (r *authRepository) CreateOrgInvitation(ctx context.Context, inv *domain.OrgInvitation) error {
+	return r.db.WithContext(ctx).Create(inv).Error
+}
+
+func (r *authRepository) GetOrgInvitationByTokenHash(ctx context.Context, tokenHash string) (*domain.OrgInvitation, error) {
+	var inv domain.OrgInvitation
+	err := r.db.WithContext(ctx).Where("token_hash = ?", tokenHash).First(&inv).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &inv, err
+}
+
+func (r *authRepository) UpdateOrgInvitation(ctx context.Context, inv *domain.OrgInvitation) error {
+	return r.db.WithContext(ctx).Save(inv).Error
 }

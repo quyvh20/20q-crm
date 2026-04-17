@@ -2,13 +2,15 @@ package http
 
 import (
 	"fmt"
+	"crm-backend/internal/domain"
 	"crm-backend/pkg/config"
 
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
 
-func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, cfg *config.Config, db *gorm.DB) {
+func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository) {
 	// Temporary endpoint to debug DB issues on deploy
 	router.GET("/api/test/db-fix", func(c *gin.Context) {
 		err1 := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(255) DEFAULT ''`).Error
@@ -31,19 +33,23 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 		auth.GET("/google", authHandler.GoogleLogin)
 		auth.GET("/google/callback", authHandler.GoogleCallback)
 
-		auth.GET("/me", AuthMiddleware(cfg.JWTSecret), authHandler.Me)
-		auth.POST("/switch-workspace", AuthMiddleware(cfg.JWTSecret), authHandler.SwitchWorkspace)
+		auth.GET("/me", AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), authHandler.Me)
+		auth.POST("/switch-workspace", AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), authHandler.SwitchWorkspace)
+		auth.POST("/accept-invite", workspaceHandler.AcceptInvite)
 	}
 
 	protected := api.Group("/")
-	protected.Use(AuthMiddleware(cfg.JWTSecret))
+	protected.Use(AuthMiddleware(cfg.JWTSecret, authRepo, redisClient))
 	{
 		workspaces := protected.Group("/workspaces")
 		{
 			workspaces.GET("", authHandler.ListWorkspaces)
 			workspaces.GET("/members", workspaceHandler.ListMembers)
 			workspaces.POST("/invites", RequireRole("admin", "manager"), workspaceHandler.InviteMember)
-			workspaces.PATCH("/members/:user_id", RequireRole("admin"), workspaceHandler.UpdateMemberRole)
+			workspaces.PATCH("/members/:user_id/role", RequireRole("admin"), workspaceHandler.UpdateMemberRole)
+			workspaces.POST("/members/:user_id/suspend", RequireRole("admin"), workspaceHandler.SuspendMember)
+			workspaces.POST("/members/:user_id/reinstate", RequireRole("admin"), workspaceHandler.ReinstateMember)
+			workspaces.POST("/members/:user_id/transfer", RequireRole("admin"), workspaceHandler.TransferOwnership)
 			workspaces.DELETE("/members/:user_id", RequireRole("admin"), workspaceHandler.RemoveMember)
 		}
 

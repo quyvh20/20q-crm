@@ -64,6 +64,7 @@ func LoadConfig() (*Config, error) {
 	viper.BindEnv("ANTHROPIC_API_KEY")
 	viper.BindEnv("VERCEL_AI_GATEWAY_URL")
 	viper.BindEnv("VERCEL_AI_GATEWAY_KEY")
+	viper.BindEnv("RESEND_API_KEY")
 
 	// Default values
 	viper.SetDefault("PORT", "8080")

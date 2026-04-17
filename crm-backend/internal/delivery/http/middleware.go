@@ -3,6 +3,7 @@ package http
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"crm-backend/internal/domain"
 	"crm-backend/internal/repository"
@@ -11,9 +12,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
 
-func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
+func AuthMiddleware(jwtSecret string, authRepo domain.AuthRepository, redisClient *redis.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
@@ -48,9 +50,42 @@ func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
 
 		c.Set("user_id", claims.UserID)
 		c.Set("org_id", claims.OrgID)
-		c.Set("role", claims.Role)
+		
+		status := "active"
+		roleName := claims.Role
 
-		scopedCtx := repository.WithDataScope(c.Request.Context(), claims.Role, claims.UserID)
+		if redisClient != nil {
+			cacheKey := "session:" + claims.UserID.String() + ":org:" + claims.OrgID.String()
+			val, err := redisClient.Get(c.Request.Context(), cacheKey).Result()
+			if err == nil && val != "" {
+				// We just store "status:roleName"
+				parts := strings.Split(val, ":")
+				if len(parts) == 2 {
+					status = parts[0]
+					roleName = parts[1]
+				}
+			} else {
+				// Cache miss, hit DB
+				ou, err := authRepo.GetOrgUser(c.Request.Context(), claims.UserID, claims.OrgID)
+				if err != nil || ou == nil || ou.DeletedAt != nil {
+					c.AbortWithStatusJSON(http.StatusForbidden, domain.Err("access denied"))
+					return
+				}
+				status = ou.Status
+				if ou.Role != nil {
+					roleName = ou.Role.Name
+				}
+				_ = redisClient.Set(c.Request.Context(), cacheKey, status+":"+roleName, 5*time.Minute).Err()
+			}
+		}
+
+		if status != "active" {
+			c.AbortWithStatusJSON(http.StatusForbidden, domain.Err("account suspended or inactive"))
+			return
+		}
+
+		c.Set("role", roleName)
+		scopedCtx := repository.WithDataScope(c.Request.Context(), roleName, claims.UserID)
 		c.Request = c.Request.WithContext(scopedCtx)
 
 		c.Next()

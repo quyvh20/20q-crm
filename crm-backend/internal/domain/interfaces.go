@@ -91,9 +91,18 @@ type AuthRepository interface {
 	GetOrgUser(ctx context.Context, userID, orgID uuid.UUID) (*OrgUser, error)
 	ListOrgsByUserID(ctx context.Context, userID uuid.UUID) ([]OrgUser, error)
 	ListMembersByOrgID(ctx context.Context, orgID uuid.UUID) ([]OrgUser, error)
-	UpdateOrgUserRole(ctx context.Context, userID, orgID uuid.UUID, role string) error
+	UpdateOrgUserRole(ctx context.Context, userID, orgID, roleID uuid.UUID) error
+	UpdateOrgUserStatus(ctx context.Context, userID, orgID uuid.UUID, status string) error
 	DeleteOrgUser(ctx context.Context, userID, orgID uuid.UUID) error
 	GetOrgUserByEmail(ctx context.Context, email string, orgID uuid.UUID) (*OrgUser, error)
+	CountOrgUsersByRole(ctx context.Context, orgID, roleID uuid.UUID, status string) (int64, error)
+
+	GetRoleByName(ctx context.Context, name string, orgID *uuid.UUID) (*Role, error)
+	GetRoleByID(ctx context.Context, id uuid.UUID) (*Role, error)
+
+	CreateOrgInvitation(ctx context.Context, inv *OrgInvitation) error
+	GetOrgInvitationByTokenHash(ctx context.Context, tokenHash string) (*OrgInvitation, error)
+	UpdateOrgInvitation(ctx context.Context, inv *OrgInvitation) error
 }
 
 type AuthUseCase interface {
@@ -110,9 +119,22 @@ type AuthUseCase interface {
 
 type WorkspaceUseCase interface {
 	ListMembers(ctx context.Context, orgID uuid.UUID) ([]MemberInfo, error)
-	InviteMember(ctx context.Context, orgID uuid.UUID, input InviteMemberInput) (*MemberInfo, error)
+	InviteMember(ctx context.Context, orgID uuid.UUID, input InviteMemberInput) (*MemberInfo, *string, error)
+	AcceptInvite(ctx context.Context, token string) error
 	UpdateMemberRole(ctx context.Context, orgID uuid.UUID, targetUserID uuid.UUID, input UpdateMemberRoleInput) error
-	RemoveMember(ctx context.Context, orgID uuid.UUID, targetUserID uuid.UUID) error
+	SuspendMember(ctx context.Context, orgID uuid.UUID, targetUserID uuid.UUID) error
+	ReinstateMember(ctx context.Context, orgID uuid.UUID, targetUserID uuid.UUID) error
+	TransferOwnership(ctx context.Context, orgID uuid.UUID, targetUserID uuid.UUID) error
+	RemoveMember(ctx context.Context, orgID uuid.UUID, targetUserID uuid.UUID, input RemoveMemberInput) error
+}
+
+type RemoveMemberInput struct {
+	ReassignToUserID *uuid.UUID `json:"reassign_to_user_id,omitempty"`
+	Strategy         string     `json:"strategy,omitempty"` // "transfer" or "unassign"
+}
+
+type Mailer interface {
+	SendInvite(ctx context.Context, to, inviteLink, orgName string) error
 }
 
 type ContactFilter struct {

@@ -94,17 +94,22 @@ func (uc *authUseCase) Register(ctx context.Context, input domain.RegisterInput)
 		return nil, domain.NewAppError(500, "Create user err: " + err.Error())
 	}
 
+	ownerRole, err := uc.authRepo.GetRoleByName(ctx, domain.RoleOwner, nil)
+	if err != nil {
+		return nil, domain.NewAppError(500, "Get role err: " + err.Error())
+	}
+
 	ou := &domain.OrgUser{
 		UserID: user.ID,
 		OrgID:  org.ID,
-		Role:   "super_admin",
-		Status: "active",
+		RoleID: ownerRole.ID,
+		Status: domain.StatusActive,
 	}
 	if err := uc.authRepo.CreateOrgUser(ctx, ou); err != nil {
 		return nil, domain.NewAppError(500, "Create org user err: " + err.Error())
 	}
 
-	accessToken, err := uc.generateAccessToken(user.ID, org.ID, "super_admin")
+	accessToken, err := uc.generateAccessToken(user.ID, org.ID, ownerRole.Name)
 	if err != nil {
 		return nil, domain.NewAppError(500, "Access token err: " + err.Error())
 	}
@@ -119,8 +124,8 @@ func (uc *authUseCase) Register(ctx context.Context, input domain.RegisterInput)
 			OrgID:   org.ID,
 			OrgName: org.Name,
 			OrgType: org.Type,
-			Role:    "super_admin",
-			Status:  "active",
+			Role:    ownerRole.Name,
+			Status:  domain.StatusActive,
 		},
 	}
 
@@ -158,11 +163,15 @@ func (uc *authUseCase) Login(ctx context.Context, input domain.LoginInput) (*dom
 			name = ou.Org.Name
 			orgType = ou.Org.Type
 		}
+		roleName := "viewer"
+		if ou.Role != nil {
+			roleName = ou.Role.Name
+		}
 		workspaces = append(workspaces, domain.WorkspaceInfo{
 			OrgID:   ou.OrgID,
 			OrgName: name,
 			OrgType: orgType,
-			Role:    ou.Role,
+			Role:    roleName,
 			Status:  ou.Status,
 		})
 	}
@@ -171,7 +180,11 @@ func (uc *authUseCase) Login(ctx context.Context, input domain.LoginInput) (*dom
 	var activeRole string
 	if len(orgUsers) > 0 {
 		activeOrgID = orgUsers[0].OrgID
-		activeRole = orgUsers[0].Role
+		if orgUsers[0].Role != nil {
+			activeRole = orgUsers[0].Role.Name
+		} else {
+			activeRole = "viewer"
+		}
 	}
 
 	accessToken, err := uc.generateAccessToken(user.ID, activeOrgID, activeRole)
@@ -206,7 +219,11 @@ func (uc *authUseCase) SwitchWorkspace(ctx context.Context, userID uuid.UUID, in
 		return nil, domain.ErrUserNotFound
 	}
 
-	accessToken, err := uc.generateAccessToken(userID, input.OrgID, ou.Role)
+	roleName := "viewer"
+	if ou.Role != nil {
+		roleName = ou.Role.Name
+	}
+	accessToken, err := uc.generateAccessToken(userID, input.OrgID, roleName)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
@@ -225,11 +242,15 @@ func (uc *authUseCase) SwitchWorkspace(ctx context.Context, userID uuid.UUID, in
 			name = o.Org.Name
 			orgType = o.Org.Type
 		}
+		roleName := "viewer"
+		if o.Role != nil {
+			roleName = o.Role.Name
+		}
 		workspaces = append(workspaces, domain.WorkspaceInfo{
 			OrgID:   o.OrgID,
 			OrgName: name,
 			OrgType: orgType,
-			Role:    o.Role,
+			Role:    roleName,
 			Status:  o.Status,
 		})
 	}
@@ -255,11 +276,15 @@ func (uc *authUseCase) ListWorkspaces(ctx context.Context, userID uuid.UUID) ([]
 			name = ou.Org.Name
 			orgType = ou.Org.Type
 		}
+		roleName := "viewer"
+		if ou.Role != nil {
+			roleName = ou.Role.Name
+		}
 		workspaces = append(workspaces, domain.WorkspaceInfo{
 			OrgID:   ou.OrgID,
 			OrgName: name,
 			OrgType: orgType,
-			Role:    ou.Role,
+			Role:    roleName,
 			Status:  ou.Status,
 		})
 	}
@@ -297,7 +322,11 @@ func (uc *authUseCase) RefreshToken(ctx context.Context, refreshToken string) (*
 	var activeRole string
 	if len(orgUsers) > 0 {
 		activeOrgID = orgUsers[0].OrgID
-		activeRole = orgUsers[0].Role
+		if orgUsers[0].Role != nil {
+			activeRole = orgUsers[0].Role.Name
+		} else {
+			activeRole = "viewer"
+		}
 	}
 
 	accessToken, err := uc.generateAccessToken(user.ID, activeOrgID, activeRole)
@@ -318,11 +347,15 @@ func (uc *authUseCase) RefreshToken(ctx context.Context, refreshToken string) (*
 			name = ou.Org.Name
 			orgType = ou.Org.Type
 		}
+		roleName := "viewer"
+		if ou.Role != nil {
+			roleName = ou.Role.Name
+		}
 		workspaces = append(workspaces, domain.WorkspaceInfo{
 			OrgID:   ou.OrgID,
 			OrgName: name,
 			OrgType: orgType,
-			Role:    ou.Role,
+			Role:    roleName,
 			Status:  ou.Status,
 		})
 	}
@@ -436,11 +469,16 @@ func (uc *authUseCase) GoogleLogin(ctx context.Context, code string) (*domain.Au
 				return nil, domain.ErrInternal
 			}
 
+			ownerRole, err := uc.authRepo.GetRoleByName(ctx, domain.RoleOwner, nil)
+			if err != nil {
+				return nil, domain.ErrInternal
+			}
+
 			ou := &domain.OrgUser{
 				UserID: user.ID,
 				OrgID:  org.ID,
-				Role:   "super_admin",
-				Status: "active",
+				RoleID: ownerRole.ID,
+				Status: domain.StatusActive,
 			}
 			if err := uc.authRepo.CreateOrgUser(ctx, ou); err != nil {
 				return nil, domain.ErrInternal
@@ -458,7 +496,11 @@ func (uc *authUseCase) GoogleLogin(ctx context.Context, code string) (*domain.Au
 	var activeRole string
 	if len(orgUsers) > 0 {
 		activeOrgID = orgUsers[0].OrgID
-		activeRole = orgUsers[0].Role
+		if orgUsers[0].Role != nil {
+			activeRole = orgUsers[0].Role.Name
+		} else {
+			activeRole = "viewer"
+		}
 	}
 
 	accessToken, err := uc.generateAccessToken(user.ID, activeOrgID, activeRole)
@@ -479,11 +521,15 @@ func (uc *authUseCase) GoogleLogin(ctx context.Context, code string) (*domain.Au
 			name = o.Org.Name
 			orgType = o.Org.Type
 		}
+		roleName := "viewer"
+		if o.Role != nil {
+			roleName = o.Role.Name
+		}
 		workspaces = append(workspaces, domain.WorkspaceInfo{
 			OrgID:   o.OrgID,
 			OrgName: name,
 			OrgType: orgType,
-			Role:    o.Role,
+			Role:    roleName,
 			Status:  o.Status,
 		})
 	}

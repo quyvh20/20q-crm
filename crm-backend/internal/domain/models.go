@@ -81,14 +81,16 @@ type User struct {
 }
 
 type OrgUser struct {
-	UserID   uuid.UUID `gorm:"type:uuid;primaryKey" json:"user_id"`
-	OrgID    uuid.UUID `gorm:"type:uuid;primaryKey" json:"org_id"`
-	Role     string    `gorm:"size:50;not null;default:'viewer'" json:"role"`
-	Status   string    `gorm:"size:50;not null;default:'active'" json:"status"`
-	JoinedAt time.Time `gorm:"not null;default:now()" json:"joined_at"`
+	UserID    uuid.UUID  `gorm:"type:uuid;primaryKey" json:"user_id"`
+	OrgID     uuid.UUID  `gorm:"type:uuid;primaryKey" json:"org_id"`
+	RoleID    uuid.UUID  `gorm:"type:uuid;not null" json:"role_id"`
+	Status    string     `gorm:"size:50;not null;default:'active'" json:"status"`
+	JoinedAt  time.Time  `gorm:"not null;default:now()" json:"joined_at"`
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 
 	User *User         `gorm:"foreignKey:UserID" json:"user,omitempty"`
 	Org  *Organization `gorm:"foreignKey:OrgID" json:"org,omitempty"`
+	Role *Role         `gorm:"foreignKey:RoleID" json:"role,omitempty"`
 }
 
 func (OrgUser) TableName() string { return "org_users" }
