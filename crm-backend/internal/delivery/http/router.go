@@ -17,11 +17,30 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 		err1 := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(255) DEFAULT ''`).Error
 		err2 := db.Exec(`UPDATE users SET full_name = TRIM(first_name || ' ' || last_name) WHERE full_name = '' OR full_name IS NULL`).Error
 		
+		errMigrate := db.Exec(`
+			CREATE TABLE IF NOT EXISTS roles (
+				id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+				org_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
+				name VARCHAR(255) NOT NULL,
+				is_system BOOLEAN NOT NULL DEFAULT false,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+			CREATE TABLE IF NOT EXISTS role_permissions (
+				role_id UUID REFERENCES roles(id) ON DELETE CASCADE,
+				permission_code VARCHAR(255) NOT NULL,
+				PRIMARY KEY (role_id, permission_code)
+			);
+			ALTER TABLE org_users ADD COLUMN IF NOT EXISTS role_id UUID REFERENCES roles(id) ON DELETE RESTRICT;
+			ALTER TABLE org_users ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+		`).Error
+
 		err3 := repository.SeedSystemRoles(db)
 
 		c.JSON(200, gin.H{
+			"status": "done",
 			"err1": fmt.Sprintf("%v", err1),
 			"err2": fmt.Sprintf("%v", err2),
+			"errMigrate": fmt.Sprintf("%v", errMigrate),
 			"seed_err": fmt.Sprintf("%v", err3),
 		})
 	})
