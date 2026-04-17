@@ -32,6 +32,28 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			);
 			ALTER TABLE org_users ADD COLUMN IF NOT EXISTS role_id UUID REFERENCES roles(id) ON DELETE RESTRICT;
 			ALTER TABLE org_users ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+
+			CREATE TABLE IF NOT EXISTS org_invitations (
+				id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+				email VARCHAR(255) NOT NULL,
+				org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+				role_id UUID NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+				token_hash VARCHAR(255) NOT NULL,
+				expires_at TIMESTAMPTZ NOT NULL,
+				status VARCHAR(50) NOT NULL DEFAULT 'pending',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+			CREATE INDEX IF NOT EXISTS idx_org_invitations_token ON org_invitations(token_hash);
+			
+			CREATE TABLE IF NOT EXISTS record_shares (
+				id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+				record_type VARCHAR(50) NOT NULL,
+				record_id UUID NOT NULL,
+				grantee_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+				permission_level VARCHAR(50) NOT NULL DEFAULT 'read',
+				created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
 		`).Error
 
 		err3 := repository.SeedSystemRoles(db)
