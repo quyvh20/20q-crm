@@ -55,7 +55,7 @@ func NewAuthUseCase(repo domain.AuthRepository, cfg *config.Config) domain.AuthU
 func (uc *authUseCase) Register(ctx context.Context, input domain.RegisterInput) (*domain.AuthResponse, error) {
 	existing, err := uc.authRepo.GetUserByEmail(ctx, input.Email)
 	if err != nil {
-		return nil, domain.ErrInternal
+		return nil, domain.NewAppError(500, "Get user err: " + err.Error())
 	}
 	if existing != nil {
 		return nil, domain.ErrEmailAlreadyExists
@@ -67,12 +67,12 @@ func (uc *authUseCase) Register(ctx context.Context, input domain.RegisterInput)
 	}
 	org := &domain.Organization{Name: input.OrgName, Type: orgType}
 	if err := uc.authRepo.CreateOrganization(ctx, org); err != nil {
-		return nil, domain.ErrInternal
+		return nil, domain.NewAppError(500, "Create org err: " + err.Error())
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcryptCost)
 	if err != nil {
-		return nil, domain.ErrInternal
+		return nil, domain.NewAppError(500, "Hash err: " + err.Error())
 	}
 	hashStr := string(hash)
 
@@ -91,7 +91,7 @@ func (uc *authUseCase) Register(ctx context.Context, input domain.RegisterInput)
 		Role:         "admin",
 	}
 	if err := uc.authRepo.CreateUser(ctx, user); err != nil {
-		return nil, domain.ErrInternal
+		return nil, domain.NewAppError(500, "Create user err: " + err.Error())
 	}
 
 	ou := &domain.OrgUser{
@@ -101,17 +101,17 @@ func (uc *authUseCase) Register(ctx context.Context, input domain.RegisterInput)
 		Status: "active",
 	}
 	if err := uc.authRepo.CreateOrgUser(ctx, ou); err != nil {
-		return nil, domain.ErrInternal
+		return nil, domain.NewAppError(500, "Create org user err: " + err.Error())
 	}
 
 	accessToken, err := uc.generateAccessToken(user.ID, org.ID, "super_admin")
 	if err != nil {
-		return nil, domain.ErrInternal
+		return nil, domain.NewAppError(500, "Access token err: " + err.Error())
 	}
 
 	refreshToken, err := uc.createRefreshToken(ctx, user.ID)
 	if err != nil {
-		return nil, domain.ErrInternal
+		return nil, domain.NewAppError(500, "Refresh token err: " + err.Error())
 	}
 
 	workspaces := []domain.WorkspaceInfo{
