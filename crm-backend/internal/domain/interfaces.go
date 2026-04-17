@@ -369,6 +369,7 @@ type PipelineStageRepository interface {
 	GetByID(ctx context.Context, orgID, id uuid.UUID) (*PipelineStage, error)
 	Create(ctx context.Context, s *PipelineStage) error
 	Update(ctx context.Context, s *PipelineStage) error
+	Delete(ctx context.Context, orgID, id uuid.UUID) error
 	CountByOrg(ctx context.Context, orgID uuid.UUID) (int64, error)
 }
 
@@ -377,6 +378,8 @@ type PipelineStageUseCase interface {
 	GetByID(ctx context.Context, orgID, id uuid.UUID) (*PipelineStage, error)
 	Create(ctx context.Context, orgID uuid.UUID, input CreateStageInput) (*PipelineStage, error)
 	Update(ctx context.Context, orgID, id uuid.UUID, input UpdateStageInput) (*PipelineStage, error)
+	Delete(ctx context.Context, orgID, id uuid.UUID) error
+	SeedDefaults(ctx context.Context, orgID uuid.UUID) ([]PipelineStage, error)
 }
 
 type ActivityFilter struct {

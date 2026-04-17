@@ -138,7 +138,8 @@ func main() {
 
 	if db != nil {
 		authRepo := repository.NewAuthRepository(db)
-		authUseCase := usecase.NewAuthUseCase(authRepo, cfg)
+		stageRepo := repository.NewPipelineStageRepository(db)
+		authUseCase := usecase.NewAuthUseCase(authRepo, stageRepo, cfg)
 		authHandler := delivery.NewAuthHandler(authUseCase, cfg)
 
 		var mailerSvc domain.Mailer
@@ -186,7 +187,6 @@ func main() {
 		tagUseCase := usecase.NewTagUseCase(tagRepo)
 		tagHandler := delivery.NewTagHandler(tagUseCase)
 
-		stageRepo := repository.NewPipelineStageRepository(db)
 		stageUseCase := usecase.NewPipelineStageUseCase(stageRepo)
 		pipelineHandler := delivery.NewPipelineHandler(stageUseCase)
 

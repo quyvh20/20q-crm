@@ -2,8 +2,10 @@ import { useState } from 'react';
 import CustomFieldManager from '../components/settings/CustomFieldManager';
 import ObjectDefManager from '../components/settings/ObjectDefManager';
 import KnowledgeBase from '../components/settings/KnowledgeBase';
+import PipelineStagesManager from '../components/settings/PipelineStagesManager';
 
 const TABS = [
+  { id: 'pipeline', label: 'Pipeline', icon: '🎯' },
   { id: 'fields', label: 'Custom Fields', icon: '📋' },
   { id: 'objects', label: 'Custom Objects', icon: '📦' },
   { id: 'knowledge', label: 'Knowledge Base', icon: '🧠' },
@@ -13,7 +15,7 @@ const TABS = [
 type TabId = (typeof TABS)[number]['id'];
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<TabId>('fields');
+  const [activeTab, setActiveTab] = useState<TabId>('pipeline');
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -21,7 +23,7 @@ export default function SettingsPage() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
         <p className="text-muted-foreground mt-1">
-          Configure custom fields, templates, and CRM preferences.
+          Configure pipeline stages, custom fields, templates, and CRM preferences.
         </p>
       </div>
 
@@ -45,6 +47,8 @@ export default function SettingsPage() {
 
       {/* Tab content */}
       <div>
+        {activeTab === 'pipeline' && <PipelineStagesManager />}
+
         {activeTab === 'fields' && <CustomFieldManager />}
 
         {activeTab === 'objects' && <ObjectDefManager />}

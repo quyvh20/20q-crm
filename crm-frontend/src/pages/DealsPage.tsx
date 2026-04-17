@@ -9,7 +9,7 @@ import {
   type DragStartEvent,
   type DragEndEvent,
 } from '@dnd-kit/core';
-import { getDeals, getStages, changeDealStage, type Deal, type PipelineStage } from '../lib/api';
+import { getDeals, getStages, changeDealStage, seedDefaultStages, type Deal, type PipelineStage } from '../lib/api';
 import KanbanColumn from '../components/deals/KanbanColumn';
 import DealCard from '../components/deals/DealCard';
 import DealFormModal from '../components/deals/DealFormModal';
@@ -165,9 +165,17 @@ export default function DealsPage() {
         {stages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full border-2 border-dashed rounded-xl border-muted mr-4">
             <div className="text-center text-muted-foreground p-8">
-              <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="mx-auto mb-4 opacity-50"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+              <div className="text-5xl mb-4">🎯</div>
               <p className="text-lg font-medium mb-1 text-foreground">No pipeline stages found</p>
-              <p className="text-sm mb-4">You need to create pipeline stages before managing deals.</p>
+              <p className="text-sm mb-5">Create stages in Settings → Pipeline, or seed the defaults now.</p>
+              <button
+                onClick={() => {
+                  seedDefaultStages().then(() => queryClient.invalidateQueries({ queryKey: ['stages'] }));
+                }}
+                className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition-colors"
+              >
+                ✨ Seed Default Stages
+              </button>
             </div>
           </div>
         ) : (

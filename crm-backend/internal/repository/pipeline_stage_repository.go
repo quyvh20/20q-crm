@@ -48,6 +48,12 @@ func (r *pipelineStageRepository) Update(ctx context.Context, s *domain.Pipeline
 	return r.db.WithContext(ctx).Save(s).Error
 }
 
+func (r *pipelineStageRepository) Delete(ctx context.Context, orgID, id uuid.UUID) error {
+	return r.db.WithContext(ctx).
+		Where("id = ? AND org_id = ?", id, orgID).
+		Delete(&domain.PipelineStage{}).Error
+}
+
 func (r *pipelineStageRepository) CountByOrg(ctx context.Context, orgID uuid.UUID) (int64, error) {
 	var count int64
 	err := r.db.WithContext(ctx).Model(&domain.PipelineStage{}).

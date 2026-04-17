@@ -521,6 +521,9 @@ func (uc *authUseCase) GoogleLogin(ctx context.Context, code string) (*domain.Au
 			if err := uc.authRepo.CreateOrgUser(ctx, ou); err != nil {
 				return nil, domain.ErrInternal
 			}
+
+			// Seed default pipeline stages for the new organization
+			uc.seedDefaultStages(ctx, org.ID)
 		}
 	}
 

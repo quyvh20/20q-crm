@@ -161,6 +161,8 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			pipeline.GET("/stages", pipelineHandler.ListStages)
 			pipeline.POST("/stages", RequireRole("admin", "manager"), pipelineHandler.CreateStage)
 			pipeline.PUT("/stages/:id", RequireRole("admin", "manager"), pipelineHandler.UpdateStage)
+			pipeline.DELETE("/stages/:id", RequireRole("admin", "manager"), pipelineHandler.DeleteStage)
+			pipeline.POST("/stages/seed-defaults", RequireRole("admin"), pipelineHandler.SeedDefaultStages)
 			pipeline.GET("/forecast", dealHandler.Forecast)
 		}
 

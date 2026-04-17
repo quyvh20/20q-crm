@@ -232,6 +232,22 @@ export async function updateStage(id: string, data: Partial<PipelineStage>) {
   return json.data as PipelineStage;
 }
 
+export async function deleteStage(id: string) {
+  const res = await apiFetch(`/api/pipeline/stages/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await res.json();
+    throw new Error(json.error || 'Failed to delete stage');
+  }
+}
+
+export async function seedDefaultStages(): Promise<PipelineStage[]> {
+  const res = await apiFetch('/api/pipeline/stages/seed-defaults', { method: 'POST' });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to seed default stages');
+  return json.data as PipelineStage[];
+}
+
+
 // ============================================================
 // Deals
 // ============================================================

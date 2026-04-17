@@ -79,3 +79,53 @@ func (uc *pipelineStageUseCase) Update(ctx context.Context, orgID, id uuid.UUID,
 	}
 	return stage, nil
 }
+
+func (uc *pipelineStageUseCase) Delete(ctx context.Context, orgID, id uuid.UUID) error {
+	stage, err := uc.repo.GetByID(ctx, orgID, id)
+	if err != nil {
+		return domain.ErrInternal
+	}
+	if stage == nil {
+		return domain.ErrStageNotFound
+	}
+	return uc.repo.Delete(ctx, orgID, id)
+}
+
+var defaultStages = []struct {
+	Name  string
+	Color string
+	IsWon bool
+	Pos   int
+}{
+	{"Lead In", "#6366F1", false, 0},
+	{"Qualified", "#3B82F6", false, 1},
+	{"Proposal", "#F59E0B", false, 2},
+	{"Negotiation", "#EF4444", false, 3},
+	{"Closed Won", "#10B981", true, 4},
+}
+
+func (uc *pipelineStageUseCase) SeedDefaults(ctx context.Context, orgID uuid.UUID) ([]domain.PipelineStage, error) {
+	count, err := uc.repo.CountByOrg(ctx, orgID)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+	if count > 0 {
+		// Already seeded; just return existing stages
+		return uc.repo.List(ctx, orgID)
+	}
+	var created []domain.PipelineStage
+	for _, s := range defaultStages {
+		stage := &domain.PipelineStage{
+			OrgID:    orgID,
+			Name:     s.Name,
+			Color:    s.Color,
+			Position: s.Pos,
+			IsWon:    s.IsWon,
+		}
+		if err := uc.repo.Create(ctx, stage); err != nil {
+			return nil, domain.ErrInternal
+		}
+		created = append(created, *stage)
+	}
+	return created, nil
+}
