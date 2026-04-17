@@ -185,5 +185,5 @@ func handleAppError(c *gin.Context, err error) {
 		c.JSON(appErr.Code, domain.Err(appErr.Message))
 		return
 	}
-	c.JSON(http.StatusInternalServerError, domain.Err("internal server error"))
+	c.JSON(http.StatusInternalServerError, domain.Err(fmt.Sprintf("internal server error: %v", err)))
 }
