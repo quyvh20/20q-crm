@@ -67,8 +67,8 @@ func (uc *workspaceUseCase) InviteMember(ctx context.Context, orgID uuid.UUID, i
 	}
 
 	existing, err := uc.authRepo.GetOrgUserByEmail(ctx, input.Email, orgID)
-	if err != nil {
-		return nil, nil, domain.ErrInternal
+	if err != nil && err.Error() != "record not found" {
+		return nil, nil, domain.NewAppError(500, "GetOrgUser error: " + err.Error())
 	}
 	if existing != nil && existing.Status != domain.StatusDeleted {
 		return nil, nil, domain.ErrAlreadyMember
@@ -87,12 +87,12 @@ func (uc *workspaceUseCase) InviteMember(ctx context.Context, orgID uuid.UUID, i
 	}
 
 	if err := uc.authRepo.CreateOrgInvitation(ctx, inv); err != nil {
-		return nil, nil, domain.ErrInternal
+		return nil, nil, domain.NewAppError(500, "CreateOrgInvitation error: " + err.Error())
 	}
 
 	link := fmt.Sprintf("%s/accept-invite?token=%s", "https://20q-crm.vercel.app", rawToken)
 	if err := uc.mailer.SendInvite(ctx, input.Email, link, orgID.String()); err != nil {
-		return nil, nil, domain.NewAppError(500, "failed to send email")
+		return nil, nil, domain.NewAppError(500, "SendInvite error: " + err.Error())
 	}
 
 	var debugToken *string

@@ -6,6 +6,9 @@ import (
 	"crm-backend/internal/repository"
 	"crm-backend/pkg/config"
 
+	"github.com/google/uuid"
+	"time"
+
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -58,12 +61,27 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 
 		err3 := repository.SeedSystemRoles(db)
 
+		var count int64
+		err4 := db.Table("org_invitations").Count(&count).Error
+
+		inv := &domain.OrgInvitation{
+			ID: uuid.New(),
+			Email: "test@example.com",
+			OrgID: uuid.Nil,
+			RoleID: uuid.Nil,
+			TokenHash: "test",
+			ExpiresAt: time.Now(),
+		}
+		err5 := db.Create(inv).Error
+
 		c.JSON(200, gin.H{
 			"status": "done",
 			"err1": fmt.Sprintf("%v", err1),
 			"err2": fmt.Sprintf("%v", err2),
 			"errMigrate": fmt.Sprintf("%v", errMigrate),
 			"seed_err": fmt.Sprintf("%v", err3),
+			"inv_count_err": fmt.Sprintf("%v", err4),
+			"inv_create_err": fmt.Sprintf("%v", err5),
 		})
 	})
 
