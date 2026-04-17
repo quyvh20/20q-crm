@@ -1018,7 +1018,7 @@ export async function inviteMember(email: string, role: string): Promise<{ membe
 }
 
 export async function updateMemberRole(userId: string, role: string): Promise<void> {
-  const res = await apiFetch(`/api/workspaces/members/${userId}`, {
+  const res = await apiFetch(`/api/workspaces/members/${userId}/role`, {
     method: 'PATCH',
     body: JSON.stringify({ role }),
   });
