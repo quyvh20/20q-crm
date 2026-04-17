@@ -201,7 +201,7 @@ func main() {
 
 		eventsHandler := delivery.NewEventsHandler(redisClient)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, cfg)
+		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, cfg, db)
 		log.Info("All routes registered")
 	} else {
 		log.Warn("Database not connected — routes skipped")
