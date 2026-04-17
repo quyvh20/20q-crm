@@ -70,8 +70,11 @@ export default function DealsPage() {
     const map: Record<string, Deal[]> = {};
     stages.forEach(s => { map[s.id] = []; });
     deals.forEach(d => {
-      // Fall back to the first available stage if stage_id is missing
-      const stageId = d.stage_id || (stages.length > 0 ? stages[0].id : null);
+      let stageId = d.stage_id;
+      // Fall back to the first available stage if stage_id is missing or deleted
+      if (!stageId || !map[stageId]) {
+        stageId = stages.length > 0 ? stages[0].id : null;
+      }
       if (stageId && map[stageId]) {
         map[stageId].push(d);
       }
@@ -79,7 +82,7 @@ export default function DealsPage() {
     return map;
   }, [stages, deals]);
 
-  const totalPipelineValue = deals.reduce((s, d) => s + d.value, 0);
+  const totalPipelineValue = deals.reduce((s, d) => s + (d.value || 0), 0);
 
   const handleDragStart = (event: DragStartEvent) => {
     const deal = deals.find(d => d.id === event.active.id);
@@ -159,27 +162,37 @@ export default function DealsPage() {
 
       {/* Kanban Board */}
       <div className="flex-1 overflow-x-auto pb-4">
-        <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-          <div className="flex gap-4 h-full">
-            {stages.map(stage => (
-              <KanbanColumn
-                key={stage.id}
-                stage={stage}
-                deals={dealsByStage[stage.id] || []}
-                onDealClick={(deal) => navigate(`/deals/${deal.id}`)}
-                onAddDeal={handleAddDeal}
-              />
-            ))}
+        {stages.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full border-2 border-dashed rounded-xl border-muted mr-4">
+            <div className="text-center text-muted-foreground p-8">
+              <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="mx-auto mb-4 opacity-50"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+              <p className="text-lg font-medium mb-1 text-foreground">No pipeline stages found</p>
+              <p className="text-sm mb-4">You need to create pipeline stages before managing deals.</p>
+            </div>
           </div>
+        ) : (
+          <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+            <div className="flex gap-4 h-full">
+              {stages.map(stage => (
+                <KanbanColumn
+                  key={stage.id}
+                  stage={stage}
+                  deals={dealsByStage[stage.id] || []}
+                  onDealClick={(deal) => navigate(`/deals/${deal.id}`)}
+                  onAddDeal={handleAddDeal}
+                />
+              ))}
+            </div>
 
-          <DragOverlay>
-            {activeDeal ? (
-              <div className="opacity-90 rotate-3 scale-105">
-                <DealCard deal={activeDeal} onClick={() => {}} />
-              </div>
-            ) : null}
-          </DragOverlay>
-        </DndContext>
+            <DragOverlay>
+              {activeDeal ? (
+                <div className="opacity-90 rotate-3 scale-105">
+                  <DealCard deal={activeDeal} onClick={() => {}} />
+                </div>
+              ) : null}
+            </DragOverlay>
+          </DndContext>
+        )}
       </div>
 
       {/* Add Deal Modal */}

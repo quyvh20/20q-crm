@@ -24,8 +24,8 @@ export default function DealCard({ deal, onClick }: DealCardProps) {
   };
 
   const probColor =
-    deal.probability >= 70 ? 'text-emerald-500 bg-emerald-500/10' :
-    deal.probability >= 30 ? 'text-amber-500 bg-amber-500/10' :
+    (deal.probability || 0) >= 70 ? 'text-emerald-500 bg-emerald-500/10' :
+    (deal.probability || 0) >= 30 ? 'text-amber-500 bg-amber-500/10' :
     'text-red-400 bg-red-400/10';
 
   const contactName = deal.contact
@@ -54,10 +54,10 @@ export default function DealCard({ deal, onClick }: DealCardProps) {
 
       <div className="flex items-center justify-between mt-2">
         <span className="text-sm font-semibold">
-          ${deal.value.toLocaleString()}
+          ${(deal.value || 0).toLocaleString()}
         </span>
         <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${probColor}`}>
-          {deal.probability}%
+          {deal.probability || 0}%
         </span>
       </div>
 
