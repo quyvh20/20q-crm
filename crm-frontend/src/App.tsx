@@ -12,6 +12,7 @@ import DealDetailPage from './pages/DealDetailPage';
 import SettingsPage from './pages/SettingsPage';
 import WorkspaceSettingsPage from './pages/WorkspaceSettingsPage';
 import CustomObjectPage from './pages/CustomObjectPage';
+import AcceptInvitePage from './pages/AcceptInvitePage';
 
 // Initialize Sentry
 const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN;
@@ -80,6 +81,7 @@ function App() {
             <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
             <Route path="/register" element={<PublicRoute><RegisterPage /></PublicRoute>} />
             <Route path="/auth/callback" element={<AuthCallbackPage />} />
+            <Route path="/accept-invite" element={<AcceptInvitePage />} />
 
             {/* Protected routes */}
             <Route path="/" element={

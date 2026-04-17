@@ -1007,14 +1007,14 @@ export async function getWorkspaceMembers(): Promise<WorkspaceMember[]> {
   return (json.data || []) as WorkspaceMember[];
 }
 
-export async function inviteMember(email: string, role: string): Promise<WorkspaceMember> {
+export async function inviteMember(email: string, role: string): Promise<{ member: WorkspaceMember; debug_token?: string }> {
   const res = await apiFetch('/api/workspaces/invites', {
     method: 'POST',
     body: JSON.stringify({ email, role }),
   });
   const json = await res.json();
   if (!res.ok) throw new Error(json.error || 'Failed to invite member');
-  return json.data as WorkspaceMember;
+  return json.data;
 }
 
 export async function updateMemberRole(userId: string, role: string): Promise<void> {
@@ -1028,10 +1028,49 @@ export async function updateMemberRole(userId: string, role: string): Promise<vo
   }
 }
 
-export async function removeMember(userId: string): Promise<void> {
-  const res = await apiFetch(`/api/workspaces/members/${userId}`, { method: 'DELETE' });
+export async function removeMember(userId: string, input?: { strategy?: 'transfer' | 'unassign'; reassign_to_user_id?: string }): Promise<void> {
+  const res = await apiFetch(`/api/workspaces/members/${userId}`, { 
+    method: 'DELETE',
+    body: input ? JSON.stringify(input) : undefined
+  });
   if (!res.ok) {
     const json = await res.json();
     throw new Error(json.error || 'Failed to remove member');
+  }
+}
+
+export async function suspendMember(userId: string): Promise<void> {
+  const res = await apiFetch(`/api/workspaces/members/${userId}/suspend`, { method: 'POST' });
+  if (!res.ok) {
+    const json = await res.json();
+    throw new Error(json.error || 'Failed to suspend member');
+  }
+}
+
+export async function reinstateMember(userId: string): Promise<void> {
+  const res = await apiFetch(`/api/workspaces/members/${userId}/reinstate`, { method: 'POST' });
+  if (!res.ok) {
+    const json = await res.json();
+    throw new Error(json.error || 'Failed to reinstate member');
+  }
+}
+
+export async function transferOwnership(userId: string): Promise<void> {
+  const res = await apiFetch(`/api/workspaces/members/${userId}/transfer`, { method: 'POST' });
+  if (!res.ok) {
+    const json = await res.json();
+    throw new Error(json.error || 'Failed to transfer ownership');
+  }
+}
+
+export async function acceptInvite(token: string): Promise<void> {
+  const res = await fetch(`${API_URL}/api/auth/accept-invite`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  });
+  if (!res.ok) {
+    const json = await res.json();
+    throw new Error(json.error || 'Failed to accept invitation');
   }
 }
