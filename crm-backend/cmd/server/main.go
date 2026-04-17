@@ -62,7 +62,9 @@ func main() {
 	}
 	if db != nil {
 		log.Info("Database connection established")
-		db.AutoMigrate(&domain.KnowledgeBaseEntry{}, &domain.AITokenUsage{}, &domain.OrgUser{}, &domain.User{})
+		db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(255) DEFAULT ''`)
+		db.Exec(`UPDATE users SET full_name = TRIM(first_name || ' ' || last_name) WHERE full_name = '' OR full_name IS NULL`)
+		db.AutoMigrate(&domain.KnowledgeBaseEntry{}, &domain.AITokenUsage{}, &domain.OrgUser{})
 	}
 
 	redisClient, err := cache.NewRedisClient(cfg.RedisURL)
