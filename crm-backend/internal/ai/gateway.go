@@ -92,7 +92,7 @@ var taskMaxTokens = map[AITask]int{
 	TaskFollowup:       200,
 	TaskEmailCompose:   400,
 	TaskAssistantChat:  500,
-	TaskCommandCenter:  512,
+	TaskCommandCenter:  768, // system prompt enforces <120 words; extra headroom for formatted bullet lists
 	TaskMeetingSummary: 1000,
 	TaskAnalytics:      1000,
 }

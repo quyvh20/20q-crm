@@ -58,8 +58,27 @@ func (r *dealRepository) List(ctx context.Context, orgID uuid.UUID, f domain.Dea
 	}
 
 	var deals []domain.Deal
+
+	// ── Sort clause ──────────────────────────────────────────────────────────
+	// Whitelist prevents SQL injection; default is newest-first.
+	allowedSort := map[string]string{
+		"value":       "deals.value",
+		"probability": "deals.probability",
+		"created_at":  "deals.created_at",
+		"title":       "deals.title",
+	}
+	sortCol := "deals.created_at"
+	if col, ok := allowedSort[f.SortBy]; ok {
+		sortCol = col
+	}
+	dir := "DESC"
+	if strings.ToUpper(f.SortOrder) == "ASC" {
+		dir = "ASC"
+	}
+	orderClause := fmt.Sprintf("%s %s, deals.id %s", sortCol, dir, dir)
+
 	if err := query.
-		Order("deals.created_at DESC, deals.id DESC").
+		Order(orderClause).
 		Limit(limit + 1).
 		Find(&deals).Error; err != nil {
 		return nil, "", err

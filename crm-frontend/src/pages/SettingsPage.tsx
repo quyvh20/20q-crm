@@ -1,10 +1,12 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../lib/auth';
 import CustomFieldManager from '../components/settings/CustomFieldManager';
 import ObjectDefManager from '../components/settings/ObjectDefManager';
 import KnowledgeBase from '../components/settings/KnowledgeBase';
 import PipelineStagesManager from '../components/settings/PipelineStagesManager';
 
-const TABS = [
+const BASE_TABS = [
   { id: 'pipeline', label: 'Pipeline', icon: '🎯' },
   { id: 'fields', label: 'Custom Fields', icon: '📋' },
   { id: 'objects', label: 'Custom Objects', icon: '📦' },
@@ -12,10 +14,30 @@ const TABS = [
   { id: 'templates', label: 'Templates', icon: '🏗️' },
 ] as const;
 
-type TabId = (typeof TABS)[number]['id'];
+const ADMIN_TABS = [
+  ...BASE_TABS,
+  { id: 'ai-logs', label: 'AI Logs', icon: '💬' },
+] as const;
+
+type BaseTabId = (typeof BASE_TABS)[number]['id'];
+type AdminTabId = (typeof ADMIN_TABS)[number]['id'];
+type TabId = BaseTabId | AdminTabId;
 
 export default function SettingsPage() {
+  const { currentRole } = useAuth();
+  const navigate = useNavigate();
+  const isAdmin = currentRole === 'admin' || currentRole === 'owner';
+  const TABS = isAdmin ? ADMIN_TABS : BASE_TABS;
+
   const [activeTab, setActiveTab] = useState<TabId>('pipeline');
+
+  const handleTab = (id: TabId) => {
+    if (id === 'ai-logs') {
+      navigate('/settings/ai-logs');
+      return;
+    }
+    setActiveTab(id);
+  };
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -32,7 +54,7 @@ export default function SettingsPage() {
         {TABS.map((tab) => (
           <button
             key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
+            onClick={() => handleTab(tab.id as TabId)}
             className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
               activeTab === tab.id
                 ? 'border-blue-500 text-foreground'

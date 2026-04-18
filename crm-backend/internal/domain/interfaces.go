@@ -145,6 +145,8 @@ type ContactFilter struct {
 	OwnerUserID *uuid.UUID  `form:"owner_user_id"`
 	Cursor      string      `form:"cursor"`
 	Limit       int         `form:"limit"`
+	SortBy      string      `form:"sort_by"`    // "name", "created_at" (default)
+	SortOrder   string      `form:"sort_order"` // "asc" or "desc" (default)
 }
 
 type ImportResult struct {
@@ -292,6 +294,8 @@ type DealFilter struct {
 	ContactID   *uuid.UUID `form:"contact_id"`
 	Cursor      string     `form:"cursor"`
 	Limit       int        `form:"limit"`
+	SortBy      string     `form:"sort_by"`    // "value", "probability", "created_at" (default)
+	SortOrder   string     `form:"sort_order"` // "asc" or "desc" (default)
 }
 
 type CreateDealInput struct {

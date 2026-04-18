@@ -13,6 +13,7 @@ import SettingsPage from './pages/SettingsPage';
 import WorkspaceSettingsPage from './pages/WorkspaceSettingsPage';
 import CustomObjectPage from './pages/CustomObjectPage';
 import AcceptInvitePage from './pages/AcceptInvitePage';
+import ConversationLogPage from './pages/ConversationLogPage';
 
 // Initialize Sentry
 const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN;
@@ -117,6 +118,11 @@ function App() {
             <Route path="/objects/:slug" element={
               <ProtectedRoute>
                 <AppLayout><CustomObjectPage /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/settings/ai-logs" element={
+              <ProtectedRoute>
+                <AppLayout><ConversationLogPage /></AppLayout>
               </ProtectedRoute>
             } />
           </Routes>

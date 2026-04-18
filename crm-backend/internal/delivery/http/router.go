@@ -14,7 +14,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository) {
+func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository) {
 	// Temporary endpoint to debug DB issues on deploy
 	router.GET("/api/test/db-fix", func(c *gin.Context) {
 		err1 := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(255) DEFAULT ''`).Error
@@ -194,6 +194,12 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			aiRoutes.GET("/jobs/:id", aiHandler.GetJobStatus)
 			aiRoutes.POST("/email/compose", aiHandler.ComposeEmail)
 			aiRoutes.POST("/meeting/summarize", aiHandler.SummarizeMeeting)
+
+			// Chat session management
+			aiRoutes.POST("/sessions/:id/end", sessionHandler.EndSession)
+			aiRoutes.GET("/sessions", RequireRole("admin", "owner"), sessionHandler.ListSessions)
+			aiRoutes.GET("/sessions/:id/messages", RequireRole("admin", "owner"), sessionHandler.GetSessionMessages)
+			aiRoutes.DELETE("/sessions/:id", RequireRole("admin", "owner"), sessionHandler.DeleteSession)
 		}
 
 		deals.GET("/:id/score", aiHandler.ScoreDeal)

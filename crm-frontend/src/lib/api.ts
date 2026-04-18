@@ -907,38 +907,99 @@ export async function getKBAIPrompt(): Promise<string> {
 }
 
 // ============================================================
+// Deal inline-form helpers (used by InlineForm chat component)
+// ============================================================
+
+export interface CreateDealFormInput {
+  title: string;
+  value?: number;
+  stage_id?: string;
+  probability?: number;
+}
+
+export interface PipelineStage {
+  id: string;
+  name: string;
+  position: number;
+  color?: string;
+}
+
+export async function createDeal(input: CreateDealFormInput): Promise<void> {
+  const res = await apiFetch('/api/deals', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to create deal');
+}
+
+export async function getPipelineStages(): Promise<PipelineStage[]> {
+  const res = await apiFetch('/api/pipeline/stages');
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch stages');
+  return json.data || [];
+}
+
+// ============================================================
 // AI Command Center
 // ============================================================
 
 export interface CommandEvent {
-  type: 'thinking' | 'planning' | 'tool_result' | 'response' | 'error' | 'done';
+  type: 'thinking' | 'planning' | 'tool_result' | 'response' | 'confirm' | 'navigate' | 'form' | 'error' | 'done';
   message?: string;
   tool?: string;
   data?: unknown;
   done?: boolean;
 }
 
+export interface HistoryMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface WorkspaceContext {
+  org_name: string;
+  role: string;
+}
+
 export async function sendCommand(
   message: string,
-  context: { page: string; entity_id?: string } | undefined,
-  onEvent: (event: CommandEvent) => void,
-  onDone: () => void,
-  onError: (err: string) => void,
+  sessionId: string,
+  history: HistoryMessage[],
+  confirmed?: boolean,
+  confirmedTool?: string,
+  confirmedArgs?: Record<string, unknown>,
+  onEvent?: (event: CommandEvent) => void,
+  onDone?: () => void,
+  onError?: (err: string) => void,
+  workspaces?: WorkspaceContext[],
 ): Promise<void> {
   try {
     const token = localStorage.getItem('access_token');
+    const body: Record<string, unknown> = {
+      message,
+      session_id: sessionId,
+      history: history.slice(-10),
+      workspaces: workspaces || [],
+    };
+    if (confirmed) {
+      body.confirmed = true;
+      body.confirmed_tool = confirmedTool;
+      body.confirmed_args = confirmedArgs;
+    }
+
     const res = await fetch(`${API_URL}/api/ai/command`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ message, context }),
+      body: JSON.stringify(body),
     });
 
     if (!res.ok) {
-      const json = await res.json();
-      onError(json.error || `HTTP ${res.status}`);
+      const json = await res.json().catch(() => ({}));
+      onError?.(json.error || `HTTP ${res.status}`);
       return;
     }
 
@@ -957,10 +1018,11 @@ export async function sendCommand(
       for (const line of lines) {
         if (line.startsWith('data: ')) {
           try {
-            const event: CommandEvent = JSON.parse(line.slice(6));
-            onEvent(event);
+            const raw = line.slice(6).replace(/\\n/g, '\n');
+            const event: CommandEvent = JSON.parse(raw);
+            onEvent?.(event);
             if (event.type === 'done') {
-              onDone();
+              onDone?.();
               return;
             }
           } catch {
@@ -969,11 +1031,63 @@ export async function sendCommand(
         }
       }
     }
-    onDone();
+    onDone?.();
   } catch (err) {
-    onError(err instanceof Error ? err.message : 'Command failed');
+    onError?.(err instanceof Error ? err.message : 'Command failed');
   }
 }
+
+// ── Chat session management ───────────────────────────────────────────────────
+
+export interface ChatSession {
+  id: string;
+  org_id: string;
+  user_id: string;
+  title: string;
+  role: string;
+  created_at: string;
+  ended_at?: string;
+  user?: { id: string; first_name: string; last_name: string; email: string };
+}
+
+export interface ChatMessageItem {
+  id: string;
+  session_id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  created_at: string;
+}
+
+export async function endChatSession(sessionId: string): Promise<void> {
+  const res = await apiFetch(`/api/ai/sessions/${sessionId}/end`, { method: 'POST' });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(json.error || 'Failed to end session');
+  }
+}
+
+export async function listChatSessions(page = 1, limit = 50): Promise<{ data: ChatSession[]; total: number }> {
+  const res = await apiFetch(`/api/ai/sessions?page=${page}&limit=${limit}`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch sessions');
+  return { data: json.data || [], total: json.total || 0 };
+}
+
+export async function getChatSessionMessages(sessionId: string): Promise<ChatMessageItem[]> {
+  const res = await apiFetch(`/api/ai/sessions/${sessionId}/messages`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch messages');
+  return json.data || [];
+}
+
+export async function deleteChatSession(sessionId: string): Promise<void> {
+  const res = await apiFetch(`/api/ai/sessions/${sessionId}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(json.error || 'Failed to delete session');
+  }
+}
+
 
 export interface Workspace {
   org_id: string;

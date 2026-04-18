@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"crm-backend/internal/domain"
@@ -91,8 +92,25 @@ func (r *contactRepository) List(ctx context.Context, orgID uuid.UUID, f domain.
 	}
 
 	var contacts []domain.Contact
+
+	// ── Sort clause ──────────────────────────────────────────────────────────
+	allowedContactSort := map[string]string{
+		"created_at": "contacts.created_at",
+		"name":       "contacts.first_name",
+		"email":      "contacts.email",
+	}
+	sortCol := "contacts.created_at"
+	if col, ok := allowedContactSort[f.SortBy]; ok {
+		sortCol = col
+	}
+	dir := "DESC"
+	if strings.ToUpper(f.SortOrder) == "ASC" {
+		dir = "ASC"
+	}
+	orderClause := fmt.Sprintf("%s %s, contacts.id %s", sortCol, dir, dir)
+
 	err := query.
-		Order("contacts.created_at DESC, contacts.id DESC").
+		Order(orderClause).
 		Limit(limit + 1). // fetch one extra to determine if there's a next page
 		Find(&contacts).Error
 	if err != nil {

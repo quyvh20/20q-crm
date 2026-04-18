@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"crm-backend/internal/ai"
 	"crm-backend/internal/domain"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // CommandHandler handles POST /api/ai/command (SSE).
@@ -22,11 +24,17 @@ func NewCommandHandler(cc *ai.CommandCenter) *CommandHandler {
 }
 
 type commandRequest struct {
-	Message string `json:"message" binding:"required"`
-	Context *struct {
+	SessionID     string                  `json:"session_id"`
+	Message       string                  `json:"message" binding:"required"`
+	History       []ai.HistoryMessage     `json:"history,omitempty"`
+	Workspaces    []ai.WorkspaceInfo      `json:"workspaces,omitempty"`
+	Context       *struct {
 		Page     string `json:"page"`
 		EntityID string `json:"entity_id"`
 	} `json:"context,omitempty"`
+	Confirmed     bool            `json:"confirmed,omitempty"`
+	ConfirmedTool string          `json:"confirmed_tool,omitempty"`
+	ConfirmedArgs json.RawMessage `json:"confirmed_args,omitempty"`
 }
 
 // Command handles SSE-streamed AI command execution.
@@ -41,6 +49,7 @@ func (h *CommandHandler) Command(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
 		return
 	}
+	role, _ := GetRole(c)
 
 	var req commandRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -48,7 +57,32 @@ func (h *CommandHandler) Command(c *gin.Context) {
 		return
 	}
 
-	events, err := h.commandCenter.Execute(c.Request.Context(), orgID, userID, req.Message)
+	// Parse or generate session ID
+	sessionID := uuid.New()
+	if req.SessionID != "" {
+		if parsed, err := uuid.Parse(req.SessionID); err == nil {
+			sessionID = parsed
+		}
+	}
+
+	// Trim history to last 10 turns server-side as well
+	history := req.History
+	if len(history) > 10 {
+		history = history[len(history)-10:]
+	}
+
+	ccReq := ai.CommandRequest{
+		SessionID:     sessionID,
+		UserMessage:   req.Message,
+		History:       history,
+		UserRole:      role,
+		Workspaces:    req.Workspaces,
+		Confirmed:     req.Confirmed,
+		ConfirmedTool: req.ConfirmedTool,
+		ConfirmedArgs: req.ConfirmedArgs,
+	}
+
+	events, err := h.commandCenter.Execute(c.Request.Context(), orgID, userID, ccReq)
 	if err != nil {
 		var budgetErr ai.ErrBudgetExceeded
 		var timeoutErr ai.ErrAITimeout
@@ -77,6 +111,7 @@ func (h *CommandHandler) Command(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, domain.Err(err.Error()))
 		return
 	}
+
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
@@ -93,7 +128,9 @@ func (h *CommandHandler) Command(c *gin.Context) {
 
 	for event := range events {
 		data, _ := json.Marshal(event)
-		fmt.Fprintf(c.Writer, "data: %s\n\n", data)
+		// Sanitize data to avoid double-newlines breaking the SSE frame
+		sanitized := strings.ReplaceAll(string(data), "\n", "\\n")
+		fmt.Fprintf(c.Writer, "data: %s\n\n", sanitized)
 		flush()
 	}
 }
