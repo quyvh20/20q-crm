@@ -280,7 +280,9 @@ func (cc *CommandCenter) Execute(
 		}
 
 		// Ask AI to summarize tool results — use rich markdown but keep confirmations brief
-		const summaryDirective = "Summarize the results above clearly. Use rich markdown (tables, lists, bold text) if helpful. Provide insights, code, or analysis if the user asked."
+		// CRITICAL MEMORY TRICK: We force the AI to embed the UUID in markdown links.
+		// That way, the UUID is saved in the chat history text, allowing the AI to recall it for follow-up actions like "Update the second one"!
+		const summaryDirective = "Summarize the results above clearly. Use rich markdown (tables, lists, bold text). IMPORTANT: When listing records (deals, contacts, tasks), you MUST embed their UUID invisibly using markdown empty links, e.g., `[Deal Name](#uuid)`. You must do this so you can remember their IDs for follow-up actions."
 		const confirmDirective = "Acknowledge what you found and state what action is pending user confirmation. Keep this confirmation concise."
 		summaryContent := summaryDirective
 		if len(writeCalls) > 0 {
