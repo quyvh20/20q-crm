@@ -1,4 +1,4 @@
-import React from 'react';
+
 
 export interface CommandEvent {
   type: 'thinking' | 'planning' | 'tool_result' | 'response' | 'confirm' | 'navigate' | 'form' | 'error' | 'done';

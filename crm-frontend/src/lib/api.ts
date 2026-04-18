@@ -300,7 +300,7 @@ export async function getDeal(id: string): Promise<Deal> {
   return json.data as Deal;
 }
 
-export async function createDeal(data: {
+export interface CreateDealFormInput {
   title: string;
   contact_id?: string;
   company_id?: string;
@@ -308,7 +308,9 @@ export async function createDeal(data: {
   value?: number;
   probability?: number;
   expected_close_at?: string;
-}): Promise<Deal> {
+}
+
+export async function createDeal(data: CreateDealFormInput): Promise<Deal> {
   const res = await apiFetch('/api/deals', { method: 'POST', body: JSON.stringify(data) });
   const json = await res.json();
   if (!res.ok) throw new Error(json.error || 'Failed to create deal');
@@ -906,39 +908,6 @@ export async function getKBAIPrompt(): Promise<string> {
   return json.data?.prompt || '';
 }
 
-// ============================================================
-// Deal inline-form helpers (used by InlineForm chat component)
-// ============================================================
-
-export interface CreateDealFormInput {
-  title: string;
-  value?: number;
-  stage_id?: string;
-  probability?: number;
-}
-
-export interface PipelineStage {
-  id: string;
-  name: string;
-  position: number;
-  color?: string;
-}
-
-export async function createDeal(input: CreateDealFormInput): Promise<void> {
-  const res = await apiFetch('/api/deals', {
-    method: 'POST',
-    body: JSON.stringify(input),
-  });
-  const json = await res.json();
-  if (!res.ok) throw new Error(json.error || 'Failed to create deal');
-}
-
-export async function getPipelineStages(): Promise<PipelineStage[]> {
-  const res = await apiFetch('/api/pipeline/stages');
-  const json = await res.json();
-  if (!res.ok) throw new Error(json.error || 'Failed to fetch stages');
-  return json.data || [];
-}
 
 // ============================================================
 // AI Command Center

@@ -73,7 +73,7 @@ export default function DealsPage() {
       let stageId = d.stage_id;
       // Fall back to the first available stage if stage_id is missing or deleted
       if (!stageId || !map[stageId]) {
-        stageId = stages.length > 0 ? stages[0].id : null;
+        stageId = stages.length > 0 ? stages[0].id : undefined;
       }
       if (stageId && map[stageId]) {
         map[stageId].push(d);

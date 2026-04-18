@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import type { FormPayload } from './chatTypes';
-import { createContact, createDeal, getPipelineStages, type PipelineStage } from '../../lib/api';
+import { createContact, createDeal, getStages, type PipelineStage } from '../../lib/api';
 
 interface Props {
   payload: FormPayload;
@@ -89,7 +89,7 @@ function DealForm({ payload, onSuccess, onCancel }: Props) {
 
   // Load pipeline stages on mount
   useEffect(() => {
-    getPipelineStages()
+    getStages()
       .then(s => {
         setStages(s);
         if (s.length > 0) setStageId(s[0].id);
