@@ -90,7 +90,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
         )}
       </aside>
 
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0" style={{ marginRight: chatOpen ? 340 : 0, transition: 'margin-right 0.22s cubic-bezier(0.16,1,0.3,1)' }}>
         <header className="h-16 border-b bg-card flex items-center justify-between px-6">
           <div className="md:hidden">
             <h1 className="text-xl font-bold tracking-tight">Guerrilla CRM</h1>
