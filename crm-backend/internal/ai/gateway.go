@@ -229,21 +229,20 @@ func (g *AIGateway) CompleteWithTools(ctx context.Context, orgID, userID uuid.UU
 		}
 	}
 
-	primaryP := g.routePrimary(task)
 	var result AIResponse
 	var err error
 
 	// Deterministic fallback chain for tool calling:
 	// 1. Vercel AI Gateway (Haiku) — best tool calling, prompt caching
-	// 2. Anthropic direct via CF AI Gateway — reliable Claude tool calls
-	// 3. CF Workers Llama — OUR OWN INFRA, always available, never skip this
+	// 2. CF Kimi K2.5 — OUR OWN INFRA, frontier model, native multi-turn tool calling
+	// 3. CF → Anthropic — last resort Claude fallback
 	type namedCall struct {
 		name string
 		call func() (AIResponse, error)
 	}
 	chain := []namedCall{}
 
-	// Always start with Vercel if configured
+	// 1. Always start with Vercel if configured
 	if g.vercelGatewayURL != "" && g.vercelGatewayKey != "" {
 		chain = append(chain, namedCall{
 			"vercel_gateway",
@@ -252,20 +251,18 @@ func (g *AIGateway) CompleteWithTools(ctx context.Context, orgID, userID uuid.UU
 			},
 		})
 	}
-	// Anthropic via CF Gateway as second
-	if primaryP != providerAnthropic || g.vercelGatewayURL == "" {
-		chain = append(chain, namedCall{
-			"cf_anthropic",
-			func() (AIResponse, error) {
-				return g.callAnthropicWithTools(ctx, task, g.modelFor(task, providerAnthropic), messages, tools)
-			},
-		})
-	}
-	// CF Llama ALWAYS last — our own infra, guaranteed available
+	// 2. CF Kimi K2.5 — our own infra, always available, strongest CF model for tool calling
 	chain = append(chain, namedCall{
-		"cf_workers_llama",
+		"cf_kimi_k2.5",
 		func() (AIResponse, error) {
 			return g.callCFWorkersWithTools(ctx, task, g.modelFor(task, providerCFWorkers), messages, tools)
+		},
+	})
+	// 3. Anthropic via CF Gateway — last resort
+	chain = append(chain, namedCall{
+		"cf_anthropic",
+		func() (AIResponse, error) {
+			return g.callAnthropicWithTools(ctx, task, g.modelFor(task, providerAnthropic), messages, tools)
 		},
 	})
 
@@ -498,7 +495,7 @@ func (g *AIGateway) routeFallback(task AITask, used provider) provider {
 }
 
 // buildFallbackChain returns an ordered provider list for Complete().
-// Always ends with CF Llama — our own infra, guaranteed available.
+// Chain: primary → CF Kimi K2.5 (our infra, strongest) → Anthropic (last resort)
 func (g *AIGateway) buildFallbackChain(primary provider) []provider {
 	seen := map[provider]bool{}
 	var chain []provider
@@ -514,10 +511,10 @@ func (g *AIGateway) buildFallbackChain(primary provider) []provider {
 	if g.vercelGatewayURL != "" && g.vercelGatewayKey != "" {
 		add(providerVercelGateway)
 	}
-	// 3. Anthropic via CF Gateway
-	add(providerAnthropic)
-	// 4. CF Llama — always last, our own infra
+	// 3. CF Kimi K2.5 — our own infra, strongest model for fallback
 	add(providerCFWorkers)
+	// 4. Anthropic via CF Gateway — last resort
+	add(providerAnthropic)
 	return chain
 }
 
