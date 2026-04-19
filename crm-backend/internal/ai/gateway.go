@@ -82,7 +82,7 @@ var taskModels = map[AITask]map[provider]string{
 	TaskSentiment:      {providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct", providerAnthropic: "claude-3-5-haiku-20241022"},
 	TaskFollowup:       {providerAnthropic: "claude-3-5-haiku-20241022", providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct"},
 	// CommandCenter: Haiku 4.5 via Vercel AI Gateway (Anthropic Messages API)
-	TaskCommandCenter:  {providerVercelGateway: "anthropic/claude-haiku-4.5", providerCFWorkers: "@cf/meta/llama-3.3-70b-instruct-fp8-fast"},
+	TaskCommandCenter:  {providerVercelGateway: "anthropic/claude-haiku-4.5", providerCFWorkers: "@cf/moonshotai/kimi-k2.5"},
 }
 
 // taskMaxTokens enforces strict output boundaries based on empirically measured p99 usage
