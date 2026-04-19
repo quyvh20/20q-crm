@@ -14,7 +14,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// CommandHandler handles POST /api/ai/command (SSE).
+// CommandHandler handles POST /api/ai/command (SSE) and POST /api/ai/command-sync (JSON).
 type CommandHandler struct {
 	commandCenter *ai.CommandCenter
 }
@@ -37,27 +37,22 @@ type commandRequest struct {
 	ConfirmedArgs json.RawMessage `json:"confirmed_args,omitempty"`
 }
 
-// Command handles SSE-streamed AI command execution.
-func (h *CommandHandler) Command(c *gin.Context) {
+func (h *CommandHandler) buildCCRequest(c *gin.Context) (uuid.UUID, uuid.UUID, ai.CommandRequest, error) {
 	orgID, ok := GetOrgID(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
-		return
+		return uuid.Nil, uuid.Nil, ai.CommandRequest{}, fmt.Errorf("unauthorized: no org_id")
 	}
 	userID, ok := GetUserID(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
-		return
+		return uuid.Nil, uuid.Nil, ai.CommandRequest{}, fmt.Errorf("unauthorized: no user_id")
 	}
 	role, _ := GetRole(c)
 
 	var req commandRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, domain.Err(err.Error()))
-		return
+		return uuid.Nil, uuid.Nil, ai.CommandRequest{}, err
 	}
 
-	// Parse or generate session ID
 	sessionID := uuid.New()
 	if req.SessionID != "" {
 		if parsed, err := uuid.Parse(req.SessionID); err == nil {
@@ -65,7 +60,6 @@ func (h *CommandHandler) Command(c *gin.Context) {
 		}
 	}
 
-	// Trim history to last 10 turns server-side as well
 	history := req.History
 	if len(history) > 10 {
 		history = history[len(history)-10:]
@@ -82,33 +76,48 @@ func (h *CommandHandler) Command(c *gin.Context) {
 		ConfirmedArgs: req.ConfirmedArgs,
 	}
 
+	return orgID, userID, ccReq, nil
+}
+
+func (h *CommandHandler) handleExecuteError(c *gin.Context, err error) {
+	var budgetErr ai.ErrBudgetExceeded
+	var timeoutErr ai.ErrAITimeout
+	var planErr ai.ErrFeatureNotInPlan
+
+	if errors.As(err, &budgetErr) {
+		c.JSON(http.StatusTooManyRequests, gin.H{
+			"error": budgetErr.Error(), "code": "budget_exceeded",
+			"reset_at": budgetErr.ResetAt,
+		})
+		return
+	}
+	if errors.As(err, &timeoutErr) {
+		c.Header("Retry-After", fmt.Sprintf("%d", timeoutErr.After))
+		c.JSON(http.StatusServiceUnavailable, domain.Err(timeoutErr.Error()))
+		return
+	}
+	if errors.As(err, &planErr) {
+		c.JSON(http.StatusPaymentRequired, gin.H{
+			"error": planErr.Error(), "code": "feature_not_in_plan",
+			"requires_plan": planErr.RequiresPlan,
+		})
+		return
+	}
+
+	c.JSON(http.StatusInternalServerError, domain.Err(err.Error()))
+}
+
+// Command handles SSE-streamed AI command execution.
+func (h *CommandHandler) Command(c *gin.Context) {
+	orgID, userID, ccReq, err := h.buildCCRequest(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, domain.Err(err.Error()))
+		return
+	}
+
 	events, err := h.commandCenter.Execute(c.Request.Context(), orgID, userID, ccReq)
 	if err != nil {
-		var budgetErr ai.ErrBudgetExceeded
-		var timeoutErr ai.ErrAITimeout
-		var planErr ai.ErrFeatureNotInPlan
-
-		if errors.As(err, &budgetErr) {
-			c.JSON(http.StatusTooManyRequests, gin.H{
-				"error": budgetErr.Error(), "code": "budget_exceeded",
-				"reset_at": budgetErr.ResetAt,
-			})
-			return
-		}
-		if errors.As(err, &timeoutErr) {
-			c.Header("Retry-After", fmt.Sprintf("%d", timeoutErr.After))
-			c.JSON(http.StatusServiceUnavailable, domain.Err(timeoutErr.Error()))
-			return
-		}
-		if errors.As(err, &planErr) {
-			c.JSON(http.StatusPaymentRequired, gin.H{
-				"error": planErr.Error(), "code": "feature_not_in_plan",
-				"requires_plan": planErr.RequiresPlan,
-			})
-			return
-		}
-
-		c.JSON(http.StatusInternalServerError, domain.Err(err.Error()))
+		h.handleExecuteError(c, err)
 		return
 	}
 
@@ -116,14 +125,39 @@ func (h *CommandHandler) Command(c *gin.Context) {
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
-	c.Writer.WriteHeaderNow() // Force headers to be sent immediately
-	c.Writer.Flush()          // Flush to the network — critical for Railway/Cloudflare
+	c.Writer.WriteHeaderNow()
+	c.Writer.Flush()
 
 	for event := range events {
 		data, _ := json.Marshal(event)
-		// Sanitize data to avoid double-newlines breaking the SSE frame
 		sanitized := strings.ReplaceAll(string(data), "\n", "\\n")
 		fmt.Fprintf(c.Writer, "data: %s\n\n", sanitized)
 		c.Writer.Flush()
 	}
+}
+
+// CommandSync handles non-streaming AI command execution.
+// Returns all events as a JSON array in one response — proxy-safe.
+func (h *CommandHandler) CommandSync(c *gin.Context) {
+	orgID, userID, ccReq, err := h.buildCCRequest(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, domain.Err(err.Error()))
+		return
+	}
+
+	eventsCh, err := h.commandCenter.Execute(c.Request.Context(), orgID, userID, ccReq)
+	if err != nil {
+		h.handleExecuteError(c, err)
+		return
+	}
+
+	// Collect all events into a slice
+	var allEvents []ai.CommandEvent
+	for event := range eventsCh {
+		allEvents = append(allEvents, event)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"events": allEvents,
+	})
 }

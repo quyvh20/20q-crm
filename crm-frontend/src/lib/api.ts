@@ -957,7 +957,7 @@ export async function sendCommand(
       body.confirmed_args = confirmedArgs;
     }
 
-    const res = await fetch(`${API_URL}/api/ai/command`, {
+    const res = await fetch(`${API_URL}/api/ai/command-sync`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -972,32 +972,15 @@ export async function sendCommand(
       return;
     }
 
-    const reader = res.body!.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
+    const json = await res.json();
+    const events: CommandEvent[] = json.events || [];
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            const raw = line.slice(6).replace(/\\n/g, '\n');
-            const event: CommandEvent = JSON.parse(raw);
-            onEvent?.(event);
-            if (event.type === 'done') {
-              onDone?.();
-              return;
-            }
-          } catch {
-            // skip malformed lines
-          }
-        }
+    // Replay events sequentially for smooth UX
+    for (const event of events) {
+      onEvent?.(event);
+      if (event.type === 'done') {
+        onDone?.();
+        return;
       }
     }
     onDone?.();

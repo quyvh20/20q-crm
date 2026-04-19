@@ -190,6 +190,7 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			aiRoutes.POST("/chat", aiHandler.Chat)
 			aiRoutes.POST("/embed", aiHandler.Embed)
 			aiRoutes.POST("/command", commandHandler.Command)
+			aiRoutes.POST("/command-sync", commandHandler.CommandSync)
 
 			aiRoutes.GET("/jobs/:id", aiHandler.GetJobStatus)
 			aiRoutes.POST("/email/compose", aiHandler.ComposeEmail)
