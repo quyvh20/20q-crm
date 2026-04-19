@@ -179,13 +179,22 @@ func (g *AIGateway) Complete(ctx context.Context, orgID, userID uuid.UUID, task 
 	primaryP := g.routePrimary(task)
 	result, err := g.callProvider(ctx, task, primaryP, messages)
 	if err != nil {
-		g.logger.Warn("primary provider failed, trying fallback",
+		g.logger.Warn("primary provider failed, trying fallbacks",
 			zap.String("task", string(task)),
 			zap.String("primary", string(primaryP)),
 			zap.Error(err))
-		fallbackP := g.routeFallback(task, primaryP)
-		if fallbackP != "" {
-			result, err = g.callProvider(ctx, task, fallbackP, messages)
+		// Try all other providers
+		for _, fb := range []provider{providerAnthropic, providerCFWorkers, providerVercelGateway} {
+			if fb == primaryP {
+				continue
+			}
+			result, err = g.callProvider(ctx, task, fb, messages)
+			if err == nil {
+				break
+			}
+			g.logger.Warn("fallback provider also failed",
+				zap.String("fallback", string(fb)),
+				zap.Error(err))
 		}
 	}
 
@@ -220,31 +229,58 @@ func (g *AIGateway) CompleteWithTools(ctx context.Context, orgID, userID uuid.UU
 	var result AIResponse
 	var err error
 
-	switch primaryP {
-	case providerVercelGateway:
-		result, err = g.callVercelGatewayWithTools(ctx, task, g.modelFor(task, providerVercelGateway), messages, tools)
-		if err != nil {
-			g.logger.Warn("Vercel Gateway tool call failed, falling back to CF Workers",
-				zap.String("task", string(task)),
-				zap.Error(err))
-			result, err = g.callCFWorkersWithTools(ctx, task, g.modelFor(task, providerCFWorkers), messages, tools)
+	// Resilient fallback chain: try providers in order of reliability for tool calling.
+	// 1. Primary (Vercel Gateway or CF Workers depending on config)
+	// 2. Anthropic via CF AI Gateway (reliable tool calling)
+	// 3. CF Workers (Llama — least reliable for tools)
+	providers := []struct {
+		name string
+		call func() (AIResponse, error)
+	}{
+		{
+			"primary/" + string(primaryP),
+			func() (AIResponse, error) {
+				switch primaryP {
+				case providerVercelGateway:
+					return g.callVercelGatewayWithTools(ctx, task, g.modelFor(task, providerVercelGateway), messages, tools)
+				case providerAnthropic:
+					return g.callAnthropicWithTools(ctx, task, g.modelFor(task, providerAnthropic), messages, tools)
+				default:
+					return g.callCFWorkersWithTools(ctx, task, g.modelFor(task, providerCFWorkers), messages, tools)
+				}
+			},
+		},
+		{
+			"anthropic_via_cf_gateway",
+			func() (AIResponse, error) {
+				if primaryP == providerAnthropic {
+					// Already tried Anthropic as primary; skip to avoid duplicate
+					return AIResponse{}, fmt.Errorf("skip: already tried anthropic")
+				}
+				return g.callAnthropicWithTools(ctx, task, g.modelFor(task, providerAnthropic), messages, tools)
+			},
+		},
+		{
+			"cf_workers_llama",
+			func() (AIResponse, error) {
+				if primaryP == providerCFWorkers {
+					// Already tried CF Workers as primary; skip
+					return AIResponse{}, fmt.Errorf("skip: already tried cf_workers")
+				}
+				return g.callCFWorkersWithTools(ctx, task, g.modelFor(task, providerCFWorkers), messages, tools)
+			},
+		},
+	}
+
+	for _, p := range providers {
+		result, err = p.call()
+		if err == nil {
+			break
 		}
-	case providerCFWorkers:
-		result, err = g.callCFWorkersWithTools(ctx, task, g.modelFor(task, providerCFWorkers), messages, tools)
-		if err != nil {
-			g.logger.Warn("CF Workers tool call failed, falling back to Anthropic",
-				zap.String("task", string(task)),
-				zap.Error(err))
-			result, err = g.callAnthropicWithTools(ctx, task, g.modelFor(task, providerAnthropic), messages, tools)
-		}
-	default:
-		result, err = g.callAnthropicWithTools(ctx, task, g.modelFor(task, providerAnthropic), messages, tools)
-		if err != nil {
-			g.logger.Warn("Anthropic tool call failed, falling back to CF Workers",
-				zap.String("task", string(task)),
-				zap.Error(err))
-			result, err = g.callCFWorkersWithTools(ctx, task, g.modelFor(task, providerCFWorkers), messages, tools)
-		}
+		g.logger.Warn("tool call provider failed, trying next",
+			zap.String("provider", p.name),
+			zap.String("task", string(task)),
+			zap.Error(err))
 	}
 
 	if err != nil {

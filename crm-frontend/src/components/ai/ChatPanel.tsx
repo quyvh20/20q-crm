@@ -154,6 +154,12 @@ export default function ChatPanel({ open, onClose }: Props) {
       .slice(-10)
       .map(m => ({ role: m.role, content: m.content }));
 
+    // Safety timeout — if streaming doesn't finish in 60s, force-reset the UI
+    const safetyTimer = setTimeout(() => {
+      setStreaming(false);
+      updateLastAssistant(prev => prev || '⚠️ Request timed out. Please try again.');
+    }, 60_000);
+
     sendCommand(
       msg,
       sessionId,
@@ -163,6 +169,12 @@ export default function ChatPanel({ open, onClose }: Props) {
       confirmedPayload?.args,
       (event: CommandEvent) => {
         switch (event.type) {
+          case 'thinking':
+            updateLastAssistant(() => event.message || 'Thinking…');
+            break;
+          case 'tool_result':
+            // Tool results are intermediate; the final summary will overwrite
+            break;
           case 'response':
             updateLastAssistant(() => event.message || '');
             break;
@@ -182,13 +194,16 @@ export default function ChatPanel({ open, onClose }: Props) {
             break;
           case 'error':
             updateLastAssistant(() => `⚠️ ${event.message || 'Something went wrong.'}`);
+            setStreaming(false);
+            clearTimeout(safetyTimer);
             break;
         }
       },
-      () => setStreaming(false),
+      () => { setStreaming(false); clearTimeout(safetyTimer); },
       (err: string) => {
         updateLastAssistant(() => `⚠️ ${err}`);
         setStreaming(false);
+        clearTimeout(safetyTimer);
       },
       workspaceContext,
     );
