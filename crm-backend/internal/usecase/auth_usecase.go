@@ -23,7 +23,7 @@ import (
 
 const (
 	bcryptCost           = 12
-	accessTokenDuration  = 15 * time.Minute
+	accessTokenDuration  = 2 * time.Hour
 	refreshTokenDuration = 7 * 24 * time.Hour
 	refreshTokenBytes    = 32
 )

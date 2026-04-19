@@ -944,7 +944,6 @@ export async function sendCommand(
   workspaces?: WorkspaceContext[],
 ): Promise<void> {
   try {
-    const token = localStorage.getItem('access_token');
     const body: Record<string, unknown> = {
       message,
       session_id: sessionId,
@@ -957,14 +956,51 @@ export async function sendCommand(
       body.confirmed_args = confirmedArgs;
     }
 
-    const res = await fetch(`${API_URL}/api/ai/command-sync`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify(body),
-    });
+    const jsonBody = JSON.stringify(body);
+
+    // Helper to make the fetch with current token
+    const doFetch = () => {
+      const token = localStorage.getItem('access_token');
+      return fetch(`${API_URL}/api/ai/command-sync`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: jsonBody,
+      });
+    };
+
+    let res = await doFetch();
+
+    // Auto-refresh token on 401 and retry once
+    if (res.status === 401) {
+      const refreshToken = localStorage.getItem('refresh_token');
+      if (refreshToken) {
+        const refreshRes = await fetch(`${API_URL}/api/auth/refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        });
+        if (refreshRes.ok) {
+          const data = await refreshRes.json();
+          localStorage.setItem('access_token', data.data.access_token);
+          localStorage.setItem('refresh_token', data.data.refresh_token);
+          res = await doFetch(); // retry with fresh token
+        } else {
+          // Refresh failed — session truly expired
+          localStorage.removeItem('access_token');
+          localStorage.removeItem('refresh_token');
+          onError?.('Session expired. Please log in again.');
+          window.location.href = '/login';
+          return;
+        }
+      } else {
+        onError?.('Session expired. Please log in again.');
+        window.location.href = '/login';
+        return;
+      }
+    }
 
     if (!res.ok) {
       const json = await res.json().catch(() => ({}));
