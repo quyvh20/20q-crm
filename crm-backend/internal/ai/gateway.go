@@ -1013,8 +1013,10 @@ func BuildAnthropicRequestBody(model string, maxTokens int, messages []Message, 
 	}
 
 	if len(tools) > 0 {
-		anthropicTools := BuildToolsForAnthropic()
-		// 2. Prompt Caching: Inject cache_control on the final Tool definition block
+		anthropicTools := buildAnthropicTools(tools)
+		// 2. Prompt Caching: Inject cache_control on the final Tool definition block.
+		// Combined with the system prompt cache_control above, this ensures the
+		// static prefix (system + tools) exceeds the 4096 token minimum for Haiku 4.5.
 		if len(anthropicTools) > 0 {
 			anthropicTools[len(anthropicTools)-1]["cache_control"] = map[string]string{"type": "ephemeral"}
 		}
@@ -1029,7 +1031,6 @@ func (g *AIGateway) vercelAnthropicHeaders() map[string]string {
 	return map[string]string{
 		"x-api-key":         g.vercelGatewayKey,
 		"anthropic-version": "2023-06-01",
-		"anthropic-beta":    "prompt-caching-2024-07-31",
 		"Content-Type":      "application/json",
 	}
 }
