@@ -92,7 +92,7 @@ var taskMaxTokens = map[AITask]int{
 	TaskFollowup:       200,
 	TaskEmailCompose:   400,
 	TaskAssistantChat:  500,
-	TaskCommandCenter:  1500, // Supports general conversational queries and comprehensive markdown rendering (tables, code blocks)
+	TaskCommandCenter:  800,  // CRM-only: tables, bullets, short confirmations — no code gen or essays
 	TaskMeetingSummary: 1000,
 	TaskAnalytics:      1000,
 }
