@@ -112,25 +112,18 @@ func (h *CommandHandler) Command(c *gin.Context) {
 		return
 	}
 
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
-	c.Header("Transfer-Encoding", "chunked")
-	c.Status(http.StatusOK)
-
-	flusher, canFlush := c.Writer.(http.Flusher)
-	flush := func() {
-		if canFlush {
-			flusher.Flush()
-		}
-	}
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.WriteHeaderNow() // Force headers to be sent immediately
+	c.Writer.Flush()          // Flush to the network — critical for Railway/Cloudflare
 
 	for event := range events {
 		data, _ := json.Marshal(event)
 		// Sanitize data to avoid double-newlines breaking the SSE frame
 		sanitized := strings.ReplaceAll(string(data), "\n", "\\n")
 		fmt.Fprintf(c.Writer, "data: %s\n\n", sanitized)
-		flush()
+		c.Writer.Flush()
 	}
 }
