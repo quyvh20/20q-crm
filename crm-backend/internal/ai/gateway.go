@@ -176,30 +176,34 @@ func (g *AIGateway) Complete(ctx context.Context, orgID, userID uuid.UUID, task 
 		}
 	}
 
+	// Deterministic fallback chain:
+	// 1. Vercel AI Gateway (Anthropic Haiku — primary for command center)
+	// 2. CF → Anthropic (via CF AI Gateway — separate billing, reliable)
+	// 3. CF → Llama (our own Cloudflare infra — last resort, never goes down)
 	primaryP := g.routePrimary(task)
-	result, err := g.callProvider(ctx, task, primaryP, messages)
-	if err != nil {
-		g.logger.Warn("primary provider failed, trying fallbacks",
-			zap.String("task", string(task)),
-			zap.String("primary", string(primaryP)),
-			zap.Error(err))
-		// Try all other providers
-		for _, fb := range []provider{providerAnthropic, providerCFWorkers, providerVercelGateway} {
-			if fb == primaryP {
-				continue
-			}
-			result, err = g.callProvider(ctx, task, fb, messages)
-			if err == nil {
-				break
-			}
-			g.logger.Warn("fallback provider also failed",
-				zap.String("fallback", string(fb)),
-				zap.Error(err))
+	chain := g.buildFallbackChain(primaryP)
+
+	var result AIResponse
+	var err error
+	for _, p := range chain {
+		result, err = g.callProvider(ctx, task, p, messages)
+		if err == nil {
+			break
 		}
+		g.logger.Warn("provider failed, trying next",
+			zap.String("provider", string(p)),
+			zap.String("task", string(task)),
+			zap.Error(err))
 	}
 
 	if err != nil {
-		return AIResponse{}, fmt.Errorf("all providers failed: %w", err)
+		// All providers failed — return graceful response instead of crashing
+		g.logger.Error("all providers failed — returning graceful fallback", zap.Error(err))
+		return AIResponse{
+			Content:  "I'm having trouble connecting right now. Please try again in a moment.",
+			Provider: "fallback",
+			Model:    "none",
+		}, nil
 	}
 
 	// Persist usage synchronously to prevent context cancellation races
@@ -216,7 +220,7 @@ func (g *AIGateway) Complete(ctx context.Context, orgID, userID uuid.UUID, task 
 }
 
 // CompleteWithTools runs inference with tool definitions.
-// Primary: Cloudflare Workers AI (llama-3.3-70b). Fallback: Anthropic (Claude).
+// Fallback chain: Vercel (Claude) → CF Anthropic → CF Llama (guaranteed last resort)
 func (g *AIGateway) CompleteWithTools(ctx context.Context, orgID, userID uuid.UUID, task AITask, messages []Message, tools []Tool) (AIResponse, error) {
 	estimated := 5000 // generous estimate for tool calls
 	if g.Budget != nil {
@@ -229,50 +233,43 @@ func (g *AIGateway) CompleteWithTools(ctx context.Context, orgID, userID uuid.UU
 	var result AIResponse
 	var err error
 
-	// Resilient fallback chain: try providers in order of reliability for tool calling.
-	// 1. Primary (Vercel Gateway or CF Workers depending on config)
-	// 2. Anthropic via CF AI Gateway (reliable tool calling)
-	// 3. CF Workers (Llama — least reliable for tools)
-	providers := []struct {
+	// Deterministic fallback chain for tool calling:
+	// 1. Vercel AI Gateway (Haiku) — best tool calling, prompt caching
+	// 2. Anthropic direct via CF AI Gateway — reliable Claude tool calls
+	// 3. CF Workers Llama — OUR OWN INFRA, always available, never skip this
+	type namedCall struct {
 		name string
 		call func() (AIResponse, error)
-	}{
-		{
-			"primary/" + string(primaryP),
+	}
+	chain := []namedCall{}
+
+	// Always start with Vercel if configured
+	if g.vercelGatewayURL != "" && g.vercelGatewayKey != "" {
+		chain = append(chain, namedCall{
+			"vercel_gateway",
 			func() (AIResponse, error) {
-				switch primaryP {
-				case providerVercelGateway:
-					return g.callVercelGatewayWithTools(ctx, task, g.modelFor(task, providerVercelGateway), messages, tools)
-				case providerAnthropic:
-					return g.callAnthropicWithTools(ctx, task, g.modelFor(task, providerAnthropic), messages, tools)
-				default:
-					return g.callCFWorkersWithTools(ctx, task, g.modelFor(task, providerCFWorkers), messages, tools)
-				}
+				return g.callVercelGatewayWithTools(ctx, task, g.modelFor(task, providerVercelGateway), messages, tools)
 			},
-		},
-		{
-			"anthropic_via_cf_gateway",
+		})
+	}
+	// Anthropic via CF Gateway as second
+	if primaryP != providerAnthropic || g.vercelGatewayURL == "" {
+		chain = append(chain, namedCall{
+			"cf_anthropic",
 			func() (AIResponse, error) {
-				if primaryP == providerAnthropic {
-					// Already tried Anthropic as primary; skip to avoid duplicate
-					return AIResponse{}, fmt.Errorf("skip: already tried anthropic")
-				}
 				return g.callAnthropicWithTools(ctx, task, g.modelFor(task, providerAnthropic), messages, tools)
 			},
-		},
-		{
-			"cf_workers_llama",
-			func() (AIResponse, error) {
-				if primaryP == providerCFWorkers {
-					// Already tried CF Workers as primary; skip
-					return AIResponse{}, fmt.Errorf("skip: already tried cf_workers")
-				}
-				return g.callCFWorkersWithTools(ctx, task, g.modelFor(task, providerCFWorkers), messages, tools)
-			},
-		},
+		})
 	}
+	// CF Llama ALWAYS last — our own infra, guaranteed available
+	chain = append(chain, namedCall{
+		"cf_workers_llama",
+		func() (AIResponse, error) {
+			return g.callCFWorkersWithTools(ctx, task, g.modelFor(task, providerCFWorkers), messages, tools)
+		},
+	})
 
-	for _, p := range providers {
+	for _, p := range chain {
 		result, err = p.call()
 		if err == nil {
 			break
@@ -284,7 +281,13 @@ func (g *AIGateway) CompleteWithTools(ctx context.Context, orgID, userID uuid.UU
 	}
 
 	if err != nil {
-		return AIResponse{}, fmt.Errorf("all tool-call providers failed: %w", err)
+		// All providers failed — return graceful response, do not crash
+		g.logger.Error("all tool-call providers failed — returning graceful fallback", zap.Error(err))
+		return AIResponse{
+			Content:  "I'm having trouble connecting right now. Please try again in a moment.",
+			Provider: "fallback",
+			Model:    "none",
+		}, nil
 	}
 
 	if g.Budget != nil {
@@ -492,6 +495,30 @@ func (g *AIGateway) routeFallback(task AITask, used provider) provider {
 		return providerAnthropic
 	}
 	return providerCFWorkers
+}
+
+// buildFallbackChain returns an ordered provider list for Complete().
+// Always ends with CF Llama — our own infra, guaranteed available.
+func (g *AIGateway) buildFallbackChain(primary provider) []provider {
+	seen := map[provider]bool{}
+	var chain []provider
+	add := func(p provider) {
+		if !seen[p] {
+			seen[p] = true
+			chain = append(chain, p)
+		}
+	}
+	// 1. Primary first
+	add(primary)
+	// 2. Vercel if configured and not already primary
+	if g.vercelGatewayURL != "" && g.vercelGatewayKey != "" {
+		add(providerVercelGateway)
+	}
+	// 3. Anthropic via CF Gateway
+	add(providerAnthropic)
+	// 4. CF Llama — always last, our own infra
+	add(providerCFWorkers)
+	return chain
 }
 
 // ============================================================
