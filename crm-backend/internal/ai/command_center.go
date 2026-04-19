@@ -208,8 +208,10 @@ func (cc *CommandCenter) Execute(
 			}
 		}
 
-		// Special: create_contact / create_deal — emit form event immediately (no DB call)
-		for i, tc := range writeCalls {
+		// Special: create_contact / create_deal — emit form events immediately (no DB call)
+		// Process ALL form tools, not just the first one
+		var remainingWrites []ToolCall
+		for _, tc := range writeCalls {
 			if tc.Name == "create_contact" {
 				var p map[string]interface{}
 				json.Unmarshal(tc.Params, &p)
@@ -219,8 +221,7 @@ func (cc *CommandCenter) Execute(
 					"prefill_email": p["prefill_email"],
 				})
 				events <- CommandEvent{Type: "form", Data: formData}
-				writeCalls = append(writeCalls[:i], writeCalls[i+1:]...)
-				break
+				continue // don't add to remainingWrites
 			}
 			if tc.Name == "create_deal" {
 				var p map[string]interface{}
@@ -231,10 +232,11 @@ func (cc *CommandCenter) Execute(
 					"prefill_value": p["prefill_value"],
 				})
 				events <- CommandEvent{Type: "form", Data: formData}
-				writeCalls = append(writeCalls[:i], writeCalls[i+1:]...)
-				break
+				continue // don't add to remainingWrites
 			}
+			remainingWrites = append(remainingWrites, tc)
 		}
+		writeCalls = remainingWrites
 
 		// Execute read-only tool calls in parallel
 		type toolResult struct {
@@ -488,6 +490,13 @@ func (cc *CommandCenter) executeTool(ctx context.Context, orgID, userID uuid.UUI
 		return cc.toolLogActivity(ctx, orgID, userID, params)
 	case "navigate_to":
 		out, _ := json.Marshal(map[string]any{"navigated": true})
+		return out
+	case "create_contact":
+		// Form tools — return prefill data for the frontend to render the form
+		out, _ := json.Marshal(map[string]any{"form_type": "contact", "prefill_name": params["prefill_name"], "prefill_email": params["prefill_email"]})
+		return out
+	case "create_deal":
+		out, _ := json.Marshal(map[string]any{"form_type": "deal", "prefill_title": params["prefill_title"], "prefill_value": params["prefill_value"]})
 		return out
 	default:
 		out, _ := json.Marshal(map[string]any{"error": "unknown tool: " + call.Name})
