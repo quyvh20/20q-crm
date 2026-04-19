@@ -20,9 +20,9 @@ var runLive = flag.Bool("live", false, "Run live integration tests against Anthr
 func TestGateway_VercelAnthropic_Success(t *testing.T) {
 	// 1. Mock Server exactly replicating the expected Anthropic Messages API format
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify expected headers exist 
-		if r.Header.Get("anthropic-beta") == "" {
-			t.Error("Missing caching header")
+		// Verify expected headers exist (anthropic-beta removed — caching is GA for Haiku 4.5)
+		if r.Header.Get("anthropic-version") == "" {
+			t.Error("Missing anthropic-version header")
 		}
 
 		w.WriteHeader(http.StatusOK)
