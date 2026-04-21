@@ -278,14 +278,32 @@ export default function VoiceLibrary({ contactId, dealId }: VoiceLibraryProps) {
                 </button>
               )}
               {(note.status === 'pending' || note.status === 'processing') && (
-                <span style={{
-                  display: 'inline-flex', alignItems: 'center', gap: 5,
-                  padding: '6px 12px', borderRadius: 8, marginRight: 8,
-                  background: 'rgba(99,102,241,0.15)', color: '#a5b4fc',
-                  fontSize: 12, fontWeight: 600,
-                }}>
-                  <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span>
-                  {note.status === 'pending' ? 'Queued…' : 'Analyzing…'}
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginRight: 8 }}>
+                  <span style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 5,
+                    padding: '6px 10px', borderRadius: 8,
+                    background: 'rgba(99,102,241,0.15)', color: '#a5b4fc',
+                    fontSize: 12, fontWeight: 600,
+                  }}>
+                    <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span>
+                    {note.status === 'pending' ? 'Queued…' : 'Analyzing…'}
+                  </span>
+                  {note.status === 'pending' && (
+                    <button
+                      id={`voice-retry-${note.id}`}
+                      onClick={() => handleAnalyze(note.id)}
+                      disabled={analyzingId === note.id}
+                      title="Job may be stuck — click to re-queue"
+                      style={{
+                        padding: '4px 8px', borderRadius: 6, border: '1px solid rgba(245,158,11,0.4)',
+                        background: 'rgba(245,158,11,0.1)', color: '#fbbf24',
+                        fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                        opacity: analyzingId === note.id ? 0.5 : 1,
+                      }}
+                    >
+                      {analyzingId === note.id ? '…' : '↻'}
+                    </button>
+                  )}
                 </span>
               )}
               {note.status === 'done' && (
