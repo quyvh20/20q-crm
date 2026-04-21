@@ -120,7 +120,9 @@ func (uc *voiceNoteUseCase) Analyze(ctx context.Context, orgID, userID, noteID u
 	if err != nil {
 		return fmt.Errorf("get note: %w", err)
 	}
-	if note.Status != "uploaded" && note.Status != "error" {
+	// Allow retry from "pending" too — the job may have been lost if the worker
+	// crashed or Redis dropped the queue entry, leaving the note stuck forever.
+	if note.Status != "uploaded" && note.Status != "error" && note.Status != "pending" {
 		return fmt.Errorf("note is not in an analyzable state (current: %s)", note.Status)
 	}
 
