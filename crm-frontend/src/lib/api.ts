@@ -134,7 +134,7 @@ export async function updateContact(id: string, data: Partial<Contact> & { tag_i
 export async function deleteContact(id: string) {
   const res = await apiFetch(`/api/contacts/${id}`, { method: 'DELETE' });
   if (!res.ok) {
-    const json = await res.json();
+    const json = await res.json().catch(() => ({}));
     throw new Error(json.error || 'Failed to delete contact');
   }
 }
@@ -235,7 +235,7 @@ export async function updateStage(id: string, data: Partial<PipelineStage>) {
 export async function deleteStage(id: string) {
   const res = await apiFetch(`/api/pipeline/stages/${id}`, { method: 'DELETE' });
   if (!res.ok) {
-    const json = await res.json();
+    const json = await res.json().catch(() => ({}));
     throw new Error(json.error || 'Failed to delete stage');
   }
 }
@@ -327,7 +327,7 @@ export async function updateDeal(id: string, data: Partial<Deal>): Promise<Deal>
 export async function deleteDeal(id: string) {
   const res = await apiFetch(`/api/deals/${id}`, { method: 'DELETE' });
   if (!res.ok) {
-    const json = await res.json();
+    const json = await res.json().catch(() => ({}));
     throw new Error(json.error || 'Failed to delete deal');
   }
 }
@@ -467,7 +467,7 @@ export async function updateTask(id: string, data: Partial<{
 export async function deleteTask(id: string) {
   const res = await apiFetch(`/api/tasks/${id}`, { method: 'DELETE' });
   if (!res.ok) {
-    const json = await res.json();
+    const json = await res.json().catch(() => ({}));
     throw new Error(json.error || 'Failed to delete task');
   }
 }
@@ -711,7 +711,7 @@ export async function updateFieldDef(key: string, data: {
 export async function deleteFieldDef(key: string): Promise<void> {
   const res = await apiFetch(`/api/settings/fields/${key}`, { method: 'DELETE' });
   if (!res.ok) {
-    const json = await res.json();
+    const json = await res.json().catch(() => ({}));
     throw new Error(json.error || 'Failed to delete field definition');
   }
 }
@@ -799,7 +799,7 @@ export async function updateObjectDef(slug: string, data: {
 export async function deleteObjectDef(slug: string): Promise<void> {
   const res = await apiFetch(`/api/objects/${slug}`, { method: 'DELETE' });
   if (!res.ok) {
-    const json = await res.json();
+    const json = await res.json().catch(() => ({}));
     throw new Error(json.error || 'Failed to delete object');
   }
 }
@@ -856,7 +856,7 @@ export async function updateObjectRecord(slug: string, id: string, data: {
 export async function deleteObjectRecord(slug: string, id: string): Promise<void> {
   const res = await apiFetch(`/api/objects/${slug}/records/${id}`, { method: 'DELETE' });
   if (!res.ok) {
-    const json = await res.json();
+    const json = await res.json().catch(() => ({}));
     throw new Error(json.error || 'Failed to delete record');
   }
 }
@@ -1141,7 +1141,7 @@ export async function updateMemberRole(userId: string, role: string): Promise<vo
     body: JSON.stringify({ role }),
   });
   if (!res.ok) {
-    const json = await res.json();
+    const json = await res.json().catch(() => ({}));
     throw new Error(json.error || 'Failed to update role');
   }
 }
@@ -1152,7 +1152,7 @@ export async function removeMember(userId: string, input?: { strategy?: 'transfe
     body: input ? JSON.stringify(input) : undefined
   });
   if (!res.ok) {
-    const json = await res.json();
+    const json = await res.json().catch(() => ({}));
     throw new Error(json.error || 'Failed to remove member');
   }
 }
@@ -1160,7 +1160,7 @@ export async function removeMember(userId: string, input?: { strategy?: 'transfe
 export async function suspendMember(userId: string): Promise<void> {
   const res = await apiFetch(`/api/workspaces/members/${userId}/suspend`, { method: 'POST' });
   if (!res.ok) {
-    const json = await res.json();
+    const json = await res.json().catch(() => ({}));
     throw new Error(json.error || 'Failed to suspend member');
   }
 }
@@ -1168,7 +1168,7 @@ export async function suspendMember(userId: string): Promise<void> {
 export async function reinstateMember(userId: string): Promise<void> {
   const res = await apiFetch(`/api/workspaces/members/${userId}/reinstate`, { method: 'POST' });
   if (!res.ok) {
-    const json = await res.json();
+    const json = await res.json().catch(() => ({}));
     throw new Error(json.error || 'Failed to reinstate member');
   }
 }
@@ -1176,7 +1176,7 @@ export async function reinstateMember(userId: string): Promise<void> {
 export async function transferOwnership(userId: string): Promise<void> {
   const res = await apiFetch(`/api/workspaces/members/${userId}/transfer`, { method: 'POST' });
   if (!res.ok) {
-    const json = await res.json();
+    const json = await res.json().catch(() => ({}));
     throw new Error(json.error || 'Failed to transfer ownership');
   }
 }
@@ -1188,7 +1188,7 @@ export async function acceptInvite(token: string): Promise<void> {
     body: JSON.stringify({ token }),
   });
   if (!res.ok) {
-    const json = await res.json();
+    const json = await res.json().catch(() => ({}));
     throw new Error(json.error || 'Failed to accept invitation');
   }
 }
@@ -1324,7 +1324,7 @@ export async function getVoiceNote(id: string): Promise<VoiceNote> {
 export async function applyVoiceNoteUpdates(id: string): Promise<void> {
   const res = await apiFetch(`/api/voice/${id}/apply-updates`, { method: 'POST' });
   if (!res.ok) {
-    const json = await res.json();
+    const json = await res.json().catch(() => ({}));
     throw new Error(json.error || 'Failed to apply updates');
   }
 }
@@ -1332,7 +1332,7 @@ export async function applyVoiceNoteUpdates(id: string): Promise<void> {
 export async function deleteVoiceNote(id: string): Promise<void> {
   const res = await apiFetch(`/api/voice/${id}`, { method: 'DELETE' });
   if (!res.ok) {
-    const json = await res.json();
+    const json = await res.json().catch(() => ({}));
     throw new Error(json.error || 'Failed to delete voice note');
   }
 }
@@ -1340,7 +1340,7 @@ export async function deleteVoiceNote(id: string): Promise<void> {
 export async function analyzeVoiceNote(id: string): Promise<void> {
   const res = await apiFetch(`/api/voice/${id}/analyze`, { method: 'POST' });
   if (!res.ok) {
-    const json = await res.json();
+    const json = await res.json().catch(() => ({}));
     throw new Error(json.error || 'Failed to start analysis');
   }
 }
