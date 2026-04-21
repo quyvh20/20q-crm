@@ -78,9 +78,13 @@ export default function VoiceLibrary({ contactId, dealId }: VoiceLibraryProps) {
     fetchNotes();
   }, [contactId, dealId]);
 
-  // Real-time SSE Connection + 10s fallback poll for stuck pending notes
+  // Derived boolean — only changes when pending state transitions, not on every notes update
+  const hasPending = notes.some((n) => n.status === 'pending' || n.status === 'processing');
+
+  // Real-time SSE Connection + 10s fallback poll for stuck pending notes.
+  // Depends on hasPending (boolean) so the connection only restarts when
+  // pending state transitions, not on every poll-triggered notes refresh.
   useEffect(() => {
-    const hasPending = notes.some((n) => n.status === 'pending' || n.status === 'processing');
     if (!hasPending) return;
 
     const token = localStorage.getItem('access_token');
@@ -116,14 +120,12 @@ export default function VoiceLibrary({ contactId, dealId }: VoiceLibraryProps) {
               try {
                 const data = JSON.parse(str);
                 if (data.type === 'voice_note_ready' && data.voice_note_id) {
-                  // Fetch the mutated note from the DB explicitly to retrieve insights
                   getVoiceNote(data.voice_note_id).then((updatedNote) => {
                     setNotes((prev) =>
                       prev.map((n) => (n.id === updatedNote.id ? updatedNote : n))
                     );
                   }).catch(console.error);
                 } else if (data.type === 'voice_note_error' && data.voice_note_id) {
-                  // Update status to error immediately without a fetch
                   setNotes((prev) =>
                     prev.map((n) =>
                       n.id === data.voice_note_id
@@ -150,7 +152,8 @@ export default function VoiceLibrary({ contactId, dealId }: VoiceLibraryProps) {
       abort.abort();
       clearInterval(fallbackPoll);
     };
-  }, [notes]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasPending]);
 
   const handleApply = async (note: VoiceNote) => {
     setApplyingId(note.id);
@@ -256,20 +259,34 @@ export default function VoiceLibrary({ contactId, dealId }: VoiceLibraryProps) {
                   </p>
                 )}
               </div>
-              {note.status === 'uploaded' && (
+              {(note.status === 'uploaded' || note.status === 'error') && (
                 <button
                   id={`voice-analyze-${note.id}`}
                   onClick={() => handleAnalyze(note.id)}
                   style={{
                     padding: '6px 12px', borderRadius: 8, border: 'none', cursor: 'pointer',
-                    background: 'linear-gradient(135deg, #0ea5e9, #0284c7)', color: '#fff',
+                    background: note.status === 'error'
+                      ? 'linear-gradient(135deg, #f59e0b, #d97706)'
+                      : 'linear-gradient(135deg, #0ea5e9, #0284c7)',
+                    color: '#fff',
                     fontSize: 12, fontWeight: 600, marginRight: 8,
                     opacity: analyzingId === note.id ? 0.6 : 1,
                   }}
                   disabled={analyzingId === note.id}
                 >
-                  {analyzingId === note.id ? 'Starting...' : '✨ Analyze Audio'}
+                  {analyzingId === note.id ? 'Starting...' : note.status === 'error' ? '↻ Retry Analysis' : '✨ Analyze Audio'}
                 </button>
+              )}
+              {(note.status === 'pending' || note.status === 'processing') && (
+                <span style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 5,
+                  padding: '6px 12px', borderRadius: 8, marginRight: 8,
+                  background: 'rgba(99,102,241,0.15)', color: '#a5b4fc',
+                  fontSize: 12, fontWeight: 600,
+                }}>
+                  <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span>
+                  {note.status === 'pending' ? 'Queued…' : 'Analyzing…'}
+                </span>
               )}
               {note.status === 'done' && (
                 <button
