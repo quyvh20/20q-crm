@@ -66,6 +66,15 @@ func ProcessVoiceNote(ctx context.Context, q *AIJobQueue, job *AIJob) (json.RawM
 			"status":        "error",
 			"error_message": errMsg,
 		})
+		// Publish SSE so frontend reacts immediately
+		sseChan := fmt.Sprintf("sse:%s", job.OrgID.String())
+		eventPayload := map[string]interface{}{
+			"type":          "voice_note_error",
+			"voice_note_id": note.ID.String(),
+			"error":         errMsg,
+		}
+		eventData, _ := json.Marshal(eventPayload)
+		q.GetRedis().Publish(ctx, sseChan, eventData)
 	}
 
 	if err := db.WithContext(ctx).Model(&note).Update("status", "processing").Error; err != nil {

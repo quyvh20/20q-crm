@@ -78,7 +78,7 @@ export default function VoiceLibrary({ contactId, dealId }: VoiceLibraryProps) {
     fetchNotes();
   }, [contactId, dealId]);
 
-  // Real-time SSE Connection
+  // Real-time SSE Connection + 10s fallback poll for stuck pending notes
   useEffect(() => {
     const hasPending = notes.some((n) => n.status === 'pending' || n.status === 'processing');
     if (!hasPending) return;
@@ -122,6 +122,15 @@ export default function VoiceLibrary({ contactId, dealId }: VoiceLibraryProps) {
                       prev.map((n) => (n.id === updatedNote.id ? updatedNote : n))
                     );
                   }).catch(console.error);
+                } else if (data.type === 'voice_note_error' && data.voice_note_id) {
+                  // Update status to error immediately without a fetch
+                  setNotes((prev) =>
+                    prev.map((n) =>
+                      n.id === data.voice_note_id
+                        ? { ...n, status: 'error', error_message: data.error }
+                        : n
+                    )
+                  );
                 }
               } catch (e) {}
             }
@@ -134,8 +143,12 @@ export default function VoiceLibrary({ contactId, dealId }: VoiceLibraryProps) {
 
     pullEvents();
 
+    // Fallback: re-fetch all notes every 10s in case SSE misses an event
+    const fallbackPoll = setInterval(fetchNotes, 10000);
+
     return () => {
       abort.abort();
+      clearInterval(fallbackPoll);
     };
   }, [notes]);
 
