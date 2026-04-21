@@ -14,7 +14,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository) {
+func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, voiceHandler *VoiceHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository) {
 	// Temporary endpoint to debug DB issues on deploy
 	router.GET("/api/test/db-fix", func(c *gin.Context) {
 		err1 := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(255) DEFAULT ''`).Error
@@ -235,6 +235,17 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			kb.GET("/ai-prompt", knowledgeHandler.GetAIPrompt)
 			kb.GET("/:section", knowledgeHandler.GetSection)
 			kb.PUT("/:section", RequireRole("admin", "manager"), knowledgeHandler.UpsertSection)
+		}
+
+		voice := protected.Group("/voice")
+		{
+			voice.POST("/upload", RequireRole("admin", "manager", "sales"), voiceHandler.Upload)
+			voice.GET("", voiceHandler.List)
+			voice.GET("/preview/:filename", voiceHandler.PreviewVoiceNote)
+			voice.GET("/:id", voiceHandler.GetByID)
+			voice.POST("/:id/apply-updates", RequireRole("admin", "manager", "sales"), voiceHandler.ApplyUpdates)
+			voice.POST("/:id/analyze", RequireRole("admin", "manager", "sales"), voiceHandler.Analyze)
+			voice.DELETE("/:id", RequireRole("admin", "manager", "sales"), voiceHandler.Delete)
 		}
 	}
 }

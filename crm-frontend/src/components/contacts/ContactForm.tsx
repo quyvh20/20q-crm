@@ -5,6 +5,9 @@ import { z } from 'zod';
 import { createContact, updateContact, type Contact } from '../../lib/api';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import DynamicCustomFields from '../common/DynamicCustomFields';
+import VoiceRecorder from '../voice/VoiceRecorder';
+import VoiceUploader from '../voice/VoiceUploader';
+import VoiceLibrary from '../voice/VoiceLibrary';
 
 const contactSchema = z.object({
   first_name: z.string().min(1, 'First name is required'),
@@ -22,9 +25,14 @@ interface ContactFormProps {
   onClose: () => void;
 }
 
+type ActiveTab = 'details' | 'voice';
+type VoiceInputMode = 'record' | 'upload';
+
 export default function ContactForm({ contact, onClose }: ContactFormProps) {
   const queryClient = useQueryClient();
   const isEditing = !!contact;
+  const [activeTab, setActiveTab] = useState<ActiveTab>('details');
+  const [voiceInputMode, setVoiceInputMode] = useState<VoiceInputMode>('record');
 
   // Custom fields state (managed outside react-hook-form since they're dynamic)
   const [customFields, setCustomFields] = useState<Record<string, unknown>>(
@@ -106,94 +114,181 @@ export default function ContactForm({ contact, onClose }: ContactFormProps) {
           </button>
         </div>
 
-        <form onSubmit={handleSubmit(onSubmit)} className="p-6 space-y-5">
-          {/* Error banner */}
-          {error && (
-            <div className="rounded-lg bg-red-500/10 border border-red-500/20 px-4 py-3 text-sm text-red-400">
-              {(error as Error).message}
+        {/* Tabs — only shown for existing contacts */}
+        {isEditing && (
+          <div className="flex border-b px-6">
+            <button
+              id="contact-tab-details"
+              onClick={() => setActiveTab('details')}
+              className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px ${
+                activeTab === 'details'
+                  ? 'border-blue-500 text-blue-600'
+                  : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              Details
+            </button>
+            <button
+              id="contact-tab-voice"
+              onClick={() => setActiveTab('voice')}
+              className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px flex items-center gap-1.5 ${
+                activeTab === 'voice'
+                  ? 'border-blue-500 text-blue-600'
+                  : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              🎙 Voice Notes
+            </button>
+          </div>
+        )}
+
+        		{/* Details tab (or create mode) */}
+        {(!isEditing || activeTab === 'details') && (
+
+          <form onSubmit={handleSubmit(onSubmit)} className="p-6 space-y-5">
+            {/* Error banner */}
+            {error && (
+              <div className="rounded-lg bg-red-500/10 border border-red-500/20 px-4 py-3 text-sm text-red-400">
+                {(error as Error).message}
+              </div>
+            )}
+
+            {/* First Name */}
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-foreground">
+                First Name <span className="text-red-400">*</span>
+              </label>
+              <input
+                {...register('first_name')}
+                className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-all"
+                placeholder="e.g. John"
+              />
+              {errors.first_name && (
+                <p className="text-xs text-red-400">{errors.first_name.message}</p>
+              )}
             </div>
-          )}
 
-          {/* First Name */}
-          <div className="space-y-1.5">
-            <label className="text-sm font-medium text-foreground">
-              First Name <span className="text-red-400">*</span>
-            </label>
-            <input
-              {...register('first_name')}
-              className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-all"
-              placeholder="e.g. John"
-            />
-            {errors.first_name && (
-              <p className="text-xs text-red-400">{errors.first_name.message}</p>
-            )}
-          </div>
+            {/* Last Name */}
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-foreground">Last Name</label>
+              <input
+                {...register('last_name')}
+                className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-all"
+                placeholder="e.g. Doe"
+              />
+            </div>
 
-          {/* Last Name */}
-          <div className="space-y-1.5">
-            <label className="text-sm font-medium text-foreground">Last Name</label>
-            <input
-              {...register('last_name')}
-              className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-all"
-              placeholder="e.g. Doe"
-            />
-          </div>
+            {/* Email */}
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-foreground">Email</label>
+              <input
+                {...register('email')}
+                type="email"
+                className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-all"
+                placeholder="john@company.com"
+              />
+              {errors.email && (
+                <p className="text-xs text-red-400">{errors.email.message}</p>
+              )}
+            </div>
 
-          {/* Email */}
-          <div className="space-y-1.5">
-            <label className="text-sm font-medium text-foreground">Email</label>
-            <input
-              {...register('email')}
-              type="email"
-              className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-all"
-              placeholder="john@company.com"
-            />
-            {errors.email && (
-              <p className="text-xs text-red-400">{errors.email.message}</p>
-            )}
-          </div>
+            {/* Phone */}
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-foreground">Phone</label>
+              <input
+                {...register('phone')}
+                className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-all"
+                placeholder="+84 123 456 789"
+              />
+            </div>
 
-          {/* Phone */}
-          <div className="space-y-1.5">
-            <label className="text-sm font-medium text-foreground">Phone</label>
-            <input
-              {...register('phone')}
-              className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-all"
-              placeholder="+84 123 456 789"
-            />
-          </div>
-
-          {/* Dynamic Custom Fields */}
-          <DynamicCustomFields
-            entityType="contact"
-            values={customFields}
-            onChange={setCustomFields}
-            disabled={isSubmitting}
-          />
-
-          {/* Submit */}
-          <div className="flex gap-3 pt-4 border-t">
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 px-4 py-2.5 rounded-lg border text-sm font-medium hover:bg-accent transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
+            {/* Dynamic Custom Fields */}
+            <DynamicCustomFields
+              entityType="contact"
+              values={customFields}
+              onChange={setCustomFields}
               disabled={isSubmitting}
-              className="flex-1 px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isSubmitting ? (
-                <span className="flex items-center justify-center gap-2">
-                  <span className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
-                  Saving...
-                </span>
-              ) : isEditing ? 'Update Contact' : 'Create Contact'}
-            </button>
+            />
+
+            {/* Submit */}
+            <div className="flex gap-3 pt-4 border-t">
+              <button
+                type="button"
+                onClick={onClose}
+                className="flex-1 px-4 py-2.5 rounded-lg border text-sm font-medium hover:bg-accent transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className="flex-1 px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isSubmitting ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <span className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
+                    Saving...
+                  </span>
+                ) : isEditing ? 'Update Contact' : 'Create Contact'}
+              </button>
+            </div>
+
+            {/* Voice Notes — always visible in Details tab for existing contacts */}
+            {isEditing && contact && (
+              <div className="pt-4 border-t space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    🎙 Voice Notes
+                  </p>
+                  <button
+                    type="button"
+                    id="contact-voice-tab-btn"
+                    onClick={() => setActiveTab('voice')}
+                    className="text-xs text-blue-500 hover:text-blue-400 transition-colors"
+                  >
+                    + New Recording
+                  </button>
+                </div>
+                <VoiceLibrary contactId={contact.id} />
+              </div>
+            )}
+          </form>
+        )}
+
+
+        {/* Voice Notes tab — only accessible when editing an existing contact */}
+        {isEditing && activeTab === 'voice' && contact && (
+          <div className="p-6 space-y-6">
+            {/* Record / Upload mini-tabs */}
+            <div className="flex gap-2 p-1 bg-muted/40 rounded-xl">
+              {(['record', 'upload'] as VoiceInputMode[]).map(m => (
+                <button
+                  key={m}
+                  id={`contact-voice-mode-${m}`}
+                  onClick={() => setVoiceInputMode(m)}
+                  className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${
+                    voiceInputMode === m
+                      ? 'bg-white dark:bg-slate-800 text-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  {m === 'record' ? '🎙 Record' : '📁 Upload File'}
+                </button>
+              ))}
+            </div>
+
+            <div>
+              {voiceInputMode === 'record'
+                ? <VoiceRecorder initialContactId={contact.id} />
+                : <VoiceUploader initialContactId={contact.id} />}
+            </div>
+
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-4">Voice Notes Library</p>
+              <VoiceLibrary contactId={contact.id} />
+            </div>
           </div>
-        </form>
+        )}
       </div>
     </div>
   );

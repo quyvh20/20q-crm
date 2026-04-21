@@ -42,6 +42,13 @@ type Config struct {
 
 	// Email
 	ResendAPIKey string `mapstructure:"RESEND_API_KEY"`
+
+	// Storage (Cloudflare R2 — optional, falls back to base64-in-redis for dev)
+	R2AccountID       string `mapstructure:"R2_ACCOUNT_ID"`
+	R2AccessKeyID     string `mapstructure:"R2_ACCESS_KEY_ID"`
+	R2SecretAccessKey string `mapstructure:"R2_SECRET_ACCESS_KEY"`
+	R2BucketName      string `mapstructure:"R2_BUCKET_NAME"`
+	R2PublicURL       string `mapstructure:"R2_PUBLIC_URL"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -65,6 +72,11 @@ func LoadConfig() (*Config, error) {
 	viper.BindEnv("VERCEL_AI_GATEWAY_URL")
 	viper.BindEnv("VERCEL_AI_GATEWAY_KEY")
 	viper.BindEnv("RESEND_API_KEY")
+	viper.BindEnv("R2_ACCOUNT_ID")
+	viper.BindEnv("R2_ACCESS_KEY_ID")
+	viper.BindEnv("R2_SECRET_ACCESS_KEY")
+	viper.BindEnv("R2_BUCKET_NAME")
+	viper.BindEnv("R2_PUBLIC_URL")
 
 	// Default values
 	viper.SetDefault("PORT", "8080")

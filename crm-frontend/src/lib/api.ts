@@ -1192,3 +1192,157 @@ export async function acceptInvite(token: string): Promise<void> {
     throw new Error(json.error || 'Failed to accept invitation');
   }
 }
+
+// ============================================================
+// Voice Notes
+// ============================================================
+
+export type VoiceNoteStatus = 'pending' | 'processing' | 'done' | 'error';
+
+export interface ExtractedContactUpdates {
+  phone_numbers?: string[];
+  emails?: string[];
+  budget?: string;
+  next_meeting_date?: string;
+  company_name?: string;
+  notes?: string;
+}
+
+export interface VoiceNoteActionItem {
+  title: string;
+  due?: string;
+  priority: 'low' | 'medium' | 'high';
+}
+
+export interface VoiceNote {
+  id: string;
+  org_id: string;
+  user_id: string;
+  contact_id?: string;
+  deal_id?: string;
+  file_url: string;
+  duration_seconds: number;
+  language_code: string;
+  status: VoiceNoteStatus;
+  transcript?: string;
+  summary?: string;
+  key_points?: string[];
+  action_items?: VoiceNoteActionItem[];
+  extracted_contact_updates?: ExtractedContactUpdates;
+  sentiment?: string;
+  error_message?: string;
+  created_at: string;
+  updated_at: string;
+  contact?: { id: string; first_name: string; last_name: string; email?: string };
+  deal?: { id: string; title: string };
+}
+
+export interface VoiceNoteFilter {
+  contact_id?: string;
+  deal_id?: string;
+  limit?: number;
+}
+
+export function uploadVoiceNote(
+  audioBlob: Blob,
+  filename: string,
+  languageCode: string,
+  contactId?: string,
+  dealId?: string,
+  durationSeconds?: number,
+  onProgress?: (percent: number) => void,
+  autoAnalyze: boolean = false
+): Promise<{ voice_note: VoiceNote; job_id: string }> {
+  return new Promise((resolve, reject) => {
+    const formData = new FormData();
+    formData.append('file', audioBlob, filename);
+    formData.append('language_code', languageCode);
+    formData.append('analyze', autoAnalyze ? 'true' : 'false');
+    if (contactId) formData.append('contact_id', contactId);
+    if (dealId) formData.append('deal_id', dealId);
+    if (durationSeconds) formData.append('duration_seconds', String(durationSeconds));
+
+    const token = localStorage.getItem('access_token');
+    const xhr = new XMLHttpRequest();
+
+    xhr.open('POST', `${API_URL}/api/voice/upload`);
+
+    if (token) {
+      xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    }
+
+    if (xhr.upload && onProgress) {
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          const percentComplete = Math.round((event.loaded / event.total) * 100);
+          onProgress(percentComplete);
+        }
+      };
+    }
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const json = JSON.parse(xhr.responseText);
+          resolve(json.data);
+        } catch (err) {
+          reject(new Error('Invalid response from server'));
+        }
+      } else {
+        try {
+          const json = JSON.parse(xhr.responseText);
+          reject(new Error(json.error || 'Upload failed'));
+        } catch (err) {
+          reject(new Error('Upload failed'));
+        }
+      }
+    };
+
+    xhr.onerror = () => reject(new Error('Network error occurred during upload'));
+    xhr.send(formData);
+  });
+}
+
+export async function getVoiceNotes(filter: VoiceNoteFilter = {}): Promise<VoiceNote[]> {
+  const params = new URLSearchParams();
+  if (filter.contact_id) params.set('contact_id', filter.contact_id);
+  if (filter.deal_id) params.set('deal_id', filter.deal_id);
+  if (filter.limit) params.set('limit', String(filter.limit));
+  const res = await apiFetch(`/api/voice?${params.toString()}`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch voice notes');
+  return (json.data || []) as VoiceNote[];
+}
+
+export async function getVoiceNote(id: string): Promise<VoiceNote> {
+  const res = await apiFetch(`/api/voice/${id}`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Voice note not found');
+  return json.data as VoiceNote;
+}
+
+export async function applyVoiceNoteUpdates(id: string): Promise<void> {
+  const res = await apiFetch(`/api/voice/${id}/apply-updates`, { method: 'POST' });
+  if (!res.ok) {
+    const json = await res.json();
+    throw new Error(json.error || 'Failed to apply updates');
+  }
+}
+
+export async function deleteVoiceNote(id: string): Promise<void> {
+  const res = await apiFetch(`/api/voice/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await res.json();
+    throw new Error(json.error || 'Failed to delete voice note');
+  }
+}
+
+export async function analyzeVoiceNote(id: string): Promise<void> {
+  const res = await apiFetch(`/api/voice/${id}/analyze`, { method: 'POST' });
+  if (!res.ok) {
+    const json = await res.json();
+    throw new Error(json.error || 'Failed to start analysis');
+  }
+}
+
+

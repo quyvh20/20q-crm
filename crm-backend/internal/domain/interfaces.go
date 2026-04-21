@@ -565,3 +565,37 @@ type KnowledgeBaseUseCase interface {
 	UpsertSection(ctx context.Context, orgID uuid.UUID, userID uuid.UUID, section string, input UpsertKBInput) (*KnowledgeBaseEntry, error)
 	GetAIPrompt(ctx context.Context, orgID uuid.UUID) (string, error)
 }
+
+type VoiceNoteFilter struct {
+	ContactID *uuid.UUID `form:"contact_id"`
+	DealID    *uuid.UUID `form:"deal_id"`
+	Limit     int        `form:"limit"`
+}
+
+type UploadVoiceNoteInput struct {
+	AudioBytes      []byte
+	OriginalName    string
+	LanguageCode    string
+	ContactID       *uuid.UUID
+	DealID          *uuid.UUID
+	DurationSeconds int
+	AutoAnalyze     bool
+}
+
+type VoiceNoteRepository interface {
+	Create(ctx context.Context, v *VoiceNote) error
+	GetByID(ctx context.Context, orgID, id uuid.UUID) (*VoiceNote, error)
+	List(ctx context.Context, orgID uuid.UUID, f VoiceNoteFilter) ([]VoiceNote, error)
+	Update(ctx context.Context, v *VoiceNote) error
+	Delete(ctx context.Context, orgID, id uuid.UUID) error
+}
+
+type VoiceNoteUseCase interface {
+	Upload(ctx context.Context, orgID, userID uuid.UUID, input UploadVoiceNoteInput) (*VoiceNote, string, error)
+	Analyze(ctx context.Context, orgID, userID, noteID uuid.UUID) error
+	List(ctx context.Context, orgID uuid.UUID, f VoiceNoteFilter) ([]VoiceNote, error)
+	GetByID(ctx context.Context, orgID, id uuid.UUID) (*VoiceNote, error)
+	ApplyContactUpdates(ctx context.Context, orgID, id uuid.UUID) error
+	Delete(ctx context.Context, orgID, id uuid.UUID) error
+}
+

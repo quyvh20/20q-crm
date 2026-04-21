@@ -1,0 +1,252 @@
+package http
+
+import (
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+
+	"crm-backend/internal/domain"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+)
+
+type VoiceHandler struct {
+	uc domain.VoiceNoteUseCase
+}
+
+func NewVoiceHandler(uc domain.VoiceNoteUseCase) *VoiceHandler {
+	return &VoiceHandler{uc: uc}
+}
+
+func (h *VoiceHandler) Upload(c *gin.Context) {
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+
+	orgUUID, err := uuid.Parse(orgID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid org_id"})
+		return
+	}
+	userUUID, err := uuid.Parse(userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user_id"})
+		return
+	}
+
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file required"})
+		return
+	}
+
+	const maxSize = 500 << 20 // 500 MB
+	if fileHeader.Size > maxSize {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "audio file must be under 500 MB"})
+		return
+	}
+
+	file, err := fileHeader.Open()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot open file"})
+		return
+	}
+	defer file.Close()
+
+	audioBytes, err := io.ReadAll(file)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "cannot read file"})
+		return
+	}
+
+	languageCode := c.DefaultPostForm("language_code", "en")
+	durationSec := 0
+	if d := c.PostForm("duration_seconds"); d != "" {
+		durationSec, _ = strconv.Atoi(d)
+	}
+
+	input := domain.UploadVoiceNoteInput{
+		AudioBytes:      audioBytes,
+		OriginalName:    fileHeader.Filename,
+		LanguageCode:    languageCode,
+		DurationSeconds: durationSec,
+		AutoAnalyze:     c.PostForm("analyze") != "false", // Default to true for backward compatibility
+	}
+
+	if cid := c.PostForm("contact_id"); cid != "" {
+		if parsed, err := uuid.Parse(cid); err == nil {
+			input.ContactID = &parsed
+		}
+	}
+	if did := c.PostForm("deal_id"); did != "" {
+		if parsed, err := uuid.Parse(did); err == nil {
+			input.DealID = &parsed
+		}
+	}
+
+	note, jobID, err := h.uc.Upload(c.Request.Context(), orgUUID, userUUID, input)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"data": gin.H{
+			"voice_note": note,
+			"job_id":     jobID,
+		},
+	})
+}
+
+func (h *VoiceHandler) List(c *gin.Context) {
+	orgID := c.GetString("org_id")
+	orgUUID, err := uuid.Parse(orgID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid org_id"})
+		return
+	}
+
+	var f domain.VoiceNoteFilter
+	if cid := c.Query("contact_id"); cid != "" {
+		if parsed, err := uuid.Parse(cid); err == nil {
+			f.ContactID = &parsed
+		}
+	}
+	if did := c.Query("deal_id"); did != "" {
+		if parsed, err := uuid.Parse(did); err == nil {
+			f.DealID = &parsed
+		}
+	}
+	if l := c.Query("limit"); l != "" {
+		f.Limit, _ = strconv.Atoi(l)
+	}
+
+	notes, err := h.uc.List(c.Request.Context(), orgUUID, f)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": notes})
+}
+
+func (h *VoiceHandler) GetByID(c *gin.Context) {
+	orgID := c.GetString("org_id")
+	orgUUID, err := uuid.Parse(orgID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid org_id"})
+		return
+	}
+
+	noteID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+
+	note, err := h.uc.GetByID(c.Request.Context(), orgUUID, noteID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "voice note not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": note})
+}
+
+func (h *VoiceHandler) ApplyUpdates(c *gin.Context) {
+	orgID := c.GetString("org_id")
+	orgUUID, err := uuid.Parse(orgID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid org_id"})
+		return
+	}
+
+	noteID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+
+	if err := h.uc.ApplyContactUpdates(c.Request.Context(), orgUUID, noteID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "contact profile updated successfully"})
+}
+
+func (h *VoiceHandler) Delete(c *gin.Context) {
+	orgID := c.GetString("org_id")
+	orgUUID, err := uuid.Parse(orgID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid org_id"})
+		return
+	}
+
+	noteID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+
+	if err := h.uc.Delete(c.Request.Context(), orgUUID, noteID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "voice note deleted"})
+}
+
+func (h *VoiceHandler) Analyze(c *gin.Context) {
+	orgID := c.GetString("org_id")
+	orgUUID, err := uuid.Parse(orgID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid org_id"})
+		return
+	}
+
+	userUUID, err := uuid.Parse(c.GetString("user_id"))
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user_id"})
+		return
+	}
+
+	noteID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid voice note id"})
+		return
+	}
+
+	err = h.uc.Analyze(c.Request.Context(), orgUUID, userUUID, noteID)
+	if err != nil {
+		if err.Error() == "note is not in an analyzable state" || len(err.Error()) > 35 && err.Error()[:35] == "note is not in an analyzable state" {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "analysis queued"})
+}
+
+func (h *VoiceHandler) PreviewVoiceNote(c *gin.Context) {
+	filename := c.Param("filename")
+	if filename == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "filename required"})
+		return
+	}
+
+	// Prevent directory traversal
+	cleanFileName := filepath.Base(filename)
+	filePath := filepath.Join("storage", "voice_notes", cleanFileName)
+
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
+		return
+	}
+
+	c.File(filePath)
+}

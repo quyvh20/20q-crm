@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"go.uber.org/zap"
 )
 
+
 // ============================================================
 // Task constants
 // ============================================================
@@ -25,25 +27,27 @@ import (
 type AITask string
 
 const (
-	TaskEmailCompose    AITask = "email_compose"
-	TaskAssistantChat   AITask = "assistant_chat"
-	TaskMeetingSummary  AITask = "meeting_summary"
-	TaskDealScore       AITask = "deal_score"
-	TaskAnalytics       AITask = "analytics_insight"
-	TaskEmbedding       AITask = "embedding"
-	TaskVoiceSTT        AITask = "voice_stt"
-	TaskSentiment       AITask = "sentiment"
-	TaskFollowup        AITask = "followup_suggest"
-	TaskCommandCenter   AITask = "command_center"
+	TaskEmailCompose       AITask = "email_compose"
+	TaskAssistantChat      AITask = "assistant_chat"
+	TaskMeetingSummary     AITask = "meeting_summary"
+	TaskDealScore          AITask = "deal_score"
+	TaskAnalytics          AITask = "analytics_insight"
+	TaskEmbedding          AITask = "embedding"
+	TaskVoiceSTT           AITask = "voice_stt"
+	TaskVoiceIntelligence  AITask = "voice_intelligence"
+	TaskSentiment          AITask = "sentiment"
+	TaskFollowup           AITask = "followup_suggest"
+	TaskCommandCenter      AITask = "command_center"
 )
 
 // advancedTasks are only available to pro+ plans
 var advancedTasks = map[AITask]bool{
-	TaskMeetingSummary: true,
-	TaskDealScore:      true,
-	TaskAnalytics:      true,
-	TaskVoiceSTT:       true,
-	TaskFollowup:       true,
+	TaskMeetingSummary:    true,
+	TaskDealScore:         true,
+	TaskAnalytics:         true,
+	TaskVoiceSTT:          true,
+	TaskVoiceIntelligence: true,
+	TaskFollowup:          true,
 }
 
 func IsAdvancedTask(t AITask) bool { return advancedTasks[t] }
@@ -62,39 +66,41 @@ const (
 
 // Task → primary provider mapping
 var taskPrimaryProvider = map[AITask]provider{
-	TaskEmailCompose:   providerAnthropic,
-	TaskAssistantChat:  providerCFWorkers,
-	TaskMeetingSummary: providerAnthropic,
-	TaskDealScore:      providerCFWorkers,
-	TaskAnalytics:      providerAnthropic,
-	TaskSentiment:      providerCFWorkers,
-	TaskFollowup:       providerAnthropic,
-	TaskCommandCenter:  providerVercelGateway, // Haiku via Vercel, CF fallback
+	TaskEmailCompose:      providerAnthropic,
+	TaskAssistantChat:     providerCFWorkers,
+	TaskMeetingSummary:    providerAnthropic,
+	TaskDealScore:         providerCFWorkers,
+	TaskAnalytics:         providerAnthropic,
+	TaskSentiment:         providerCFWorkers,
+	TaskFollowup:          providerAnthropic,
+	TaskVoiceIntelligence: providerCFWorkers,
+	TaskCommandCenter:     providerVercelGateway,
 }
 
 // Task → model mapping per provider
 var taskModels = map[AITask]map[provider]string{
-	TaskEmailCompose:   {providerAnthropic: "claude-3-5-haiku-20241022", providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct"},
-	TaskAssistantChat:  {providerCFWorkers: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", providerAnthropic: "claude-3-5-haiku-20241022"},
-	TaskMeetingSummary: {providerAnthropic: "claude-3-5-haiku-20241022", providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct"},
-	TaskDealScore:      {providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct", providerAnthropic: "claude-3-5-haiku-20241022"},
-	TaskAnalytics:      {providerAnthropic: "claude-3-5-haiku-20241022", providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct"},
-	TaskSentiment:      {providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct", providerAnthropic: "claude-3-5-haiku-20241022"},
-	TaskFollowup:       {providerAnthropic: "claude-3-5-haiku-20241022", providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct"},
-	// CommandCenter: Haiku 4.5 via Vercel AI Gateway (Anthropic Messages API)
-	TaskCommandCenter:  {providerVercelGateway: "anthropic/claude-haiku-4.5", providerCFWorkers: "@cf/moonshotai/kimi-k2.5"},
+	TaskEmailCompose:      {providerAnthropic: "claude-3-5-haiku-20241022", providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct"},
+	TaskAssistantChat:     {providerCFWorkers: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", providerAnthropic: "claude-3-5-haiku-20241022"},
+	TaskMeetingSummary:    {providerAnthropic: "claude-3-5-haiku-20241022", providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct"},
+	TaskDealScore:         {providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct", providerAnthropic: "claude-3-5-haiku-20241022"},
+	TaskAnalytics:         {providerAnthropic: "claude-3-5-haiku-20241022", providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct"},
+	TaskSentiment:         {providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct", providerAnthropic: "claude-3-5-haiku-20241022"},
+	TaskFollowup:          {providerAnthropic: "claude-3-5-haiku-20241022", providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct"},
+	TaskVoiceIntelligence: {providerCFWorkers: "@cf/moonshotai/kimi-k2.5", providerAnthropic: "claude-3-5-haiku-20241022"},
+	TaskCommandCenter:     {providerVercelGateway: "anthropic/claude-haiku-4.5", providerCFWorkers: "@cf/moonshotai/kimi-k2.5"},
 }
 
 // taskMaxTokens enforces strict output boundaries based on empirically measured p99 usage
 var taskMaxTokens = map[AITask]int{
-	TaskSentiment:      50,
-	TaskDealScore:      300,
-	TaskFollowup:       200,
-	TaskEmailCompose:   400,
-	TaskAssistantChat:  500,
-	TaskCommandCenter:  800,  // CRM-only: tables, bullets, short confirmations — no code gen or essays
-	TaskMeetingSummary: 1000,
-	TaskAnalytics:      1000,
+	TaskSentiment:         50,
+	TaskDealScore:         300,
+	TaskFollowup:          200,
+	TaskEmailCompose:      400,
+	TaskAssistantChat:     500,
+	TaskCommandCenter:     800,
+	TaskMeetingSummary:    1000,
+	TaskAnalytics:         1000,
+	TaskVoiceIntelligence: 1500,
 }
 
 func maxTokensFor(task AITask) int {
@@ -1122,4 +1128,78 @@ func estimateTokens(messages []Message) int {
 		total += len(m.Content)/4 + 10
 	}
 	return total + 100 // buffer for response
+}
+
+// ============================================================
+// TranscribeAudio — Whisper-large-v3-turbo via CF Workers AI
+// ============================================================
+
+type TranscribeResult struct {
+	Text     string  `json:"text"`
+	Language string  `json:"language,omitempty"`
+	Duration float64 `json:"duration,omitempty"`
+}
+
+func (g *AIGateway) TranscribeAudio(ctx context.Context, audioBytes []byte, filename, languageCode string) (*TranscribeResult, error) {
+	model := "@cf/openai/whisper-large-v3-turbo"
+	url := fmt.Sprintf("%s/workers-ai/%s", g.gatewayURL, model)
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+
+	fw, err := mw.CreateFormFile("audio", filename)
+	if err != nil {
+		return nil, fmt.Errorf("whisper: create form file: %w", err)
+	}
+	if _, err = fw.Write(audioBytes); err != nil {
+		return nil, fmt.Errorf("whisper: write audio bytes: %w", err)
+	}
+
+	if languageCode != "" && languageCode != "auto" {
+		if err = mw.WriteField("language", languageCode); err != nil {
+			return nil, fmt.Errorf("whisper: write language field: %w", err)
+		}
+	}
+	mw.Close()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, &buf)
+	if err != nil {
+		return nil, fmt.Errorf("whisper: build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+g.cfToken)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	if g.cfGatewayToken != "" {
+		req.Header.Set("cf-aig-authorization", "Bearer "+g.cfGatewayToken)
+	}
+
+	res, err := g.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("whisper: http do: %w", err)
+	}
+	defer res.Body.Close()
+	data, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, fmt.Errorf("whisper: read response: %w", err)
+	}
+	if res.StatusCode >= 400 {
+		return nil, fmt.Errorf("whisper: provider returned %d: %s", res.StatusCode, strings.TrimSpace(string(data)))
+	}
+
+	var cfResp struct {
+		Result struct {
+			Text     string  `json:"text"`
+			Language string  `json:"detected_language"`
+			Duration float64 `json:"duration"`
+		} `json:"result"`
+		Success bool `json:"success"`
+	}
+	if err := json.Unmarshal(data, &cfResp); err != nil {
+		return nil, fmt.Errorf("whisper: unmarshal: %w (body: %s)", err, string(data))
+	}
+
+	return &TranscribeResult{
+		Text:     strings.TrimSpace(cfResp.Result.Text),
+		Language: cfResp.Result.Language,
+		Duration: cfResp.Result.Duration,
+	}, nil
 }

@@ -4,7 +4,12 @@ import { getDeal, deleteDeal, getActivities, getStages, changeDealStage, updateD
 import ActivityForm from '../components/deals/ActivityForm';
 import EmailComposer from '../components/ai/EmailComposer';
 import MeetingSummary from '../components/ai/MeetingSummary';
+import VoiceRecorder from '../components/voice/VoiceRecorder';
+import VoiceUploader from '../components/voice/VoiceUploader';
+import VoiceLibrary from '../components/voice/VoiceLibrary';
 import { useState, useEffect } from 'react';
+
+type DealVoiceMode = 'record' | 'upload';
 
 const ACTIVITY_ICONS: Record<string, string> = {
   call: '📞',
@@ -740,6 +745,15 @@ export default function DealDetailPage() {
               </div>
             ))}
           </div>
+
+          {/* Voice Notes section */}
+          <div className="rounded-xl border bg-card p-5">
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">🎙 Voice Notes</h2>
+
+            {/* Record / Upload mini-tabs */}
+            <DealVoiceTabs dealId={id} />
+
+          </div>
         </div>
       </div>
 
@@ -793,6 +807,37 @@ export default function DealDetailPage() {
           onTasksCreated={() => queryClient.invalidateQueries({ queryKey: ['tasks', id] })}
         />
       )}
+    </div>
+  );
+}
+
+/* ── DealVoiceTabs — self-contained mini input switcher ── */
+function DealVoiceTabs({ dealId }: { dealId: string }) {
+  const [mode, setMode] = useState<DealVoiceMode>('record');
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-2 p-1 bg-muted/40 rounded-xl">
+        {(['record', 'upload'] as DealVoiceMode[]).map(m => (
+          <button
+            key={m}
+            id={`deal-voice-mode-${m}`}
+            onClick={() => setMode(m)}
+            className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${
+              mode === m
+                ? 'bg-white dark:bg-slate-800 text-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            {m === 'record' ? '🎙 Record' : '📁 Upload File'}
+          </button>
+        ))}
+      </div>
+      <div className="mb-2">
+        {mode === 'record'
+          ? <VoiceRecorder initialDealId={dealId} />
+          : <VoiceUploader initialDealId={dealId} />}
+      </div>
+      <VoiceLibrary dealId={dealId} />
     </div>
   );
 }

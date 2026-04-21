@@ -51,6 +51,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
             <a href="/" className="block px-3 py-2 rounded-md bg-accent text-accent-foreground font-medium">Dashboard</a>
             <a href="/contacts" className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">Contacts</a>
             <a href="/deals" className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">Deals</a>
+            <a href="/voice" className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">🎙 Voice Notes</a>
             {customObjects.map(obj => (
               <a key={obj.slug} href={`/objects/${obj.slug}`}
                 className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">

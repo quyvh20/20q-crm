@@ -156,6 +156,8 @@ func (q *AIJobQueue) processJob(ctx context.Context, job *AIJob) {
 		result, err = ProcessMeetingSummary(ctx, q, job)
 	case string(ai.TaskSentiment):
 		result, err = ProcessSentimentAnalysis(ctx, q, job)
+	case "voice_note":
+		result, err = ProcessVoiceNote(ctx, q, job)
 	default:
 		err = fmt.Errorf("unknown task type: %s", job.TaskType)
 	}

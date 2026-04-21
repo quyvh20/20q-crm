@@ -219,20 +219,28 @@ type Tag struct {
 }
 
 type VoiceNote struct {
-	ID              uuid.UUID      `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
-	OrgID           uuid.UUID      `gorm:"type:uuid;not null" json:"org_id"`
-	DealID          *uuid.UUID     `gorm:"type:uuid" json:"deal_id,omitempty"`
-	ContactID       *uuid.UUID     `gorm:"type:uuid" json:"contact_id,omitempty"`
-	FileURL         *string        `gorm:"type:text" json:"file_url,omitempty"`
-	DurationSeconds *int           `json:"duration_seconds,omitempty"`
-	Status          string         `gorm:"size:50;not null;default:'pending'" json:"status"`
-	Transcript      *string        `gorm:"type:text" json:"transcript,omitempty"`
-	Summary         *string        `gorm:"type:text" json:"summary,omitempty"`
-	KeyPoints       JSON           `gorm:"type:jsonb;default:'[]'" json:"key_points"`
-	ActionItems     JSON           `gorm:"type:jsonb;default:'[]'" json:"action_items"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
-	DeletedAt       gorm.DeletedAt `gorm:"index" json:"-"`
+	ID                      uuid.UUID      `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
+	OrgID                   uuid.UUID      `gorm:"type:uuid;index;not null" json:"org_id"`
+	UserID                  uuid.UUID      `gorm:"type:uuid;index;not null" json:"user_id"`
+	ContactID               *uuid.UUID     `gorm:"type:uuid;index" json:"contact_id,omitempty"`
+	DealID                  *uuid.UUID     `gorm:"type:uuid;index" json:"deal_id,omitempty"`
+	FileURL                 string         `gorm:"type:text;not null" json:"file_url"`
+	DurationSeconds         int            `gorm:"not null;default:0" json:"duration_seconds"`
+	LanguageCode            string         `gorm:"type:varchar(10);default:'en'" json:"language_code"`
+	Status                  string         `gorm:"type:varchar(20);not null;default:'pending'" json:"status"`
+	Transcript              *string        `gorm:"type:text" json:"transcript,omitempty"`
+	Summary                 *string        `gorm:"type:text" json:"summary,omitempty"`
+	KeyPoints               JSON           `gorm:"type:jsonb;default:'[]'" json:"key_points"`
+	ActionItems             JSON           `gorm:"type:jsonb;default:'[]'" json:"action_items"`
+	ExtractedContactUpdates JSON           `gorm:"type:jsonb;default:'{}'" json:"extracted_contact_updates"`
+	Sentiment               *string        `gorm:"type:varchar(50)" json:"sentiment,omitempty"`
+	ErrorMessage            *string        `gorm:"type:text" json:"error_message,omitempty"`
+	CreatedAt               time.Time      `json:"created_at"`
+	UpdatedAt               time.Time      `json:"updated_at"`
+	DeletedAt               gorm.DeletedAt `gorm:"index" json:"-"`
+
+	Contact *Contact `gorm:"foreignKey:ContactID;constraint:OnDelete:SET NULL" json:"contact,omitempty"`
+	Deal    *Deal    `gorm:"foreignKey:DealID;constraint:OnDelete:SET NULL" json:"deal,omitempty"`
 }
 
 type CustomFieldDef struct {
