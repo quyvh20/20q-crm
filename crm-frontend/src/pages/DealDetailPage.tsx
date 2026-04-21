@@ -751,7 +751,7 @@ export default function DealDetailPage() {
             <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">🎙 Voice Notes</h2>
 
             {/* Record / Upload mini-tabs */}
-            <DealVoiceTabs dealId={id} />
+            <DealVoiceTabs dealId={id!} />
 
           </div>
         </div>

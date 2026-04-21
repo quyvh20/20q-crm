@@ -1197,7 +1197,7 @@ export async function acceptInvite(token: string): Promise<void> {
 // Voice Notes
 // ============================================================
 
-export type VoiceNoteStatus = 'pending' | 'processing' | 'done' | 'error';
+export type VoiceNoteStatus = 'uploaded' | 'pending' | 'processing' | 'done' | 'error';
 
 export interface ExtractedContactUpdates {
   phone_numbers?: string[];

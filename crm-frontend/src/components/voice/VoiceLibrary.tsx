@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   getVoiceNotes,
   getVoiceNote,
@@ -6,7 +6,6 @@ import {
   analyzeVoiceNote,
   deleteVoiceNote,
   type VoiceNote,
-  type VoiceNoteStatus,
   type ExtractedContactUpdates,
 } from '../../lib/api';
 
