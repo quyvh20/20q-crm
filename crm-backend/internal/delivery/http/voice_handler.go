@@ -22,19 +22,8 @@ func NewVoiceHandler(uc domain.VoiceNoteUseCase) *VoiceHandler {
 }
 
 func (h *VoiceHandler) Upload(c *gin.Context) {
-	orgID := c.GetString("org_id")
-	userID := c.GetString("user_id")
-
-	orgUUID, err := uuid.Parse(orgID)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid org_id"})
-		return
-	}
-	userUUID, err := uuid.Parse(userID)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user_id"})
-		return
-	}
+	orgUUID := c.MustGet("org_id").(uuid.UUID)
+	userUUID := c.MustGet("user_id").(uuid.UUID)
 
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
@@ -101,12 +90,7 @@ func (h *VoiceHandler) Upload(c *gin.Context) {
 }
 
 func (h *VoiceHandler) List(c *gin.Context) {
-	orgID := c.GetString("org_id")
-	orgUUID, err := uuid.Parse(orgID)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid org_id"})
-		return
-	}
+	orgUUID := c.MustGet("org_id").(uuid.UUID)
 
 	var f domain.VoiceNoteFilter
 	if cid := c.Query("contact_id"); cid != "" {
@@ -133,12 +117,7 @@ func (h *VoiceHandler) List(c *gin.Context) {
 }
 
 func (h *VoiceHandler) GetByID(c *gin.Context) {
-	orgID := c.GetString("org_id")
-	orgUUID, err := uuid.Parse(orgID)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid org_id"})
-		return
-	}
+	orgUUID := c.MustGet("org_id").(uuid.UUID)
 
 	noteID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -156,12 +135,7 @@ func (h *VoiceHandler) GetByID(c *gin.Context) {
 }
 
 func (h *VoiceHandler) ApplyUpdates(c *gin.Context) {
-	orgID := c.GetString("org_id")
-	orgUUID, err := uuid.Parse(orgID)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid org_id"})
-		return
-	}
+	orgUUID := c.MustGet("org_id").(uuid.UUID)
 
 	noteID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -178,12 +152,7 @@ func (h *VoiceHandler) ApplyUpdates(c *gin.Context) {
 }
 
 func (h *VoiceHandler) Delete(c *gin.Context) {
-	orgID := c.GetString("org_id")
-	orgUUID, err := uuid.Parse(orgID)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid org_id"})
-		return
-	}
+	orgUUID := c.MustGet("org_id").(uuid.UUID)
 
 	noteID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -200,18 +169,8 @@ func (h *VoiceHandler) Delete(c *gin.Context) {
 }
 
 func (h *VoiceHandler) Analyze(c *gin.Context) {
-	orgID := c.GetString("org_id")
-	orgUUID, err := uuid.Parse(orgID)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid org_id"})
-		return
-	}
-
-	userUUID, err := uuid.Parse(c.GetString("user_id"))
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user_id"})
-		return
-	}
+	orgUUID := c.MustGet("org_id").(uuid.UUID)
+	userUUID := c.MustGet("user_id").(uuid.UUID)
 
 	noteID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
