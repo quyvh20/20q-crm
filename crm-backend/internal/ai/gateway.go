@@ -42,12 +42,10 @@ const (
 
 // advancedTasks are only available to pro+ plans
 var advancedTasks = map[AITask]bool{
-	TaskMeetingSummary:    true,
-	TaskDealScore:         true,
-	TaskAnalytics:         true,
-	TaskVoiceSTT:          true,
-	TaskVoiceIntelligence: true,
-	TaskFollowup:          true,
+	TaskMeetingSummary: true,
+	TaskDealScore:      true,
+	TaskAnalytics:      true,
+	TaskFollowup:       true,
 }
 
 func IsAdvancedTask(t AITask) bool { return advancedTasks[t] }
