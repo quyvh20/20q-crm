@@ -114,7 +114,7 @@ func ProcessVoiceNote(ctx context.Context, q *AIJobQueue, job *AIJob) (json.RawM
 		if len(bulkData) > whisperMaxBytes {
 			msg := fmt.Sprintf("audio file too large for transcription (%d MB). ffmpeg is required to split large files — please contact support.", len(bulkData)/(1024*1024))
 			setError(msg)
-			return nil, fmt.Errorf(msg)
+			return nil, fmt.Errorf("%s", msg)
 		}
 		q.logger.Info("using raw audio file (no ffmpeg)", zap.Int("size_bytes", len(bulkData)))
 		chunks = [][]byte{bulkData}
