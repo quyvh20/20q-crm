@@ -100,7 +100,7 @@ func (r *voiceNoteRepository) List(ctx context.Context, orgID uuid.UUID, f domai
 }
 
 func (r *voiceNoteRepository) Update(ctx context.Context, v *domain.VoiceNote) error {
-	return r.db.WithContext(ctx).Save(v).Error
+	return r.db.WithContext(ctx).Omit("Contact", "Deal").Save(v).Error
 }
 
 func (r *voiceNoteRepository) Delete(ctx context.Context, orgID, id uuid.UUID) error {

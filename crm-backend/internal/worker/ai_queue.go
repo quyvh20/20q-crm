@@ -46,6 +46,10 @@ func NewAIJobQueue(redisClient *redis.Client, gateway *ai.AIGateway, db *gorm.DB
 
 // Enqueue pushes a job to the Redis list and initializes its status hash.
 func (q *AIJobQueue) Enqueue(ctx context.Context, job *AIJob) error {
+	if q.redis == nil {
+		return fmt.Errorf("AI features require Redis configuration (REDIS_URL)")
+	}
+
 	job.CreatedAt = time.Now()
 	job.Status = "pending"
 

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"crm-backend/internal/domain"
+	"crm-backend/internal/repository"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -84,7 +85,9 @@ func (h *VoiceHandler) Upload(c *gin.Context) {
 		}
 	}
 
-	note, jobID, err := h.uc.Upload(c.Request.Context(), orgUUID, userUUID, input)
+	ctx := repository.WithDataScope(c.Request.Context(), GetRole(c), userUUID)
+
+	note, jobID, err := h.uc.Upload(ctx, orgUUID, userUUID, input)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -120,7 +123,10 @@ func (h *VoiceHandler) List(c *gin.Context) {
 		f.Limit, _ = strconv.Atoi(l)
 	}
 
-	notes, err := h.uc.List(c.Request.Context(), orgUUID, f)
+	userUUID, _ := GetUserID(c)
+	ctx := repository.WithDataScope(c.Request.Context(), GetRole(c), userUUID)
+
+	notes, err := h.uc.List(ctx, orgUUID, f)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -142,7 +148,10 @@ func (h *VoiceHandler) GetByID(c *gin.Context) {
 		return
 	}
 
-	note, err := h.uc.GetByID(c.Request.Context(), orgUUID, noteID)
+	userUUID, _ := GetUserID(c)
+	ctx := repository.WithDataScope(c.Request.Context(), GetRole(c), userUUID)
+
+	note, err := h.uc.GetByID(ctx, orgUUID, noteID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "voice note not found"})
 		return
@@ -164,7 +173,10 @@ func (h *VoiceHandler) ApplyUpdates(c *gin.Context) {
 		return
 	}
 
-	if err := h.uc.ApplyContactUpdates(c.Request.Context(), orgUUID, noteID); err != nil {
+	userUUID, _ := GetUserID(c)
+	ctx := repository.WithDataScope(c.Request.Context(), GetRole(c), userUUID)
+
+	if err := h.uc.ApplyContactUpdates(ctx, orgUUID, noteID); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -185,7 +197,10 @@ func (h *VoiceHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	if err := h.uc.Delete(c.Request.Context(), orgUUID, noteID); err != nil {
+	userUUID, _ := GetUserID(c)
+	ctx := repository.WithDataScope(c.Request.Context(), GetRole(c), userUUID)
+
+	if err := h.uc.Delete(ctx, orgUUID, noteID); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
@@ -211,7 +226,9 @@ func (h *VoiceHandler) Analyze(c *gin.Context) {
 		return
 	}
 
-	err = h.uc.Analyze(c.Request.Context(), orgUUID, userUUID, noteID)
+	ctx := repository.WithDataScope(c.Request.Context(), GetRole(c), userUUID)
+
+	err = h.uc.Analyze(ctx, orgUUID, userUUID, noteID)
 	if err != nil {
 		if strings.HasPrefix(err.Error(), "note is not in an analyzable state") {
 			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
