@@ -212,7 +212,7 @@ export default function VoiceLibrary({ contactId, dealId }: VoiceLibraryProps) {
     return (
       <div style={{ ...containerStyle, textAlign: 'center', padding: 40, opacity: 0.6 }}>
         <div style={{ fontSize: 36, marginBottom: 12 }}>🎙</div>
-        <p style={{ margin: 0, fontSize: 14 }}>No voice notes yet.<br />Record your first note above.</p>
+        <p style={{ margin: 0, fontSize: 14 }}>No voice notes yet.<br />Upload your first audio file to get started.</p>
       </div>
     );
   }
