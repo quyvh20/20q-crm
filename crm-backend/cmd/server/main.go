@@ -118,7 +118,16 @@ func main() {
 	router := gin.New()
 	router.MaxMultipartMemory = 500 << 20 // 500 MB
 
-	router.Use(gin.Recovery())
+	// Custom recovery middleware: return JSON on panic instead of gin's default HTML page.
+	router.Use(func(c *gin.Context) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("panic recovered", zap.Any("panic", r))
+				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			}
+		}()
+		c.Next()
+	})
 
 	if cfg.SentryDSN != "" {
 		router.Use(sentrygin.New(sentrygin.Options{Repanic: true}))
