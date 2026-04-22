@@ -25,7 +25,7 @@ type planLimits struct {
 }
 
 var tierLimits = map[string]planLimits{
-	"free":     {MonthlyAITokens: 10_000, AIFeaturesAdvanced: false},
+	"free":     {MonthlyAITokens: 50_000, AIFeaturesAdvanced: false},
 	"starter":  {MonthlyAITokens: 50_000, AIFeaturesAdvanced: false},
 	"pro":      {MonthlyAITokens: 500_000, AIFeaturesAdvanced: true},
 	"business": {MonthlyAITokens: 2_000_000, AIFeaturesAdvanced: true},
