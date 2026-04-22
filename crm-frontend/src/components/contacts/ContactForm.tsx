@@ -5,7 +5,6 @@ import { z } from 'zod';
 import { createContact, updateContact, type Contact } from '../../lib/api';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import DynamicCustomFields from '../common/DynamicCustomFields';
-import VoiceRecorder from '../voice/VoiceRecorder';
 import VoiceUploader from '../voice/VoiceUploader';
 import VoiceLibrary from '../voice/VoiceLibrary';
 
@@ -26,13 +25,11 @@ interface ContactFormProps {
 }
 
 type ActiveTab = 'details' | 'voice';
-type VoiceInputMode = 'record' | 'upload';
 
 export default function ContactForm({ contact, onClose }: ContactFormProps) {
   const queryClient = useQueryClient();
   const isEditing = !!contact;
   const [activeTab, setActiveTab] = useState<ActiveTab>('details');
-  const [voiceInputMode, setVoiceInputMode] = useState<VoiceInputMode>('record');
 
   // Custom fields state (managed outside react-hook-form since they're dynamic)
   const [customFields, setCustomFields] = useState<Record<string, unknown>>(
@@ -246,7 +243,7 @@ export default function ContactForm({ contact, onClose }: ContactFormProps) {
                     onClick={() => setActiveTab('voice')}
                     className="text-xs text-blue-500 hover:text-blue-400 transition-colors"
                   >
-                    + New Recording
+                    + Upload Voice Note
                   </button>
                 </div>
                 <VoiceLibrary contactId={contact.id} />
@@ -259,28 +256,8 @@ export default function ContactForm({ contact, onClose }: ContactFormProps) {
         {/* Voice Notes tab — only accessible when editing an existing contact */}
         {isEditing && activeTab === 'voice' && contact && (
           <div className="p-6 space-y-6">
-            {/* Record / Upload mini-tabs */}
-            <div className="flex gap-2 p-1 bg-muted/40 rounded-xl">
-              {(['record', 'upload'] as VoiceInputMode[]).map(m => (
-                <button
-                  key={m}
-                  id={`contact-voice-mode-${m}`}
-                  onClick={() => setVoiceInputMode(m)}
-                  className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${
-                    voiceInputMode === m
-                      ? 'bg-white dark:bg-slate-800 text-foreground shadow-sm'
-                      : 'text-muted-foreground hover:text-foreground'
-                  }`}
-                >
-                  {m === 'record' ? '🎙 Record' : '📁 Upload File'}
-                </button>
-              ))}
-            </div>
-
             <div>
-              {voiceInputMode === 'record'
-                ? <VoiceRecorder initialContactId={contact.id} />
-                : <VoiceUploader initialContactId={contact.id} />}
+              <VoiceUploader initialContactId={contact.id} />
             </div>
 
             <div>
