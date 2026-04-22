@@ -69,9 +69,9 @@ export const ActionNode: React.FC<ActionNodeProps> = ({ action, index }) => {
           ✕
         </button>
       </div>
-      {action.params.title && (
+      {typeof action.params.title === 'string' && action.params.title && (
         <p className="text-xs text-gray-400 mt-2 truncate pl-13">
-          {String(action.params.title)}
+          {action.params.title}
         </p>
       )}
     </div>

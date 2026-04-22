@@ -1,5 +1,5 @@
 import React from 'react';
-import { ACTION_LABELS, ACTION_ICONS, TEMPLATE_VARIABLES, type ActionSpec, type ActionType } from '../types';
+import { ACTION_LABELS, ACTION_ICONS, TEMPLATE_VARIABLES, type ActionSpec } from '../types';
 import { useBuilderStore } from '../store';
 
 export const ActionConfigPanel: React.FC = () => {

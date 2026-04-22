@@ -4,9 +4,13 @@ import { z } from 'zod';
 // Zod schemas mirroring backend §3 exactly
 // ============================================================
 
+const triggerTypes = ['contact_created', 'contact_updated', 'deal_stage_changed', 'no_activity_days', 'webhook_inbound'] as const;
+const groupOps = ['AND', 'OR'] as const;
+const actionTypes = ['send_email', 'create_task', 'assign_user', 'send_webhook', 'delay'] as const;
+
 export const triggerSpecSchema = z.object({
-  type: z.enum(['contact_created', 'contact_updated', 'deal_stage_changed', 'no_activity_days', 'webhook_inbound']),
-  params: z.record(z.unknown()).optional(),
+  type: z.enum(triggerTypes),
+  params: z.record(z.string(), z.unknown()).optional(),
 });
 
 const conditionRuleSchema: z.ZodType<any> = z.lazy(() =>
@@ -19,21 +23,21 @@ const conditionRuleSchema: z.ZodType<any> = z.lazy(() =>
     }),
     // Nested group
     z.object({
-      op: z.enum(['AND', 'OR']),
+      op: z.enum(groupOps),
       rules: z.array(conditionRuleSchema).min(1),
     }),
   ])
 );
 
 export const conditionGroupSchema = z.object({
-  op: z.enum(['AND', 'OR']),
+  op: z.enum(groupOps),
   rules: z.array(conditionRuleSchema).min(1, 'At least one rule is required'),
 }).nullable().optional();
 
 export const actionSpecSchema = z.object({
-  type: z.enum(['send_email', 'create_task', 'assign_user', 'send_webhook', 'delay']),
+  type: z.enum(actionTypes),
   id: z.string().min(1, 'Action ID is required'),
-  params: z.record(z.unknown()),
+  params: z.record(z.string(), z.unknown()),
 });
 
 export const workflowSchema = z.object({

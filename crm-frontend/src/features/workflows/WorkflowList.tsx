@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getWorkflows, deleteWorkflow, toggleWorkflow } from './api';
 import type { Workflow } from './types';
-import { TRIGGER_LABELS, STATUS_COLORS } from './types';
+import { TRIGGER_LABELS } from './types';
 
 export const WorkflowList: React.FC = () => {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
