@@ -85,7 +85,8 @@ func (h *VoiceHandler) Upload(c *gin.Context) {
 		}
 	}
 
-	ctx := repository.WithDataScope(c.Request.Context(), GetRole(c), userUUID)
+	role, _ := GetRole(c)
+	ctx := repository.WithDataScope(c.Request.Context(), role, userUUID)
 
 	note, jobID, err := h.uc.Upload(ctx, orgUUID, userUUID, input)
 	if err != nil {
@@ -124,7 +125,8 @@ func (h *VoiceHandler) List(c *gin.Context) {
 	}
 
 	userUUID, _ := GetUserID(c)
-	ctx := repository.WithDataScope(c.Request.Context(), GetRole(c), userUUID)
+	role, _ := GetRole(c)
+	ctx := repository.WithDataScope(c.Request.Context(), role, userUUID)
 
 	notes, err := h.uc.List(ctx, orgUUID, f)
 	if err != nil {
@@ -149,7 +151,8 @@ func (h *VoiceHandler) GetByID(c *gin.Context) {
 	}
 
 	userUUID, _ := GetUserID(c)
-	ctx := repository.WithDataScope(c.Request.Context(), GetRole(c), userUUID)
+	role, _ := GetRole(c)
+	ctx := repository.WithDataScope(c.Request.Context(), role, userUUID)
 
 	note, err := h.uc.GetByID(ctx, orgUUID, noteID)
 	if err != nil {
@@ -174,7 +177,8 @@ func (h *VoiceHandler) ApplyUpdates(c *gin.Context) {
 	}
 
 	userUUID, _ := GetUserID(c)
-	ctx := repository.WithDataScope(c.Request.Context(), GetRole(c), userUUID)
+	role, _ := GetRole(c)
+	ctx := repository.WithDataScope(c.Request.Context(), role, userUUID)
 
 	if err := h.uc.ApplyContactUpdates(ctx, orgUUID, noteID); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -198,7 +202,8 @@ func (h *VoiceHandler) Delete(c *gin.Context) {
 	}
 
 	userUUID, _ := GetUserID(c)
-	ctx := repository.WithDataScope(c.Request.Context(), GetRole(c), userUUID)
+	role, _ := GetRole(c)
+	ctx := repository.WithDataScope(c.Request.Context(), role, userUUID)
 
 	if err := h.uc.Delete(ctx, orgUUID, noteID); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
@@ -226,7 +231,8 @@ func (h *VoiceHandler) Analyze(c *gin.Context) {
 		return
 	}
 
-	ctx := repository.WithDataScope(c.Request.Context(), GetRole(c), userUUID)
+	role, _ := GetRole(c)
+	ctx := repository.WithDataScope(c.Request.Context(), role, userUUID)
 
 	err = h.uc.Analyze(ctx, orgUUID, userUUID, noteID)
 	if err != nil {
