@@ -276,12 +276,31 @@ func validateActionParams(action ActionSpec, path string, result *ValidationResu
 				Message: "assign_user requires 'entity' parameter",
 			})
 		}
-		if _, ok := action.Params["strategy"]; !ok {
+		if strategy, ok := action.Params["strategy"]; !ok {
 			result.Valid = false
 			result.Errors = append(result.Errors, ValidationError{
 				Field:   path + ".params.strategy",
 				Message: "assign_user requires 'strategy' parameter",
 			})
+		} else {
+			strategyStr, _ := strategy.(string)
+			validStrategies := map[string]bool{"specific": true, "round_robin": true, "least_loaded": true}
+			if !validStrategies[strategyStr] {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   path + ".params.strategy",
+					Message: fmt.Sprintf("invalid strategy: '%s'. Valid: specific, round_robin, least_loaded", strategyStr),
+				})
+			}
+			if strategyStr == "specific" {
+				if _, hasUID := action.Params["user_id"]; !hasUID {
+					result.Valid = false
+					result.Errors = append(result.Errors, ValidationError{
+						Field:   path + ".params.user_id",
+						Message: "assign_user with strategy 'specific' requires 'user_id' parameter",
+					})
+				}
+			}
 		}
 	case ActionSendWebhook:
 		if _, ok := action.Params["url"]; !ok {
