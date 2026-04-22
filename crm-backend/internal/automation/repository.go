@@ -36,6 +36,7 @@ func (r *Repository) AutoMigrate() error {
 	r.db.Exec(`CREATE INDEX IF NOT EXISTS idx_wf_runs_status_retry ON automation_workflow_runs (status, next_retry_at)`)
 	r.db.Exec(`CREATE INDEX IF NOT EXISTS idx_wf_action_logs_run_action ON automation_workflow_action_logs (run_id, action_idx)`)
 	r.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_wf_versions_wf_ver ON automation_workflow_versions (workflow_id, version)`)
+	r.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_wf_runs_wf_idemp ON automation_workflow_runs (workflow_id, idempotency_key)`)
 
 	return nil
 }

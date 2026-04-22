@@ -55,7 +55,7 @@ type WorkflowRun struct {
 	NextRetryAt      *time.Time     `gorm:"index" json:"next_retry_at,omitempty"`
 	StartedAt        *time.Time     `json:"started_at,omitempty"`
 	FinishedAt       *time.Time     `json:"finished_at,omitempty"`
-	IdempotencyKey   string         `gorm:"size:100;uniqueIndex" json:"idempotency_key"`
+	IdempotencyKey   string         `gorm:"size:100;not null" json:"idempotency_key"`
 	RecoveryCount    int            `gorm:"not null;default:0" json:"recovery_count"`
 	CreatedAt        time.Time      `json:"created_at"`
 	UpdatedAt        time.Time      `json:"updated_at"`
