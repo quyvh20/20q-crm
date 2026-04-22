@@ -206,8 +206,21 @@ Rules:
 	}
 
 	var insight ParsedVoiceInsight
-	if err := json.Unmarshal([]byte(resp.Content), &insight); err != nil {
-		setError(fmt.Sprintf("parse AI response: %s (response: %s)", err.Error(), resp.Content))
+	// Strip markdown code block wrappers if present (e.g., ```json\n{...}\n```)
+	cleanContent := strings.TrimSpace(resp.Content)
+	if strings.HasPrefix(cleanContent, "```") {
+		// Remove opening fence (```json or ```)
+		if idx := strings.Index(cleanContent, "\n"); idx != -1 {
+			cleanContent = cleanContent[idx+1:]
+		}
+		// Remove closing fence
+		if idx := strings.LastIndex(cleanContent, "```"); idx != -1 {
+			cleanContent = cleanContent[:idx]
+		}
+		cleanContent = strings.TrimSpace(cleanContent)
+	}
+	if err := json.Unmarshal([]byte(cleanContent), &insight); err != nil {
+		setError(fmt.Sprintf("parse AI response: %s (response: %.300s)", err.Error(), resp.Content))
 		return nil, fmt.Errorf("parse insight JSON: %w", err)
 	}
 
