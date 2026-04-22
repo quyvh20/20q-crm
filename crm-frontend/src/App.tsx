@@ -15,6 +15,9 @@ import CustomObjectPage from './pages/CustomObjectPage';
 import AcceptInvitePage from './pages/AcceptInvitePage';
 import ConversationLogPage from './pages/ConversationLogPage';
 import VoicePage from './pages/VoicePage';
+import { WorkflowList } from './features/workflows/WorkflowList';
+import { WorkflowBuilder } from './features/workflows/WorkflowBuilder';
+import { RunHistory } from './features/workflows/RunHistory';
 
 // Initialize Sentry
 const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN;
@@ -129,6 +132,21 @@ function App() {
             <Route path="/voice" element={
               <ProtectedRoute>
                 <AppLayout><VoicePage /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/workflows" element={
+              <ProtectedRoute>
+                <AppLayout><WorkflowList /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/workflows/:id" element={
+              <ProtectedRoute>
+                <AppLayout><WorkflowBuilder /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/workflows/:id/history" element={
+              <ProtectedRoute>
+                <AppLayout><RunHistory /></AppLayout>
               </ProtectedRoute>
             } />
           </Routes>

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -10,6 +11,7 @@ import (
 
 	delivery "crm-backend/internal/delivery/http"
 	"crm-backend/internal/ai"
+	"crm-backend/internal/automation"
 	"crm-backend/internal/domain"
 	"crm-backend/internal/repository"
 	"crm-backend/internal/usecase"
@@ -175,6 +177,7 @@ func main() {
 		})
 	})
 
+	var autoEngine *automation.Engine
 	if db != nil {
 		authRepo := repository.NewAuthRepository(db)
 		stageRepo := repository.NewPipelineStageRepository(db)
@@ -267,7 +270,20 @@ func main() {
 		voiceHandler := delivery.NewVoiceHandler(voiceNoteUC)
 
 		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, cfg, db, redisClient, authRepo)
-		log.Info("All routes registered")
+
+		// --- Workflow Automation Engine ---
+		autoLogger := slog.Default()
+		autoEngine = automation.NewEngine(db, autoLogger,
+			automation.WithWorkers(5),
+			automation.WithEmailExecutor(cfg.ResendAPIKey, "onboarding@resend.dev"),
+		)
+		autoEngine.Start()
+		autoHandler := automation.NewHandler(autoEngine, db, autoLogger)
+		autoHandler.RegisterRoutes(router,
+			delivery.AuthMiddleware(cfg.JWTSecret, authRepo, redisClient),
+			delivery.RequireRole,
+		)
+		log.Info("All routes registered (including automation)")
 	} else {
 		log.Warn("Database not connected — routes skipped")
 	}
@@ -289,6 +305,11 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Info("Shutting down server...")
+
+	// Stop automation engine first (let in-flight runs finish)
+	if autoEngine != nil {
+		autoEngine.Stop()
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
