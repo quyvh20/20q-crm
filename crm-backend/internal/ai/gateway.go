@@ -191,8 +191,11 @@ func (g *AIGateway) Complete(ctx context.Context, orgID, userID uuid.UUID, task 
 	var err error
 	for _, p := range chain {
 		result, err = g.callProvider(ctx, task, p, messages)
-		if err == nil {
+		if err == nil && result.Content != "" {
 			break
+		}
+		if err == nil && result.Content == "" {
+			err = fmt.Errorf("provider %s returned empty response", p)
 		}
 		g.logger.Warn("provider failed, trying next",
 			zap.String("provider", string(p)),
@@ -627,14 +630,27 @@ func (g *AIGateway) callCFWorkers(ctx context.Context, task AITask, model string
 		Success bool `json:"success"`
 	}
 	if err := json.Unmarshal(resp, &cfResp); err != nil {
-		return AIResponse{}, fmt.Errorf("cf workers unmarshal: %w", err)
+		return AIResponse{}, fmt.Errorf("cf workers unmarshal: %w (raw: %.500s)", err, string(resp))
 	}
 
 	responseText := ""
 	if cfResp.Result.Response != nil {
-		if s, ok := cfResp.Result.Response.(string); ok {
-			responseText = s
+		switch v := cfResp.Result.Response.(type) {
+		case string:
+			responseText = v
+		default:
+			// Some models return non-string responses; marshal back to string
+			b, _ := json.Marshal(v)
+			responseText = string(b)
 		}
+	}
+
+	if responseText == "" {
+		g.logger.Warn("CF Workers AI returned empty response",
+			zap.String("model", model),
+			zap.Bool("success", cfResp.Success),
+			zap.String("raw_response", string(resp[:min(len(resp), 500)])),
+		)
 	}
 
 	return AIResponse{
