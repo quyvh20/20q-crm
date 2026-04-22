@@ -71,7 +71,7 @@ var taskPrimaryProvider = map[AITask]provider{
 	TaskAnalytics:         providerAnthropic,
 	TaskSentiment:         providerCFWorkers,
 	TaskFollowup:          providerAnthropic,
-	TaskVoiceIntelligence: providerCFWorkers,
+	TaskVoiceIntelligence: providerAnthropic,
 	TaskCommandCenter:     providerVercelGateway,
 }
 
@@ -84,7 +84,7 @@ var taskModels = map[AITask]map[provider]string{
 	TaskAnalytics:         {providerAnthropic: "claude-3-5-haiku-20241022", providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct"},
 	TaskSentiment:         {providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct", providerAnthropic: "claude-3-5-haiku-20241022"},
 	TaskFollowup:          {providerAnthropic: "claude-3-5-haiku-20241022", providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct"},
-	TaskVoiceIntelligence: {providerCFWorkers: "@cf/moonshotai/kimi-k2.5", providerAnthropic: "claude-3-5-haiku-20241022"},
+	TaskVoiceIntelligence: {providerAnthropic: "claude-3-5-haiku-20241022", providerCFWorkers: "@cf/meta/llama-3.3-70b-instruct-fp8-fast"},
 	TaskCommandCenter:     {providerVercelGateway: "anthropic/claude-haiku-4.5", providerCFWorkers: "@cf/moonshotai/kimi-k2.5"},
 }
 
