@@ -5,11 +5,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net"
 	"net/http"
 	"strings"
@@ -1144,45 +1144,22 @@ func (g *AIGateway) TranscribeAudio(ctx context.Context, audioBytes []byte, file
 	model := "@cf/openai/whisper-large-v3-turbo"
 	url := fmt.Sprintf("%s/workers-ai/%s", g.gatewayURL, model)
 
-	var buf bytes.Buffer
-	mw := multipart.NewWriter(&buf)
-
-	fw, err := mw.CreateFormFile("audio", filename)
-	if err != nil {
-		return nil, fmt.Errorf("whisper: create form file: %w", err)
+	// CF Workers AI Whisper expects JSON with base64-encoded audio
+	encoded := base64.StdEncoding.EncodeToString(audioBytes)
+	body := map[string]interface{}{
+		"audio": encoded,
+		"task":  "transcribe",
 	}
-	if _, err = fw.Write(audioBytes); err != nil {
-		return nil, fmt.Errorf("whisper: write audio bytes: %w", err)
-	}
-
 	if languageCode != "" && languageCode != "auto" {
-		if err = mw.WriteField("language", languageCode); err != nil {
-			return nil, fmt.Errorf("whisper: write language field: %w", err)
-		}
-	}
-	mw.Close()
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, &buf)
-	if err != nil {
-		return nil, fmt.Errorf("whisper: build request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+g.cfToken)
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	if g.cfGatewayToken != "" {
-		req.Header.Set("cf-aig-authorization", "Bearer "+g.cfGatewayToken)
+		body["language"] = languageCode
 	}
 
-	res, err := g.httpClient.Do(req)
+	resp, err := g.doRequest(ctx, url, "POST", map[string]string{
+		"Authorization": "Bearer " + g.cfToken,
+		"Content-Type":  "application/json",
+	}, body)
 	if err != nil {
-		return nil, fmt.Errorf("whisper: http do: %w", err)
-	}
-	defer res.Body.Close()
-	data, err := io.ReadAll(res.Body)
-	if err != nil {
-		return nil, fmt.Errorf("whisper: read response: %w", err)
-	}
-	if res.StatusCode >= 400 {
-		return nil, fmt.Errorf("whisper: provider returned %d: %s", res.StatusCode, strings.TrimSpace(string(data)))
+		return nil, fmt.Errorf("whisper: %w", err)
 	}
 
 	var cfResp struct {
@@ -1193,8 +1170,8 @@ func (g *AIGateway) TranscribeAudio(ctx context.Context, audioBytes []byte, file
 		} `json:"result"`
 		Success bool `json:"success"`
 	}
-	if err := json.Unmarshal(data, &cfResp); err != nil {
-		return nil, fmt.Errorf("whisper: unmarshal: %w (body: %s)", err, string(data))
+	if err := json.Unmarshal(resp, &cfResp); err != nil {
+		return nil, fmt.Errorf("whisper: unmarshal: %w (body: %.500s)", err, string(resp))
 	}
 
 	return &TranscribeResult{
