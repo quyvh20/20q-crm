@@ -78,13 +78,22 @@ export const WorkflowBuilder: React.FC = () => {
   );
 
   const handleSave = async () => {
+    if (!store.validate()) return; // show validation errors first
     try {
       await store.save();
-      if (!id || id === 'new') {
-        navigate(`/workflows/${store.workflowId}`, { replace: true });
+      const wfId = useBuilderStore.getState().workflowId;
+      if (wfId && (!id || id === 'new')) {
+        navigate(`/workflows/${wfId}`, { replace: true });
       }
     } catch (e: any) {
-      alert(e.message);
+      alert(e.message || 'Failed to save workflow');
+    }
+  };
+
+  const handleCanvasClick = (e: React.MouseEvent) => {
+    // Deselect node when clicking on the canvas background
+    if (e.target === e.currentTarget) {
+      store.selectNode(null);
     }
   };
 
@@ -142,8 +151,8 @@ export const WorkflowBuilder: React.FC = () => {
       </div>
 
       {/* Canvas area */}
-      <div className="flex-1 bg-gray-950 overflow-auto">
-        <div className="min-h-full flex flex-col items-center py-12 px-8">
+      <div className="flex-1 bg-gray-950 overflow-auto" onClick={handleCanvasClick}>
+        <div className="min-h-full flex flex-col items-center py-12 px-8" onClick={handleCanvasClick}>
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
             {/* Trigger */}
             <TriggerNode trigger={store.trigger} />
