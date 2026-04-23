@@ -161,39 +161,76 @@ export const RunHistory: React.FC = () => {
                   ) : actionLogs.length === 0 ? (
                     <div className="py-4 text-center text-gray-600 text-sm">No action logs</div>
                   ) : (
-                    actionLogs.map((log) => (
-                      <div
-                        key={log.id}
-                        className="bg-gray-800/40 border border-gray-700/50 rounded-lg p-3 flex items-center gap-3"
-                      >
-                        <span
-                          className="w-2 h-2 rounded-full flex-shrink-0"
-                          style={{ backgroundColor: STATUS_COLORS[log.status] || '#666' }}
-                        />
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs font-medium text-white">
-                              Step {log.action_idx + 1}: {ACTION_LABELS[log.action_type as keyof typeof ACTION_LABELS] || log.action_type}
-                            </span>
-                            <span className="text-xs text-gray-500">
-                              {log.duration_ms}ms
-                            </span>
-                            {log.attempt_no > 1 && (
-                              <span className="text-xs text-amber-400">attempt #{log.attempt_no}</span>
-                            )}
-                          </div>
-                          {log.error && (
-                            <p className="text-xs text-red-400 mt-0.5 truncate">{log.error}</p>
-                          )}
-                        </div>
-                        <span
-                          className="text-xs font-medium"
-                          style={{ color: STATUS_COLORS[log.status] || '#666' }}
+                    actionLogs.map((log) => {
+                      const hasDetail = log.input || log.output || log.error;
+                      return (
+                        <details
+                          key={log.id}
+                          className="bg-gray-800/40 border border-gray-700/50 rounded-lg overflow-hidden group/log"
                         >
-                          {log.status}
-                        </span>
-                      </div>
-                    ))
+                          <summary className="flex items-center gap-3 p-3 cursor-pointer select-none hover:bg-gray-800/60 transition-colors list-none">
+                            <span
+                              className="w-2 h-2 rounded-full flex-shrink-0"
+                              style={{ backgroundColor: STATUS_COLORS[log.status] || '#666' }}
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-medium text-white">
+                                  Step {log.action_idx + 1}: {ACTION_LABELS[log.action_type as keyof typeof ACTION_LABELS] || log.action_type}
+                                </span>
+                                <span className="text-xs text-gray-500">
+                                  {log.duration_ms}ms
+                                </span>
+                                {log.attempt_no > 1 && (
+                                  <span className="text-xs text-amber-400">attempt #{log.attempt_no}</span>
+                                )}
+                              </div>
+                              {log.error && (
+                                <p className="text-xs text-red-400 mt-0.5 truncate group-open/log:hidden">{log.error}</p>
+                              )}
+                            </div>
+                            <span
+                              className="text-xs font-medium"
+                              style={{ color: STATUS_COLORS[log.status] || '#666' }}
+                            >
+                              {log.status}
+                            </span>
+                            {hasDetail && (
+                              <span className="text-gray-600 text-xs transition-transform group-open/log:rotate-90">▶</span>
+                            )}
+                          </summary>
+
+                          {hasDetail && (
+                            <div className="px-3 pb-3 space-y-2 border-t border-gray-700/30 pt-2">
+                              {log.input && Object.keys(log.input).length > 0 && (
+                                <div>
+                                  <p className="text-xs text-gray-500 mb-1 font-medium">Input (resolved params)</p>
+                                  <pre className="text-xs font-mono leading-relaxed p-2 bg-gray-900/60 rounded-lg border border-gray-700/30 overflow-x-auto max-h-40 overflow-y-auto">
+                                    {syntaxHighlightJSON(JSON.stringify(redactValue(log.input), null, 2))}
+                                  </pre>
+                                </div>
+                              )}
+                              {log.output && Object.keys(log.output).length > 0 && (
+                                <div>
+                                  <p className="text-xs text-gray-500 mb-1 font-medium">Output</p>
+                                  <pre className="text-xs font-mono leading-relaxed p-2 bg-gray-900/60 rounded-lg border border-gray-700/30 overflow-x-auto max-h-40 overflow-y-auto">
+                                    {syntaxHighlightJSON(JSON.stringify(redactValue(log.output), null, 2))}
+                                  </pre>
+                                </div>
+                              )}
+                              {log.error && (
+                                <div>
+                                  <p className="text-xs text-gray-500 mb-1 font-medium">Error</p>
+                                  <pre className="text-xs font-mono text-red-400 p-2 bg-red-500/5 rounded-lg border border-red-500/20 whitespace-pre-wrap">
+                                    {log.error}
+                                  </pre>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </details>
+                      );
+                    })
                   )}
                 </div>
               )}
