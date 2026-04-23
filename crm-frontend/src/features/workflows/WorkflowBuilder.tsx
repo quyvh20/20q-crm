@@ -3,6 +3,7 @@ import {
   DndContext,
   DragOverlay,
   closestCenter,
+  KeyboardSensor,
   PointerSensor,
   useSensor,
   useSensors,
@@ -11,6 +12,7 @@ import {
 } from '@dnd-kit/core';
 import {
   SortableContext,
+  sortableKeyboardCoordinates,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { useParams, useNavigate } from 'react-router-dom';
@@ -42,7 +44,8 @@ export const WorkflowBuilder: React.FC = () => {
   }, [id]);
 
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
 
   const [activeDragType, setActiveDragType] = useState<ActionType | null>(null);
