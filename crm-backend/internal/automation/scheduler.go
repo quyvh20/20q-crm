@@ -55,9 +55,9 @@ func (s *Scheduler) scanNoActivityDays() {
 	ctx := context.Background()
 
 	// Try advisory lock to prevent concurrent execution across instances
-	var lockResult int
-	s.db.WithContext(ctx).Raw("SELECT pg_try_advisory_lock(hashtext('wf_cron_no_activity'))").Scan(&lockResult)
-	if lockResult == 0 {
+	var lockAcquired bool
+	s.db.WithContext(ctx).Raw("SELECT pg_try_advisory_lock(hashtext('wf_cron_no_activity'))").Scan(&lockAcquired)
+	if !lockAcquired {
 		return // Another instance has the lock
 	}
 	defer s.db.WithContext(ctx).Exec("SELECT pg_advisory_unlock(hashtext('wf_cron_no_activity'))")
