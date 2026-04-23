@@ -245,19 +245,19 @@ func TestIntegration_KillAndResume(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, inserted)
 
-	// Process — will panic after action[1]
-	assert.Panics(t, func() {
-		engine1.processRun(run.ID)
-	}, "engine must panic when PostActionLogHook panics")
+	// Process — PostActionLogHook will panic after action[1].
+	// processRun has defer+recover, so the panic is caught internally.
+	// We verify the crash effect through DB state.
+	engine1.processRun(run.ID)
 	engine1.cancel()
 
-	// Verify crash state
+	// Verify crash state: action[0] committed, action[1] rolled back
 	crashedRun, err := repo.GetRunByID(context.Background(), run.ID)
 	require.NoError(t, err)
 	completedSet := GetCompletedActionIndices(crashedRun)
 	assert.True(t, completedSet[0], "action[0] committed before crash")
 	assert.False(t, completedSet[1], "action[1] tx rolled back")
-	assert.Equal(t, int64(2), executor.getCallCount())
+	assert.Equal(t, int64(2), executor.getCallCount(), "executor called for action[0] and action[1]")
 
 	// --- Phase 2: Recovery ---
 	RequeueInFlight(context.Background(), repo, make(chan WorkflowRunJob, 100), slog.Default())
