@@ -26,6 +26,10 @@ type Engine struct {
 	cancel    context.CancelFunc
 	executors map[string]ActionExecutor
 	scheduler *Scheduler
+	// testPostActionWriteHook is a test-only callback invoked after action log + run
+	// writes inside commitActionAndRun, but before tx.Commit(). Set to a function
+	// that panics to simulate a crash between DB writes and commit.
+	testPostActionWriteHook func()
 }
 
 // WorkflowRunJob is pushed to the jobs channel to signal a run needs processing.
@@ -232,7 +236,7 @@ func (e *Engine) worker(id int) {
 }
 
 func (e *Engine) processRun(runID uuid.UUID) {
-	// Use a transaction with row-level lock
+	// Phase 1: Acquire row lock and mark as running (single transaction)
 	tx := e.repo.BeginTx(e.ctx)
 	defer func() {
 		if r := recover(); r != nil {
@@ -265,7 +269,7 @@ func (e *Engine) processRun(runID uuid.UUID) {
 	}
 	tx.Commit()
 
-	// Load workflow at the pinned version
+	// Phase 2: Load workflow at the pinned version
 	ver, err := e.repo.GetWorkflowVersion(e.ctx, run.WorkflowID, run.WorkflowVersion)
 	if err != nil || ver == nil {
 		e.failRun(run, fmt.Errorf("workflow version %d not found", run.WorkflowVersion))
@@ -293,7 +297,7 @@ func (e *Engine) processRun(runID uuid.UUID) {
 		}
 	}
 
-	// Execute actions sequentially
+	// Phase 3: Execute actions sequentially
 	completedSet := GetCompletedActionIndices(run)
 
 	for i := run.CurrentActionIdx; i < len(actions); i++ {
@@ -307,7 +311,8 @@ func (e *Engine) processRun(runID uuid.UUID) {
 
 		action := actions[i]
 
-		// Create action log
+		// Create pre-execution action log (informational, non-transactional).
+		// Loss on crash is acceptable — the action hasn't executed yet.
 		actionLog := &WorkflowActionLog{
 			ID:         uuid.New(),
 			RunID:      run.ID,
@@ -320,7 +325,7 @@ func (e *Engine) processRun(runID uuid.UUID) {
 
 		inputJSON, _ := json.Marshal(action.Params)
 		actionLog.Input = datatypes.JSON(inputJSON)
-		e.repo.CreateActionLog(e.ctx, nil, actionLog)
+		e.repo.CreateActionLogNoTx(e.ctx, actionLog)
 
 		startTime := time.Now()
 		output, execErr := e.executeAction(e.ctx, run, action, evalCtx)
@@ -329,19 +334,21 @@ func (e *Engine) processRun(runID uuid.UUID) {
 		actionLog.DurationMs = durationMs
 
 		if execErr != nil {
-			actionLog.Status = LogStatusFailed
-			actionLog.Error = execErr.Error()
-			e.repo.UpdateActionLog(e.ctx, nil, actionLog)
-
 			if run.RetryCount < 3 && isRetryable(execErr) {
+				// Retryable failure: atomically update action log + run
 				run.RetryCount++
 				retryAt := time.Now().Add(backoff(run.RetryCount))
 				run.NextRetryAt = &retryAt
 				run.Status = StatusPending
 				run.CurrentActionIdx = i
+				run.LastError = execErr.Error()
+
 				actionLog.Status = LogStatusRetrying
-				e.repo.UpdateActionLog(e.ctx, nil, actionLog)
-				e.repo.UpdateRun(e.ctx, nil, run)
+				actionLog.Error = execErr.Error()
+
+				if err := e.commitActionAndRun(actionLog, run); err != nil {
+					e.logger.Error("automation: commit retry tx failed", "error", err, "run_id", run.ID.String())
+				}
 
 				e.logger.Warn("automation: action failed, scheduling retry",
 					"run_id", run.ID.String(),
@@ -352,12 +359,18 @@ func (e *Engine) processRun(runID uuid.UUID) {
 				return
 			}
 
-			// Non-retryable or max retries exceeded
+			// Non-retryable or max retries exceeded: atomically fail
 			now := time.Now()
 			run.Status = StatusFailed
 			run.LastError = execErr.Error()
 			run.FinishedAt = &now
-			e.repo.UpdateRun(e.ctx, nil, run)
+
+			actionLog.Status = LogStatusFailed
+			actionLog.Error = execErr.Error()
+
+			if err := e.commitActionAndRun(actionLog, run); err != nil {
+				e.logger.Error("automation: commit failure tx failed", "error", err, "run_id", run.ID.String())
+			}
 
 			e.logger.Error("automation: run failed",
 				"run_id", run.ID.String(),
@@ -367,15 +380,7 @@ func (e *Engine) processRun(runID uuid.UUID) {
 			return
 		}
 
-		// Success
-		actionLog.Status = LogStatusSuccess
-		if output != nil {
-			outputJSON, _ := json.Marshal(output)
-			actionLog.Output = datatypes.JSON(outputJSON)
-		}
-		e.repo.UpdateActionLog(e.ctx, nil, actionLog)
-
-		// Update eval context with action output
+		// Success: update eval context with action output
 		if evalCtx.Actions == nil {
 			evalCtx.Actions = make(map[string]any)
 		}
@@ -390,21 +395,60 @@ func (e *Engine) processRun(runID uuid.UUID) {
 		completedJSON, _ := SetCompletedActions(completedSlice)
 		run.CompletedActions = datatypes.JSON(completedJSON)
 		run.CurrentActionIdx = i + 1
-		e.repo.UpdateRun(e.ctx, nil, run)
+
+		// Prepare action log for success
+		actionLog.Status = LogStatusSuccess
+		if output != nil {
+			outputJSON, _ := json.Marshal(output)
+			actionLog.Output = datatypes.JSON(outputJSON)
+		}
+
+		// If this was the last action, mark run as completed in the same tx
+		if i+1 >= len(actions) {
+			now := time.Now()
+			run.Status = StatusCompleted
+			run.FinishedAt = &now
+		}
+
+		// Atomically commit action log + run update (§13.3 compliance)
+		if err := e.commitActionAndRun(actionLog, run); err != nil {
+			e.logger.Error("automation: commit success tx failed", "error", err, "run_id", run.ID.String())
+			return
+		}
 	}
 
-	// All actions completed
-	if run.CurrentActionIdx >= len(actions) {
-		now := time.Now()
-		run.Status = StatusCompleted
-		run.FinishedAt = &now
-		e.repo.UpdateRun(e.ctx, nil, run)
-
+	if run.Status == StatusCompleted {
 		e.logger.Info("automation: run completed",
 			"run_id", run.ID.String(),
 			"actions_count", len(actions),
 		)
 	}
+}
+
+// commitActionAndRun atomically updates an action log and its parent run in a single transaction.
+// This prevents the inconsistency where an action log is written but the run's CompletedActions
+// is not updated, which would cause duplicate action execution on crash recovery (§13.3).
+func (e *Engine) commitActionAndRun(actionLog *WorkflowActionLog, run *WorkflowRun) error {
+	tx := e.repo.BeginTx(e.ctx)
+	if err := e.repo.UpdateActionLog(e.ctx, tx, actionLog); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("update action log: %w", err)
+	}
+	if err := e.repo.UpdateRun(e.ctx, tx, run); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("update run: %w", err)
+	}
+
+	// Test-only fault injection: if set, called after writes but before commit.
+	// Used to simulate crashes between DB writes and tx commit.
+	if e.testPostActionWriteHook != nil {
+		e.testPostActionWriteHook()
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return fmt.Errorf("commit tx: %w", err)
+	}
+	return nil
 }
 
 // buildEvalContext creates an EvalContext from the trigger context JSON.
@@ -437,20 +481,24 @@ func (e *Engine) buildEvalContext(run *WorkflowRun) EvalContext {
 	return ctx
 }
 
+// failRun marks a run as failed. Uses non-transactional write because there is no
+// associated action log to keep atomic (version-not-found, parse error, etc.).
 func (e *Engine) failRun(run *WorkflowRun, err error) {
 	now := time.Now()
 	run.Status = StatusFailed
 	run.LastError = err.Error()
 	run.FinishedAt = &now
-	e.repo.UpdateRun(e.ctx, nil, run)
+	e.repo.UpdateRunNoTx(e.ctx, run)
 	e.logger.Error("automation: run failed", "run_id", run.ID.String(), "error", err)
 }
 
+// skipRun marks a run as skipped. Uses non-transactional write because there is no
+// associated action log to keep atomic (conditions not met).
 func (e *Engine) skipRun(run *WorkflowRun) {
 	now := time.Now()
 	run.Status = StatusSkipped
 	run.FinishedAt = &now
-	e.repo.UpdateRun(e.ctx, nil, run)
+	e.repo.UpdateRunNoTx(e.ctx, run)
 	e.logger.Info("automation: run skipped (conditions not met)", "run_id", run.ID.String())
 }
 

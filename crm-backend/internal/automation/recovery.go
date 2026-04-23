@@ -21,7 +21,7 @@ func RequeueInFlight(ctx context.Context, repo *Repository, jobs chan WorkflowRu
 			run := &runningRuns[i]
 			run.Status = StatusPending
 			run.RecoveryCount++
-			if err := repo.UpdateRun(ctx, nil, run); err != nil {
+			if err := repo.UpdateRunNoTx(ctx, run); err != nil {
 				logger.Error("automation recovery: failed to reset running run",
 					"run_id", run.ID.String(),
 					"error", err,
