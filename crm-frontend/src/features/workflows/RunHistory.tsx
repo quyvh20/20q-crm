@@ -147,9 +147,15 @@ export const RunHistory: React.FC = () => {
                 </div>
               </div>
 
-              {/* Action logs (expanded) */}
+              {/* Expanded detail */}
               {selectedRunId === run.id && (
-                <div className="ml-8 mt-1 space-y-1 mb-3">
+                <div className="ml-8 mt-1 space-y-2 mb-3">
+                  {/* Trigger context accordion — above action logs */}
+                  {run.trigger_context && Object.keys(run.trigger_context).length > 0 && (
+                    <TriggerContextAccordion context={run.trigger_context} />
+                  )}
+
+                  {/* Action logs */}
                   {loadingLogs ? (
                     <div className="py-4 text-center text-gray-600 text-sm">Loading...</div>
                   ) : actionLogs.length === 0 ? (
@@ -231,5 +237,151 @@ function formatDuration(startStr?: string, endStr?: string): string {
   if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
   return `${Math.round(ms / 60000)}min`;
 }
+
+// --- Trigger Context Accordion ---
+
+// Keys to redact — matches backend §8 slog redaction list
+const REDACT_KEYS = new Set([
+  'email', 'phone', 'password', 'token', 'secret', 'api_key',
+]);
+
+function redactValue(obj: unknown): unknown {
+  if (obj === null || obj === undefined) return obj;
+  if (Array.isArray(obj)) return obj.map(redactValue);
+  if (typeof obj === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(obj as Record<string, unknown>)) {
+      if (REDACT_KEYS.has(key.toLowerCase())) {
+        result[key] = '***';
+      } else {
+        result[key] = redactValue(val);
+      }
+    }
+    return result;
+  }
+  return obj;
+}
+
+/** Lightweight syntax highlighting for JSON — returns JSX spans */
+function syntaxHighlightJSON(json: string): React.ReactNode[] {
+  const parts: React.ReactNode[] = [];
+  // Regex to match JSON tokens: strings, numbers, booleans, null
+  const tokenRegex = /("(?:\\.|[^"\\])*")\s*:/g;    // keys
+  const valueRegex = /:\s*("(?:\\.|[^"\\])*")/g;     // string values
+  const numberRegex = /:\s*(-?\d+\.?\d*)/g;           // numbers
+  const boolNullRegex = /:\s*(true|false|null)/g;     // booleans/null
+
+  // Simple line-by-line approach for stability
+  const lines = json.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // Highlight keys, string values, numbers, booleans
+    const highlighted = line
+      .replace(/"([^"\\]|\\.)*"\s*:/g, (match) => {
+        const key = match.slice(0, -1).trim(); // remove trailing :
+        return `<k>${key}</k>:`;
+      })
+      .replace(/:\s*"([^"\\]|\\.)*"/g, (match) => {
+        return `: <s>${match.slice(match.indexOf('"'))}</s>`;
+      })
+      .replace(/:\s*(-?\d+\.?\d*)\b/g, (match, num) => {
+        return `: <n>${num}</n>`;
+      })
+      .replace(/:\s*(true|false|null)\b/g, (_, val) => {
+        return `: <b>${val}</b>`;
+      });
+
+    // Parse our custom tags into spans
+    const elements: React.ReactNode[] = [];
+    let remaining = highlighted;
+    let tagMatch;
+    const tagRegex = /<(k|s|n|b)>(.*?)<\/\1>/g;
+    let lastIndex = 0;
+
+    while ((tagMatch = tagRegex.exec(highlighted)) !== null) {
+      if (tagMatch.index > lastIndex) {
+        elements.push(
+          <span key={`t-${i}-${lastIndex}`} className="text-gray-400">
+            {highlighted.slice(lastIndex, tagMatch.index)}
+          </span>
+        );
+      }
+      const tagType = tagMatch[1];
+      const content = tagMatch[2];
+      const colorClass =
+        tagType === 'k' ? 'text-indigo-400' :
+        tagType === 's' ? 'text-emerald-400' :
+        tagType === 'n' ? 'text-amber-400' :
+        'text-purple-400'; // bool/null
+      elements.push(
+        <span key={`t-${i}-${tagMatch.index}`} className={colorClass}>
+          {content}
+        </span>
+      );
+      lastIndex = tagMatch.index + tagMatch[0].length;
+    }
+
+    if (lastIndex < highlighted.length) {
+      elements.push(
+        <span key={`t-${i}-end`} className="text-gray-400">
+          {highlighted.slice(lastIndex)}
+        </span>
+      );
+    }
+
+    parts.push(
+      <React.Fragment key={`line-${i}`}>
+        {elements.length > 0 ? elements : <span className="text-gray-400">{line}</span>}
+        {i < lines.length - 1 ? '\n' : ''}
+      </React.Fragment>
+    );
+  }
+
+  return parts;
+}
+
+const TriggerContextAccordion: React.FC<{ context: Record<string, unknown> }> = ({ context }) => {
+  const [copied, setCopied] = useState(false);
+
+  const redacted = redactValue(context) as Record<string, unknown>;
+  const jsonString = JSON.stringify(redacted, null, 2);
+
+  const handleCopy = (e: React.MouseEvent) => {
+    e.preventDefault(); // don't toggle accordion
+    e.stopPropagation();
+    navigator.clipboard.writeText(jsonString).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  return (
+    <details className="bg-gray-800/40 border border-gray-700/50 rounded-lg overflow-hidden group/ctx">
+      <summary className="flex items-center gap-2 px-3 py-2.5 cursor-pointer select-none hover:bg-gray-800/60 transition-colors list-none">
+        <span className="text-gray-500 text-xs transition-transform group-open/ctx:rotate-90">▶</span>
+        <span className="text-xs font-medium text-gray-300">Trigger Context</span>
+        <span className="text-xs text-gray-600 ml-1">
+          ({Object.keys(context).length} field{Object.keys(context).length !== 1 ? 's' : ''})
+        </span>
+        <button
+          onClick={handleCopy}
+          className={`ml-auto px-2 py-0.5 rounded text-xs transition-colors ${
+            copied
+              ? 'text-emerald-400 bg-emerald-400/10'
+              : 'text-gray-500 hover:text-white hover:bg-gray-700'
+          }`}
+          title="Copy to clipboard"
+        >
+          {copied ? '✓ Copied' : '📋 Copy'}
+        </button>
+      </summary>
+      <div className="px-3 pb-3">
+        <pre className="text-xs font-mono leading-relaxed overflow-x-auto max-h-80 overflow-y-auto p-3 bg-gray-900/60 rounded-lg border border-gray-700/30">
+          {syntaxHighlightJSON(jsonString)}
+        </pre>
+      </div>
+    </details>
+  );
+};
 
 export default RunHistory;
