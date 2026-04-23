@@ -124,7 +124,7 @@ func (h *Handler) ListWorkflows(c *gin.Context) {
 
 	var items []WorkflowResponse
 	for i := range workflows {
-		items = append(items, ToWorkflowResponse(&workflows[i]))
+		items = append(items, ToWorkflowResponseWithRun(&workflows[i].Workflow, workflows[i].LastRunStatus, workflows[i].LastRunAt))
 	}
 
 	c.JSON(http.StatusOK, gin.H{

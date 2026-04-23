@@ -1,6 +1,8 @@
 package automation
 
 import (
+	"encoding/json"
+
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 )
@@ -34,18 +36,21 @@ type TestRunRequest struct {
 
 // WorkflowResponse is the response for a single workflow.
 type WorkflowResponse struct {
-	ID          uuid.UUID      `json:"id"`
-	OrgID       uuid.UUID      `json:"org_id"`
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	IsActive    bool           `json:"is_active"`
-	Trigger     datatypes.JSON `json:"trigger"`
-	Conditions  datatypes.JSON `json:"conditions"`
-	Actions     datatypes.JSON `json:"actions"`
-	Version     int            `json:"version"`
-	CreatedBy   uuid.UUID      `json:"created_by"`
-	CreatedAt   string         `json:"created_at"`
-	UpdatedAt   string         `json:"updated_at"`
+	ID            uuid.UUID      `json:"id"`
+	OrgID         uuid.UUID      `json:"org_id"`
+	Name          string         `json:"name"`
+	Description   string         `json:"description"`
+	IsActive      bool           `json:"is_active"`
+	Trigger       datatypes.JSON `json:"trigger"`
+	Conditions    datatypes.JSON `json:"conditions"`
+	Actions       datatypes.JSON `json:"actions"`
+	ActionCount   int            `json:"action_count"`
+	Version       int            `json:"version"`
+	CreatedBy     uuid.UUID      `json:"created_by"`
+	CreatedAt     string         `json:"created_at"`
+	UpdatedAt     string         `json:"updated_at"`
+	LastRunStatus *string        `json:"last_run_status"`
+	LastRunAt     *string        `json:"last_run_at"`
 }
 
 // WorkflowListResponse is the response for listing workflows.
@@ -129,6 +134,15 @@ type WebhookInboundResponse struct {
 
 // ToWorkflowResponse converts a Workflow model to a response DTO.
 func ToWorkflowResponse(wf *Workflow) WorkflowResponse {
+	// Count actions from JSON array
+	var actionCount int
+	if wf.Actions != nil {
+		var actions []json.RawMessage
+		if err := json.Unmarshal(wf.Actions, &actions); err == nil {
+			actionCount = len(actions)
+		}
+	}
+
 	return WorkflowResponse{
 		ID:          wf.ID,
 		OrgID:       wf.OrgID,
@@ -138,11 +152,20 @@ func ToWorkflowResponse(wf *Workflow) WorkflowResponse {
 		Trigger:     wf.Trigger,
 		Conditions:  wf.Conditions,
 		Actions:     wf.Actions,
+		ActionCount: actionCount,
 		Version:     wf.Version,
 		CreatedBy:   wf.CreatedBy,
 		CreatedAt:   wf.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		UpdatedAt:   wf.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 	}
+}
+
+// ToWorkflowResponseWithRun converts a Workflow model to a response DTO with last run info.
+func ToWorkflowResponseWithRun(wf *Workflow, lastRunStatus *string, lastRunAt *string) WorkflowResponse {
+	resp := ToWorkflowResponse(wf)
+	resp.LastRunStatus = lastRunStatus
+	resp.LastRunAt = lastRunAt
+	return resp
 }
 
 // ToRunResponse converts a WorkflowRun model to a response DTO.

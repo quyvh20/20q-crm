@@ -107,14 +107,21 @@ func (r *Repository) GetWorkflowByID(ctx context.Context, orgID, id uuid.UUID) (
 }
 
 // ListWorkflows lists workflows for an org with optional filtering and pagination.
-func (r *Repository) ListWorkflows(ctx context.Context, orgID uuid.UUID, activeOnly bool, page, size int) ([]Workflow, int64, error) {
-	query := r.db.WithContext(ctx).Where("org_id = ?", orgID)
-	if activeOnly {
-		query = query.Where("is_active = ?", true)
-	}
+// WorkflowWithLastRun holds a workflow plus its latest run info from the JOIN LATERAL query.
+type WorkflowWithLastRun struct {
+	Workflow
+	LastRunStatus *string `gorm:"column:last_run_status"`
+	LastRunAt     *string `gorm:"column:last_run_at"`
+}
 
+func (r *Repository) ListWorkflows(ctx context.Context, orgID uuid.UUID, activeOnly bool, page, size int) ([]WorkflowWithLastRun, int64, error) {
+	// Count first (simple query)
+	countQuery := r.db.WithContext(ctx).Model(&Workflow{}).Where("org_id = ?", orgID)
+	if activeOnly {
+		countQuery = countQuery.Where("is_active = ?", true)
+	}
 	var total int64
-	if err := query.Model(&Workflow{}).Count(&total).Error; err != nil {
+	if err := countQuery.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
@@ -126,11 +133,31 @@ func (r *Repository) ListWorkflows(ctx context.Context, orgID uuid.UUID, activeO
 	}
 	offset := (page - 1) * size
 
-	var workflows []Workflow
-	err := query.Order("created_at DESC").
-		Offset(offset).Limit(size).
-		Find(&workflows).Error
-	return workflows, total, err
+	// Main query with LEFT JOIN LATERAL for latest run
+	activeFilter := ""
+	if activeOnly {
+		activeFilter = "AND w.is_active = true"
+	}
+
+	query := `
+		SELECT w.*,
+			lr.status AS last_run_status,
+			lr.created_at AS last_run_at
+		FROM automation_workflows w
+		LEFT JOIN LATERAL (
+			SELECT wr.status, wr.created_at
+			FROM automation_workflow_runs wr
+			WHERE wr.workflow_id = w.id
+			ORDER BY wr.created_at DESC
+			LIMIT 1
+		) lr ON true
+		WHERE w.org_id = ? AND w.deleted_at IS NULL ` + activeFilter + `
+		ORDER BY w.created_at DESC
+		OFFSET ? LIMIT ?`
+
+	var results []WorkflowWithLastRun
+	err := r.db.WithContext(ctx).Raw(query, orgID, offset, size).Scan(&results).Error
+	return results, total, err
 }
 
 // SoftDeleteWorkflow soft-deletes a workflow and deactivates it.

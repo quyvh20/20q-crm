@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getWorkflows, deleteWorkflow, toggleWorkflow } from './api';
 import type { Workflow } from './types';
-import { TRIGGER_LABELS } from './types';
+import { TRIGGER_LABELS, STATUS_COLORS } from './types';
 
 export const WorkflowList: React.FC = () => {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
@@ -10,7 +10,13 @@ export const WorkflowList: React.FC = () => {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [filterActive, setFilterActive] = useState<boolean | undefined>(undefined);
+  const [toast, setToast] = useState<{ message: string; type: 'error' | 'success' } | null>(null);
   const navigate = useNavigate();
+
+  const showToast = (message: string, type: 'error' | 'success' = 'error') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  };
 
   const fetchWorkflows = useCallback(async () => {
     setLoading(true);
@@ -29,12 +35,21 @@ export const WorkflowList: React.FC = () => {
     fetchWorkflows();
   }, [fetchWorkflows]);
 
+  // Optimistic toggle — flip UI immediately, revert on error
   const handleToggle = async (wf: Workflow) => {
+    const previousState = wf.is_active;
+    // Optimistic update
+    setWorkflows((prev) =>
+      prev.map((w) => (w.id === wf.id ? { ...w, is_active: !previousState } : w))
+    );
     try {
-      const updated = await toggleWorkflow(wf.id);
-      setWorkflows((prev) => prev.map((w) => (w.id === wf.id ? updated : w)));
+      await toggleWorkflow(wf.id);
     } catch (e: any) {
-      alert(e.message);
+      // Revert on error
+      setWorkflows((prev) =>
+        prev.map((w) => (w.id === wf.id ? { ...w, is_active: previousState } : w))
+      );
+      showToast(e.message || 'Failed to toggle workflow', 'error');
     }
   };
 
@@ -44,14 +59,44 @@ export const WorkflowList: React.FC = () => {
       await deleteWorkflow(wf.id);
       setWorkflows((prev) => prev.filter((w) => w.id !== wf.id));
     } catch (e: any) {
-      alert(e.message);
+      showToast(e.message || 'Failed to delete workflow', 'error');
     }
   };
 
   const totalPages = Math.ceil(total / 20);
 
+  const statusLabel = (status: string | null) => {
+    if (!status) return null;
+    const color = STATUS_COLORS[status] || '#9CA3AF';
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 text-xs font-medium"
+        style={{ color }}
+      >
+        <span
+          className="w-1.5 h-1.5 rounded-full"
+          style={{ backgroundColor: color }}
+        />
+        {status.charAt(0).toUpperCase() + status.slice(1)}
+      </span>
+    );
+  };
+
   return (
     <div className="max-w-5xl mx-auto py-8 px-4">
+      {/* Toast notification */}
+      {toast && (
+        <div
+          className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-xl shadow-lg text-sm font-medium transition-all animate-in slide-in-from-top-2 ${
+            toast.type === 'error'
+              ? 'bg-red-500/90 text-white'
+              : 'bg-emerald-500/90 text-white'
+          }`}
+        >
+          {toast.message}
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div>
@@ -129,11 +174,25 @@ export const WorkflowList: React.FC = () => {
                       ⚡ {TRIGGER_LABELS[wf.trigger?.type] || 'Unknown'}
                     </span>
                     <span className="text-xs text-gray-500">
+                      {wf.action_count || wf.actions?.length || 0} action{(wf.action_count || wf.actions?.length || 0) !== 1 ? 's' : ''}
+                    </span>
+                    <span className="text-xs text-gray-500">
                       v{wf.version}
                     </span>
-                    <span className="text-xs text-gray-600">
-                      {new Date(wf.updated_at).toLocaleDateString()}
-                    </span>
+                    {wf.last_run_status && (
+                      <>
+                        <span className="text-xs text-gray-700">|</span>
+                        {statusLabel(wf.last_run_status)}
+                        {wf.last_run_at && (
+                          <span className="text-xs text-gray-600">
+                            {new Date(wf.last_run_at).toLocaleDateString()}
+                          </span>
+                        )}
+                      </>
+                    )}
+                    {!wf.last_run_status && (
+                      <span className="text-xs text-gray-600 italic">No runs</span>
+                    )}
                   </div>
                 </div>
 

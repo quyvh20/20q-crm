@@ -35,10 +35,13 @@ export interface Workflow {
   trigger: TriggerSpec;
   conditions: ConditionGroup | null;
   actions: ActionSpec[];
+  action_count: number;
   version: number;
   created_by: string;
   created_at: string;
   updated_at: string;
+  last_run_status: string | null;
+  last_run_at: string | null;
 }
 
 export interface WorkflowRun {
