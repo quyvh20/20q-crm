@@ -284,6 +284,18 @@ func TestIntegration_KillAndResume(t *testing.T) {
 		"total: action[0]×1 + action[1]×2 + action[2]×1 = 4")
 	assert.Equal(t, []int{0, 1, 1, 2}, executor.getCalls())
 
+	// Explicit: action[0] must appear exactly once — it was committed in
+	// Phase 1 and must NOT be re-executed during the Phase 2 resume.
+	calls := executor.getCalls()
+	action0Count := 0
+	for _, idx := range calls {
+		if idx == 0 {
+			action0Count++
+		}
+	}
+	assert.Equal(t, 1, action0Count,
+		"completed action[0] must NOT be re-executed on resume (idempotency)")
+
 	logs, err := repo.GetActionLogsByRunID(context.Background(), run.ID)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, len(logs), 3)
