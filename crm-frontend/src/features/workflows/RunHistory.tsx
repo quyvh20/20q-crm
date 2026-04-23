@@ -302,11 +302,6 @@ function redactValue(obj: unknown): unknown {
 /** Lightweight syntax highlighting for JSON — returns JSX spans */
 function syntaxHighlightJSON(json: string): React.ReactNode[] {
   const parts: React.ReactNode[] = [];
-  // Regex to match JSON tokens: strings, numbers, booleans, null
-  const tokenRegex = /("(?:\\.|[^"\\])*")\s*:/g;    // keys
-  const valueRegex = /:\s*("(?:\\.|[^"\\])*")/g;     // string values
-  const numberRegex = /:\s*(-?\d+\.?\d*)/g;           // numbers
-  const boolNullRegex = /:\s*(true|false|null)/g;     // booleans/null
 
   // Simple line-by-line approach for stability
   const lines = json.split('\n');
@@ -321,7 +316,7 @@ function syntaxHighlightJSON(json: string): React.ReactNode[] {
       .replace(/:\s*"([^"\\]|\\.)*"/g, (match) => {
         return `: <s>${match.slice(match.indexOf('"'))}</s>`;
       })
-      .replace(/:\s*(-?\d+\.?\d*)\b/g, (match, num) => {
+      .replace(/:\s*(-?\d+\.?\d*)\b/g, (_match, num) => {
         return `: <n>${num}</n>`;
       })
       .replace(/:\s*(true|false|null)\b/g, (_, val) => {
@@ -330,7 +325,6 @@ function syntaxHighlightJSON(json: string): React.ReactNode[] {
 
     // Parse our custom tags into spans
     const elements: React.ReactNode[] = [];
-    let remaining = highlighted;
     let tagMatch;
     const tagRegex = /<(k|s|n|b)>(.*?)<\/\1>/g;
     let lastIndex = 0;
