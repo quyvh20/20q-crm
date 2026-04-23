@@ -26,10 +26,11 @@ type Engine struct {
 	cancel    context.CancelFunc
 	executors map[string]ActionExecutor
 	scheduler *Scheduler
-	// testPostActionWriteHook is a test-only callback invoked after action log + run
-	// writes inside commitActionAndRun, but before tx.Commit(). Set to a function
-	// that panics to simulate a crash between DB writes and commit.
-	testPostActionWriteHook func()
+	// PostActionLogHook is called inside commitActionAndRun after both DB writes
+	// (UpdateActionLogTx + UpdateRunTx) but before tx.Commit(). Exported so tests
+	// can inject a panic to simulate a crash and verify that uncommitted writes
+	// are rolled back atomically. Must be nil in production.
+	PostActionLogHook func()
 }
 
 // WorkflowRunJob is pushed to the jobs channel to signal a run needs processing.
@@ -261,7 +262,7 @@ func (e *Engine) processRun(runID uuid.UUID) {
 		now := time.Now()
 		run.Status = StatusRunning
 		run.StartedAt = &now
-		if err := e.repo.UpdateRun(e.ctx, tx, run); err != nil {
+		if err := e.repo.UpdateRunTx(e.ctx, tx, run); err != nil {
 			tx.Rollback()
 			e.logger.Error("automation: update run status", "error", err)
 			return
@@ -311,7 +312,7 @@ func (e *Engine) processRun(runID uuid.UUID) {
 
 		action := actions[i]
 
-		// Create pre-execution action log (informational, non-transactional).
+		// Create pre-execution action log (standalone tx, informational).
 		// Loss on crash is acceptable — the action hasn't executed yet.
 		actionLog := &WorkflowActionLog{
 			ID:         uuid.New(),
@@ -325,7 +326,7 @@ func (e *Engine) processRun(runID uuid.UUID) {
 
 		inputJSON, _ := json.Marshal(action.Params)
 		actionLog.Input = datatypes.JSON(inputJSON)
-		e.repo.CreateActionLogNoTx(e.ctx, actionLog)
+		e.repo.CreateActionLogStandalone(e.ctx, actionLog)
 
 		startTime := time.Now()
 		output, execErr := e.executeAction(e.ctx, run, action, evalCtx)
@@ -430,19 +431,20 @@ func (e *Engine) processRun(runID uuid.UUID) {
 // is not updated, which would cause duplicate action execution on crash recovery (§13.3).
 func (e *Engine) commitActionAndRun(actionLog *WorkflowActionLog, run *WorkflowRun) error {
 	tx := e.repo.BeginTx(e.ctx)
-	if err := e.repo.UpdateActionLog(e.ctx, tx, actionLog); err != nil {
+	if err := e.repo.UpdateActionLogTx(e.ctx, tx, actionLog); err != nil {
 		tx.Rollback()
 		return fmt.Errorf("update action log: %w", err)
 	}
-	if err := e.repo.UpdateRun(e.ctx, tx, run); err != nil {
+	if err := e.repo.UpdateRunTx(e.ctx, tx, run); err != nil {
 		tx.Rollback()
 		return fmt.Errorf("update run: %w", err)
 	}
 
-	// Test-only fault injection: if set, called after writes but before commit.
-	// Used to simulate crashes between DB writes and tx commit.
-	if e.testPostActionWriteHook != nil {
-		e.testPostActionWriteHook()
+	// Fault injection point: PostActionLogHook fires after both writes land in the
+	// transaction buffer but before Commit. A panic here proves the tx rolls back
+	// both writes atomically — exactly the §13.3 crash scenario.
+	if e.PostActionLogHook != nil {
+		e.PostActionLogHook()
 	}
 
 	if err := tx.Commit().Error; err != nil {
@@ -481,24 +483,24 @@ func (e *Engine) buildEvalContext(run *WorkflowRun) EvalContext {
 	return ctx
 }
 
-// failRun marks a run as failed. Uses non-transactional write because there is no
+// failRun marks a run as failed. Uses standalone tx because there is no
 // associated action log to keep atomic (version-not-found, parse error, etc.).
 func (e *Engine) failRun(run *WorkflowRun, err error) {
 	now := time.Now()
 	run.Status = StatusFailed
 	run.LastError = err.Error()
 	run.FinishedAt = &now
-	e.repo.UpdateRunNoTx(e.ctx, run)
+	e.repo.UpdateRunStandalone(e.ctx, run)
 	e.logger.Error("automation: run failed", "run_id", run.ID.String(), "error", err)
 }
 
-// skipRun marks a run as skipped. Uses non-transactional write because there is no
+// skipRun marks a run as skipped. Uses standalone tx because there is no
 // associated action log to keep atomic (conditions not met).
 func (e *Engine) skipRun(run *WorkflowRun) {
 	now := time.Now()
 	run.Status = StatusSkipped
 	run.FinishedAt = &now
-	e.repo.UpdateRunNoTx(e.ctx, run)
+	e.repo.UpdateRunStandalone(e.ctx, run)
 	e.logger.Info("automation: run skipped (conditions not met)", "run_id", run.ID.String())
 }
 

@@ -220,19 +220,22 @@ func (r *Repository) LockAndGetRun(ctx context.Context, tx *gorm.DB, runID uuid.
 	return &run, nil
 }
 
-// UpdateRun updates a workflow run within a transaction. tx must not be nil.
-func (r *Repository) UpdateRun(ctx context.Context, tx *gorm.DB, run *WorkflowRun) error {
+// UpdateRunTx updates a workflow run within a caller-provided transaction.
+// tx must not be nil — use UpdateRunStandalone for self-contained writes.
+func (r *Repository) UpdateRunTx(ctx context.Context, tx *gorm.DB, run *WorkflowRun) error {
 	if tx == nil {
 		return ErrNilTransaction
 	}
 	return tx.WithContext(ctx).Save(run).Error
 }
 
-// UpdateRunNoTx updates a workflow run without a transaction.
-// Use only for terminal/idempotent writes where no action log atomicity is needed
+// UpdateRunStandalone updates a workflow run in its own transaction.
+// Use for terminal/idempotent writes where no action log atomicity is needed
 // (e.g. failRun, skipRun, crash recovery reset).
-func (r *Repository) UpdateRunNoTx(ctx context.Context, run *WorkflowRun) error {
-	return r.db.WithContext(ctx).Save(run).Error
+func (r *Repository) UpdateRunStandalone(ctx context.Context, run *WorkflowRun) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return tx.Save(run).Error
+	})
 }
 
 // ListRunsByWorkflow returns paginated runs for a workflow.
@@ -307,8 +310,9 @@ func (r *Repository) SweepRetries(ctx context.Context) ([]uuid.UUID, error) {
 
 // --- WorkflowActionLog ---
 
-// CreateActionLog inserts an action log entry within a transaction. tx must not be nil.
-func (r *Repository) CreateActionLog(ctx context.Context, tx *gorm.DB, log *WorkflowActionLog) error {
+// CreateActionLogTx inserts an action log entry within a caller-provided transaction.
+// tx must not be nil — use CreateActionLogStandalone for self-contained writes.
+func (r *Repository) CreateActionLogTx(ctx context.Context, tx *gorm.DB, log *WorkflowActionLog) error {
 	if tx == nil {
 		return ErrNilTransaction
 	}
@@ -318,18 +322,21 @@ func (r *Repository) CreateActionLog(ctx context.Context, tx *gorm.DB, log *Work
 	return tx.WithContext(ctx).Create(log).Error
 }
 
-// CreateActionLogNoTx inserts an action log entry without a transaction.
-// Use only for pre-execution informational logs (status=running) where
+// CreateActionLogStandalone inserts an action log entry in its own transaction.
+// Use for pre-execution informational logs (status=running) where
 // loss on crash is acceptable.
-func (r *Repository) CreateActionLogNoTx(ctx context.Context, log *WorkflowActionLog) error {
+func (r *Repository) CreateActionLogStandalone(ctx context.Context, log *WorkflowActionLog) error {
 	if log.ID == uuid.Nil {
 		log.ID = uuid.New()
 	}
-	return r.db.WithContext(ctx).Create(log).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return tx.Create(log).Error
+	})
 }
 
-// UpdateActionLog updates an existing action log entry within a transaction. tx must not be nil.
-func (r *Repository) UpdateActionLog(ctx context.Context, tx *gorm.DB, log *WorkflowActionLog) error {
+// UpdateActionLogTx updates an existing action log entry within a caller-provided transaction.
+// tx must not be nil.
+func (r *Repository) UpdateActionLogTx(ctx context.Context, tx *gorm.DB, log *WorkflowActionLog) error {
 	if tx == nil {
 		return ErrNilTransaction
 	}
