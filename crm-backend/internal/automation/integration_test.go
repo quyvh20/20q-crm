@@ -318,10 +318,10 @@ func TestIntegration_CreateWorkflow_HappyAndValidation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 
-	// Simulate auth middleware by injecting org_id + user_id + role
+	// Simulate auth middleware by injecting org_id + user_id as uuid.UUID (matching real middleware)
 	router.Use(func(c *gin.Context) {
-		c.Set("org_id", orgID.String())
-		c.Set("user_id", userID.String())
+		c.Set("org_id", orgID)
+		c.Set("user_id", userID)
 		c.Set("role", "admin")
 		c.Next()
 	})
@@ -343,11 +343,12 @@ func TestIntegration_CreateWorkflow_HappyAndValidation(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusCreated, w.Code, "expected 201 Created")
+	assert.Equal(t, http.StatusCreated, w.Code, "expected 201 Created, body: %s", w.Body.String())
 
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	data := resp["data"].(map[string]any)
+	data, ok := resp["data"].(map[string]any)
+	require.True(t, ok, "response must have 'data' object, got: %s", w.Body.String())
 	assert.Equal(t, "Test Workflow", data["name"])
 	assert.NotEmpty(t, data["id"])
 
@@ -355,12 +356,14 @@ func TestIntegration_CreateWorkflow_HappyAndValidation(t *testing.T) {
 	w2 := httptest.NewRecorder()
 	req2 := httptest.NewRequest("GET", "/api/workflows?page=1&size=20", nil)
 	router.ServeHTTP(w2, req2)
-	assert.Equal(t, http.StatusOK, w2.Code)
+	assert.Equal(t, http.StatusOK, w2.Code, "list body: %s", w2.Body.String())
 
 	var listResp map[string]any
 	require.NoError(t, json.Unmarshal(w2.Body.Bytes(), &listResp))
-	listData := listResp["data"].(map[string]any)
-	workflows := listData["workflows"].([]any)
+	listData, ok := listResp["data"].(map[string]any)
+	require.True(t, ok, "list response must have 'data' object, got: %s", w2.Body.String())
+	workflows, ok := listData["workflows"].([]any)
+	require.True(t, ok, "list data must have 'workflows' array")
 	assert.Len(t, workflows, 1)
 	wfResp := workflows[0].(map[string]any)
 	assert.Equal(t, float64(1), wfResp["action_count"])
