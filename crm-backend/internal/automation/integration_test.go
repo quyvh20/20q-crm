@@ -657,3 +657,287 @@ func TestIntegration_WebhookInbound_E2E(t *testing.T) {
 	assert.Equal(t, StatusCompleted, finalRun.Status)
 	assert.GreaterOrEqual(t, executor.getCallCount(), int64(1))
 }
+
+// ============================================================
+// Integration Test 6: Full Pipeline
+// contact_created → if tags contains vip → send_email → delay → create_task
+// ============================================================
+
+// recordingEmailExecutor captures the email params for assertion.
+type recordingEmailExecutor struct {
+	mu     sync.Mutex
+	called bool
+	to     string
+}
+
+func (e *recordingEmailExecutor) Execute(ctx context.Context, run *WorkflowRun, action ActionSpec, evalCtx EvalContext) (any, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.called = true
+	e.to = getStringParam(action.Params, "to", evalCtx)
+	return map[string]any{"status": "sent", "to": e.to}, nil
+}
+
+func TestIntegration_FullPipeline_VIPContact(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	orgID := uuid.New()
+	contactID := uuid.New()
+	repo := NewRepository(db)
+
+	// Create the tasks table (TaskExecutor writes directly to it)
+	db.Exec(`CREATE TABLE IF NOT EXISTS tasks (
+		id UUID PRIMARY KEY,
+		org_id UUID NOT NULL,
+		title TEXT NOT NULL,
+		contact_id UUID,
+		deal_id UUID,
+		assigned_to UUID,
+		due_at TIMESTAMPTZ,
+		priority TEXT DEFAULT 'medium',
+		created_at TIMESTAMPTZ DEFAULT NOW(),
+		updated_at TIMESTAMPTZ DEFAULT NOW()
+	)`)
+
+	// --- Build the workflow ---
+	// Trigger: contact_created
+	// Conditions: contact.tags contains "vip"
+	// Actions: send_email → delay 1s → create_task
+
+	trigger, _ := json.Marshal(TriggerSpec{Type: TriggerContactCreated})
+
+	conditions, _ := json.Marshal(ConditionGroup{
+		Op: "AND",
+		Rules: []ConditionRule{{
+			Field:    "contact.tags",
+			Operator: "contains",
+			Value:    "vip",
+		}},
+	})
+
+	actions, _ := json.Marshal([]ActionSpec{
+		{
+			ID:   "email_vip",
+			Type: ActionSendEmail,
+			Params: map[string]any{
+				"to":        "{{contact.email}}",
+				"subject":   "Welcome VIP!",
+				"body_html": "<h1>Hello {{contact.first_name}}</h1>",
+			},
+		},
+		{
+			ID:   "delay_1s",
+			Type: ActionDelay,
+			Params: map[string]any{
+				"duration_sec": float64(1),
+			},
+		},
+		{
+			ID:   "create_followup",
+			Type: ActionCreateTask,
+			Params: map[string]any{
+				"title":      "Follow up with VIP: {{contact.first_name}}",
+				"priority":   "high",
+				"due_in_days": float64(3),
+			},
+		},
+	})
+
+	wf := &Workflow{
+		ID:         uuid.New(),
+		OrgID:      orgID,
+		Name:       "VIP Welcome Pipeline",
+		IsActive:   true,
+		Trigger:    datatypes.JSON(trigger),
+		Conditions: datatypes.JSON(conditions),
+		Actions:    datatypes.JSON(actions),
+		Version:    1,
+		CreatedBy:  uuid.New(),
+	}
+	require.NoError(t, db.Create(wf).Error)
+
+	ver := &WorkflowVersion{
+		ID:         uuid.New(),
+		WorkflowID: wf.ID,
+		Version:    1,
+		Trigger:    wf.Trigger,
+		Conditions: wf.Conditions,
+		Actions:    wf.Actions,
+		CreatedAt:  time.Now(),
+	}
+	require.NoError(t, db.Create(ver).Error)
+
+	// --- Set up executors ---
+	emailExec := &recordingEmailExecutor{}
+	taskExec := NewTaskExecutor(db) // real executor, writes to tasks table
+	delayExec := NewDelayExecutor() // real executor, actually waits
+
+	engine := makeEngine(db, map[string]ActionExecutor{
+		ActionSendEmail:  emailExec,
+		ActionDelay:      delayExec,
+		ActionCreateTask: taskExec,
+	})
+	defer engine.cancel()
+
+	// --- Create the trigger context (VIP contact) ---
+	triggerCtx, _ := json.Marshal(map[string]any{
+		"entity_id": contactID.String(),
+		"contact": map[string]any{
+			"id":         contactID.String(),
+			"email":      "vip@example.com",
+			"first_name": "Jane",
+			"last_name":  "Doe",
+			"tags":       []any{"enterprise", "vip", "priority"},
+		},
+		"trigger": map[string]any{
+			"type":   TriggerContactCreated,
+			"source": "webhook_inbound",
+		},
+	})
+
+	run := &WorkflowRun{
+		ID:              uuid.New(),
+		WorkflowID:      wf.ID,
+		WorkflowVersion: 1,
+		OrgID:           orgID,
+		Status:          StatusPending,
+		TriggerContext:  datatypes.JSON(triggerCtx),
+		IdempotencyKey:  fmt.Sprintf("vip-test-%s", uuid.New().String()),
+	}
+	inserted, err := repo.CreateRun(context.Background(), run)
+	require.NoError(t, err)
+	require.True(t, inserted)
+
+	// --- Execute the run ---
+	startTime := time.Now()
+	engine.processRun(run.ID)
+	elapsed := time.Since(startTime)
+
+	// --- Verify: run completed ---
+	finalRun, err := repo.GetRunByID(context.Background(), run.ID)
+	require.NoError(t, err)
+	assert.Equal(t, StatusCompleted, finalRun.Status, "run must complete")
+	assert.NotNil(t, finalRun.FinishedAt, "FinishedAt must be set")
+	assert.Equal(t, 3, finalRun.CurrentActionIdx, "all 3 actions executed")
+
+	// --- Verify: email sent with correct address ---
+	emailExec.mu.Lock()
+	assert.True(t, emailExec.called, "send_email executor must be called")
+	assert.Equal(t, "vip@example.com", emailExec.to,
+		"email 'to' must resolve {{contact.email}} to vip@example.com")
+	emailExec.mu.Unlock()
+
+	// --- Verify: delay was observed (≥1s) ---
+	assert.GreaterOrEqual(t, elapsed, 1*time.Second,
+		"delay action must wait at least 1s")
+
+	// --- Verify: task was created in DB ---
+	var taskCount int64
+	db.Raw("SELECT COUNT(*) FROM tasks WHERE org_id = ?", orgID).Scan(&taskCount)
+	assert.Equal(t, int64(1), taskCount, "create_task must insert exactly one task row")
+
+	var taskTitle string
+	db.Raw("SELECT title FROM tasks WHERE org_id = ?", orgID).Scan(&taskTitle)
+	assert.Equal(t, "Follow up with VIP: Jane", taskTitle,
+		"task title must resolve {{contact.first_name}}")
+
+	// --- Verify: exactly 3 action logs ---
+	logs, err := repo.GetActionLogsByRunID(context.Background(), run.ID)
+	require.NoError(t, err)
+	assert.Len(t, logs, 3, "must have exactly 3 action logs")
+
+	// Verify log types in order
+	logTypes := make([]string, len(logs))
+	for i, l := range logs {
+		logTypes[i] = l.ActionType
+	}
+	assert.Equal(t, []string{ActionSendEmail, ActionDelay, ActionCreateTask}, logTypes,
+		"action log types must match pipeline order")
+
+	// All logs should be success
+	for _, l := range logs {
+		assert.Equal(t, LogStatusSuccess, l.Status,
+			"action log %s must be success", l.ActionType)
+	}
+}
+
+// ============================================================
+// Integration Test 7: Condition rejection (non-VIP contact skips)
+// ============================================================
+
+func TestIntegration_FullPipeline_NonVIP_Skipped(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	orgID := uuid.New()
+	repo := NewRepository(db)
+
+	// Same workflow as above
+	trigger, _ := json.Marshal(TriggerSpec{Type: TriggerContactCreated})
+	conditions, _ := json.Marshal(ConditionGroup{
+		Op: "AND",
+		Rules: []ConditionRule{{
+			Field:    "contact.tags",
+			Operator: "contains",
+			Value:    "vip",
+		}},
+	})
+	actions, _ := json.Marshal([]ActionSpec{
+		{ID: "a1", Type: ActionSendEmail, Params: map[string]any{"to": "x@y.com"}},
+	})
+
+	wf := &Workflow{
+		ID: uuid.New(), OrgID: orgID, Name: "VIP-only",
+		IsActive: true, Trigger: datatypes.JSON(trigger),
+		Conditions: datatypes.JSON(conditions), Actions: datatypes.JSON(actions),
+		Version: 1, CreatedBy: uuid.New(),
+	}
+	require.NoError(t, db.Create(wf).Error)
+	ver := &WorkflowVersion{
+		ID: uuid.New(), WorkflowID: wf.ID, Version: 1,
+		Trigger: wf.Trigger, Conditions: wf.Conditions,
+		Actions: wf.Actions, CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.Create(ver).Error)
+
+	executor := &countingExecutor{}
+	engine := makeEngine(db, map[string]ActionExecutor{ActionSendEmail: executor})
+	defer engine.cancel()
+
+	// Non-VIP contact — tags do NOT contain "vip"
+	triggerCtx, _ := json.Marshal(map[string]any{
+		"contact": map[string]any{
+			"id":   uuid.New().String(),
+			"tags": []any{"regular", "newsletter"},
+		},
+		"trigger": map[string]any{"type": TriggerContactCreated},
+	})
+
+	run := &WorkflowRun{
+		ID: uuid.New(), WorkflowID: wf.ID, WorkflowVersion: 1,
+		OrgID: orgID, Status: StatusPending,
+		TriggerContext: datatypes.JSON(triggerCtx),
+		IdempotencyKey: fmt.Sprintf("nonvip-%s", uuid.New().String()),
+	}
+	inserted, err := repo.CreateRun(context.Background(), run)
+	require.NoError(t, err)
+	require.True(t, inserted)
+
+	engine.processRun(run.ID)
+
+	finalRun, err := repo.GetRunByID(context.Background(), run.ID)
+	require.NoError(t, err)
+	assert.Equal(t, StatusSkipped, finalRun.Status,
+		"run must be SKIPPED when conditions not met")
+	assert.Equal(t, int64(0), executor.getCallCount(),
+		"no actions should execute when conditions fail")
+}
