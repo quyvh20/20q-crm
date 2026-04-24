@@ -50,6 +50,7 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerF
 	{
 		workflows.POST("", requireRole("admin", "manager"), h.CreateWorkflow)
 		workflows.GET("", h.ListWorkflows)
+		workflows.GET("/schema", h.GetWorkflowSchema)
 		workflows.GET("/:id", h.GetWorkflow)
 		workflows.PUT("/:id", requireRole("admin", "manager"), h.UpdateWorkflow)
 		workflows.DELETE("/:id", requireRole("admin", "manager"), h.DeleteWorkflow)
@@ -594,6 +595,190 @@ func (h *Handler) getContext(c *gin.Context) (uuid.UUID, uuid.UUID) {
 	userID, _ := userIDVal.(uuid.UUID)
 
 	return orgID, userID
+}
+
+// --- Workflow Schema (for builder field pickers) ---
+
+// GetWorkflowSchema handles GET /api/workflows/schema.
+// Returns all available fields, stages, tags, users, and custom objects
+// so the frontend builder can render smart pickers instead of raw text inputs.
+func (h *Handler) GetWorkflowSchema(c *gin.Context) {
+	orgID, _ := h.getContext(c)
+	if orgID == uuid.Nil {
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	// 1. Built-in entity fields
+	entities := []SchemaEntity{
+		{
+			Key: "contact", Label: "Contact", Icon: "👤",
+			Fields: []SchemaField{
+				{Path: "contact.first_name", Label: "First Name", Type: "string"},
+				{Path: "contact.last_name", Label: "Last Name", Type: "string"},
+				{Path: "contact.email", Label: "Email", Type: "string"},
+				{Path: "contact.phone", Label: "Phone", Type: "string"},
+				{Path: "contact.owner_id", Label: "Owner", Type: "user", PickerType: "user"},
+				{Path: "contact.tags", Label: "Tags", Type: "array", PickerType: "tag"},
+				{Path: "contact.company.name", Label: "Company Name", Type: "string"},
+				{Path: "contact.id", Label: "Contact ID", Type: "string"},
+			},
+		},
+		{
+			Key: "deal", Label: "Deal", Icon: "💰",
+			Fields: []SchemaField{
+				{Path: "deal.title", Label: "Title", Type: "string"},
+				{Path: "deal.value", Label: "Value", Type: "number"},
+				{Path: "deal.stage", Label: "Stage", Type: "string", PickerType: "stage"},
+				{Path: "deal.probability", Label: "Probability (%)", Type: "number"},
+				{Path: "deal.is_won", Label: "Is Won", Type: "boolean"},
+				{Path: "deal.is_lost", Label: "Is Lost", Type: "boolean"},
+				{Path: "deal.owner_id", Label: "Owner", Type: "user", PickerType: "user"},
+				{Path: "deal.id", Label: "Deal ID", Type: "string"},
+			},
+		},
+		{
+			Key: "trigger", Label: "Trigger Event", Icon: "⚡",
+			Fields: []SchemaField{
+				{Path: "trigger.type", Label: "Event Type", Type: "string"},
+				{Path: "trigger.from_stage", Label: "Previous Stage", Type: "string", PickerType: "stage"},
+				{Path: "trigger.to_stage", Label: "New Stage", Type: "string", PickerType: "stage"},
+			},
+		},
+	}
+
+	// 2. Custom field definitions from org_settings
+	type orgSettingsRow struct {
+		CustomFieldDefs json.RawMessage `gorm:"column:custom_field_defs"`
+	}
+	var settings orgSettingsRow
+	if err := h.db.WithContext(ctx).Table("org_settings").Where("org_id = ?", orgID).First(&settings).Error; err == nil && len(settings.CustomFieldDefs) > 2 {
+		var defs []struct {
+			Key        string   `json:"key"`
+			Label      string   `json:"label"`
+			Type       string   `json:"type"`
+			EntityType string   `json:"entity_type"`
+			Options    []string `json:"options"`
+		}
+		if json.Unmarshal(settings.CustomFieldDefs, &defs) == nil {
+			for _, d := range defs {
+				field := SchemaField{
+					Path:  d.EntityType + ".custom_fields." + d.Key,
+					Label: d.Label,
+					Type:  d.Type,
+				}
+				if d.Type == "select" {
+					field.Options = d.Options
+				}
+				// Append to the matching entity
+				for i := range entities {
+					if entities[i].Key == d.EntityType {
+						entities[i].Fields = append(entities[i].Fields, field)
+					}
+				}
+			}
+		}
+	}
+
+	// 3. Custom object definitions
+	var customObjects []SchemaEntity
+	type customObjRow struct {
+		Slug   string          `gorm:"column:slug"`
+		Label  string          `gorm:"column:label"`
+		Icon   string          `gorm:"column:icon"`
+		Fields json.RawMessage `gorm:"column:fields"`
+	}
+	var objRows []customObjRow
+	if err := h.db.WithContext(ctx).Table("custom_object_defs").Where("org_id = ? AND deleted_at IS NULL", orgID).Find(&objRows).Error; err == nil {
+		for _, obj := range objRows {
+			entity := SchemaEntity{
+				Key:   obj.Slug,
+				Label: obj.Label,
+				Icon:  obj.Icon,
+			}
+			var fieldDefs []struct {
+				Key     string   `json:"key"`
+				Label   string   `json:"label"`
+				Type    string   `json:"type"`
+				Options []string `json:"options"`
+			}
+			if json.Unmarshal(obj.Fields, &fieldDefs) == nil {
+				for _, f := range fieldDefs {
+					sf := SchemaField{
+						Path:  obj.Slug + "." + f.Key,
+						Label: f.Label,
+						Type:  f.Type,
+					}
+					if f.Type == "select" {
+						sf.Options = f.Options
+					}
+					entity.Fields = append(entity.Fields, sf)
+				}
+			}
+			customObjects = append(customObjects, entity)
+		}
+	}
+
+	// 4. Pipeline stages
+	var stages []SchemaStage
+	type stageRow struct {
+		ID    uuid.UUID `gorm:"column:id"`
+		Name  string    `gorm:"column:name"`
+		Color string    `gorm:"column:color"`
+	}
+	var stageRows []stageRow
+	if err := h.db.WithContext(ctx).Table("pipeline_stages").Where("org_id = ? AND deleted_at IS NULL", orgID).Order("position ASC").Find(&stageRows).Error; err == nil {
+		for _, s := range stageRows {
+			stages = append(stages, SchemaStage{ID: s.ID.String(), Name: s.Name, Color: s.Color})
+		}
+	}
+
+	// 5. Tags
+	var tags []SchemaTag
+	type tagRow struct {
+		ID    uuid.UUID `gorm:"column:id"`
+		Name  string    `gorm:"column:name"`
+		Color string    `gorm:"column:color"`
+	}
+	var tagRows []tagRow
+	if err := h.db.WithContext(ctx).Table("tags").Where("org_id = ? AND deleted_at IS NULL", orgID).Order("name ASC").Find(&tagRows).Error; err == nil {
+		for _, t := range tagRows {
+			tags = append(tags, SchemaTag{ID: t.ID.String(), Name: t.Name, Color: t.Color})
+		}
+	}
+
+	// 6. Org members
+	var users []SchemaUser
+	type userRow struct {
+		ID        uuid.UUID `gorm:"column:id"`
+		FirstName string    `gorm:"column:first_name"`
+		LastName  string    `gorm:"column:last_name"`
+		Email     string    `gorm:"column:email"`
+	}
+	var userRows []userRow
+	if err := h.db.WithContext(ctx).Table("users").
+		Joins("JOIN org_users ON org_users.user_id = users.id").
+		Where("org_users.org_id = ? AND org_users.status = 'active' AND org_users.deleted_at IS NULL", orgID).
+		Select("users.id, users.first_name, users.last_name, users.email").
+		Order("users.first_name ASC").
+		Find(&userRows).Error; err == nil {
+		for _, u := range userRows {
+			name := strings.TrimSpace(u.FirstName + " " + u.LastName)
+			if name == "" {
+				name = u.Email
+			}
+			users = append(users, SchemaUser{ID: u.ID.String(), Name: name, Email: u.Email})
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": SchemaResponse{
+		Entities:      entities,
+		CustomObjects: customObjects,
+		Stages:        stages,
+		Tags:          tags,
+		Users:         users,
+	}})
 }
 
 func (h *Handler) errorResponse(c *gin.Context, status int, code, message string, details []ValidationError) {

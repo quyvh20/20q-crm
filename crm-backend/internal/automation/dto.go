@@ -210,3 +210,52 @@ func ToActionLogResponse(log *WorkflowActionLog) ActionLogResponse {
 		CreatedAt:  log.CreatedAt.Format("2006-01-02T15:04:05Z"),
 	}
 }
+
+// --- Schema DTOs (for workflow builder field pickers) ---
+
+// SchemaField describes a single field available for conditions / template variables.
+type SchemaField struct {
+	Path       string   `json:"path"`                  // e.g. "contact.email"
+	Label      string   `json:"label"`                 // e.g. "Email"
+	Type       string   `json:"type"`                  // string, number, boolean, array, select, date
+	PickerType string   `json:"picker_type,omitempty"` // tag, stage, user — tells UI which picker to render
+	Options    []string `json:"options,omitempty"`      // for select-type custom fields
+}
+
+// SchemaEntity groups fields under an entity category (Contact, Deal, etc.).
+type SchemaEntity struct {
+	Key    string        `json:"key"`    // "contact", "deal", "trigger", or custom object slug
+	Label  string        `json:"label"`  // "Contact", "Deal", ...
+	Icon   string        `json:"icon"`   // emoji
+	Fields []SchemaField `json:"fields"`
+}
+
+// SchemaStage represents a pipeline stage for stage pickers.
+type SchemaStage struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Color string `json:"color"`
+}
+
+// SchemaTag represents an org tag for tag pickers.
+type SchemaTag struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Color string `json:"color"`
+}
+
+// SchemaUser represents an org member for user pickers.
+type SchemaUser struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Email string `json:"email"`
+}
+
+// SchemaResponse is the response for GET /api/workflows/schema.
+type SchemaResponse struct {
+	Entities      []SchemaEntity `json:"entities"`
+	CustomObjects []SchemaEntity `json:"custom_objects"`
+	Stages        []SchemaStage  `json:"stages"`
+	Tags          []SchemaTag    `json:"tags"`
+	Users         []SchemaUser   `json:"users"`
+}

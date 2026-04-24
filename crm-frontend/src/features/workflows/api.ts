@@ -119,3 +119,53 @@ export async function getRunDetail(runId: string): Promise<RunDetailResponse> {
   if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch run detail');
   return json.data as RunDetailResponse;
 }
+
+// --- Schema (for builder field pickers) ---
+
+export interface SchemaField {
+  path: string;
+  label: string;
+  type: 'string' | 'number' | 'boolean' | 'array' | 'select' | 'date';
+  picker_type?: 'tag' | 'stage' | 'user';
+  options?: string[];
+}
+
+export interface SchemaEntity {
+  key: string;
+  label: string;
+  icon: string;
+  fields: SchemaField[];
+}
+
+export interface SchemaStage {
+  id: string;
+  name: string;
+  color: string;
+}
+
+export interface SchemaTag {
+  id: string;
+  name: string;
+  color: string;
+}
+
+export interface SchemaUser {
+  id: string;
+  name: string;
+  email: string;
+}
+
+export interface WorkflowSchema {
+  entities: SchemaEntity[];
+  custom_objects: SchemaEntity[];
+  stages: SchemaStage[];
+  tags: SchemaTag[];
+  users: SchemaUser[];
+}
+
+export async function getWorkflowSchema(): Promise<WorkflowSchema> {
+  const res = await apiFetch('/api/workflows/schema');
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch schema');
+  return json.data as WorkflowSchema;
+}
