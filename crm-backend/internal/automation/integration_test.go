@@ -1135,3 +1135,103 @@ func TestIntegration_SendWebhook_500_RetriesAndFails(t *testing.T) {
 	assert.Equal(t, 3, retryingCount, "first 3 logs should be 'retrying'")
 	assert.Equal(t, 1, failedCount, "last log should be 'failed'")
 }
+
+// ============================================================
+// Integration Test 9: Deactivate workflow mid-run
+// In-flight run completes; new trigger does NOT create a run
+// ============================================================
+
+func TestIntegration_DeactivateMidRun_CompletesButNoNewRuns(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	orgID := uuid.New()
+	repo := NewRepository(db)
+
+	// Workflow with 2 actions: test_action (instant) + delay 1s
+	trigger, _ := json.Marshal(TriggerSpec{Type: TriggerContactCreated})
+	actions, _ := json.Marshal([]ActionSpec{
+		{ID: "a1", Type: "test_action", Params: map[string]any{}},
+		{ID: "a2", Type: ActionDelay, Params: map[string]any{"duration_sec": float64(1)}},
+	})
+
+	wf := &Workflow{
+		ID: uuid.New(), OrgID: orgID, Name: "deactivation-test",
+		IsActive: true, Trigger: datatypes.JSON(trigger),
+		Actions: datatypes.JSON(actions), Version: 1, CreatedBy: uuid.New(),
+	}
+	require.NoError(t, db.Create(wf).Error)
+	ver := &WorkflowVersion{
+		ID: uuid.New(), WorkflowID: wf.ID, Version: 1,
+		Trigger: wf.Trigger, Actions: wf.Actions, CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.Create(ver).Error)
+
+	executor := &countingExecutor{}
+	engine := makeEngine(db, map[string]ActionExecutor{
+		"test_action": executor,
+		ActionDelay:   NewDelayExecutor(),
+	})
+	defer engine.cancel()
+
+	// Inject hook: after action[0] commits, deactivate the workflow
+	var hookCalled int64
+	engine.PostActionLogHook = func() {
+		n := atomic.AddInt64(&hookCalled, 1)
+		if n == 1 {
+			// Deactivate the workflow while action[1] (delay) hasn't run yet
+			db.Model(&Workflow{}).Where("id = ?", wf.ID).Update("is_active", false)
+		}
+	}
+
+	// Create and process the run
+	triggerCtx, _ := json.Marshal(map[string]any{
+		"entity_id": uuid.New().String(),
+		"contact":   map[string]any{"id": uuid.New().String()},
+		"trigger":   map[string]any{"type": TriggerContactCreated},
+	})
+	run := &WorkflowRun{
+		ID: uuid.New(), WorkflowID: wf.ID, WorkflowVersion: 1,
+		OrgID: orgID, Status: StatusPending,
+		TriggerContext: datatypes.JSON(triggerCtx),
+		IdempotencyKey: fmt.Sprintf("deact-%s", uuid.New().String()),
+	}
+	inserted, err := repo.CreateRun(context.Background(), run)
+	require.NoError(t, err)
+	require.True(t, inserted)
+
+	// Process the run — hook deactivates after action[0], but run should still complete
+	engine.processRun(run.ID)
+
+	// --- Verify: in-flight run completed despite deactivation ---
+	finalRun, err := repo.GetRunByID(context.Background(), run.ID)
+	require.NoError(t, err)
+	assert.Equal(t, StatusCompleted, finalRun.Status,
+		"in-flight run must complete even after workflow is deactivated")
+	assert.NotNil(t, finalRun.FinishedAt)
+
+	// Confirm workflow is now inactive
+	var wfCheck Workflow
+	db.First(&wfCheck, "id = ?", wf.ID)
+	assert.False(t, wfCheck.IsActive, "workflow must be inactive after deactivation")
+
+	// --- Verify: a new trigger does NOT create a new run ---
+	// Use a different entity_id so idempotency doesn't block it
+	newPayload := map[string]any{
+		"entity_id": uuid.New().String(),
+		"contact":   map[string]any{"id": uuid.New().String()},
+		"trigger":   map[string]any{"type": TriggerContactCreated},
+	}
+	err = engine.triggerEventInternal(context.Background(), orgID, TriggerContactCreated, newPayload)
+	require.NoError(t, err)
+
+	// Count total runs for this workflow — should still be 1
+	var runCount int64
+	db.Model(&WorkflowRun{}).Where("workflow_id = ?", wf.ID).Count(&runCount)
+	assert.Equal(t, int64(1), runCount,
+		"no new run should be created after workflow deactivation")
+}
