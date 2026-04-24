@@ -158,6 +158,15 @@ type Deal struct {
 	ContactID       *uuid.UUID     `gorm:"type:uuid" json:"contact_id,omitempty"`
 	CompanyID       *uuid.UUID     `gorm:"type:uuid" json:"company_id,omitempty"`
 	StageID         *uuid.UUID     `gorm:"type:uuid" json:"stage_id,omitempty"`
+	// Value stores the deal's estimated monetary value.
+	// Uses float64 backed by Postgres numeric(15,2). This is safe because:
+	//   (a) DB storage is exact (numeric, not float4/float8),
+	//   (b) values are user-entered sales estimates, not ledger entries,
+	//   (c) no server-side arithmetic is performed on monetary values
+	//       (the one totalValue sum in AI analytics is display-only).
+	// If a future feature requires server-side money arithmetic
+	// (commission calc, revenue splits, billing), migrate to int64 cents
+	// BEFORE implementing that feature.
 	Value           float64        `gorm:"type:numeric(15,2);default:0" json:"value"`
 	Probability     int            `gorm:"default:0" json:"probability"`
 	OwnerUserID     *uuid.UUID     `gorm:"type:uuid" json:"owner_user_id,omitempty"`
