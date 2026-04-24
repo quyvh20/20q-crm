@@ -941,3 +941,153 @@ func TestIntegration_FullPipeline_NonVIP_Skipped(t *testing.T) {
 	assert.Equal(t, int64(0), executor.getCallCount(),
 		"no actions should execute when conditions fail")
 }
+
+// ============================================================
+// Integration Test 8: send_webhook → 500 → retries at ~30s, ~2m, ~10m → failed
+// ============================================================
+
+func TestIntegration_SendWebhook_500_RetriesAndFails(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	orgID := uuid.New()
+	repo := NewRepository(db)
+
+	// --- Spin up a test HTTP server that always returns 500 ---
+	var webhookHits int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&webhookHits, 1)
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error":"service unavailable"}`))
+	}))
+	defer srv.Close()
+
+	// --- Create workflow with send_webhook action ---
+	trigger, _ := json.Marshal(TriggerSpec{Type: TriggerContactCreated})
+	actions, _ := json.Marshal([]ActionSpec{
+		{
+			ID:   "webhook_500",
+			Type: ActionSendWebhook,
+			Params: map[string]any{
+				"url":    srv.URL,
+				"method": "POST",
+			},
+		},
+	})
+
+	wf := &Workflow{
+		ID: uuid.New(), OrgID: orgID, Name: "webhook-retry-test",
+		IsActive: true, Trigger: datatypes.JSON(trigger),
+		Actions: datatypes.JSON(actions), Version: 1, CreatedBy: uuid.New(),
+	}
+	require.NoError(t, db.Create(wf).Error)
+	ver := &WorkflowVersion{
+		ID: uuid.New(), WorkflowID: wf.ID, Version: 1,
+		Trigger: wf.Trigger, Actions: wf.Actions, CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.Create(ver).Error)
+
+	// --- Use the REAL WebhookExecutor (not a mock) ---
+	webhookExec := NewWebhookExecutor()
+	engine := makeEngine(db, map[string]ActionExecutor{
+		ActionSendWebhook: webhookExec,
+	})
+	defer engine.cancel()
+
+	triggerCtx, _ := json.Marshal(map[string]any{
+		"contact": map[string]any{"id": uuid.New().String()},
+		"trigger": map[string]any{"type": TriggerContactCreated},
+	})
+
+	run := &WorkflowRun{
+		ID: uuid.New(), WorkflowID: wf.ID, WorkflowVersion: 1,
+		OrgID: orgID, Status: StatusPending,
+		TriggerContext: datatypes.JSON(triggerCtx),
+		IdempotencyKey: fmt.Sprintf("wh500-%s", uuid.New().String()),
+	}
+	inserted, err := repo.CreateRun(context.Background(), run)
+	require.NoError(t, err)
+	require.True(t, inserted)
+
+	// === Attempt 1: initial run → retryable 500 → status=pending, retryCount=1 ===
+	beforeAttempt1 := time.Now()
+	engine.processRun(run.ID)
+
+	after1, err := repo.GetRunByID(context.Background(), run.ID)
+	require.NoError(t, err)
+	assert.Equal(t, StatusPending, after1.Status, "attempt 1: should be pending (retry scheduled)")
+	assert.Equal(t, 1, after1.RetryCount)
+	require.NotNil(t, after1.NextRetryAt)
+	// Backoff 1 = 30s → NextRetryAt should be ~30s from now
+	expectedRetry1 := beforeAttempt1.Add(30 * time.Second)
+	assert.WithinDuration(t, expectedRetry1, *after1.NextRetryAt, 5*time.Second,
+		"attempt 1: NextRetryAt should be ~30s from now")
+	assert.Contains(t, after1.LastError, "500",
+		"attempt 1: LastError should mention 500")
+
+	// === Attempt 2: re-process → retryCount=2, backoff ~2m ===
+	beforeAttempt2 := time.Now()
+	engine.processRun(run.ID)
+
+	after2, err := repo.GetRunByID(context.Background(), run.ID)
+	require.NoError(t, err)
+	assert.Equal(t, StatusPending, after2.Status, "attempt 2: should be pending")
+	assert.Equal(t, 2, after2.RetryCount)
+	require.NotNil(t, after2.NextRetryAt)
+	expectedRetry2 := beforeAttempt2.Add(2 * time.Minute)
+	assert.WithinDuration(t, expectedRetry2, *after2.NextRetryAt, 5*time.Second,
+		"attempt 2: NextRetryAt should be ~2m from now")
+
+	// === Attempt 3: re-process → retryCount=3, backoff ~10m ===
+	beforeAttempt3 := time.Now()
+	engine.processRun(run.ID)
+
+	after3, err := repo.GetRunByID(context.Background(), run.ID)
+	require.NoError(t, err)
+	assert.Equal(t, StatusPending, after3.Status, "attempt 3: should be pending")
+	assert.Equal(t, 3, after3.RetryCount)
+	require.NotNil(t, after3.NextRetryAt)
+	expectedRetry3 := beforeAttempt3.Add(10 * time.Minute)
+	assert.WithinDuration(t, expectedRetry3, *after3.NextRetryAt, 5*time.Second,
+		"attempt 3: NextRetryAt should be ~10m from now")
+
+	// === Attempt 4: retryCount=3, exceeds max → permanent failure ===
+	engine.processRun(run.ID)
+
+	finalRun, err := repo.GetRunByID(context.Background(), run.ID)
+	require.NoError(t, err)
+	assert.Equal(t, StatusFailed, finalRun.Status,
+		"attempt 4: run must be FAILED after exhausting retries")
+	assert.Equal(t, 3, finalRun.RetryCount,
+		"retryCount stays at 3 (max reached, not incremented)")
+	assert.NotNil(t, finalRun.FinishedAt)
+	assert.Contains(t, finalRun.LastError, "500",
+		"LastError must reference the 500 status code")
+
+	// === Verify: httptest server was hit exactly 4 times ===
+	assert.Equal(t, int64(4), atomic.LoadInt64(&webhookHits),
+		"webhook endpoint must be called exactly 4 times (1 initial + 3 retries)")
+
+	// === Verify: action logs show status transitions ===
+	logs, err := repo.GetActionLogsByRunID(context.Background(), run.ID)
+	require.NoError(t, err)
+	assert.Len(t, logs, 4, "must have 4 action logs (one per attempt)")
+
+	retryingCount := 0
+	failedCount := 0
+	for _, l := range logs {
+		switch l.Status {
+		case LogStatusRetrying:
+			retryingCount++
+		case LogStatusFailed:
+			failedCount++
+		}
+		assert.Equal(t, ActionSendWebhook, l.ActionType)
+	}
+	assert.Equal(t, 3, retryingCount, "first 3 logs should be 'retrying'")
+	assert.Equal(t, 1, failedCount, "last log should be 'failed'")
+}
