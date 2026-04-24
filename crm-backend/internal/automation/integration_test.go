@@ -395,6 +395,50 @@ func TestIntegration_CreateWorkflow_HappyAndValidation(t *testing.T) {
 	router.ServeHTTP(w3, req3)
 
 	assert.Equal(t, http.StatusBadRequest, w3.Code, "expected 400 for invalid trigger")
+
+	// --- Validation failure: unknown condition operator ---
+	badOperatorPayload := map[string]any{
+		"name":    "Bad Operator Workflow",
+		"trigger": map[string]any{"type": "contact_created"},
+		"conditions": map[string]any{
+			"op": "AND",
+			"rules": []map[string]any{
+				{
+					"field":    "contact.tags",
+					"operator": "banana",
+					"value":    "vip",
+				},
+			},
+		},
+		"actions": []map[string]any{
+			{"type": "send_email", "id": "a1", "params": map[string]any{"to": "x@y.com"}},
+		},
+	}
+	body3, _ := json.Marshal(badOperatorPayload)
+	w4 := httptest.NewRecorder()
+	req4 := httptest.NewRequest("POST", "/api/workflows", bytes.NewReader(body3))
+	req4.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w4, req4)
+
+	assert.Equal(t, http.StatusBadRequest, w4.Code,
+		"expected 400 for unknown operator, body: %s", w4.Body.String())
+
+	var errResp map[string]any
+	require.NoError(t, json.Unmarshal(w4.Body.Bytes(), &errResp))
+	errBody, ok := errResp["error"].(map[string]any)
+	require.True(t, ok, "response must have 'error' object, got: %s", w4.Body.String())
+	assert.Equal(t, "VALIDATION_FAILED", errBody["code"])
+
+	// Verify the error details name the bad field
+	details, ok := errBody["details"].([]any)
+	require.True(t, ok, "error must have 'details' array")
+	require.GreaterOrEqual(t, len(details), 1, "must have at least 1 validation error")
+
+	firstDetail := details[0].(map[string]any)
+	assert.Equal(t, "conditions.rules[0].operator", firstDetail["field"],
+		"validation error must name the bad field path")
+	assert.Contains(t, firstDetail["message"], "banana",
+		"validation error must mention the unknown operator")
 }
 
 // ============================================================
