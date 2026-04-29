@@ -151,21 +151,3 @@ export const CONDITION_OPERATORS = [
   { value: 'starts_with', label: 'Starts With' },
   { value: 'ends_with', label: 'Ends With' },
 ];
-
-export const TEMPLATE_VARIABLES = [
-  { path: 'contact.email', label: 'Contact Email' },
-  { path: 'contact.first_name', label: 'Contact First Name' },
-  { path: 'contact.last_name', label: 'Contact Last Name' },
-  { path: 'contact.phone', label: 'Contact Phone' },
-  { path: 'contact.owner_id', label: 'Contact Owner ID' },
-  { path: 'contact.id', label: 'Contact ID' },
-  { path: 'deal.title', label: 'Deal Title' },
-  { path: 'deal.stage', label: 'Deal Stage' },
-  { path: 'deal.amount', label: 'Deal Amount' },
-  { path: 'deal.id', label: 'Deal ID' },
-  { path: 'trigger.type', label: 'Trigger Type' },
-  { path: 'trigger.from_stage', label: 'From Stage' },
-  { path: 'trigger.to_stage', label: 'To Stage' },
-  { path: 'org.name', label: 'Organization Name' },
-  { path: 'user.email', label: 'User Email' },
-];
