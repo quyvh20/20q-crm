@@ -1,7 +1,9 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useCallback } from 'react';
 import { type ConditionGroup, type ConditionRule } from '../types';
 import { useBuilderStore } from '../store';
 import { getOperatorsForType } from '../useSchema';
+import { FieldPicker } from './FieldPicker';
+import type { SchemaField } from '../api';
 
 export const ConditionConfigPanel: React.FC = () => {
   const { conditions, setConditions, schema, schemaLoading, schemaError, invalidateSchema } = useBuilderStore();
@@ -52,6 +54,35 @@ export const ConditionConfigPanel: React.FC = () => {
     return found?.type || 'string';
   };
 
+  /**
+   * Handle field selection from FieldPicker.
+   * When the field type changes, reset operator to a valid one for the new type,
+   * and clear the value to avoid stale data.
+   */
+  const handleFieldChange = useCallback(
+    (index: number, path: string, field: SchemaField | null) => {
+      const currentRule = group.rules[index];
+      const oldFieldType = getFieldType(currentRule.field || '');
+      const newFieldType = field?.type || 'string';
+
+      // If type changed, reset operator to first valid one + clear value
+      if (oldFieldType !== newFieldType || !currentRule.field) {
+        const validOps = getOperatorsForType(newFieldType);
+        const currentOpStillValid = validOps.some((op) => op.value === currentRule.operator);
+
+        updateRule(index, {
+          field: path,
+          operator: currentOpStillValid ? currentRule.operator : validOps[0]?.value || 'eq',
+          value: '',
+        });
+      } else {
+        updateRule(index, { field: path });
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [group.rules, fieldOptions]
+  );
+
   return (
     <div className="space-y-4">
       <h3 className="text-lg font-semibold text-white">Conditions</h3>
@@ -93,60 +124,74 @@ export const ConditionConfigPanel: React.FC = () => {
         {group.rules.map((rule, idx) => {
           const fieldType = getFieldType(rule.field || '');
           const operators = getOperatorsForType(fieldType);
+          const isUnary = ['is_empty', 'is_not_empty'].includes(rule.operator || '');
 
           return (
-            <div key={idx} className="flex gap-2 items-start">
-              <div className="flex-1 space-y-2">
-                {/* Field picker — skeleton while loading, dropdown when ready, error state shown above */}
-                {schemaLoading ? (
-                  <div className="w-full h-[34px] bg-gray-800 border border-gray-700 rounded-lg animate-pulse" />
-                ) : (
-                  <select
+            <div key={idx} className="group/rule rounded-xl border border-gray-800 bg-gray-900/50 p-3 space-y-2 transition-colors hover:border-gray-700">
+              {/* Row 1: Field picker */}
+              <div className="flex gap-2 items-start">
+                <div className="flex-1">
+                  <FieldPicker
                     value={rule.field || ''}
-                    onChange={(e) => updateRule(idx, { field: e.target.value, operator: 'eq', value: '' })}
+                    onChange={(path, field) => handleFieldChange(idx, path, field)}
                     disabled={!!schemaError}
-                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:border-purple-500 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+                    placeholder="Select field…"
+                  />
+                </div>
+                <button
+                  onClick={() => removeRule(idx)}
+                  className="mt-0.5 w-7 h-7 rounded-full flex items-center justify-center text-gray-600 hover:text-red-400 hover:bg-red-400/10 transition-colors opacity-0 group-hover/rule:opacity-100"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Row 2: Operator + Value (only show when field is selected) */}
+              {rule.field && (
+                <div className="flex gap-2 items-center">
+                  {/* Operator dropdown — filtered by field type */}
+                  <select
+                    value={rule.operator || 'eq'}
+                    onChange={(e) => {
+                      const newOp = e.target.value;
+                      // If switching to unary operator, clear value
+                      if (['is_empty', 'is_not_empty'].includes(newOp)) {
+                        updateRule(idx, { operator: newOp, value: '' });
+                      } else {
+                        updateRule(idx, { operator: newOp });
+                      }
+                    }}
+                    className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-white focus:border-purple-500 focus:outline-none min-w-[120px]"
                   >
-                    <option value="">{schemaError ? 'Schema unavailable' : 'Select field…'}</option>
-                    {fieldOptions.map((f) => (
-                      <option key={f.path} value={f.path}>{f.label}</option>
+                    {operators.map((op) => (
+                      <option key={op.value} value={op.value}>{op.label}</option>
                     ))}
                   </select>
-                )}
-                <div className="flex gap-2">
-                  {schemaLoading ? (
-                    <div className="flex-1 h-[34px] bg-gray-800 border border-gray-700 rounded-lg animate-pulse" />
-                  ) : (
-                    <select
-                      value={rule.operator || 'eq'}
-                      onChange={(e) => updateRule(idx, { operator: e.target.value })}
-                      className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-white focus:border-purple-500 focus:outline-none"
-                    >
-                      {operators.map((op) => (
-                        <option key={op.value} value={op.value}>{op.label}</option>
-                      ))}
-                    </select>
-                  )}
-                  {!['is_empty', 'is_not_empty'].includes(rule.operator || '') && (
-                    <input
-                      type="text"
-                      placeholder="Value"
-                      value={String(rule.value ?? '')}
-                      onChange={(e) => {
-                        const num = Number(e.target.value);
-                        updateRule(idx, { value: isNaN(num) ? e.target.value : num });
-                      }}
-                      className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:border-purple-500 focus:outline-none"
+
+                  {/* Value input — hidden for unary operators */}
+                  {!isUnary && (
+                    <ValueInput
+                      fieldPath={rule.field}
+                      fieldType={fieldType}
+                      value={rule.value}
+                      onChange={(v) => updateRule(idx, { value: v })}
                     />
                   )}
                 </div>
-              </div>
-              <button
-                onClick={() => removeRule(idx)}
-                className="mt-1 w-7 h-7 rounded-full flex items-center justify-center text-gray-500 hover:text-red-400 hover:bg-red-400/10 transition-colors"
-              >
-                ✕
-              </button>
+              )}
+
+              {/* Field type indicator when selected */}
+              {rule.field && (
+                <div className="flex items-center gap-1.5 text-[10px] text-gray-600">
+                  <span className="uppercase tracking-wider font-medium" style={{
+                    color: TYPE_INDICATOR_COLORS[fieldType] || '#6B7280',
+                  }}>
+                    {fieldType}
+                  </span>
+                  <span>·</span>
+                  <span className="font-mono text-gray-600">{rule.field}</span>
+                </div>
+              )}
             </div>
           );
         })}
@@ -170,4 +215,84 @@ export const ConditionConfigPanel: React.FC = () => {
       )}
     </div>
   );
+};
+
+// --- Type-aware value input ---
+
+const TYPE_INDICATOR_COLORS: Record<string, string> = {
+  string: '#9CA3AF',
+  number: '#60A5FA',
+  boolean: '#F59E0B',
+  array: '#A78BFA',
+  select: '#34D399',
+  date: '#FB923C',
+};
+
+interface ValueInputProps {
+  fieldPath: string;
+  fieldType: string;
+  value: unknown;
+  onChange: (value: unknown) => void;
+}
+
+/**
+ * Basic type-aware value input.
+ * For P2 (Day 3), this will be replaced with SmartValueInput that uses
+ * tag/stage/user pickers. For now, it renders type-appropriate native inputs.
+ */
+const ValueInput: React.FC<ValueInputProps> = ({ fieldType, value, onChange }) => {
+  const baseClass =
+    'flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:border-purple-500 focus:outline-none';
+
+  switch (fieldType) {
+    case 'boolean':
+      return (
+        <select
+          value={String(value ?? 'true')}
+          onChange={(e) => onChange(e.target.value === 'true')}
+          className={`${baseClass} min-w-[100px]`}
+        >
+          <option value="true">Yes</option>
+          <option value="false">No</option>
+        </select>
+      );
+
+    case 'number':
+      return (
+        <input
+          type="number"
+          value={String(value ?? '')}
+          onChange={(e) => {
+            const num = parseFloat(e.target.value);
+            onChange(isNaN(num) ? '' : num);
+          }}
+          placeholder="Value"
+          className={baseClass}
+        />
+      );
+
+    case 'date':
+      return (
+        <input
+          type="date"
+          value={String(value ?? '')}
+          onChange={(e) => onChange(e.target.value)}
+          className={baseClass}
+        />
+      );
+
+    case 'string':
+    case 'array':
+    case 'select':
+    default:
+      return (
+        <input
+          type="text"
+          value={String(value ?? '')}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={fieldType === 'array' ? 'Value (e.g. tag name)' : 'Value'}
+          className={baseClass}
+        />
+      );
+  }
 };
