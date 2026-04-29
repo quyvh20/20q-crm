@@ -24,12 +24,12 @@ import (
 
 // Handler provides HTTP handlers for the workflow automation API.
 type Handler struct {
-	engine *Engine
-	repo   *Repository
-	db     *gorm.DB
-	logger *slog.Logger
-	// Rate limiter for webhook inbound
-	rateLimiter *tokenBucket
+	engine      *Engine
+	repo        *Repository
+	db          *gorm.DB
+	logger      *slog.Logger
+	rateLimiter *tokenBucket       // Rate limiter for webhook inbound
+	schemaCache *SchemaCache        // Per-org schema cache (60s TTL)
 }
 
 // NewHandler creates a new automation HTTP handler.
@@ -40,6 +40,16 @@ func NewHandler(engine *Engine, db *gorm.DB, logger *slog.Logger) *Handler {
 		db:          db,
 		logger:      logger,
 		rateLimiter: newTokenBucket(),
+		schemaCache: NewSchemaCache(60 * time.Second),
+	}
+}
+
+// InvalidateSchemaCache removes the cached workflow schema for a specific org.
+// Call this from delivery handlers when stages, tags, custom fields, or
+// custom objects are created/updated/deleted.
+func (h *Handler) InvalidateSchemaCache(orgID uuid.UUID) {
+	if h.schemaCache != nil {
+		h.schemaCache.Invalidate(orgID)
 	}
 }
 
@@ -608,6 +618,14 @@ func (h *Handler) GetWorkflowSchema(c *gin.Context) {
 		return
 	}
 
+	// Check cache first
+	if h.schemaCache != nil {
+		if cached := h.schemaCache.Get(orgID); cached != nil {
+			c.JSON(http.StatusOK, gin.H{"data": cached})
+			return
+		}
+	}
+
 	ctx := c.Request.Context()
 
 	// 1. Built-in entity fields
@@ -773,13 +791,20 @@ func (h *Handler) GetWorkflowSchema(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"data": SchemaResponse{
+	result := &SchemaResponse{
 		Entities:      entities,
 		CustomObjects: customObjects,
 		Stages:        stages,
 		Tags:          tags,
 		Users:         users,
-	}})
+	}
+
+	// Store in cache
+	if h.schemaCache != nil {
+		h.schemaCache.Set(orgID, result)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": result})
 }
 
 func (h *Handler) errorResponse(c *gin.Context, status int, code, message string, details []ValidationError) {

@@ -10,11 +10,23 @@ import (
 )
 
 type SettingsHandler struct {
-	settingsUC domain.OrgSettingsUseCase
+	settingsUC       domain.OrgSettingsUseCase
+	invalidateSchema SchemaInvalidator
 }
 
 func NewSettingsHandler(uc domain.OrgSettingsUseCase) *SettingsHandler {
 	return &SettingsHandler{settingsUC: uc}
+}
+
+// SetSchemaInvalidator sets the callback to invalidate the workflow schema cache.
+func (h *SettingsHandler) SetSchemaInvalidator(fn SchemaInvalidator) {
+	h.invalidateSchema = fn
+}
+
+func (h *SettingsHandler) invalidateSchemaIfSet(orgID uuid.UUID) {
+	if h.invalidateSchema != nil {
+		h.invalidateSchema(orgID)
+	}
 }
 
 // ListFieldDefs returns custom field definitions, optionally filtered by entity_type.
@@ -51,7 +63,7 @@ func (h *SettingsHandler) CreateFieldDef(c *gin.Context) {
 		handleAppError(c, err)
 		return
 	}
-
+	h.invalidateSchemaIfSet(orgID.(uuid.UUID))
 	c.JSON(http.StatusCreated, gin.H{"data": def})
 }
 
@@ -72,7 +84,7 @@ func (h *SettingsHandler) UpdateFieldDef(c *gin.Context) {
 		handleAppError(c, err)
 		return
 	}
-
+	h.invalidateSchemaIfSet(orgID.(uuid.UUID))
 	c.JSON(http.StatusOK, gin.H{"data": def})
 }
 
@@ -87,7 +99,7 @@ func (h *SettingsHandler) DeleteFieldDef(c *gin.Context) {
 		handleAppError(c, err)
 		return
 	}
-
+	h.invalidateSchemaIfSet(orgID.(uuid.UUID))
 	c.JSON(http.StatusOK, gin.H{"message": "field definition deleted"})
 }
 

@@ -2,15 +2,19 @@ package automation
 
 import (
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"log/slog"
+	"gorm.io/gorm"
 )
 
 // TestGetWorkflowSchema_FullCoverage verifies that GET /api/workflows/schema
@@ -434,4 +438,263 @@ func findField(fields []SchemaField, path string) *SchemaField {
 	return nil
 }
 
+// TestGetWorkflowSchema_NoNPlus1_QueryCount verifies that a single
+// GET /api/workflows/schema request issues at most 6 SQL queries,
+// regardless of how many stages, tags, users, or custom objects exist.
+// This catches N+1 regressions (e.g., querying per-stage or per-tag).
+func TestGetWorkflowSchema_NoNPlus1_QueryCount(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	orgID := uuid.New()
+
+	// --- Seed tables with MANY rows to expose any N+1 ---
+	db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_stages (
+		id UUID PRIMARY KEY, org_id UUID NOT NULL, name TEXT, position INT DEFAULT 0,
+		color TEXT DEFAULT '#000', is_won BOOLEAN DEFAULT FALSE, is_lost BOOLEAN DEFAULT FALSE,
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS tags (
+		id UUID PRIMARY KEY, org_id UUID NOT NULL, name TEXT, color TEXT DEFAULT '#000',
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS users (
+		id UUID PRIMARY KEY, org_id UUID, email TEXT, first_name TEXT DEFAULT '', last_name TEXT DEFAULT '',
+		full_name TEXT DEFAULT '', role TEXT DEFAULT 'viewer',
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS org_users (
+		user_id UUID NOT NULL, org_id UUID NOT NULL, role_id UUID NOT NULL,
+		status TEXT DEFAULT 'active', joined_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ,
+		PRIMARY KEY (user_id, org_id))`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS org_settings (
+		org_id UUID PRIMARY KEY, custom_field_defs JSONB DEFAULT '[]',
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS custom_object_defs (
+		id UUID PRIMARY KEY, org_id UUID NOT NULL, slug TEXT, label TEXT, label_plural TEXT,
+		icon TEXT DEFAULT '📦', fields JSONB DEFAULT '[]',
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
+
+	// Insert 10 pipeline stages
+	for i := 0; i < 10; i++ {
+		db.Exec(`INSERT INTO pipeline_stages (id, org_id, name, position, color) VALUES (?, ?, ?, ?, ?)`,
+			uuid.New(), orgID, fmt.Sprintf("Stage %d", i), i, fmt.Sprintf("#%02x%02x%02x", i*25, 100, 200))
+	}
+	// Insert 10 tags
+	for i := 0; i < 10; i++ {
+		db.Exec(`INSERT INTO tags (id, org_id, name, color) VALUES (?, ?, ?, ?)`,
+			uuid.New(), orgID, fmt.Sprintf("Tag %d", i), fmt.Sprintf("#%02x%02x%02x", 200, i*25, 100))
+	}
+	// Insert 10 users
+	for i := 0; i < 10; i++ {
+		uid := uuid.New()
+		db.Exec(`INSERT INTO users (id, org_id, email, first_name, last_name) VALUES (?, ?, ?, ?, ?)`,
+			uid, orgID, fmt.Sprintf("user%d@test.com", i), fmt.Sprintf("User%d", i), "Test")
+		db.Exec(`INSERT INTO org_users (user_id, org_id, role_id) VALUES (?, ?, ?)`, uid, orgID, uuid.New())
+	}
+	// Insert 5 custom objects with 3 fields each
+	for i := 0; i < 5; i++ {
+		fields := fmt.Sprintf(`[{"key":"f1","label":"Field 1","type":"string"},{"key":"f2","label":"Field 2","type":"number"},{"key":"f3","label":"Field 3","type":"boolean"}]`)
+		db.Exec(`INSERT INTO custom_object_defs (id, org_id, slug, label, label_plural, icon, fields) VALUES (?, ?, ?, ?, ?, '📦', ?::jsonb)`,
+			uuid.New(), orgID, fmt.Sprintf("obj_%d", i), fmt.Sprintf("Object %d", i), fmt.Sprintf("Objects %d", i), fields)
+	}
+	// Insert org settings with custom field defs
+	customFields := `[
+		{"key":"source","label":"Source","type":"select","entity_type":"contact","options":["Web","Ads"]},
+		{"key":"tier","label":"Tier","type":"string","entity_type":"deal","options":null}
+	]`
+	db.Exec(`INSERT INTO org_settings (org_id, custom_field_defs) VALUES (?, ?::jsonb)`, orgID, customFields)
+
+	// --- Register a GORM callback to count SQL queries ---
+	var queryCount int64
+	const callbackName = "test:count_queries"
+	db.Callback().Query().After("gorm:query").Register(callbackName, func(d *gorm.DB) {
+		atomic.AddInt64(&queryCount, 1)
+	})
+	db.Callback().Raw().After("gorm:raw").Register(callbackName, func(d *gorm.DB) {
+		atomic.AddInt64(&queryCount, 1)
+	})
+	defer func() {
+		// Clean up callbacks to avoid affecting other tests
+		db.Callback().Query().Remove(callbackName)
+		db.Callback().Raw().Remove(callbackName)
+	}()
+
+	// --- Build handler + router ---
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	userID := uuid.New()
+	fakeAuth := func(c *gin.Context) {
+		c.Set("org_id", orgID)
+		c.Set("user_id", userID)
+		c.Next()
+	}
+	fakeRequireRole := func(roles ...string) gin.HandlerFunc {
+		return func(c *gin.Context) { c.Next() }
+	}
+	handler := &Handler{
+		engine: makeEngine(db, nil),
+		repo:   NewRepository(db),
+		logger: slog.Default(),
+		db:     db,
+	}
+	handler.RegisterRoutes(router, fakeAuth, fakeRequireRole)
+
+	// --- Reset counter and fire the request ---
+	atomic.StoreInt64(&queryCount, 0)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/workflows/schema", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code, "expected 200 OK, got %d: %s", w.Code, w.Body.String())
+
+	// --- Assert: at most 6 queries (currently 5: org_settings, custom_object_defs, pipeline_stages, tags, users+org_users) ---
+	finalCount := atomic.LoadInt64(&queryCount)
+	t.Logf("Schema endpoint executed %d SQL queries (with 10 stages, 10 tags, 10 users, 5 custom objects)", finalCount)
+
+	assert.LessOrEqual(t, finalCount, int64(6),
+		"Schema endpoint must issue ≤ 6 SQL queries (no N+1). Got %d queries.", finalCount)
+
+	// Also verify the response actually contains all the seeded data
+	var resp struct {
+		Data SchemaResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Len(t, resp.Data.Stages, 10, "should return all 10 stages")
+	assert.Len(t, resp.Data.Tags, 10, "should return all 10 tags")
+	assert.Len(t, resp.Data.Users, 10, "should return all 10 users")
+	assert.Len(t, resp.Data.CustomObjects, 5, "should return all 5 custom objects")
+}
+
+// TestGetWorkflowSchema_CacheHitAndInvalidate verifies:
+// 1. Second request hits cache → 0 SQL queries
+// 2. InvalidateSchemaCache → next request queries DB again
+func TestGetWorkflowSchema_CacheHitAndInvalidate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	orgID := uuid.New()
+
+	// Seed minimal data
+	db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_stages (
+		id UUID PRIMARY KEY, org_id UUID NOT NULL, name TEXT, position INT DEFAULT 0,
+		color TEXT DEFAULT '#000', is_won BOOLEAN DEFAULT FALSE, is_lost BOOLEAN DEFAULT FALSE,
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS tags (
+		id UUID PRIMARY KEY, org_id UUID NOT NULL, name TEXT, color TEXT DEFAULT '#000',
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS users (
+		id UUID PRIMARY KEY, org_id UUID, email TEXT, first_name TEXT DEFAULT '', last_name TEXT DEFAULT '',
+		full_name TEXT DEFAULT '', role TEXT DEFAULT 'viewer',
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS org_users (
+		user_id UUID NOT NULL, org_id UUID NOT NULL, role_id UUID NOT NULL,
+		status TEXT DEFAULT 'active', joined_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ,
+		PRIMARY KEY (user_id, org_id))`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS org_settings (
+		org_id UUID PRIMARY KEY, custom_field_defs JSONB DEFAULT '[]',
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS custom_object_defs (
+		id UUID PRIMARY KEY, org_id UUID NOT NULL, slug TEXT, label TEXT, label_plural TEXT,
+		icon TEXT DEFAULT '📦', fields JSONB DEFAULT '[]',
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
+
+	db.Exec(`INSERT INTO pipeline_stages (id, org_id, name, position, color) VALUES (?, ?, 'Lead', 0, '#3B82F6')`, uuid.New(), orgID)
+	db.Exec(`INSERT INTO tags (id, org_id, name, color) VALUES (?, ?, 'VIP', '#F59E0B')`, uuid.New(), orgID)
+
+	// Register SQL counter callbacks
+	var queryCount int64
+	const callbackName = "test:cache_query_count"
+	db.Callback().Query().After("gorm:query").Register(callbackName, func(d *gorm.DB) {
+		atomic.AddInt64(&queryCount, 1)
+	})
+	db.Callback().Raw().After("gorm:raw").Register(callbackName, func(d *gorm.DB) {
+		atomic.AddInt64(&queryCount, 1)
+	})
+	defer func() {
+		db.Callback().Query().Remove(callbackName)
+		db.Callback().Raw().Remove(callbackName)
+	}()
+
+	// Build handler with cache
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	userID := uuid.New()
+	fakeAuth := func(c *gin.Context) {
+		c.Set("org_id", orgID)
+		c.Set("user_id", userID)
+		c.Next()
+	}
+	fakeRequireRole := func(roles ...string) gin.HandlerFunc {
+		return func(c *gin.Context) { c.Next() }
+	}
+	handler := &Handler{
+		engine:      makeEngine(db, nil),
+		repo:        NewRepository(db),
+		logger:      slog.Default(),
+		db:          db,
+		schemaCache: NewSchemaCache(60 * time.Second),
+	}
+	handler.RegisterRoutes(router, fakeAuth, fakeRequireRole)
+
+	// --- Request 1: cold cache (DB hit) ---
+	atomic.StoreInt64(&queryCount, 0)
+	req1 := httptest.NewRequest(http.MethodGet, "/api/workflows/schema", nil)
+	w1 := httptest.NewRecorder()
+	router.ServeHTTP(w1, req1)
+	require.Equal(t, http.StatusOK, w1.Code)
+
+	coldQueries := atomic.LoadInt64(&queryCount)
+	t.Logf("Request 1 (cold cache): %d SQL queries", coldQueries)
+	assert.Greater(t, coldQueries, int64(0), "cold cache should hit DB")
+
+	// --- Request 2: warm cache (zero DB queries) ---
+	atomic.StoreInt64(&queryCount, 0)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/workflows/schema", nil)
+	w2 := httptest.NewRecorder()
+	router.ServeHTTP(w2, req2)
+	require.Equal(t, http.StatusOK, w2.Code)
+
+	warmQueries := atomic.LoadInt64(&queryCount)
+	t.Logf("Request 2 (warm cache): %d SQL queries", warmQueries)
+	assert.Equal(t, int64(0), warmQueries, "warm cache should issue 0 SQL queries")
+
+	// Verify same response body
+	assert.Equal(t, w1.Body.String(), w2.Body.String(), "cached response should match original")
+
+	// --- Invalidate cache ---
+	handler.InvalidateSchemaCache(orgID)
+
+	// --- Request 3: after invalidation (DB hit again) ---
+	atomic.StoreInt64(&queryCount, 0)
+	req3 := httptest.NewRequest(http.MethodGet, "/api/workflows/schema", nil)
+	w3 := httptest.NewRecorder()
+	router.ServeHTTP(w3, req3)
+	require.Equal(t, http.StatusOK, w3.Code)
+
+	postInvalidateQueries := atomic.LoadInt64(&queryCount)
+	t.Logf("Request 3 (after invalidate): %d SQL queries", postInvalidateQueries)
+	assert.Greater(t, postInvalidateQueries, int64(0), "after invalidation should hit DB again")
+
+	// --- Add a new stage and verify invalidation picks it up ---
+	db.Exec(`INSERT INTO pipeline_stages (id, org_id, name, position, color) VALUES (?, ?, 'Closed Won', 1, '#10B981')`, uuid.New(), orgID)
+	handler.InvalidateSchemaCache(orgID)
+
+	req4 := httptest.NewRequest(http.MethodGet, "/api/workflows/schema", nil)
+	w4 := httptest.NewRecorder()
+	router.ServeHTTP(w4, req4)
+	require.Equal(t, http.StatusOK, w4.Code)
+
+	var resp struct {
+		Data SchemaResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w4.Body.Bytes(), &resp))
+	assert.Len(t, resp.Data.Stages, 2, "after invalidation + new stage insert, should see 2 stages")
+}
 

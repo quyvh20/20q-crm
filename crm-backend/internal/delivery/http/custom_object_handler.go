@@ -11,11 +11,23 @@ import (
 )
 
 type CustomObjectHandler struct {
-	uc domain.CustomObjectUseCase
+	uc               domain.CustomObjectUseCase
+	invalidateSchema SchemaInvalidator
 }
 
 func NewCustomObjectHandler(uc domain.CustomObjectUseCase) *CustomObjectHandler {
 	return &CustomObjectHandler{uc: uc}
+}
+
+// SetSchemaInvalidator sets the callback to invalidate the workflow schema cache.
+func (h *CustomObjectHandler) SetSchemaInvalidator(fn SchemaInvalidator) {
+	h.invalidateSchema = fn
+}
+
+func (h *CustomObjectHandler) invalidateSchemaIfSet(orgID uuid.UUID) {
+	if h.invalidateSchema != nil {
+		h.invalidateSchema(orgID)
+	}
 }
 
 // ============================================================
@@ -58,6 +70,7 @@ func (h *CustomObjectHandler) CreateDef(c *gin.Context) {
 		handleAppError(c, err)
 		return
 	}
+	h.invalidateSchemaIfSet(orgID)
 	c.JSON(http.StatusCreated, gin.H{"data": def, "error": nil})
 }
 
@@ -75,6 +88,7 @@ func (h *CustomObjectHandler) UpdateDef(c *gin.Context) {
 		handleAppError(c, err)
 		return
 	}
+	h.invalidateSchemaIfSet(orgID)
 	c.JSON(http.StatusOK, gin.H{"data": def, "error": nil})
 }
 
@@ -86,6 +100,7 @@ func (h *CustomObjectHandler) DeleteDef(c *gin.Context) {
 		handleAppError(c, err)
 		return
 	}
+	h.invalidateSchemaIfSet(orgID)
 	c.JSON(http.StatusOK, gin.H{"data": "deleted", "error": nil})
 }
 

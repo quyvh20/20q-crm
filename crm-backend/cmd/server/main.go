@@ -283,6 +283,16 @@ func main() {
 			delivery.AuthMiddleware(cfg.JWTSecret, authRepo, redisClient),
 			delivery.RequireRole,
 		)
+
+		// Wire schema cache invalidation: when stages, tags, custom fields,
+		// or custom object defs change, the workflow schema cache is purged
+		// for that org so the builder picks up fresh data.
+		invalidator := autoHandler.InvalidateSchemaCache
+		pipelineHandler.SetSchemaInvalidator(invalidator)
+		tagHandler.SetSchemaInvalidator(invalidator)
+		settingsHandler.SetSchemaInvalidator(invalidator)
+		customObjHandler.SetSchemaInvalidator(invalidator)
+
 		log.Info("All routes registered (including automation)")
 	} else {
 		log.Warn("Database not connected — routes skipped")

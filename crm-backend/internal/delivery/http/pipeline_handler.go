@@ -9,12 +9,28 @@ import (
 	"github.com/google/uuid"
 )
 
+// SchemaInvalidator is a callback to invalidate the workflow schema cache
+// when stages, tags, custom fields, or custom objects change.
+type SchemaInvalidator func(orgID uuid.UUID)
+
 type PipelineHandler struct {
-	stageUC domain.PipelineStageUseCase
+	stageUC            domain.PipelineStageUseCase
+	invalidateSchema   SchemaInvalidator
 }
 
 func NewPipelineHandler(stageUC domain.PipelineStageUseCase) *PipelineHandler {
 	return &PipelineHandler{stageUC: stageUC}
+}
+
+// SetSchemaInvalidator sets the callback to invalidate the workflow schema cache.
+func (h *PipelineHandler) SetSchemaInvalidator(fn SchemaInvalidator) {
+	h.invalidateSchema = fn
+}
+
+func (h *PipelineHandler) invalidateSchemaIfSet(orgID uuid.UUID) {
+	if h.invalidateSchema != nil {
+		h.invalidateSchema(orgID)
+	}
 }
 
 // GET /api/pipeline/stages
@@ -49,6 +65,7 @@ func (h *PipelineHandler) CreateStage(c *gin.Context) {
 		handleAppError(c, err)
 		return
 	}
+	h.invalidateSchemaIfSet(orgID)
 	c.JSON(http.StatusCreated, domain.Success(stage))
 }
 
@@ -74,6 +91,7 @@ func (h *PipelineHandler) UpdateStage(c *gin.Context) {
 		handleAppError(c, err)
 		return
 	}
+	h.invalidateSchemaIfSet(orgID)
 	c.JSON(http.StatusOK, domain.Success(stage))
 }
 
@@ -93,6 +111,7 @@ func (h *PipelineHandler) DeleteStage(c *gin.Context) {
 		handleAppError(c, err)
 		return
 	}
+	h.invalidateSchemaIfSet(orgID)
 	c.JSON(http.StatusOK, domain.Success(gin.H{"deleted": true}))
 }
 
@@ -108,5 +127,6 @@ func (h *PipelineHandler) SeedDefaultStages(c *gin.Context) {
 		handleAppError(c, err)
 		return
 	}
+	h.invalidateSchemaIfSet(orgID)
 	c.JSON(http.StatusOK, domain.Success(stages))
 }

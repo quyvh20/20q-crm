@@ -10,11 +10,23 @@ import (
 )
 
 type TagHandler struct {
-	tagUC domain.TagUseCase
+	tagUC            domain.TagUseCase
+	invalidateSchema SchemaInvalidator
 }
 
 func NewTagHandler(uc domain.TagUseCase) *TagHandler {
 	return &TagHandler{tagUC: uc}
+}
+
+// SetSchemaInvalidator sets the callback to invalidate the workflow schema cache.
+func (h *TagHandler) SetSchemaInvalidator(fn SchemaInvalidator) {
+	h.invalidateSchema = fn
+}
+
+func (h *TagHandler) invalidateSchemaIfSet(orgID uuid.UUID) {
+	if h.invalidateSchema != nil {
+		h.invalidateSchema(orgID)
+	}
 }
 
 // GET /api/tags
@@ -77,6 +89,7 @@ func (h *TagHandler) Create(c *gin.Context) {
 		return
 	}
 
+	h.invalidateSchemaIfSet(orgID)
 	c.JSON(http.StatusCreated, domain.Success(tag))
 }
 
@@ -106,6 +119,7 @@ func (h *TagHandler) Update(c *gin.Context) {
 		return
 	}
 
+	h.invalidateSchemaIfSet(orgID)
 	c.JSON(http.StatusOK, domain.Success(tag))
 }
 
@@ -128,5 +142,6 @@ func (h *TagHandler) Delete(c *gin.Context) {
 		return
 	}
 
+	h.invalidateSchemaIfSet(orgID)
 	c.JSON(http.StatusOK, domain.Success(gin.H{"message": "tag deleted"}))
 }
