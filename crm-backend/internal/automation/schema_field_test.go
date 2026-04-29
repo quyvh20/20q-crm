@@ -79,7 +79,7 @@ func TestSchemaField_JSONShape(t *testing.T) {
 		f := SchemaField{
 			Path:       "contact.owner_id",
 			Label:      "Owner",
-			Type:       "user",
+			Type:       "string",
 			PickerType: "user",
 		}
 		b, err := json.Marshal(f)
@@ -90,7 +90,7 @@ func TestSchemaField_JSONShape(t *testing.T) {
 
 		assert.Equal(t, "contact.owner_id", m["path"])
 		assert.Equal(t, "Owner", m["label"])
-		assert.Equal(t, "user", m["type"])
+		assert.Equal(t, "string", m["type"])
 		assert.Equal(t, "user", m["picker_type"])
 	})
 
@@ -187,7 +187,7 @@ func TestSchemaField_AllBuiltinFieldsHaveRequiredProperties(t *testing.T) {
 				{Path: "contact.last_name", Label: "Last Name", Type: "string"},
 				{Path: "contact.email", Label: "Email", Type: "string"},
 				{Path: "contact.phone", Label: "Phone", Type: "string"},
-				{Path: "contact.owner_id", Label: "Owner", Type: "user", PickerType: "user"},
+				{Path: "contact.owner_id", Label: "Owner", Type: "string", PickerType: "user"},
 				{Path: "contact.tags", Label: "Tags", Type: "array", PickerType: "tag"},
 				{Path: "contact.company.name", Label: "Company Name", Type: "string"},
 				{Path: "contact.id", Label: "Contact ID", Type: "string"},
@@ -202,7 +202,7 @@ func TestSchemaField_AllBuiltinFieldsHaveRequiredProperties(t *testing.T) {
 				{Path: "deal.probability", Label: "Probability (%)", Type: "number"},
 				{Path: "deal.is_won", Label: "Is Won", Type: "boolean"},
 				{Path: "deal.is_lost", Label: "Is Lost", Type: "boolean"},
-				{Path: "deal.owner_id", Label: "Owner", Type: "user", PickerType: "user"},
+				{Path: "deal.owner_id", Label: "Owner", Type: "string", PickerType: "user"},
 				{Path: "deal.id", Label: "Deal ID", Type: "string"},
 			},
 		},
@@ -226,7 +226,7 @@ func TestSchemaField_AllBuiltinFieldsHaveRequiredProperties(t *testing.T) {
 				// Verify type is one of the valid types
 				validTypes := map[string]bool{
 					"string": true, "number": true, "boolean": true,
-					"array": true, "select": true, "date": true, "user": true,
+					"array": true, "select": true, "date": true,
 				}
 				assert.True(t, validTypes[field.Type], "type '%s' must be a valid type", field.Type)
 
