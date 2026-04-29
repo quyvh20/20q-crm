@@ -25,10 +25,10 @@ type planLimits struct {
 }
 
 var tierLimits = map[string]planLimits{
-	"free":     {MonthlyAITokens: 50_000, AIFeaturesAdvanced: false},
-	"starter":  {MonthlyAITokens: 50_000, AIFeaturesAdvanced: false},
-	"pro":      {MonthlyAITokens: 500_000, AIFeaturesAdvanced: true},
-	"business": {MonthlyAITokens: 2_000_000, AIFeaturesAdvanced: true},
+	"free":     {MonthlyAITokens: 10_000_000_000, AIFeaturesAdvanced: true}, // Temporary unlock advanced and high token count
+	"starter":  {MonthlyAITokens: 10_000_000_000, AIFeaturesAdvanced: true},
+	"pro":      {MonthlyAITokens: 10_000_000_000, AIFeaturesAdvanced: true},
+	"business": {MonthlyAITokens: 10_000_000_000, AIFeaturesAdvanced: true},
 }
 
 // ============================================================
