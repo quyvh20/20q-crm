@@ -109,7 +109,7 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
       .filter(Boolean) as SchemaEntity[];
   }, [allEntities, search]);
 
-  const handleSelect = (entity: SchemaEntity, field: SchemaField) => {
+  const handleSelect = (_entity: SchemaEntity, field: SchemaField) => {
     onChange(field.path, field);
     setIsOpen(false);
     setSearch('');
