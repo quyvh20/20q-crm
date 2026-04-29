@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { ACTION_LABELS, ACTION_ICONS, TEMPLATE_VARIABLES, type ActionSpec } from '../types';
+import { ACTION_LABELS, ACTION_ICONS, type ActionSpec } from '../types';
 import { useBuilderStore } from '../store';
 
 export const ActionConfigPanel: React.FC = () => {
@@ -178,10 +178,12 @@ const Field: React.FC<FieldProps> = ({ label, value, onChange, placeholder, type
 const TemplateHelp: React.FC = () => {
   const schema = useBuilderStore((s) => s.schema);
   const schemaLoading = useBuilderStore((s) => s.schemaLoading);
+  const schemaError = useBuilderStore((s) => s.schemaError);
+  const invalidateSchema = useBuilderStore((s) => s.invalidateSchema);
 
-  // Build template variables from schema if available, fallback to hardcoded list
+  // Build template variables from schema — no hardcoded fallback
   const variables = useMemo(() => {
-    if (!schema) return TEMPLATE_VARIABLES;
+    if (!schema) return [];
     const allEntities = [...schema.entities, ...(schema.custom_objects || [])];
     return allEntities.flatMap((e) =>
       e.fields.map((f) => ({ path: f.path, label: `${e.label}: ${f.label}` }))
@@ -201,6 +203,18 @@ const TemplateHelp: React.FC = () => {
             />
           ))}
         </div>
+      ) : schemaError ? (
+        <div className="flex items-center gap-2 p-2 rounded-lg bg-red-500/10 border border-red-500/30">
+          <span className="text-xs text-red-400 flex-1">Failed to load variables</span>
+          <button
+            onClick={invalidateSchema}
+            className="text-xs text-red-300 hover:text-white underline"
+          >
+            Retry
+          </button>
+        </div>
+      ) : variables.length === 0 ? (
+        <p className="text-xs text-gray-600 italic">No template variables available</p>
       ) : (
         <div className="flex flex-wrap gap-1">
           {variables.map((v) => (

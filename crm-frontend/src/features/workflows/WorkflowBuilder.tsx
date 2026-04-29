@@ -133,7 +133,7 @@ export const WorkflowBuilder: React.FC = () => {
     return <ActionPalette />;
   };
 
-  return (
+   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd2}>
       <div className="flex h-[calc(100vh-64px)]">
         {/* Left sidebar — palette + config */}
@@ -157,6 +157,20 @@ export const WorkflowBuilder: React.FC = () => {
               className="w-full bg-transparent text-sm text-gray-400 placeholder-gray-700 focus:outline-none resize-none mt-2"
             />
           </div>
+
+          {/* Schema error banner */}
+          {store.schemaError && (
+            <div className="mx-4 mt-3 flex items-center gap-2 p-2.5 rounded-lg bg-red-500/10 border border-red-500/30">
+              <span className="text-xs text-red-400 flex-1">⚠ Schema: {store.schemaError}</span>
+              <button
+                onClick={() => store.invalidateSchema()}
+                className="text-xs text-red-300 hover:text-white underline whitespace-nowrap"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+
           <div className="flex-1 overflow-y-auto p-4">
             {renderConfigPanel()}
           </div>
@@ -168,12 +182,22 @@ export const WorkflowBuilder: React.FC = () => {
             >
               {store.saving ? 'Saving...' : store.workflowId ? 'Save Changes' : 'Create Workflow'}
             </button>
-            <button
-              onClick={() => navigate('/workflows')}
-              className="w-full py-2 rounded-xl border border-gray-700 text-gray-400 text-sm hover:text-white hover:border-gray-600 transition-colors"
-            >
-              ← Back to Workflows
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={() => navigate('/workflows')}
+                className="flex-1 py-2 rounded-xl border border-gray-700 text-gray-400 text-sm hover:text-white hover:border-gray-600 transition-colors"
+              >
+                ← Back
+              </button>
+              <button
+                onClick={() => store.invalidateSchema()}
+                disabled={store.schemaLoading}
+                title="Refresh schema (after adding tags, fields, or stages in Settings)"
+                className="px-3 py-2 rounded-xl border border-gray-700 text-gray-500 text-sm hover:text-white hover:border-gray-600 transition-colors disabled:opacity-50"
+              >
+                {store.schemaLoading ? '⟳' : '↻'} Schema
+              </button>
+            </div>
           </div>
         </div>
 

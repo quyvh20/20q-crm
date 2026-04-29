@@ -19,6 +19,7 @@ interface BuilderState {
   // Schema (fetched once on builder mount)
   schema: WorkflowSchema | null;
   schemaLoading: boolean;
+  schemaError: string | null;
 
   // Actions
   setName: (name: string) => void;
@@ -34,6 +35,7 @@ interface BuilderState {
   save: () => Promise<void>;
   loadWorkflow: (id: string) => Promise<void>;
   fetchSchema: () => Promise<void>;
+  invalidateSchema: () => void;
   reset: () => void;
 }
 
@@ -63,6 +65,7 @@ const initialState = {
   saving: false,
   schema: null as WorkflowSchema | null,
   schemaLoading: false,
+  schemaError: null as string | null,
 };
 
 // Singleton promise so concurrent fetchSchema() calls share one request
@@ -205,7 +208,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
     // Already loaded → skip
     if (get().schema) return;
 
-    set({ schemaLoading: true });
+    set({ schemaLoading: true, schemaError: null });
     try {
       // Deduplicate concurrent fetches with a singleton promise
       if (!schemaFetchPromise) {
@@ -214,16 +217,26 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       const data = await schemaFetchPromise;
       set({ schema: data });
     } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to load schema';
       console.error('Failed to load workflow schema:', err);
+      set({ schemaError: message });
     } finally {
       set({ schemaLoading: false });
       schemaFetchPromise = null;
     }
   },
 
+  invalidateSchema: () => {
+    // Clear cached schema and re-fetch from server.
+    // Call this after settings mutations (tags, stages, custom fields, custom objects).
+    schemaFetchPromise = null;
+    set({ schema: null, schemaError: null });
+    get().fetchSchema();
+  },
+
   reset: () => {
     // Preserve schema across resets — it doesn't change when navigating between workflows
-    const { schema } = get();
-    set({ ...initialState, schema, errors: {} });
+    const { schema, schemaError } = get();
+    set({ ...initialState, schema, schemaError, errors: {} });
   },
 }));

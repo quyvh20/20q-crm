@@ -1,10 +1,10 @@
 import React, { useMemo } from 'react';
-import { CONDITION_OPERATORS, type ConditionGroup, type ConditionRule } from '../types';
+import { type ConditionGroup, type ConditionRule } from '../types';
 import { useBuilderStore } from '../store';
 import { getOperatorsForType } from '../useSchema';
 
 export const ConditionConfigPanel: React.FC = () => {
-  const { conditions, setConditions, schema, schemaLoading } = useBuilderStore();
+  const { conditions, setConditions, schema, schemaLoading, schemaError, invalidateSchema } = useBuilderStore();
 
   const group: ConditionGroup = conditions || { op: 'AND', rules: [] };
 
@@ -57,6 +57,19 @@ export const ConditionConfigPanel: React.FC = () => {
       <h3 className="text-lg font-semibold text-white">Conditions</h3>
       <p className="text-xs text-gray-400">Only execute actions when all/any conditions match.</p>
 
+      {/* Schema error banner — no silent fallback to stale data */}
+      {schemaError && (
+        <div className="flex items-center gap-2 p-2.5 rounded-lg bg-red-500/10 border border-red-500/30">
+          <span className="text-xs text-red-400 flex-1">⚠ Failed to load fields: {schemaError}</span>
+          <button
+            onClick={invalidateSchema}
+            className="text-xs text-red-300 hover:text-white underline whitespace-nowrap"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
       <div className="flex gap-2">
         <button
           onClick={() => updateGroup({ op: 'AND' })}
@@ -79,33 +92,26 @@ export const ConditionConfigPanel: React.FC = () => {
       <div className="space-y-3">
         {group.rules.map((rule, idx) => {
           const fieldType = getFieldType(rule.field || '');
-          const operators = fieldOptions.length > 0 ? getOperatorsForType(fieldType) : CONDITION_OPERATORS;
+          const operators = getOperatorsForType(fieldType);
 
           return (
             <div key={idx} className="flex gap-2 items-start">
               <div className="flex-1 space-y-2">
-                {/* Field picker — skeleton while loading, dropdown when ready */}
+                {/* Field picker — skeleton while loading, dropdown when ready, error state shown above */}
                 {schemaLoading ? (
                   <div className="w-full h-[34px] bg-gray-800 border border-gray-700 rounded-lg animate-pulse" />
-                ) : fieldOptions.length > 0 ? (
+                ) : (
                   <select
                     value={rule.field || ''}
                     onChange={(e) => updateRule(idx, { field: e.target.value, operator: 'eq', value: '' })}
-                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:border-purple-500 focus:outline-none"
+                    disabled={!!schemaError}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:border-purple-500 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    <option value="">Select field…</option>
+                    <option value="">{schemaError ? 'Schema unavailable' : 'Select field…'}</option>
                     {fieldOptions.map((f) => (
                       <option key={f.path} value={f.path}>{f.label}</option>
                     ))}
                   </select>
-                ) : (
-                  <input
-                    type="text"
-                    placeholder="Field path (e.g. contact.tags)"
-                    value={rule.field || ''}
-                    onChange={(e) => updateRule(idx, { field: e.target.value })}
-                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:border-purple-500 focus:outline-none"
-                  />
                 )}
                 <div className="flex gap-2">
                   {schemaLoading ? (
@@ -148,10 +154,10 @@ export const ConditionConfigPanel: React.FC = () => {
 
       <button
         onClick={addRule}
-        disabled={schemaLoading}
+        disabled={schemaLoading || !!schemaError}
         className="w-full py-2 border border-dashed border-gray-700 rounded-lg text-sm text-gray-400 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        {schemaLoading ? 'Loading fields…' : '+ Add Rule'}
+        {schemaLoading ? 'Loading fields…' : schemaError ? 'Schema unavailable' : '+ Add Rule'}
       </button>
 
       {conditions && group.rules.length > 0 && (
