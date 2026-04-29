@@ -141,6 +141,7 @@ export interface SchemaStage {
   id: string;
   name: string;
   color: string;
+  order: number;
 }
 
 export interface SchemaTag {

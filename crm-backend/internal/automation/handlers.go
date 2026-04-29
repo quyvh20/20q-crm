@@ -723,14 +723,15 @@ func (h *Handler) GetWorkflowSchema(c *gin.Context) {
 	// 4. Pipeline stages
 	var stages []SchemaStage
 	type stageRow struct {
-		ID    uuid.UUID `gorm:"column:id"`
-		Name  string    `gorm:"column:name"`
-		Color string    `gorm:"column:color"`
+		ID       uuid.UUID `gorm:"column:id"`
+		Name     string    `gorm:"column:name"`
+		Color    string    `gorm:"column:color"`
+		Position int       `gorm:"column:position"`
 	}
 	var stageRows []stageRow
 	if err := h.db.WithContext(ctx).Table("pipeline_stages").Where("org_id = ? AND deleted_at IS NULL", orgID).Order("position ASC").Find(&stageRows).Error; err == nil {
 		for _, s := range stageRows {
-			stages = append(stages, SchemaStage{ID: s.ID.String(), Name: s.Name, Color: s.Color})
+			stages = append(stages, SchemaStage{ID: s.ID.String(), Name: s.Name, Color: s.Color, Order: s.Position})
 		}
 	}
 

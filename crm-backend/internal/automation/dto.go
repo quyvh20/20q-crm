@@ -235,6 +235,7 @@ type SchemaStage struct {
 	ID    string `json:"id"`
 	Name  string `json:"name"`
 	Color string `json:"color"`
+	Order int    `json:"order"`
 }
 
 // SchemaTag represents an org tag for tag pickers.
