@@ -7,7 +7,7 @@ const TRIGGER_TYPES: TriggerType[] = [
 ];
 
 export const TriggerConfigPanel: React.FC = () => {
-  const { trigger, setTrigger } = useBuilderStore();
+  const { trigger, setTrigger, schema, schemaLoading } = useBuilderStore();
 
   return (
     <div className="space-y-4">
@@ -30,23 +30,53 @@ export const TriggerConfigPanel: React.FC = () => {
         <>
           <div>
             <label className="block text-sm text-gray-400 mb-2">From Stage</label>
-            <input
-              type="text"
-              value={(trigger.params?.from_stage as string) || ''}
-              onChange={(e) => setTrigger({ ...trigger, params: { ...trigger.params, from_stage: e.target.value || '*' } })}
-              placeholder="* (any stage)"
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none"
-            />
+            {schemaLoading ? (
+              <div className="w-full h-[38px] bg-gray-800 border border-gray-700 rounded-lg animate-pulse" />
+            ) : schema && schema.stages.length > 0 ? (
+              <select
+                value={(trigger.params?.from_stage as string) || '*'}
+                onChange={(e) => setTrigger({ ...trigger, params: { ...trigger.params, from_stage: e.target.value } })}
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none"
+              >
+                <option value="*">Any stage</option>
+                {schema.stages.map((s) => (
+                  <option key={s.id} value={s.name}>{s.name}</option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={(trigger.params?.from_stage as string) || ''}
+                onChange={(e) => setTrigger({ ...trigger, params: { ...trigger.params, from_stage: e.target.value || '*' } })}
+                placeholder="* (any stage)"
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none"
+              />
+            )}
           </div>
           <div>
             <label className="block text-sm text-gray-400 mb-2">To Stage</label>
-            <input
-              type="text"
-              value={(trigger.params?.to_stage as string) || ''}
-              onChange={(e) => setTrigger({ ...trigger, params: { ...trigger.params, to_stage: e.target.value } })}
-              placeholder="e.g. won"
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none"
-            />
+            {schemaLoading ? (
+              <div className="w-full h-[38px] bg-gray-800 border border-gray-700 rounded-lg animate-pulse" />
+            ) : schema && schema.stages.length > 0 ? (
+              <select
+                value={(trigger.params?.to_stage as string) || ''}
+                onChange={(e) => setTrigger({ ...trigger, params: { ...trigger.params, to_stage: e.target.value } })}
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none"
+              >
+                <option value="">Select stage…</option>
+                {schema.stages.map((s) => (
+                  <option key={s.id} value={s.name}>{s.name}</option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={(trigger.params?.to_stage as string) || ''}
+                onChange={(e) => setTrigger({ ...trigger, params: { ...trigger.params, to_stage: e.target.value } })}
+                placeholder="e.g. won"
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none"
+              />
+            )}
           </div>
         </>
       )}

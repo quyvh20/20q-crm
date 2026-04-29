@@ -4,7 +4,7 @@ import { useBuilderStore } from '../store';
 import { getOperatorsForType } from '../useSchema';
 
 export const ConditionConfigPanel: React.FC = () => {
-  const { conditions, setConditions, schema } = useBuilderStore();
+  const { conditions, setConditions, schema, schemaLoading } = useBuilderStore();
 
   const group: ConditionGroup = conditions || { op: 'AND', rules: [] };
 
@@ -84,8 +84,10 @@ export const ConditionConfigPanel: React.FC = () => {
           return (
             <div key={idx} className="flex gap-2 items-start">
               <div className="flex-1 space-y-2">
-                {/* Field picker — dropdown when schema loaded, text input as fallback */}
-                {fieldOptions.length > 0 ? (
+                {/* Field picker — skeleton while loading, dropdown when ready */}
+                {schemaLoading ? (
+                  <div className="w-full h-[34px] bg-gray-800 border border-gray-700 rounded-lg animate-pulse" />
+                ) : fieldOptions.length > 0 ? (
                   <select
                     value={rule.field || ''}
                     onChange={(e) => updateRule(idx, { field: e.target.value, operator: 'eq', value: '' })}
@@ -106,15 +108,19 @@ export const ConditionConfigPanel: React.FC = () => {
                   />
                 )}
                 <div className="flex gap-2">
-                  <select
-                    value={rule.operator || 'eq'}
-                    onChange={(e) => updateRule(idx, { operator: e.target.value })}
-                    className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-white focus:border-purple-500 focus:outline-none"
-                  >
-                    {operators.map((op) => (
-                      <option key={op.value} value={op.value}>{op.label}</option>
-                    ))}
-                  </select>
+                  {schemaLoading ? (
+                    <div className="flex-1 h-[34px] bg-gray-800 border border-gray-700 rounded-lg animate-pulse" />
+                  ) : (
+                    <select
+                      value={rule.operator || 'eq'}
+                      onChange={(e) => updateRule(idx, { operator: e.target.value })}
+                      className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-white focus:border-purple-500 focus:outline-none"
+                    >
+                      {operators.map((op) => (
+                        <option key={op.value} value={op.value}>{op.label}</option>
+                      ))}
+                    </select>
+                  )}
                   {!['is_empty', 'is_not_empty'].includes(rule.operator || '') && (
                     <input
                       type="text"
@@ -142,9 +148,10 @@ export const ConditionConfigPanel: React.FC = () => {
 
       <button
         onClick={addRule}
-        className="w-full py-2 border border-dashed border-gray-700 rounded-lg text-sm text-gray-400 hover:text-white hover:border-gray-500 transition-colors"
+        disabled={schemaLoading}
+        className="w-full py-2 border border-dashed border-gray-700 rounded-lg text-sm text-gray-400 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        + Add Rule
+        {schemaLoading ? 'Loading fields…' : '+ Add Rule'}
       </button>
 
       {conditions && group.rules.length > 0 && (

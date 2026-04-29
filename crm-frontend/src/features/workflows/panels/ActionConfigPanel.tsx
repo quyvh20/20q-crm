@@ -177,6 +177,7 @@ const Field: React.FC<FieldProps> = ({ label, value, onChange, placeholder, type
 
 const TemplateHelp: React.FC = () => {
   const schema = useBuilderStore((s) => s.schema);
+  const schemaLoading = useBuilderStore((s) => s.schemaLoading);
 
   // Build template variables from schema if available, fallback to hardcoded list
   const variables = useMemo(() => {
@@ -190,20 +191,32 @@ const TemplateHelp: React.FC = () => {
   return (
     <div className="mt-4 pt-4 border-t border-gray-700">
       <p className="text-xs text-gray-500 mb-2">Available Template Variables</p>
-      <div className="flex flex-wrap gap-1">
-        {variables.map((v) => (
-          <button
-            key={v.path}
-            onClick={() => {
-              navigator.clipboard.writeText(`{{${v.path}}}`);
-            }}
-            title={`Copy {{${v.path}}}`}
-            className="px-2 py-0.5 rounded bg-gray-800 text-xs text-gray-400 hover:text-white hover:bg-gray-700 transition-colors font-mono"
-          >
-            {v.path}
-          </button>
-        ))}
-      </div>
+      {schemaLoading ? (
+        <div className="flex flex-wrap gap-1">
+          {[...Array(8)].map((_, i) => (
+            <div
+              key={i}
+              className="h-5 rounded bg-gray-800 animate-pulse"
+              style={{ width: `${60 + Math.random() * 50}px` }}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-1">
+          {variables.map((v) => (
+            <button
+              key={v.path}
+              onClick={() => {
+                navigator.clipboard.writeText(`{{${v.path}}}`);
+              }}
+              title={`Copy {{${v.path}}}`}
+              className="px-2 py-0.5 rounded bg-gray-800 text-xs text-gray-400 hover:text-white hover:bg-gray-700 transition-colors font-mono"
+            >
+              {v.path}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 };
