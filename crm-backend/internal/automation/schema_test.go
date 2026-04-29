@@ -698,3 +698,373 @@ func TestGetWorkflowSchema_CacheHitAndInvalidate(t *testing.T) {
 	assert.Len(t, resp.Data.Stages, 2, "after invalidation + new stage insert, should see 2 stages")
 }
 
+// TestSchemaEndpoint_ReturnsAllCategories asserts that the schema response
+// contains all 7 categories:
+//  1. entities[].key = "contact"   (built-in)
+//  2. entities[].key = "deal"      (built-in)
+//  3. entities[].key = "trigger"   (built-in)
+//  4. custom_objects               (org-scoped)
+//  5. stages                       (org-scoped)
+//  6. tags                         (org-scoped)
+//  7. users                        (org-scoped)
+func TestSchemaEndpoint_ReturnsAllCategories(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	orgID := uuid.New()
+
+	// --- Seed all tables so every category is populated ---
+	db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_stages (
+		id UUID PRIMARY KEY, org_id UUID NOT NULL, name TEXT, position INT DEFAULT 0,
+		color TEXT DEFAULT '#000', is_won BOOLEAN DEFAULT FALSE, is_lost BOOLEAN DEFAULT FALSE,
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS tags (
+		id UUID PRIMARY KEY, org_id UUID NOT NULL, name TEXT, color TEXT DEFAULT '#000',
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS users (
+		id UUID PRIMARY KEY, org_id UUID, email TEXT, first_name TEXT DEFAULT '', last_name TEXT DEFAULT '',
+		full_name TEXT DEFAULT '', role TEXT DEFAULT 'viewer',
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS org_users (
+		user_id UUID NOT NULL, org_id UUID NOT NULL, role_id UUID NOT NULL,
+		status TEXT DEFAULT 'active', joined_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ,
+		PRIMARY KEY (user_id, org_id))`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS org_settings (
+		org_id UUID PRIMARY KEY, custom_field_defs JSONB DEFAULT '[]',
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS custom_object_defs (
+		id UUID PRIMARY KEY, org_id UUID NOT NULL, slug TEXT, label TEXT, label_plural TEXT,
+		icon TEXT DEFAULT '📦', fields JSONB DEFAULT '[]',
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
+
+	// Seed 1 row per category
+	db.Exec(`INSERT INTO pipeline_stages (id, org_id, name, position, color) VALUES (?, ?, 'Lead', 0, '#3B82F6')`, uuid.New(), orgID)
+	db.Exec(`INSERT INTO tags (id, org_id, name, color) VALUES (?, ?, 'VIP', '#F59E0B')`, uuid.New(), orgID)
+	userID := uuid.New()
+	db.Exec(`INSERT INTO users (id, org_id, email, first_name) VALUES (?, ?, 'alice@test.com', 'Alice')`, userID, orgID)
+	db.Exec(`INSERT INTO org_users (user_id, org_id, role_id) VALUES (?, ?, ?)`, userID, orgID, uuid.New())
+	db.Exec(`INSERT INTO custom_object_defs (id, org_id, slug, label, label_plural, fields) VALUES (?, ?, 'ticket', 'Ticket', 'Tickets', '[{"key":"priority","label":"Priority","type":"select","options":["Low","High"]}]'::jsonb)`, uuid.New(), orgID)
+	db.Exec(`INSERT INTO org_settings (org_id, custom_field_defs) VALUES (?, '[{"key":"source","label":"Source","type":"string","entity_type":"contact"}]'::jsonb)`, orgID)
+
+	// --- Build handler + router ---
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	fakeAuth := func(c *gin.Context) {
+		c.Set("org_id", orgID)
+		c.Set("user_id", userID)
+		c.Next()
+	}
+	handler := &Handler{
+		engine:      makeEngine(db, nil),
+		repo:        NewRepository(db),
+		logger:      slog.Default(),
+		db:          db,
+		schemaCache: NewSchemaCache(60 * time.Second),
+	}
+	handler.RegisterRoutes(router, fakeAuth, func(roles ...string) gin.HandlerFunc {
+		return func(c *gin.Context) { c.Next() }
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/workflows/schema", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+
+	var resp struct {
+		Data SchemaResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	schema := resp.Data
+
+	// ==========================================================
+	// Category 1-3: Built-in entities (contact, deal, trigger)
+	// ==========================================================
+	require.GreaterOrEqual(t, len(schema.Entities), 3,
+		"entities must contain at least 3 built-in categories (contact, deal, trigger)")
+
+	entityKeys := map[string]*SchemaEntity{}
+	for i := range schema.Entities {
+		entityKeys[schema.Entities[i].Key] = &schema.Entities[i]
+	}
+
+	// --- Category 1: Contact ---
+	contact, ok := entityKeys["contact"]
+	require.True(t, ok, "entities must include 'contact'")
+	assert.Equal(t, "Contact", contact.Label)
+	assert.Equal(t, "👤", contact.Icon)
+	assert.GreaterOrEqual(t, len(contact.Fields), 8, "contact should have ≥8 built-in fields")
+	// Verify custom field was appended
+	contactPaths := map[string]bool{}
+	for _, f := range contact.Fields {
+		contactPaths[f.Path] = true
+	}
+	assert.True(t, contactPaths["contact.custom_fields.source"],
+		"custom field 'source' should be appended to contact entity")
+
+	// --- Category 2: Deal ---
+	deal, ok := entityKeys["deal"]
+	require.True(t, ok, "entities must include 'deal'")
+	assert.Equal(t, "Deal", deal.Label)
+	assert.Equal(t, "💰", deal.Icon)
+	assert.GreaterOrEqual(t, len(deal.Fields), 8, "deal should have ≥8 built-in fields")
+
+	// --- Category 3: Trigger ---
+	trigger, ok := entityKeys["trigger"]
+	require.True(t, ok, "entities must include 'trigger'")
+	assert.Equal(t, "Trigger Event", trigger.Label)
+	assert.Equal(t, "⚡", trigger.Icon)
+	assert.GreaterOrEqual(t, len(trigger.Fields), 3, "trigger should have ≥3 fields (type, from_stage, to_stage)")
+
+	// ==========================================================
+	// Category 4: Custom Objects
+	// ==========================================================
+	require.GreaterOrEqual(t, len(schema.CustomObjects), 1,
+		"custom_objects must have ≥1 entry")
+	assert.Equal(t, "ticket", schema.CustomObjects[0].Key)
+	assert.Equal(t, "Ticket", schema.CustomObjects[0].Label)
+	assert.GreaterOrEqual(t, len(schema.CustomObjects[0].Fields), 1)
+
+	// ==========================================================
+	// Category 5: Pipeline Stages
+	// ==========================================================
+	require.GreaterOrEqual(t, len(schema.Stages), 1,
+		"stages must have ≥1 entry")
+	assert.Equal(t, "Lead", schema.Stages[0].Name)
+	assert.NotEmpty(t, schema.Stages[0].ID, "stage must have an ID")
+	assert.NotEmpty(t, schema.Stages[0].Color, "stage must have a color")
+	assert.Equal(t, 0, schema.Stages[0].Order, "first stage should have order=0")
+
+	// ==========================================================
+	// Category 6: Tags
+	// ==========================================================
+	require.GreaterOrEqual(t, len(schema.Tags), 1,
+		"tags must have ≥1 entry")
+	assert.Equal(t, "VIP", schema.Tags[0].Name)
+	assert.NotEmpty(t, schema.Tags[0].ID, "tag must have an ID")
+	assert.NotEmpty(t, schema.Tags[0].Color, "tag must have a color")
+
+	// ==========================================================
+	// Category 7: Users (org members)
+	// ==========================================================
+	require.GreaterOrEqual(t, len(schema.Users), 1,
+		"users must have ≥1 entry")
+	assert.Equal(t, "alice@test.com", schema.Users[0].Email)
+	assert.NotEmpty(t, schema.Users[0].ID, "user must have an ID")
+	assert.NotEmpty(t, schema.Users[0].Name, "user must have a name")
+
+	// ==========================================================
+	// Summary: all 7 categories accounted for
+	// ==========================================================
+	t.Logf("All 7 categories present: contact(%d fields), deal(%d fields), trigger(%d fields), "+
+		"custom_objects(%d), stages(%d), tags(%d), users(%d)",
+		len(contact.Fields), len(deal.Fields), len(trigger.Fields),
+		len(schema.CustomObjects), len(schema.Stages), len(schema.Tags), len(schema.Users))
+}
+
+// TestSchemaEndpoint_ScopedByOrg verifies that org A does NOT see
+// org B's custom fields, custom objects, stages, tags, or users.
+// Covers all 5 org-scoped categories — the 3 built-in entities are
+// static and identical for every org, so they are excluded from this test.
+func TestSchemaEndpoint_ScopedByOrg(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	orgA := uuid.New()
+	orgB := uuid.New()
+
+	// --- Create all tables ---
+	db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_stages (
+		id UUID PRIMARY KEY, org_id UUID NOT NULL, name TEXT, position INT DEFAULT 0,
+		color TEXT DEFAULT '#000', is_won BOOLEAN DEFAULT FALSE, is_lost BOOLEAN DEFAULT FALSE,
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS tags (
+		id UUID PRIMARY KEY, org_id UUID NOT NULL, name TEXT, color TEXT DEFAULT '#000',
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS users (
+		id UUID PRIMARY KEY, org_id UUID, email TEXT, first_name TEXT DEFAULT '', last_name TEXT DEFAULT '',
+		full_name TEXT DEFAULT '', role TEXT DEFAULT 'viewer',
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS org_users (
+		user_id UUID NOT NULL, org_id UUID NOT NULL, role_id UUID NOT NULL,
+		status TEXT DEFAULT 'active', joined_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ,
+		PRIMARY KEY (user_id, org_id))`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS org_settings (
+		org_id UUID PRIMARY KEY, custom_field_defs JSONB DEFAULT '[]',
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS custom_object_defs (
+		id UUID PRIMARY KEY, org_id UUID NOT NULL, slug TEXT, label TEXT, label_plural TEXT,
+		icon TEXT DEFAULT '📦', fields JSONB DEFAULT '[]',
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
+
+	// --- Seed Org A data ---
+	db.Exec(`INSERT INTO pipeline_stages (id, org_id, name, position, color) VALUES (?, ?, 'A-Lead', 0, '#A00')`, uuid.New(), orgA)
+	db.Exec(`INSERT INTO tags (id, org_id, name, color) VALUES (?, ?, 'A-VIP', '#A11')`, uuid.New(), orgA)
+	userA := uuid.New()
+	db.Exec(`INSERT INTO users (id, org_id, email, first_name) VALUES (?, ?, 'alice@orga.com', 'Alice')`, userA, orgA)
+	db.Exec(`INSERT INTO org_users (user_id, org_id, role_id) VALUES (?, ?, ?)`, userA, orgA, uuid.New())
+	db.Exec(`INSERT INTO org_settings (org_id, custom_field_defs) VALUES (?, '[{"key":"industry","label":"Industry","type":"select","entity_type":"contact","options":["Tech","Finance"]}]'::jsonb)`, orgA)
+	db.Exec(`INSERT INTO custom_object_defs (id, org_id, slug, label, label_plural, fields) VALUES (?, ?, 'project', 'Project', 'Projects', '[{"key":"status","label":"Status","type":"string"}]'::jsonb)`, uuid.New(), orgA)
+
+	// --- Seed Org B data (different everything) ---
+	db.Exec(`INSERT INTO pipeline_stages (id, org_id, name, position, color) VALUES (?, ?, 'B-Discovery', 0, '#B00')`, uuid.New(), orgB)
+	db.Exec(`INSERT INTO pipeline_stages (id, org_id, name, position, color) VALUES (?, ?, 'B-Closed', 1, '#B11')`, uuid.New(), orgB)
+	db.Exec(`INSERT INTO tags (id, org_id, name, color) VALUES (?, ?, 'B-Enterprise', '#B22')`, uuid.New(), orgB)
+	db.Exec(`INSERT INTO tags (id, org_id, name, color) VALUES (?, ?, 'B-Partner', '#B33')`, uuid.New(), orgB)
+	userB := uuid.New()
+	db.Exec(`INSERT INTO users (id, org_id, email, first_name) VALUES (?, ?, 'bob@orgb.com', 'Bob')`, userB, orgB)
+	db.Exec(`INSERT INTO org_users (user_id, org_id, role_id) VALUES (?, ?, ?)`, userB, orgB, uuid.New())
+	db.Exec(`INSERT INTO org_settings (org_id, custom_field_defs) VALUES (?, '[{"key":"segment","label":"Segment","type":"string","entity_type":"deal"},{"key":"region","label":"Region","type":"select","entity_type":"contact","options":["NA","EMEA","APAC"]}]'::jsonb)`, orgB)
+	db.Exec(`INSERT INTO custom_object_defs (id, org_id, slug, label, label_plural, fields) VALUES (?, ?, 'subscription', 'Subscription', 'Subscriptions', '[{"key":"plan","label":"Plan","type":"select","options":["Free","Pro"]}]'::jsonb)`, uuid.New(), orgB)
+
+	// --- Helper: fetch schema as a given org ---
+	fetchSchema := func(orgID, userID uuid.UUID) SchemaResponse {
+		gin.SetMode(gin.TestMode)
+		router := gin.New()
+		auth := func(c *gin.Context) {
+			c.Set("org_id", orgID)
+			c.Set("user_id", userID)
+			c.Next()
+		}
+		handler := &Handler{
+			engine:      makeEngine(db, nil),
+			repo:        NewRepository(db),
+			logger:      slog.Default(),
+			db:          db,
+			schemaCache: NewSchemaCache(60 * time.Second),
+		}
+		handler.RegisterRoutes(router, auth, func(roles ...string) gin.HandlerFunc {
+			return func(c *gin.Context) { c.Next() }
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/api/workflows/schema", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+
+		var resp struct {
+			Data SchemaResponse `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		return resp.Data
+	}
+
+	// ==========================================================
+	// Request as Org A
+	// ==========================================================
+	schemaA := fetchSchema(orgA, userA)
+
+	// --- Stages: only A-Lead ---
+	require.Len(t, schemaA.Stages, 1, "org A should see exactly 1 stage")
+	assert.Equal(t, "A-Lead", schemaA.Stages[0].Name)
+
+	// --- Tags: only A-VIP ---
+	require.Len(t, schemaA.Tags, 1, "org A should see exactly 1 tag")
+	assert.Equal(t, "A-VIP", schemaA.Tags[0].Name)
+
+	// --- Users: only Alice ---
+	require.Len(t, schemaA.Users, 1, "org A should see exactly 1 user")
+	assert.Equal(t, "alice@orga.com", schemaA.Users[0].Email)
+
+	// --- Custom Objects: only 'project' ---
+	require.Len(t, schemaA.CustomObjects, 1, "org A should see exactly 1 custom object")
+	assert.Equal(t, "project", schemaA.CustomObjects[0].Key)
+
+	// --- Custom Fields: only 'industry' appended to contact ---
+	contactA := findEntity(schemaA.Entities, "contact")
+	require.NotNil(t, contactA)
+	customFieldPathsA := collectCustomFieldPaths(contactA.Fields)
+	assert.Contains(t, customFieldPathsA, "contact.custom_fields.industry",
+		"org A should have custom field 'industry' on contact")
+	assert.NotContains(t, customFieldPathsA, "contact.custom_fields.region",
+		"org A must NOT see org B's custom field 'region'")
+
+	dealA := findEntity(schemaA.Entities, "deal")
+	require.NotNil(t, dealA)
+	customFieldPathsDealA := collectCustomFieldPaths(dealA.Fields)
+	assert.NotContains(t, customFieldPathsDealA, "deal.custom_fields.segment",
+		"org A must NOT see org B's deal custom field 'segment'")
+
+	// ==========================================================
+	// Request as Org B
+	// ==========================================================
+	schemaB := fetchSchema(orgB, userB)
+
+	// --- Stages: B-Discovery and B-Closed ---
+	require.Len(t, schemaB.Stages, 2, "org B should see exactly 2 stages")
+	stageNamesB := []string{schemaB.Stages[0].Name, schemaB.Stages[1].Name}
+	assert.Contains(t, stageNamesB, "B-Discovery")
+	assert.Contains(t, stageNamesB, "B-Closed")
+
+	// --- Tags: B-Enterprise and B-Partner ---
+	require.Len(t, schemaB.Tags, 2, "org B should see exactly 2 tags")
+	tagNamesB := []string{schemaB.Tags[0].Name, schemaB.Tags[1].Name}
+	assert.Contains(t, tagNamesB, "B-Enterprise")
+	assert.Contains(t, tagNamesB, "B-Partner")
+
+	// --- Users: only Bob ---
+	require.Len(t, schemaB.Users, 1, "org B should see exactly 1 user")
+	assert.Equal(t, "bob@orgb.com", schemaB.Users[0].Email)
+
+	// --- Custom Objects: only 'subscription' ---
+	require.Len(t, schemaB.CustomObjects, 1, "org B should see exactly 1 custom object")
+	assert.Equal(t, "subscription", schemaB.CustomObjects[0].Key)
+
+	// --- Custom Fields: 'region' on contact, 'segment' on deal ---
+	contactB := findEntity(schemaB.Entities, "contact")
+	require.NotNil(t, contactB)
+	customFieldPathsB := collectCustomFieldPaths(contactB.Fields)
+	assert.Contains(t, customFieldPathsB, "contact.custom_fields.region",
+		"org B should have custom field 'region' on contact")
+	assert.NotContains(t, customFieldPathsB, "contact.custom_fields.industry",
+		"org B must NOT see org A's custom field 'industry'")
+
+	dealB := findEntity(schemaB.Entities, "deal")
+	require.NotNil(t, dealB)
+	customFieldPathsDealB := collectCustomFieldPaths(dealB.Fields)
+	assert.Contains(t, customFieldPathsDealB, "deal.custom_fields.segment",
+		"org B should have custom field 'segment' on deal")
+
+	t.Logf("Org isolation verified: A sees %d stages, %d tags, %d users, %d objects, %d custom fields; "+
+		"B sees %d stages, %d tags, %d users, %d objects, %d custom fields",
+		len(schemaA.Stages), len(schemaA.Tags), len(schemaA.Users), len(schemaA.CustomObjects), len(customFieldPathsA),
+		len(schemaB.Stages), len(schemaB.Tags), len(schemaB.Users), len(schemaB.CustomObjects), len(customFieldPathsB)+len(customFieldPathsDealB))
+}
+
+// findEntity looks up a SchemaEntity by key within a slice.
+func findEntity(entities []SchemaEntity, key string) *SchemaEntity {
+	for i := range entities {
+		if entities[i].Key == key {
+			return &entities[i]
+		}
+	}
+	return nil
+}
+
+// collectCustomFieldPaths filters field paths that contain "custom_fields".
+func collectCustomFieldPaths(fields []SchemaField) []string {
+	var paths []string
+	for _, f := range fields {
+		if len(f.Path) > 0 && contains(f.Path, "custom_fields") {
+			paths = append(paths, f.Path)
+		}
+	}
+	return paths
+}
+
+// contains checks if a string contains a substring (avoids importing strings).
+func contains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}

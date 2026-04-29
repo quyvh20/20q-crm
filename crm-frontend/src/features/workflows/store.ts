@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { TriggerSpec, ConditionGroup, ActionSpec } from './types';
 import { workflowSchema, validateActionIds, validateConditionDepth } from './schemas';
-import { createWorkflow, updateWorkflow, getWorkflow } from './api';
+import { createWorkflow, updateWorkflow, getWorkflow, getWorkflowSchema, type WorkflowSchema } from './api';
 
 interface BuilderState {
   workflowId: string | null;
@@ -16,6 +16,10 @@ interface BuilderState {
   errors: Record<string, string[]>;
   saving: boolean;
 
+  // Schema (fetched once on builder mount)
+  schema: WorkflowSchema | null;
+  schemaLoading: boolean;
+
   // Actions
   setName: (name: string) => void;
   setDescription: (desc: string) => void;
@@ -29,6 +33,7 @@ interface BuilderState {
   validate: () => boolean;
   save: () => Promise<void>;
   loadWorkflow: (id: string) => Promise<void>;
+  fetchSchema: () => Promise<void>;
   reset: () => void;
 }
 
@@ -56,7 +61,12 @@ const initialState = {
   isDirty: false,
   errors: {} as Record<string, string[]>,
   saving: false,
+  schema: null as WorkflowSchema | null,
+  schemaLoading: false,
 };
+
+// Singleton promise so concurrent fetchSchema() calls share one request
+let schemaFetchPromise: Promise<WorkflowSchema> | null = null;
 
 export const useBuilderStore = create<BuilderState>((set, get) => ({
   ...initialState,
@@ -191,5 +201,29 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
     });
   },
 
-  reset: () => set({ ...initialState, errors: {} }),
+  fetchSchema: async () => {
+    // Already loaded → skip
+    if (get().schema) return;
+
+    set({ schemaLoading: true });
+    try {
+      // Deduplicate concurrent fetches with a singleton promise
+      if (!schemaFetchPromise) {
+        schemaFetchPromise = getWorkflowSchema();
+      }
+      const data = await schemaFetchPromise;
+      set({ schema: data });
+    } catch (err) {
+      console.error('Failed to load workflow schema:', err);
+    } finally {
+      set({ schemaLoading: false });
+      schemaFetchPromise = null;
+    }
+  },
+
+  reset: () => {
+    // Preserve schema across resets — it doesn't change when navigating between workflows
+    const { schema } = get();
+    set({ ...initialState, schema, errors: {} });
+  },
 }));

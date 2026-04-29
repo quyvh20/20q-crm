@@ -34,6 +34,9 @@ export const WorkflowBuilder: React.FC = () => {
   const store = useBuilderStore();
 
   useEffect(() => {
+    // Fetch schema once on builder mount (cached in store + deduped)
+    store.fetchSchema();
+
     if (id && id !== 'new') {
       store.loadWorkflow(id);
     } else {

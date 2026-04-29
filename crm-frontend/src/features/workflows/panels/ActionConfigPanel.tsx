@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { ACTION_LABELS, ACTION_ICONS, TEMPLATE_VARIABLES, type ActionSpec } from '../types';
 import { useBuilderStore } from '../store';
 
@@ -175,22 +175,35 @@ const Field: React.FC<FieldProps> = ({ label, value, onChange, placeholder, type
 
 // --- Template variables reference ---
 
-const TemplateHelp: React.FC = () => (
-  <div className="mt-4 pt-4 border-t border-gray-700">
-    <p className="text-xs text-gray-500 mb-2">Available Template Variables</p>
-    <div className="flex flex-wrap gap-1">
-      {TEMPLATE_VARIABLES.map((v) => (
-        <button
-          key={v.path}
-          onClick={() => {
-            navigator.clipboard.writeText(`{{${v.path}}}`);
-          }}
-          title={`Copy {{${v.path}}}`}
-          className="px-2 py-0.5 rounded bg-gray-800 text-xs text-gray-400 hover:text-white hover:bg-gray-700 transition-colors font-mono"
-        >
-          {v.path}
-        </button>
-      ))}
+const TemplateHelp: React.FC = () => {
+  const schema = useBuilderStore((s) => s.schema);
+
+  // Build template variables from schema if available, fallback to hardcoded list
+  const variables = useMemo(() => {
+    if (!schema) return TEMPLATE_VARIABLES;
+    const allEntities = [...schema.entities, ...(schema.custom_objects || [])];
+    return allEntities.flatMap((e) =>
+      e.fields.map((f) => ({ path: f.path, label: `${e.label}: ${f.label}` }))
+    );
+  }, [schema]);
+
+  return (
+    <div className="mt-4 pt-4 border-t border-gray-700">
+      <p className="text-xs text-gray-500 mb-2">Available Template Variables</p>
+      <div className="flex flex-wrap gap-1">
+        {variables.map((v) => (
+          <button
+            key={v.path}
+            onClick={() => {
+              navigator.clipboard.writeText(`{{${v.path}}}`);
+            }}
+            title={`Copy {{${v.path}}}`}
+            className="px-2 py-0.5 rounded bg-gray-800 text-xs text-gray-400 hover:text-white hover:bg-gray-700 transition-colors font-mono"
+          >
+            {v.path}
+          </button>
+        ))}
+      </div>
     </div>
-  </div>
-);
+  );
+};

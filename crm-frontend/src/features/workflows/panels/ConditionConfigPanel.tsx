@@ -1,11 +1,25 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { CONDITION_OPERATORS, type ConditionGroup, type ConditionRule } from '../types';
 import { useBuilderStore } from '../store';
+import { getOperatorsForType } from '../useSchema';
 
 export const ConditionConfigPanel: React.FC = () => {
-  const { conditions, setConditions } = useBuilderStore();
+  const { conditions, setConditions, schema } = useBuilderStore();
 
   const group: ConditionGroup = conditions || { op: 'AND', rules: [] };
+
+  // Build flat list of all field paths from schema entities + custom objects
+  const fieldOptions = useMemo(() => {
+    if (!schema) return [];
+    const allEntities = [...schema.entities, ...(schema.custom_objects || [])];
+    return allEntities.flatMap((e) =>
+      e.fields.map((f) => ({
+        path: f.path,
+        label: `${e.label} → ${f.label}`,
+        type: f.type,
+      }))
+    );
+  }, [schema]);
 
   const updateGroup = (updates: Partial<ConditionGroup>) => {
     setConditions({ ...group, ...updates });
@@ -30,6 +44,12 @@ export const ConditionConfigPanel: React.FC = () => {
     } else {
       updateGroup({ rules: newRules });
     }
+  };
+
+  // Get the schema field type for a given field path
+  const getFieldType = (path: string): string => {
+    const found = fieldOptions.find((f) => f.path === path);
+    return found?.type || 'string';
   };
 
   return (
@@ -57,48 +77,67 @@ export const ConditionConfigPanel: React.FC = () => {
       </div>
 
       <div className="space-y-3">
-        {group.rules.map((rule, idx) => (
-          <div key={idx} className="flex gap-2 items-start">
-            <div className="flex-1 space-y-2">
-              <input
-                type="text"
-                placeholder="Field path (e.g. contact.tags)"
-                value={rule.field || ''}
-                onChange={(e) => updateRule(idx, { field: e.target.value })}
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:border-purple-500 focus:outline-none"
-              />
-              <div className="flex gap-2">
-                <select
-                  value={rule.operator || 'eq'}
-                  onChange={(e) => updateRule(idx, { operator: e.target.value })}
-                  className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-white focus:border-purple-500 focus:outline-none"
-                >
-                  {CONDITION_OPERATORS.map((op) => (
-                    <option key={op.value} value={op.value}>{op.label}</option>
-                  ))}
-                </select>
-                {!['is_empty', 'is_not_empty'].includes(rule.operator || '') && (
+        {group.rules.map((rule, idx) => {
+          const fieldType = getFieldType(rule.field || '');
+          const operators = fieldOptions.length > 0 ? getOperatorsForType(fieldType) : CONDITION_OPERATORS;
+
+          return (
+            <div key={idx} className="flex gap-2 items-start">
+              <div className="flex-1 space-y-2">
+                {/* Field picker — dropdown when schema loaded, text input as fallback */}
+                {fieldOptions.length > 0 ? (
+                  <select
+                    value={rule.field || ''}
+                    onChange={(e) => updateRule(idx, { field: e.target.value, operator: 'eq', value: '' })}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:border-purple-500 focus:outline-none"
+                  >
+                    <option value="">Select field…</option>
+                    {fieldOptions.map((f) => (
+                      <option key={f.path} value={f.path}>{f.label}</option>
+                    ))}
+                  </select>
+                ) : (
                   <input
                     type="text"
-                    placeholder="Value"
-                    value={String(rule.value ?? '')}
-                    onChange={(e) => {
-                      const num = Number(e.target.value);
-                      updateRule(idx, { value: isNaN(num) ? e.target.value : num });
-                    }}
-                    className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:border-purple-500 focus:outline-none"
+                    placeholder="Field path (e.g. contact.tags)"
+                    value={rule.field || ''}
+                    onChange={(e) => updateRule(idx, { field: e.target.value })}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:border-purple-500 focus:outline-none"
                   />
                 )}
+                <div className="flex gap-2">
+                  <select
+                    value={rule.operator || 'eq'}
+                    onChange={(e) => updateRule(idx, { operator: e.target.value })}
+                    className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-white focus:border-purple-500 focus:outline-none"
+                  >
+                    {operators.map((op) => (
+                      <option key={op.value} value={op.value}>{op.label}</option>
+                    ))}
+                  </select>
+                  {!['is_empty', 'is_not_empty'].includes(rule.operator || '') && (
+                    <input
+                      type="text"
+                      placeholder="Value"
+                      value={String(rule.value ?? '')}
+                      onChange={(e) => {
+                        const num = Number(e.target.value);
+                        updateRule(idx, { value: isNaN(num) ? e.target.value : num });
+                      }}
+                      className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:border-purple-500 focus:outline-none"
+                    />
+                  )}
+                </div>
               </div>
+              <button
+                onClick={() => removeRule(idx)}
+                className="mt-1 w-7 h-7 rounded-full flex items-center justify-center text-gray-500 hover:text-red-400 hover:bg-red-400/10 transition-colors"
+              >
+                ✕
+              </button>
             </div>
-            <button
-              onClick={() => removeRule(idx)}
-              className="mt-1 w-7 h-7 rounded-full flex items-center justify-center text-gray-500 hover:text-red-400 hover:bg-red-400/10 transition-colors"
-            >
-              ✕
-            </button>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <button
