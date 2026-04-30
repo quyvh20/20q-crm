@@ -2,7 +2,7 @@ import React, { useMemo, useCallback } from 'react';
 import { type ConditionGroup, type ConditionRule } from '../types';
 import { useBuilderStore } from '../store';
 import { getOperatorsForType } from '../useSchema';
-import { FieldPicker } from './FieldPicker';
+import { FieldPicker, type FieldMeta } from './FieldPicker';
 
 export const ConditionConfigPanel: React.FC = () => {
   const { conditions, setConditions, schema, schemaLoading, schemaError, invalidateSchema } = useBuilderStore();
@@ -59,10 +59,10 @@ export const ConditionConfigPanel: React.FC = () => {
    * and clear the value to avoid stale data.
    */
   const handleFieldChange = useCallback(
-    (index: number, path: string) => {
+    (index: number, path: string, fieldMeta: FieldMeta) => {
       const currentRule = group.rules[index];
       const oldFieldType = getFieldType(currentRule.field || '');
-      const newFieldType = getFieldType(path);
+      const newFieldType = fieldMeta.type;
 
       // If type changed, reset operator to first valid one + clear value
       if (oldFieldType !== newFieldType || !currentRule.field) {
@@ -132,7 +132,7 @@ export const ConditionConfigPanel: React.FC = () => {
                 <div className="flex-1">
                   <FieldPicker
                     value={rule.field || null}
-                    onChange={(path) => handleFieldChange(idx, path)}
+                    onChange={(path, fieldMeta) => handleFieldChange(idx, path, fieldMeta)}
                     disabled={!!schemaError}
                     placeholder="Select field…"
                   />

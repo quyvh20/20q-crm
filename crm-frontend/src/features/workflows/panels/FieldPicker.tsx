@@ -2,6 +2,13 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useBuilderStore } from '../store';
 import type { SchemaField, SchemaEntity } from '../api';
 
+/** Metadata about the selected field — passed to onChange so consumers can react to type changes. */
+export interface FieldMeta {
+  type: SchemaField['type'];
+  picker_type?: SchemaField['picker_type'];
+  options?: string[];
+}
+
 // Icons per entity key
 const ENTITY_ICONS: Record<string, string> = {
   contact: '👤',
@@ -32,8 +39,8 @@ const TYPE_LABELS: Record<string, string> = {
 interface FieldPickerProps {
   /** Currently selected field path (e.g. "contact.tags"), or null if nothing selected */
   value: string | null;
-  /** Called with the selected field path */
-  onChange: (path: string) => void;
+  /** Called with the selected field path and its metadata */
+  onChange: (path: string, fieldMeta: FieldMeta) => void;
   /** Optional filter — only show these entity keys (e.g. ['contact', 'deal']) */
   entities?: string[];
   /** Disable the picker */
@@ -117,7 +124,11 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
   }, [allEntities, search]);
 
   const handleSelect = (_entity: SchemaEntity, field: SchemaField) => {
-    onChange(field.path);
+    onChange(field.path, {
+      type: field.type,
+      picker_type: field.picker_type,
+      options: field.options,
+    });
     setIsOpen(false);
     setSearch('');
   };
