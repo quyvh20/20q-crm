@@ -4,6 +4,7 @@ import type { SchemaField, SchemaEntity } from '../api';
 
 /** Metadata about the selected field — passed to onChange so consumers can react to type changes. */
 export interface FieldMeta {
+  label: string;
   type: SchemaField['type'];
   picker_type?: SchemaField['picker_type'];
   options?: string[];
@@ -183,6 +184,7 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
 
   const handleSelect = (_entity: SchemaEntity, field: SchemaField) => {
     onChange(field.path, {
+      label: field.label,
       type: field.type,
       picker_type: field.picker_type,
       options: field.options,

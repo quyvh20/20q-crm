@@ -202,6 +202,7 @@ describe('TestFieldPicker_RendersAllSchemaCategories', () => {
 
     expect(onChange).toHaveBeenCalledOnce();
     expect(onChange).toHaveBeenCalledWith('contact.tags', {
+      label: 'Tags',
       type: 'array',
       picker_type: 'tag',
       options: undefined,
@@ -380,6 +381,7 @@ describe('TestFieldPicker_RendersAllSchemaCategories', () => {
 
     expect(onChange).toHaveBeenCalledOnce();
     expect(onChange).toHaveBeenCalledWith('contact.first_name', {
+      label: 'First Name',
       type: 'string',
       picker_type: undefined,
       options: undefined,
