@@ -303,4 +303,135 @@ describe('TestFieldPicker_RendersAllSchemaCategories', () => {
 
     expect(screen.getByText('Pick a field')).toBeInTheDocument();
   });
+
+  // ── A11y: Keyboard navigation ──────────────────────────────────────
+
+  it('ArrowDown/ArrowUp cycles through categories', async () => {
+    seedStore();
+    render(<FieldPicker value={null} onChange={onChange} />);
+
+    // Open the picker
+    await userEvent.click(screen.getByText('Select field…'));
+
+    // ArrowDown → first category gets focus highlight
+    await userEvent.keyboard('{ArrowDown}');
+    // First category = Contact
+    const contactBtn = screen.getByText('Contact').closest('button')!;
+    expect(contactBtn.className).toContain('text-white');
+
+    // ArrowDown again → Deal
+    await userEvent.keyboard('{ArrowDown}');
+    const dealBtn = screen.getByText('Deal').closest('button')!;
+    expect(dealBtn.className).toContain('text-white');
+
+    // ArrowUp → back to Contact
+    await userEvent.keyboard('{ArrowUp}');
+    expect(contactBtn.className).toContain('text-white');
+  });
+
+  it('Enter on a category drills in', async () => {
+    seedStore();
+    render(<FieldPicker value={null} onChange={onChange} />);
+
+    await userEvent.click(screen.getByText('Select field…'));
+    await userEvent.keyboard('{ArrowDown}'); // Focus Contact
+    await userEvent.keyboard('{Enter}');     // Drill in
+
+    // Should now show Contact fields
+    expect(screen.getByText('First Name')).toBeInTheDocument();
+    expect(screen.getByText('Email')).toBeInTheDocument();
+  });
+
+  it('Escape closes the dropdown', async () => {
+    seedStore();
+    render(<FieldPicker value={null} onChange={onChange} />);
+
+    await userEvent.click(screen.getByText('Select field…'));
+    expect(screen.getByPlaceholderText('Search all fields...')).toBeInTheDocument();
+
+    await userEvent.keyboard('{Escape}');
+    // Dropdown should be closed
+    expect(screen.queryByPlaceholderText('Search all fields...')).not.toBeInTheDocument();
+  });
+
+  it('ArrowRight drills into focused category', async () => {
+    seedStore();
+    render(<FieldPicker value={null} onChange={onChange} />);
+
+    await userEvent.click(screen.getByText('Select field…'));
+    await userEvent.keyboard('{ArrowDown}');  // Focus Contact
+    await userEvent.keyboard('{ArrowRight}'); // Drill in
+
+    // Should show Contact fields
+    expect(screen.getByText('First Name')).toBeInTheDocument();
+    expect(screen.getByText('Tags')).toBeInTheDocument();
+  });
+
+  it('Enter on a field selects it and emits onChange', async () => {
+    seedStore();
+    render(<FieldPicker value={null} onChange={onChange} />);
+
+    await userEvent.click(screen.getByText('Select field…'));
+    await userEvent.keyboard('{ArrowDown}'); // Focus Contact
+    await userEvent.keyboard('{Enter}');     // Drill in
+    await userEvent.keyboard('{ArrowDown}'); // Skip back button (idx 0)
+    await userEvent.keyboard('{ArrowDown}'); // Focus First Name (idx 1)
+    await userEvent.keyboard('{Enter}');     // Select
+
+    expect(onChange).toHaveBeenCalledOnce();
+    expect(onChange).toHaveBeenCalledWith('contact.first_name', {
+      type: 'string',
+      picker_type: undefined,
+      options: undefined,
+    });
+  });
+
+  // ── ARIA attributes ────────────────────────────────────────────────
+
+  it('trigger button has correct ARIA attributes', () => {
+    seedStore();
+    render(<FieldPicker value={null} onChange={onChange} />);
+
+    const trigger = screen.getByText('Select field…').closest('button')!;
+    expect(trigger).toHaveAttribute('aria-haspopup', 'listbox');
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  // ── Performance: Virtualization ────────────────────────────────────
+
+  it('limits rendered items to 50 and shows overflow message', async () => {
+    // Create an entity with 60 fields
+    const bigEntity: WorkflowSchema = {
+      entities: [{
+        key: 'big',
+        label: 'Big',
+        icon: '📦',
+        fields: Array.from({ length: 60 }, (_, i) => ({
+          path: `big.field_${i}`,
+          label: `Field ${i}`,
+          type: 'string' as const,
+        })),
+      }],
+      custom_objects: [],
+      stages: [],
+      tags: [],
+      users: [],
+    };
+    seedStore(bigEntity);
+    render(<FieldPicker value={null} onChange={onChange} />);
+
+    await userEvent.click(screen.getByText('Select field…'));
+
+    // Type to search and get all 60 in flat results
+    await userEvent.type(screen.getByPlaceholderText('Search all fields...'), 'Field');
+
+    // Should show the overflow message
+    expect(screen.getByText('+10 more — refine your search')).toBeInTheDocument();
+
+    // Should NOT render Field 59 (beyond limit)
+    expect(screen.queryByText('Field 59')).not.toBeInTheDocument();
+
+    // Should render Field 0 (within limit)
+    expect(screen.getByText('Field 0')).toBeInTheDocument();
+  });
 });

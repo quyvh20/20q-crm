@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useBuilderStore } from '../store';
 import type { SchemaField, SchemaEntity } from '../api';
 
@@ -36,6 +36,9 @@ const TYPE_LABELS: Record<string, string> = {
   date: '📅',
 };
 
+// Virtualization threshold — if total items > this, we limit rendering
+const VIRTUAL_LIMIT = 50;
+
 interface FieldPickerProps {
   /** Currently selected field path (e.g. "contact.tags"), or null if nothing selected */
   value: string | null;
@@ -60,8 +63,10 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
+  const [focusIndex, setFocusIndex] = useState(-1);
   const containerRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   // Close on outside click
   useEffect(() => {
@@ -70,6 +75,7 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
         setIsOpen(false);
         setSearch('');
         setActiveCategory(null);
+        setFocusIndex(-1);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -82,6 +88,15 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
       searchRef.current.focus();
     }
   }, [isOpen]);
+
+  // Scroll focused item into view
+  useEffect(() => {
+    if (focusIndex >= 0 && listRef.current) {
+      const items = listRef.current.querySelectorAll('[data-item]');
+      const el = items[focusIndex] as HTMLElement | undefined;
+      el?.scrollIntoView?.({ block: 'nearest' });
+    }
+  }, [focusIndex]);
 
   // All entities (built-in + custom objects), optionally filtered by entity keys
   const allEntities = useMemo(() => {
@@ -98,18 +113,19 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
     if (!value || !allEntities.length) return null;
     for (const entity of allEntities) {
       const field = entity.fields.find((f) => f.path === value);
-      if (field) {
-        return { entity, field };
-      }
+      if (field) return { entity, field };
     }
     return null;
   }, [value, allEntities]);
 
-  // The active entity (when a category is drilled into)
-  const activeCategoryEntity = useMemo(() => {
-    if (!activeCategory) return null;
-    return allEntities.find((e) => e.key === activeCategory) || null;
-  }, [activeCategory, allEntities]);
+  // The active drilled-in category entity
+  const activeCategoryEntity = useMemo(
+    () => (activeCategory ? allEntities.find((e) => e.key === activeCategory) || null : null),
+    [activeCategory, allEntities]
+  );
+
+  // Is the user actively searching?
+  const isSearching = search.trim().length > 0;
 
   // Search: filter fields across all entities (flattened results)
   const searchResults = useMemo(() => {
@@ -130,6 +146,41 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
     return results;
   }, [allEntities, search]);
 
+  // Build the current list of interactive items for keyboard navigation
+  const currentItems = useMemo(() => {
+    if (isSearching && searchResults !== null) {
+      // Search results: each is a field
+      return searchResults.map(({ entity, field }) => ({
+        type: 'field' as const,
+        entity,
+        field,
+      }));
+    }
+    if (activeCategory && activeCategoryEntity) {
+      // Drilled-in: back button + fields
+      return [
+        { type: 'back' as const, entity: activeCategoryEntity, field: null },
+        ...activeCategoryEntity.fields.map((field) => ({
+          type: 'field' as const,
+          entity: activeCategoryEntity,
+          field,
+        })),
+      ];
+    }
+    // Category list
+    return allEntities.map((entity) => ({
+      type: 'category' as const,
+      entity,
+      field: null,
+    }));
+  }, [isSearching, searchResults, activeCategory, activeCategoryEntity, allEntities]);
+
+  // Virtualization: limit rendered items if > VIRTUAL_LIMIT
+  const totalItems = currentItems.length;
+  const isVirtualized = totalItems > VIRTUAL_LIMIT;
+  const visibleItems = isVirtualized ? currentItems.slice(0, VIRTUAL_LIMIT) : currentItems;
+  const hiddenCount = isVirtualized ? totalItems - VIRTUAL_LIMIT : 0;
+
   const handleSelect = (_entity: SchemaEntity, field: SchemaField) => {
     onChange(field.path, {
       type: field.type,
@@ -139,6 +190,7 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
     setIsOpen(false);
     setSearch('');
     setActiveCategory(null);
+    setFocusIndex(-1);
   };
 
   const handleOpen = () => {
@@ -147,8 +199,10 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
       setIsOpen(false);
       setSearch('');
       setActiveCategory(null);
+      setFocusIndex(-1);
     } else {
       setIsOpen(true);
+      setFocusIndex(-1);
       // If a field is already selected, auto-drill into its category
       if (selectedField) {
         setActiveCategory(selectedField.entity.key);
@@ -159,9 +213,106 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
   const handleBack = () => {
     setActiveCategory(null);
     setSearch('');
+    setFocusIndex(-1);
     // Re-focus search after going back
     setTimeout(() => searchRef.current?.focus(), 50);
   };
+
+  // ── Keyboard handler ─────────────────────────────────────────────
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (!isOpen) {
+        // Open on Enter/Space/ArrowDown when trigger is focused
+        if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown') {
+          e.preventDefault();
+          handleOpen();
+        }
+        return;
+      }
+
+      const maxIndex = visibleItems.length - 1;
+
+      switch (e.key) {
+        case 'ArrowDown':
+          e.preventDefault();
+          setFocusIndex((prev) => (prev < maxIndex ? prev + 1 : 0));
+          break;
+
+        case 'ArrowUp':
+          e.preventDefault();
+          setFocusIndex((prev) => (prev > 0 ? prev - 1 : maxIndex));
+          break;
+
+        case 'Enter': {
+          e.preventDefault();
+          if (focusIndex < 0 || focusIndex > maxIndex) break;
+          const item = visibleItems[focusIndex];
+          if (item.type === 'category') {
+            setActiveCategory(item.entity.key);
+            setFocusIndex(-1);
+          } else if (item.type === 'back') {
+            handleBack();
+          } else if (item.type === 'field' && item.field) {
+            handleSelect(item.entity, item.field);
+          }
+          break;
+        }
+
+        case 'ArrowRight': {
+          // Drill into category (like clicking →)
+          if (focusIndex >= 0 && focusIndex <= maxIndex) {
+            const item = visibleItems[focusIndex];
+            if (item.type === 'category') {
+              e.preventDefault();
+              setActiveCategory(item.entity.key);
+              setFocusIndex(-1);
+            }
+          }
+          break;
+        }
+
+        case 'ArrowLeft':
+        case 'Backspace': {
+          // Go back from drilled-in category (when search is empty)
+          if (activeCategory && !isSearching && (e.key === 'ArrowLeft' || (e.key === 'Backspace' && search === ''))) {
+            e.preventDefault();
+            handleBack();
+          }
+          break;
+        }
+
+        case 'Escape':
+          e.preventDefault();
+          if (isSearching) {
+            setSearch('');
+            setFocusIndex(-1);
+          } else if (activeCategory) {
+            handleBack();
+          } else {
+            setIsOpen(false);
+            setSearch('');
+            setActiveCategory(null);
+            setFocusIndex(-1);
+          }
+          break;
+
+        case 'Tab':
+          // Close on tab-out
+          setIsOpen(false);
+          setSearch('');
+          setActiveCategory(null);
+          setFocusIndex(-1);
+          break;
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isOpen, focusIndex, visibleItems, activeCategory, isSearching, search]
+  );
+
+  // Reset focus index when list changes
+  useEffect(() => {
+    setFocusIndex(-1);
+  }, [activeCategory, search]);
 
   // --- Loading state ---
   if (schemaLoading) {
@@ -180,16 +331,15 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
     );
   }
 
-  // Is the user actively searching?
-  const isSearching = search.trim().length > 0;
-
   return (
-    <div ref={containerRef} className="relative">
+    <div ref={containerRef} className="relative" onKeyDown={handleKeyDown}>
       {/* Trigger button */}
       <button
         type="button"
         onClick={handleOpen}
         disabled={disabled}
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
         className={`
           w-full bg-gray-800 border rounded-lg px-3 py-1.5 text-sm text-left
           flex items-center gap-2 transition-all
@@ -234,6 +384,8 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
         <div
           className="absolute z-50 top-full left-0 right-0 mt-1 border border-gray-700 rounded-xl shadow-2xl shadow-black/50 overflow-hidden"
           style={{ backgroundColor: '#1a1d27' }}
+          role="listbox"
+          aria-label="Field picker"
         >
           {/* Search bar */}
           <div className="p-2 border-b border-gray-700/50">
@@ -256,12 +408,14 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
                   ? `Search ${activeCategoryEntity?.label || ''} fields...`
                   : 'Search all fields...'}
                 className="w-full bg-gray-800/80 border border-gray-700/50 rounded-lg pl-8 pr-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500/50"
+                role="searchbox"
+                aria-label="Search fields"
               />
             </div>
           </div>
 
           {/* Content area */}
-          <div className="max-h-64 overflow-y-auto overscroll-contain">
+          <div ref={listRef} className="max-h-64 overflow-y-auto overscroll-contain">
 
             {/* ── State 1: Search results (flat, across all categories) ── */}
             {isSearching && searchResults !== null ? (
@@ -270,16 +424,24 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
                   No matching fields
                 </div>
               ) : (
-                searchResults.map(({ entity, field }) => (
-                  <FieldRow
-                    key={field.path}
-                    entity={entity}
-                    field={field}
-                    isSelected={field.path === value}
-                    showCategory
-                    onSelect={() => handleSelect(entity, field)}
-                  />
-                ))
+                <>
+                  {visibleItems.map((item, idx) => item.field && (
+                    <FieldRow
+                      key={item.field.path}
+                      entity={item.entity}
+                      field={item.field}
+                      isSelected={item.field.path === value}
+                      isFocused={idx === focusIndex}
+                      showCategory
+                      onSelect={() => handleSelect(item.entity, item.field!)}
+                    />
+                  ))}
+                  {hiddenCount > 0 && (
+                    <div className="px-3 py-2 text-center text-xs text-gray-500 border-t border-gray-700/30">
+                      +{hiddenCount} more — refine your search
+                    </div>
+                  )}
+                </>
               )
 
             /* ── State 2: Category drilled in → show fields ── */
@@ -289,7 +451,13 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
                 <button
                   type="button"
                   onClick={handleBack}
-                  className="w-full px-3 py-2 text-left flex items-center gap-2 text-xs text-gray-400 hover:text-white hover:bg-gray-800/40 transition-colors border-b border-gray-700/30"
+                  data-item
+                  className={`
+                    w-full px-3 py-2 text-left flex items-center gap-2 text-xs transition-colors border-b border-gray-700/30
+                    ${focusIndex === 0 ? 'bg-gray-800/80 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800/40'}
+                  `}
+                  role="option"
+                  aria-selected={false}
                 >
                   <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
@@ -302,12 +470,13 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
                 </button>
 
                 {/* Fields in this category */}
-                {activeCategoryEntity.fields.map((field) => (
+                {activeCategoryEntity.fields.map((field, idx) => (
                   <FieldRow
                     key={field.path}
                     entity={activeCategoryEntity}
                     field={field}
                     isSelected={field.path === value}
+                    isFocused={idx + 1 === focusIndex} /* +1 because back button is index 0 */
                     onSelect={() => handleSelect(activeCategoryEntity, field)}
                   />
                 ))}
@@ -320,12 +489,18 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
                   No fields available
                 </div>
               ) : (
-                allEntities.map((entity) => (
+                allEntities.map((entity, idx) => (
                   <button
                     key={entity.key}
                     type="button"
                     onClick={() => setActiveCategory(entity.key)}
-                    className="w-full px-3 py-2.5 text-left flex items-center gap-3 text-sm text-gray-300 hover:bg-gray-800/60 hover:text-white transition-colors"
+                    data-item
+                    role="option"
+                    aria-selected={false}
+                    className={`
+                      w-full px-3 py-2.5 text-left flex items-center gap-3 text-sm transition-colors
+                      ${idx === focusIndex ? 'bg-gray-800/60 text-white' : 'text-gray-300 hover:bg-gray-800/60 hover:text-white'}
+                    `}
                   >
                     <span className="text-lg leading-none">
                       {ENTITY_ICONS[entity.key] || entity.icon || '📦'}
@@ -351,6 +526,7 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
                   ? '← Back to categories · Type to search'
                   : 'Select a category · Type to search all'}
             </span>
+            <span className="ml-auto text-gray-700">↑↓ navigate · Enter select · Esc close</span>
           </div>
         </div>
       )}
@@ -364,19 +540,25 @@ interface FieldRowProps {
   entity: SchemaEntity;
   field: SchemaField;
   isSelected: boolean;
+  isFocused?: boolean;
   showCategory?: boolean;
   onSelect: () => void;
 }
 
-const FieldRow: React.FC<FieldRowProps> = ({ entity, field, isSelected, showCategory, onSelect }) => (
+const FieldRow: React.FC<FieldRowProps> = ({ entity, field, isSelected, isFocused = false, showCategory, onSelect }) => (
   <button
     type="button"
     onClick={onSelect}
+    data-item
+    role="option"
+    aria-selected={isSelected}
     className={`
       w-full px-3 py-2 text-left flex items-center gap-2 text-sm transition-colors
       ${isSelected
         ? 'bg-purple-500/15 text-purple-300'
-        : 'text-gray-300 hover:bg-gray-800/60 hover:text-white'
+        : isFocused
+          ? 'bg-gray-800/60 text-white'
+          : 'text-gray-300 hover:bg-gray-800/60 hover:text-white'
       }
     `}
   >
