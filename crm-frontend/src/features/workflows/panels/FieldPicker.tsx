@@ -59,6 +59,7 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
   const { schema, schemaLoading, schemaError } = useBuilderStore();
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState('');
+  const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -68,6 +69,7 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setIsOpen(false);
         setSearch('');
+        setActiveCategory(null);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -103,27 +105,32 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
     return null;
   }, [value, allEntities]);
 
-  // Filter entities & fields by search term
-  const filteredEntities = useMemo(() => {
-    if (!allEntities.length) return [];
-    const q = search.toLowerCase().trim();
-    if (!q) return allEntities;
+  // The active entity (when a category is drilled into)
+  const activeCategoryEntity = useMemo(() => {
+    if (!activeCategory) return null;
+    return allEntities.find((e) => e.key === activeCategory) || null;
+  }, [activeCategory, allEntities]);
 
-    return allEntities
-      .map((entity) => {
-        const matchedFields = entity.fields.filter(
-          (f) =>
-            f.label.toLowerCase().includes(q) ||
-            f.path.toLowerCase().includes(q) ||
-            entity.label.toLowerCase().includes(q)
-        );
-        if (matchedFields.length === 0) return null;
-        return { ...entity, fields: matchedFields };
-      })
-      .filter(Boolean) as SchemaEntity[];
+  // Search: filter fields across all entities (flattened results)
+  const searchResults = useMemo(() => {
+    const q = search.toLowerCase().trim();
+    if (!q) return null; // null = not searching
+    const results: { entity: SchemaEntity; field: SchemaField }[] = [];
+    for (const entity of allEntities) {
+      for (const field of entity.fields) {
+        if (
+          field.label.toLowerCase().includes(q) ||
+          field.path.toLowerCase().includes(q) ||
+          entity.label.toLowerCase().includes(q)
+        ) {
+          results.push({ entity, field });
+        }
+      }
+    }
+    return results;
   }, [allEntities, search]);
 
-  const handleSelect = (_entity: SchemaEntity, field: SchemaField) => {
+  const handleSelect = (entity: SchemaEntity, field: SchemaField) => {
     onChange(field.path, {
       type: field.type,
       picker_type: field.picker_type,
@@ -131,6 +138,29 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
     });
     setIsOpen(false);
     setSearch('');
+    setActiveCategory(null);
+  };
+
+  const handleOpen = () => {
+    if (disabled) return;
+    if (isOpen) {
+      setIsOpen(false);
+      setSearch('');
+      setActiveCategory(null);
+    } else {
+      setIsOpen(true);
+      // If a field is already selected, auto-drill into its category
+      if (selectedField) {
+        setActiveCategory(selectedField.entity.key);
+      }
+    }
+  };
+
+  const handleBack = () => {
+    setActiveCategory(null);
+    setSearch('');
+    // Re-focus search after going back
+    setTimeout(() => searchRef.current?.focus(), 50);
   };
 
   // --- Loading state ---
@@ -150,14 +180,15 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
     );
   }
 
+  // Is the user actively searching?
+  const isSearching = search.trim().length > 0;
+
   return (
     <div ref={containerRef} className="relative">
       {/* Trigger button */}
       <button
         type="button"
-        onClick={() => {
-          if (!disabled) setIsOpen(!isOpen);
-        }}
+        onClick={handleOpen}
         disabled={disabled}
         className={`
           w-full bg-gray-800 border rounded-lg px-3 py-1.5 text-sm text-left
@@ -200,10 +231,11 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
 
       {/* Dropdown */}
       {isOpen && (
-        <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-gray-850 border border-gray-700 rounded-xl shadow-2xl shadow-black/50 overflow-hidden"
+        <div
+          className="absolute z-50 top-full left-0 right-0 mt-1 border border-gray-700 rounded-xl shadow-2xl shadow-black/50 overflow-hidden"
           style={{ backgroundColor: '#1a1d27' }}
         >
-          {/* Search */}
+          {/* Search bar */}
           <div className="p-2 border-b border-gray-700/50">
             <div className="relative">
               <svg
@@ -220,77 +252,163 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search fields..."
+                placeholder={activeCategory && !isSearching
+                  ? `Search ${activeCategoryEntity?.label || ''} fields...`
+                  : 'Search all fields...'}
                 className="w-full bg-gray-800/80 border border-gray-700/50 rounded-lg pl-8 pr-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500/50"
               />
             </div>
           </div>
 
-          {/* Field list grouped by entity */}
+          {/* Content area */}
           <div className="max-h-64 overflow-y-auto overscroll-contain">
-            {filteredEntities.length === 0 ? (
-              <div className="px-3 py-4 text-center text-xs text-gray-500">
-                {search ? 'No matching fields' : 'No fields available'}
-              </div>
-            ) : (
-              filteredEntities.map((entity) => (
-                <div key={entity.key}>
-                  {/* Entity group header */}
-                  <div className="px-3 py-1.5 text-[11px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-800/30 sticky top-0 flex items-center gap-1.5">
-                    <span>{ENTITY_ICONS[entity.key] || entity.icon || '📦'}</span>
-                    <span>{entity.label}</span>
-                  </div>
-                  {/* Fields */}
-                  {entity.fields.map((field) => {
-                    const isSelected = field.path === value;
-                    return (
-                      <button
-                        key={field.path}
-                        type="button"
-                        onClick={() => handleSelect(entity, field)}
-                        className={`
-                          w-full px-3 py-2 text-left flex items-center gap-2 text-sm transition-colors
-                          ${isSelected
-                            ? 'bg-purple-500/15 text-purple-300'
-                            : 'text-gray-300 hover:bg-gray-800/60 hover:text-white'
-                          }
-                        `}
-                      >
-                        <span className="flex-1 truncate">{field.label}</span>
-                        {field.picker_type && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-400 font-medium">
-                            {field.picker_type}
-                          </span>
-                        )}
-                        <span
-                          className="px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider flex-shrink-0"
-                          style={{
-                            backgroundColor: `${TYPE_COLORS[field.type] || TYPE_COLORS.string}15`,
-                            color: TYPE_COLORS[field.type] || TYPE_COLORS.string,
-                          }}
-                        >
-                          {TYPE_LABELS[field.type] || field.type}
-                        </span>
-                        {isSelected && (
-                          <svg className="w-3.5 h-3.5 text-purple-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                          </svg>
-                        )}
-                      </button>
-                    );
-                  })}
+
+            {/* ── State 1: Search results (flat, across all categories) ── */}
+            {isSearching && searchResults !== null ? (
+              searchResults.length === 0 ? (
+                <div className="px-3 py-4 text-center text-xs text-gray-500">
+                  No matching fields
                 </div>
-              ))
+              ) : (
+                searchResults.map(({ entity, field }) => (
+                  <FieldRow
+                    key={field.path}
+                    entity={entity}
+                    field={field}
+                    isSelected={field.path === value}
+                    showCategory
+                    onSelect={() => handleSelect(entity, field)}
+                  />
+                ))
+              )
+
+            /* ── State 2: Category drilled in → show fields ── */
+            ) : activeCategory && activeCategoryEntity ? (
+              <>
+                {/* Back button / breadcrumb */}
+                <button
+                  type="button"
+                  onClick={handleBack}
+                  className="w-full px-3 py-2 text-left flex items-center gap-2 text-xs text-gray-400 hover:text-white hover:bg-gray-800/40 transition-colors border-b border-gray-700/30"
+                >
+                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+                  </svg>
+                  <span className="text-base leading-none">
+                    {ENTITY_ICONS[activeCategoryEntity.key] || activeCategoryEntity.icon || '📦'}
+                  </span>
+                  <span className="font-medium">{activeCategoryEntity.label}</span>
+                  <span className="text-gray-600 ml-auto text-[10px]">{activeCategoryEntity.fields.length} fields</span>
+                </button>
+
+                {/* Fields in this category */}
+                {activeCategoryEntity.fields.map((field) => (
+                  <FieldRow
+                    key={field.path}
+                    entity={activeCategoryEntity}
+                    field={field}
+                    isSelected={field.path === value}
+                    onSelect={() => handleSelect(activeCategoryEntity, field)}
+                  />
+                ))}
+              </>
+
+            /* ── State 3: Category list (initial) ── */
+            ) : (
+              allEntities.length === 0 ? (
+                <div className="px-3 py-4 text-center text-xs text-gray-500">
+                  No fields available
+                </div>
+              ) : (
+                allEntities.map((entity) => (
+                  <button
+                    key={entity.key}
+                    type="button"
+                    onClick={() => setActiveCategory(entity.key)}
+                    className="w-full px-3 py-2.5 text-left flex items-center gap-3 text-sm text-gray-300 hover:bg-gray-800/60 hover:text-white transition-colors"
+                  >
+                    <span className="text-lg leading-none">
+                      {ENTITY_ICONS[entity.key] || entity.icon || '📦'}
+                    </span>
+                    <span className="font-medium flex-1">{entity.label}</span>
+                    <span className="text-[11px] text-gray-600">{entity.fields.length} fields</span>
+                    <svg className="w-3.5 h-3.5 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                    </svg>
+                  </button>
+                ))
+              )
             )}
           </div>
 
           {/* Footer hint */}
           <div className="px-3 py-1.5 border-t border-gray-700/50 text-[10px] text-gray-600 flex items-center gap-1">
             <span>💡</span>
-            <span>Type to search · Click to select</span>
+            <span>
+              {isSearching
+                ? 'Showing results across all categories'
+                : activeCategory
+                  ? '← Back to categories · Type to search'
+                  : 'Select a category · Type to search all'}
+            </span>
           </div>
         </div>
       )}
     </div>
   );
 };
+
+// --- Field row sub-component ---
+
+interface FieldRowProps {
+  entity: SchemaEntity;
+  field: SchemaField;
+  isSelected: boolean;
+  showCategory?: boolean;
+  onSelect: () => void;
+}
+
+const FieldRow: React.FC<FieldRowProps> = ({ entity, field, isSelected, showCategory, onSelect }) => (
+  <button
+    type="button"
+    onClick={onSelect}
+    className={`
+      w-full px-3 py-2 text-left flex items-center gap-2 text-sm transition-colors
+      ${isSelected
+        ? 'bg-purple-500/15 text-purple-300'
+        : 'text-gray-300 hover:bg-gray-800/60 hover:text-white'
+      }
+    `}
+  >
+    {/* Category prefix (shown in search results) */}
+    {showCategory && (
+      <>
+        <span className="text-xs leading-none">
+          {ENTITY_ICONS[entity.key] || entity.icon || '📦'}
+        </span>
+        <span className="text-gray-500 text-xs">{entity.label}</span>
+        <span className="text-gray-700 text-xs">›</span>
+      </>
+    )}
+    <span className="flex-1 truncate">{field.label}</span>
+    {field.picker_type && (
+      <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-400 font-medium">
+        {field.picker_type}
+      </span>
+    )}
+    <span
+      className="px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider flex-shrink-0"
+      style={{
+        backgroundColor: `${TYPE_COLORS[field.type] || TYPE_COLORS.string}15`,
+        color: TYPE_COLORS[field.type] || TYPE_COLORS.string,
+      }}
+    >
+      {TYPE_LABELS[field.type] || field.type}
+    </span>
+    {isSelected && (
+      <svg className="w-3.5 h-3.5 text-purple-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+      </svg>
+    )}
+  </button>
+);
