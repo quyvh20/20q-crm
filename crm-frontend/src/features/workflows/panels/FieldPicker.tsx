@@ -130,7 +130,7 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
     return results;
   }, [allEntities, search]);
 
-  const handleSelect = (entity: SchemaEntity, field: SchemaField) => {
+  const handleSelect = (_entity: SchemaEntity, field: SchemaField) => {
     onChange(field.path, {
       type: field.type,
       picker_type: field.picker_type,
