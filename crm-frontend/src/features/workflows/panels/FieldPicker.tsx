@@ -30,10 +30,12 @@ const TYPE_LABELS: Record<string, string> = {
 };
 
 interface FieldPickerProps {
-  /** Currently selected field path (e.g. "contact.tags") */
-  value: string;
+  /** Currently selected field path (e.g. "contact.tags"), or null if nothing selected */
+  value: string | null;
   /** Called with the selected field path */
-  onChange: (path: string, field: SchemaField | null) => void;
+  onChange: (path: string) => void;
+  /** Optional filter — only show these entity keys (e.g. ['contact', 'deal']) */
+  entities?: string[];
   /** Disable the picker */
   disabled?: boolean;
   /** Placeholder text */
@@ -43,6 +45,7 @@ interface FieldPickerProps {
 export const FieldPicker: React.FC<FieldPickerProps> = ({
   value,
   onChange,
+  entities: entityFilter,
   disabled = false,
   placeholder = 'Select field…',
 }) => {
@@ -71,11 +74,15 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
     }
   }, [isOpen]);
 
-  // All entities (built-in + custom objects)
+  // All entities (built-in + custom objects), optionally filtered by entity keys
   const allEntities = useMemo(() => {
     if (!schema) return [];
-    return [...schema.entities, ...(schema.custom_objects || [])];
-  }, [schema]);
+    const all = [...schema.entities, ...(schema.custom_objects || [])];
+    if (entityFilter && entityFilter.length > 0) {
+      return all.filter((e) => entityFilter.includes(e.key));
+    }
+    return all;
+  }, [schema, entityFilter]);
 
   // Find the currently selected field info for display
   const selectedField = useMemo(() => {
@@ -110,7 +117,7 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
   }, [allEntities, search]);
 
   const handleSelect = (_entity: SchemaEntity, field: SchemaField) => {
-    onChange(field.path, field);
+    onChange(field.path);
     setIsOpen(false);
     setSearch('');
   };
