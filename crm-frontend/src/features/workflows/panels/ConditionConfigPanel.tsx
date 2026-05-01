@@ -3,6 +3,7 @@ import { type ConditionGroup, type ConditionRule } from '../types';
 import { useBuilderStore } from '../store';
 import { getOperatorsForType } from '../useSchema';
 import { FieldPicker, type FieldMeta } from './FieldPicker';
+import { SmartValueInput } from './SmartValueInput';
 
 export const ConditionConfigPanel: React.FC = () => {
   const { conditions, setConditions, schema, schemaLoading, schemaError, invalidateSchema } = useBuilderStore();
@@ -169,7 +170,7 @@ export const ConditionConfigPanel: React.FC = () => {
 
                   {/* Value input — hidden for unary operators */}
                   {!isUnary && (
-                    <ValueInput
+                    <SmartValueInput
                       fieldPath={rule.field}
                       fieldType={fieldType}
                       value={rule.value}
@@ -216,7 +217,7 @@ export const ConditionConfigPanel: React.FC = () => {
   );
 };
 
-// --- Type-aware value input ---
+// --- Field type indicator colors (used by rule row) ---
 
 const TYPE_INDICATOR_COLORS: Record<string, string> = {
   string: '#9CA3AF',
@@ -225,73 +226,4 @@ const TYPE_INDICATOR_COLORS: Record<string, string> = {
   array: '#A78BFA',
   select: '#34D399',
   date: '#FB923C',
-};
-
-interface ValueInputProps {
-  fieldPath: string;
-  fieldType: string;
-  value: unknown;
-  onChange: (value: unknown) => void;
-}
-
-/**
- * Basic type-aware value input.
- * For P2 (Day 3), this will be replaced with SmartValueInput that uses
- * tag/stage/user pickers. For now, it renders type-appropriate native inputs.
- */
-const ValueInput: React.FC<ValueInputProps> = ({ fieldType, value, onChange }) => {
-  const baseClass =
-    'flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:border-purple-500 focus:outline-none';
-
-  switch (fieldType) {
-    case 'boolean':
-      return (
-        <select
-          value={String(value ?? 'true')}
-          onChange={(e) => onChange(e.target.value === 'true')}
-          className={`${baseClass} min-w-[100px]`}
-        >
-          <option value="true">Yes</option>
-          <option value="false">No</option>
-        </select>
-      );
-
-    case 'number':
-      return (
-        <input
-          type="number"
-          value={String(value ?? '')}
-          onChange={(e) => {
-            const num = parseFloat(e.target.value);
-            onChange(isNaN(num) ? '' : num);
-          }}
-          placeholder="Value"
-          className={baseClass}
-        />
-      );
-
-    case 'date':
-      return (
-        <input
-          type="date"
-          value={String(value ?? '')}
-          onChange={(e) => onChange(e.target.value)}
-          className={baseClass}
-        />
-      );
-
-    case 'string':
-    case 'array':
-    case 'select':
-    default:
-      return (
-        <input
-          type="text"
-          value={String(value ?? '')}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={fieldType === 'array' ? 'Value (e.g. tag name)' : 'Value'}
-          className={baseClass}
-        />
-      );
-  }
 };
