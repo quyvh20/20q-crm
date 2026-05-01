@@ -155,9 +155,9 @@ export const ConditionConfigPanel: React.FC = () => {
                     value={rule.operator || 'eq'}
                     onChange={(e) => {
                       const newOp = e.target.value;
-                      // If switching to unary operator, clear value
+                      // If switching to unary operator, set value=null (no operand needed)
                       if (['is_empty', 'is_not_empty'].includes(newOp)) {
-                        updateRule(idx, { operator: newOp, value: '' });
+                        updateRule(idx, { operator: newOp, value: null });
                       } else {
                         updateRule(idx, { operator: newOp });
                       }
