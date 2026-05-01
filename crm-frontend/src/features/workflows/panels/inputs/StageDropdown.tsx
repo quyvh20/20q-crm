@@ -3,6 +3,7 @@ import type { SchemaStage } from '../../api';
 
 // ============================================================
 // StageDropdown — colored dots with stage names
+// Emits stage ID (UUID), displays stage name.
 // ============================================================
 
 export interface StageDropdownProps {
@@ -16,7 +17,7 @@ export const StageDropdown: React.FC<StageDropdownProps> = ({ stages, value, onC
   const containerRef = useRef<HTMLDivElement>(null);
 
   const selectedValue = String(value ?? '');
-  const selectedStage = stages.find((s) => s.name === selectedValue);
+  const selectedStage = stages.find((s) => s.id === selectedValue);
 
   // Close on outside click
   useEffect(() => {
@@ -30,7 +31,7 @@ export const StageDropdown: React.FC<StageDropdownProps> = ({ stages, value, onC
   }, []);
 
   const handleSelect = (stage: SchemaStage) => {
-    onChange(stage.name);
+    onChange(stage.id);
     setIsOpen(false);
   };
 
@@ -83,7 +84,7 @@ export const StageDropdown: React.FC<StageDropdownProps> = ({ stages, value, onC
               <div className="px-3 py-3 text-center text-xs text-gray-500">No stages found</div>
             ) : (
               sortedStages.map((stage) => {
-                const isSelected = stage.name === selectedValue;
+                const isSelected = stage.id === selectedValue;
                 return (
                   <button
                     key={stage.id}

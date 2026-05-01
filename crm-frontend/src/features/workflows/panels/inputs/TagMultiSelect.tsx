@@ -3,6 +3,7 @@ import type { SchemaTag } from '../../api';
 
 // ============================================================
 // TagMultiSelect — colored pill tags with popover picker
+// Emits array of tag IDs (UUIDs), displays tag names.
 // ============================================================
 
 export interface TagMultiSelectProps {
@@ -17,8 +18,8 @@ export const TagMultiSelect: React.FC<TagMultiSelectProps> = ({ tags, value, onC
   const containerRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
-  // Normalize value to string array
-  const selected: string[] = Array.isArray(value)
+  // Normalize value to string array of IDs
+  const selectedIds: string[] = Array.isArray(value)
     ? value.map(String)
     : typeof value === 'string' && value
       ? value.split(',').map((s) => s.trim()).filter(Boolean)
@@ -47,22 +48,22 @@ export const TagMultiSelect: React.FC<TagMultiSelectProps> = ({ tags, value, onC
     return tags.filter((t) => t.name.toLowerCase().includes(q));
   }, [tags, search]);
 
-  const toggle = (tagName: string) => {
-    if (selected.includes(tagName)) {
-      onChange(selected.filter((s) => s !== tagName));
+  const toggle = (tagId: string) => {
+    if (selectedIds.includes(tagId)) {
+      onChange(selectedIds.filter((s) => s !== tagId));
     } else {
-      onChange([...selected, tagName]);
+      onChange([...selectedIds, tagId]);
     }
   };
 
-  const remove = (tagName: string) => {
-    onChange(selected.filter((s) => s !== tagName));
+  const remove = (tagId: string) => {
+    onChange(selectedIds.filter((s) => s !== tagId));
   };
 
-  // Resolve tag colors
-  const tagMap = useMemo(() => {
+  // Resolve tag by ID for display
+  const tagById = useMemo(() => {
     const m = new Map<string, SchemaTag>();
-    tags.forEach((t) => m.set(t.name, t));
+    tags.forEach((t) => m.set(t.id, t));
     return m;
   }, [tags]);
 
@@ -75,15 +76,16 @@ export const TagMultiSelect: React.FC<TagMultiSelectProps> = ({ tags, value, onC
           isOpen ? 'border-purple-500 ring-1 ring-purple-500/30' : 'border-gray-700 hover:border-gray-600'
         }`}
       >
-        {selected.length === 0 && (
+        {selectedIds.length === 0 && (
           <span className="text-gray-500 text-sm px-1">Select tags…</span>
         )}
-        {selected.map((tagName) => {
-          const tag = tagMap.get(tagName);
+        {selectedIds.map((tagId) => {
+          const tag = tagById.get(tagId);
           const color = tag?.color || '#6B7280';
+          const name = tag?.name || tagId;
           return (
             <span
-              key={tagName}
+              key={tagId}
               className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium"
               style={{
                 backgroundColor: `${color}20`,
@@ -95,12 +97,12 @@ export const TagMultiSelect: React.FC<TagMultiSelectProps> = ({ tags, value, onC
                 className="w-1.5 h-1.5 rounded-full flex-shrink-0"
                 style={{ backgroundColor: color }}
               />
-              {tagName}
+              {name}
               <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  remove(tagName);
+                  remove(tagId);
                 }}
                 className="ml-0.5 hover:opacity-70 transition-opacity"
               >
@@ -136,12 +138,12 @@ export const TagMultiSelect: React.FC<TagMultiSelectProps> = ({ tags, value, onC
               </div>
             ) : (
               filteredTags.map((tag) => {
-                const isSelected = selected.includes(tag.name);
+                const isSelected = selectedIds.includes(tag.id);
                 return (
                   <button
                     key={tag.id}
                     type="button"
-                    onClick={() => toggle(tag.name)}
+                    onClick={() => toggle(tag.id)}
                     className={`w-full px-3 py-2 text-left flex items-center gap-2.5 text-sm transition-colors ${
                       isSelected
                         ? 'bg-purple-500/10 text-white'
@@ -172,7 +174,7 @@ export const TagMultiSelect: React.FC<TagMultiSelectProps> = ({ tags, value, onC
 
           {/* Footer */}
           <div className="px-3 py-1.5 border-t border-gray-700/50 text-[10px] text-gray-600">
-            {selected.length} selected · Click to toggle
+            {selectedIds.length} selected · Click to toggle
           </div>
         </div>
       )}

@@ -186,17 +186,15 @@ describe('TestSmartValueInput_HiddenForIsEmpty', () => {
   });
 });
 
-// ── 3. TagPicker emits tag names (current contract) ──────────────────
-// NOTE: The current implementation emits tag NAMES, not UUIDs.
-// The backend `evalContains` does string comparison against the tag array
-// stored on the contact, which contains tag names. This is by design —
-// the schema exposes tags by name for human-readable conditions.
-describe('TestSmartValueInput_TagPickerEmitsNames', () => {
+// ── 3. TagPicker emits tag IDs (UUIDs) ───────────────────────────────
+// The TagMultiSelect emits tag UUIDs (e.g. 'tag-uuid-1') rather than
+// display names. The backend evaluator resolves these IDs at runtime.
+describe('TestSmartValueInput_TagPickerEmitsIDs', () => {
   beforeEach(() => {
     seedStore();
   });
 
-  it('selecting a tag emits array containing the tag name', async () => {
+  it('selecting a tag emits array containing the tag UUID', async () => {
     const onChange = vi.fn();
     render(
       <SmartValueInput field={field('contact.tags')} operator="contains" value={[]} onChange={onChange} />
@@ -205,22 +203,21 @@ describe('TestSmartValueInput_TagPickerEmitsNames', () => {
     // Open dropdown
     await userEvent.click(screen.getByText('Select tags…'));
 
-    // Click "VIP" tag
+    // Click "VIP" tag — should emit the UUID, not the name
     await userEvent.click(screen.getByText('VIP'));
 
-    // Should emit ['VIP'] (tag name, not UUID)
-    expect(onChange).toHaveBeenCalledWith(['VIP']);
+    expect(onChange).toHaveBeenCalledWith(['tag-uuid-1']);
   });
 
-  it('selecting multiple tags emits array of tag names', async () => {
+  it('selecting multiple tags emits array of tag UUIDs', async () => {
     const onChange = vi.fn();
 
-    // Start with VIP already selected
+    // Start with VIP already selected (by UUID)
     render(
-      <SmartValueInput field={field('contact.tags')} operator="contains" value={['VIP']} onChange={onChange} />
+      <SmartValueInput field={field('contact.tags')} operator="contains" value={['tag-uuid-1']} onChange={onChange} />
     );
 
-    // Open dropdown by clicking the trigger area
+    // Open dropdown by clicking the trigger area — VIP name is resolved from UUID
     const triggerArea = screen.getAllByText('VIP')[0].closest('div[class*="cursor-pointer"]')!;
     await userEvent.click(triggerArea);
 
@@ -228,14 +225,14 @@ describe('TestSmartValueInput_TagPickerEmitsNames', () => {
     const enterpriseBtn = screen.getByText('Enterprise');
     await userEvent.click(enterpriseBtn);
 
-    // Should emit the combined array ['VIP', 'Enterprise']
-    expect(onChange).toHaveBeenCalledWith(['VIP', 'Enterprise']);
+    // Should emit the combined array of UUIDs
+    expect(onChange).toHaveBeenCalledWith(['tag-uuid-1', 'tag-uuid-3']);
   });
 
-  it('removing a tag emits filtered array', async () => {
+  it('removing a tag emits filtered array of UUIDs', async () => {
     const onChange = vi.fn();
     render(
-      <SmartValueInput field={field('contact.tags')} operator="contains" value={['VIP', 'Enterprise']} onChange={onChange} />
+      <SmartValueInput field={field('contact.tags')} operator="contains" value={['tag-uuid-1', 'tag-uuid-3']} onChange={onChange} />
     );
 
     // Find the × button inside the "VIP" pill and click it
@@ -243,8 +240,8 @@ describe('TestSmartValueInput_TagPickerEmitsNames', () => {
     const removeBtn = within(vipPill).getByText('×');
     await userEvent.click(removeBtn);
 
-    // Should emit ['Enterprise'] (VIP removed)
-    expect(onChange).toHaveBeenCalledWith(['Enterprise']);
+    // Should emit ['tag-uuid-3'] (VIP's UUID removed)
+    expect(onChange).toHaveBeenCalledWith(['tag-uuid-3']);
   });
 });
 
@@ -271,8 +268,8 @@ describe('TestSmartValueInput_ResetValueOnFieldChange', () => {
 
   it('handleFieldChange resets operator + value on type change', () => {
     // string → number: operator must reset, value must be null
-    const oldFieldType = 'string';
-    const newFieldType = 'number';
+    const oldFieldType: string = 'string';
+    const newFieldType: string = 'number';
     const currentField = 'contact.email';
 
     if (oldFieldType !== newFieldType || !currentField) {
@@ -348,14 +345,14 @@ describe('TestSmartValueInput_DatePickerEmitsISO8601UTC', () => {
 // ── 6. Condition round-trip: save → reload → state preserved ─────────
 describe('TestConditionRoundTrip', () => {
   it('tag condition serializes and restores correctly', () => {
-    // Simulate building a condition with tag picker
+    // Simulate building a condition with tag picker (emits UUIDs)
     const condition = {
       op: 'AND' as const,
       rules: [
         {
           field: 'contact.tags',
           operator: 'contains',
-          value: ['VIP', 'Enterprise'], // tag names (current contract)
+          value: ['tag-uuid-1', 'tag-uuid-3'], // tag UUIDs
         },
       ],
     };
@@ -364,12 +361,12 @@ describe('TestConditionRoundTrip', () => {
     const json = JSON.stringify(condition);
     const restored = JSON.parse(json);
 
-    // Assert round-trip preserves structure
+    // Assert round-trip preserves UUIDs
     expect(restored.op).toBe('AND');
     expect(restored.rules).toHaveLength(1);
     expect(restored.rules[0].field).toBe('contact.tags');
     expect(restored.rules[0].operator).toBe('contains');
-    expect(restored.rules[0].value).toEqual(['VIP', 'Enterprise']);
+    expect(restored.rules[0].value).toEqual(['tag-uuid-1', 'tag-uuid-3']);
     expect(Array.isArray(restored.rules[0].value)).toBe(true);
   });
 
@@ -377,7 +374,8 @@ describe('TestConditionRoundTrip', () => {
     const condition = {
       op: 'AND' as const,
       rules: [
-        { field: 'contact.tags', operator: 'contains', value: ['VIP'] },
+        { field: 'contact.tags', operator: 'contains', value: ['tag-uuid-1'] },
+        { field: 'deal.stage', operator: 'eq', value: 'stage-uuid-2' },
         { field: 'deal.value', operator: 'gt', value: 5000 },
         { field: 'deal.is_won', operator: 'eq', value: true },
         { field: 'contact.created_at', operator: 'gt', value: '2026-01-01T00:00:00.000Z' },
@@ -388,25 +386,27 @@ describe('TestConditionRoundTrip', () => {
     const json = JSON.stringify(condition);
     const restored = JSON.parse(json);
 
-    // Tags → array preserved
-    expect(restored.rules[0].value).toEqual(['VIP']);
+    // Tags → array of UUIDs preserved
+    expect(restored.rules[0].value).toEqual(['tag-uuid-1']);
+    // Stage → UUID preserved
+    expect(restored.rules[1].value).toBe('stage-uuid-2');
     // Number → number preserved
-    expect(restored.rules[1].value).toBe(5000);
-    expect(typeof restored.rules[1].value).toBe('number');
+    expect(restored.rules[2].value).toBe(5000);
+    expect(typeof restored.rules[2].value).toBe('number');
     // Boolean → boolean preserved
-    expect(restored.rules[2].value).toBe(true);
-    expect(typeof restored.rules[2].value).toBe('boolean');
+    expect(restored.rules[3].value).toBe(true);
+    expect(typeof restored.rules[3].value).toBe('boolean');
     // Date → ISO string preserved
-    expect(restored.rules[3].value).toBe('2026-01-01T00:00:00.000Z');
+    expect(restored.rules[4].value).toBe('2026-01-01T00:00:00.000Z');
     // Unary → null preserved
-    expect(restored.rules[4].value).toBeNull();
+    expect(restored.rules[5].value).toBeNull();
   });
 
   it('store preserves condition state across set/get cycle', () => {
     const condition = {
       op: 'AND' as const,
       rules: [
-        { field: 'contact.tags', operator: 'contains', value: ['VIP', 'Enterprise'] },
+        { field: 'contact.tags', operator: 'contains', value: ['tag-uuid-1', 'tag-uuid-3'] },
       ],
     };
 
@@ -417,6 +417,6 @@ describe('TestConditionRoundTrip', () => {
     const stored = useBuilderStore.getState().conditions;
     expect(stored).not.toBeNull();
     expect(stored!.rules[0].field).toBe('contact.tags');
-    expect(stored!.rules[0].value).toEqual(['VIP', 'Enterprise']);
+    expect(stored!.rules[0].value).toEqual(['tag-uuid-1', 'tag-uuid-3']);
   });
 });
