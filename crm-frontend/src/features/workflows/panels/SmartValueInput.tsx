@@ -461,11 +461,12 @@ const StageDropdown: React.FC<StageDropdownProps> = ({ stages, value, onChange }
                     }`}
                   >
                     <span
-                      className="w-3 h-3 rounded-full flex-shrink-0 ring-2"
+                      className="w-3 h-3 rounded-full flex-shrink-0"
                       style={{
                         backgroundColor: stage.color || '#6B7280',
-                        ringColor: isSelected ? `${stage.color}60` : 'transparent',
-                        boxShadow: isSelected ? `0 0 8px ${stage.color}40` : 'none',
+                        boxShadow: isSelected
+                          ? `0 0 0 2px #1a1d27, 0 0 0 4px ${stage.color}60, 0 0 8px ${stage.color}40`
+                          : 'none',
                       }}
                     />
                     <span className="flex-1 truncate">{stage.name}</span>
