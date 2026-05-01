@@ -128,6 +128,10 @@ export interface SchemaField {
   type: 'string' | 'number' | 'boolean' | 'array' | 'select' | 'date';
   picker_type?: 'tag' | 'stage' | 'user';
   options?: string[];
+  /** Minimum value for number fields (enforced in NumberInput) */
+  min?: number;
+  /** Maximum value for number fields (enforced in NumberInput) */
+  max?: number;
 }
 
 export interface SchemaEntity {

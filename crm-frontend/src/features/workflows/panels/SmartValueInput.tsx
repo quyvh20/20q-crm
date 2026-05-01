@@ -86,47 +86,21 @@ export const SmartValueInput: React.FC<SmartValueInputProps> = ({
 
   if (fieldType === 'number') {
     return (
-      <input
-        type="number"
-        value={String(value ?? '')}
-        onChange={(e) => {
-          const num = parseFloat(e.target.value);
-          onChange(isNaN(num) ? '' : num);
-        }}
-        placeholder="Value"
-        className={INPUT_CLASS}
+      <NumberInput
+        value={value}
+        onChange={onChange}
+        min={field.min}
+        max={field.max}
       />
     );
   }
 
   if (fieldType === 'date') {
-    return (
-      <input
-        type="date"
-        value={String(value ?? '')}
-        onChange={(e) => onChange(e.target.value)}
-        className={INPUT_CLASS}
-      />
-    );
+    return <DateInput value={value} onChange={onChange} />;
   }
 
-  // 3. Default: plain text
-  const placeholder =
-    fieldType === 'array' ? 'Value (e.g. tag name)'
-    : operator === 'contains' || operator === 'not_contains' ? 'Search text…'
-    : operator === 'starts_with' ? 'Prefix…'
-    : operator === 'ends_with' ? 'Suffix…'
-    : 'Value';
-
-  return (
-    <input
-      type="text"
-      value={String(value ?? '')}
-      onChange={(e) => onChange(e.target.value)}
-      placeholder={placeholder}
-      className={INPUT_CLASS}
-    />
-  );
+  // 3. Default: plain text fallback
+  return <StringInput value={value} onChange={onChange} operator={operator} fieldType={fieldType} />;
 };
 
 // ============================================================
@@ -677,5 +651,106 @@ const UserDropdown: React.FC<UserDropdownProps> = ({ users, value, onChange }) =
   );
 };
 
+// ============================================================
+// NumberInput — numeric input with optional min/max constraints
+// ============================================================
+
+const NumberInput: React.FC<{
+  value: unknown;
+  onChange: (v: number | '') => void;
+  min?: number;
+  max?: number;
+}> = ({ value, onChange, min, max }) => {
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const raw = e.target.value;
+    if (raw === '') { onChange(''); return; }
+    const num = parseFloat(raw);
+    if (isNaN(num)) return;
+    // Clamp to min/max if defined
+    const clamped =
+      min !== undefined && num < min ? min
+      : max !== undefined && num > max ? max
+      : num;
+    onChange(clamped);
+  };
+
+  return (
+    <input
+      type="number"
+      value={String(value ?? '')}
+      onChange={handleChange}
+      min={min}
+      max={max}
+      placeholder={min !== undefined && max !== undefined ? `${min}–${max}` : 'Value'}
+      className={INPUT_CLASS}
+    />
+  );
+};
+
+// ============================================================
+// DateInput — date picker that emits UTC ISO 8601 strings
+// ============================================================
+
+const DateInput: React.FC<{
+  value: unknown;
+  onChange: (v: string) => void;
+}> = ({ value, onChange }) => {
+  // Convert stored ISO string (e.g. "2026-05-01T00:00:00.000Z") back to YYYY-MM-DD for the input
+  const displayValue = useMemo(() => {
+    const str = String(value ?? '');
+    if (!str) return '';
+    // Already YYYY-MM-DD?
+    if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+    // Try parsing ISO string
+    const d = new Date(str);
+    if (isNaN(d.getTime())) return '';
+    return d.toISOString().slice(0, 10);
+  }, [value]);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const dateStr = e.target.value; // YYYY-MM-DD
+    if (!dateStr) { onChange(''); return; }
+    // Emit as UTC ISO 8601: "2026-05-01T00:00:00.000Z"
+    onChange(new Date(dateStr + 'T00:00:00.000Z').toISOString());
+  };
+
+  return (
+    <input
+      type="date"
+      value={displayValue}
+      onChange={handleChange}
+      className={INPUT_CLASS}
+    />
+  );
+};
+
+// ============================================================
+// StringInput — text fallback with operator-aware placeholders
+// ============================================================
+
+const StringInput: React.FC<{
+  value: unknown;
+  onChange: (v: string) => void;
+  operator: string;
+  fieldType: string;
+}> = ({ value, onChange, operator, fieldType }) => {
+  const placeholder =
+    fieldType === 'array' ? 'Value (e.g. tag name)'
+    : operator === 'contains' || operator === 'not_contains' ? 'Search text…'
+    : operator === 'starts_with' ? 'Prefix…'
+    : operator === 'ends_with' ? 'Suffix…'
+    : 'Value';
+
+  return (
+    <input
+      type="text"
+      value={String(value ?? '')}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      className={INPUT_CLASS}
+    />
+  );
+};
+
 // Re-export sub-components for use in ActionConfigPanel (P10, P16, etc.)
-export { TagMultiSelect, StageDropdown, UserDropdown, BooleanToggle, SelectDropdown };
+export { TagMultiSelect, StageDropdown, UserDropdown, BooleanToggle, SelectDropdown, NumberInput, DateInput, StringInput };
