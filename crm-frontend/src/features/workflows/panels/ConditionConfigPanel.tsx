@@ -56,8 +56,8 @@ export const ConditionConfigPanel: React.FC = () => {
 
   /**
    * Handle field selection from FieldPicker.
-   * When the field type changes, reset operator to a valid one for the new type,
-   * and clear the value to avoid stale data.
+   * ALWAYS reset value on field change (don't carry old field's data).
+   * Also reset operator when the field type changes.
    */
   const handleFieldChange = useCallback(
     (index: number, path: string, fieldMeta: FieldMeta) => {
@@ -65,7 +65,7 @@ export const ConditionConfigPanel: React.FC = () => {
       const oldFieldType = getFieldType(currentRule.field || '');
       const newFieldType = fieldMeta.type;
 
-      // If type changed, reset operator to first valid one + clear value
+      // If type changed (or first selection), reset operator to a valid one
       if (oldFieldType !== newFieldType || !currentRule.field) {
         const validOps = getOperatorsForType(newFieldType);
         const currentOpStillValid = validOps.some((op) => op.value === currentRule.operator);
@@ -73,10 +73,11 @@ export const ConditionConfigPanel: React.FC = () => {
         updateRule(index, {
           field: path,
           operator: currentOpStillValid ? currentRule.operator : validOps[0]?.value || 'eq',
-          value: '',
+          value: null,
         });
       } else {
-        updateRule(index, { field: path });
+        // Same type, different field → still reset value (don't carry stale data)
+        updateRule(index, { field: path, value: null });
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -155,9 +156,17 @@ export const ConditionConfigPanel: React.FC = () => {
                     value={rule.operator || 'eq'}
                     onChange={(e) => {
                       const newOp = e.target.value;
-                      // If switching to unary operator, set value=null (no operand needed)
-                      if (['is_empty', 'is_not_empty'].includes(newOp)) {
+                      const oldOp = rule.operator || 'eq';
+                      const isNewUnary = ['is_empty', 'is_not_empty'].includes(newOp);
+                      const isNewMulti = ['in', 'not_in'].includes(newOp);
+                      const isOldMulti = ['in', 'not_in'].includes(oldOp);
+
+                      // Unary → null value, hide input
+                      if (isNewUnary) {
                         updateRule(idx, { operator: newOp, value: null });
+                      // Switching between multi↔scalar → reset value
+                      } else if (isNewMulti !== isOldMulti) {
+                        updateRule(idx, { operator: newOp, value: isNewMulti ? [] : null });
                       } else {
                         updateRule(idx, { operator: newOp });
                       }
