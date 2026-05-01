@@ -75,7 +75,24 @@ export const SmartValueInput: React.FC<SmartValueInputProps> = ({
     );
   }
 
-  // 2. Field-type based rendering
+  // 2. Operator-aware: in/not_in → force multi-value input
+  const isMultiOp = operator === 'in' || operator === 'not_in';
+  if (isMultiOp) {
+    // For select fields with predefined options, use a multi-select dropdown
+    if (fieldType === 'select' && options && options.length > 0) {
+      return <MultiSelectDropdown options={options} value={value} onChange={onChange} />;
+    }
+    // For all other types, use a chip input (type & press Enter)
+    return (
+      <MultiValueChipInput
+        value={value}
+        onChange={onChange}
+        placeholder={fieldType === 'number' ? 'Type number + Enter' : 'Type value + Enter'}
+      />
+    );
+  }
+
+  // 3. Field-type based rendering
   if (fieldType === 'boolean') {
     return <BooleanToggle value={value} onChange={onChange} />;
   }
@@ -99,7 +116,7 @@ export const SmartValueInput: React.FC<SmartValueInputProps> = ({
     return <DateInput value={value} onChange={onChange} />;
   }
 
-  // 3. Default: plain text fallback
+  // 4. Default: plain text fallback
   return <StringInput value={value} onChange={onChange} operator={operator} fieldType={fieldType} />;
 };
 
@@ -752,5 +769,183 @@ const StringInput: React.FC<{
   );
 };
 
+// ============================================================
+// MultiValueChipInput — chip input for in/not_in operators
+// ============================================================
+
+const MultiValueChipInput: React.FC<{
+  value: unknown;
+  onChange: (v: string[]) => void;
+  placeholder?: string;
+}> = ({ value, onChange, placeholder = 'Type value + Enter' }) => {
+  const [inputValue, setInputValue] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Normalize value to string[]
+  const chips: string[] = Array.isArray(value)
+    ? value.map(String)
+    : typeof value === 'string' && value
+      ? value.split(',').map((s) => s.trim()).filter(Boolean)
+      : [];
+
+  const addChip = () => {
+    const trimmed = inputValue.trim();
+    if (trimmed && !chips.includes(trimmed)) {
+      onChange([...chips, trimmed]);
+    }
+    setInputValue('');
+  };
+
+  const removeChip = (chip: string) => {
+    onChange(chips.filter((c) => c !== chip));
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      addChip();
+    } else if (e.key === 'Backspace' && !inputValue && chips.length > 0) {
+      onChange(chips.slice(0, -1));
+    }
+  };
+
+  return (
+    <div
+      className={`flex-1 min-h-[34px] bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 flex flex-wrap gap-1 items-center cursor-text focus-within:border-purple-500 focus-within:ring-1 focus-within:ring-purple-500/30 transition-colors`}
+      onClick={() => inputRef.current?.focus()}
+    >
+      {chips.map((chip) => (
+        <span
+          key={chip}
+          className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-md text-xs font-medium bg-purple-500/15 text-purple-300 border border-purple-500/25"
+        >
+          {chip}
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); removeChip(chip); }}
+            className="ml-0.5 hover:text-white transition-colors"
+          >
+            ×
+          </button>
+        </span>
+      ))}
+      <input
+        ref={inputRef}
+        type="text"
+        value={inputValue}
+        onChange={(e) => setInputValue(e.target.value)}
+        onKeyDown={handleKeyDown}
+        onBlur={() => { if (inputValue.trim()) addChip(); }}
+        placeholder={chips.length === 0 ? placeholder : ''}
+        className="flex-1 min-w-[60px] bg-transparent text-sm text-white placeholder-gray-500 outline-none"
+      />
+    </div>
+  );
+};
+
+// ============================================================
+// MultiSelectDropdown — multi-select for in/not_in on select fields
+// ============================================================
+
+const MultiSelectDropdown: React.FC<{
+  options: string[];
+  value: unknown;
+  onChange: (v: string[]) => void;
+}> = ({ options, value, onChange }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Normalize value to string[]
+  const selected: string[] = Array.isArray(value)
+    ? value.map(String)
+    : typeof value === 'string' && value
+      ? value.split(',').map((s) => s.trim()).filter(Boolean)
+      : [];
+
+  // Close on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const toggle = (opt: string) => {
+    if (selected.includes(opt)) {
+      onChange(selected.filter((s) => s !== opt));
+    } else {
+      onChange([...selected, opt]);
+    }
+  };
+
+  return (
+    <div ref={containerRef} className="relative flex-1">
+      <div
+        onClick={() => setIsOpen(!isOpen)}
+        className={`min-h-[34px] bg-gray-800 border rounded-lg px-2 py-1 flex flex-wrap gap-1 items-center cursor-pointer transition-colors ${
+          isOpen ? 'border-purple-500 ring-1 ring-purple-500/30' : 'border-gray-700 hover:border-gray-600'
+        }`}
+      >
+        {selected.length === 0 && (
+          <span className="text-gray-500 text-sm px-1">Select values…</span>
+        )}
+        {selected.map((opt) => (
+          <span
+            key={opt}
+            className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-md text-xs font-medium bg-purple-500/15 text-purple-300 border border-purple-500/25"
+          >
+            {opt}
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); toggle(opt); }}
+              className="ml-0.5 hover:text-white transition-colors"
+            >
+              ×
+            </button>
+          </span>
+        ))}
+      </div>
+
+      {isOpen && (
+        <div
+          className="absolute z-50 top-full left-0 right-0 mt-1 border border-gray-700 rounded-xl shadow-2xl shadow-black/50 overflow-hidden"
+          style={{ backgroundColor: '#1a1d27' }}
+        >
+          <div className="max-h-48 overflow-y-auto overscroll-contain">
+            {options.map((opt) => {
+              const isSelected = selected.includes(opt);
+              return (
+                <button
+                  key={opt}
+                  type="button"
+                  onClick={() => toggle(opt)}
+                  className={`w-full px-3 py-2 text-left flex items-center gap-2.5 text-sm transition-colors ${
+                    isSelected
+                      ? 'bg-purple-500/10 text-white'
+                      : 'text-gray-300 hover:bg-gray-800/60 hover:text-white'
+                  }`}
+                >
+                  <span className="flex-1 truncate">{opt}</span>
+                  {isSelected && (
+                    <svg className="w-3.5 h-3.5 text-purple-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          <div className="px-3 py-1.5 border-t border-gray-700/50 text-[10px] text-gray-600">
+            {selected.length} selected · Click to toggle
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 // Re-export sub-components for use in ActionConfigPanel (P10, P16, etc.)
-export { TagMultiSelect, StageDropdown, UserDropdown, BooleanToggle, SelectDropdown, NumberInput, DateInput, StringInput };
+export { TagMultiSelect, StageDropdown, UserDropdown, BooleanToggle, SelectDropdown, NumberInput, DateInput, StringInput, MultiValueChipInput, MultiSelectDropdown };

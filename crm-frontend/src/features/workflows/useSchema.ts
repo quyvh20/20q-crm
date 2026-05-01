@@ -90,6 +90,8 @@ export function getOperatorsForType(type: string) {
         { value: 'gte', label: 'Greater or Equal' },
         { value: 'lt', label: 'Less Than' },
         { value: 'lte', label: 'Less or Equal' },
+        { value: 'in', label: 'In' },
+        { value: 'not_in', label: 'Not In' },
       ];
     case 'boolean':
       return [
@@ -126,6 +128,8 @@ export function getOperatorsForType(type: string) {
         { value: 'not_contains', label: 'Not Contains' },
         { value: 'starts_with', label: 'Starts With' },
         { value: 'ends_with', label: 'Ends With' },
+        { value: 'in', label: 'In' },
+        { value: 'not_in', label: 'Not In' },
         { value: 'is_empty', label: 'Is Empty' },
         { value: 'is_not_empty', label: 'Is Not Empty' },
       ];
