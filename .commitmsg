@@ -1,0 +1,6 @@
+refactor(SmartValueInput): accept SchemaField + operator props directly
+
+- Props changed: (fieldPath, fieldType) -> (field: SchemaField, operator: string)
+- Eliminates redundant findFieldInSchema lookup (caller resolves once)
+- Operator-aware contextual placeholders (Contains -> Search text...)
+- Exported SmartValueInputProps interface for type-safe consumers

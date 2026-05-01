@@ -1,7 +1,7 @@
 import React, { useMemo, useCallback } from 'react';
 import { type ConditionGroup, type ConditionRule } from '../types';
 import { useBuilderStore } from '../store';
-import { getOperatorsForType } from '../useSchema';
+import { getOperatorsForType, findFieldInSchema } from '../useSchema';
 import { FieldPicker, type FieldMeta } from './FieldPicker';
 import { SmartValueInput } from './SmartValueInput';
 
@@ -125,6 +125,7 @@ export const ConditionConfigPanel: React.FC = () => {
           const fieldType = getFieldType(rule.field || '');
           const operators = getOperatorsForType(fieldType);
           const isUnary = ['is_empty', 'is_not_empty'].includes(rule.operator || '');
+          const resolvedField = rule.field ? findFieldInSchema(schema, rule.field) : null;
 
           return (
             <div key={idx} className="group/rule rounded-xl border border-gray-800 bg-gray-900/50 p-3 space-y-2 transition-colors hover:border-gray-700">
@@ -169,10 +170,10 @@ export const ConditionConfigPanel: React.FC = () => {
                   </select>
 
                   {/* Value input — hidden for unary operators */}
-                  {!isUnary && (
+                  {!isUnary && resolvedField && (
                     <SmartValueInput
-                      fieldPath={rule.field}
-                      fieldType={fieldType}
+                      field={resolvedField}
+                      operator={rule.operator || 'eq'}
                       value={rule.value}
                       onChange={(v) => updateRule(idx, { value: v })}
                     />

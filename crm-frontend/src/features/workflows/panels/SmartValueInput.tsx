@@ -1,23 +1,26 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useBuilderStore } from '../store';
-import { findFieldInSchema } from '../useSchema';
-import type { SchemaTag, SchemaStage, SchemaUser } from '../api';
+import type { SchemaField, SchemaTag, SchemaStage, SchemaUser } from '../api';
 
 // ============================================================
 // SmartValueInput — renders the right picker based on field metadata
 // ============================================================
 
-interface SmartValueInputProps {
-  fieldPath: string;
-  fieldType: string;
+export interface SmartValueInputProps {
+  /** The resolved schema field (caller passes this directly — no internal lookup) */
+  field: SchemaField;
+  /** The currently selected operator (e.g. 'eq', 'contains', 'gt') */
+  operator: string;
+  /** Current value of the condition */
   value: unknown;
-  onChange: (value: unknown) => void;
+  /** Callback when value changes */
+  onChange: (v: unknown) => void;
 }
 
 /**
  * Schema-aware value input for workflow conditions.
  *
- * Reads picker_type + options from the schema to determine which sub-component
+ * Reads picker_type + options from the field to determine which sub-component
  * to render:
  *   picker_type=tag   → TagMultiSelect (colored pills, real org tags)
  *   picker_type=stage → StageDropdown  (colored dots, real pipeline stages)
@@ -29,16 +32,17 @@ interface SmartValueInputProps {
  *   default           → Plain text input
  */
 export const SmartValueInput: React.FC<SmartValueInputProps> = ({
-  fieldPath,
-  fieldType,
+  field,
+  operator,
   value,
   onChange,
 }) => {
+  // Tags, stages, users live at schema root — still need store for those
   const schema = useBuilderStore((s) => s.schema);
-  const field = useMemo(() => findFieldInSchema(schema, fieldPath), [schema, fieldPath]);
 
-  const pickerType = field?.picker_type;
-  const options = field?.options;
+  const fieldType = field.type;
+  const pickerType = field.picker_type;
+  const options = field.options;
 
   // 1. Picker-type based rendering (highest priority)
   if (pickerType === 'tag') {
@@ -107,12 +111,19 @@ export const SmartValueInput: React.FC<SmartValueInputProps> = ({
   }
 
   // 3. Default: plain text
+  const placeholder =
+    fieldType === 'array' ? 'Value (e.g. tag name)'
+    : operator === 'contains' || operator === 'not_contains' ? 'Search text…'
+    : operator === 'starts_with' ? 'Prefix…'
+    : operator === 'ends_with' ? 'Suffix…'
+    : 'Value';
+
   return (
     <input
       type="text"
       value={String(value ?? '')}
       onChange={(e) => onChange(e.target.value)}
-      placeholder={fieldType === 'array' ? 'Value (e.g. tag name)' : 'Value'}
+      placeholder={placeholder}
       className={INPUT_CLASS}
     />
   );
