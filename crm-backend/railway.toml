@@ -1,10 +1,10 @@
 [build]
 builder = "NIXPACKS"
-buildCommand = "go build -o bin/server cmd/server/main.go && curl -L https://github.com/golang-migrate/migrate/releases/download/v4.17.0/migrate.linux-amd64.tar.gz | tar xvz && mv migrate bin/migrate"
+buildCommand = "go build -o bin/server cmd/server/main.go && curl -L https://github.com/golang-migrate/migrate/releases/download/v4.17.0/migrate.linux-amd64.tar.gz | tar xvz && mv migrate bin/migrate && chmod +x start.sh"
 nixpacksConfigPath = "nixpacks.toml"
 
 [deploy]
-startCommand = "(./bin/migrate -path ./migrations -database \"$DATABASE_URL\" up || true) && ./bin/server"
+startCommand = "/bin/sh start.sh"
 healthcheckPath = "/health"
 healthcheckTimeout = 100
 restartPolicyType = "ON_FAILURE"
