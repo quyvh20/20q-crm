@@ -85,50 +85,50 @@ export function getOperatorsForType(type: string) {
     case 'number':
       return [
         { value: 'eq', label: 'Equals' },
-        { value: 'neq', label: 'Not Equals' },
-        { value: 'gt', label: 'Greater Than' },
-        { value: 'gte', label: 'Greater or Equal' },
-        { value: 'lt', label: 'Less Than' },
-        { value: 'lte', label: 'Less or Equal' },
+        { value: 'neq', label: 'Not equals' },
+        { value: 'gt', label: 'Greater than' },
+        { value: 'gte', label: 'Greater than or equal' },
+        { value: 'lt', label: 'Less than' },
+        { value: 'lte', label: 'Less than or equal' },
       ];
     case 'boolean':
       return [
         { value: 'eq', label: 'Is' },
-        { value: 'neq', label: 'Is Not' },
+        { value: 'neq', label: 'Is not' },
       ];
     case 'array':
       return [
         { value: 'contains', label: 'Contains' },
-        { value: 'not_contains', label: 'Not Contains' },
-        { value: 'is_empty', label: 'Is Empty' },
-        { value: 'is_not_empty', label: 'Is Not Empty' },
+        { value: 'not_contains', label: 'Does not contain' },
+        { value: 'is_empty', label: 'Is empty' },
+        { value: 'is_not_empty', label: 'Is not empty' },
       ];
     case 'select':
       return [
         { value: 'eq', label: 'Equals' },
-        { value: 'neq', label: 'Not Equals' },
-        { value: 'in', label: 'In' },
-        { value: 'not_in', label: 'Not In' },
+        { value: 'neq', label: 'Not equals' },
+        { value: 'in', label: 'Is any of' },
+        { value: 'not_in', label: 'Is none of' },
       ];
     case 'date':
       return [
         { value: 'eq', label: 'Equals' },
         { value: 'gt', label: 'After' },
         { value: 'lt', label: 'Before' },
-        { value: 'gte', label: 'On or After' },
-        { value: 'lte', label: 'On or Before' },
+        { value: 'gte', label: 'On or after' },
+        { value: 'lte', label: 'On or before' },
       ];
     case 'string':
     default:
       return [
         { value: 'eq', label: 'Equals' },
-        { value: 'neq', label: 'Not Equals' },
+        { value: 'neq', label: 'Not equals' },
         { value: 'contains', label: 'Contains' },
-        { value: 'not_contains', label: 'Not Contains' },
-        { value: 'starts_with', label: 'Starts With' },
-        { value: 'ends_with', label: 'Ends With' },
-        { value: 'is_empty', label: 'Is Empty' },
-        { value: 'is_not_empty', label: 'Is Not Empty' },
+        { value: 'not_contains', label: 'Does not contain' },
+        { value: 'starts_with', label: 'Starts with' },
+        { value: 'ends_with', label: 'Ends with' },
+        { value: 'is_empty', label: 'Is empty' },
+        { value: 'is_not_empty', label: 'Is not empty' },
       ];
   }
 }
