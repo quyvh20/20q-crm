@@ -10,7 +10,7 @@ export const ConditionConfigPanel: React.FC = () => {
 
   // Inline toast: shows briefly when operator is auto-reset on field type change
   const [resetNotice, setResetNotice] = useState<number | null>(null);
-  const resetTimer = useRef<ReturnType<typeof setTimeout>>();
+  const resetTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const showResetNotice = (ruleIndex: number) => {
     clearTimeout(resetTimer.current);
     setResetNotice(ruleIndex);
