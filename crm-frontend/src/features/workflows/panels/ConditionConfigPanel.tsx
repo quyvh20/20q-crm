@@ -1,4 +1,4 @@
-import React, { useMemo, useCallback } from 'react';
+import React, { useMemo, useCallback, useState, useEffect, useRef } from 'react';
 import { type ConditionGroup, type ConditionRule } from '../types';
 import { useBuilderStore } from '../store';
 import { getOperatorsForType, findFieldInSchema } from '../useSchema';
@@ -7,6 +7,16 @@ import { SmartValueInput } from './SmartValueInput';
 
 export const ConditionConfigPanel: React.FC = () => {
   const { conditions, setConditions, schema, schemaLoading, schemaError, invalidateSchema } = useBuilderStore();
+
+  // Inline toast: shows briefly when operator is auto-reset on field type change
+  const [resetNotice, setResetNotice] = useState<number | null>(null);
+  const resetTimer = useRef<ReturnType<typeof setTimeout>>();
+  const showResetNotice = (ruleIndex: number) => {
+    clearTimeout(resetTimer.current);
+    setResetNotice(ruleIndex);
+    resetTimer.current = setTimeout(() => setResetNotice(null), 3000);
+  };
+  useEffect(() => () => clearTimeout(resetTimer.current), []);
 
   const group: ConditionGroup = conditions || { op: 'AND', rules: [] };
 
@@ -69,12 +79,15 @@ export const ConditionConfigPanel: React.FC = () => {
       if (oldFieldType !== newFieldType || !currentRule.field) {
         const validOps = getOperatorsForType(newFieldType);
         const currentOpStillValid = validOps.some((op) => op.value === currentRule.operator);
+        const didReset = !currentOpStillValid && !!currentRule.field;
 
         updateRule(index, {
           field: path,
           operator: currentOpStillValid ? currentRule.operator : validOps[0]?.value || 'eq',
           value: null,
         });
+
+        if (didReset) showResetNotice(index);
       } else {
         // Same type, different field → still reset value (don't carry stale data)
         updateRule(index, { field: path, value: null });
@@ -130,6 +143,12 @@ export const ConditionConfigPanel: React.FC = () => {
 
           return (
             <div key={idx} className="group/rule rounded-xl border border-gray-800 bg-gray-900/50 p-3 space-y-2 transition-colors hover:border-gray-700">
+              {/* Inline toast: operator was auto-reset */}
+              {resetNotice === idx && (
+                <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-400 animate-pulse">
+                  ⚡ Operator reset because field type changed
+                </div>
+              )}
               {/* Row 1: Field picker */}
               <div className="flex gap-2 items-start">
                 <div className="flex-1">
