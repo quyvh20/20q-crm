@@ -119,7 +119,18 @@ export function getOperatorsForType(type: string) {
         { value: 'lte', label: 'On or before' },
       ];
     case 'string':
+      return [
+        { value: 'eq', label: 'Equals' },
+        { value: 'neq', label: 'Not equals' },
+        { value: 'contains', label: 'Contains' },
+        { value: 'not_contains', label: 'Does not contain' },
+        { value: 'starts_with', label: 'Starts with' },
+        { value: 'ends_with', label: 'Ends with' },
+        { value: 'is_empty', label: 'Is empty' },
+        { value: 'is_not_empty', label: 'Is not empty' },
+      ];
     default:
+      console.warn(`[getOperatorsForType] Unknown field type "${type}" — falling back to string operators`);
       return [
         { value: 'eq', label: 'Equals' },
         { value: 'neq', label: 'Not equals' },
