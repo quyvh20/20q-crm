@@ -44,6 +44,7 @@ interface ParamProps {
 const EmailParams: React.FC<ParamProps> = ({ action, setParam }) => (
   <div className="space-y-3">
     <TemplateInput label="To" value={String(action.params.to || '')} onChange={(v) => setParam('to', v)} placeholder="Click {x} to insert contact email" />
+    <TemplateInput label="CC" value={String(action.params.cc || '')} onChange={(v) => setParam('cc', v)} placeholder="Optional — comma-separated or use {x} for variables" />
     <TemplateInput label="From Name" value={String(action.params.from_name || '')} onChange={(v) => setParam('from_name', v)} placeholder="Your Company" />
     <TemplateInput label="Subject" value={String(action.params.subject || '')} onChange={(v) => setParam('subject', v)} placeholder="Click {x} to insert variables" />
     <TemplateInput
