@@ -186,7 +186,7 @@ func main() {
 
 		var mailerSvc domain.Mailer
 		if cfg.ResendAPIKey != "" {
-			mailerSvc = mailer.NewResendMailer(cfg.ResendAPIKey, "onboarding@resend.dev")
+			mailerSvc = mailer.NewResendMailer(cfg.ResendAPIKey, "noreply@twentyq.io")
 		} else {
 			mailerSvc = mailer.NewLogMailer()
 		}
@@ -275,7 +275,7 @@ func main() {
 		autoLogger := slog.Default()
 		autoEngine = automation.NewEngine(db, autoLogger,
 			automation.WithWorkers(5),
-			automation.WithEmailExecutor(cfg.ResendAPIKey, "onboarding@resend.dev"),
+			automation.WithEmailExecutor(cfg.ResendAPIKey, "noreply@twentyq.io"),
 		)
 		autoEngine.Start()
 		autoHandler := automation.NewHandler(autoEngine, db, autoLogger)
