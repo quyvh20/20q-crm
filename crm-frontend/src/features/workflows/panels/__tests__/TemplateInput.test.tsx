@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { TemplateInput } from '../inputs/TemplateInput';
 import { useBuilderStore } from '../../store';
@@ -207,7 +207,7 @@ describe('TestTemplateInput_FocusReturnsAfterInsert', () => {
       return 0;
     });
 
-    const { onChange } = renderInput({ value: 'Hello World' });
+    renderInput({ value: 'Hello World' });
 
     const input = screen.getByPlaceholderText('Enter text...') as HTMLInputElement;
     const focusSpy = vi.spyOn(input, 'focus');
