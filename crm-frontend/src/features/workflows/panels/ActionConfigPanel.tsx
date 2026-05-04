@@ -59,25 +59,77 @@ const EmailParams: React.FC<ParamProps> = ({ action, setParam }) => (
   </div>
 );
 
-const TaskParams: React.FC<ParamProps> = ({ action, setParam }) => (
-  <div className="space-y-3">
-    <TemplateInput label="Title" value={String(action.params.title || '')} onChange={(v) => setParam('title', v)} placeholder="Follow up with {{contact.first_name}}" />
-    <div>
-      <label className="block text-sm text-gray-400 mb-1">Priority</label>
-      <select
-        value={String(action.params.priority || 'medium')}
-        onChange={(e) => setParam('priority', e.target.value)}
-        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none"
-      >
-        <option value="low">Low</option>
-        <option value="medium">Medium</option>
-        <option value="high">High</option>
-      </select>
+const TaskParams: React.FC<ParamProps> = ({ action, setParam }) => {
+  const schema = useBuilderStore((s) => s.schema);
+  const users = schema?.users || [];
+
+  // Determine assignee mode from current value
+  const assigneeValue = String(action.params.assignee_field || '');
+  const isContactOwner = assigneeValue === '' || assigneeValue === 'contact.owner_id';
+
+  return (
+    <div className="space-y-3">
+      <TemplateInput label="Title" value={String(action.params.title || '')} onChange={(v) => setParam('title', v)} placeholder="Follow up with {{contact.first_name}}" />
+      <div>
+        <label className="block text-sm text-gray-400 mb-1">Priority</label>
+        <select
+          value={String(action.params.priority || 'medium')}
+          onChange={(e) => setParam('priority', e.target.value)}
+          className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none"
+        >
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+        </select>
+      </div>
+      <Field label="Due in Days" value={action.params.due_in_days} onChange={(v) => setParam('due_in_days', parseInt(String(v)) || 0)} type="number" placeholder="3" />
+
+      {/* Assignee — segmented: Contact Owner vs Specific User */}
+      <div>
+        <label className="block text-sm text-gray-400 mb-1">Assign To</label>
+        <div className="flex rounded-lg overflow-hidden border border-gray-700 mb-2">
+          <button
+            type="button"
+            onClick={() => setParam('assignee_field', 'contact.owner_id')}
+            className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${
+              isContactOwner
+                ? 'bg-emerald-500/20 text-emerald-300 border-r border-emerald-500/30'
+                : 'bg-gray-800 text-gray-400 hover:text-white border-r border-gray-700'
+            }`}
+          >
+            👤 Contact Owner
+          </button>
+          <button
+            type="button"
+            onClick={() => setParam('assignee_field', '')}
+            className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${
+              !isContactOwner
+                ? 'bg-emerald-500/20 text-emerald-300'
+                : 'bg-gray-800 text-gray-400 hover:text-white'
+            }`}
+          >
+            🎯 Specific User
+          </button>
+        </div>
+
+        {isContactOwner ? (
+          <p className="text-xs text-gray-500 italic">Task will be assigned to the contact's current owner.</p>
+        ) : (
+          <select
+            value={assigneeValue}
+            onChange={(e) => setParam('assignee_field', e.target.value)}
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none"
+          >
+            <option value="">Select a user…</option>
+            {users.map((u) => (
+              <option key={u.id} value={u.id}>{u.name} ({u.email})</option>
+            ))}
+          </select>
+        )}
+      </div>
     </div>
-    <Field label="Due in Days" value={action.params.due_in_days} onChange={(v) => setParam('due_in_days', parseInt(String(v)) || 0)} type="number" placeholder="3" />
-    <TemplateInput label="Assignee Field" value={String(action.params.assignee_field || '')} onChange={(v) => setParam('assignee_field', v)} placeholder="contact.owner_id" fieldFilter="owner_id" />
-  </div>
-);
+  );
+};
 
 const AssignParams: React.FC<ParamProps> = ({ action, setParam }) => (
   <div className="space-y-3">
