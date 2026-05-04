@@ -43,14 +43,14 @@ interface ParamProps {
 
 const EmailParams: React.FC<ParamProps> = ({ action, setParam }) => (
   <div className="space-y-3">
-    <TemplateInput label="To" value={String(action.params.to || '')} onChange={(v) => setParam('to', v)} placeholder="{{contact.email}}" />
+    <TemplateInput label="To" value={String(action.params.to || '')} onChange={(v) => setParam('to', v)} placeholder="Click {x} to insert contact email" />
     <TemplateInput label="From Name" value={String(action.params.from_name || '')} onChange={(v) => setParam('from_name', v)} placeholder="Your Company" />
-    <TemplateInput label="Subject" value={String(action.params.subject || '')} onChange={(v) => setParam('subject', v)} placeholder="Welcome, {{contact.first_name}}!" />
+    <TemplateInput label="Subject" value={String(action.params.subject || '')} onChange={(v) => setParam('subject', v)} placeholder="Click {x} to insert variables" />
     <TemplateInput
       label="Body HTML"
       value={String(action.params.body_html || '')}
       onChange={(v) => setParam('body_html', v)}
-      placeholder="<p>Hi {{contact.first_name}},</p>"
+      placeholder="Write your email body — click {x} to insert variables"
       multiline
       rows={6}
       mono
