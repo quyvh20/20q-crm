@@ -43,8 +43,8 @@ interface ParamProps {
 
 const EmailParams: React.FC<ParamProps> = ({ action, setParam }) => (
   <div className="space-y-3">
-    <TemplateInput label="To" value={String(action.params.to || '')} onChange={(v) => setParam('to', v)} placeholder="Click {x} to insert contact email" />
-    <TemplateInput label="CC" value={String(action.params.cc || '')} onChange={(v) => setParam('cc', v)} placeholder="Optional — comma-separated or use {x} for variables" />
+    <TemplateInput label="To" value={String(action.params.to || '')} onChange={(v) => setParam('to', v)} placeholder="Click {x} to insert contact email" fieldFilter="email" />
+    <TemplateInput label="CC" value={String(action.params.cc || '')} onChange={(v) => setParam('cc', v)} placeholder="Optional — comma-separated or use {x} for variables" fieldFilter="email" />
     <TemplateInput label="From Name" value={String(action.params.from_name || '')} onChange={(v) => setParam('from_name', v)} placeholder="Your Company" />
     <TemplateInput label="Subject" value={String(action.params.subject || '')} onChange={(v) => setParam('subject', v)} placeholder="Click {x} to insert variables" />
     <TemplateInput
@@ -75,7 +75,7 @@ const TaskParams: React.FC<ParamProps> = ({ action, setParam }) => (
       </select>
     </div>
     <Field label="Due in Days" value={action.params.due_in_days} onChange={(v) => setParam('due_in_days', parseInt(String(v)) || 0)} type="number" placeholder="3" />
-    <TemplateInput label="Assignee Field" value={String(action.params.assignee_field || '')} onChange={(v) => setParam('assignee_field', v)} placeholder="contact.owner_id" />
+    <TemplateInput label="Assignee Field" value={String(action.params.assignee_field || '')} onChange={(v) => setParam('assignee_field', v)} placeholder="contact.owner_id" fieldFilter="owner_id" />
   </div>
 );
 

@@ -22,6 +22,12 @@ interface TemplateInputProps {
   rows?: number;
   /** If true, uses monospace font (for code/JSON) */
   mono?: boolean;
+  /**
+   * Optional filter for the variable picker.
+   * When set, only fields whose path includes this substring are shown.
+   * E.g. 'email' → only shows contact.email, not contact.first_name.
+   */
+  fieldFilter?: string;
 }
 
 export const TemplateInput: React.FC<TemplateInputProps> = ({
@@ -33,6 +39,7 @@ export const TemplateInput: React.FC<TemplateInputProps> = ({
   multiline = false,
   rows = 4,
   mono = false,
+  fieldFilter,
 }) => {
   const [showPicker, setShowPicker] = useState(false);
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
@@ -138,6 +145,7 @@ export const TemplateInput: React.FC<TemplateInputProps> = ({
             ref={pickerRef}
             onSelect={insertVariable}
             onClose={() => setShowPicker(false)}
+            fieldFilter={fieldFilter}
           />
         )}
       </div>
@@ -152,10 +160,12 @@ export const TemplateInput: React.FC<TemplateInputProps> = ({
 interface VariablePickerProps {
   onSelect: (path: string) => void;
   onClose: () => void;
+  /** When set, only fields whose path includes this substring are shown */
+  fieldFilter?: string;
 }
 
 const VariablePicker = React.forwardRef<HTMLDivElement, VariablePickerProps>(
-  ({ onSelect, onClose }, ref) => {
+  ({ onSelect, onClose, fieldFilter }, ref) => {
     const schema = useBuilderStore((s) => s.schema);
     const schemaLoading = useBuilderStore((s) => s.schemaLoading);
     const [search, setSearch] = useState('');
@@ -167,17 +177,21 @@ const VariablePicker = React.forwardRef<HTMLDivElement, VariablePickerProps>(
       searchRef.current?.focus();
     }, []);
 
-    // Build grouped variables from schema
+    // Build grouped variables from schema, applying fieldFilter if set
     const groups = useMemo(() => {
       if (!schema) return [];
       const allEntities = [...schema.entities, ...(schema.custom_objects || [])];
-      return allEntities.map((entity) => ({
-        key: entity.key,
-        label: entity.label,
-        icon: entity.icon,
-        fields: entity.fields,
-      }));
-    }, [schema]);
+      return allEntities
+        .map((entity) => ({
+          key: entity.key,
+          label: entity.label,
+          icon: entity.icon,
+          fields: fieldFilter
+            ? entity.fields.filter((f) => f.path.toLowerCase().includes(fieldFilter.toLowerCase()))
+            : entity.fields,
+        }))
+        .filter((g) => g.fields.length > 0);
+    }, [schema, fieldFilter]);
 
     // Filter by search
     const filteredGroups = useMemo(() => {
