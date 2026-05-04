@@ -158,6 +158,31 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       }
     }
 
+    // Validate email addresses in send_email actions
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const templateRegex = /\{\{.+?\}\}/;
+    for (let i = 0; i < state.actions.length; i++) {
+      const action = state.actions[i];
+      if (action.type !== 'send_email') continue;
+      const key = `actions.${i}`;
+
+      // Validate "to"
+      const to = String(action.params.to || '').trim();
+      if (to && !emailRegex.test(to) && !templateRegex.test(to)) {
+        errors[`${key}.params.to`] = ['Must be a valid email address or {{template}}'];
+      }
+
+      // Validate "cc" — comma-separated, each part must be email or template
+      const cc = String(action.params.cc || '').trim();
+      if (cc) {
+        const parts = cc.split(',').map((p: string) => p.trim()).filter(Boolean);
+        const invalid = parts.filter((p: string) => !emailRegex.test(p) && !templateRegex.test(p));
+        if (invalid.length > 0) {
+          errors[`${key}.params.cc`] = [`Invalid CC address: ${invalid.join(', ')}`];
+        }
+      }
+    }
+
     set({ errors });
     return Object.keys(errors).length === 0;
   },

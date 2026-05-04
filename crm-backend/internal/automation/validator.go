@@ -259,6 +259,34 @@ func validateActionParams(action ActionSpec, path string, result *ValidationResu
 				Field:   path + ".params.to",
 				Message: "send_email requires 'to' parameter",
 			})
+		} else if toStr, ok := action.Params["to"].(string); ok {
+			// Validate "to" is a valid email or template variable
+			toStr = strings.TrimSpace(toStr)
+			if toStr != "" && !isEmailOrTemplate(toStr) {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   path + ".params.to",
+					Message: fmt.Sprintf("invalid email address: '%s' (must be email or {{template}})", toStr),
+				})
+			}
+		}
+		// Validate "cc" — comma-separated, each part must be email or template
+		if ccVal, ok := action.Params["cc"]; ok {
+			if ccStr, ok := ccVal.(string); ok {
+				ccStr = strings.TrimSpace(ccStr)
+				if ccStr != "" {
+					for _, part := range strings.Split(ccStr, ",") {
+						part = strings.TrimSpace(part)
+						if part != "" && !isEmailOrTemplate(part) {
+							result.Valid = false
+							result.Errors = append(result.Errors, ValidationError{
+								Field:   path + ".params.cc",
+								Message: fmt.Sprintf("invalid CC address: '%s' (must be email or {{template}})", part),
+							})
+						}
+					}
+				}
+			}
 		}
 	case ActionCreateTask:
 		if _, ok := action.Params["title"]; !ok {
@@ -351,4 +379,19 @@ func validTriggerTypesList() string {
 		types = append(types, t)
 	}
 	return strings.Join(types, ", ")
+}
+
+// isEmailOrTemplate returns true if s is a valid email address or contains a {{template}} variable.
+func isEmailOrTemplate(s string) bool {
+	// Template variable (e.g. {{contact.email}})
+	if strings.Contains(s, "{{") && strings.Contains(s, "}}") {
+		return true
+	}
+	// Basic email validation: has @ and at least one dot after @
+	at := strings.LastIndex(s, "@")
+	if at < 1 {
+		return false
+	}
+	domain := s[at+1:]
+	return strings.Contains(domain, ".") && !strings.HasSuffix(domain, ".") && !strings.HasPrefix(domain, ".")
 }
