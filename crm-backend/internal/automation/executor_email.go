@@ -62,6 +62,14 @@ func (e *EmailExecutor) Execute(ctx context.Context, run *WorkflowRun, action Ac
 		return nil, fmt.Errorf("send_email: marshal error: %w", err)
 	}
 
+	slog.Info("automation: sending email",
+		"workflow_run_id", run.ID.String(),
+		"to", payload.To,
+		"cc", payload.Cc,
+		"subject", payload.Subject,
+		"from", payload.From,
+	)
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.resend.com/emails", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("send_email: request creation error: %w", err)
@@ -90,6 +98,7 @@ func (e *EmailExecutor) Execute(ctx context.Context, run *WorkflowRun, action Ac
 	slog.Info("automation: email sent",
 		"workflow_run_id", run.ID.String(),
 		"status", resp.StatusCode,
+		"resend_response", respBody,
 	)
 
 	return map[string]any{
