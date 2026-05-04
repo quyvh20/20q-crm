@@ -293,6 +293,9 @@ func main() {
 		settingsHandler.SetSchemaInvalidator(invalidator)
 		customObjHandler.SetSchemaInvalidator(invalidator)
 
+		// Wire contact creation → automation trigger
+		contactHandler.SetEventEmitter(autoEngine.TriggerEvent)
+
 		log.Info("All routes registered (including automation)")
 	} else {
 		log.Warn("Database not connected — routes skipped")

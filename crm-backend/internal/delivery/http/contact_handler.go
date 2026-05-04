@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -11,12 +12,22 @@ import (
 	"github.com/google/uuid"
 )
 
+// ContactEventEmitter is called after contact create/update to fire automation triggers.
+// The callback is injected from main.go to avoid a direct dependency on the automation package.
+type ContactEventEmitter func(ctx context.Context, orgID uuid.UUID, eventType string, payload map[string]any)
+
 type ContactHandler struct {
-	contactUC domain.ContactUseCase
+	contactUC    domain.ContactUseCase
+	emitEvent    ContactEventEmitter
 }
 
 func NewContactHandler(contactUC domain.ContactUseCase) *ContactHandler {
 	return &ContactHandler{contactUC: contactUC}
+}
+
+// SetEventEmitter wires the automation trigger callback (called from main.go after engine init).
+func (h *ContactHandler) SetEventEmitter(fn ContactEventEmitter) {
+	h.emitEvent = fn
 }
 
 // countWords returns the number of whitespace-separated tokens.
@@ -173,6 +184,30 @@ func (h *ContactHandler) Create(c *gin.Context) {
 	if err != nil {
 		handleAppError(c, err)
 		return
+	}
+
+	// Fire automation trigger asynchronously
+	if h.emitEvent != nil {
+		contactMap := map[string]any{
+			"id":         contact.ID.String(),
+			"first_name": contact.FirstName,
+			"last_name":  contact.LastName,
+		}
+		if contact.Email != nil {
+			contactMap["email"] = *contact.Email
+		}
+		if contact.Phone != nil {
+			contactMap["phone"] = *contact.Phone
+		}
+		payload := map[string]any{
+			"entity_id": contact.ID.String(),
+			"contact":   contactMap,
+			"trigger": map[string]any{
+				"type":   "contact_created",
+				"source": "crm_ui",
+			},
+		}
+		go h.emitEvent(context.Background(), orgID, "contact_created", payload)
 	}
 
 	c.JSON(http.StatusCreated, domain.Success(contact))
