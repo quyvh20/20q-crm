@@ -14,7 +14,7 @@ interface AddNodeButtonProps {
 function getDefaultParams(type: ActionType): Record<string, unknown> {
   switch (type) {
     case 'send_email':
-      return { to: '{{contact.email}}', subject: '', body_html: '' };
+      return { to: '', subject: '', body_html: '' };
     case 'create_task':
       return { title: '', priority: 'medium', due_in_days: 3 };
     case 'assign_user':

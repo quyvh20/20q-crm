@@ -127,7 +127,7 @@ const WebhookParams: React.FC<ParamProps> = ({ action, setParam }) => (
       label="Body Template"
       value={String(action.params.body_template || '')}
       onChange={(v) => setParam('body_template', v)}
-      placeholder='{"email": "{{contact.email}}"}'
+      placeholder='{"key": "value"} — click {x} to insert variables'
       multiline
       rows={4}
       mono
