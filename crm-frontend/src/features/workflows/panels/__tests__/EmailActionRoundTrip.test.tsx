@@ -227,3 +227,153 @@ describe('TestEmailAction_TemplateRoundTrip', () => {
     expect(screen.getByDisplayValue('{{contact.email}}')).toBeInTheDocument();
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// Test 3: CC field round-trip — save with CC, reload, CC preserved
+// ═══════════════════════════════════════════════════════════════════════
+
+/** Email action with CC — comma-separated addresses */
+const EMAIL_WITH_CC: ActionSpec = {
+  id: 'action_email_cc',
+  type: 'send_email',
+  params: {
+    to: '{{contact.email}}',
+    cc: '{{contact.email}}, manager@company.com',
+    from_name: 'Sales Team',
+    subject: 'Deal update for {{contact.first_name}}',
+    body_html: '<p>Hi {{contact.first_name}},</p>',
+  },
+};
+
+describe('TestEmailAction_CCFieldRoundTrip', () => {
+  it('preserves CC value in store after setState', () => {
+    useBuilderStore.setState({
+      actions: [EMAIL_WITH_CC],
+      selectedNodeId: EMAIL_WITH_CC.id,
+    });
+
+    const action = useBuilderStore.getState().actions.find((a) => a.id === EMAIL_WITH_CC.id);
+    expect(action).toBeDefined();
+    expect(action!.params.cc).toBe('{{contact.email}}, manager@company.com');
+  });
+
+  it('renders CC field with preserved comma-separated value', () => {
+    useBuilderStore.setState({
+      actions: [EMAIL_WITH_CC],
+      selectedNodeId: EMAIL_WITH_CC.id,
+      schema: MOCK_SCHEMA,
+    });
+
+    render(<ActionConfigPanel />);
+
+    const ccInput = screen.getByDisplayValue('{{contact.email}}, manager@company.com');
+    expect(ccInput).toBeInTheDocument();
+    expect(ccInput.tagName).toBe('INPUT');
+  });
+
+  it('CC survives updateAction merge — changing subject preserves CC', () => {
+    useBuilderStore.setState({
+      actions: [EMAIL_WITH_CC],
+      selectedNodeId: EMAIL_WITH_CC.id,
+    });
+
+    // User changes subject — CC must stay untouched
+    useBuilderStore.getState().updateAction(EMAIL_WITH_CC.id, {
+      params: { subject: 'Updated subject' },
+    });
+
+    const updated = useBuilderStore.getState().actions.find((a) => a.id === EMAIL_WITH_CC.id);
+    expect(updated!.params.cc).toBe('{{contact.email}}, manager@company.com');
+    expect(updated!.params.to).toBe('{{contact.email}}');
+    expect(updated!.params.subject).toBe('Updated subject');
+  });
+
+  it('CC included in save payload with correct format', () => {
+    useBuilderStore.setState({
+      workflowId: 'wf_cc_test',
+      name: 'CC Test Flow',
+      trigger: { type: 'contact_created', params: {} },
+      actions: [EMAIL_WITH_CC],
+    });
+
+    const state = useBuilderStore.getState();
+    const payload = {
+      name: state.name,
+      trigger: state.trigger,
+      actions: state.actions,
+    };
+
+    // CC is a comma-separated string in the payload
+    expect(payload.actions[0].params.cc).toBe('{{contact.email}}, manager@company.com');
+    const json = JSON.stringify(payload);
+    expect(json).toContain('manager@company.com');
+    expect(json).toContain('{{contact.email}}');
+  });
+
+  it('full save → reset → load round-trip preserves CC', () => {
+    // 1. Configure action with CC
+    useBuilderStore.setState({
+      workflowId: 'wf_cc_789',
+      name: 'CC Round-Trip',
+      trigger: { type: 'contact_created', params: {} },
+      actions: [EMAIL_WITH_CC],
+      isDirty: true,
+    });
+
+    // 2. Capture the payload that would be sent to API
+    const savedPayload = {
+      actions: useBuilderStore.getState().actions.map((a) => ({
+        ...a,
+        params: { ...a.params },
+      })),
+    };
+
+    // 3. Reset (simulate navigation away)
+    useBuilderStore.getState().reset();
+    expect(useBuilderStore.getState().actions).toHaveLength(0);
+
+    // 4. Reload from API response
+    useBuilderStore.setState({
+      workflowId: 'wf_cc_789',
+      name: 'CC Round-Trip',
+      trigger: { type: 'contact_created', params: {} },
+      actions: savedPayload.actions as ActionSpec[],
+      isDirty: false,
+      selectedNodeId: EMAIL_WITH_CC.id,
+      schema: MOCK_SCHEMA,
+    });
+
+    // 5. Verify CC survived round-trip
+    const reloaded = useBuilderStore.getState().actions[0];
+    expect(reloaded.params.to).toBe('{{contact.email}}');
+    expect(reloaded.params.cc).toBe('{{contact.email}}, manager@company.com');
+    expect(reloaded.params.from_name).toBe('Sales Team');
+    expect(reloaded.params.subject).toBe('Deal update for {{contact.first_name}}');
+
+    // 6. Verify UI renders CC correctly after reload
+    render(<ActionConfigPanel />);
+    expect(screen.getByDisplayValue('{{contact.email}}, manager@company.com')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('Sales Team')).toBeInTheDocument();
+  });
+
+  it('empty CC is preserved correctly — no phantom values', () => {
+    const emailNoCC: ActionSpec = {
+      id: 'action_no_cc',
+      type: 'send_email',
+      params: { to: '{{contact.email}}', subject: 'Hi', body_html: '' },
+    };
+
+    useBuilderStore.setState({
+      actions: [emailNoCC],
+      selectedNodeId: emailNoCC.id,
+      schema: MOCK_SCHEMA,
+    });
+
+    render(<ActionConfigPanel />);
+
+    // CC field should show placeholder, not a value
+    const ccInput = screen.getByPlaceholderText('Separate multiple addresses with commas');
+    expect(ccInput).toBeInTheDocument();
+    expect((ccInput as HTMLInputElement).value).toBe('');
+  });
+});
