@@ -43,12 +43,12 @@ interface ParamProps {
 
 const EmailParams: React.FC<ParamProps> = ({ action, setParam }) => (
   <div className="space-y-3">
-    <TemplateInput label="To" value={action.params.to} onChange={(v) => setParam('to', v)} placeholder="{{contact.email}}" />
-    <TemplateInput label="From Name" value={action.params.from_name} onChange={(v) => setParam('from_name', v)} placeholder="Your Company" />
-    <TemplateInput label="Subject" value={action.params.subject} onChange={(v) => setParam('subject', v)} placeholder="Welcome, {{contact.first_name}}!" />
+    <TemplateInput label="To" value={String(action.params.to || '')} onChange={(v) => setParam('to', v)} placeholder="{{contact.email}}" />
+    <TemplateInput label="From Name" value={String(action.params.from_name || '')} onChange={(v) => setParam('from_name', v)} placeholder="Your Company" />
+    <TemplateInput label="Subject" value={String(action.params.subject || '')} onChange={(v) => setParam('subject', v)} placeholder="Welcome, {{contact.first_name}}!" />
     <TemplateInput
       label="Body HTML"
-      value={action.params.body_html}
+      value={String(action.params.body_html || '')}
       onChange={(v) => setParam('body_html', v)}
       placeholder="<p>Hi {{contact.first_name}},</p>"
       multiline
@@ -60,7 +60,7 @@ const EmailParams: React.FC<ParamProps> = ({ action, setParam }) => (
 
 const TaskParams: React.FC<ParamProps> = ({ action, setParam }) => (
   <div className="space-y-3">
-    <TemplateInput label="Title" value={action.params.title} onChange={(v) => setParam('title', v)} placeholder="Follow up with {{contact.first_name}}" />
+    <TemplateInput label="Title" value={String(action.params.title || '')} onChange={(v) => setParam('title', v)} placeholder="Follow up with {{contact.first_name}}" />
     <div>
       <label className="block text-sm text-gray-400 mb-1">Priority</label>
       <select
@@ -74,7 +74,7 @@ const TaskParams: React.FC<ParamProps> = ({ action, setParam }) => (
       </select>
     </div>
     <Field label="Due in Days" value={action.params.due_in_days} onChange={(v) => setParam('due_in_days', parseInt(String(v)) || 0)} type="number" placeholder="3" />
-    <TemplateInput label="Assignee Field" value={action.params.assignee_field} onChange={(v) => setParam('assignee_field', v)} placeholder="contact.owner_id" />
+    <TemplateInput label="Assignee Field" value={String(action.params.assignee_field || '')} onChange={(v) => setParam('assignee_field', v)} placeholder="contact.owner_id" />
   </div>
 );
 
@@ -111,7 +111,7 @@ const AssignParams: React.FC<ParamProps> = ({ action, setParam }) => (
 
 const WebhookParams: React.FC<ParamProps> = ({ action, setParam }) => (
   <div className="space-y-3">
-    <TemplateInput label="URL" value={action.params.url} onChange={(v) => setParam('url', v)} placeholder="https://example.com/webhook" />
+    <TemplateInput label="URL" value={String(action.params.url || '')} onChange={(v) => setParam('url', v)} placeholder="https://example.com/webhook" />
     <div>
       <label className="block text-sm text-gray-400 mb-1">Method</label>
       <select
@@ -125,7 +125,7 @@ const WebhookParams: React.FC<ParamProps> = ({ action, setParam }) => (
     </div>
     <TemplateInput
       label="Body Template"
-      value={action.params.body_template}
+      value={String(action.params.body_template || '')}
       onChange={(v) => setParam('body_template', v)}
       placeholder='{"email": "{{contact.email}}"}'
       multiline

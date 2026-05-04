@@ -6,9 +6,13 @@ import { useBuilderStore } from '../../store';
 /* ------------------------------------------------------------------ */
 
 interface TemplateInputProps {
+  /** Field label displayed above the input */
   label: string;
-  value: unknown;
+  /** Current text value */
+  value: string;
+  /** Called with the new string on every change or variable insertion */
   onChange: (v: string) => void;
+  /** Placeholder text */
   placeholder?: string;
   /** HTML input type — defaults to 'text' */
   type?: string;
@@ -72,7 +76,7 @@ export const TemplateInput: React.FC<TemplateInputProps> = ({
         });
       } else {
         // Fallback — append
-        onChange(String(value || '') + template);
+        onChange((value || '') + template);
       }
       setShowPicker(false);
     },
@@ -94,7 +98,7 @@ export const TemplateInput: React.FC<TemplateInputProps> = ({
         {multiline ? (
           <textarea
             ref={inputRef as React.RefObject<HTMLTextAreaElement>}
-            value={String(value || '')}
+            value={value || ''}
             onChange={(e) => onChange(e.target.value)}
             placeholder={placeholder}
             rows={rows}
@@ -104,7 +108,7 @@ export const TemplateInput: React.FC<TemplateInputProps> = ({
           <input
             ref={inputRef as React.RefObject<HTMLInputElement>}
             type={type}
-            value={String(value || '')}
+            value={value || ''}
             onChange={(e) => onChange(e.target.value)}
             placeholder={placeholder}
             className={inputClass}
