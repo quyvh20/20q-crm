@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { ACTION_LABELS, ACTION_ICONS, type ActionSpec } from '../types';
 import { useBuilderStore } from '../store';
+import { TemplateInput } from './inputs';
 
 export const ActionConfigPanel: React.FC = () => {
   const { selectedNodeId, actions, updateAction } = useBuilderStore();
@@ -42,25 +43,24 @@ interface ParamProps {
 
 const EmailParams: React.FC<ParamProps> = ({ action, setParam }) => (
   <div className="space-y-3">
-    <Field label="To" value={action.params.to} onChange={(v) => setParam('to', v)} placeholder="{{contact.email}}" />
-    <Field label="From Name" value={action.params.from_name} onChange={(v) => setParam('from_name', v)} placeholder="Your Company" />
-    <Field label="Subject" value={action.params.subject} onChange={(v) => setParam('subject', v)} placeholder="Welcome, {{contact.first_name}}!" />
-    <div>
-      <label className="block text-sm text-gray-400 mb-1">Body HTML</label>
-      <textarea
-        value={String(action.params.body_html || '')}
-        onChange={(e) => setParam('body_html', e.target.value)}
-        placeholder="<p>Hi {{contact.first_name}},</p>"
-        rows={6}
-        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none resize-none font-mono"
-      />
-    </div>
+    <TemplateInput label="To" value={action.params.to} onChange={(v) => setParam('to', v)} placeholder="{{contact.email}}" />
+    <TemplateInput label="From Name" value={action.params.from_name} onChange={(v) => setParam('from_name', v)} placeholder="Your Company" />
+    <TemplateInput label="Subject" value={action.params.subject} onChange={(v) => setParam('subject', v)} placeholder="Welcome, {{contact.first_name}}!" />
+    <TemplateInput
+      label="Body HTML"
+      value={action.params.body_html}
+      onChange={(v) => setParam('body_html', v)}
+      placeholder="<p>Hi {{contact.first_name}},</p>"
+      multiline
+      rows={6}
+      mono
+    />
   </div>
 );
 
 const TaskParams: React.FC<ParamProps> = ({ action, setParam }) => (
   <div className="space-y-3">
-    <Field label="Title" value={action.params.title} onChange={(v) => setParam('title', v)} placeholder="Follow up with {{contact.first_name}}" />
+    <TemplateInput label="Title" value={action.params.title} onChange={(v) => setParam('title', v)} placeholder="Follow up with {{contact.first_name}}" />
     <div>
       <label className="block text-sm text-gray-400 mb-1">Priority</label>
       <select
@@ -74,7 +74,7 @@ const TaskParams: React.FC<ParamProps> = ({ action, setParam }) => (
       </select>
     </div>
     <Field label="Due in Days" value={action.params.due_in_days} onChange={(v) => setParam('due_in_days', parseInt(String(v)) || 0)} type="number" placeholder="3" />
-    <Field label="Assignee Field" value={action.params.assignee_field} onChange={(v) => setParam('assignee_field', v)} placeholder="contact.owner_id" />
+    <TemplateInput label="Assignee Field" value={action.params.assignee_field} onChange={(v) => setParam('assignee_field', v)} placeholder="contact.owner_id" />
   </div>
 );
 
@@ -111,7 +111,7 @@ const AssignParams: React.FC<ParamProps> = ({ action, setParam }) => (
 
 const WebhookParams: React.FC<ParamProps> = ({ action, setParam }) => (
   <div className="space-y-3">
-    <Field label="URL" value={action.params.url} onChange={(v) => setParam('url', v)} placeholder="https://example.com/webhook" />
+    <TemplateInput label="URL" value={action.params.url} onChange={(v) => setParam('url', v)} placeholder="https://example.com/webhook" />
     <div>
       <label className="block text-sm text-gray-400 mb-1">Method</label>
       <select
@@ -123,16 +123,15 @@ const WebhookParams: React.FC<ParamProps> = ({ action, setParam }) => (
         <option value="PUT">PUT</option>
       </select>
     </div>
-    <div>
-      <label className="block text-sm text-gray-400 mb-1">Body Template</label>
-      <textarea
-        value={String(action.params.body_template || '')}
-        onChange={(e) => setParam('body_template', e.target.value)}
-        placeholder='{"email": "{{contact.email}}"}'
-        rows={4}
-        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none resize-none font-mono"
-      />
-    </div>
+    <TemplateInput
+      label="Body Template"
+      value={action.params.body_template}
+      onChange={(v) => setParam('body_template', v)}
+      placeholder='{"email": "{{contact.email}}"}'
+      multiline
+      rows={4}
+      mono
+    />
     <Field label="Timeout (sec)" value={action.params.timeout_sec} onChange={(v) => setParam('timeout_sec', parseInt(String(v)) || 10)} type="number" placeholder="10" />
   </div>
 );
@@ -150,7 +149,7 @@ const DelayParams: React.FC<ParamProps> = ({ action, setParam }) => (
   </div>
 );
 
-// --- Shared form field ---
+// --- Shared form field (kept for non-template fields like numbers) ---
 
 interface FieldProps {
   label: string;

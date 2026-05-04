@@ -9,4 +9,5 @@ export { DateInput } from './DateInput';
 export { StringInput } from './StringInput';
 export { MultiValueChipInput } from './MultiValueChipInput';
 export { MultiSelectDropdown } from './MultiSelectDropdown';
+export { TemplateInput } from './TemplateInput';
 export { INPUT_CLASS } from './shared';
