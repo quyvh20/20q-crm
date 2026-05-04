@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // ActionExecutor interface that all action executors must implement.
@@ -34,6 +35,7 @@ func getStringParam(params map[string]any, key string, evalCtx EvalContext) stri
 }
 
 // getStringSliceParam extracts a []string param with template interpolation.
+// Accepts []string, []any, or a comma-separated string (e.g. "a@x.com, b@x.com").
 func getStringSliceParam(params map[string]any, key string, evalCtx EvalContext) []string {
 	val, ok := params[key]
 	if !ok {
@@ -52,6 +54,24 @@ func getStringSliceParam(params map[string]any, key string, evalCtx EvalContext)
 		result := make([]string, 0, len(v))
 		for _, s := range v {
 			result = append(result, InterpolateTemplate(s, evalCtx))
+		}
+		return result
+	case string:
+		// Support comma-separated string (e.g. from TemplateInput)
+		interpolated := InterpolateTemplate(v, evalCtx)
+		if interpolated == "" {
+			return nil
+		}
+		parts := strings.Split(interpolated, ",")
+		result := make([]string, 0, len(parts))
+		for _, p := range parts {
+			trimmed := strings.TrimSpace(p)
+			if trimmed != "" {
+				result = append(result, trimmed)
+			}
+		}
+		if len(result) == 0 {
+			return nil
 		}
 		return result
 	default:
