@@ -135,19 +135,6 @@ export const STATUS_COLORS: Record<string, string> = {
   skipped: '#F59E0B',
 };
 
-export const CONDITION_OPERATORS = [
-  { value: 'eq', label: 'Equals' },
-  { value: 'neq', label: 'Not equals' },
-  { value: 'gt', label: 'Greater than' },
-  { value: 'gte', label: 'Greater than or equal' },
-  { value: 'lt', label: 'Less than' },
-  { value: 'lte', label: 'Less than or equal' },
-  { value: 'contains', label: 'Contains' },
-  { value: 'not_contains', label: 'Does not contain' },
-  { value: 'in', label: 'Is any of' },
-  { value: 'not_in', label: 'Is none of' },
-  { value: 'is_empty', label: 'Is empty' },
-  { value: 'is_not_empty', label: 'Is not empty' },
-  { value: 'starts_with', label: 'Starts with' },
-  { value: 'ends_with', label: 'Ends with' },
-];
+// NOTE: Operator definitions live ONLY in useSchema.ts → getOperatorsForType().
+// Do NOT define operator lists here. Single source of truth.
+
