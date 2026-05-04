@@ -101,7 +101,7 @@ const TaskParams: React.FC<ParamProps> = ({ action, setParam }) => {
           </button>
           <button
             type="button"
-            onClick={() => setParam('assignee_field', '')}
+            onClick={() => setParam('assignee_field', '__pick_user__')}
             className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${
               !isContactOwner
                 ? 'bg-emerald-500/20 text-emerald-300'
@@ -116,8 +116,8 @@ const TaskParams: React.FC<ParamProps> = ({ action, setParam }) => {
           <p className="text-xs text-gray-500 italic">Task will be assigned to the contact's current owner.</p>
         ) : (
           <select
-            value={assigneeValue}
-            onChange={(e) => setParam('assignee_field', e.target.value)}
+            value={users.some((u) => u.id === assigneeValue) ? assigneeValue : ''}
+            onChange={(e) => setParam('assignee_field', e.target.value || '__pick_user__')}
             className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none"
           >
             <option value="">Select a user…</option>
