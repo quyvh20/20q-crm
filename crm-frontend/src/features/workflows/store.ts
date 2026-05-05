@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { TriggerSpec, ConditionGroup, ActionSpec } from './types';
 import { workflowSchema, validateActionIds, validateConditionDepth } from './schemas';
-import { createWorkflow, updateWorkflow, getWorkflow, getWorkflowSchema, type WorkflowSchema } from './api';
+import { createWorkflow, updateWorkflow, getWorkflow, getWorkflowSchema, getObjectFields, type WorkflowSchema, type FieldItem } from './api';
 import { isNoValueOperator } from './useSchema';
 
 interface BuilderState {
@@ -22,6 +22,11 @@ interface BuilderState {
   schemaLoading: boolean;
   schemaError: string | null;
 
+  // Per-object field cache (session-scoped, refetched on Source change)
+  fieldCache: Record<string, FieldItem[]>;
+  fieldCacheLoading: string | null; // slug currently being fetched
+  fieldCacheError: string | null;
+
   // Actions
   setName: (name: string) => void;
   setDescription: (desc: string) => void;
@@ -37,6 +42,7 @@ interface BuilderState {
   loadWorkflow: (id: string) => Promise<void>;
   fetchSchema: () => Promise<void>;
   invalidateSchema: () => void;
+  fetchObjectFields: (slug: string, forceRefresh?: boolean) => Promise<void>;
   reset: () => void;
 }
 
@@ -78,10 +84,15 @@ const initialState = {
   schema: null as WorkflowSchema | null,
   schemaLoading: false,
   schemaError: null as string | null,
+  fieldCache: {} as Record<string, FieldItem[]>,
+  fieldCacheLoading: null as string | null,
+  fieldCacheError: null as string | null,
 };
 
 // Singleton promise so concurrent fetchSchema() calls share one request
 let schemaFetchPromise: Promise<WorkflowSchema> | null = null;
+// Per-slug singleton promises so concurrent fetchObjectFields() calls share one request
+let fieldFetchPromises: Record<string, Promise<FieldItem[]>> = {};
 
 export const useBuilderStore = create<BuilderState>((set, get) => ({
   ...initialState,
@@ -94,15 +105,19 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
     const updates: Partial<BuilderState> = { trigger, isDirty: true };
 
     // If the source object changed, clear stale condition rules (field paths no longer valid)
-    if (prev) {
-      const prevSlug = extractObjectSlug(prev.type);
-      const newSlug = extractObjectSlug(trigger.type);
-      if (prevSlug && newSlug && prevSlug !== newSlug) {
-        updates.conditions = null;
-      }
+    const prevSlug = prev ? extractObjectSlug(prev.type) : '';
+    const newSlug = extractObjectSlug(trigger.type);
+
+    if (prev && prevSlug && newSlug && prevSlug !== newSlug) {
+      updates.conditions = null;
     }
 
     set(updates);
+
+    // Auto-fetch fields for the new object (uses cache if available)
+    if (newSlug && newSlug !== 'webhook') {
+      get().fetchObjectFields(newSlug);
+    }
   },
 
   setConditions: (conditions) => set({ conditions, isDirty: true }),
@@ -389,16 +404,42 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
   },
 
   invalidateSchema: () => {
-    // Clear cached schema and re-fetch from server.
+    // Clear cached schema AND field cache, then re-fetch from server.
     // Call this after settings mutations (tags, stages, custom fields, custom objects).
     schemaFetchPromise = null;
-    set({ schema: null, schemaError: null });
+    fieldFetchPromises = {};
+    set({ schema: null, schemaError: null, fieldCache: {}, fieldCacheLoading: null, fieldCacheError: null });
     get().fetchSchema();
   },
 
+  fetchObjectFields: async (slug, forceRefresh = false) => {
+    // Return cached fields if available (session cache)
+    const cache = get().fieldCache;
+    if (!forceRefresh && cache[slug]) return;
+
+    set({ fieldCacheLoading: slug, fieldCacheError: null });
+    try {
+      // Deduplicate concurrent fetches per slug
+      if (!fieldFetchPromises[slug]) {
+        fieldFetchPromises[slug] = getObjectFields(slug);
+      }
+      const fields = await fieldFetchPromises[slug];
+      set({
+        fieldCache: { ...get().fieldCache, [slug]: fields },
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to load fields';
+      console.error(`Failed to load fields for ${slug}:`, err);
+      set({ fieldCacheError: message });
+    } finally {
+      set({ fieldCacheLoading: null });
+      delete fieldFetchPromises[slug];
+    }
+  },
+
   reset: () => {
-    // Preserve schema across resets — it doesn't change when navigating between workflows
-    const { schema, schemaError } = get();
-    set({ ...initialState, schema, schemaError, errors: {} });
+    // Preserve schema and fieldCache across resets — they don't change when navigating between workflows
+    const { schema, schemaError, fieldCache } = get();
+    set({ ...initialState, schema, schemaError, fieldCache, errors: {} });
   },
 }));

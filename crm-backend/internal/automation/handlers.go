@@ -61,6 +61,8 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerF
 		workflows.POST("", requireRole("admin", "manager"), h.CreateWorkflow)
 		workflows.GET("", h.ListWorkflows)
 		workflows.GET("/schema", h.GetWorkflowSchema)
+		workflows.GET("/schema/objects", h.GetSchemaObjects)
+		workflows.GET("/schema/objects/:slug/fields", h.GetSchemaObjectFields)
 		workflows.GET("/:id", h.GetWorkflow)
 		workflows.PUT("/:id", requireRole("admin", "manager"), h.UpdateWorkflow)
 		workflows.DELETE("/:id", requireRole("admin", "manager"), h.DeleteWorkflow)
@@ -809,6 +811,226 @@ func (h *Handler) GetWorkflowSchema(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
+// --- New API Contracts ---
+
+// ObjectListItem is a lightweight object entry for the objects list endpoint.
+type ObjectListItem struct {
+	Name  string `json:"name"`
+	Label string `json:"label"`
+	Icon  string `json:"icon"`
+}
+
+// FieldListItem is a field entry for the per-object fields endpoint.
+type FieldListItem struct {
+	Name           string   `json:"name"`
+	Label          string   `json:"label"`
+	Type           string   `json:"type"` // text, number, date, boolean, picklist, reference
+	PicklistValues []string `json:"picklist_values,omitempty"`
+}
+
+// normalizeFieldType maps internal schema types to the public API contract types.
+func normalizeFieldType(schemaType, pickerType string) string {
+	switch schemaType {
+	case "string":
+		if pickerType == "user" || pickerType == "stage" {
+			return "reference"
+		}
+		return "text"
+	case "number":
+		return "number"
+	case "boolean":
+		return "boolean"
+	case "date":
+		return "date"
+	case "select":
+		return "picklist"
+	case "array":
+		if pickerType == "tag" {
+			return "reference"
+		}
+		return "text"
+	default:
+		return "text"
+	}
+}
+
+// GetSchemaObjects handles GET /api/workflows/schema/objects?permission=read.
+// Returns a flat list of objects the current user has read permission to.
+func (h *Handler) GetSchemaObjects(c *gin.Context) {
+	orgID, _ := h.getContext(c)
+	if orgID == uuid.Nil {
+		return
+	}
+
+	// permission param — currently all authenticated org members have read access.
+	// In the future, filter by role-based permissions here.
+	_ = c.DefaultQuery("permission", "read")
+
+	ctx := c.Request.Context()
+	var objects []ObjectListItem
+
+	// Built-in entities
+	objects = append(objects,
+		ObjectListItem{Name: "contact", Label: "Contact", Icon: "👤"},
+		ObjectListItem{Name: "deal", Label: "Deal", Icon: "💰"},
+	)
+
+	// Custom objects from DB
+	type customObjRow struct {
+		Slug  string `gorm:"column:slug"`
+		Label string `gorm:"column:label"`
+		Icon  string `gorm:"column:icon"`
+	}
+	var objRows []customObjRow
+	if err := h.db.WithContext(ctx).Table("custom_object_defs").
+		Where("org_id = ? AND deleted_at IS NULL", orgID).
+		Select("slug, label, icon").
+		Find(&objRows).Error; err == nil {
+		for _, obj := range objRows {
+			icon := obj.Icon
+			if icon == "" {
+				icon = "📦"
+			}
+			objects = append(objects, ObjectListItem{Name: obj.Slug, Label: obj.Label, Icon: icon})
+		}
+	}
+
+	// Webhook (always available)
+	objects = append(objects, ObjectListItem{Name: "webhook", Label: "Webhook", Icon: "🔗"})
+
+	c.JSON(http.StatusOK, gin.H{"data": objects})
+}
+
+// GetSchemaObjectFields handles GET /api/workflows/schema/objects/:slug/fields?permission=read.
+// Returns the fields for a specific object, with type normalization and picklist values.
+func (h *Handler) GetSchemaObjectFields(c *gin.Context) {
+	orgID, _ := h.getContext(c)
+	if orgID == uuid.Nil {
+		return
+	}
+
+	slug := c.Param("slug")
+	if slug == "" {
+		h.errorResponse(c, http.StatusBadRequest, "INVALID_PARAMS", "Object slug is required", nil)
+		return
+	}
+
+	_ = c.DefaultQuery("permission", "read")
+	ctx := c.Request.Context()
+
+	var fields []FieldListItem
+
+	// Check built-in entities first
+	builtinFields := map[string][]SchemaField{
+		"contact": {
+			{Path: "contact.first_name", Label: "First Name", Type: "string"},
+			{Path: "contact.last_name", Label: "Last Name", Type: "string"},
+			{Path: "contact.email", Label: "Email", Type: "string"},
+			{Path: "contact.phone", Label: "Phone", Type: "string"},
+			{Path: "contact.owner_id", Label: "Owner", Type: "string", PickerType: "user"},
+			{Path: "contact.tags", Label: "Tags", Type: "array", PickerType: "tag"},
+			{Path: "contact.company.name", Label: "Company Name", Type: "string"},
+			{Path: "contact.created_at", Label: "Created At", Type: "date"},
+			{Path: "contact.id", Label: "Contact ID", Type: "string"},
+		},
+		"deal": {
+			{Path: "deal.title", Label: "Title", Type: "string"},
+			{Path: "deal.value", Label: "Value", Type: "number"},
+			{Path: "deal.stage", Label: "Stage", Type: "string", PickerType: "stage"},
+			{Path: "deal.probability", Label: "Probability (%)", Type: "number"},
+			{Path: "deal.is_won", Label: "Is Won", Type: "boolean"},
+			{Path: "deal.is_lost", Label: "Is Lost", Type: "boolean"},
+			{Path: "deal.owner_id", Label: "Owner", Type: "string", PickerType: "user"},
+			{Path: "deal.expected_close_at", Label: "Expected Close", Type: "date"},
+			{Path: "deal.closed_at", Label: "Closed At", Type: "date"},
+			{Path: "deal.created_at", Label: "Created At", Type: "date"},
+			{Path: "deal.id", Label: "Deal ID", Type: "string"},
+		},
+		"trigger": {
+			{Path: "trigger.type", Label: "Event Type", Type: "string"},
+			{Path: "trigger.from_stage", Label: "Previous Stage", Type: "string", PickerType: "stage"},
+			{Path: "trigger.to_stage", Label: "New Stage", Type: "string", PickerType: "stage"},
+		},
+	}
+
+	if builtinDefs, ok := builtinFields[slug]; ok {
+		for _, f := range builtinDefs {
+			fields = append(fields, FieldListItem{
+				Name:  f.Path,
+				Label: f.Label,
+				Type:  normalizeFieldType(f.Type, f.PickerType),
+			})
+		}
+
+		// Append custom field definitions for this entity
+		type orgSettingsRow struct {
+			CustomFieldDefs json.RawMessage `gorm:"column:custom_field_defs"`
+		}
+		var settings orgSettingsRow
+		if err := h.db.WithContext(ctx).Table("org_settings").Where("org_id = ?", orgID).First(&settings).Error; err == nil && len(settings.CustomFieldDefs) > 2 {
+			var defs []struct {
+				Key        string   `json:"key"`
+				Label      string   `json:"label"`
+				Type       string   `json:"type"`
+				EntityType string   `json:"entity_type"`
+				Options    []string `json:"options"`
+			}
+			if json.Unmarshal(settings.CustomFieldDefs, &defs) == nil {
+				for _, d := range defs {
+					if d.EntityType != slug {
+						continue
+					}
+					item := FieldListItem{
+						Name:  d.EntityType + ".custom_fields." + d.Key,
+						Label: d.Label,
+						Type:  normalizeFieldType(d.Type, ""),
+					}
+					if d.Type == "select" {
+						item.PicklistValues = d.Options
+					}
+					fields = append(fields, item)
+				}
+			}
+		}
+	} else {
+		// Custom object — look up from custom_object_defs
+		type customObjRow struct {
+			Slug   string          `gorm:"column:slug"`
+			Fields json.RawMessage `gorm:"column:fields"`
+		}
+		var objRow customObjRow
+		err := h.db.WithContext(ctx).Table("custom_object_defs").
+			Where("org_id = ? AND slug = ? AND deleted_at IS NULL", orgID, slug).
+			First(&objRow).Error
+		if err != nil {
+			h.errorResponse(c, http.StatusNotFound, "NOT_FOUND", "Object not found: "+slug, nil)
+			return
+		}
+
+		var fieldDefs []struct {
+			Key     string   `json:"key"`
+			Label   string   `json:"label"`
+			Type    string   `json:"type"`
+			Options []string `json:"options"`
+		}
+		if json.Unmarshal(objRow.Fields, &fieldDefs) == nil {
+			for _, f := range fieldDefs {
+				item := FieldListItem{
+					Name:  slug + "." + f.Key,
+					Label: f.Label,
+					Type:  normalizeFieldType(f.Type, ""),
+				}
+				if f.Type == "select" {
+					item.PicklistValues = f.Options
+				}
+				fields = append(fields, item)
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": fields})
 }
 
 func (h *Handler) errorResponse(c *gin.Context, status int, code, message string, details []ValidationError) {

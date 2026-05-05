@@ -174,3 +174,40 @@ export async function getWorkflowSchema(): Promise<WorkflowSchema> {
   if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch schema');
   return json.data as WorkflowSchema;
 }
+
+// --- New API contracts: Objects & Fields ---
+
+export interface ObjectItem {
+  name: string;
+  label: string;
+  icon: string;
+}
+
+export interface FieldItem {
+  name: string;
+  label: string;
+  type: 'text' | 'number' | 'date' | 'boolean' | 'picklist' | 'reference';
+  picklist_values?: string[];
+}
+
+/**
+ * GET /api/workflows/schema/objects?permission=read
+ * Returns a flat list of objects the current user has read permission to.
+ */
+export async function getSchemaObjects(): Promise<ObjectItem[]> {
+  const res = await apiFetch('/api/workflows/schema/objects?permission=read');
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch objects');
+  return json.data as ObjectItem[];
+}
+
+/**
+ * GET /api/workflows/schema/objects/:slug/fields?permission=read
+ * Returns the fields for a specific object with name, type, label, and picklistValues.
+ */
+export async function getObjectFields(slug: string): Promise<FieldItem[]> {
+  const res = await apiFetch(`/api/workflows/schema/objects/${encodeURIComponent(slug)}/fields?permission=read`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch fields for ' + slug);
+  return json.data as FieldItem[];
+}
