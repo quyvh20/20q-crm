@@ -302,18 +302,85 @@ const WebhookParams: React.FC<ParamProps> = ({ action, setParam }) => (
   </div>
 );
 
-const DelayParams: React.FC<ParamProps> = ({ action, setParam }) => (
-  <div className="space-y-3">
-    <Field
-      label="Duration (seconds)"
-      value={action.params.duration_sec}
-      onChange={(v) => setParam('duration_sec', parseInt(String(v)) || 60)}
-      type="number"
-      placeholder="60"
-    />
-    <p className="text-xs text-gray-500">Max: 86400 seconds (24 hours)</p>
-  </div>
-);
+const DELAY_UNITS = [
+  { value: 'seconds', label: 'Seconds', factor: 1 },
+  { value: 'minutes', label: 'Minutes', factor: 60 },
+  { value: 'hours',   label: 'Hours',   factor: 3600 },
+  { value: 'days',    label: 'Days',    factor: 86400 },
+] as const;
+
+type DelayUnit = typeof DELAY_UNITS[number]['value'];
+
+/** Decompose total seconds into the best-fitting (value, unit) pair */
+function decomposeSeconds(totalSec: number): { value: number; unit: DelayUnit } {
+  if (totalSec <= 0) return { value: 1, unit: 'minutes' };
+  // Pick the largest unit that divides evenly, otherwise fall back to seconds
+  for (let i = DELAY_UNITS.length - 1; i >= 1; i--) {
+    const u = DELAY_UNITS[i];
+    if (totalSec % u.factor === 0) {
+      return { value: totalSec / u.factor, unit: u.value };
+    }
+  }
+  return { value: totalSec, unit: 'seconds' };
+}
+
+const MAX_DELAY_SEC = 604800; // 7 days
+
+const DelayParams: React.FC<ParamProps> = ({ action, setParam }) => {
+  const totalSec = Number(action.params.duration_sec) || 60;
+  const decomposed = useMemo(() => decomposeSeconds(totalSec), [totalSec]);
+
+  const currentFactor = DELAY_UNITS.find((u) => u.value === decomposed.unit)!.factor;
+
+  const handleValueChange = (raw: string) => {
+    const num = Math.max(1, parseInt(raw) || 1);
+    const newSec = Math.min(num * currentFactor, MAX_DELAY_SEC);
+    setParam('duration_sec', newSec);
+  };
+
+  const handleUnitChange = (unit: string) => {
+    const factor = DELAY_UNITS.find((u) => u.value === unit)!.factor;
+    const newSec = Math.min(decomposed.value * factor, MAX_DELAY_SEC);
+    setParam('duration_sec', newSec);
+  };
+
+  // Friendly human-readable summary
+  const summary = `${decomposed.value} ${decomposed.value === 1 ? decomposed.unit.replace(/s$/, '') : decomposed.unit}`;
+
+  return (
+    <div className="space-y-3">
+      <label className="block text-sm text-gray-400 mb-1">Wait Duration</label>
+      <div className="flex gap-2">
+        <input
+          type="number"
+          min={1}
+          value={decomposed.value}
+          onChange={(e) => handleValueChange(e.target.value)}
+          className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+        />
+        <select
+          value={decomposed.unit}
+          onChange={(e) => handleUnitChange(e.target.value)}
+          className="w-28 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none"
+        >
+          {DELAY_UNITS.map((u) => (
+            <option key={u.value} value={u.value}>{u.label}</option>
+          ))}
+        </select>
+      </div>
+
+      {/* Friendly preview */}
+      <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-800/50 border border-gray-700/50">
+        <span className="text-sm">⏱️</span>
+        <span className="text-xs text-gray-400">
+          Workflow will pause for <span className="text-emerald-400 font-medium">{summary}</span>
+        </span>
+      </div>
+
+      <p className="text-xs text-gray-500">Max: 7 days (604,800 seconds)</p>
+    </div>
+  );
+};
 
 // --- Shared form field (kept for non-template fields like numbers) ---
 

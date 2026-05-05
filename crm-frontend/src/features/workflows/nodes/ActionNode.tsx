@@ -9,6 +9,30 @@ interface ActionNodeProps {
   index: number;
 }
 
+/** Generate a short human-readable subtitle for the action node on the canvas */
+function getActionSummary(action: ActionSpec): string | null {
+  switch (action.type) {
+    case 'delay': {
+      const sec = Number(action.params.duration_sec) || 0;
+      if (sec <= 0) return null;
+      const units: [number, string][] = [[86400, 'day'], [3600, 'hour'], [60, 'minute'], [1, 'second']];
+      for (const [factor, label] of units) {
+        if (sec >= factor && sec % factor === 0) {
+          const v = sec / factor;
+          return `Wait ${v} ${label}${v !== 1 ? 's' : ''}`;
+        }
+      }
+      return `Wait ${sec}s`;
+    }
+    case 'send_email':
+      return action.params.subject ? String(action.params.subject) : null;
+    case 'send_webhook':
+      return action.params.url ? String(action.params.url) : null;
+    default:
+      return typeof action.params.title === 'string' && action.params.title ? action.params.title : null;
+  }
+}
+
 export const ActionNode: React.FC<ActionNodeProps> = ({ action, index }) => {
   const { selectedNodeId, selectNode, removeAction } = useBuilderStore();
   const isSelected = selectedNodeId === action.id;
@@ -31,6 +55,8 @@ export const ActionNode: React.FC<ActionNodeProps> = ({ action, index }) => {
     opacity: isDragging ? 0.5 : 1,
     minWidth: 280,
   };
+
+  const summary = getActionSummary(action);
 
   return (
     <div
@@ -69,9 +95,9 @@ export const ActionNode: React.FC<ActionNodeProps> = ({ action, index }) => {
           ✕
         </button>
       </div>
-      {typeof action.params.title === 'string' && action.params.title && (
+      {summary && (
         <p className="text-xs text-gray-400 mt-2 truncate pl-13">
-          {action.params.title}
+          {summary}
         </p>
       )}
     </div>
