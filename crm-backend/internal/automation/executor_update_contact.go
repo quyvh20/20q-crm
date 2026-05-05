@@ -156,7 +156,7 @@ func (e *UpdateContactExecutor) parseUpdates(params map[string]any) ([]FieldUpda
 }
 
 // handleColumnField updates a direct column on the contacts table.
-// Supports: set, clear.
+// Supports: set, add (falls through to set for scalars), clear.
 func (e *UpdateContactExecutor) handleColumnField(ctx context.Context, orgID, contactID uuid.UUID, field, op string, params map[string]any, evalCtx EvalContext) (map[string]any, error) {
 	// Map workflow field names to actual DB column names
 	columnMap := map[string]string{
@@ -174,19 +174,20 @@ func (e *UpdateContactExecutor) handleColumnField(ctx context.Context, orgID, co
 	}
 
 	switch op {
-	case "set":
+	case "set", "add":
+		// "add" on a scalar column behaves as "set" (overwrite)
 		value := getStringParam(params, "value", evalCtx)
 		if value == "" {
-			return nil, fmt.Errorf("'value' is required for 'set' on column '%s'", field)
+			return nil, fmt.Errorf("'value' is required for '%s' on column '%s'", op, field)
 		}
 		err := e.db.WithContext(ctx).
 			Table("contacts").
 			Where("id = ? AND org_id = ?", contactID, orgID).
 			Update(column, value).Error
 		if err != nil {
-			return nil, fmt.Errorf("set error: %w", err)
+			return nil, fmt.Errorf("%s error: %w", op, err)
 		}
-		return map[string]any{"field": field, "op": "set", "value": value}, nil
+		return map[string]any{"field": field, "op": op, "value": value}, nil
 
 	case "clear":
 		err := e.db.WithContext(ctx).
@@ -201,8 +202,8 @@ func (e *UpdateContactExecutor) handleColumnField(ctx context.Context, orgID, co
 	case "increment", "decrement":
 		return nil, fmt.Errorf("'%s' is not supported on column field '%s' (use on number custom fields)", op, field)
 
-	case "add", "remove":
-		return nil, fmt.Errorf("'%s' is not supported on column field '%s' (use on tags)", op, field)
+	case "remove":
+		return nil, fmt.Errorf("'remove' is not supported on scalar column field '%s' (use on tags)", field)
 
 	default:
 		return nil, fmt.Errorf("unsupported op '%s' on column field '%s'", op, field)
@@ -290,10 +291,11 @@ func (e *UpdateContactExecutor) handleTags(ctx context.Context, orgID, contactID
 }
 
 // handleCustomField updates a key in the contact's custom_fields JSONB column.
-// Supports: set, increment, decrement, clear.
+// Supports: set, add (falls through to set for scalars), increment, decrement, clear.
 func (e *UpdateContactExecutor) handleCustomField(ctx context.Context, orgID, contactID uuid.UUID, cfKey, op string, params map[string]any, evalCtx EvalContext) (map[string]any, error) {
 	switch op {
-	case "set":
+	case "set", "add":
+		// "add" on a custom field (scalar) behaves as "set" (overwrite)
 		value := getStringParam(params, "value", evalCtx)
 		// Use JSONB set: custom_fields || '{"key": "value"}'
 		patch, _ := json.Marshal(map[string]any{cfKey: value})
@@ -302,9 +304,9 @@ func (e *UpdateContactExecutor) handleCustomField(ctx context.Context, orgID, co
 			Where("id = ? AND org_id = ?", contactID, orgID).
 			Update("custom_fields", gorm.Expr("COALESCE(custom_fields, '{}'::jsonb) || ?::jsonb", string(patch))).Error
 		if err != nil {
-			return nil, fmt.Errorf("custom field set error: %w", err)
+			return nil, fmt.Errorf("custom field %s error: %w", op, err)
 		}
-		return map[string]any{"field": "custom_fields." + cfKey, "op": "set", "value": value}, nil
+		return map[string]any{"field": "custom_fields." + cfKey, "op": op, "value": value}, nil
 
 	case "increment":
 		delta := getIntParam(params, "value")
@@ -351,8 +353,8 @@ func (e *UpdateContactExecutor) handleCustomField(ctx context.Context, orgID, co
 		}
 		return map[string]any{"field": "custom_fields." + cfKey, "op": "clear"}, nil
 
-	case "add", "remove":
-		return nil, fmt.Errorf("'%s' is not supported on custom fields (use on tags)", op)
+	case "remove":
+		return nil, fmt.Errorf("'remove' is not supported on custom fields (use on tags)", )
 
 	default:
 		return nil, fmt.Errorf("unsupported op '%s' on custom field '%s'", op, cfKey)

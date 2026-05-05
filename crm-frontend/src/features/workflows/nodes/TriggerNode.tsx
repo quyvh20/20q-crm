@@ -7,113 +7,58 @@ interface TriggerNodeProps {
   trigger: TriggerSpec | null;
 }
 
-/**
- * Builds a compact, human-readable label for the trigger node on the canvas.
- * Supports built-in entities AND custom objects dynamically.
- * Examples:
- *   "Contact is created"
- *   "Contact's Owner changes"
- *   "Deal changes stage → Qualified"
- *   "Subscription is created"
- *   "No activity for 7 days"
- */
-function triggerSentence(trigger: TriggerSpec, schema: WorkflowSchema | null): string {
-  // Built-in types
-  switch (trigger.type) {
-    case 'contact_created':
-      return 'Contact is created';
-    case 'contact_updated': {
-      return formatUpdatedSentence('Contact', trigger, schema);
-    }
-    case 'deal_stage_changed': {
-      const to = (trigger.params?.to_stage as string) || '';
-      return to ? `Stage → ${to}` : 'Stage changes';
-    }
-    case 'no_activity_days': {
-      const days = (trigger.params?.days as number) || 7;
-      const ent = (trigger.params?.entity as string) || 'contact';
-      const entLabel = resolveEntityLabel(ent, schema);
-      return `${entLabel} idle ${days}d`;
-    }
-    case 'webhook_inbound': {
-      const src = (trigger.params?.source as string) || 'custom';
-      return `Webhook (${src})`;
-    }
+/** Resolve object slug from trigger type */
+function getObjectSlug(type: string): string {
+  if (type === 'deal_stage_changed') return 'deal';
+  if (type === 'no_activity_days') return 'contact';
+  if (type === 'webhook_inbound') return 'webhook';
+  for (const suffix of ['_created', '_updated', '_deleted', '_any']) {
+    if (type.endsWith(suffix)) return type.slice(0, -suffix.length);
   }
-
-  // Dynamic: custom object triggers
-  if (trigger.type.endsWith('_created')) {
-    const slug = trigger.type.replace(/_created$/, '');
-    return `${resolveEntityLabel(slug, schema)} is created`;
-  }
-  if (trigger.type.endsWith('_updated')) {
-    const slug = trigger.type.replace(/_updated$/, '');
-    return formatUpdatedSentence(resolveEntityLabel(slug, schema), trigger, schema);
-  }
-
-  return 'Trigger';
+  return '';
 }
 
-/** Shared: format an "updated" trigger sentence with optional field/value watch */
-function formatUpdatedSentence(entityLabel: string, trigger: TriggerSpec, schema: WorkflowSchema | null): string {
-  const wf = trigger.params?.watch_field as string | undefined;
-  if (!wf) return `${entityLabel} is updated`;
-  let fieldLabel = wf.split('.').pop() || wf;
-  if (schema) {
-    for (const ent of [...schema.entities, ...(schema.custom_objects || [])]) {
-      const f = ent.fields.find((ff) => ff.path === wf);
-      if (f) { fieldLabel = f.label; break; }
-    }
-  }
-  const hasVal = trigger.params?.watch_value !== undefined;
-  if (hasVal) return `${fieldLabel} → ${String(trigger.params!.watch_value)}`;
-  return `${fieldLabel} changes`;
+/** Resolve fires-on label */
+function getFiresOnLabel(type: string): string {
+  if (type === 'deal_stage_changed') return 'updated';
+  if (type === 'no_activity_days') return 'idle';
+  if (type === 'webhook_inbound') return 'receives data';
+  if (type.endsWith('_created')) return 'created';
+  if (type.endsWith('_updated')) return 'updated';
+  if (type.endsWith('_deleted')) return 'deleted';
+  if (type.endsWith('_any')) return 'any change';
+  return '';
 }
 
-/** Resolve a slug to a display label using schema data */
+/** Resolve entity label from schema */
 function resolveEntityLabel(slug: string, schema: WorkflowSchema | null): string {
-  if (!schema) {
-    // Capitalize first letter as fallback
-    return slug.charAt(0).toUpperCase() + slug.slice(1);
-  }
+  if (!schema) return slug.charAt(0).toUpperCase() + slug.slice(1);
   for (const ent of [...schema.entities, ...(schema.custom_objects || [])]) {
     if (ent.key === slug) return ent.label;
   }
   return slug.charAt(0).toUpperCase() + slug.slice(1);
 }
 
-// Entity icon for trigger type — now dynamic
-function triggerIcon(trigger: TriggerSpec, schema: WorkflowSchema | null): string {
-  const ICONS: Record<string, string> = {
-    contact: '👤',
-    deal: '📊',
-    webhook: '🔗',
-  };
-
-  switch (trigger.type) {
-    case 'contact_created':
-    case 'contact_updated':
-      return '👤';
-    case 'deal_stage_changed':
-      return '📊';
-    case 'no_activity_days':
-      return (trigger.params?.entity as string) === 'deal' ? '📊' : '👤';
-    case 'webhook_inbound':
-      return '🔗';
-  }
-
-  // Dynamic: extract slug from {slug}_created or {slug}_updated
-  const slug = trigger.type.replace(/_(created|updated)$/, '');
+/** Resolve entity icon from schema */
+function resolveEntityIcon(slug: string, schema: WorkflowSchema | null): string {
+  const ICONS: Record<string, string> = { contact: '👤', deal: '📊', webhook: '🔗' };
   if (ICONS[slug]) return ICONS[slug];
-
-  // Look up custom object icon from schema
-  if (schema) {
-    for (const obj of (schema.custom_objects || [])) {
-      if (obj.key === slug) return obj.icon || '📦';
-    }
+  if (!schema) return '📦';
+  for (const obj of (schema.custom_objects || [])) {
+    if (obj.key === slug) return obj.icon || '📦';
   }
+  for (const ent of schema.entities) {
+    if (ent.key === slug) return ent.icon || '📦';
+  }
+  return '📦';
+}
 
-  return '📦'; // Default for custom objects
+function triggerSentence(trigger: TriggerSpec, schema: WorkflowSchema | null): string {
+  const slug = getObjectSlug(trigger.type);
+  const label = resolveEntityLabel(slug, schema);
+  const event = getFiresOnLabel(trigger.type);
+  if (!slug) return 'Trigger';
+  return `${label} — ${event}`;
 }
 
 export const TriggerNode: React.FC<TriggerNodeProps> = ({ trigger }) => {
@@ -126,7 +71,7 @@ export const TriggerNode: React.FC<TriggerNodeProps> = ({ trigger }) => {
     return triggerSentence(trigger, schema);
   }, [trigger, schema]);
 
-  const icon = trigger ? triggerIcon(trigger, schema) : '⚡';
+  const icon = trigger ? resolveEntityIcon(getObjectSlug(trigger.type), schema) : '⚡';
 
   return (
     <div
@@ -143,9 +88,9 @@ export const TriggerNode: React.FC<TriggerNodeProps> = ({ trigger }) => {
           {icon}
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-xs uppercase tracking-wider text-gray-400 font-semibold">When</p>
+          <p className="text-xs uppercase tracking-wider text-gray-400 font-semibold">Source</p>
           <p className="text-sm font-medium text-white truncate">
-            {label || 'Select a trigger…'}
+            {label || 'Select a source…'}
           </p>
         </div>
       </div>

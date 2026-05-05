@@ -253,16 +253,21 @@ var ValidTriggerTypes = map[string]bool{
 
 // IsValidTriggerType checks if a trigger type is valid.
 // Accepts built-in types from ValidTriggerTypes AND dynamic custom object
-// patterns like "{slug}_created" or "{slug}_updated".
+// patterns like "{slug}_created", "{slug}_updated", "{slug}_deleted", or "{slug}_any".
 func IsValidTriggerType(triggerType string) bool {
 	if ValidTriggerTypes[triggerType] {
 		return true
 	}
-	// Dynamic: accept {slug}_created or {slug}_updated for custom objects
-	if strings.HasSuffix(triggerType, "_created") || strings.HasSuffix(triggerType, "_updated") {
-		slug := strings.TrimSuffix(strings.TrimSuffix(triggerType, "_created"), "_updated")
-		// slug must be non-empty and not a built-in entity prefix (those are already handled above)
-		return slug != "" && slug != "contact" && slug != "deal"
+	// Dynamic: accept {slug}_{event} for custom objects and built-in entities
+	suffixes := []string{"_created", "_updated", "_deleted", "_any"}
+	for _, suffix := range suffixes {
+		if strings.HasSuffix(triggerType, suffix) {
+			slug := strings.TrimSuffix(triggerType, suffix)
+			// slug must be non-empty
+			if slug != "" {
+				return true
+			}
+		}
 	}
 	return false
 }
