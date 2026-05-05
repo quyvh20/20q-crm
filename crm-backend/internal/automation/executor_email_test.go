@@ -203,3 +203,220 @@ func TestEmailAction_CCTemplateOnly(t *testing.T) {
 	assert.Equal(t, []string{"boss@corp.com"}, capturedPayload.Cc,
 		"CC must resolve template to single email")
 }
+
+// =============================================================================
+// Pitfall tests — edge cases that can break CC in production
+// =============================================================================
+
+// TestPitfall_TemplateResolvesToGarbage — if {{contact.manager_email}} resolves
+// to a non-email string, the executor must reject it, not send to Resend.
+func TestPitfall_TemplateResolvesToGarbage(t *testing.T) {
+	mockResend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("Resend should NOT be called when 'to' resolves to garbage")
+	}))
+	defer mockResend.Close()
+
+	exec := &testableEmailExecutor{
+		apiKey:    "test-key",
+		fromEmail: "noreply@20q.io",
+		baseURL:   mockResend.URL,
+	}
+
+	run := &WorkflowRun{ID: uuid.New()}
+
+	// 'to' is a template that resolves to a non-email value
+	action := ActionSpec{
+		ID:   "email_garbage_to",
+		Type: ActionSendEmail,
+		Params: map[string]any{
+			"to":      "{{contact.name}}", // resolves to "John Doe" — not an email!
+			"subject": "Test",
+		},
+	}
+
+	evalCtx := EvalContext{
+		Contact: map[string]any{
+			"name": "John Doe",
+		},
+	}
+
+	_, err := exec.Execute(context.Background(), run, action, evalCtx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a valid email")
+	assert.Contains(t, err.Error(), "John Doe")
+}
+
+// TestPitfall_CCTemplateResolvesToGarbage — CC template resolves to non-email,
+// it should be dropped silently (not crash), valid addresses preserved.
+func TestPitfall_CCTemplateResolvesToGarbage(t *testing.T) {
+	var capturedPayload resendEmailPayload
+
+	mockResend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &capturedPayload)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"msg_filter"}`))
+	}))
+	defer mockResend.Close()
+
+	exec := &testableEmailExecutor{
+		apiKey:    "test-key",
+		fromEmail: "noreply@20q.io",
+		baseURL:   mockResend.URL,
+	}
+
+	run := &WorkflowRun{ID: uuid.New()}
+
+	// CC has a mix of valid email and garbage template value
+	action := ActionSpec{
+		ID:   "email_cc_mixed",
+		Type: ActionSendEmail,
+		Params: map[string]any{
+			"to":      "user@example.com",
+			"cc":      "{{contact.name}}, valid@company.com",
+			"subject": "Test",
+		},
+	}
+
+	evalCtx := EvalContext{
+		Contact: map[string]any{
+			"name": "Jane Smith", // not an email
+		},
+	}
+
+	result, err := exec.Execute(context.Background(), run, action, evalCtx)
+	require.NoError(t, err, "Should succeed — invalid CC dropped, valid CC kept")
+	require.NotNil(t, result)
+
+	// "Jane Smith" should be dropped, "valid@company.com" should be kept
+	assert.Equal(t, []string{"valid@company.com"}, capturedPayload.Cc,
+		"Only valid emails should remain in CC after runtime validation")
+}
+
+// TestPitfall_AllCCInvalid — if all CC addresses resolve to garbage, CC should be nil.
+func TestPitfall_AllCCInvalid(t *testing.T) {
+	var capturedPayload resendEmailPayload
+
+	mockResend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &capturedPayload)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"msg_nil_cc"}`))
+	}))
+	defer mockResend.Close()
+
+	exec := &testableEmailExecutor{
+		apiKey:    "test-key",
+		fromEmail: "noreply@20q.io",
+		baseURL:   mockResend.URL,
+	}
+
+	run := &WorkflowRun{ID: uuid.New()}
+
+	action := ActionSpec{
+		ID:   "email_all_cc_bad",
+		Type: ActionSendEmail,
+		Params: map[string]any{
+			"to":      "user@example.com",
+			"cc":      "{{contact.name}}, {{contact.phone}}",
+			"subject": "Test",
+		},
+	}
+
+	evalCtx := EvalContext{
+		Contact: map[string]any{
+			"name":  "Jane Smith",
+			"phone": "+1234567890",
+		},
+	}
+
+	result, err := exec.Execute(context.Background(), run, action, evalCtx)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.Nil(t, capturedPayload.Cc,
+		"CC must be nil when all resolved addresses are invalid (omitempty)")
+}
+
+// TestPitfall_EmptyCCString_OmittedFromJSON verifies that CC="" produces
+// a JSON payload WITHOUT the "cc" key (omitempty).
+func TestPitfall_EmptyCCString_OmittedFromJSON(t *testing.T) {
+	var rawPayload map[string]any
+
+	mockResend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &rawPayload)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"msg_empty"}`))
+	}))
+	defer mockResend.Close()
+
+	exec := &testableEmailExecutor{
+		apiKey:    "test-key",
+		fromEmail: "noreply@20q.io",
+		baseURL:   mockResend.URL,
+	}
+
+	run := &WorkflowRun{ID: uuid.New()}
+
+	action := ActionSpec{
+		ID:   "email_cc_empty_str",
+		Type: ActionSendEmail,
+		Params: map[string]any{
+			"to":      "user@example.com",
+			"cc":      "",
+			"subject": "Test",
+		},
+	}
+
+	result, err := exec.Execute(context.Background(), run, action, EvalContext{})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// The raw JSON payload should NOT contain a "cc" key
+	_, hasCCKey := rawPayload["cc"]
+	assert.False(t, hasCCKey,
+		"Empty CC string must result in cc key being omitted from JSON payload (omitempty)")
+}
+
+// TestPitfall_WireFormat_CommaStringSplitCorrectly verifies end-to-end:
+// Frontend sends string "a@x.com, b@x.com" → backend splits → Resend receives ["a@x.com", "b@x.com"]
+func TestPitfall_WireFormat_CommaStringSplitCorrectly(t *testing.T) {
+	var capturedPayload resendEmailPayload
+
+	mockResend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &capturedPayload)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"msg_wire"}`))
+	}))
+	defer mockResend.Close()
+
+	exec := &testableEmailExecutor{
+		apiKey:    "test-key",
+		fromEmail: "noreply@20q.io",
+		baseURL:   mockResend.URL,
+	}
+
+	run := &WorkflowRun{ID: uuid.New()}
+
+	// This is exactly how the frontend sends CC — a comma-separated string
+	action := ActionSpec{
+		ID:   "email_wire_format",
+		Type: ActionSendEmail,
+		Params: map[string]any{
+			"to":      "primary@example.com",
+			"cc":      "a@x.com, b@x.com, c@x.com",
+			"subject": "Wire format test",
+		},
+	}
+
+	result, err := exec.Execute(context.Background(), run, action, EvalContext{})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Resend must receive a proper array, NOT a single string with commas
+	assert.Equal(t, []string{"a@x.com", "b@x.com", "c@x.com"}, capturedPayload.Cc,
+		"Comma-separated CC string must be split into individual email array entries")
+	assert.Len(t, capturedPayload.Cc, 3, "Must be 3 separate CC recipients, not 1 string with commas")
+}

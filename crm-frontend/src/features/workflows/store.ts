@@ -193,12 +193,23 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
 
     set({ saving: true });
     try {
+      // Sanitize: strip empty CC strings → omit key entirely
+      const cleanedActions = state.actions.map((a) => {
+        if (a.type !== 'send_email') return a;
+        const params = { ...a.params };
+        const cc = typeof params.cc === 'string' ? params.cc.trim() : '';
+        if (!cc) {
+          delete params.cc;
+        }
+        return { ...a, params };
+      });
+
       const payload = {
         name: state.name,
         description: state.description,
         trigger: state.trigger!,
         conditions: state.conditions,
-        actions: state.actions,
+        actions: cleanedActions,
       };
 
       if (state.workflowId) {

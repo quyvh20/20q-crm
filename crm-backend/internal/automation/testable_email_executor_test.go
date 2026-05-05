@@ -24,10 +24,35 @@ func (e *testableEmailExecutor) Execute(ctx context.Context, run *WorkflowRun, a
 		return nil, fmt.Errorf("send_email: 'to' is required")
 	}
 
+	// Runtime validation: 'to' must be a valid email after template resolution
+	if !isValidEmail(to) {
+		return nil, fmt.Errorf("send_email: resolved 'to' address is not a valid email: '%s'", to)
+	}
+
 	subject := getStringParam(action.Params, "subject", evalCtx)
 	bodyHTML := getStringParam(action.Params, "body_html", evalCtx)
 	fromName := getStringParam(action.Params, "from_name", evalCtx)
 	cc := getStringSliceParam(action.Params, "cc", evalCtx)
+
+	// Runtime validation: filter invalid resolved CC addresses
+	if len(cc) > 0 {
+		validCC := make([]string, 0, len(cc))
+		for _, addr := range cc {
+			if isValidEmail(addr) {
+				validCC = append(validCC, addr)
+			} else {
+				slog.Warn("automation: dropping invalid CC address after template resolution",
+					"workflow_run_id", run.ID.String(),
+					"invalid_address", addr,
+				)
+			}
+		}
+		if len(validCC) == 0 {
+			cc = nil
+		} else {
+			cc = validCC
+		}
+	}
 
 	from := e.fromEmail
 	if fromName != "" {

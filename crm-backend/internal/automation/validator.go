@@ -387,6 +387,12 @@ func isEmailOrTemplate(s string) bool {
 	if strings.Contains(s, "{{") && strings.Contains(s, "}}") {
 		return true
 	}
+	return isValidEmail(s)
+}
+
+// isValidEmail returns true if s is a valid email address (no template support).
+// Used for runtime validation after template resolution.
+func isValidEmail(s string) bool {
 	// Basic email validation: has @ and at least one dot after @
 	at := strings.LastIndex(s, "@")
 	if at < 1 {
