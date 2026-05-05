@@ -31,7 +31,6 @@ const BUILTIN_EVENTS: Record<string, EventDef[]> = {
   contact: [
     { key: 'created', label: 'is created', triggerType: 'contact_created' },
     { key: 'updated', label: 'is updated', triggerType: 'contact_updated' },
-    { key: 'field_changes', label: 'field changes', triggerType: 'contact_updated' },
     { key: 'no_activity', label: 'has no activity', triggerType: 'no_activity_days' },
   ],
   deal: [
@@ -67,12 +66,17 @@ interface EntityOption {
   icon: string;
 }
 
+// Entities that exist in schema.entities for template variables but are NOT
+// triggerable objects. These are filtered out of the entity dropdown.
+const NON_TRIGGERABLE_ENTITIES = new Set(['trigger']);
+
 function buildEntityList(schema: WorkflowSchema | null): EntityOption[] {
   const entities: EntityOption[] = [];
 
-  // Built-in entities from schema
+  // Built-in entities from schema (filter out non-triggerable ones)
   if (schema) {
     for (const ent of schema.entities) {
+      if (NON_TRIGGERABLE_ENTITIES.has(ent.key)) continue;
       entities.push({
         key: ent.key,
         label: ent.label,
@@ -108,9 +112,7 @@ function parseTriggerToSentence(trigger: TriggerSpec, customObjectSlugs: string[
     case 'contact_created':
       return { entity: 'contact', event: 'created' };
     case 'contact_updated':
-      return trigger.params?.watch_field
-        ? { entity: 'contact', event: 'field_changes' }
-        : { entity: 'contact', event: 'updated' };
+      return { entity: 'contact', event: 'updated' };
     case 'deal_stage_changed':
       return { entity: 'deal', event: 'stage_changed' };
     case 'no_activity_days': {
