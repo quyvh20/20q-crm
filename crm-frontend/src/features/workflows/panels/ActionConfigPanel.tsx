@@ -324,7 +324,7 @@ function decomposeSeconds(totalSec: number): { value: number; unit: DelayUnit } 
   return { value: totalSec, unit: 'seconds' };
 }
 
-const MAX_DELAY_SEC = 604800; // 7 days
+const MAX_DELAY_SEC = 2592000; // 30 days
 
 const DelayParams: React.FC<ParamProps> = ({ action, setParam }) => {
   const totalSec = Number(action.params.duration_sec) || 60;
@@ -334,15 +334,17 @@ const DelayParams: React.FC<ParamProps> = ({ action, setParam }) => {
 
   const handleValueChange = (raw: string) => {
     const num = Math.max(1, parseInt(raw) || 1);
-    const newSec = Math.min(num * currentFactor, MAX_DELAY_SEC);
+    const newSec = num * currentFactor;
     setParam('duration_sec', newSec);
   };
 
   const handleUnitChange = (unit: string) => {
     const factor = DELAY_UNITS.find((u) => u.value === unit)!.factor;
-    const newSec = Math.min(decomposed.value * factor, MAX_DELAY_SEC);
+    const newSec = decomposed.value * factor;
     setParam('duration_sec', newSec);
   };
+
+  const isOverMax = totalSec > MAX_DELAY_SEC;
 
   // Friendly human-readable summary
   const summary = `${decomposed.value} ${decomposed.value === 1 ? decomposed.unit.replace(/s$/, '') : decomposed.unit}`;
@@ -356,12 +358,16 @@ const DelayParams: React.FC<ParamProps> = ({ action, setParam }) => {
           min={1}
           value={decomposed.value}
           onChange={(e) => handleValueChange(e.target.value)}
-          className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+          className={`flex-1 bg-gray-800 border rounded-lg px-3 py-2 text-sm text-white focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${
+            isOverMax ? 'border-red-500 focus:border-red-500' : 'border-gray-700 focus:border-emerald-500'
+          }`}
         />
         <select
           value={decomposed.unit}
           onChange={(e) => handleUnitChange(e.target.value)}
-          className="w-28 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none"
+          className={`w-28 bg-gray-800 border rounded-lg px-3 py-2 text-sm text-white focus:outline-none ${
+            isOverMax ? 'border-red-500 focus:border-red-500' : 'border-gray-700 focus:border-emerald-500'
+          }`}
         >
           {DELAY_UNITS.map((u) => (
             <option key={u.value} value={u.value}>{u.label}</option>
@@ -369,15 +375,24 @@ const DelayParams: React.FC<ParamProps> = ({ action, setParam }) => {
         </select>
       </div>
 
-      {/* Friendly preview */}
-      <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-800/50 border border-gray-700/50">
-        <span className="text-sm">⏱️</span>
-        <span className="text-xs text-gray-400">
-          Workflow will pause for <span className="text-emerald-400 font-medium">{summary}</span>
-        </span>
-      </div>
+      {/* Over-max error */}
+      {isOverMax && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/30">
+          <span className="text-xs text-red-400">⚠ Duration exceeds the maximum of 30 days (2,592,000 seconds). Reduce it to save.</span>
+        </div>
+      )}
 
-      <p className="text-xs text-gray-500">Max: 7 days (604,800 seconds)</p>
+      {/* Friendly preview */}
+      {!isOverMax && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-800/50 border border-gray-700/50">
+          <span className="text-sm">⏱️</span>
+          <span className="text-xs text-gray-400">
+            Workflow will pause for <span className="text-emerald-400 font-medium">{summary}</span>
+          </span>
+        </div>
+      )}
+
+      <p className="text-xs text-gray-500">Max: 30 days (2,592,000 seconds)</p>
     </div>
   );
 };

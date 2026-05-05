@@ -232,6 +232,67 @@ func TestValidateActions_Delay_RequiresDurationSec(t *testing.T) {
 	}
 }
 
+func TestValidateActions_Delay_ZeroDuration(t *testing.T) {
+	actions := `[{"type":"delay","id":"a1","params":{"duration_sec":0}}]`
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	if result.Valid {
+		t.Fatal("expected invalid — duration_sec=0 must be rejected")
+	}
+	found := false
+	for _, e := range result.Errors {
+		if e.Field == "actions[0].params.duration_sec" && e.Message == "duration_sec must be a positive integer" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected 'positive integer' error, got: %+v", result.Errors)
+	}
+}
+
+func TestValidateActions_Delay_NegativeDuration(t *testing.T) {
+	actions := `[{"type":"delay","id":"a1","params":{"duration_sec":-10}}]`
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	if result.Valid {
+		t.Fatal("expected invalid — negative duration_sec must be rejected")
+	}
+}
+
+func TestValidateActions_Delay_ExceedsMax(t *testing.T) {
+	// 2592001 seconds = 30 days + 1 second
+	actions := `[{"type":"delay","id":"a1","params":{"duration_sec":2592001}}]`
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	if result.Valid {
+		t.Fatal("expected invalid — duration_sec exceeds 30-day max")
+	}
+	found := false
+	for _, e := range result.Errors {
+		if e.Field == "actions[0].params.duration_sec" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected duration_sec error, got: %+v", result.Errors)
+	}
+}
+
+func TestValidateActions_Delay_ExactlyAtMax(t *testing.T) {
+	// 2592000 seconds = exactly 30 days — should be valid
+	actions := `[{"type":"delay","id":"a1","params":{"duration_sec":2592000}}]`
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	if !result.Valid {
+		t.Fatalf("expected valid at exactly 30 days, got errors: %+v", result.Errors)
+	}
+}
+
+func TestValidateActions_Delay_ValidDuration(t *testing.T) {
+	// 3600 seconds = 1 hour
+	actions := `[{"type":"delay","id":"a1","params":{"duration_sec":3600}}]`
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	if !result.Valid {
+		t.Fatalf("expected valid for 3600s, got errors: %+v", result.Errors)
+	}
+}
+
 func TestValidateActions_AllTypesValid(t *testing.T) {
 	actions := `[
 		{"type":"send_email","id":"a1","params":{"to":"x@test.com"}},

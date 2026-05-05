@@ -339,12 +339,35 @@ func validateActionParams(action ActionSpec, path string, result *ValidationResu
 			})
 		}
 	case ActionDelay:
-		if _, ok := action.Params["duration_sec"]; !ok {
+		if raw, ok := action.Params["duration_sec"]; !ok {
 			result.Valid = false
 			result.Errors = append(result.Errors, ValidationError{
 				Field:   path + ".params.duration_sec",
 				Message: "delay requires 'duration_sec' parameter",
 			})
+		} else {
+			sec := 0.0
+			switch v := raw.(type) {
+			case float64:
+				sec = v
+			case int:
+				sec = float64(v)
+			case json.Number:
+				sec, _ = v.Float64()
+			}
+			if sec <= 0 {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   path + ".params.duration_sec",
+					Message: "duration_sec must be a positive integer",
+				})
+			} else if sec > 2592000 { // 30 days
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   path + ".params.duration_sec",
+					Message: fmt.Sprintf("duration_sec %d exceeds maximum of 2592000 (30 days)", int(sec)),
+				})
+			}
 		}
 	}
 

@@ -195,6 +195,15 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
           }
         }
       }
+
+      if (action.type === 'delay') {
+        const sec = Number(action.params.duration_sec) || 0;
+        if (sec <= 0) {
+          errors[`${key}.params.duration_sec`] = ['Duration must be a positive number'];
+        } else if (sec > 2592000) {
+          errors[`${key}.params.duration_sec`] = ['Duration exceeds maximum of 30 days (2,592,000 seconds)'];
+        }
+      }
     }
 
     set({ errors });
