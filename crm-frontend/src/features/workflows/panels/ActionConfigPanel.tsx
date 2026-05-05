@@ -311,10 +311,21 @@ const DELAY_UNITS = [
 
 type DelayUnit = typeof DELAY_UNITS[number]['value'];
 
-/** Decompose total seconds into the best-fitting (value, unit) pair */
+/**
+ * Decompose total seconds into the best-fitting (value, unit) pair.
+ *
+ * **Rule: Integer-only decomposition (no fractional units).**
+ * Picks the largest unit where `totalSec % factor === 0`:
+ *   - 86400  → { 1, 'days' }
+ *   - 7200   → { 2, 'hours' }
+ *   - 90     → { 90, 'seconds' }  (not 1.5 minutes)
+ *   - 7201   → { 7201, 'seconds' } (not "2 hours 1 second")
+ *
+ * This avoids floating-point display values and ensures the input always
+ * shows a clean whole number that round-trips losslessly through seconds.
+ */
 function decomposeSeconds(totalSec: number): { value: number; unit: DelayUnit } {
   if (totalSec <= 0) return { value: 1, unit: 'minutes' };
-  // Pick the largest unit that divides evenly, otherwise fall back to seconds
   for (let i = DELAY_UNITS.length - 1; i >= 1; i--) {
     const u = DELAY_UNITS[i];
     if (totalSec % u.factor === 0) {

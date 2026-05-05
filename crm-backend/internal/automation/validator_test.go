@@ -293,6 +293,24 @@ func TestValidateActions_Delay_ValidDuration(t *testing.T) {
 	}
 }
 
+func TestValidateActions_Delay_FractionalSeconds(t *testing.T) {
+	// 60.5 is not a whole number — must be rejected
+	actions := `[{"type":"delay","id":"a1","params":{"duration_sec":60.5}}]`
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	if result.Valid {
+		t.Fatal("expected invalid — fractional duration_sec must be rejected")
+	}
+	found := false
+	for _, e := range result.Errors {
+		if e.Field == "actions[0].params.duration_sec" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected duration_sec error for fractional value, got: %+v", result.Errors)
+	}
+}
+
 func TestValidateActions_AllTypesValid(t *testing.T) {
 	actions := `[
 		{"type":"send_email","id":"a1","params":{"to":"x@test.com"}},

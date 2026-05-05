@@ -361,6 +361,13 @@ func validateActionParams(action ActionSpec, path string, result *ValidationResu
 					Field:   path + ".params.duration_sec",
 					Message: "duration_sec must be a positive integer",
 				})
+			} else if sec != float64(int(sec)) {
+				// Reject fractional seconds (e.g. 60.5) — integer math only
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   path + ".params.duration_sec",
+					Message: fmt.Sprintf("duration_sec must be a whole number, got %g", sec),
+				})
 			} else if sec > 2592000 { // 30 days
 				result.Valid = false
 				result.Errors = append(result.Errors, ValidationError{

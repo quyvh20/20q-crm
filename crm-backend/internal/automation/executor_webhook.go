@@ -112,9 +112,10 @@ func (e *DelayExecutor) Execute(ctx context.Context, run *WorkflowRun, action Ac
 		durationSec = 1
 	}
 
-	// Cap at 24 hours to prevent abuse
-	if durationSec > 86400 {
-		durationSec = 86400
+	// Cap at 30 days (must match validator's max of 2_592_000)
+	const maxDelaySec = 2592000
+	if durationSec > maxDelaySec {
+		durationSec = maxDelaySec
 	}
 
 	slog.Info("automation: delay started",
