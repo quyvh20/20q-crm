@@ -3,7 +3,7 @@
 // ============================================================
 
 export interface TriggerSpec {
-  type: 'contact_created' | 'contact_updated' | 'deal_stage_changed' | 'no_activity_days' | 'webhook_inbound';
+  type: string; // e.g. 'contact_created', 'subscription_updated', 'deal_stage_changed'
   params?: Record<string, unknown>;
 }
 
@@ -103,7 +103,7 @@ export interface ValidationError {
 export type TriggerType = TriggerSpec['type'];
 export type ActionType = ActionSpec['type'];
 
-export const TRIGGER_LABELS: Record<TriggerType, string> = {
+export const TRIGGER_LABELS: Record<string, string> = {
   contact_created: 'Contact Created',
   contact_updated: 'Contact Updated',
   deal_stage_changed: 'Deal Stage Changed',

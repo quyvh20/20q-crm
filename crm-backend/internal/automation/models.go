@@ -1,6 +1,7 @@
 package automation
 
 import (
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -248,6 +249,22 @@ var ValidTriggerTypes = map[string]bool{
 	TriggerDealStageChanged: true,
 	TriggerNoActivityDays:   true,
 	TriggerWebhookInbound:   true,
+}
+
+// IsValidTriggerType checks if a trigger type is valid.
+// Accepts built-in types from ValidTriggerTypes AND dynamic custom object
+// patterns like "{slug}_created" or "{slug}_updated".
+func IsValidTriggerType(triggerType string) bool {
+	if ValidTriggerTypes[triggerType] {
+		return true
+	}
+	// Dynamic: accept {slug}_created or {slug}_updated for custom objects
+	if strings.HasSuffix(triggerType, "_created") || strings.HasSuffix(triggerType, "_updated") {
+		slug := strings.TrimSuffix(strings.TrimSuffix(triggerType, "_created"), "_updated")
+		// slug must be non-empty and not a built-in entity prefix (those are already handled above)
+		return slug != "" && slug != "contact" && slug != "deal"
+	}
+	return false
 }
 
 // Valid action types set

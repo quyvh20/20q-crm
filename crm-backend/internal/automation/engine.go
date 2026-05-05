@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -175,7 +176,8 @@ func (e *Engine) triggerEventInternal(ctx context.Context, orgID uuid.UUID, even
 		// --- Field-level trigger filtering (watch_field / watch_value) ---
 		// If the workflow's trigger specifies a watched field, skip unless
 		// that field actually changed (and optionally changed to the expected value).
-		if eventType == TriggerContactUpdated {
+		// Works for contact_updated, subscription_updated, etc.
+		if strings.HasSuffix(eventType, "_updated") {
 			var triggerSpec TriggerSpec
 			if err := json.Unmarshal(wf.Trigger, &triggerSpec); err == nil && triggerSpec.Params != nil {
 				if watchField, ok := triggerSpec.Params["watch_field"].(string); ok && watchField != "" {

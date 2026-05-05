@@ -57,11 +57,11 @@ func validateTrigger(data []byte, result *ValidationResult) {
 		return
 	}
 
-	if !ValidTriggerTypes[trigger.Type] {
+	if !IsValidTriggerType(trigger.Type) {
 		result.Valid = false
 		result.Errors = append(result.Errors, ValidationError{
 			Field:   "trigger.type",
-			Message: fmt.Sprintf("unknown trigger type: '%s'. Valid types: %s", trigger.Type, validTriggerTypesList()),
+			Message: fmt.Sprintf("unknown trigger type: '%s'. Valid built-in types: %s. Custom object triggers use '{slug}_created' or '{slug}_updated'.", trigger.Type, validTriggerTypesList()),
 		})
 	}
 
@@ -80,30 +80,6 @@ func validateTrigger(data []byte, result *ValidationResult) {
 				Field:   "trigger.params.to_stage",
 				Message: "deal_stage_changed requires 'to_stage' parameter",
 			})
-		}
-	case TriggerContactUpdated:
-		// watch_field and watch_value are optional params for field-level filtering
-		if trigger.Params != nil {
-			if wf, ok := trigger.Params["watch_field"]; ok {
-				wfStr, isStr := wf.(string)
-				if !isStr || wfStr == "" {
-					result.Valid = false
-					result.Errors = append(result.Errors, ValidationError{
-						Field:   "trigger.params.watch_field",
-						Message: "watch_field must be a non-empty string (e.g. 'contact.owner_user_id')",
-					})
-				}
-			}
-			// watch_value without watch_field makes no sense
-			if _, hasValue := trigger.Params["watch_value"]; hasValue {
-				if _, hasField := trigger.Params["watch_field"]; !hasField {
-					result.Valid = false
-					result.Errors = append(result.Errors, ValidationError{
-						Field:   "trigger.params.watch_value",
-						Message: "watch_value requires watch_field to be set",
-					})
-				}
-			}
 		}
 	case TriggerNoActivityDays:
 		if trigger.Params == nil {
@@ -134,6 +110,30 @@ func validateTrigger(data []byte, result *ValidationResult) {
 					Field:   "trigger.params.entity",
 					Message: "'entity' parameter is required",
 				})
+			}
+		}
+	default:
+		// All *_updated triggers (contact_updated, subscription_updated, etc.)
+		// support optional watch_field / watch_value for field-level filtering.
+		if strings.HasSuffix(trigger.Type, "_updated") && trigger.Params != nil {
+			if wf, ok := trigger.Params["watch_field"]; ok {
+				wfStr, isStr := wf.(string)
+				if !isStr || wfStr == "" {
+					result.Valid = false
+					result.Errors = append(result.Errors, ValidationError{
+						Field:   "trigger.params.watch_field",
+						Message: "watch_field must be a non-empty string (e.g. 'contact.owner_user_id')",
+					})
+				}
+			}
+			if _, hasValue := trigger.Params["watch_value"]; hasValue {
+				if _, hasField := trigger.Params["watch_field"]; !hasField {
+					result.Valid = false
+					result.Errors = append(result.Errors, ValidationError{
+						Field:   "trigger.params.watch_value",
+						Message: "watch_value requires watch_field to be set",
+					})
+				}
 			}
 		}
 	}

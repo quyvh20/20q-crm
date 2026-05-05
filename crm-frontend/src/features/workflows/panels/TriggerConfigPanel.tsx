@@ -1,38 +1,33 @@
 import React, { useMemo } from 'react';
-import type { TriggerType, TriggerSpec } from '../types';
+import type { TriggerSpec } from '../types';
 import { useBuilderStore } from '../store';
 import { FieldPicker, type FieldMeta } from './FieldPicker';
 import { SmartValueInput } from './SmartValueInput';
-import type { SchemaField } from '../api';
+import type { SchemaField, SchemaEntity, WorkflowSchema } from '../api';
 
 // ============================================================
-// Sentence Trigger Builder
+// Sentence Trigger Builder — Schema-Driven
 // "When a [Contact ▾] [is created ▾]"
+// Supports built-in entities AND custom objects from schema.
 // ============================================================
 
-// --- Entity definitions ---
-type EntityKey = 'contact' | 'deal' | 'webhook';
+// --- Built-in entity icons ---
+const ENTITY_ICONS: Record<string, string> = {
+  contact: '👤',
+  deal: '📊',
+  webhook: '🔗',
+};
 
-interface EntityDef {
-  key: EntityKey;
-  label: string;
-  icon: string;
-}
-
-const ENTITIES: EntityDef[] = [
-  { key: 'contact', label: 'Contact', icon: '👤' },
-  { key: 'deal', label: 'Deal', icon: '📊' },
-  { key: 'webhook', label: 'Webhook', icon: '🔗' },
-];
-
-// --- Event definitions per entity ---
+// --- Event definitions per entity key ---
 interface EventDef {
   key: string;
   label: string;
-  triggerType: TriggerType;
+  /** How we derive trigger type: either a literal string or a function of the entity slug */
+  triggerType: string;
 }
 
-const EVENTS_BY_ENTITY: Record<EntityKey, EventDef[]> = {
+/** Built-in events for specific entity types */
+const BUILTIN_EVENTS: Record<string, EventDef[]> = {
   contact: [
     { key: 'created', label: 'is created', triggerType: 'contact_created' },
     { key: 'updated', label: 'is updated', triggerType: 'contact_updated' },
@@ -48,8 +43,67 @@ const EVENTS_BY_ENTITY: Record<EntityKey, EventDef[]> = {
   ],
 };
 
-// --- Derive entity+event from an existing TriggerSpec (for loading saved workflows) ---
-function parseTriggerToSentence(trigger: TriggerSpec): { entity: EntityKey; event: string } {
+/** Generate standard events for a custom object entity */
+function makeCustomObjectEvents(slug: string): EventDef[] {
+  return [
+    { key: 'created', label: 'is created', triggerType: `${slug}_created` },
+    { key: 'updated', label: 'is updated', triggerType: `${slug}_updated` },
+    { key: 'field_changes', label: 'field changes', triggerType: `${slug}_updated` },
+  ];
+}
+
+/** Get events for any entity key */
+function getEventsForEntity(entityKey: string, customObjectSlugs: string[]): EventDef[] {
+  if (BUILTIN_EVENTS[entityKey]) return BUILTIN_EVENTS[entityKey];
+  // Custom object: generate events dynamically
+  if (customObjectSlugs.includes(entityKey)) return makeCustomObjectEvents(entityKey);
+  return [];
+}
+
+// --- Build entity list from schema ---
+interface EntityOption {
+  key: string;
+  label: string;
+  icon: string;
+}
+
+function buildEntityList(schema: WorkflowSchema | null): EntityOption[] {
+  const entities: EntityOption[] = [];
+
+  // Built-in entities from schema
+  if (schema) {
+    for (const ent of schema.entities) {
+      entities.push({
+        key: ent.key,
+        label: ent.label,
+        icon: ENTITY_ICONS[ent.key] || ent.icon || '📦',
+      });
+    }
+    // Custom objects from schema
+    for (const obj of (schema.custom_objects || [])) {
+      entities.push({
+        key: obj.key,
+        label: obj.label,
+        icon: obj.icon || '📦',
+      });
+    }
+  } else {
+    // Fallback if schema not loaded yet
+    entities.push(
+      { key: 'contact', label: 'Contact', icon: '👤' },
+      { key: 'deal', label: 'Deal', icon: '📊' },
+    );
+  }
+
+  // Webhook is always available (not a schema entity)
+  entities.push({ key: 'webhook', label: 'Webhook', icon: '🔗' });
+
+  return entities;
+}
+
+// --- Derive entity+event from an existing TriggerSpec ---
+function parseTriggerToSentence(trigger: TriggerSpec, customObjectSlugs: string[]): { entity: string; event: string } {
+  // Built-in types
   switch (trigger.type) {
     case 'contact_created':
       return { entity: 'contact', event: 'created' };
@@ -61,13 +115,23 @@ function parseTriggerToSentence(trigger: TriggerSpec): { entity: EntityKey; even
       return { entity: 'deal', event: 'stage_changed' };
     case 'no_activity_days': {
       const e = (trigger.params?.entity as string) || 'contact';
-      return { entity: e as EntityKey, event: 'no_activity' };
+      return { entity: e, event: 'no_activity' };
     }
     case 'webhook_inbound':
       return { entity: 'webhook', event: 'receives_data' };
-    default:
-      return { entity: 'contact', event: 'created' };
   }
+
+  // Dynamic: custom object triggers like "subscription_created"
+  for (const slug of customObjectSlugs) {
+    if (trigger.type === `${slug}_created`) return { entity: slug, event: 'created' };
+    if (trigger.type === `${slug}_updated`) {
+      return trigger.params?.watch_field
+        ? { entity: slug, event: 'field_changes' }
+        : { entity: slug, event: 'updated' };
+    }
+  }
+
+  return { entity: 'contact', event: 'created' };
 }
 
 // --- Shared select styling ---
@@ -81,62 +145,63 @@ const selectClass =
 export const TriggerConfigPanel: React.FC = () => {
   const { trigger, setTrigger, schema, schemaLoading } = useBuilderStore();
 
+  // Build entity list from schema
+  const entityList = useMemo(() => buildEntityList(schema), [schema]);
+  const customObjectSlugs = useMemo(
+    () => (schema?.custom_objects || []).map((o: SchemaEntity) => o.key),
+    [schema],
+  );
+
   // Derive current entity + event from trigger state
   const { entity, event } = useMemo(() => {
-    if (!trigger) return { entity: '' as EntityKey, event: '' };
-    return parseTriggerToSentence(trigger);
-  }, [trigger]);
+    if (!trigger) return { entity: '', event: '' };
+    return parseTriggerToSentence(trigger, customObjectSlugs);
+  }, [trigger, customObjectSlugs]);
 
-  const events = entity ? EVENTS_BY_ENTITY[entity] || [] : [];
+  const events = useMemo(
+    () => entity ? getEventsForEntity(entity, customObjectSlugs) : [],
+    [entity, customObjectSlugs],
+  );
 
   // --- Build the TriggerSpec from sentence selections ---
-  const handleEntityChange = (newEntity: EntityKey) => {
-    // Auto-select first event for the new entity
-    const firstEvent = EVENTS_BY_ENTITY[newEntity]?.[0];
+  const handleEntityChange = (newEntity: string) => {
+    const evts = getEventsForEntity(newEntity, customObjectSlugs);
+    const firstEvent = evts[0];
     if (!firstEvent) return;
-    setTrigger(buildTriggerSpec(newEntity, firstEvent.key, {}));
+    setTrigger(buildTriggerSpec(newEntity, firstEvent.key, {}, customObjectSlugs));
   };
 
   const handleEventChange = (newEvent: string) => {
-    setTrigger(buildTriggerSpec(entity, newEvent, {}));
+    setTrigger(buildTriggerSpec(entity, newEvent, {}, customObjectSlugs));
   };
 
   // --- Stage handlers ---
   const handleFromStageChange = (val: string) => {
-    setTrigger({
-      ...trigger!,
-      params: { ...trigger?.params, from_stage: val },
-    });
+    setTrigger({ ...trigger!, params: { ...trigger?.params, from_stage: val } });
   };
-
   const handleToStageChange = (val: string) => {
-    setTrigger({
-      ...trigger!,
-      params: { ...trigger?.params, to_stage: val },
-    });
+    setTrigger({ ...trigger!, params: { ...trigger?.params, to_stage: val } });
   };
 
   // --- No activity handlers ---
   const handleDaysChange = (val: string) => {
     const days = parseInt(val) || 7;
-    setTrigger({
-      ...trigger!,
-      params: { ...trigger?.params, days },
-    });
+    setTrigger({ ...trigger!, params: { ...trigger?.params, days } });
   };
 
   // --- Webhook source handler ---
   const handleSourceChange = (val: string) => {
-    setTrigger({
-      ...trigger!,
-      params: { ...trigger?.params, source: val },
-    });
+    setTrigger({ ...trigger!, params: { ...trigger?.params, source: val } });
   };
 
   // --- Field changes handlers ---
   const handleWatchFieldChange = (path: string, meta: FieldMeta) => {
+    // Derive the correct trigger type for the current entity
+    const evts = getEventsForEntity(entity, customObjectSlugs);
+    const fcEvent = evts.find((e) => e.key === 'field_changes');
+    const triggerType = fcEvent?.triggerType || `${entity}_updated`;
     setTrigger({
-      type: 'contact_updated',
+      type: triggerType,
       params: { watch_field: path, _fieldMeta: meta },
     });
   };
@@ -154,28 +219,17 @@ export const TriggerConfigPanel: React.FC = () => {
 
   const handleWatchValueChange = (val: unknown) => {
     if (!trigger) return;
-    setTrigger({
-      ...trigger,
-      params: { ...trigger.params, watch_value: val },
-    });
+    setTrigger({ ...trigger, params: { ...trigger.params, watch_value: val } });
   };
 
   // Resolve the field meta for watch_field (for SmartValueInput)
   const watchFieldMeta = useMemo((): SchemaField | null => {
     if (!trigger?.params?.watch_field || !schema) return null;
     const watchPath = trigger.params.watch_field as string;
-    // Check if we have cached metadata from FieldPicker
     if (trigger.params._fieldMeta) {
       const m = trigger.params._fieldMeta as FieldMeta;
-      return {
-        path: watchPath,
-        label: m.label,
-        type: m.type,
-        picker_type: m.picker_type,
-        options: m.options,
-      };
+      return { path: watchPath, label: m.label, type: m.type, picker_type: m.picker_type, options: m.options };
     }
-    // Fallback: look up in schema
     for (const ent of [...schema.entities, ...(schema.custom_objects || [])]) {
       const field = ent.fields.find((f) => f.path === watchPath);
       if (field) return field;
@@ -184,6 +238,12 @@ export const TriggerConfigPanel: React.FC = () => {
   }, [trigger?.params?.watch_field, trigger?.params?._fieldMeta, schema]);
 
   const hasWatchValue = trigger?.params?.watch_value !== undefined;
+
+  // Determine which entity filter to pass to FieldPicker
+  const fieldPickerEntities = useMemo(() => {
+    if (!entity || entity === 'webhook') return undefined;
+    return [entity];
+  }, [entity]);
 
   return (
     <div className="space-y-4">
@@ -195,23 +255,23 @@ export const TriggerConfigPanel: React.FC = () => {
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-sm text-gray-400 font-medium whitespace-nowrap">When a</span>
 
-          {/* Entity dropdown */}
+          {/* Entity dropdown — schema-driven */}
           <div className="relative">
             <select
               value={entity || ''}
-              onChange={(e) => handleEntityChange(e.target.value as EntityKey)}
+              onChange={(e) => handleEntityChange(e.target.value)}
               className={selectClass}
               style={{ paddingRight: '2rem' }}
             >
               <option value="" disabled>pick…</option>
-              {ENTITIES.map((e) => (
+              {entityList.map((e) => (
                 <option key={e.key} value={e.key}>{e.icon} {e.label}</option>
               ))}
             </select>
             <ChevronDown />
           </div>
 
-          {/* Event dropdown (appears after entity is picked) */}
+          {/* Event dropdown */}
           {entity && events.length > 0 && (
             <div className="relative">
               <select
@@ -230,7 +290,7 @@ export const TriggerConfigPanel: React.FC = () => {
           )}
         </div>
 
-        {/* Row 2: Contextual params based on event */}
+        {/* Row 2: Contextual params */}
 
         {/* deal_stage_changed: from [stage] to [stage] */}
         {event === 'stage_changed' && (
@@ -319,7 +379,7 @@ export const TriggerConfigPanel: React.FC = () => {
                 <FieldPicker
                   value={(trigger?.params?.watch_field as string) || null}
                   onChange={handleWatchFieldChange}
-                  entities={['contact']}
+                  entities={fieldPickerEntities}
                   placeholder="Select field to watch…"
                 />
               </div>
@@ -362,7 +422,7 @@ export const TriggerConfigPanel: React.FC = () => {
         <div className="px-3 py-2 rounded-lg bg-indigo-500/5 border border-indigo-500/10">
           <p className="text-xs text-indigo-300/70">
             <span className="text-indigo-400 font-medium">Preview: </span>
-            {buildSentencePreview(trigger, schema)}
+            {buildSentencePreview(trigger, schema, entityList, customObjectSlugs)}
           </p>
         </div>
       )}
@@ -374,83 +434,84 @@ export const TriggerConfigPanel: React.FC = () => {
 // Helpers
 // ============================================================
 
-function buildTriggerSpec(entity: EntityKey, event: string, existingParams: Record<string, unknown>): TriggerSpec {
-  const eventDef = EVENTS_BY_ENTITY[entity]?.find((e) => e.key === event);
-  if (!eventDef) return { type: 'contact_created' };
+function buildTriggerSpec(
+  entity: string,
+  event: string,
+  existingParams: Record<string, unknown>,
+  customObjectSlugs: string[],
+): TriggerSpec {
+  const evts = getEventsForEntity(entity, customObjectSlugs);
+  const eventDef = evts.find((e) => e.key === event);
+  if (!eventDef) return { type: `${entity}_created` };
 
   const type = eventDef.triggerType;
   const params: Record<string, unknown> = {};
 
-  switch (`${entity}:${event}`) {
-    case 'contact:created':
-    case 'contact:updated':
-      // No params needed
-      break;
-    case 'contact:field_changes':
-      // Preserve existing watch_field if any
-      if (existingParams.watch_field) params.watch_field = existingParams.watch_field;
-      break;
-    case 'deal:stage_changed':
-      params.from_stage = existingParams.from_stage || '*';
-      params.to_stage = existingParams.to_stage || '';
-      break;
-    case 'contact:no_activity':
-      params.entity = 'contact';
-      params.days = existingParams.days || 7;
-      break;
-    case 'deal:no_activity':
-      params.entity = 'deal';
-      params.days = existingParams.days || 7;
-      break;
-    case 'webhook:receives_data':
-      params.source = existingParams.source || 'custom';
-      break;
+  // Handle special params per event type
+  if (event === 'field_changes' && existingParams.watch_field) {
+    params.watch_field = existingParams.watch_field;
+  }
+  if (event === 'stage_changed') {
+    params.from_stage = existingParams.from_stage || '*';
+    params.to_stage = existingParams.to_stage || '';
+  }
+  if (event === 'no_activity') {
+    params.entity = entity;
+    params.days = existingParams.days || 7;
+  }
+  if (event === 'receives_data') {
+    params.source = existingParams.source || 'custom';
   }
 
   return { type, params: Object.keys(params).length > 0 ? params : undefined } as TriggerSpec;
 }
 
-function buildSentencePreview(trigger: TriggerSpec, schema: ReturnType<typeof useBuilderStore.getState>['schema']): string {
-  const { entity, event } = parseTriggerToSentence(trigger);
-  const entityDef = ENTITIES.find((e) => e.key === entity);
+function buildSentencePreview(
+  trigger: TriggerSpec,
+  schema: WorkflowSchema | null,
+  entityList: EntityOption[],
+  customObjectSlugs: string[],
+): string {
+  const { entity, event } = parseTriggerToSentence(trigger, customObjectSlugs);
+  const entityDef = entityList.find((e) => e.key === entity);
   const entityLabel = entityDef?.label || entity;
 
-  switch (`${entity}:${event}`) {
-    case 'contact:created':
-      return `When a Contact is created`;
-    case 'contact:updated':
-      return `When a Contact is updated (any field)`;
-    case 'contact:field_changes': {
-      const wf = trigger.params?.watch_field as string;
-      if (!wf) return `When a Contact field changes`;
-      // Find field label
-      let fieldLabel = wf.replace('contact.', '');
-      if (schema) {
-        for (const ent of schema.entities) {
-          const f = ent.fields.find((ff) => ff.path === wf);
-          if (f) { fieldLabel = f.label; break; }
-        }
-      }
-      const hasVal = trigger.params?.watch_value !== undefined;
-      if (hasVal) {
-        return `When a Contact's ${fieldLabel} changes to "${String(trigger.params!.watch_value)}"`;
-      }
-      return `When a Contact's ${fieldLabel} changes`;
+  // Find field label helper
+  const resolveFieldLabel = (watchField: string): string => {
+    if (!schema) return watchField;
+    for (const ent of [...schema.entities, ...(schema.custom_objects || [])]) {
+      const f = ent.fields.find((ff) => ff.path === watchField);
+      if (f) return f.label;
     }
-    case 'deal:stage_changed': {
+    return watchField;
+  };
+
+  switch (event) {
+    case 'created':
+      return `When a ${entityLabel} is created`;
+    case 'updated':
+      return `When a ${entityLabel} is updated (any field)`;
+    case 'field_changes': {
+      const wf = trigger.params?.watch_field as string;
+      if (!wf) return `When a ${entityLabel} field changes`;
+      const fieldLabel = resolveFieldLabel(wf);
+      if (trigger.params?.watch_value !== undefined) {
+        return `When a ${entityLabel}'s ${fieldLabel} changes to "${String(trigger.params.watch_value)}"`;
+      }
+      return `When a ${entityLabel}'s ${fieldLabel} changes`;
+    }
+    case 'stage_changed': {
       const from = (trigger.params?.from_stage as string) || '*';
       const to = (trigger.params?.to_stage as string) || '?';
-      const fromLabel = from === '*' ? 'any stage' : from;
-      return `When a Deal changes stage from ${fromLabel} to ${to}`;
+      return `When a ${entityLabel} changes stage from ${from === '*' ? 'any stage' : from} to ${to}`;
     }
-    case 'contact:no_activity':
-    case 'deal:no_activity': {
+    case 'no_activity': {
       const days = (trigger.params?.days as number) || 7;
       return `When a ${entityLabel} has no activity for ${days} days`;
     }
-    case 'webhook:receives_data': {
+    case 'receives_data': {
       const src = (trigger.params?.source as string) || 'custom';
-      return `When a Webhook receives data from ${src}`;
+      return `When a ${entityLabel} receives data from ${src}`;
     }
     default:
       return `Trigger configured`;
