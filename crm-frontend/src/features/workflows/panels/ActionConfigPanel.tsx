@@ -131,36 +131,149 @@ const TaskParams: React.FC<ParamProps> = ({ action, setParam }) => {
   );
 };
 
-const AssignParams: React.FC<ParamProps> = ({ action, setParam }) => (
-  <div className="space-y-3">
-    <div>
-      <label className="block text-sm text-gray-400 mb-1">Entity</label>
-      <select
-        value={String(action.params.entity || 'contact')}
-        onChange={(e) => setParam('entity', e.target.value)}
-        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none"
-      >
-        <option value="contact">Contact</option>
-        <option value="deal">Deal</option>
-      </select>
+const AssignParams: React.FC<ParamProps> = ({ action, setParam }) => {
+  const schema = useBuilderStore((s) => s.schema);
+  const updateAction = useBuilderStore((s) => s.updateAction);
+  const users = schema?.users || [];
+
+  // pool is stored as string[] of UUIDs
+  const pool: string[] = Array.isArray(action.params.pool) ? action.params.pool as string[] : [];
+
+  const togglePoolUser = (userId: string) => {
+    const next = pool.includes(userId)
+      ? pool.filter((id) => id !== userId)
+      : [...pool, userId];
+    // Use updateAction directly so we replace the full array (setParam merges shallowly)
+    updateAction(action.id, { params: { pool: next } });
+  };
+
+  const strategy = String(action.params.strategy || 'round_robin');
+
+  /** Migrate user data across strategy switches so selections aren't lost */
+  const handleStrategyChange = (nextStrategy: string) => {
+    const prevStrategy = strategy;
+    if (nextStrategy === prevStrategy) return;
+
+    const patch: Record<string, unknown> = { strategy: nextStrategy };
+
+    // specific → round_robin: seed pool with the single user_id
+    if (prevStrategy === 'specific' && nextStrategy === 'round_robin') {
+      const uid = String(action.params.user_id || '');
+      if (uid && users.some((u) => u.id === uid)) {
+        patch.pool = [uid];
+      }
+    }
+
+    // round_robin → specific: take first pool member as user_id
+    if (prevStrategy === 'round_robin' && nextStrategy === 'specific') {
+      if (pool.length > 0) {
+        patch.user_id = pool[0];
+      }
+    }
+
+    updateAction(action.id, { params: patch });
+  };
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <label className="block text-sm text-gray-400 mb-1">Entity</label>
+        <select
+          value={String(action.params.entity || 'contact')}
+          onChange={(e) => setParam('entity', e.target.value)}
+          className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none"
+        >
+          <option value="contact">Contact</option>
+          <option value="deal">Deal</option>
+        </select>
+      </div>
+      <div>
+        <label className="block text-sm text-gray-400 mb-1">Strategy</label>
+        <select
+          value={strategy}
+          onChange={(e) => handleStrategyChange(e.target.value)}
+          className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none"
+        >
+          <option value="specific">Specific User</option>
+          <option value="round_robin">Round Robin</option>
+          <option value="least_loaded">Least Loaded</option>
+        </select>
+      </div>
+
+      {/* Specific → single user dropdown */}
+      {strategy === 'specific' && (
+        <div>
+          <label className="block text-sm text-gray-400 mb-1">User</label>
+          <select
+            value={users.some((u) => u.id === String(action.params.user_id || '')) ? String(action.params.user_id) : ''}
+            onChange={(e) => setParam('user_id', e.target.value || '')}
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none"
+          >
+            <option value="">Select a user…</option>
+            {users.map((u) => (
+              <option key={u.id} value={u.id}>{u.name} ({u.email})</option>
+            ))}
+          </select>
+          <p className="text-xs text-gray-500 mt-1">Always assign to this user.</p>
+        </div>
+      )}
+
+      {/* Round Robin → multi-user pool picker */}
+      {strategy === 'round_robin' && (
+        <div>
+          <label className="block text-sm text-gray-400 mb-1">
+            User Pool{' '}
+            <span className="text-gray-600">({pool.length} selected)</span>
+          </label>
+          <div className="max-h-48 overflow-y-auto rounded-lg border border-gray-700 bg-gray-800 divide-y divide-gray-700/50">
+            {users.length === 0 ? (
+              <p className="px-3 py-2 text-xs text-gray-500 italic">No users available</p>
+            ) : (
+              users.map((u) => {
+                const checked = pool.includes(u.id);
+                return (
+                  <label
+                    key={u.id}
+                    className={`flex items-center gap-3 px-3 py-2 cursor-pointer transition-colors ${
+                      checked ? 'bg-emerald-500/10' : 'hover:bg-gray-700/50'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => togglePoolUser(u.id)}
+                      className="rounded border-gray-600 bg-gray-900 text-emerald-500 focus:ring-emerald-500 focus:ring-offset-0 h-4 w-4"
+                    />
+                    <div className="flex flex-col min-w-0">
+                      <span className="text-sm text-white truncate">{u.name}</span>
+                      <span className="text-xs text-gray-500 truncate">{u.email}</span>
+                    </div>
+                  </label>
+                );
+              })
+            )}
+          </div>
+          <p className="text-xs text-gray-500 mt-1">
+            Distributes evenly across selected users by existing assignment count.
+          </p>
+          {pool.length === 0 && (
+            <p className="text-xs text-amber-400 mt-1">⚠ Select at least one user for round robin.</p>
+          )}
+        </div>
+      )}
+
+      {/* Least Loaded → no picker needed */}
+      {strategy === 'least_loaded' && (
+        <div className="rounded-lg bg-gray-800/50 border border-gray-700 px-3 py-2">
+          <p className="text-xs text-gray-400">
+            Automatically assigns to the team member with the fewest{' '}
+            {String(action.params.entity || 'contact')}s in your org.
+          </p>
+        </div>
+      )}
     </div>
-    <div>
-      <label className="block text-sm text-gray-400 mb-1">Strategy</label>
-      <select
-        value={String(action.params.strategy || 'round_robin')}
-        onChange={(e) => setParam('strategy', e.target.value)}
-        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none"
-      >
-        <option value="specific">Specific User</option>
-        <option value="round_robin">Round Robin</option>
-        <option value="least_loaded">Least Loaded</option>
-      </select>
-    </div>
-    {action.params.strategy === 'specific' && (
-      <Field label="User ID" value={action.params.user_id} onChange={(v) => setParam('user_id', v)} placeholder="UUID" />
-    )}
-  </div>
-);
+  );
+};
 
 const WebhookParams: React.FC<ParamProps> = ({ action, setParam }) => (
   <div className="space-y-3">

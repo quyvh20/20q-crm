@@ -163,22 +163,36 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
     const templateRegex = /\{\{.+?\}\}/;
     for (let i = 0; i < state.actions.length; i++) {
       const action = state.actions[i];
-      if (action.type !== 'send_email') continue;
       const key = `actions.${i}`;
 
-      // Validate "to"
-      const to = String(action.params.to || '').trim();
-      if (to && !emailRegex.test(to) && !templateRegex.test(to)) {
-        errors[`${key}.params.to`] = ['Must be a valid email address or {{template}}'];
+      if (action.type === 'send_email') {
+        // Validate "to"
+        const to = String(action.params.to || '').trim();
+        if (to && !emailRegex.test(to) && !templateRegex.test(to)) {
+          errors[`${key}.params.to`] = ['Must be a valid email address or {{template}}'];
+        }
+
+        // Validate "cc" — comma-separated, each part must be email or template
+        const cc = String(action.params.cc || '').trim();
+        if (cc) {
+          const parts = cc.split(',').map((p: string) => p.trim()).filter(Boolean);
+          const invalid = parts.filter((p: string) => !emailRegex.test(p) && !templateRegex.test(p));
+          if (invalid.length > 0) {
+            errors[`${key}.params.cc`] = [`Invalid CC address: ${invalid.join(', ')}`];
+          }
+        }
       }
 
-      // Validate "cc" — comma-separated, each part must be email or template
-      const cc = String(action.params.cc || '').trim();
-      if (cc) {
-        const parts = cc.split(',').map((p: string) => p.trim()).filter(Boolean);
-        const invalid = parts.filter((p: string) => !emailRegex.test(p) && !templateRegex.test(p));
-        if (invalid.length > 0) {
-          errors[`${key}.params.cc`] = [`Invalid CC address: ${invalid.join(', ')}`];
+      if (action.type === 'assign_user') {
+        const strategy = String(action.params.strategy || '');
+        if (strategy === 'specific' && !action.params.user_id) {
+          errors[`${key}.params.user_id`] = ['Select a user to assign'];
+        }
+        if (strategy === 'round_robin') {
+          const pool = Array.isArray(action.params.pool) ? action.params.pool : [];
+          if (pool.length === 0) {
+            errors[`${key}.params.pool`] = ['Select at least one user for round robin pool'];
+          }
         }
       }
     }
