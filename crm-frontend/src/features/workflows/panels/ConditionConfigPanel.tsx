@@ -40,7 +40,7 @@ function deriveObjectSlug(triggerType: string): string {
 }
 
 export const ConditionConfigPanel: React.FC = () => {
-  const { trigger, conditions, setConditions, schema, schemaLoading, schemaError, invalidateSchema, errors } = useBuilderStore();
+  const { trigger, conditions, setConditions, schema, schemaLoading, schemaError, invalidateSchema, errors, fetchObjectFields } = useBuilderStore();
 
   // Derive firesOn + object from current trigger
   const firesOn = useMemo<FiresOn>(() => {
@@ -145,9 +145,15 @@ export const ConditionConfigPanel: React.FC = () => {
       } else {
         updateRule(index, { field: path, value: null });
       }
+
+      // Edge case 4: refetch fields for this object to get fresh picklist values
+      // Don't trust cached picklist values — they may have changed on the backend
+      if (objectSlug) {
+        fetchObjectFields(objectSlug, true);
+      }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [group.rules, scopedFields, firesOn],
+    [group.rules, scopedFields, firesOn, objectSlug],
   );
 
   // --- Build live preview as rich JSX ---
@@ -275,6 +281,23 @@ export const ConditionConfigPanel: React.FC = () => {
     return { previewNodes: nodes, isIncomplete: incomplete };
   }, [trigger, group, objectLabel, firesOn, scopedFields]);
 
+  // Edge case 2: object has no fields user can read
+  const hasNoFields = objectSlug && !schemaLoading && !schemaError && scopedFields.length === 0;
+
+  // Edge case 3: detect orphaned fields (fields in condition rules that are no longer in schema)
+  const orphanedFieldIndices = useMemo(() => {
+    if (!scopedFields.length || !conditions) return new Set<number>();
+    const validPaths = new Set(scopedFields.map((f) => f.path));
+    const orphans = new Set<number>();
+    for (let i = 0; i < group.rules.length; i++) {
+      const field = group.rules[i].field;
+      if (field && !validPaths.has(field)) {
+        orphans.add(i);
+      }
+    }
+    return orphans;
+  }, [scopedFields, conditions, group.rules]);
+
   // No source object selected
   if (!objectSlug) {
     return (
@@ -289,6 +312,16 @@ export const ConditionConfigPanel: React.FC = () => {
     <div className="space-y-4">
       <h3 className="text-lg font-semibold text-white">Conditions</h3>
       <p className="text-xs text-gray-400">Optional — filter when actions should run.</p>
+
+      {/* Edge case 2: no readable fields */}
+      {hasNoFields && (
+        <div className="p-4 rounded-xl border border-dashed border-gray-700 bg-gray-800/20 text-center space-y-2">
+          <p className="text-sm text-gray-400">No fields available for conditions</p>
+          <p className="text-xs text-gray-500">
+            The selected object has no fields you can read. Conditions are disabled until the object has accessible fields.
+          </p>
+        </div>
+      )}
 
       {/* Schema error banner */}
       {schemaError && (
@@ -313,6 +346,7 @@ export const ConditionConfigPanel: React.FC = () => {
           const dualValue = isDualValueOperator(currentOp);
           const resolvedField = rule.field ? findFieldInSchema(schema, rule.field) : null;
           const ruleValueError = errors[`conditions.rules.${idx}.value`]?.[0];
+          const isOrphaned = orphanedFieldIndices.has(idx);
 
           return (
             <React.Fragment key={idx}>
@@ -333,10 +367,18 @@ export const ConditionConfigPanel: React.FC = () => {
               )}
 
               <div className={`group/rule rounded-xl border bg-gray-900/50 p-3 space-y-2 transition-colors ${
-                ruleValueError
+                isOrphaned
+                  ? 'border-amber-500/50 hover:border-amber-500/70'
+                  : ruleValueError
                   ? 'border-red-500/50 hover:border-red-500/70'
                   : 'border-gray-800 hover:border-gray-700'
               }`}>
+                {/* Edge case 3: orphaned field warning */}
+                {isOrphaned && (
+                  <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-400">
+                    ⚠ Field "{rule.field}" is no longer accessible. Select a different field or remove this condition.
+                  </div>
+                )}
                 {/* Inline toast: operator was auto-reset */}
                 {resetNotice === idx && (
                   <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-400 animate-pulse">
@@ -478,7 +520,7 @@ export const ConditionConfigPanel: React.FC = () => {
       {/* Add rule button */}
       <button
         onClick={addRule}
-        disabled={schemaLoading || !!schemaError || group.rules.length >= MAX_CONDITIONS}
+        disabled={schemaLoading || !!schemaError || hasNoFields || group.rules.length >= MAX_CONDITIONS}
         className="w-full py-2 border border-dashed border-gray-700 rounded-lg text-sm text-gray-400 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {schemaLoading

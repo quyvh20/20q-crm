@@ -122,10 +122,37 @@ export const TriggerConfigPanel: React.FC = () => {
   const objectError = errors['trigger.object']?.[0];
   const firesOnError = errors['trigger.firesOn']?.[0];
 
+  // Edge case: no objects with read access
+  const hasNoObjects = entityList.length === 0;
+
+  // Edge case: selected object no longer in entity list (permission downgrade)
+  const objectOrphaned = object && !entityList.some((e) => e.key === object);
+
   return (
     <div className="space-y-4">
       <h3 className="text-lg font-semibold text-white">Source</h3>
       <p className="text-xs text-gray-400 -mt-2">Choose which object triggers this workflow.</p>
+
+      {/* Empty state: no readable objects */}
+      {hasNoObjects && (
+        <div className="p-4 rounded-xl border border-dashed border-gray-700 bg-gray-800/20 text-center space-y-2">
+          <p className="text-sm text-gray-400">No objects available</p>
+          <p className="text-xs text-gray-500">You don't have read access to any objects. Contact your admin to get access.</p>
+        </div>
+      )}
+
+      {/* Permission downgrade warning */}
+      {objectOrphaned && (
+        <div className="flex items-start gap-2 p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30">
+          <span className="text-amber-400 text-sm mt-0.5">⚠</span>
+          <div>
+            <p className="text-xs text-amber-400 font-medium">Object no longer accessible</p>
+            <p className="text-[11px] text-amber-400/70 mt-0.5">
+              The object "{object}" is no longer in your readable objects. Select a different object or contact your admin.
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="p-3 rounded-xl border border-gray-700/50 bg-gray-800/30 space-y-3">
         {/* Object dropdown */}
@@ -135,10 +162,15 @@ export const TriggerConfigPanel: React.FC = () => {
             <select
               value={object || ''}
               onChange={(e) => handleObjectChange(e.target.value)}
-              className={`${selectClass} w-full ${objectError ? '!border-red-500' : ''}`}
+              className={`${selectClass} w-full ${objectError || objectOrphaned ? '!border-red-500' : ''}`}
               style={{ paddingRight: '2rem' }}
+              disabled={hasNoObjects}
             >
               <option value="" disabled>Select object…</option>
+              {/* Show orphaned object as a disabled option so UI doesn't break */}
+              {objectOrphaned && (
+                <option value={object} disabled>⚠ {object} (no longer accessible)</option>
+              )}
               {entityList.map((e) => (
                 <option key={e.key} value={e.key}>{e.icon} {e.label}</option>
               ))}

@@ -217,8 +217,25 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       }
 
       // Validate condition rules: block save if field+operator set but value missing
+      // Also flag orphaned fields (edge case 3: permission downgrade)
+      const slug = state.trigger ? extractObjectSlug(state.trigger.type) : '';
+      const allEntities = state.schema
+        ? [...state.schema.entities, ...(state.schema.custom_objects || [])]
+        : [];
+      const entity = allEntities.find((e) => e.key === slug);
+      const validFieldPaths = new Set(entity?.fields.map((f) => f.path) || []);
+
       for (let i = 0; i < state.conditions.rules.length; i++) {
         const rule = state.conditions.rules[i];
+
+        // Orphaned field check
+        if (rule.field && validFieldPaths.size > 0 && !validFieldPaths.has(rule.field)) {
+          errors[`conditions.rules.${i}.field`] = [`Field "${rule.field}" is no longer accessible`];
+          if (!errors.conditions) errors.conditions = [];
+          errors.conditions.push(`Rule ${i + 1}: field no longer accessible`);
+        }
+
+        // Missing value check
         if (rule.field && rule.operator && !isNoValueOperator(rule.operator)) {
           const isEmpty = rule.value === null || rule.value === undefined || rule.value === '';
           if (isEmpty) {
@@ -226,6 +243,20 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
             if (!errors.conditions) errors.conditions = [];
             errors.conditions.push(`Rule ${i + 1}: value is required`);
           }
+        }
+      }
+    }
+
+    // Edge case 3: trigger object permission downgrade
+    if (state.trigger && state.schema) {
+      const slug = extractObjectSlug(state.trigger.type);
+      if (slug && slug !== 'webhook') {
+        const allEntities = [...state.schema.entities, ...(state.schema.custom_objects || [])];
+        const objectExists = allEntities.some((e) => e.key === slug);
+        if (!objectExists) {
+          errors['trigger.object'] = [`Object "${slug}" is no longer accessible`];
+          if (!errors.trigger) errors.trigger = [];
+          errors.trigger.push('Source object is no longer accessible');
         }
       }
     }
