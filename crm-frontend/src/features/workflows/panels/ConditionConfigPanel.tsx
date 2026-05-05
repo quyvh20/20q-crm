@@ -150,46 +150,129 @@ export const ConditionConfigPanel: React.FC = () => {
     [group.rules, scopedFields, firesOn],
   );
 
-  // --- Build live preview sentence ---
-  const previewSentence = useMemo(() => {
-    if (!trigger || group.rules.length === 0) return '';
+  // --- Build live preview as rich JSX ---
+  const { previewNodes, isIncomplete } = useMemo(() => {
+    if (!trigger || group.rules.length === 0) return { previewNodes: null, isIncomplete: false };
+
     const firesOnLabel = {
       created: 'created', updated: 'updated', deleted: 'deleted', any: 'created or updated',
     }[firesOn] || firesOn;
 
-    let sentence = `When a ${objectLabel} is ${firesOnLabel}`;
-    const parts: string[] = [];
+    // Use "an" for vowel-start objects
+    const article = /^[aeiou]/i.test(objectLabel) ? 'an' : 'a';
 
+    const nodes: React.ReactNode[] = [];
+    let incomplete = false;
+
+    // Header: "When a {Object} is {event}"
+    nodes.push(
+      <React.Fragment key="header">
+        When {article}{' '}
+        <span className="font-semibold text-purple-300">{objectLabel}</span>
+        {' '}is{' '}
+        <span className="font-semibold text-purple-300">{firesOnLabel}</span>
+      </React.Fragment>
+    );
+
+    // Condition clauses
+    let hasConditions = false;
     for (let i = 0; i < group.rules.length; i++) {
       const rule = group.rules[i];
-      if (!rule.field) continue;
+      if (!rule.field && !rule.operator) continue;
 
       const fieldDef = scopedFields.find((f) => f.path === rule.field);
       const fieldLabel = fieldDef?.label || rule.field?.split('.').pop() || '…';
       const op = rule.operator || 'eq';
-      const opDef = getOperatorsForType(getFieldType(rule.field), firesOn).find((o) => o.value === op);
+      const opDef = getOperatorsForType(getFieldType(rule.field || ''), firesOn).find((o) => o.value === op);
       const opLabel = opDef?.label || op;
+      const noVal = isNoValueOperator(op);
+      const dualVal = isDualValueOperator(op);
 
-      let part = `${fieldLabel} ${opLabel}`;
-      if (!isNoValueOperator(op) && rule.value !== null && rule.value !== undefined && rule.value !== '') {
-        if (isDualValueOperator(op) && Array.isArray(rule.value)) {
-          part += ` ${rule.value[0] ?? '…'} to ${rule.value[1] ?? '…'}`;
+      // Join connector
+      if (!hasConditions) {
+        nodes.push(<span key={`join-${i}`}>, and </span>);
+      } else {
+        const joinOp = rule.op || group.op;
+        nodes.push(
+          <span key={`join-${i}`} className="font-bold text-purple-400"> {joinOp} </span>
+        );
+      }
+      hasConditions = true;
+
+      // Field name
+      nodes.push(
+        <span key={`field-${i}`} className="font-medium text-purple-200">{fieldLabel}</span>
+      );
+      nodes.push(<span key={`sp1-${i}`}> </span>);
+
+      // Operator
+      nodes.push(
+        <span key={`op-${i}`} className="text-purple-300/80">{opLabel}</span>
+      );
+
+      // Value rendering
+      if (noVal) {
+        // No value needed — sentence is complete as-is
+      } else if (op === 'in_last_days') {
+        // Special: "in last N days"
+        const val = rule.value;
+        if (val !== null && val !== undefined && val !== '') {
+          nodes.push(
+            <span key={`val-${i}`}>
+              {' '}<span className="text-purple-200 font-medium">'{String(val)}'</span> days
+            </span>
+          );
         } else {
-          part += ` "${String(rule.value)}"`;
+          incomplete = true;
+          nodes.push(
+            <span key={`val-${i}`} className="text-gray-500 italic"> {'{N}'} days</span>
+          );
+        }
+      } else if (dualVal) {
+        // Dual value: "from X to Y" or "X to Y"
+        const arr = Array.isArray(rule.value) ? rule.value : ['', ''];
+        const v0 = arr[0] !== '' && arr[0] != null ? arr[0] : null;
+        const v1 = arr[1] !== '' && arr[1] != null ? arr[1] : null;
+
+        if (v0 == null || v1 == null) incomplete = true;
+
+        nodes.push(
+          <span key={`val-${i}`}>
+            {' '}
+            {v0 != null
+              ? <span className="text-purple-200 font-medium">'{String(v0)}'</span>
+              : <span className="text-gray-500 italic">{'{value}'}</span>
+            }
+            <span className="text-purple-300/60"> to </span>
+            {v1 != null
+              ? <span className="text-purple-200 font-medium">'{String(v1)}'</span>
+              : <span className="text-gray-500 italic">{'{value}'}</span>
+            }
+          </span>
+        );
+      } else {
+        // Standard single value
+        const val = rule.value;
+        const hasVal = val !== null && val !== undefined && val !== '';
+
+        if (hasVal) {
+          // Format arrays as comma-separated
+          const display = Array.isArray(val) ? val.join(', ') : String(val);
+          nodes.push(
+            <span key={`val-${i}`}>
+              {' '}<span className="text-purple-200 font-medium">'{display}'</span>
+            </span>
+          );
+        } else {
+          incomplete = true;
+          nodes.push(
+            <span key={`val-${i}`} className="text-gray-500 italic"> {'{value}'}</span>
+          );
         }
       }
-
-      if (i > 0) {
-        const joinOp = group.rules[i].op || group.op;
-        parts.push(joinOp);
-      }
-      parts.push(part);
     }
 
-    if (parts.length > 0) {
-      sentence += ', and ' + parts.join(' ');
-    }
-    return sentence;
+    return { previewNodes: nodes, isIncomplete: incomplete };
   }, [trigger, group, objectLabel, firesOn, scopedFields]);
 
   // No source object selected
@@ -405,13 +488,23 @@ export const ConditionConfigPanel: React.FC = () => {
         </button>
       )}
 
-      {/* Live preview */}
-      {previewSentence && (
-        <div className="px-3 py-2 rounded-lg bg-purple-500/5 border border-purple-500/10">
-          <p className="text-xs text-purple-300/70">
-            <span className="text-purple-400 font-medium">Preview: </span>
-            {previewSentence}
+      {/* Live preview — rich JSX with muted placeholders for missing values */}
+      {previewNodes && (
+        <div className={`px-3 py-2.5 rounded-lg border transition-colors ${
+          isIncomplete
+            ? 'bg-gray-800/30 border-gray-700/50'
+            : 'bg-purple-500/5 border-purple-500/10'
+        }`}>
+          <p className={`text-xs leading-relaxed ${
+            isIncomplete ? 'text-gray-400' : 'text-purple-300/80'
+          }`}>
+            {previewNodes}
           </p>
+          {isIncomplete && (
+            <p className="text-[10px] text-gray-500 mt-1 italic">
+              ⚠ Fill in missing values to complete this rule.
+            </p>
+          )}
         </div>
       )}
     </div>
