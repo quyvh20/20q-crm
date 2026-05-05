@@ -61,7 +61,7 @@ export function findFieldInSchema(
 ): SchemaField | null {
   if (!schema || !path) return null;
 
-  for (const entity of [...schema.entities, ...schema.custom_objects]) {
+  for (const entity of [...schema.entities, ...(schema.custom_objects || [])]) {
     for (const field of entity.fields) {
       if (field.path === path) return field;
     }
