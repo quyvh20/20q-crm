@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { TriggerSpec, ConditionGroup, ActionSpec } from './types';
 import { workflowSchema, validateActionIds, validateConditionDepth } from './schemas';
 import { createWorkflow, updateWorkflow, getWorkflow, getWorkflowSchema, type WorkflowSchema } from './api';
+import { isNoValueOperator } from './useSchema';
 
 interface BuilderState {
   workflowId: string | null;
@@ -51,6 +52,17 @@ export function generateActionId(): string {
   return `action_${Date.now()}_${++idCounter}`;
 }
 
+/** Extract object slug from a trigger type string (e.g. 'contact_created' → 'contact') */
+function extractObjectSlug(type: string): string {
+  if (type === 'deal_stage_changed') return 'deal';
+  if (type === 'no_activity_days') return 'contact';
+  if (type === 'webhook_inbound') return 'webhook';
+  for (const suffix of ['_created', '_updated', '_deleted', '_any']) {
+    if (type.endsWith(suffix)) return type.slice(0, -suffix.length);
+  }
+  return '';
+}
+
 const initialState = {
   workflowId: null as string | null,
   name: '',
@@ -77,7 +89,21 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
   setName: (name) => set({ name, isDirty: true }),
   setDescription: (description) => set({ description, isDirty: true }),
 
-  setTrigger: (trigger) => set({ trigger, isDirty: true }),
+  setTrigger: (trigger) => {
+    const prev = get().trigger;
+    const updates: Partial<BuilderState> = { trigger, isDirty: true };
+
+    // If the source object changed, clear stale condition rules (field paths no longer valid)
+    if (prev) {
+      const prevSlug = extractObjectSlug(prev.type);
+      const newSlug = extractObjectSlug(trigger.type);
+      if (prevSlug && newSlug && prevSlug !== newSlug) {
+        updates.conditions = null;
+      }
+    }
+
+    set(updates);
+  },
 
   setConditions: (conditions) => set({ conditions, isDirty: true }),
 
@@ -155,6 +181,19 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       const depthErrors = validateConditionDepth(state.conditions);
       if (depthErrors.length) {
         errors.conditions = [...(errors.conditions || []), ...depthErrors];
+      }
+
+      // Validate condition rules: block save if field+operator set but value missing
+      for (let i = 0; i < state.conditions.rules.length; i++) {
+        const rule = state.conditions.rules[i];
+        if (rule.field && rule.operator && !isNoValueOperator(rule.operator)) {
+          const isEmpty = rule.value === null || rule.value === undefined || rule.value === '';
+          if (isEmpty) {
+            errors[`conditions.rules.${i}.value`] = ['Value is required for this operator'];
+            if (!errors.conditions) errors.conditions = [];
+            errors.conditions.push(`Rule ${i + 1}: value is required`);
+          }
+        }
       }
     }
 
