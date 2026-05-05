@@ -376,6 +376,41 @@ func validateActionParams(action ActionSpec, path string, result *ValidationResu
 				})
 			}
 		}
+	case ActionUpdateContact:
+		if _, ok := action.Params["field"]; !ok {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   path + ".params.field",
+				Message: "update_contact requires 'field' parameter",
+			})
+		}
+		if op, ok := action.Params["operation"]; !ok {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   path + ".params.operation",
+				Message: "update_contact requires 'operation' parameter",
+			})
+		} else {
+			opStr, _ := op.(string)
+			validOps := map[string]bool{"set": true, "add": true, "remove": true, "increment": true, "decrement": true, "clear": true}
+			if !validOps[opStr] {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   path + ".params.operation",
+					Message: fmt.Sprintf("invalid operation: '%s'. Valid: set, add, remove, increment, decrement, clear", opStr),
+				})
+			}
+			// "clear" doesn't need a value; all others do
+			if opStr != "clear" {
+				if _, hasValue := action.Params["value"]; !hasValue {
+					result.Valid = false
+					result.Errors = append(result.Errors, ValidationError{
+						Field:   path + ".params.value",
+						Message: fmt.Sprintf("update_contact with operation '%s' requires 'value' parameter", opStr),
+					})
+				}
+			}
+		}
 	}
 
 	// Check for template references (warning, not block)

@@ -2,6 +2,10 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { ACTION_LABELS, ACTION_ICONS, type ActionSpec } from '../types';
 import { useBuilderStore } from '../store';
 import { TemplateInput } from './inputs';
+import { FieldPicker, type FieldMeta } from './FieldPicker';
+import { SmartValueInput } from './SmartValueInput';
+import type { SchemaField } from '../api';
+import { findFieldInSchema } from '../useSchema';
 
 export const ActionConfigPanel: React.FC = () => {
   const { selectedNodeId, actions, updateAction } = useBuilderStore();
@@ -28,6 +32,7 @@ export const ActionConfigPanel: React.FC = () => {
       {action.type === 'assign_user' && <AssignParams action={action} setParam={setParam} />}
       {action.type === 'send_webhook' && <WebhookParams action={action} setParam={setParam} />}
       {action.type === 'delay' && <DelayParams action={action} setParam={setParam} />}
+      {action.type === 'update_contact' && <UpdateContactParams action={action} setParam={setParam} />}
 
       <TemplateHelp />
     </div>
@@ -269,6 +274,178 @@ const AssignParams: React.FC<ParamProps> = ({ action, setParam }) => {
             Automatically assigns to the team member with the fewest{' '}
             {String(action.params.entity || 'contact')}s in your org.
           </p>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// --- Update Contact params ---
+
+const UPDATE_OPERATIONS = [
+  { value: 'set',       label: 'Set',       icon: '✏️', description: 'Set field to a specific value' },
+  { value: 'add',       label: 'Add',       icon: '➕', description: 'Add items to an array field (tags)' },
+  { value: 'remove',    label: 'Remove',    icon: '➖', description: 'Remove items from an array field (tags)' },
+  { value: 'increment', label: 'Increment', icon: '⬆️', description: 'Increase a number field by a value' },
+  { value: 'decrement', label: 'Decrement', icon: '⬇️', description: 'Decrease a number field by a value' },
+  { value: 'clear',     label: 'Clear',     icon: '🗑️', description: 'Remove the field value entirely' },
+] as const;
+
+type UpdateOperation = typeof UPDATE_OPERATIONS[number]['value'];
+
+/** Which operations are valid for each field type */
+function getOperationsForFieldType(fieldType: string, pickerType?: string): UpdateOperation[] {
+  if (pickerType === 'tag') return ['add', 'remove', 'set', 'clear'];
+  if (fieldType === 'array') return ['add', 'remove', 'set', 'clear'];
+  if (fieldType === 'number') return ['set', 'increment', 'decrement', 'clear'];
+  // string, boolean, select, date, user, stage
+  return ['set', 'clear'];
+}
+
+const UpdateContactParams: React.FC<ParamProps> = ({ action, setParam }) => {
+  const schema = useBuilderStore((s) => s.schema);
+  const updateAction = useBuilderStore((s) => s.updateAction);
+
+  const fieldPath = String(action.params.field || '');
+  const operation = String(action.params.operation || 'set') as UpdateOperation;
+
+  // Resolve the selected field from schema
+  const selectedField: SchemaField | null = useMemo(
+    () => findFieldInSchema(schema, fieldPath),
+    [schema, fieldPath],
+  );
+
+  // Get valid operations for the current field
+  const validOps = useMemo(
+    () => selectedField
+      ? getOperationsForFieldType(selectedField.type, selectedField.picker_type)
+      : (['set', 'clear'] as UpdateOperation[]),
+    [selectedField],
+  );
+
+  // When field changes, auto-reset operation if it's no longer valid
+  const handleFieldChange = (path: string, _meta: FieldMeta) => {
+    const field = findFieldInSchema(schema, path);
+    const newValidOps = field
+      ? getOperationsForFieldType(field.type, field.picker_type)
+      : ['set', 'clear'];
+
+    const patch: Record<string, unknown> = { field: path, value: undefined };
+
+    // If current operation is invalid for the new field, reset to first valid
+    if (!newValidOps.includes(operation)) {
+      patch.operation = newValidOps[0];
+    }
+
+    updateAction(action.id, { params: patch });
+  };
+
+  const handleOperationChange = (op: string) => {
+    const patch: Record<string, unknown> = { operation: op };
+    // Clear value when switching to 'clear'
+    if (op === 'clear') {
+      patch.value = undefined;
+    }
+    updateAction(action.id, { params: patch });
+  };
+
+  // Determine if the value input needs the SmartValueInput or a simple number input
+  const needsValue = operation !== 'clear';
+  const isNumericOp = operation === 'increment' || operation === 'decrement';
+
+  return (
+    <div className="space-y-3">
+      {/* Field picker — contact fields only */}
+      <div>
+        <label className="block text-sm text-gray-400 mb-1">Field</label>
+        <FieldPicker
+          value={fieldPath || null}
+          onChange={handleFieldChange}
+          entities={['contact']}
+          placeholder="Select a contact field…"
+        />
+      </div>
+
+      {/* Operation picker */}
+      {fieldPath && (
+        <div>
+          <label className="block text-sm text-gray-400 mb-1">Operation</label>
+          <div className="grid grid-cols-3 gap-1.5">
+            {UPDATE_OPERATIONS.filter((op) => validOps.includes(op.value)).map((op) => (
+              <button
+                key={op.value}
+                type="button"
+                onClick={() => handleOperationChange(op.value)}
+                title={op.description}
+                className={`
+                  flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all
+                  ${operation === op.value
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm shadow-emerald-500/10'
+                    : 'bg-gray-800 text-gray-400 border border-gray-700 hover:text-white hover:border-gray-600'
+                  }
+                `}
+              >
+                <span>{op.icon}</span>
+                <span>{op.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Value input — adapts to field type */}
+      {fieldPath && needsValue && (
+        <div>
+          <label className="block text-sm text-gray-400 mb-1">
+            {isNumericOp ? `${operation === 'increment' ? 'Increase' : 'Decrease'} by` : 'Value'}
+          </label>
+          {isNumericOp ? (
+            <input
+              type="number"
+              min={1}
+              value={String(action.params.value ?? 1)}
+              onChange={(e) => {
+                const v = parseInt(e.target.value);
+                setParam('value', isNaN(v) ? 1 : v);
+              }}
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+            />
+          ) : selectedField ? (
+            <SmartValueInput
+              field={selectedField}
+              operator={operation === 'add' || operation === 'remove' ? 'contains' : 'eq'}
+              value={action.params.value}
+              onChange={(v) => setParam('value', v)}
+            />
+          ) : (
+            <input
+              type="text"
+              value={String(action.params.value || '')}
+              onChange={(e) => setParam('value', e.target.value)}
+              placeholder="Enter value…"
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none"
+            />
+          )}
+        </div>
+      )}
+
+      {/* Clear confirmation */}
+      {fieldPath && operation === 'clear' && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30">
+          <span className="text-sm">⚠️</span>
+          <span className="text-xs text-amber-400">
+            This will remove the value of <span className="font-medium text-amber-300">{selectedField?.label || fieldPath}</span> on the contact.
+          </span>
+        </div>
+      )}
+
+      {/* No field selected hint */}
+      {!fieldPath && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-800/50 border border-gray-700/50">
+          <span className="text-sm">💡</span>
+          <span className="text-xs text-gray-500">
+            Select a contact field above, then choose how to modify it.
+          </span>
         </div>
       )}
     </div>

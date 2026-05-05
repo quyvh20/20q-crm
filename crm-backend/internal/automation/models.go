@@ -152,11 +152,12 @@ const (
 
 // Valid action types
 const (
-	ActionSendEmail   = "send_email"
-	ActionCreateTask  = "create_task"
-	ActionAssignUser  = "assign_user"
-	ActionSendWebhook = "send_webhook"
-	ActionDelay       = "delay"
+	ActionSendEmail      = "send_email"
+	ActionCreateTask     = "create_task"
+	ActionAssignUser     = "assign_user"
+	ActionSendWebhook    = "send_webhook"
+	ActionDelay          = "delay"
+	ActionUpdateContact  = "update_contact"
 )
 
 // Run statuses
@@ -251,9 +252,10 @@ var ValidTriggerTypes = map[string]bool{
 
 // Valid action types set
 var ValidActionTypes = map[string]bool{
-	ActionSendEmail:   true,
-	ActionCreateTask:  true,
-	ActionAssignUser:  true,
-	ActionSendWebhook: true,
-	ActionDelay:       true,
+	ActionSendEmail:     true,
+	ActionCreateTask:    true,
+	ActionAssignUser:    true,
+	ActionSendWebhook:   true,
+	ActionDelay:         true,
+	ActionUpdateContact: true,
 }

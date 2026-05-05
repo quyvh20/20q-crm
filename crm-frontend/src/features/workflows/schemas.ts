@@ -6,7 +6,7 @@ import { z } from 'zod';
 
 const triggerTypes = ['contact_created', 'contact_updated', 'deal_stage_changed', 'no_activity_days', 'webhook_inbound'] as const;
 const groupOps = ['AND', 'OR'] as const;
-const actionTypes = ['send_email', 'create_task', 'assign_user', 'send_webhook', 'delay'] as const;
+const actionTypes = ['send_email', 'create_task', 'assign_user', 'send_webhook', 'delay', 'update_contact'] as const;
 
 export const triggerSpecSchema = z.object({
   type: z.enum(triggerTypes),

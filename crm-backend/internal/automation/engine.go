@@ -100,6 +100,9 @@ func (e *Engine) Start() {
 	if _, ok := e.executors[ActionDelay]; !ok {
 		e.executors[ActionDelay] = NewDelayExecutor()
 	}
+	if _, ok := e.executors[ActionUpdateContact]; !ok {
+		e.executors[ActionUpdateContact] = NewUpdateContactExecutor(e.db)
+	}
 
 	// Run migrations
 	if err := e.repo.AutoMigrate(); err != nil {

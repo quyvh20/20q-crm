@@ -204,6 +204,19 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
           errors[`${key}.params.duration_sec`] = ['Duration exceeds maximum of 30 days (2,592,000 seconds)'];
         }
       }
+
+      if (action.type === 'update_contact') {
+        if (!action.params.field) {
+          errors[`${key}.params.field`] = ['Select a contact field to update'];
+        }
+        const op = String(action.params.operation || '');
+        if (!op) {
+          errors[`${key}.params.operation`] = ['Select an operation'];
+        }
+        if (op && op !== 'clear' && (action.params.value === undefined || action.params.value === null || action.params.value === '')) {
+          errors[`${key}.params.value`] = ['Provide a value for this operation'];
+        }
+      }
     }
 
     set({ errors });
