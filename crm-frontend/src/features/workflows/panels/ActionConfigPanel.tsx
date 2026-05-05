@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { ACTION_LABELS, ACTION_ICONS, type ActionSpec } from '../types';
 import { useBuilderStore } from '../store';
 import { TemplateInput } from './inputs';
@@ -330,18 +330,36 @@ const DelayParams: React.FC<ParamProps> = ({ action, setParam }) => {
   const totalSec = Number(action.params.duration_sec) || 60;
   const decomposed = useMemo(() => decomposeSeconds(totalSec), [totalSec]);
 
+  // Local state lets user clear the field to type a new value without it snapping back to 1
+  const [inputValue, setInputValue] = useState(String(decomposed.value));
+
+  // Sync local input when the store value changes externally (load, unit switch)
+  useEffect(() => {
+    setInputValue(String(decomposed.value));
+  }, [decomposed.value]);
+
   const currentFactor = DELAY_UNITS.find((u) => u.value === decomposed.unit)!.factor;
 
   const handleValueChange = (raw: string) => {
-    const num = Math.max(1, parseInt(raw) || 1);
-    const newSec = num * currentFactor;
-    setParam('duration_sec', newSec);
+    setInputValue(raw); // always update the visible text immediately
+    const parsed = parseInt(raw);
+    if (!isNaN(parsed) && parsed > 0) {
+      setParam('duration_sec', parsed * currentFactor);
+    }
+  };
+
+  const handleBlur = () => {
+    // If the user left the field empty or invalid, restore the last valid value
+    const parsed = parseInt(inputValue);
+    if (isNaN(parsed) || parsed <= 0) {
+      setInputValue(String(decomposed.value));
+    }
   };
 
   const handleUnitChange = (unit: string) => {
     const factor = DELAY_UNITS.find((u) => u.value === unit)!.factor;
-    const newSec = decomposed.value * factor;
-    setParam('duration_sec', newSec);
+    const currentValue = parseInt(inputValue) || decomposed.value;
+    setParam('duration_sec', currentValue * factor);
   };
 
   const isOverMax = totalSec > MAX_DELAY_SEC;
@@ -356,8 +374,9 @@ const DelayParams: React.FC<ParamProps> = ({ action, setParam }) => {
         <input
           type="number"
           min={1}
-          value={decomposed.value}
+          value={inputValue}
           onChange={(e) => handleValueChange(e.target.value)}
+          onBlur={handleBlur}
           className={`flex-1 bg-gray-800 border rounded-lg px-3 py-2 text-sm text-white focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${
             isOverMax ? 'border-red-500 focus:border-red-500' : 'border-gray-700 focus:border-emerald-500'
           }`}
