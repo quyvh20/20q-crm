@@ -282,6 +282,9 @@ const AssignParams: React.FC<ParamProps> = ({ action, setParam }) => {
 
 // --- Update Contact params ---
 
+// Data contract: params.updates = [{ field, op, value }, ...]
+// Each FieldUpdate row lets user pick a contact field, an operation, and a value.
+
 const UPDATE_OPERATIONS = [
   { value: 'set',       label: 'Set',       icon: '✏️', description: 'Set field to a specific value' },
   { value: 'add',       label: 'Add',       icon: '➕', description: 'Add items to an array field (tags)' },
@@ -293,6 +296,12 @@ const UPDATE_OPERATIONS = [
 
 type UpdateOperation = typeof UPDATE_OPERATIONS[number]['value'];
 
+interface FieldUpdateEntry {
+  field: string;
+  op: UpdateOperation;
+  value?: unknown;
+}
+
 /** Which operations are valid for each field type */
 function getOperationsForFieldType(fieldType: string, pickerType?: string): UpdateOperation[] {
   if (pickerType === 'tag') return ['add', 'remove', 'set', 'clear'];
@@ -302,20 +311,105 @@ function getOperationsForFieldType(fieldType: string, pickerType?: string): Upda
   return ['set', 'clear'];
 }
 
-const UpdateContactParams: React.FC<ParamProps> = ({ action, setParam }) => {
+const UpdateContactParams: React.FC<ParamProps> = ({ action }) => {
   const schema = useBuilderStore((s) => s.schema);
   const updateAction = useBuilderStore((s) => s.updateAction);
 
-  const fieldPath = String(action.params.field || '');
-  const operation = String(action.params.operation || 'set') as UpdateOperation;
+  // Read updates array from params (or migrate from legacy flat format)
+  const updates: FieldUpdateEntry[] = useMemo(() => {
+    if (Array.isArray(action.params.updates)) {
+      return action.params.updates as FieldUpdateEntry[];
+    }
+    // Legacy migration: flat { field, operation, value } → updates[0]
+    if (action.params.field) {
+      return [{
+        field: String(action.params.field),
+        op: (String(action.params.operation || action.params.op || 'set')) as UpdateOperation,
+        value: action.params.value,
+      }];
+    }
+    return [];
+  }, [action.params]);
 
-  // Resolve the selected field from schema
+  const setUpdates = (newUpdates: FieldUpdateEntry[]) => {
+    // Emit the full updates array, clearing legacy keys
+    updateAction(action.id, {
+      params: {
+        updates: newUpdates,
+        // Clear legacy flat keys
+        field: undefined,
+        operation: undefined,
+        op: undefined,
+        value: undefined,
+      },
+    });
+  };
+
+  const patchUpdate = (idx: number, patch: Partial<FieldUpdateEntry>) => {
+    const next = [...updates];
+    next[idx] = { ...next[idx], ...patch };
+    setUpdates(next);
+  };
+
+  const addUpdate = () => {
+    setUpdates([...updates, { field: '', op: 'set' }]);
+  };
+
+  const removeUpdate = (idx: number) => {
+    setUpdates(updates.filter((_, i) => i !== idx));
+  };
+
+  return (
+    <div className="space-y-3">
+      {updates.map((upd, idx) => (
+        <UpdateRow
+          key={idx}
+          entry={upd}
+          index={idx}
+          schema={schema}
+          totalCount={updates.length}
+          onPatch={(patch) => patchUpdate(idx, patch)}
+          onRemove={() => removeUpdate(idx)}
+        />
+      ))}
+
+      {/* Add update button */}
+      <button
+        type="button"
+        onClick={addUpdate}
+        className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-dashed border-gray-700 text-xs text-gray-500 hover:border-emerald-500/50 hover:text-emerald-400 transition-all"
+      >
+        <span>➕</span>
+        <span>{updates.length === 0 ? 'Add a field update' : 'Add another field update'}</span>
+      </button>
+
+      {/* Empty state hint */}
+      {updates.length === 0 && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-800/50 border border-gray-700/50">
+          <span className="text-sm">💡</span>
+          <span className="text-xs text-gray-500">
+            Add one or more field updates. Each can set, add, remove, increment, decrement, or clear a contact field.
+          </span>
+        </div>
+      )}
+    </div>
+  );
+};
+
+/** Single field-update row within the UpdateContactParams component */
+const UpdateRow: React.FC<{
+  entry: FieldUpdateEntry;
+  index: number;
+  schema: ReturnType<typeof useBuilderStore>['schema'];
+  totalCount: number;
+  onPatch: (patch: Partial<FieldUpdateEntry>) => void;
+  onRemove: () => void;
+}> = ({ entry, index, schema, totalCount, onPatch, onRemove }) => {
   const selectedField: SchemaField | null = useMemo(
-    () => findFieldInSchema(schema, fieldPath),
-    [schema, fieldPath],
+    () => findFieldInSchema(schema, entry.field),
+    [schema, entry.field],
   );
 
-  // Get valid operations for the current field
   const validOps = useMemo(
     () => selectedField
       ? getOperationsForFieldType(selectedField.type, selectedField.picker_type)
@@ -323,128 +417,123 @@ const UpdateContactParams: React.FC<ParamProps> = ({ action, setParam }) => {
     [selectedField],
   );
 
-  // When field changes, auto-reset operation if it's no longer valid
   const handleFieldChange = (path: string, _meta: FieldMeta) => {
     const field = findFieldInSchema(schema, path);
     const newValidOps = field
       ? getOperationsForFieldType(field.type, field.picker_type)
       : ['set', 'clear'];
 
-    const patch: Record<string, unknown> = { field: path, value: undefined };
-
-    // If current operation is invalid for the new field, reset to first valid
-    if (!newValidOps.includes(operation)) {
-      patch.operation = newValidOps[0];
+    const patch: Partial<FieldUpdateEntry> = { field: path, value: undefined };
+    if (!newValidOps.includes(entry.op)) {
+      patch.op = newValidOps[0];
     }
-
-    updateAction(action.id, { params: patch });
+    onPatch(patch);
   };
 
-  const handleOperationChange = (op: string) => {
-    const patch: Record<string, unknown> = { operation: op };
-    // Clear value when switching to 'clear'
-    if (op === 'clear') {
-      patch.value = undefined;
-    }
-    updateAction(action.id, { params: patch });
+  const handleOpChange = (op: string) => {
+    const patch: Partial<FieldUpdateEntry> = { op: op as UpdateOperation };
+    if (op === 'clear') patch.value = undefined;
+    onPatch(patch);
   };
 
-  // Determine if the value input needs the SmartValueInput or a simple number input
-  const needsValue = operation !== 'clear';
-  const isNumericOp = operation === 'increment' || operation === 'decrement';
+  const needsValue = entry.op !== 'clear';
+  const isNumericOp = entry.op === 'increment' || entry.op === 'decrement';
 
   return (
-    <div className="space-y-3">
-      {/* Field picker — contact fields only */}
-      <div>
-        <label className="block text-sm text-gray-400 mb-1">Field</label>
-        <FieldPicker
-          value={fieldPath || null}
-          onChange={handleFieldChange}
-          entities={['contact']}
-          placeholder="Select a contact field…"
-        />
+    <div className="relative border border-gray-700/60 rounded-xl p-3 space-y-2.5 bg-gray-900/30">
+      {/* Row header */}
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] uppercase tracking-wider text-gray-600 font-medium">
+          Update {index + 1}
+        </span>
+        {totalCount > 1 && (
+          <button
+            type="button"
+            onClick={onRemove}
+            title="Remove this update"
+            className="text-gray-600 hover:text-red-400 transition-colors p-0.5"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        )}
       </div>
 
+      {/* Field picker — contact fields only */}
+      <FieldPicker
+        value={entry.field || null}
+        onChange={handleFieldChange}
+        entities={['contact']}
+        placeholder="Select a contact field…"
+      />
+
       {/* Operation picker */}
-      {fieldPath && (
-        <div>
-          <label className="block text-sm text-gray-400 mb-1">Operation</label>
-          <div className="grid grid-cols-3 gap-1.5">
-            {UPDATE_OPERATIONS.filter((op) => validOps.includes(op.value)).map((op) => (
-              <button
-                key={op.value}
-                type="button"
-                onClick={() => handleOperationChange(op.value)}
-                title={op.description}
-                className={`
-                  flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all
-                  ${operation === op.value
-                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm shadow-emerald-500/10'
-                    : 'bg-gray-800 text-gray-400 border border-gray-700 hover:text-white hover:border-gray-600'
-                  }
-                `}
-              >
-                <span>{op.icon}</span>
-                <span>{op.label}</span>
-              </button>
-            ))}
-          </div>
+      {entry.field && (
+        <div className="grid grid-cols-3 gap-1">
+          {UPDATE_OPERATIONS.filter((op) => validOps.includes(op.value)).map((op) => (
+            <button
+              key={op.value}
+              type="button"
+              onClick={() => handleOpChange(op.value)}
+              title={op.description}
+              className={`
+                flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition-all
+                ${entry.op === op.value
+                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                  : 'bg-gray-800 text-gray-500 border border-gray-700/50 hover:text-white hover:border-gray-600'
+                }
+              `}
+            >
+              <span className="text-[10px]">{op.icon}</span>
+              <span>{op.label}</span>
+            </button>
+          ))}
         </div>
       )}
 
-      {/* Value input — adapts to field type */}
-      {fieldPath && needsValue && (
+      {/* Value input */}
+      {entry.field && needsValue && (
         <div>
-          <label className="block text-sm text-gray-400 mb-1">
-            {isNumericOp ? `${operation === 'increment' ? 'Increase' : 'Decrease'} by` : 'Value'}
+          <label className="block text-[11px] text-gray-500 mb-0.5">
+            {isNumericOp ? `${entry.op === 'increment' ? 'Increase' : 'Decrease'} by` : 'Value'}
           </label>
           {isNumericOp ? (
             <input
               type="number"
               min={1}
-              value={String(action.params.value ?? 1)}
+              value={String(entry.value ?? 1)}
               onChange={(e) => {
                 const v = parseInt(e.target.value);
-                setParam('value', isNaN(v) ? 1 : v);
+                onPatch({ value: isNaN(v) ? 1 : v });
               }}
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:border-emerald-500 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
             />
           ) : selectedField ? (
             <SmartValueInput
               field={selectedField}
-              operator={operation === 'add' || operation === 'remove' ? 'contains' : 'eq'}
-              value={action.params.value}
-              onChange={(v) => setParam('value', v)}
+              operator={entry.op === 'add' || entry.op === 'remove' ? 'contains' : 'eq'}
+              value={entry.value}
+              onChange={(v) => onPatch({ value: v })}
             />
           ) : (
             <input
               type="text"
-              value={String(action.params.value || '')}
-              onChange={(e) => setParam('value', e.target.value)}
+              value={String(entry.value || '')}
+              onChange={(e) => onPatch({ value: e.target.value })}
               placeholder="Enter value…"
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none"
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:border-emerald-500 focus:outline-none"
             />
           )}
         </div>
       )}
 
-      {/* Clear confirmation */}
-      {fieldPath && operation === 'clear' && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30">
-          <span className="text-sm">⚠️</span>
-          <span className="text-xs text-amber-400">
-            This will remove the value of <span className="font-medium text-amber-300">{selectedField?.label || fieldPath}</span> on the contact.
-          </span>
-        </div>
-      )}
-
-      {/* No field selected hint */}
-      {!fieldPath && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-800/50 border border-gray-700/50">
-          <span className="text-sm">💡</span>
-          <span className="text-xs text-gray-500">
-            Select a contact field above, then choose how to modify it.
+      {/* Clear warning */}
+      {entry.field && entry.op === 'clear' && (
+        <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30">
+          <span className="text-[11px]">⚠️</span>
+          <span className="text-[11px] text-amber-400">
+            Clears <span className="font-medium text-amber-300">{selectedField?.label || entry.field}</span>
           </span>
         </div>
       )}

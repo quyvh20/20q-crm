@@ -206,15 +206,24 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       }
 
       if (action.type === 'update_contact') {
-        if (!action.params.field) {
-          errors[`${key}.params.field`] = ['Select a contact field to update'];
-        }
-        const op = String(action.params.operation || '');
-        if (!op) {
-          errors[`${key}.params.operation`] = ['Select an operation'];
-        }
-        if (op && op !== 'clear' && (action.params.value === undefined || action.params.value === null || action.params.value === '')) {
-          errors[`${key}.params.value`] = ['Provide a value for this operation'];
+        const updates = Array.isArray(action.params.updates)
+          ? (action.params.updates as Array<{ field?: string; op?: string; value?: unknown }>)
+          : [];
+        if (updates.length === 0) {
+          errors[`${key}.params.updates`] = ['Add at least one field update'];
+        } else {
+          updates.forEach((upd, idx) => {
+            const uKey = `${key}.params.updates[${idx}]`;
+            if (!upd.field) {
+              errors[`${uKey}.field`] = ['Select a contact field'];
+            }
+            if (!upd.op) {
+              errors[`${uKey}.op`] = ['Select an operation'];
+            }
+            if (upd.op && upd.op !== 'clear' && (upd.value === undefined || upd.value === null || upd.value === '')) {
+              errors[`${uKey}.value`] = ['Provide a value for this operation'];
+            }
+          });
         }
       }
     }
@@ -229,21 +238,45 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
 
     set({ saving: true });
     try {
-      // Sanitize: strip empty CC strings → omit key entirely
+      // Sanitize: strip empty CC strings → omit key entirely; clean update_contact params
       const cleanedActions = state.actions.map((a) => {
-        if (a.type !== 'send_email') return a;
-        const params = { ...a.params };
-        const cc = typeof params.cc === 'string' ? params.cc.trim() : '';
-        if (!cc) {
-          delete params.cc;
+        if (a.type === 'send_email') {
+          const params = { ...a.params };
+          const cc = typeof params.cc === 'string' ? params.cc.trim() : '';
+          if (!cc) {
+            delete params.cc;
+          }
+          return { ...a, params };
         }
-        return { ...a, params };
+        if (a.type === 'update_contact') {
+          // Ensure only 'updates' key is emitted, strip legacy flat keys
+          const params: Record<string, unknown> = {};
+          if (Array.isArray(a.params.updates)) {
+            // Strip undefined values from each entry
+            params.updates = (a.params.updates as Array<Record<string, unknown>>).map((u) => {
+              const clean: Record<string, unknown> = { field: u.field, op: u.op };
+              if (u.op !== 'clear' && u.value !== undefined && u.value !== null) {
+                clean.value = u.value;
+              }
+              return clean;
+            });
+          }
+          return { ...a, params };
+        }
+        return a;
       });
+
+      // Sanitize trigger: strip UI-only _fieldMeta cache from params
+      const cleanedTrigger = { ...state.trigger! };
+      if (cleanedTrigger.params) {
+        const { _fieldMeta, ...triggerParams } = cleanedTrigger.params as Record<string, unknown>;
+        cleanedTrigger.params = Object.keys(triggerParams).length > 0 ? triggerParams : undefined;
+      }
 
       const payload = {
         name: state.name,
         description: state.description,
-        trigger: state.trigger!,
+        trigger: cleanedTrigger,
         conditions: state.conditions,
         actions: cleanedActions,
       };

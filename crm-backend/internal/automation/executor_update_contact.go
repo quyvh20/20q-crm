@@ -13,6 +13,17 @@ import (
 
 // UpdateContactExecutor modifies contact fields from workflow actions.
 // Supports operations: set, add, remove, increment, decrement, clear.
+//
+// Params contract:
+//
+//	{
+//	  "updates": [
+//	    { "field": "first_name",           "op": "set",       "value": "Jane" },
+//	    { "field": "tags",                 "op": "add",       "value": ["uuid1","uuid2"] },
+//	    { "field": "custom_fields.score",  "op": "increment", "value": 5 },
+//	    { "field": "phone",                "op": "clear" }
+//	  ]
+//	}
 type UpdateContactExecutor struct {
 	db *gorm.DB
 }
@@ -20,6 +31,13 @@ type UpdateContactExecutor struct {
 // NewUpdateContactExecutor creates a new update contact executor.
 func NewUpdateContactExecutor(db *gorm.DB) *UpdateContactExecutor {
 	return &UpdateContactExecutor{db: db}
+}
+
+// FieldUpdate describes a single field mutation within an update_contact action.
+type FieldUpdate struct {
+	Field string `json:"field"`
+	Op    string `json:"op"`
+	Value any    `json:"value,omitempty"`
 }
 
 // Valid update operations
@@ -32,21 +50,15 @@ var validUpdateOperations = map[string]bool{
 	"clear":     true,
 }
 
-// Execute updates a contact field based on the configured operation.
-//
-// Params:
-//   - field:     the field path to update (e.g. "first_name", "tags", "custom_fields.industry")
-//   - operation: set | add | remove | increment | decrement | clear
-//   - value:     the value to use (not needed for "clear")
+// Execute applies all field updates from params.updates to the contact in context.
 func (e *UpdateContactExecutor) Execute(ctx context.Context, run *WorkflowRun, action ActionSpec, evalCtx EvalContext) (any, error) {
-	field := getStringParam(action.Params, "field", evalCtx)
-	operation := getStringParam(action.Params, "operation", evalCtx)
-
-	if field == "" {
-		return nil, fmt.Errorf("update_contact: 'field' parameter is required")
+	// Parse updates array from params
+	updates, err := e.parseUpdates(action.Params)
+	if err != nil {
+		return nil, fmt.Errorf("update_contact: %w", err)
 	}
-	if !validUpdateOperations[operation] {
-		return nil, fmt.Errorf("update_contact: invalid operation '%s'. Valid: set, add, remove, increment, decrement, clear", operation)
+	if len(updates) == 0 {
+		return nil, fmt.Errorf("update_contact: 'updates' array is empty — nothing to do")
 	}
 
 	// Get contact ID from context
@@ -63,36 +75,89 @@ func (e *UpdateContactExecutor) Execute(ctx context.Context, run *WorkflowRun, a
 		return nil, fmt.Errorf("update_contact: invalid contact ID: %w", err)
 	}
 
-	// Dispatch to the appropriate handler
-	var result map[string]any
+	// Execute each field update
+	results := make([]map[string]any, 0, len(updates))
+	for i, upd := range updates {
+		field := InterpolateTemplate(upd.Field, evalCtx)
+		op := upd.Op
 
-	switch {
-	case field == "tags":
-		result, err = e.handleTags(ctx, run.OrgID, cid, operation, action.Params, evalCtx)
-	case strings.HasPrefix(field, "custom_fields."):
-		cfKey := strings.TrimPrefix(field, "custom_fields.")
-		result, err = e.handleCustomField(ctx, run.OrgID, cid, cfKey, operation, action.Params, evalCtx)
-	default:
-		result, err = e.handleColumnField(ctx, run.OrgID, cid, field, operation, action.Params, evalCtx)
+		if field == "" {
+			return nil, fmt.Errorf("update_contact: updates[%d].field is empty", i)
+		}
+		if !validUpdateOperations[op] {
+			return nil, fmt.Errorf("update_contact: updates[%d] invalid op '%s'. Valid: set, add, remove, increment, decrement, clear", i, op)
+		}
+
+		// Strip "contact." prefix if present (UI emits "contact.first_name", executor needs "first_name")
+		field = strings.TrimPrefix(field, "contact.")
+
+		// Build a per-update params map for handler dispatch
+		updateParams := map[string]any{"value": upd.Value}
+
+		var result map[string]any
+
+		switch {
+		case field == "tags":
+			result, err = e.handleTags(ctx, run.OrgID, cid, op, updateParams, evalCtx)
+		case strings.HasPrefix(field, "custom_fields."):
+			cfKey := strings.TrimPrefix(field, "custom_fields.")
+			result, err = e.handleCustomField(ctx, run.OrgID, cid, cfKey, op, updateParams, evalCtx)
+		default:
+			result, err = e.handleColumnField(ctx, run.OrgID, cid, field, op, updateParams, evalCtx)
+		}
+
+		if err != nil {
+			return nil, fmt.Errorf("update_contact: updates[%d] (%s.%s): %w", i, field, op, err)
+		}
+
+		results = append(results, result)
+
+		slog.Info("automation: contact field updated",
+			"contact_id", contactID,
+			"field", field,
+			"op", op,
+			"workflow_run_id", run.ID.String(),
+		)
 	}
 
-	if err != nil {
-		return nil, err
+	return map[string]any{"updates": results, "count": len(results)}, nil
+}
+
+// parseUpdates extracts the []FieldUpdate from action params.
+// Supports both the new "updates" array format and legacy flat format for backwards compat.
+func (e *UpdateContactExecutor) parseUpdates(params map[string]any) ([]FieldUpdate, error) {
+	// Primary: "updates" key
+	if raw, ok := params["updates"]; ok {
+		data, err := json.Marshal(raw)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal 'updates': %w", err)
+		}
+		var updates []FieldUpdate
+		if err := json.Unmarshal(data, &updates); err != nil {
+			return nil, fmt.Errorf("failed to parse 'updates' array: %w", err)
+		}
+		return updates, nil
 	}
 
-	slog.Info("automation: contact updated",
-		"contact_id", contactID,
-		"field", field,
-		"operation", operation,
-		"workflow_run_id", run.ID.String(),
-	)
+	// Legacy fallback: flat { field, operation, value } → single-item array
+	if field, ok := params["field"]; ok {
+		op, _ := params["operation"].(string)
+		if op == "" {
+			op, _ = params["op"].(string)
+		}
+		return []FieldUpdate{{
+			Field: fmt.Sprintf("%v", field),
+			Op:    op,
+			Value: params["value"],
+		}}, nil
+	}
 
-	return result, nil
+	return nil, fmt.Errorf("'updates' array is required")
 }
 
 // handleColumnField updates a direct column on the contacts table.
-// Supports: set, increment, decrement, clear.
-func (e *UpdateContactExecutor) handleColumnField(ctx context.Context, orgID, contactID uuid.UUID, field, operation string, params map[string]any, evalCtx EvalContext) (map[string]any, error) {
+// Supports: set, clear.
+func (e *UpdateContactExecutor) handleColumnField(ctx context.Context, orgID, contactID uuid.UUID, field, op string, params map[string]any, evalCtx EvalContext) (map[string]any, error) {
 	// Map workflow field names to actual DB column names
 	columnMap := map[string]string{
 		"first_name":    "first_name",
@@ -105,23 +170,23 @@ func (e *UpdateContactExecutor) handleColumnField(ctx context.Context, orgID, co
 
 	column, ok := columnMap[field]
 	if !ok {
-		return nil, fmt.Errorf("update_contact: unknown field '%s'. Valid column fields: first_name, last_name, email, phone, owner_user_id, company_id", field)
+		return nil, fmt.Errorf("unknown column field '%s'. Valid: first_name, last_name, email, phone, owner_user_id, company_id", field)
 	}
 
-	switch operation {
+	switch op {
 	case "set":
 		value := getStringParam(params, "value", evalCtx)
 		if value == "" {
-			return nil, fmt.Errorf("update_contact: 'value' is required for 'set' operation")
+			return nil, fmt.Errorf("'value' is required for 'set' on column '%s'", field)
 		}
 		err := e.db.WithContext(ctx).
 			Table("contacts").
 			Where("id = ? AND org_id = ?", contactID, orgID).
 			Update(column, value).Error
 		if err != nil {
-			return nil, fmt.Errorf("update_contact: set column error: %w", err)
+			return nil, fmt.Errorf("set error: %w", err)
 		}
-		return map[string]any{"field": field, "operation": "set", "value": value}, nil
+		return map[string]any{"field": field, "op": "set", "value": value}, nil
 
 	case "clear":
 		err := e.db.WithContext(ctx).
@@ -129,31 +194,31 @@ func (e *UpdateContactExecutor) handleColumnField(ctx context.Context, orgID, co
 			Where("id = ? AND org_id = ?", contactID, orgID).
 			Update(column, nil).Error
 		if err != nil {
-			return nil, fmt.Errorf("update_contact: clear column error: %w", err)
+			return nil, fmt.Errorf("clear error: %w", err)
 		}
-		return map[string]any{"field": field, "operation": "clear"}, nil
+		return map[string]any{"field": field, "op": "clear"}, nil
 
 	case "increment", "decrement":
-		return nil, fmt.Errorf("update_contact: '%s' operation is not supported on column field '%s' (use on number custom fields instead)", operation, field)
+		return nil, fmt.Errorf("'%s' is not supported on column field '%s' (use on number custom fields)", op, field)
 
 	case "add", "remove":
-		return nil, fmt.Errorf("update_contact: '%s' operation is not supported on column field '%s' (use on tags instead)", operation, field)
+		return nil, fmt.Errorf("'%s' is not supported on column field '%s' (use on tags)", op, field)
 
 	default:
-		return nil, fmt.Errorf("update_contact: unsupported operation '%s' on column field '%s'", operation, field)
+		return nil, fmt.Errorf("unsupported op '%s' on column field '%s'", op, field)
 	}
 }
 
 // handleTags manages tag add/remove/set/clear on a contact via the contact_tags join table.
-func (e *UpdateContactExecutor) handleTags(ctx context.Context, orgID, contactID uuid.UUID, operation string, params map[string]any, evalCtx EvalContext) (map[string]any, error) {
-	switch operation {
+func (e *UpdateContactExecutor) handleTags(ctx context.Context, orgID, contactID uuid.UUID, op string, params map[string]any, evalCtx EvalContext) (map[string]any, error) {
+	switch op {
 	case "add":
 		tagIDs, err := e.resolveTagIDs(params, evalCtx)
 		if err != nil {
-			return nil, fmt.Errorf("update_contact: tags add: %w", err)
+			return nil, fmt.Errorf("tags add: %w", err)
 		}
 		if len(tagIDs) == 0 {
-			return nil, fmt.Errorf("update_contact: 'value' (tag IDs) required for 'add' on tags")
+			return nil, fmt.Errorf("'value' (tag IDs) required for 'add' on tags")
 		}
 		// Insert into contact_tags ON CONFLICT DO NOTHING
 		sql := "INSERT INTO contact_tags (contact_id, tag_id) VALUES "
@@ -167,33 +232,33 @@ func (e *UpdateContactExecutor) handleTags(ctx context.Context, orgID, contactID
 		}
 		sql += " ON CONFLICT DO NOTHING"
 		if err := e.db.WithContext(ctx).Exec(sql, args...).Error; err != nil {
-			return nil, fmt.Errorf("update_contact: tags add error: %w", err)
+			return nil, fmt.Errorf("tags add error: %w", err)
 		}
-		return map[string]any{"field": "tags", "operation": "add", "tag_ids": uuidsToStrings(tagIDs)}, nil
+		return map[string]any{"field": "tags", "op": "add", "tag_ids": uuidsToStrings(tagIDs)}, nil
 
 	case "remove":
 		tagIDs, err := e.resolveTagIDs(params, evalCtx)
 		if err != nil {
-			return nil, fmt.Errorf("update_contact: tags remove: %w", err)
+			return nil, fmt.Errorf("tags remove: %w", err)
 		}
 		if len(tagIDs) == 0 {
-			return nil, fmt.Errorf("update_contact: 'value' (tag IDs) required for 'remove' on tags")
+			return nil, fmt.Errorf("'value' (tag IDs) required for 'remove' on tags")
 		}
 		if err := e.db.WithContext(ctx).
 			Exec("DELETE FROM contact_tags WHERE contact_id = ? AND tag_id IN ?", contactID, tagIDs).Error; err != nil {
-			return nil, fmt.Errorf("update_contact: tags remove error: %w", err)
+			return nil, fmt.Errorf("tags remove error: %w", err)
 		}
-		return map[string]any{"field": "tags", "operation": "remove", "tag_ids": uuidsToStrings(tagIDs)}, nil
+		return map[string]any{"field": "tags", "op": "remove", "tag_ids": uuidsToStrings(tagIDs)}, nil
 
 	case "set":
 		tagIDs, err := e.resolveTagIDs(params, evalCtx)
 		if err != nil {
-			return nil, fmt.Errorf("update_contact: tags set: %w", err)
+			return nil, fmt.Errorf("tags set: %w", err)
 		}
 		// Replace all tags: delete all, then insert new
 		if err := e.db.WithContext(ctx).
 			Exec("DELETE FROM contact_tags WHERE contact_id = ?", contactID).Error; err != nil {
-			return nil, fmt.Errorf("update_contact: tags clear before set error: %w", err)
+			return nil, fmt.Errorf("tags clear before set error: %w", err)
 		}
 		if len(tagIDs) > 0 {
 			sql := "INSERT INTO contact_tags (contact_id, tag_id) VALUES "
@@ -207,27 +272,27 @@ func (e *UpdateContactExecutor) handleTags(ctx context.Context, orgID, contactID
 			}
 			sql += " ON CONFLICT DO NOTHING"
 			if err := e.db.WithContext(ctx).Exec(sql, args...).Error; err != nil {
-				return nil, fmt.Errorf("update_contact: tags set insert error: %w", err)
+				return nil, fmt.Errorf("tags set insert error: %w", err)
 			}
 		}
-		return map[string]any{"field": "tags", "operation": "set", "tag_ids": uuidsToStrings(tagIDs)}, nil
+		return map[string]any{"field": "tags", "op": "set", "tag_ids": uuidsToStrings(tagIDs)}, nil
 
 	case "clear":
 		if err := e.db.WithContext(ctx).
 			Exec("DELETE FROM contact_tags WHERE contact_id = ?", contactID).Error; err != nil {
-			return nil, fmt.Errorf("update_contact: tags clear error: %w", err)
+			return nil, fmt.Errorf("tags clear error: %w", err)
 		}
-		return map[string]any{"field": "tags", "operation": "clear"}, nil
+		return map[string]any{"field": "tags", "op": "clear"}, nil
 
 	default:
-		return nil, fmt.Errorf("update_contact: unsupported operation '%s' on tags (valid: add, remove, set, clear)", operation)
+		return nil, fmt.Errorf("unsupported op '%s' on tags (valid: add, remove, set, clear)", op)
 	}
 }
 
 // handleCustomField updates a key in the contact's custom_fields JSONB column.
 // Supports: set, increment, decrement, clear.
-func (e *UpdateContactExecutor) handleCustomField(ctx context.Context, orgID, contactID uuid.UUID, cfKey, operation string, params map[string]any, evalCtx EvalContext) (map[string]any, error) {
-	switch operation {
+func (e *UpdateContactExecutor) handleCustomField(ctx context.Context, orgID, contactID uuid.UUID, cfKey, op string, params map[string]any, evalCtx EvalContext) (map[string]any, error) {
+	switch op {
 	case "set":
 		value := getStringParam(params, "value", evalCtx)
 		// Use JSONB set: custom_fields || '{"key": "value"}'
@@ -237,17 +302,15 @@ func (e *UpdateContactExecutor) handleCustomField(ctx context.Context, orgID, co
 			Where("id = ? AND org_id = ?", contactID, orgID).
 			Update("custom_fields", gorm.Expr("COALESCE(custom_fields, '{}'::jsonb) || ?::jsonb", string(patch))).Error
 		if err != nil {
-			return nil, fmt.Errorf("update_contact: custom field set error: %w", err)
+			return nil, fmt.Errorf("custom field set error: %w", err)
 		}
-		return map[string]any{"field": "custom_fields." + cfKey, "operation": "set", "value": value}, nil
+		return map[string]any{"field": "custom_fields." + cfKey, "op": "set", "value": value}, nil
 
 	case "increment":
 		delta := getIntParam(params, "value")
 		if delta == 0 {
 			delta = 1
 		}
-		// JSONB: set key to (current value + delta)
-		// Postgres expression: custom_fields || jsonb_build_object(key, COALESCE((custom_fields->>key)::numeric, 0) + delta)
 		err := e.db.WithContext(ctx).
 			Table("contacts").
 			Where("id = ? AND org_id = ?", contactID, orgID).
@@ -256,9 +319,9 @@ func (e *UpdateContactExecutor) handleCustomField(ctx context.Context, orgID, co
 				cfKey, cfKey, delta,
 			)).Error
 		if err != nil {
-			return nil, fmt.Errorf("update_contact: custom field increment error: %w", err)
+			return nil, fmt.Errorf("custom field increment error: %w", err)
 		}
-		return map[string]any{"field": "custom_fields." + cfKey, "operation": "increment", "delta": delta}, nil
+		return map[string]any{"field": "custom_fields." + cfKey, "op": "increment", "delta": delta}, nil
 
 	case "decrement":
 		delta := getIntParam(params, "value")
@@ -273,9 +336,9 @@ func (e *UpdateContactExecutor) handleCustomField(ctx context.Context, orgID, co
 				cfKey, cfKey, delta,
 			)).Error
 		if err != nil {
-			return nil, fmt.Errorf("update_contact: custom field decrement error: %w", err)
+			return nil, fmt.Errorf("custom field decrement error: %w", err)
 		}
-		return map[string]any{"field": "custom_fields." + cfKey, "operation": "decrement", "delta": delta}, nil
+		return map[string]any{"field": "custom_fields." + cfKey, "op": "decrement", "delta": delta}, nil
 
 	case "clear":
 		// Remove the key from JSONB: custom_fields - 'key'
@@ -284,19 +347,19 @@ func (e *UpdateContactExecutor) handleCustomField(ctx context.Context, orgID, co
 			Where("id = ? AND org_id = ?", contactID, orgID).
 			Update("custom_fields", gorm.Expr("COALESCE(custom_fields, '{}'::jsonb) - ?", cfKey)).Error
 		if err != nil {
-			return nil, fmt.Errorf("update_contact: custom field clear error: %w", err)
+			return nil, fmt.Errorf("custom field clear error: %w", err)
 		}
-		return map[string]any{"field": "custom_fields." + cfKey, "operation": "clear"}, nil
+		return map[string]any{"field": "custom_fields." + cfKey, "op": "clear"}, nil
 
 	case "add", "remove":
-		return nil, fmt.Errorf("update_contact: '%s' operation is not supported on custom fields (use on tags instead)", operation)
+		return nil, fmt.Errorf("'%s' is not supported on custom fields (use on tags)", op)
 
 	default:
-		return nil, fmt.Errorf("update_contact: unsupported operation '%s' on custom field '%s'", operation, cfKey)
+		return nil, fmt.Errorf("unsupported op '%s' on custom field '%s'", op, cfKey)
 	}
 }
 
-// resolveTagIDs extracts tag UUIDs from the action's "value" param.
+// resolveTagIDs extracts tag UUIDs from the update's "value" param.
 // Accepts: []string of UUIDs, []any of UUIDs, or a single UUID string.
 func (e *UpdateContactExecutor) resolveTagIDs(params map[string]any, evalCtx EvalContext) ([]uuid.UUID, error) {
 	val, ok := params["value"]

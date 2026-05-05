@@ -172,6 +172,37 @@ func (e *Engine) triggerEventInternal(ctx context.Context, orgID uuid.UUID, even
 	}
 
 	for _, wf := range workflows {
+		// --- Field-level trigger filtering (watch_field / watch_value) ---
+		// If the workflow's trigger specifies a watched field, skip unless
+		// that field actually changed (and optionally changed to the expected value).
+		if eventType == TriggerContactUpdated {
+			var triggerSpec TriggerSpec
+			if err := json.Unmarshal(wf.Trigger, &triggerSpec); err == nil && triggerSpec.Params != nil {
+				if watchField, ok := triggerSpec.Params["watch_field"].(string); ok && watchField != "" {
+					if !payloadContainsChangedField(payload, watchField) {
+						e.logger.Debug("automation: watch_field not in changed_fields, skipping",
+							"workflow_id", wf.ID.String(),
+							"watch_field", watchField,
+						)
+						continue
+					}
+					// If watch_value is set, also check the new value matches
+					if watchValue, ok := triggerSpec.Params["watch_value"]; ok {
+						newValue := getNestedValue(payload, watchField)
+						if !valuesMatch(newValue, watchValue) {
+							e.logger.Debug("automation: watch_value mismatch, skipping",
+								"workflow_id", wf.ID.String(),
+								"watch_field", watchField,
+								"watch_value", watchValue,
+								"actual_value", newValue,
+							)
+							continue
+						}
+					}
+				}
+			}
+		}
+
 		// Build idempotency key
 		entityID := ""
 		if id, ok := payload["entity_id"]; ok {
@@ -515,4 +546,76 @@ func (e *Engine) Repo() *Repository {
 // Jobs returns the jobs channel for external use (recovery, scheduler).
 func (e *Engine) Jobs() chan WorkflowRunJob {
 	return e.jobs
+}
+
+// --- Watch field helpers for field-level trigger filtering ---
+
+// payloadContainsChangedField checks if a field path (e.g. "contact.owner_user_id")
+// is present in the payload's "changed_fields" array.
+func payloadContainsChangedField(payload map[string]any, watchField string) bool {
+	changedRaw, ok := payload["changed_fields"]
+	if !ok {
+		return false
+	}
+	// changed_fields can be []string or []any (from JSON unmarshal)
+	switch changed := changedRaw.(type) {
+	case []string:
+		for _, f := range changed {
+			if f == watchField {
+				return true
+			}
+		}
+	case []any:
+		for _, f := range changed {
+			if fmt.Sprintf("%v", f) == watchField {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// getNestedValue resolves a dotted path like "contact.owner_user_id" against a payload.
+// It walks the map hierarchy: payload["contact"]["owner_user_id"].
+func getNestedValue(payload map[string]any, path string) any {
+	parts := splitDotPath(path)
+	var current any = payload
+	for _, part := range parts {
+		m, ok := current.(map[string]any)
+		if !ok {
+			return nil
+		}
+		current = m[part]
+	}
+	return current
+}
+
+// splitDotPath splits a dotted field path into segments.
+func splitDotPath(path string) []string {
+	var parts []string
+	start := 0
+	for i := 0; i < len(path); i++ {
+		if path[i] == '.' {
+			if i > start {
+				parts = append(parts, path[start:i])
+			}
+			start = i + 1
+		}
+	}
+	if start < len(path) {
+		parts = append(parts, path[start:])
+	}
+	return parts
+}
+
+// valuesMatch compares two values for equality using string representation.
+// This handles the JSON type mismatch problem (e.g., UUID stored as string vs interface{}).
+func valuesMatch(actual, expected any) bool {
+	if actual == nil && expected == nil {
+		return true
+	}
+	if actual == nil || expected == nil {
+		return false
+	}
+	return fmt.Sprintf("%v", actual) == fmt.Sprintf("%v", expected)
 }

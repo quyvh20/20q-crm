@@ -2,6 +2,8 @@ package http
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -188,20 +190,9 @@ func (h *ContactHandler) Create(c *gin.Context) {
 
 	// Fire automation trigger asynchronously
 	if h.emitEvent != nil {
-		contactMap := map[string]any{
-			"id":         contact.ID.String(),
-			"first_name": contact.FirstName,
-			"last_name":  contact.LastName,
-		}
-		if contact.Email != nil {
-			contactMap["email"] = *contact.Email
-		}
-		if contact.Phone != nil {
-			contactMap["phone"] = *contact.Phone
-		}
 		payload := map[string]any{
 			"entity_id": contact.ID.String(),
-			"contact":   contactMap,
+			"contact":   contactToMap(contact),
 			"trigger": map[string]any{
 				"type":   "contact_created",
 				"source": "crm_ui",
@@ -233,10 +224,35 @@ func (h *ContactHandler) Update(c *gin.Context) {
 		return
 	}
 
+	// Snapshot old contact BEFORE update for field-change detection
+	var oldContactMap map[string]any
+	if h.emitEvent != nil {
+		if oldContact, err := h.contactUC.GetByID(c.Request.Context(), orgID, id); err == nil && oldContact != nil {
+			oldContactMap = contactToMap(oldContact)
+		}
+	}
+
 	contact, err := h.contactUC.Update(c.Request.Context(), orgID, id, input)
 	if err != nil {
 		handleAppError(c, err)
 		return
+	}
+
+	// Fire contact_updated automation trigger
+	if h.emitEvent != nil {
+		newContactMap := contactToMap(contact)
+		changedFields := computeChangedFields(oldContactMap, newContactMap)
+		payload := map[string]any{
+			"entity_id":      contact.ID.String(),
+			"contact":        newContactMap,
+			"old_contact":    oldContactMap,
+			"changed_fields": changedFields,
+			"trigger": map[string]any{
+				"type":   "contact_updated",
+				"source": "crm_ui",
+			},
+		}
+		go h.emitEvent(context.Background(), orgID, "contact_updated", payload)
 	}
 
 	c.JSON(http.StatusOK, domain.Success(contact))
@@ -331,4 +347,66 @@ func (h *ContactHandler) BulkAction(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, domain.Success(result))
+}
+
+// contactToMap converts a Contact struct into a flat map for automation event payloads.
+func contactToMap(c *domain.Contact) map[string]any {
+	m := map[string]any{
+		"id":         c.ID.String(),
+		"first_name": c.FirstName,
+		"last_name":  c.LastName,
+	}
+	if c.Email != nil {
+		m["email"] = *c.Email
+	}
+	if c.Phone != nil {
+		m["phone"] = *c.Phone
+	}
+	if c.CompanyID != nil {
+		m["company_id"] = c.CompanyID.String()
+	}
+	if c.OwnerUserID != nil {
+		m["owner_user_id"] = c.OwnerUserID.String()
+	}
+	// Include tags as an array of IDs
+	if len(c.Tags) > 0 {
+		tagIDs := make([]string, len(c.Tags))
+		for i, t := range c.Tags {
+			tagIDs[i] = t.ID.String()
+		}
+		m["tags"] = tagIDs
+	}
+	// Include custom fields
+	if len(c.CustomFields) > 0 && string(c.CustomFields) != "null" && string(c.CustomFields) != "{}" {
+		var cf map[string]any
+		if err := json.Unmarshal([]byte(c.CustomFields), &cf); err == nil {
+			for k, v := range cf {
+				m["custom_fields."+k] = v
+			}
+		}
+	}
+	return m
+}
+
+// computeChangedFields compares old and new contact maps and returns
+// a list of changed field paths (e.g., "contact.email", "contact.owner_user_id").
+func computeChangedFields(oldMap, newMap map[string]any) []string {
+	if oldMap == nil || newMap == nil {
+		return nil
+	}
+	var changed []string
+	// Check all keys in the new map
+	for key, newVal := range newMap {
+		oldVal, exists := oldMap[key]
+		if !exists || fmt.Sprintf("%v", oldVal) != fmt.Sprintf("%v", newVal) {
+			changed = append(changed, "contact."+key)
+		}
+	}
+	// Check keys that were removed (present in old but not in new)
+	for key := range oldMap {
+		if _, exists := newMap[key]; !exists {
+			changed = append(changed, "contact."+key)
+		}
+	}
+	return changed
 }

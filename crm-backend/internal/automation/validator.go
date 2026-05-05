@@ -81,6 +81,30 @@ func validateTrigger(data []byte, result *ValidationResult) {
 				Message: "deal_stage_changed requires 'to_stage' parameter",
 			})
 		}
+	case TriggerContactUpdated:
+		// watch_field and watch_value are optional params for field-level filtering
+		if trigger.Params != nil {
+			if wf, ok := trigger.Params["watch_field"]; ok {
+				wfStr, isStr := wf.(string)
+				if !isStr || wfStr == "" {
+					result.Valid = false
+					result.Errors = append(result.Errors, ValidationError{
+						Field:   "trigger.params.watch_field",
+						Message: "watch_field must be a non-empty string (e.g. 'contact.owner_user_id')",
+					})
+				}
+			}
+			// watch_value without watch_field makes no sense
+			if _, hasValue := trigger.Params["watch_value"]; hasValue {
+				if _, hasField := trigger.Params["watch_field"]; !hasField {
+					result.Valid = false
+					result.Errors = append(result.Errors, ValidationError{
+						Field:   "trigger.params.watch_value",
+						Message: "watch_value requires watch_field to be set",
+					})
+				}
+			}
+		}
 	case TriggerNoActivityDays:
 		if trigger.Params == nil {
 			result.Valid = false
@@ -377,37 +401,105 @@ func validateActionParams(action ActionSpec, path string, result *ValidationResu
 			}
 		}
 	case ActionUpdateContact:
-		if _, ok := action.Params["field"]; !ok {
-			result.Valid = false
-			result.Errors = append(result.Errors, ValidationError{
-				Field:   path + ".params.field",
-				Message: "update_contact requires 'field' parameter",
-			})
-		}
-		if op, ok := action.Params["operation"]; !ok {
-			result.Valid = false
-			result.Errors = append(result.Errors, ValidationError{
-				Field:   path + ".params.operation",
-				Message: "update_contact requires 'operation' parameter",
-			})
+		// Validate the "updates" array: []{ field, op, value }
+		updatesRaw, hasUpdates := action.Params["updates"]
+		if hasUpdates {
+			// New format: params.updates = [{ field, op, value }, ...]
+			updatesSlice, ok := updatesRaw.([]any)
+			if !ok {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   path + ".params.updates",
+					Message: "update_contact 'updates' must be an array of { field, op, value }",
+				})
+			} else if len(updatesSlice) == 0 {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   path + ".params.updates",
+					Message: "update_contact 'updates' array must not be empty",
+				})
+			} else {
+				for idx, entry := range updatesSlice {
+					entryMap, ok := entry.(map[string]any)
+					if !ok {
+						result.Valid = false
+						result.Errors = append(result.Errors, ValidationError{
+							Field:   fmt.Sprintf("%s.params.updates[%d]", path, idx),
+							Message: "each update must be an object with 'field' and 'op'",
+						})
+						continue
+					}
+					uPath := fmt.Sprintf("%s.params.updates[%d]", path, idx)
+					// Validate field
+					fieldVal, _ := entryMap["field"].(string)
+					if fieldVal == "" {
+						result.Valid = false
+						result.Errors = append(result.Errors, ValidationError{
+							Field:   uPath + ".field",
+							Message: "'field' is required in each update",
+						})
+					}
+					// Validate op
+					opVal, _ := entryMap["op"].(string)
+					validOps := map[string]bool{"set": true, "add": true, "remove": true, "increment": true, "decrement": true, "clear": true}
+					if opVal == "" {
+						result.Valid = false
+						result.Errors = append(result.Errors, ValidationError{
+							Field:   uPath + ".op",
+							Message: "'op' is required in each update",
+						})
+					} else if !validOps[opVal] {
+						result.Valid = false
+						result.Errors = append(result.Errors, ValidationError{
+							Field:   uPath + ".op",
+							Message: fmt.Sprintf("invalid op '%s'. Valid: set, add, remove, increment, decrement, clear", opVal),
+						})
+					}
+					// Value required for non-clear ops
+					if opVal != "" && opVal != "clear" {
+						if _, hasValue := entryMap["value"]; !hasValue {
+							result.Valid = false
+							result.Errors = append(result.Errors, ValidationError{
+								Field:   uPath + ".value",
+								Message: fmt.Sprintf("'value' is required for op '%s'", opVal),
+							})
+						}
+					}
+				}
+			}
 		} else {
-			opStr, _ := op.(string)
-			validOps := map[string]bool{"set": true, "add": true, "remove": true, "increment": true, "decrement": true, "clear": true}
-			if !validOps[opStr] {
+			// Legacy fallback: flat { field, operation, value }
+			if _, ok := action.Params["field"]; !ok {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   path + ".params.field",
+					Message: "update_contact requires 'updates' array or legacy 'field' parameter",
+				})
+			}
+			if op, ok := action.Params["operation"]; !ok {
 				result.Valid = false
 				result.Errors = append(result.Errors, ValidationError{
 					Field:   path + ".params.operation",
-					Message: fmt.Sprintf("invalid operation: '%s'. Valid: set, add, remove, increment, decrement, clear", opStr),
+					Message: "update_contact requires 'operation' parameter",
 				})
-			}
-			// "clear" doesn't need a value; all others do
-			if opStr != "clear" {
-				if _, hasValue := action.Params["value"]; !hasValue {
+			} else {
+				opStr, _ := op.(string)
+				validOps := map[string]bool{"set": true, "add": true, "remove": true, "increment": true, "decrement": true, "clear": true}
+				if !validOps[opStr] {
 					result.Valid = false
 					result.Errors = append(result.Errors, ValidationError{
-						Field:   path + ".params.value",
-						Message: fmt.Sprintf("update_contact with operation '%s' requires 'value' parameter", opStr),
+						Field:   path + ".params.operation",
+						Message: fmt.Sprintf("invalid operation: '%s'. Valid: set, add, remove, increment, decrement, clear", opStr),
 					})
+				}
+				if opStr != "clear" {
+					if _, hasValue := action.Params["value"]; !hasValue {
+						result.Valid = false
+						result.Errors = append(result.Errors, ValidationError{
+							Field:   path + ".params.value",
+							Message: fmt.Sprintf("update_contact with operation '%s' requires 'value' parameter", opStr),
+						})
+					}
 				}
 			}
 		}
