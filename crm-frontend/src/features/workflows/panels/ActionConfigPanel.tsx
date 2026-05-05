@@ -4,7 +4,7 @@ import { useBuilderStore } from '../store';
 import { TemplateInput } from './inputs';
 import { FieldPicker, type FieldMeta } from './FieldPicker';
 import { SmartValueInput } from './SmartValueInput';
-import type { SchemaField } from '../api';
+import type { SchemaField, WorkflowSchema } from '../api';
 import { findFieldInSchema } from '../useSchema';
 
 export const ActionConfigPanel: React.FC = () => {
@@ -304,11 +304,14 @@ interface FieldUpdateEntry {
 
 /** Which operations are valid for each field type */
 function getOperationsForFieldType(fieldType: string, pickerType?: string): UpdateOperation[] {
-  if (pickerType === 'tag') return ['add', 'remove', 'set', 'clear'];
-  if (fieldType === 'array') return ['add', 'remove', 'set', 'clear'];
-  if (fieldType === 'number') return ['set', 'increment', 'decrement', 'clear'];
-  // string, boolean, select, date, user, stage
-  return ['set', 'clear'];
+  // Tags / array: all array ops
+  if (pickerType === 'tag') return ['set', 'add', 'remove', 'clear'];
+  if (fieldType === 'array') return ['set', 'add', 'remove', 'clear'];
+  // Numbers: set, add (→set), increment, decrement, clear
+  if (fieldType === 'number') return ['set', 'add', 'increment', 'decrement', 'clear'];
+  // Scalars (string, boolean, select, date, user, stage):
+  // set, add (→set fallback), clear. 'remove' excluded for scalars.
+  return ['set', 'add', 'clear'];
 }
 
 const UpdateContactParams: React.FC<ParamProps> = ({ action }) => {
@@ -400,7 +403,7 @@ const UpdateContactParams: React.FC<ParamProps> = ({ action }) => {
 const UpdateRow: React.FC<{
   entry: FieldUpdateEntry;
   index: number;
-  schema: ReturnType<typeof useBuilderStore>['schema'];
+  schema: WorkflowSchema | null;
   totalCount: number;
   onPatch: (patch: Partial<FieldUpdateEntry>) => void;
   onRemove: () => void;
@@ -421,11 +424,11 @@ const UpdateRow: React.FC<{
     const field = findFieldInSchema(schema, path);
     const newValidOps = field
       ? getOperationsForFieldType(field.type, field.picker_type)
-      : ['set', 'clear'];
+      : ['set', 'clear'] as UpdateOperation[];
 
     const patch: Partial<FieldUpdateEntry> = { field: path, value: undefined };
     if (!newValidOps.includes(entry.op)) {
-      patch.op = newValidOps[0];
+      patch.op = newValidOps[0] as UpdateOperation;
     }
     onPatch(patch);
   };

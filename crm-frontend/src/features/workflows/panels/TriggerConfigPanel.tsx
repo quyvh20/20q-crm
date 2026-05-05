@@ -326,7 +326,7 @@ export const TriggerConfigPanel: React.FC = () => {
             </div>
 
             {/* Optional: to exact value */}
-            {trigger?.params?.watch_field && (
+            {!!trigger?.params?.watch_field && (
               <div className="flex items-center gap-2">
                 <label className="flex items-center gap-2 cursor-pointer select-none">
                   <input
@@ -433,7 +433,7 @@ function buildSentencePreview(trigger: TriggerSpec, schema: ReturnType<typeof us
       }
       const hasVal = trigger.params?.watch_value !== undefined;
       if (hasVal) {
-        return `When a Contact's ${fieldLabel} changes to "${trigger.params!.watch_value}"`;
+        return `When a Contact's ${fieldLabel} changes to "${String(trigger.params!.watch_value)}"`;
       }
       return `When a Contact's ${fieldLabel} changes`;
     }
