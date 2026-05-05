@@ -40,7 +40,7 @@ function deriveObjectSlug(triggerType: string): string {
 }
 
 export const ConditionConfigPanel: React.FC = () => {
-  const { trigger, conditions, setConditions, schema, schemaLoading, schemaError, invalidateSchema } = useBuilderStore();
+  const { trigger, conditions, setConditions, schema, schemaLoading, schemaError, invalidateSchema, errors } = useBuilderStore();
 
   // Derive firesOn + object from current trigger
   const firesOn = useMemo<FiresOn>(() => {
@@ -312,6 +312,7 @@ export const ConditionConfigPanel: React.FC = () => {
           const noValue = isNoValueOperator(currentOp);
           const dualValue = isDualValueOperator(currentOp);
           const resolvedField = rule.field ? findFieldInSchema(schema, rule.field) : null;
+          const ruleValueError = errors[`conditions.rules.${idx}.value`]?.[0];
 
           return (
             <React.Fragment key={idx}>
@@ -331,7 +332,11 @@ export const ConditionConfigPanel: React.FC = () => {
                 </div>
               )}
 
-              <div className="group/rule rounded-xl border border-gray-800 bg-gray-900/50 p-3 space-y-2 transition-colors hover:border-gray-700">
+              <div className={`group/rule rounded-xl border bg-gray-900/50 p-3 space-y-2 transition-colors ${
+                ruleValueError
+                  ? 'border-red-500/50 hover:border-red-500/70'
+                  : 'border-gray-800 hover:border-gray-700'
+              }`}>
                 {/* Inline toast: operator was auto-reset */}
                 {resetNotice === idx && (
                   <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-400 animate-pulse">
@@ -443,6 +448,13 @@ export const ConditionConfigPanel: React.FC = () => {
                       </div>
                     )}
                   </div>
+                )}
+
+                {/* Inline validation error for missing value */}
+                {ruleValueError && (
+                  <p className="text-[11px] text-red-400 flex items-center gap-1">
+                    <span>⚠</span> {ruleValueError}
+                  </p>
                 )}
 
                 {/* Field type indicator */}

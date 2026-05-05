@@ -88,7 +88,7 @@ const selectClass =
 // ============================================================
 
 export const TriggerConfigPanel: React.FC = () => {
-  const { trigger, setTrigger, schema } = useBuilderStore();
+  const { trigger, setTrigger, schema, errors } = useBuilderStore();
 
   const entityList = useMemo(() => buildEntityList(schema), [schema]);
 
@@ -118,6 +118,10 @@ export const TriggerConfigPanel: React.FC = () => {
   // Fires-on label for preview
   const firesOnLabel = FIRES_ON_OPTIONS.find((o) => o.value === firesOn)?.label?.toLowerCase() || firesOn;
 
+  // Inline errors
+  const objectError = errors['trigger.object']?.[0];
+  const firesOnError = errors['trigger.firesOn']?.[0];
+
   return (
     <div className="space-y-4">
       <h3 className="text-lg font-semibold text-white">Source</h3>
@@ -131,7 +135,7 @@ export const TriggerConfigPanel: React.FC = () => {
             <select
               value={object || ''}
               onChange={(e) => handleObjectChange(e.target.value)}
-              className={`${selectClass} w-full`}
+              className={`${selectClass} w-full ${objectError ? '!border-red-500' : ''}`}
               style={{ paddingRight: '2rem' }}
             >
               <option value="" disabled>Select object…</option>
@@ -141,6 +145,9 @@ export const TriggerConfigPanel: React.FC = () => {
             </select>
             <ChevronDown />
           </div>
+          {objectError && (
+            <p className="text-[11px] text-red-400 mt-0.5">⚠ {objectError}</p>
+          )}
         </div>
 
         {/* Fires on selector */}
@@ -162,6 +169,9 @@ export const TriggerConfigPanel: React.FC = () => {
                 </button>
               ))}
             </div>
+            {firesOnError && (
+              <p className="text-[11px] text-red-400 mt-0.5">⚠ {firesOnError}</p>
+            )}
           </div>
         )}
       </div>

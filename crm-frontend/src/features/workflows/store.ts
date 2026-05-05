@@ -146,7 +146,25 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
     }
 
     if (!state.trigger) {
-      errors.trigger = ['Trigger is required'];
+      errors.trigger = ['Source is required'];
+      errors['trigger.object'] = ['Select a source object'];
+    } else {
+      const slug = extractObjectSlug(state.trigger.type);
+      if (!slug) {
+        errors['trigger.object'] = ['Select a source object'];
+        if (!errors.trigger) errors.trigger = [];
+        errors.trigger.push('Source object is missing');
+      }
+      // Fires-on is always set when object is set (default = created),
+      // but validate the trigger type is well-formed
+      const t = state.trigger.type;
+      const hasValidEvent = t === 'webhook_inbound' || t === 'deal_stage_changed' || t === 'no_activity_days'
+        || t.endsWith('_created') || t.endsWith('_updated') || t.endsWith('_deleted') || t.endsWith('_any');
+      if (slug && !hasValidEvent) {
+        errors['trigger.firesOn'] = ['Select a fires-on event'];
+        if (!errors.trigger) errors.trigger = [];
+        errors.trigger.push('Fires-on event is missing');
+      }
     }
 
     if (state.actions.length === 0) {
