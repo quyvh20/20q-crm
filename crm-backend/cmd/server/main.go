@@ -162,7 +162,7 @@ func main() {
 	})
 
 	router.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{cfg.FrontendURL, "http://localhost:5173", "https://20q-crm.vercel.app"},
+		AllowOrigins:     []string{cfg.FrontendURL, "http://localhost:5173", "https://20q-crm.vercel.app", "https://20q-crm.pages.dev"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},
 		ExposeHeaders:    []string{"Content-Length"},
@@ -193,7 +193,7 @@ func main() {
 
 		appEnv := os.Getenv("APP_ENV")
 
-		workspaceUseCase := usecase.NewWorkspaceUseCase(authRepo, mailerSvc, appEnv)
+		workspaceUseCase := usecase.NewWorkspaceUseCase(authRepo, mailerSvc, appEnv, cfg.FrontendURL)
 		workspaceHandler := delivery.NewWorkspaceHandler(workspaceUseCase)
 
 		budget := ai.NewBudgetGuard(db, redisClient)

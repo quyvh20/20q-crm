@@ -13,16 +13,18 @@ import (
 )
 
 type workspaceUseCase struct {
-	authRepo domain.AuthRepository
-	mailer   domain.Mailer
-	appEnv   string
+	authRepo    domain.AuthRepository
+	mailer      domain.Mailer
+	appEnv      string
+	frontendURL string
 }
 
-func NewWorkspaceUseCase(authRepo domain.AuthRepository, mailer domain.Mailer, appEnv string) domain.WorkspaceUseCase {
+func NewWorkspaceUseCase(authRepo domain.AuthRepository, mailer domain.Mailer, appEnv string, frontendURL string) domain.WorkspaceUseCase {
 	return &workspaceUseCase{
-		authRepo: authRepo,
-		mailer:   mailer,
-		appEnv:   appEnv,
+		authRepo:    authRepo,
+		mailer:      mailer,
+		appEnv:      appEnv,
+		frontendURL: frontendURL,
 	}
 }
 
@@ -90,7 +92,7 @@ func (uc *workspaceUseCase) InviteMember(ctx context.Context, orgID uuid.UUID, i
 		return nil, nil, domain.NewAppError(500, "CreateOrgInvitation error: " + err.Error())
 	}
 
-	link := fmt.Sprintf("%s/accept-invite?token=%s", "https://20q-crm.vercel.app", rawToken)
+	link := fmt.Sprintf("%s/accept-invite?token=%s", uc.frontendURL, rawToken)
 	if err := uc.mailer.SendInvite(ctx, input.Email, link, orgID.String()); err != nil {
 		return nil, nil, domain.NewAppError(500, "SendInvite error: " + err.Error())
 	}
