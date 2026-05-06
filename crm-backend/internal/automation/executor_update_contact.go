@@ -120,7 +120,32 @@ func (e *UpdateContactExecutor) Execute(ctx context.Context, run *WorkflowRun, a
 		)
 	}
 
-	return map[string]any{"updates": results, "count": len(results)}, nil
+	// Re-read the updated contact from DB so downstream actions can reference
+	// current values via {{actions.<id>.email}}, {{actions.<id>.first_name}}, etc.
+	contactSnapshot, err := e.readContactSnapshot(ctx, run.OrgID, cid)
+	if err != nil {
+		// Non-fatal: return update results without snapshot
+		slog.Warn("automation: could not re-read contact after update",
+			"contact_id", contactID,
+			"error", err,
+		)
+		return map[string]any{"updates": results, "count": len(results)}, nil
+	}
+
+	// Also refresh evalCtx.Contact so remaining actions in this run
+	// see the latest contact state in templates like {{contact.email}}
+	for k, v := range contactSnapshot {
+		evalCtx.Contact[k] = v
+	}
+
+	// Merge contact fields into the output at the top level:
+	// output.email, output.first_name, etc. are directly accessible
+	// as {{actions.<id>.email}}, while output.updates has the mutation log.
+	output := contactSnapshot
+	output["updates"] = results
+	output["count"] = len(results)
+
+	return output, nil
 }
 
 // parseUpdates extracts the []FieldUpdate from action params.
@@ -407,4 +432,80 @@ func uuidsToStrings(ids []uuid.UUID) []string {
 		result[i] = id.String()
 	}
 	return result
+}
+
+// readContactSnapshot re-reads the contact from DB and returns a flat map
+// suitable for template interpolation (e.g. {{actions.uc1.email}}).
+// Keys match the EvalContext contact shape: id, first_name, last_name, email,
+// phone, owner_user_id, company_id, custom_fields.*, tags (as []string of IDs).
+func (e *UpdateContactExecutor) readContactSnapshot(ctx context.Context, orgID, contactID uuid.UUID) (map[string]any, error) {
+	// Read core fields
+	var row struct {
+		ID          uuid.UUID  `gorm:"column:id"`
+		FirstName   string     `gorm:"column:first_name"`
+		LastName    string     `gorm:"column:last_name"`
+		Email       *string    `gorm:"column:email"`
+		Phone       *string    `gorm:"column:phone"`
+		OwnerUserID *uuid.UUID `gorm:"column:owner_user_id"`
+		CompanyID   *uuid.UUID `gorm:"column:company_id"`
+		CustomFields *string   `gorm:"column:custom_fields"`
+	}
+
+	if err := e.db.WithContext(ctx).
+		Table("contacts").
+		Select("id, first_name, last_name, email, phone, owner_user_id, company_id, custom_fields::text").
+		Where("id = ? AND org_id = ?", contactID, orgID).
+		Scan(&row).Error; err != nil {
+		return nil, fmt.Errorf("read contact: %w", err)
+	}
+
+	snapshot := map[string]any{
+		"id":         row.ID.String(),
+		"first_name": row.FirstName,
+		"last_name":  row.LastName,
+	}
+
+	if row.Email != nil {
+		snapshot["email"] = *row.Email
+	}
+	if row.Phone != nil {
+		snapshot["phone"] = *row.Phone
+	}
+	if row.OwnerUserID != nil {
+		snapshot["owner_user_id"] = row.OwnerUserID.String()
+	}
+	if row.CompanyID != nil {
+		snapshot["company_id"] = row.CompanyID.String()
+	}
+
+	// Flatten custom_fields JSONB into snapshot
+	if row.CustomFields != nil && *row.CustomFields != "" {
+		var cf map[string]any
+		if err := json.Unmarshal([]byte(*row.CustomFields), &cf); err == nil {
+			snapshot["custom_fields"] = cf
+			// Also expose each custom field as a top-level key for convenience:
+			// {{actions.uc1.score}} instead of {{actions.uc1.custom_fields.score}}
+			for k, v := range cf {
+				snapshot[k] = v
+			}
+		}
+	}
+
+	// Read tags
+	var tagIDs []struct {
+		TagID uuid.UUID `gorm:"column:tag_id"`
+	}
+	if err := e.db.WithContext(ctx).
+		Table("contact_tags").
+		Select("tag_id").
+		Where("contact_id = ?", contactID).
+		Scan(&tagIDs).Error; err == nil && len(tagIDs) > 0 {
+		tags := make([]string, len(tagIDs))
+		for i, t := range tagIDs {
+			tags[i] = t.TagID.String()
+		}
+		snapshot["tags"] = tags
+	}
+
+	return snapshot, nil
 }
