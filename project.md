@@ -88,8 +88,8 @@ The project is fully automated and deployed to production:
 - **Backend**: [Railway](https://railway.app)
   - Auto-builds from `main` branch.
   - Health Endpoint: `https://20q-crm-production.up.railway.app/health`
-- **Frontend**: [Vercel](https://vercel.app)
-  - Live URL: [https://20q-crm.vercel.app](https://20q-crm.vercel.app)
+- **Frontend**: [Cloudflare Pages](https://pages.cloudflare.com)
+  - Live URL: [https://20q-crm.pages.dev](https://20q-crm.pages.dev)
 
 ---
 
