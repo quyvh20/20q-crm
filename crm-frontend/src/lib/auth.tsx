@@ -134,6 +134,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const loadUser = async () => {
+      // Skip auth check on /auth/callback — that page manages its own token flow.
+      // Running loadUser here causes a race condition: this fetch gets aborted
+      // when the callback page navigates away, triggering clearAuth() which
+      // wipes the tokens from localStorage before the new page loads.
+      if (window.location.pathname === '/auth/callback') {
+        console.log('[AuthProvider] Skipping loadUser on /auth/callback');
+        setIsLoading(false);
+        return;
+      }
+
       const token = localStorage.getItem('access_token');
       console.log('[AuthProvider] loadUser: token present?', !!token);
       if (!token) {
@@ -170,6 +180,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           clearAuth();
         }
       } catch (err) {
+        // Don't clear auth on abort/navigation errors — the page is just unloading
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          console.log('[AuthProvider] Fetch aborted (navigation), keeping tokens');
+          return;
+        }
         console.error('[AuthProvider] /api/auth/me network error:', err);
         clearAuth();
       } finally {
