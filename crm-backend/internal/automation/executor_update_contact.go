@@ -55,6 +55,11 @@ var validUpdateOperations = map[string]bool{
 // Execute applies all field updates from params.updates to the contact in context.
 // All mutations run inside a single transaction — if any update fails, the entire
 // batch is rolled back (all-or-nothing semantics).
+//
+// Infinite-loop safety: this executor uses direct SQL (GORM) to mutate the contact,
+// which bypasses the HTTP handler and does NOT emit contact_updated events. The engine
+// also has a _internal_update guard in triggerEventInternal() as defense-in-depth.
+// If event emission is ever added here, the payload MUST include _internal_update=true.
 func (e *UpdateContactExecutor) Execute(ctx context.Context, run *WorkflowRun, action ActionSpec, evalCtx EvalContext) (any, error) {
 	// Parse updates array from params
 	updates, err := e.parseUpdates(action.Params)

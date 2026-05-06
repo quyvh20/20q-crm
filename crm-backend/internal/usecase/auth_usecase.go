@@ -536,17 +536,9 @@ func (uc *authUseCase) GoogleLogin(ctx context.Context, code string) (*domain.Au
 	var activeOrgID uuid.UUID
 	var activeRole string
 	if len(orgUsers) > 0 {
-		// Prefer a workspace where the user has admin/owner role
-		bestIdx := 0
-		for i, ou := range orgUsers {
-			if ou.Role != nil && (ou.Role.Name == domain.RoleOwner || ou.Role.Name == "admin") {
-				bestIdx = i
-				break
-			}
-		}
-		activeOrgID = orgUsers[bestIdx].OrgID
-		if orgUsers[bestIdx].Role != nil {
-			activeRole = orgUsers[bestIdx].Role.Name
+		activeOrgID = orgUsers[0].OrgID
+		if orgUsers[0].Role != nil {
+			activeRole = orgUsers[0].Role.Name
 		} else {
 			activeRole = "viewer"
 		}

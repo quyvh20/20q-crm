@@ -167,6 +167,18 @@ func (e *Engine) TriggerEvent(ctx context.Context, orgID uuid.UUID, eventType st
 }
 
 func (e *Engine) triggerEventInternal(ctx context.Context, orgID uuid.UUID, eventType string, payload map[string]any) error {
+	// ── Infinite-loop guard ────────────────────────────────────────────
+	// If the event was caused by the automation engine itself (e.g. an
+	// update_contact action modifying a contact), skip re-triggering to
+	// prevent contact_updated → update_contact → contact_updated → ∞.
+	if internal, ok := payload["_internal_update"].(bool); ok && internal {
+		e.logger.Debug("automation: skipping re-trigger (internal update)",
+			"event_type", eventType,
+			"org_id", orgID.String(),
+		)
+		return nil
+	}
+
 	workflows, err := e.repo.GetActiveWorkflowsByTrigger(ctx, orgID, eventType)
 	if err != nil {
 		return fmt.Errorf("query workflows: %w", err)
