@@ -75,6 +75,19 @@ func (e *UpdateContactExecutor) Execute(ctx context.Context, run *WorkflowRun, a
 		return nil, fmt.Errorf("update_contact: invalid contact ID: %w", err)
 	}
 
+	// Defense-in-depth: verify the contact belongs to the run's org BEFORE any mutations.
+	// This is critical because tag operations (contact_tags join table) cannot include
+	// org_id in their WHERE clause — they rely on this pre-check for org scoping.
+	var exists bool
+	if err := e.db.WithContext(ctx).
+		Raw("SELECT EXISTS(SELECT 1 FROM contacts WHERE id = ? AND org_id = ? AND deleted_at IS NULL)", cid, run.OrgID).
+		Scan(&exists).Error; err != nil {
+		return nil, fmt.Errorf("update_contact: org ownership check failed: %w", err)
+	}
+	if !exists {
+		return nil, fmt.Errorf("update_contact: contact %s not found in org %s", contactID, run.OrgID.String())
+	}
+
 	// Execute each field update
 	results := make([]map[string]any, 0, len(updates))
 	for i, upd := range updates {
