@@ -24,6 +24,8 @@ import (
 //	    { "field": "phone",                "op": "clear" }
 //	  ]
 //	}
+//
+// All updates execute inside a single DB transaction for multi-field atomicity.
 type UpdateContactExecutor struct {
 	db *gorm.DB
 }
@@ -51,6 +53,8 @@ var validUpdateOperations = map[string]bool{
 }
 
 // Execute applies all field updates from params.updates to the contact in context.
+// All mutations run inside a single transaction — if any update fails, the entire
+// batch is rolled back (all-or-nothing semantics).
 func (e *UpdateContactExecutor) Execute(ctx context.Context, run *WorkflowRun, action ActionSpec, evalCtx EvalContext) (any, error) {
 	// Parse updates array from params
 	updates, err := e.parseUpdates(action.Params)
@@ -88,53 +92,65 @@ func (e *UpdateContactExecutor) Execute(ctx context.Context, run *WorkflowRun, a
 		return nil, fmt.Errorf("update_contact: contact %s not found in org %s", contactID, run.OrgID.String())
 	}
 
-	// Execute each field update
-	results := make([]map[string]any, 0, len(updates))
-	for i, upd := range updates {
-		field := InterpolateTemplate(upd.Field, evalCtx)
-		op := upd.Op
+	// ── Transaction: all mutations are atomic (all-or-nothing) ──────────
+	var results []map[string]any
 
-		if field == "" {
-			return nil, fmt.Errorf("update_contact: updates[%d].field is empty", i)
+	txErr := e.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		results = make([]map[string]any, 0, len(updates))
+
+		for i, upd := range updates {
+			field := InterpolateTemplate(upd.Field, evalCtx)
+			op := upd.Op
+
+			if field == "" {
+				return fmt.Errorf("updates[%d].field is empty", i)
+			}
+			if !validUpdateOperations[op] {
+				return fmt.Errorf("updates[%d] invalid op '%s'. Valid: set, add, remove, increment, decrement, clear", i, op)
+			}
+
+			// Strip "contact." prefix if present (UI emits "contact.first_name", executor needs "first_name")
+			field = strings.TrimPrefix(field, "contact.")
+
+			// Build a per-update params map for handler dispatch
+			updateParams := map[string]any{"value": upd.Value}
+
+			var result map[string]any
+			var err error
+
+			switch {
+			case field == "tags":
+				result, err = e.handleTags(ctx, tx, run.OrgID, cid, op, updateParams, evalCtx)
+			case strings.HasPrefix(field, "custom_fields."):
+				cfKey := strings.TrimPrefix(field, "custom_fields.")
+				result, err = e.handleCustomField(ctx, tx, run.OrgID, cid, cfKey, op, updateParams, evalCtx)
+			default:
+				result, err = e.handleColumnField(ctx, tx, run.OrgID, cid, field, op, updateParams, evalCtx)
+			}
+
+			if err != nil {
+				return fmt.Errorf("updates[%d] (%s.%s): %w", i, field, op, err)
+			}
+
+			results = append(results, result)
+
+			slog.Info("automation: contact field updated",
+				"contact_id", contactID,
+				"field", field,
+				"op", op,
+				"workflow_run_id", run.ID.String(),
+			)
 		}
-		if !validUpdateOperations[op] {
-			return nil, fmt.Errorf("update_contact: updates[%d] invalid op '%s'. Valid: set, add, remove, increment, decrement, clear", i, op)
-		}
 
-		// Strip "contact." prefix if present (UI emits "contact.first_name", executor needs "first_name")
-		field = strings.TrimPrefix(field, "contact.")
+		return nil // commit
+	})
 
-		// Build a per-update params map for handler dispatch
-		updateParams := map[string]any{"value": upd.Value}
-
-		var result map[string]any
-
-		switch {
-		case field == "tags":
-			result, err = e.handleTags(ctx, run.OrgID, cid, op, updateParams, evalCtx)
-		case strings.HasPrefix(field, "custom_fields."):
-			cfKey := strings.TrimPrefix(field, "custom_fields.")
-			result, err = e.handleCustomField(ctx, run.OrgID, cid, cfKey, op, updateParams, evalCtx)
-		default:
-			result, err = e.handleColumnField(ctx, run.OrgID, cid, field, op, updateParams, evalCtx)
-		}
-
-		if err != nil {
-			return nil, fmt.Errorf("update_contact: updates[%d] (%s.%s): %w", i, field, op, err)
-		}
-
-		results = append(results, result)
-
-		slog.Info("automation: contact field updated",
-			"contact_id", contactID,
-			"field", field,
-			"op", op,
-			"workflow_run_id", run.ID.String(),
-		)
+	if txErr != nil {
+		return nil, fmt.Errorf("update_contact: %w", txErr)
 	}
 
-	// Re-read the updated contact from DB so downstream actions can reference
-	// current values via {{actions.<id>.email}}, {{actions.<id>.first_name}}, etc.
+	// ── Post-commit: re-read contact for downstream template access ────
+	// Uses e.db (not tx, which is closed) to read the committed state.
 	contactSnapshot, err := e.readContactSnapshot(ctx, run.OrgID, cid)
 	if err != nil {
 		// Non-fatal: return update results without snapshot
@@ -195,7 +211,8 @@ func (e *UpdateContactExecutor) parseUpdates(params map[string]any) ([]FieldUpda
 
 // handleColumnField updates a direct column on the contacts table.
 // Supports: set, add (falls through to set for scalars), clear.
-func (e *UpdateContactExecutor) handleColumnField(ctx context.Context, orgID, contactID uuid.UUID, field, op string, params map[string]any, evalCtx EvalContext) (map[string]any, error) {
+// All operations use the provided tx handle for transactional atomicity.
+func (e *UpdateContactExecutor) handleColumnField(ctx context.Context, tx *gorm.DB, orgID, contactID uuid.UUID, field, op string, params map[string]any, evalCtx EvalContext) (map[string]any, error) {
 	// Map workflow field names to actual DB column names
 	columnMap := map[string]string{
 		"first_name":    "first_name",
@@ -218,7 +235,7 @@ func (e *UpdateContactExecutor) handleColumnField(ctx context.Context, orgID, co
 		if value == "" {
 			return nil, fmt.Errorf("'value' is required for '%s' on column '%s'", op, field)
 		}
-		err := e.db.WithContext(ctx).
+		err := tx.WithContext(ctx).
 			Table("contacts").
 			Where("id = ? AND org_id = ?", contactID, orgID).
 			Update(column, value).Error
@@ -228,7 +245,7 @@ func (e *UpdateContactExecutor) handleColumnField(ctx context.Context, orgID, co
 		return map[string]any{"field": field, "op": op, "value": value}, nil
 
 	case "clear":
-		err := e.db.WithContext(ctx).
+		err := tx.WithContext(ctx).
 			Table("contacts").
 			Where("id = ? AND org_id = ?", contactID, orgID).
 			Update(column, nil).Error
@@ -249,7 +266,8 @@ func (e *UpdateContactExecutor) handleColumnField(ctx context.Context, orgID, co
 }
 
 // handleTags manages tag add/remove/set/clear on a contact via the contact_tags join table.
-func (e *UpdateContactExecutor) handleTags(ctx context.Context, orgID, contactID uuid.UUID, op string, params map[string]any, evalCtx EvalContext) (map[string]any, error) {
+// All operations use the provided tx handle for transactional atomicity.
+func (e *UpdateContactExecutor) handleTags(ctx context.Context, tx *gorm.DB, orgID, contactID uuid.UUID, op string, params map[string]any, evalCtx EvalContext) (map[string]any, error) {
 	switch op {
 	case "add":
 		tagIDs, err := e.resolveTagIDs(params, evalCtx)
@@ -270,7 +288,7 @@ func (e *UpdateContactExecutor) handleTags(ctx context.Context, orgID, contactID
 			args = append(args, contactID, tid)
 		}
 		sql += " ON CONFLICT DO NOTHING"
-		if err := e.db.WithContext(ctx).Exec(sql, args...).Error; err != nil {
+		if err := tx.WithContext(ctx).Exec(sql, args...).Error; err != nil {
 			return nil, fmt.Errorf("tags add error: %w", err)
 		}
 		return map[string]any{"field": "tags", "op": "add", "tag_ids": uuidsToStrings(tagIDs)}, nil
@@ -283,7 +301,7 @@ func (e *UpdateContactExecutor) handleTags(ctx context.Context, orgID, contactID
 		if len(tagIDs) == 0 {
 			return nil, fmt.Errorf("'value' (tag IDs) required for 'remove' on tags")
 		}
-		if err := e.db.WithContext(ctx).
+		if err := tx.WithContext(ctx).
 			Exec("DELETE FROM contact_tags WHERE contact_id = ? AND tag_id IN ?", contactID, tagIDs).Error; err != nil {
 			return nil, fmt.Errorf("tags remove error: %w", err)
 		}
@@ -295,7 +313,7 @@ func (e *UpdateContactExecutor) handleTags(ctx context.Context, orgID, contactID
 			return nil, fmt.Errorf("tags set: %w", err)
 		}
 		// Replace all tags: delete all, then insert new
-		if err := e.db.WithContext(ctx).
+		if err := tx.WithContext(ctx).
 			Exec("DELETE FROM contact_tags WHERE contact_id = ?", contactID).Error; err != nil {
 			return nil, fmt.Errorf("tags clear before set error: %w", err)
 		}
@@ -310,14 +328,14 @@ func (e *UpdateContactExecutor) handleTags(ctx context.Context, orgID, contactID
 				args = append(args, contactID, tid)
 			}
 			sql += " ON CONFLICT DO NOTHING"
-			if err := e.db.WithContext(ctx).Exec(sql, args...).Error; err != nil {
+			if err := tx.WithContext(ctx).Exec(sql, args...).Error; err != nil {
 				return nil, fmt.Errorf("tags set insert error: %w", err)
 			}
 		}
 		return map[string]any{"field": "tags", "op": "set", "tag_ids": uuidsToStrings(tagIDs)}, nil
 
 	case "clear":
-		if err := e.db.WithContext(ctx).
+		if err := tx.WithContext(ctx).
 			Exec("DELETE FROM contact_tags WHERE contact_id = ?", contactID).Error; err != nil {
 			return nil, fmt.Errorf("tags clear error: %w", err)
 		}
@@ -330,14 +348,15 @@ func (e *UpdateContactExecutor) handleTags(ctx context.Context, orgID, contactID
 
 // handleCustomField updates a key in the contact's custom_fields JSONB column.
 // Supports: set, add (falls through to set for scalars), increment, decrement, clear.
-func (e *UpdateContactExecutor) handleCustomField(ctx context.Context, orgID, contactID uuid.UUID, cfKey, op string, params map[string]any, evalCtx EvalContext) (map[string]any, error) {
+// All operations use the provided tx handle for transactional atomicity.
+func (e *UpdateContactExecutor) handleCustomField(ctx context.Context, tx *gorm.DB, orgID, contactID uuid.UUID, cfKey, op string, params map[string]any, evalCtx EvalContext) (map[string]any, error) {
 	switch op {
 	case "set", "add":
 		// "add" on a custom field (scalar) behaves as "set" (overwrite)
 		value := getStringParam(params, "value", evalCtx)
 		// Use JSONB set: custom_fields || '{"key": "value"}'
 		patch, _ := json.Marshal(map[string]any{cfKey: value})
-		err := e.db.WithContext(ctx).
+		err := tx.WithContext(ctx).
 			Table("contacts").
 			Where("id = ? AND org_id = ?", contactID, orgID).
 			Update("custom_fields", gorm.Expr("COALESCE(custom_fields, '{}'::jsonb) || ?::jsonb", string(patch))).Error
@@ -351,7 +370,7 @@ func (e *UpdateContactExecutor) handleCustomField(ctx context.Context, orgID, co
 		if delta == 0 {
 			delta = 1
 		}
-		err := e.db.WithContext(ctx).
+		err := tx.WithContext(ctx).
 			Table("contacts").
 			Where("id = ? AND org_id = ?", contactID, orgID).
 			Update("custom_fields", gorm.Expr(
@@ -368,7 +387,7 @@ func (e *UpdateContactExecutor) handleCustomField(ctx context.Context, orgID, co
 		if delta == 0 {
 			delta = 1
 		}
-		err := e.db.WithContext(ctx).
+		err := tx.WithContext(ctx).
 			Table("contacts").
 			Where("id = ? AND org_id = ?", contactID, orgID).
 			Update("custom_fields", gorm.Expr(
@@ -382,7 +401,7 @@ func (e *UpdateContactExecutor) handleCustomField(ctx context.Context, orgID, co
 
 	case "clear":
 		// Remove the key from JSONB: custom_fields - 'key'
-		err := e.db.WithContext(ctx).
+		err := tx.WithContext(ctx).
 			Table("contacts").
 			Where("id = ? AND org_id = ?", contactID, orgID).
 			Update("custom_fields", gorm.Expr("COALESCE(custom_fields, '{}'::jsonb) - ?", cfKey)).Error
@@ -392,7 +411,7 @@ func (e *UpdateContactExecutor) handleCustomField(ctx context.Context, orgID, co
 		return map[string]any{"field": "custom_fields." + cfKey, "op": "clear"}, nil
 
 	case "remove":
-		return nil, fmt.Errorf("'remove' is not supported on custom fields (use on tags)", )
+		return nil, fmt.Errorf("'remove' is not supported on custom fields (use on tags)")
 
 	default:
 		return nil, fmt.Errorf("unsupported op '%s' on custom field '%s'", op, cfKey)
@@ -451,17 +470,18 @@ func uuidsToStrings(ids []uuid.UUID) []string {
 // suitable for template interpolation (e.g. {{actions.uc1.email}}).
 // Keys match the EvalContext contact shape: id, first_name, last_name, email,
 // phone, owner_user_id, company_id, custom_fields.*, tags (as []string of IDs).
+// Uses e.db (not tx) because this runs after the transaction commits.
 func (e *UpdateContactExecutor) readContactSnapshot(ctx context.Context, orgID, contactID uuid.UUID) (map[string]any, error) {
 	// Read core fields
 	var row struct {
-		ID          uuid.UUID  `gorm:"column:id"`
-		FirstName   string     `gorm:"column:first_name"`
-		LastName    string     `gorm:"column:last_name"`
-		Email       *string    `gorm:"column:email"`
-		Phone       *string    `gorm:"column:phone"`
-		OwnerUserID *uuid.UUID `gorm:"column:owner_user_id"`
-		CompanyID   *uuid.UUID `gorm:"column:company_id"`
-		CustomFields *string   `gorm:"column:custom_fields"`
+		ID           uuid.UUID  `gorm:"column:id"`
+		FirstName    string     `gorm:"column:first_name"`
+		LastName     string     `gorm:"column:last_name"`
+		Email        *string    `gorm:"column:email"`
+		Phone        *string    `gorm:"column:phone"`
+		OwnerUserID  *uuid.UUID `gorm:"column:owner_user_id"`
+		CompanyID    *uuid.UUID `gorm:"column:company_id"`
+		CustomFields *string    `gorm:"column:custom_fields"`
 	}
 
 	if err := e.db.WithContext(ctx).
