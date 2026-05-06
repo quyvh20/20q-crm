@@ -158,21 +158,30 @@ func (h *AuthHandler) GoogleLogin(c *gin.Context) {
 }
 
 func (h *AuthHandler) GoogleCallback(c *gin.Context) {
+	frontendURL := h.cfg.FrontendURL
+	if frontendURL == "" {
+		frontendURL = "http://localhost:5173"
+	}
+
+	// Google sends ?error=access_denied when user denies consent
+	if errMsg := c.Query("error"); errMsg != "" {
+		c.Redirect(http.StatusTemporaryRedirect,
+			fmt.Sprintf("%s/login?error=%s", frontendURL, errMsg))
+		return
+	}
+
 	code := c.Query("code")
 	if code == "" {
-		c.JSON(http.StatusBadRequest, domain.Err("missing authorization code"))
+		c.Redirect(http.StatusTemporaryRedirect,
+			fmt.Sprintf("%s/login?error=missing_code", frontendURL))
 		return
 	}
 
 	resp, err := h.authUC.GoogleLogin(c.Request.Context(), code)
 	if err != nil {
-		handleAppError(c, err)
+		c.Redirect(http.StatusTemporaryRedirect,
+			fmt.Sprintf("%s/login?error=google_login_failed", frontendURL))
 		return
-	}
-
-	frontendURL := h.cfg.FrontendURL
-	if frontendURL == "" {
-		frontendURL = "http://localhost:5173"
 	}
 
 	redirectURL := fmt.Sprintf("%s/auth/callback?access_token=%s&refresh_token=%s",

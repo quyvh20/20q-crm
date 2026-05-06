@@ -1,29 +1,37 @@
-import { useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 /**
  * Handles the Google OAuth callback redirect.
  * Extracts tokens from the URL query params and stores them.
+ *
+ * Uses window.location.replace() instead of React Router navigate() to
+ * guarantee a full page reload so AuthProvider re-reads localStorage.
+ * This avoids the race condition where navigate() + reload() fires before
+ * the URL actually changes, causing the page to reload at /auth/callback
+ * without query params and redirecting to /login.
  */
 export default function AuthCallbackPage() {
   const [searchParams] = useSearchParams();
-  const navigate = useNavigate();
+  const processed = useRef(false);
 
   useEffect(() => {
+    // Guard against double-execution in StrictMode
+    if (processed.current) return;
+    processed.current = true;
+
     const accessToken = searchParams.get('access_token');
     const refreshToken = searchParams.get('refresh_token');
 
     if (accessToken && refreshToken) {
       localStorage.setItem('access_token', accessToken);
       localStorage.setItem('refresh_token', refreshToken);
-      // Redirect to dashboard — auth context will pick up tokens on mount
-      navigate('/', { replace: true });
-      // Force reload so AuthProvider re-reads localStorage
-      window.location.reload();
+      // Full page navigation so AuthProvider re-reads localStorage on mount
+      window.location.replace('/');
     } else {
-      navigate('/login', { replace: true });
+      window.location.replace('/login');
     }
-  }, [searchParams, navigate]);
+  }, [searchParams]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">

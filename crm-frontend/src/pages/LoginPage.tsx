@@ -1,14 +1,30 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 
+const GOOGLE_ERROR_MESSAGES: Record<string, string> = {
+  access_denied: 'Google sign-in was cancelled',
+  missing_code: 'Google sign-in failed: missing authorization code',
+  google_login_failed: 'Google sign-in failed. Please try again.',
+};
+
 export default function LoginPage() {
   const { login } = useAuth();
+  const [searchParams] = useSearchParams();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // Show Google OAuth errors from redirect
+  useEffect(() => {
+    const errCode = searchParams.get('error');
+    if (errCode) {
+      setError(GOOGLE_ERROR_MESSAGES[errCode] || `Sign-in error: ${errCode}`);
+    }
+  }, [searchParams]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
