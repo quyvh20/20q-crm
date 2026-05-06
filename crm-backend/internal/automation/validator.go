@@ -3,6 +3,7 @@ package automation
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -465,6 +466,11 @@ func validateActionParams(action ActionSpec, path string, result *ValidationResu
 							})
 						}
 					}
+
+					// ── Schema-aware checks (field existence, op/type, value type) ──
+					if fieldVal != "" && opVal != "" && validOps[opVal] {
+						validateUpdateFieldSchema(fieldVal, opVal, entryMap["value"], uPath, result)
+					}
 				}
 			}
 		} else {
@@ -558,3 +564,158 @@ func isValidEmail(s string) bool {
 	domain := s[at+1:]
 	return strings.Contains(domain, ".") && !strings.HasSuffix(domain, ".") && !strings.HasPrefix(domain, ".")
 }
+
+// ── Schema-aware update_contact field validation ─────────────────────
+
+// contactFieldTypes maps built-in contact column paths to their data types.
+// Used by validateUpdateFieldSchema to check field existence + op/type compat.
+var contactFieldTypes = map[string]string{
+	"first_name":    "string",
+	"last_name":     "string",
+	"email":         "string",
+	"phone":         "string",
+	"owner_user_id": "string", // UUID stored as string
+	"company_id":    "string", // UUID stored as string
+	"tags":          "array",  // join-table managed
+}
+
+// opsValidForType defines which operations are valid per field type.
+var opsValidForType = map[string]map[string]bool{
+	"string": {"set": true, "add": true, "clear": true},
+	"number": {"set": true, "add": true, "increment": true, "decrement": true, "clear": true},
+	"array":  {"set": true, "add": true, "remove": true, "clear": true},
+	"boolean": {"set": true, "clear": true},
+	"date":    {"set": true, "clear": true},
+	"select":  {"set": true, "clear": true},
+}
+
+// validateUpdateFieldSchema performs schema-aware checks on a single update entry:
+//  1. Field existence: is the field path a known column, custom_field, or tags?
+//  2. Operation/type compatibility: e.g., can't increment a string field.
+//  3. Value type match: e.g., increment value must be numeric (after coercion).
+//
+// Does NOT block if the field starts with "custom_fields." (custom fields are
+// org-specific and may not be known at pure-validation time — see warning).
+func validateUpdateFieldSchema(fieldPath, op string, value any, uPath string, result *ValidationResult) {
+	// Normalize: strip "contact." prefix (UI emits "contact.first_name")
+	field := strings.TrimPrefix(fieldPath, "contact.")
+
+	// --- 1. Field existence check ---
+	var fieldType string
+
+	if field == "tags" {
+		fieldType = "array"
+	} else if strings.HasPrefix(field, "custom_fields.") {
+		// Custom fields: accept at structural level. The exact key is org-specific
+		// and validated at execution time. We can still check op/value compat
+		// assuming "string" as default (increment/decrement treated as "number").
+		if op == "increment" || op == "decrement" {
+			fieldType = "number"
+		} else {
+			fieldType = "string" // default for custom fields
+		}
+	} else if ft, ok := contactFieldTypes[field]; ok {
+		fieldType = ft
+	} else {
+		// Unknown field — reject
+		result.Valid = false
+		result.Errors = append(result.Errors, ValidationError{
+			Field: uPath + ".field",
+			Message: fmt.Sprintf(
+				"unknown contact field '%s'. Valid: first_name, last_name, email, phone, owner_user_id, company_id, tags, or custom_fields.<key>",
+				fieldPath,
+			),
+		})
+		return
+	}
+
+	// --- 2. Operation/type compatibility ---
+	allowedOps, typeKnown := opsValidForType[fieldType]
+	if typeKnown && !allowedOps[op] {
+		result.Valid = false
+		allowed := make([]string, 0, len(allowedOps))
+		for k := range allowedOps {
+			allowed = append(allowed, k)
+		}
+		result.Errors = append(result.Errors, ValidationError{
+			Field: uPath + ".op",
+			Message: fmt.Sprintf(
+				"operation '%s' is not valid for %s field '%s'. Allowed: %s",
+				op, fieldType, fieldPath, strings.Join(allowed, ", "),
+			),
+		})
+		return
+	}
+
+	// --- 3. Value type compatibility (skip for 'clear' which has no value) ---
+	if op == "clear" || value == nil {
+		return
+	}
+
+	// Skip type checking if value is a template variable (will be resolved at runtime)
+	if strVal, ok := value.(string); ok && strings.Contains(strVal, "{{") {
+		return
+	}
+
+	switch fieldType {
+	case "number":
+		// increment/decrement/set on number: value must be numeric or coercible
+		if !isNumericValue(value) {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   uPath + ".value",
+				Message: fmt.Sprintf("value for %s field '%s' must be numeric, got %T", op, fieldPath, value),
+			})
+		}
+	case "array":
+		// add/remove/set on array: value should be a string, []string, or []any
+		switch value.(type) {
+		case string, []any, []string:
+			// valid
+		default:
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   uPath + ".value",
+				Message: fmt.Sprintf("value for array field '%s' must be a string or array, got %T", fieldPath, value),
+			})
+		}
+	case "boolean":
+		// set on boolean: value should be bool or "true"/"false"
+		switch v := value.(type) {
+		case bool:
+			// valid
+		case string:
+			if v != "true" && v != "false" {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   uPath + ".value",
+					Message: fmt.Sprintf("value for boolean field '%s' must be true/false, got '%s'", fieldPath, v),
+				})
+			}
+		default:
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   uPath + ".value",
+				Message: fmt.Sprintf("value for boolean field '%s' must be a boolean, got %T", fieldPath, value),
+			})
+		}
+	// string, date, select: any string value is acceptable
+	}
+}
+
+// isNumericValue checks if a value is numeric or can be coerced to a number.
+func isNumericValue(v any) bool {
+	switch v.(type) {
+	case float64, float32, int, int64, int32:
+		return true
+	case json.Number:
+		return true
+	case string:
+		s := v.(string)
+		_, err := strconv.ParseFloat(s, 64)
+		return err == nil
+	default:
+		return false
+	}
+}
+

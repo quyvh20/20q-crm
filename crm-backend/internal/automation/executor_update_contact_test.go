@@ -165,12 +165,23 @@ func TestValidateActions_UpdateContact_SetRequiresValue(t *testing.T) {
 }
 
 func TestValidateActions_UpdateContact_AllOpsValid(t *testing.T) {
-	ops := []string{"set", "add", "remove", "increment", "decrement"}
-	for _, op := range ops {
+	// Each operation paired with a compatible field type
+	tests := []struct {
+		field string
+		op    string
+		value any
+	}{
+		{"contact.tags", "set", "test"},
+		{"contact.tags", "add", "test"},
+		{"contact.tags", "remove", "test"},
+		{"custom_fields.score", "increment", 5},
+		{"custom_fields.score", "decrement", 3},
+	}
+	for _, tt := range tests {
 		actions := []ActionSpec{
 			{Type: "update_contact", ID: "uc1", Params: map[string]any{
 				"updates": []any{
-					map[string]any{"field": "contact.tags", "op": op, "value": "test"},
+					map[string]any{"field": tt.field, "op": tt.op, "value": tt.value},
 				},
 			}},
 		}
@@ -178,7 +189,7 @@ func TestValidateActions_UpdateContact_AllOpsValid(t *testing.T) {
 		result := &ValidationResult{Valid: true}
 		validateActions(data, result)
 		if !result.Valid {
-			t.Errorf("op '%s' should be valid, got errors: %+v", op, result.Errors)
+			t.Errorf("op '%s' on '%s' should be valid, got errors: %+v", tt.op, tt.field, result.Errors)
 		}
 	}
 }
@@ -280,3 +291,150 @@ func TestValidateActions_UpdateContact_MixedErrorPaths(t *testing.T) {
 		t.Errorf("expected error on updates[1].op, got: %+v", result.Errors)
 	}
 }
+
+// ============================================================
+// Schema-aware validation tests
+// ============================================================
+
+func TestValidateActions_UpdateContact_UnknownFieldRejected(t *testing.T) {
+	actions := []ActionSpec{
+		{Type: "update_contact", ID: "uc1", Params: map[string]any{
+			"updates": []any{
+				map[string]any{"field": "contact.nonexistent", "op": "set", "value": "x"},
+			},
+		}},
+	}
+	data, _ := json.Marshal(actions)
+	result := &ValidationResult{Valid: true}
+	validateActions(data, result)
+	if result.Valid {
+		t.Fatal("expected invalid for unknown field 'contact.nonexistent'")
+	}
+	found := false
+	for _, e := range result.Errors {
+		if e.Field == "actions[0].params.updates[0].field" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected error on .field, got: %+v", result.Errors)
+	}
+}
+
+func TestValidateActions_UpdateContact_IncrementOnStringRejected(t *testing.T) {
+	actions := []ActionSpec{
+		{Type: "update_contact", ID: "uc1", Params: map[string]any{
+			"updates": []any{
+				map[string]any{"field": "contact.first_name", "op": "increment", "value": 5},
+			},
+		}},
+	}
+	data, _ := json.Marshal(actions)
+	result := &ValidationResult{Valid: true}
+	validateActions(data, result)
+	if result.Valid {
+		t.Fatal("expected invalid: can't increment a string field")
+	}
+	found := false
+	for _, e := range result.Errors {
+		if e.Field == "actions[0].params.updates[0].op" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected error on .op, got: %+v", result.Errors)
+	}
+}
+
+func TestValidateActions_UpdateContact_RemoveOnStringRejected(t *testing.T) {
+	actions := []ActionSpec{
+		{Type: "update_contact", ID: "uc1", Params: map[string]any{
+			"updates": []any{
+				map[string]any{"field": "contact.email", "op": "remove", "value": "test@x.com"},
+			},
+		}},
+	}
+	data, _ := json.Marshal(actions)
+	result := &ValidationResult{Valid: true}
+	validateActions(data, result)
+	if result.Valid {
+		t.Fatal("expected invalid: can't remove from a string field")
+	}
+}
+
+func TestValidateActions_UpdateContact_NonNumericIncrementValueRejected(t *testing.T) {
+	actions := []ActionSpec{
+		{Type: "update_contact", ID: "uc1", Params: map[string]any{
+			"updates": []any{
+				map[string]any{"field": "custom_fields.score", "op": "increment", "value": "not-a-number"},
+			},
+		}},
+	}
+	data, _ := json.Marshal(actions)
+	result := &ValidationResult{Valid: true}
+	validateActions(data, result)
+	if result.Valid {
+		t.Fatal("expected invalid: increment value must be numeric")
+	}
+	found := false
+	for _, e := range result.Errors {
+		if e.Field == "actions[0].params.updates[0].value" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected error on .value, got: %+v", result.Errors)
+	}
+}
+
+func TestValidateActions_UpdateContact_NumericStringCoercionOK(t *testing.T) {
+	// "5" should be accepted as numeric for increment (coercion)
+	actions := []ActionSpec{
+		{Type: "update_contact", ID: "uc1", Params: map[string]any{
+			"updates": []any{
+				map[string]any{"field": "custom_fields.score", "op": "increment", "value": "5"},
+			},
+		}},
+	}
+	data, _ := json.Marshal(actions)
+	result := &ValidationResult{Valid: true}
+	validateActions(data, result)
+	if !result.Valid {
+		t.Errorf("numeric string '5' should coerce for increment, got errors: %+v", result.Errors)
+	}
+}
+
+func TestValidateActions_UpdateContact_TemplateValueBypassesTypeCheck(t *testing.T) {
+	// Template values are resolved at runtime, should not be type-checked
+	actions := []ActionSpec{
+		{Type: "update_contact", ID: "uc1", Params: map[string]any{
+			"updates": []any{
+				map[string]any{"field": "custom_fields.score", "op": "increment", "value": "{{trigger.amount}}"},
+			},
+		}},
+	}
+	data, _ := json.Marshal(actions)
+	result := &ValidationResult{Valid: true}
+	validateActions(data, result)
+	if !result.Valid {
+		t.Errorf("template value should bypass type check, got errors: %+v", result.Errors)
+	}
+}
+
+func TestValidateActions_UpdateContact_CustomFieldAccepted(t *testing.T) {
+	// Any custom_fields.* path should be structurally accepted
+	actions := []ActionSpec{
+		{Type: "update_contact", ID: "uc1", Params: map[string]any{
+			"updates": []any{
+				map[string]any{"field": "custom_fields.industry", "op": "set", "value": "Tech"},
+			},
+		}},
+	}
+	data, _ := json.Marshal(actions)
+	result := &ValidationResult{Valid: true}
+	validateActions(data, result)
+	if !result.Valid {
+		t.Errorf("custom field should be accepted, got errors: %+v", result.Errors)
+	}
+}
+
