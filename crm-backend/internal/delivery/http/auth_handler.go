@@ -4,7 +4,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net/http"
+	"net/url"
 
 	"crm-backend/internal/domain"
 	"crm-backend/pkg/config"
@@ -179,13 +181,15 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 
 	resp, err := h.authUC.GoogleLogin(c.Request.Context(), code)
 	if err != nil {
+		log.Printf("[GoogleCallback] GoogleLogin error: %v", err)
 		c.Redirect(http.StatusTemporaryRedirect,
-			fmt.Sprintf("%s/login?error=google_login_failed", frontendURL))
+			fmt.Sprintf("%s/login?error=google_login_failed&detail=%s", frontendURL, url.QueryEscape(err.Error())))
 		return
 	}
 
+	log.Printf("[GoogleCallback] Success for user %s, redirecting to %s", resp.User.Email, frontendURL)
 	redirectURL := fmt.Sprintf("%s/auth/callback?access_token=%s&refresh_token=%s",
-		frontendURL, resp.AccessToken, resp.RefreshToken)
+		frontendURL, url.QueryEscape(resp.AccessToken), url.QueryEscape(resp.RefreshToken))
 	c.Redirect(http.StatusTemporaryRedirect, redirectURL)
 }
 

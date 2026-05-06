@@ -135,18 +135,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const loadUser = async () => {
       const token = localStorage.getItem('access_token');
+      console.log('[AuthProvider] loadUser: token present?', !!token);
       if (!token) {
         setIsLoading(false);
         return;
       }
 
       try {
+        console.log('[AuthProvider] Calling /api/auth/me with API_URL:', API_URL);
         const res = await fetch(`${API_URL}/api/auth/me`, {
           headers: { Authorization: `Bearer ${token}` },
         });
 
+        console.log('[AuthProvider] /api/auth/me status:', res.status);
+
         if (res.ok) {
           const json: MeResponse = await res.json();
+          console.log('[AuthProvider] /api/auth/me success, user:', json.data?.user?.email);
           if (json.data) {
             setUser(json.data.user);
             setAccessToken(token);
@@ -157,11 +162,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             }
           }
         } else if (res.status === 401) {
+          console.log('[AuthProvider] 401 - attempting refresh');
           await refreshAuth();
         } else {
+          const text = await res.text();
+          console.error('[AuthProvider] /api/auth/me failed:', res.status, text);
           clearAuth();
         }
-      } catch {
+      } catch (err) {
+        console.error('[AuthProvider] /api/auth/me network error:', err);
         clearAuth();
       } finally {
         setIsLoading(false);

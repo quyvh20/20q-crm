@@ -22,7 +22,9 @@ export default function LoginPage() {
   useEffect(() => {
     const errCode = searchParams.get('error');
     if (errCode) {
-      setError(GOOGLE_ERROR_MESSAGES[errCode] || `Sign-in error: ${errCode}`);
+      const detail = searchParams.get('detail');
+      const baseMsg = GOOGLE_ERROR_MESSAGES[errCode] || `Sign-in error: ${errCode}`;
+      setError(detail ? `${baseMsg} (${detail})` : baseMsg);
     }
   }, [searchParams]);
 
