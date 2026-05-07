@@ -143,6 +143,7 @@ func (e *UpdateContactExecutor) Execute(ctx context.Context, run *WorkflowRun, a
 				"contact_id", contactID,
 				"field", field,
 				"op", op,
+				"workflow_id", run.WorkflowID.String(),
 				"workflow_run_id", run.ID.String(),
 			)
 		}
