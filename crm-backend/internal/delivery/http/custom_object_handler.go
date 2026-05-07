@@ -1,6 +1,8 @@
 package http
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -10,13 +12,22 @@ import (
 	"github.com/google/uuid"
 )
 
+// CustomObjectEventEmitter fires automation triggers for custom object events.
+type CustomObjectEventEmitter func(ctx context.Context, orgID uuid.UUID, eventType string, payload map[string]any)
+
 type CustomObjectHandler struct {
 	uc               domain.CustomObjectUseCase
 	invalidateSchema SchemaInvalidator
+	emitEvent        CustomObjectEventEmitter
 }
 
 func NewCustomObjectHandler(uc domain.CustomObjectUseCase) *CustomObjectHandler {
 	return &CustomObjectHandler{uc: uc}
+}
+
+// SetEventEmitter wires the automation trigger callback for custom object events.
+func (h *CustomObjectHandler) SetEventEmitter(fn CustomObjectEventEmitter) {
+	h.emitEvent = fn
 }
 
 // SetSchemaInvalidator sets the callback to invalidate the workflow schema cache.
@@ -166,6 +177,14 @@ func (h *CustomObjectHandler) CreateRecord(c *gin.Context) {
 		handleAppError(c, err)
 		return
 	}
+
+	// Fire automation trigger asynchronously
+	if h.emitEvent != nil {
+		eventType := slug + "_created"
+		payload := h.buildRecordPayload(rec, slug, eventType)
+		go h.emitEvent(context.Background(), orgID, eventType, payload)
+	}
+
 	c.JSON(http.StatusCreated, gin.H{"data": rec, "error": nil})
 }
 
@@ -190,7 +209,43 @@ func (h *CustomObjectHandler) UpdateRecord(c *gin.Context) {
 		handleAppError(c, err)
 		return
 	}
+
+	// Fire automation trigger asynchronously
+	if h.emitEvent != nil {
+		eventType := slug + "_updated"
+		payload := h.buildRecordPayload(rec, slug, eventType)
+		go h.emitEvent(context.Background(), orgID, eventType, payload)
+	}
+
 	c.JSON(http.StatusOK, gin.H{"data": rec, "error": nil})
+}
+
+// buildRecordPayload constructs the trigger payload for custom object events.
+// The record's data fields are flattened under the slug key for condition resolution.
+func (h *CustomObjectHandler) buildRecordPayload(rec *domain.CustomObjectRecord, slug, eventType string) map[string]any {
+	recordData := map[string]any{
+		"id":           rec.ID.String(),
+		"display_name": rec.DisplayName,
+	}
+
+	// Flatten Data JSONB fields into the record map
+	if rec.Data != nil {
+		var dataMap map[string]any
+		if err := json.Unmarshal(rec.Data, &dataMap); err == nil {
+			for k, v := range dataMap {
+				recordData[k] = v
+			}
+		}
+	}
+
+	return map[string]any{
+		"entity_id": rec.ID.String(),
+		slug:        recordData,
+		"trigger": map[string]any{
+			"type":   eventType,
+			"source": "crm_ui",
+		},
+	}
 }
 
 // DeleteRecord handles DELETE /api/objects/:slug/records/:id

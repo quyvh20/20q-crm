@@ -81,7 +81,17 @@ func resolvePath(path string, ctx EvalContext) any {
 	case "actions":
 		data = ctx.Actions
 	default:
-		return nil
+		// Dynamic: check Extra map for custom object slugs
+		if ctx.Extra != nil {
+			if extra, ok := ctx.Extra[root]; ok {
+				if m, ok2 := extra.(map[string]any); ok2 {
+					data = m
+				}
+			}
+		}
+		if data == nil {
+			return nil
+		}
 	}
 
 	if data == nil {

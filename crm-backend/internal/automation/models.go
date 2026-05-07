@@ -140,6 +140,7 @@ type EvalContext struct {
 	Org     map[string]any `json:"org,omitempty"`
 	User    map[string]any `json:"user,omitempty"`
 	Actions map[string]any `json:"actions,omitempty"` // action.id -> output
+	Extra   map[string]any `json:"extra,omitempty"`   // custom object slug -> fields map
 }
 
 // Valid trigger types

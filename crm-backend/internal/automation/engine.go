@@ -507,11 +507,18 @@ func (e *Engine) commitActionAndRun(actionLog *WorkflowActionLog, run *WorkflowR
 func (e *Engine) buildEvalContext(run *WorkflowRun) EvalContext {
 	ctx := EvalContext{
 		Actions: make(map[string]any),
+		Extra:   make(map[string]any),
 	}
 
 	var payload map[string]any
 	if err := json.Unmarshal(run.TriggerContext, &payload); err != nil {
 		return ctx
+	}
+
+	// Known root keys
+	knownKeys := map[string]bool{
+		"contact": true, "deal": true, "trigger": true,
+		"org": true, "user": true, "entity_id": true,
 	}
 
 	if contact, ok := payload["contact"].(map[string]any); ok {
@@ -528,6 +535,17 @@ func (e *Engine) buildEvalContext(run *WorkflowRun) EvalContext {
 	}
 	if user, ok := payload["user"].(map[string]any); ok {
 		ctx.User = user
+	}
+
+	// Extract custom object data: any unknown key with a map value
+	// goes into ctx.Extra[slug] for dynamic path resolution
+	for key, val := range payload {
+		if knownKeys[key] {
+			continue
+		}
+		if m, ok := val.(map[string]any); ok {
+			ctx.Extra[key] = m
+		}
 	}
 
 	return ctx

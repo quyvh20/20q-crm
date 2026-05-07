@@ -296,6 +296,9 @@ func main() {
 		// Wire contact creation → automation trigger
 		contactHandler.SetEventEmitter(autoEngine.TriggerEvent)
 
+		// Wire custom object create/update → automation trigger
+		customObjHandler.SetEventEmitter(autoEngine.TriggerEvent)
+
 		log.Info("All routes registered (including automation)")
 	} else {
 		log.Warn("Database not connected — routes skipped")
