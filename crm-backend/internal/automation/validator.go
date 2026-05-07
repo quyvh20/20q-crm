@@ -420,7 +420,7 @@ func validateActionParams(action ActionSpec, path string, result *ValidationResu
 				})
 			}
 		}
-	case ActionUpdateContact:
+	case ActionUpdateRecord, ActionUpdateContact:
 		// Validate the "updates" array: []{ field, op, value }
 		updatesRaw, hasUpdates := action.Params["updates"]
 		if hasUpdates {
@@ -584,18 +584,30 @@ func isValidEmail(s string) bool {
 	return strings.Contains(domain, ".") && !strings.HasSuffix(domain, ".") && !strings.HasPrefix(domain, ".")
 }
 
-// ── Schema-aware update_contact field validation ─────────────────────
+// ── Schema-aware update_record field validation ──────────────────────
 
 // contactFieldTypes maps built-in contact column paths to their data types.
-// Used by validateUpdateFieldSchema to check field existence + op/type compat.
 var contactFieldTypes = map[string]string{
 	"first_name":    "string",
 	"last_name":     "string",
 	"email":         "string",
 	"phone":         "string",
-	"owner_user_id": "string", // UUID stored as string
-	"company_id":    "string", // UUID stored as string
-	"tags":          "array",  // join-table managed
+	"owner_user_id": "string",
+	"company_id":    "string",
+	"tags":          "array",
+}
+
+// dealFieldTypes maps built-in deal column paths to their data types.
+var dealFieldTypes = map[string]string{
+	"title":           "string",
+	"value":           "number",
+	"probability":     "number",
+	"stage_id":        "string",
+	"contact_id":      "string",
+	"company_id":      "string",
+	"owner_user_id":   "string",
+	"is_won":          "boolean",
+	"is_lost":         "boolean",
 }
 
 // opsValidForType defines which operations are valid per field type.
@@ -616,33 +628,45 @@ var opsValidForType = map[string]map[string]bool{
 // Does NOT block if the field starts with "custom_fields." (custom fields are
 // org-specific and may not be known at pure-validation time — see warning).
 func validateUpdateFieldSchema(fieldPath, op string, value any, uPath string, result *ValidationResult) {
-	// Normalize: strip "contact." prefix (UI emits "contact.first_name")
-	field := strings.TrimPrefix(fieldPath, "contact.")
+	// Determine entity from field path prefix
+	entity := "contact"
+	field := fieldPath
+	if strings.HasPrefix(fieldPath, "deal.") {
+		entity = "deal"
+		field = strings.TrimPrefix(fieldPath, "deal.")
+	} else {
+		field = strings.TrimPrefix(fieldPath, "contact.")
+	}
+
+	fieldRegistry := contactFieldTypes
+	if entity == "deal" {
+		fieldRegistry = dealFieldTypes
+	}
 
 	// --- 1. Field existence check ---
 	var fieldType string
 
-	if field == "tags" {
+	if entity == "contact" && field == "tags" {
 		fieldType = "array"
 	} else if strings.HasPrefix(field, "custom_fields.") {
-		// Custom fields: accept at structural level. The exact key is org-specific
-		// and validated at execution time. We can still check op/value compat
-		// assuming "string" as default (increment/decrement treated as "number").
 		if op == "increment" || op == "decrement" {
 			fieldType = "number"
 		} else {
-			fieldType = "string" // default for custom fields
+			fieldType = "string"
 		}
-	} else if ft, ok := contactFieldTypes[field]; ok {
+	} else if ft, ok := fieldRegistry[field]; ok {
 		fieldType = ft
 	} else {
-		// Unknown field — reject
 		result.Valid = false
+		valid := make([]string, 0, len(fieldRegistry))
+		for k := range fieldRegistry {
+			valid = append(valid, k)
+		}
 		result.Errors = append(result.Errors, ValidationError{
 			Field: uPath + ".field",
 			Message: fmt.Sprintf(
-				"unknown contact field '%s'. Valid: first_name, last_name, email, phone, owner_user_id, company_id, tags, or custom_fields.<key>",
-				fieldPath,
+				"unknown %s field '%s'. Valid: %s, or custom_fields.<key>",
+				entity, fieldPath, strings.Join(valid, ", "),
 			),
 		})
 		return

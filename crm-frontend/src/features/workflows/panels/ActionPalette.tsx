@@ -3,7 +3,7 @@ import { useDraggable } from '@dnd-kit/core';
 import { ACTION_LABELS, ACTION_ICONS, type ActionType } from '../types';
 
 const ACTION_TYPES: ActionType[] = [
-  'send_email', 'create_task', 'assign_user', 'send_webhook', 'delay', 'update_contact',
+  'send_email', 'create_task', 'assign_user', 'send_webhook', 'delay', 'update_record',
 ];
 
 export const ActionPalette: React.FC = () => {

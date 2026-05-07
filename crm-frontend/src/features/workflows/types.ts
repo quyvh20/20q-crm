@@ -21,7 +21,7 @@ export interface ConditionGroup {
 }
 
 export interface ActionSpec {
-  type: 'send_email' | 'create_task' | 'assign_user' | 'send_webhook' | 'delay' | 'update_contact';
+  type: 'send_email' | 'create_task' | 'assign_user' | 'send_webhook' | 'delay' | 'update_record';
   id: string;
   params: Record<string, unknown>;
 }
@@ -117,7 +117,7 @@ export const ACTION_LABELS: Record<ActionType, string> = {
   assign_user: 'Assign User',
   send_webhook: 'Send Webhook',
   delay: 'Delay',
-  update_contact: 'Update Contact',
+  update_record: 'Update Record',
 };
 
 export const ACTION_ICONS: Record<ActionType, string> = {
@@ -126,7 +126,7 @@ export const ACTION_ICONS: Record<ActionType, string> = {
   assign_user: '👤',
   send_webhook: '🔗',
   delay: '⏱️',
-  update_contact: '✏️',
+  update_record: '📝',
 };
 
 export const STATUS_COLORS: Record<string, string> = {

@@ -318,7 +318,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
         }
       }
 
-      if (action.type === 'update_contact') {
+      if (action.type === 'update_record' || (action.type as string) === 'update_contact') {
         const updates = Array.isArray(action.params.updates)
           ? (action.params.updates as Array<{ field?: string; op?: string; value?: unknown }>)
           : [];
@@ -351,7 +351,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
 
     set({ saving: true });
     try {
-      // Sanitize: strip empty CC strings → omit key entirely; clean update_contact params
+      // Sanitize: strip empty CC strings → omit key entirely; clean update_record params
       const cleanedActions = state.actions.map((a) => {
         if (a.type === 'send_email') {
           const params = { ...a.params };
@@ -361,7 +361,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
           }
           return { ...a, params };
         }
-        if (a.type === 'update_contact') {
+        if (a.type === 'update_record' || (a.type as string) === 'update_contact') {
           // Ensure only 'updates' key is emitted, strip legacy flat keys
           const params: Record<string, unknown> = {};
           if (Array.isArray(a.params.updates)) {

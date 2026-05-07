@@ -158,7 +158,8 @@ const (
 	ActionAssignUser     = "assign_user"
 	ActionSendWebhook    = "send_webhook"
 	ActionDelay          = "delay"
-	ActionUpdateContact  = "update_contact"
+	ActionUpdateRecord   = "update_record"
+	ActionUpdateContact  = "update_contact" // DEPRECATED alias: kept for backward compat with saved workflows
 )
 
 // Run statuses
@@ -279,5 +280,6 @@ var ValidActionTypes = map[string]bool{
 	ActionAssignUser:    true,
 	ActionSendWebhook:   true,
 	ActionDelay:         true,
-	ActionUpdateContact: true,
+	ActionUpdateRecord:  true,
+	ActionUpdateContact: true, // backward compat
 }

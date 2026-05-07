@@ -101,8 +101,10 @@ func (e *Engine) Start() {
 	if _, ok := e.executors[ActionDelay]; !ok {
 		e.executors[ActionDelay] = NewDelayExecutor()
 	}
-	if _, ok := e.executors[ActionUpdateContact]; !ok {
-		e.executors[ActionUpdateContact] = NewUpdateContactExecutor(e.db)
+	if _, ok := e.executors[ActionUpdateRecord]; !ok {
+		executor := NewUpdateRecordExecutor(e.db)
+		e.executors[ActionUpdateRecord] = executor
+		e.executors[ActionUpdateContact] = executor // backward compat
 	}
 
 	// Run migrations

@@ -21,9 +21,9 @@ export const ActionConfigPanel: React.FC = () => {
     <div className="space-y-4">
       <div className="flex items-center gap-3">
         <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center text-sm">
-          {ACTION_ICONS[action.type]}
+          {ACTION_ICONS[action.type] || '📝'}
         </div>
-        <h3 className="text-lg font-semibold text-white">{ACTION_LABELS[action.type]}</h3>
+        <h3 className="text-lg font-semibold text-white">{ACTION_LABELS[action.type] || 'Update Record'}</h3>
       </div>
 
       {/* Type-specific param editors */}
@@ -32,7 +32,9 @@ export const ActionConfigPanel: React.FC = () => {
       {action.type === 'assign_user' && <AssignParams action={action} setParam={setParam} />}
       {action.type === 'send_webhook' && <WebhookParams action={action} setParam={setParam} />}
       {action.type === 'delay' && <DelayParams action={action} setParam={setParam} />}
-      {action.type === 'update_contact' && <UpdateContactParams action={action} setParam={setParam} />}
+      {action.type === 'update_record' && <UpdateRecordParams action={action} setParam={setParam} />}
+      {/* backward compat for saved workflows */}
+      {(action.type as string) === 'update_contact' && <UpdateRecordParams action={action} setParam={setParam} />}
 
       <TemplateHelp />
     </div>
@@ -280,10 +282,10 @@ const AssignParams: React.FC<ParamProps> = ({ action, setParam }) => {
   );
 };
 
-// --- Update Contact params ---
+// --- Update Record params ---
 
 // Data contract: params.updates = [{ field, op, value }, ...]
-// Each FieldUpdate row lets user pick a contact field, an operation, and a value.
+// Each FieldUpdate row lets user pick a field (from trigger entity), an operation, and a value.
 
 const UPDATE_OPERATIONS = [
   { value: 'set',       label: 'Set',       icon: '✏️', description: 'Set field to a specific value' },
@@ -314,9 +316,20 @@ function getOperationsForFieldType(fieldType: string, pickerType?: string): Upda
   return ['set', 'add', 'clear'];
 }
 
-const UpdateContactParams: React.FC<ParamProps> = ({ action }) => {
+/** Resolve which entity to show fields for based on the workflow's trigger type */
+function resolveEntityFromTrigger(triggerType?: string): string[] {
+  if (!triggerType) return ['contact'];
+  if (triggerType.startsWith('deal')) return ['deal'];
+  return ['contact'];
+}
+
+const UpdateRecordParams: React.FC<ParamProps> = ({ action }) => {
   const schema = useBuilderStore((s) => s.schema);
   const updateAction = useBuilderStore((s) => s.updateAction);
+  const trigger = useBuilderStore((s) => s.trigger);
+
+  const entities = useMemo(() => resolveEntityFromTrigger(trigger?.type), [trigger?.type]);
+  const entityLabel = entities[0] === 'deal' ? 'deal' : 'contact';
 
   // Read updates array from params (or migrate from legacy flat format)
   const updates: FieldUpdateEntry[] = useMemo(() => {
@@ -364,12 +377,21 @@ const UpdateContactParams: React.FC<ParamProps> = ({ action }) => {
 
   return (
     <div className="space-y-3">
+      {/* Entity indicator */}
+      <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-gray-800/50 border border-gray-700/50">
+        <span className="text-sm">{entityLabel === 'deal' ? '💼' : '👤'}</span>
+        <span className="text-xs text-gray-400">
+          Updates the <span className="font-medium text-white">{entityLabel}</span> from the trigger source
+        </span>
+      </div>
+
       {updates.map((upd, idx) => (
         <UpdateRow
           key={idx}
           entry={upd}
           index={idx}
           schema={schema}
+          entities={entities}
           totalCount={updates.length}
           onPatch={(patch) => patchUpdate(idx, patch)}
           onRemove={() => removeUpdate(idx)}
@@ -391,7 +413,7 @@ const UpdateContactParams: React.FC<ParamProps> = ({ action }) => {
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-800/50 border border-gray-700/50">
           <span className="text-sm">💡</span>
           <span className="text-xs text-gray-500">
-            Add one or more field updates. Each can set, add, remove, increment, decrement, or clear a contact field.
+            Add one or more field updates. Each can set, add, remove, increment, decrement, or clear a {entityLabel} field.
           </span>
         </div>
       )}
@@ -399,15 +421,16 @@ const UpdateContactParams: React.FC<ParamProps> = ({ action }) => {
   );
 };
 
-/** Single field-update row within the UpdateContactParams component */
+/** Single field-update row within the UpdateRecordParams component */
 const UpdateRow: React.FC<{
   entry: FieldUpdateEntry;
   index: number;
   schema: WorkflowSchema | null;
+  entities: string[];
   totalCount: number;
   onPatch: (patch: Partial<FieldUpdateEntry>) => void;
   onRemove: () => void;
-}> = ({ entry, index, schema, totalCount, onPatch, onRemove }) => {
+}> = ({ entry, index, schema, entities, totalCount, onPatch, onRemove }) => {
   const selectedField: SchemaField | null = useMemo(
     () => findFieldInSchema(schema, entry.field),
     [schema, entry.field],
@@ -463,12 +486,12 @@ const UpdateRow: React.FC<{
         )}
       </div>
 
-      {/* Field picker — contact fields only */}
+      {/* Field picker — entity determined by trigger type */}
       <FieldPicker
         value={entry.field || null}
         onChange={handleFieldChange}
-        entities={['contact']}
-        placeholder="Select a contact field…"
+        entities={entities}
+        placeholder={`Select a ${entities[0]} field…`}
       />
 
       {/* Operation picker */}

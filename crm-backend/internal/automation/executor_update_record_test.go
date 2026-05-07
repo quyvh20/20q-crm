@@ -438,3 +438,88 @@ func TestValidateActions_UpdateContact_CustomFieldAccepted(t *testing.T) {
 	}
 }
 
+// ============================================================
+// update_record type tests (new action type + deal support)
+// ============================================================
+
+func TestValidateActions_UpdateRecord_Valid(t *testing.T) {
+	actions := []ActionSpec{
+		{Type: "update_record", ID: "ur1", Params: map[string]any{
+			"updates": []any{
+				map[string]any{"field": "contact.first_name", "op": "set", "value": "Jane"},
+			},
+		}},
+	}
+	data, _ := json.Marshal(actions)
+	result := &ValidationResult{Valid: true}
+	validateActions(data, result)
+	if !result.Valid {
+		t.Errorf("update_record should be valid, got errors: %+v", result.Errors)
+	}
+}
+
+func TestValidateActions_UpdateRecord_DealFieldValid(t *testing.T) {
+	actions := []ActionSpec{
+		{Type: "update_record", ID: "ur1", Params: map[string]any{
+			"updates": []any{
+				map[string]any{"field": "deal.title", "op": "set", "value": "Big Deal"},
+				map[string]any{"field": "deal.value", "op": "set", "value": "50000"},
+				map[string]any{"field": "deal.is_won", "op": "set", "value": true},
+			},
+		}},
+	}
+	data, _ := json.Marshal(actions)
+	result := &ValidationResult{Valid: true}
+	validateActions(data, result)
+	if !result.Valid {
+		t.Errorf("deal fields should be valid, got errors: %+v", result.Errors)
+	}
+}
+
+func TestValidateActions_UpdateRecord_DealUnknownFieldRejected(t *testing.T) {
+	actions := []ActionSpec{
+		{Type: "update_record", ID: "ur1", Params: map[string]any{
+			"updates": []any{
+				map[string]any{"field": "deal.nonexistent", "op": "set", "value": "x"},
+			},
+		}},
+	}
+	data, _ := json.Marshal(actions)
+	result := &ValidationResult{Valid: true}
+	validateActions(data, result)
+	if result.Valid {
+		t.Fatal("expected invalid for unknown deal field 'deal.nonexistent'")
+	}
+}
+
+func TestValidateActions_UpdateRecord_DealIncrementOnBooleanRejected(t *testing.T) {
+	actions := []ActionSpec{
+		{Type: "update_record", ID: "ur1", Params: map[string]any{
+			"updates": []any{
+				map[string]any{"field": "deal.is_won", "op": "increment", "value": 1},
+			},
+		}},
+	}
+	data, _ := json.Marshal(actions)
+	result := &ValidationResult{Valid: true}
+	validateActions(data, result)
+	if result.Valid {
+		t.Fatal("expected invalid: can't increment a boolean field")
+	}
+}
+
+func TestValidateActions_UpdateRecord_DealCustomFieldAccepted(t *testing.T) {
+	actions := []ActionSpec{
+		{Type: "update_record", ID: "ur1", Params: map[string]any{
+			"updates": []any{
+				map[string]any{"field": "deal.custom_fields.priority", "op": "set", "value": "high"},
+			},
+		}},
+	}
+	data, _ := json.Marshal(actions)
+	result := &ValidationResult{Valid: true}
+	validateActions(data, result)
+	if !result.Valid {
+		t.Errorf("deal custom field should be accepted, got errors: %+v", result.Errors)
+	}
+}

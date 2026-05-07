@@ -82,7 +82,7 @@ export const ActionNode: React.FC<ActionNodeProps> = ({ action, index }) => {
             Step {index + 1}
           </p>
           <p className="text-sm font-medium text-white truncate">
-            {ACTION_LABELS[action.type]}
+            {ACTION_LABELS[action.type] || 'Update Record'}
           </p>
         </div>
         <button
