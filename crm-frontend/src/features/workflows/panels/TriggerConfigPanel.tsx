@@ -77,10 +77,11 @@ function buildTriggerSpec(object: string, firesOn: FiresOn, params?: Record<stri
   if (object === 'webhook') {
     return { type: 'webhook_inbound', params: { source: 'custom' } };
   }
-  const type = `${object}_${firesOn}`;
-  // deal_stage_changed is a special case: deal + updated → deal_stage_changed
-  // but we also need to handle the generic deal_updated case
-  return { type, params };
+  // deal + updated → deal_stage_changed (the only deal-update trigger the backend supports)
+  if (object === 'deal' && firesOn === 'updated') {
+    return { type: 'deal_stage_changed', params };
+  }
+  return { type: `${object}_${firesOn}`, params };
 }
 
 // --- Select styling ---
