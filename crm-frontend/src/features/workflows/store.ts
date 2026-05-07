@@ -180,6 +180,16 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
         if (!errors.trigger) errors.trigger = [];
         errors.trigger.push('Fires-on event is missing');
       }
+
+      // deal_stage_changed requires to_stage param
+      if (t === 'deal_stage_changed') {
+        const toStage = state.trigger.params?.to_stage;
+        if (!toStage || toStage === '') {
+          errors['trigger.params.to_stage'] = ['Select a target stage'];
+          if (!errors.trigger) errors.trigger = [];
+          errors.trigger.push('Target stage is required for deal stage change trigger');
+        }
+      }
     }
 
     if (state.actions.length === 0) {

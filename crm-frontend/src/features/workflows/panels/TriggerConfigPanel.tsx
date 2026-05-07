@@ -1,8 +1,9 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useCallback } from 'react';
 import type { TriggerSpec } from '../types';
 import { useBuilderStore } from '../store';
 import type { WorkflowSchema } from '../api';
 import type { FiresOn } from '../useSchema';
+import { StageDropdown } from './inputs';
 
 // ============================================================
 // Source Panel — Step 1
@@ -71,12 +72,15 @@ function parseTrigger(trigger: TriggerSpec): { object: string; firesOn: FiresOn 
   return { object: '', firesOn: 'created' };
 }
 
-// --- Build TriggerSpec from object + firesOn ---
-function buildTriggerSpec(object: string, firesOn: FiresOn): TriggerSpec {
+// --- Build TriggerSpec from object + firesOn + optional stage params ---
+function buildTriggerSpec(object: string, firesOn: FiresOn, params?: Record<string, unknown>): TriggerSpec {
   if (object === 'webhook') {
     return { type: 'webhook_inbound', params: { source: 'custom' } };
   }
-  return { type: `${object}_${firesOn}` };
+  const type = `${object}_${firesOn}`;
+  // deal_stage_changed is a special case: deal + updated → deal_stage_changed
+  // but we also need to handle the generic deal_updated case
+  return { type, params };
 }
 
 // --- Select styling ---
@@ -109,11 +113,32 @@ export const TriggerConfigPanel: React.FC = () => {
 
   const handleFiresOnChange = (newFiresOn: FiresOn) => {
     if (!object) return;
-    setTrigger(buildTriggerSpec(object, newFiresOn));
+    // Preserve existing stage params if staying on deal
+    const currentParams = trigger?.params || {};
+    setTrigger(buildTriggerSpec(object, newFiresOn, currentParams));
   };
 
-  // For webhook, firesOn is not relevant
-  const showFiresOn = object && object !== 'webhook';
+  // --- Deal Stage Changed: detect and expose stage params ---
+  const isDealStageChanged = trigger?.type === 'deal_stage_changed';
+  const stages = schema?.stages || [];
+
+  const fromStage = (trigger?.params?.from_stage as string) || '';
+  const toStage = (trigger?.params?.to_stage as string) || '';
+
+  const handleFromStageChange = useCallback((val: string) => {
+    if (!trigger) return;
+    const params = { ...(trigger.params || {}), from_stage: val };
+    setTrigger({ ...trigger, params });
+  }, [trigger, setTrigger]);
+
+  const handleToStageChange = useCallback((val: string) => {
+    if (!trigger) return;
+    const params = { ...(trigger.params || {}), to_stage: val };
+    setTrigger({ ...trigger, params });
+  }, [trigger, setTrigger]);
+
+  // For webhook and deal_stage_changed, firesOn is not relevant
+  const showFiresOn = object && object !== 'webhook' && !isDealStageChanged;
 
   // Fires-on label for preview
   const firesOnLabel = FIRES_ON_OPTIONS.find((o) => o.value === firesOn)?.label?.toLowerCase() || firesOn;
@@ -121,6 +146,7 @@ export const TriggerConfigPanel: React.FC = () => {
   // Inline errors
   const objectError = errors['trigger.object']?.[0];
   const firesOnError = errors['trigger.firesOn']?.[0];
+  const toStageError = errors['trigger.params.to_stage']?.[0];
 
   // Edge case: no objects with read access
   const hasNoObjects = entityList.length === 0;
@@ -182,6 +208,41 @@ export const TriggerConfigPanel: React.FC = () => {
           )}
         </div>
 
+        {/* Deal Stage Changed: From / To stage pickers */}
+        {isDealStageChanged && (
+          <div className="p-3 rounded-xl border border-gray-700/50 bg-gray-800/30 space-y-3 mt-3">
+            <p className="text-xs text-gray-400 font-medium">Stage Transition Filter</p>
+
+            {/* From Stage */}
+            <div className="space-y-1.5">
+              <label className="text-xs text-gray-500 font-medium uppercase tracking-wider">From Stage</label>
+              <StageDropdown
+                stages={stages}
+                value={fromStage}
+                onChange={handleFromStageChange}
+                allowAny
+                placeholder="Select from stage…"
+              />
+              <p className="text-[10px] text-gray-600">Only trigger when the deal moves <em>from</em> this stage. "Any" matches all.</p>
+            </div>
+
+            {/* To Stage */}
+            <div className="space-y-1.5">
+              <label className="text-xs text-gray-500 font-medium uppercase tracking-wider">To Stage</label>
+              <StageDropdown
+                stages={stages}
+                value={toStage}
+                onChange={handleToStageChange}
+                placeholder="Select target stage…"
+              />
+              {toStageError && (
+                <p className="text-[11px] text-red-400 mt-0.5">⚠ {toStageError}</p>
+              )}
+              <p className="text-[10px] text-gray-600">Required — the stage the deal must move <em>to</em> for this trigger to fire.</p>
+            </div>
+          </div>
+        )}
+
         {/* Fires on selector */}
         {showFiresOn && (
           <div className="space-y-1.5">
@@ -213,9 +274,19 @@ export const TriggerConfigPanel: React.FC = () => {
         <div className="px-3 py-2 rounded-lg bg-indigo-500/5 border border-indigo-500/10">
           <p className="text-xs text-indigo-300/70">
             <span className="text-indigo-400 font-medium">Preview: </span>
-            {object === 'webhook'
-              ? `When a Webhook receives data`
-              : `When a ${entityLabel} is ${firesOnLabel}`}
+            {isDealStageChanged
+              ? (() => {
+                  const fromLabel = fromStage === '*'
+                    ? 'any stage'
+                    : stages.find((s) => s.id === fromStage)?.name || (fromStage || '…');
+                  const toLabel = toStage === '*'
+                    ? 'any stage'
+                    : stages.find((s) => s.id === toStage)?.name || (toStage || '…');
+                  return `When a Deal moves from ${fromLabel} → ${toLabel}`;
+                })()
+              : object === 'webhook'
+                ? `When a Webhook receives data`
+                : `When a ${entityLabel} is ${firesOnLabel}`}
           </p>
         </div>
       )}

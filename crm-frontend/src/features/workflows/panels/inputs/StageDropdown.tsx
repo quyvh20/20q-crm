@@ -10,14 +10,19 @@ export interface StageDropdownProps {
   stages: SchemaStage[];
   value: unknown;
   onChange: (v: string) => void;
+  /** If true, prepend an "Any Stage" option with value "*" */
+  allowAny?: boolean;
+  /** Custom placeholder when nothing is selected */
+  placeholder?: string;
 }
 
-export const StageDropdown: React.FC<StageDropdownProps> = ({ stages, value, onChange }) => {
+export const StageDropdown: React.FC<StageDropdownProps> = ({ stages, value, onChange, allowAny, placeholder }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const selectedValue = String(value ?? '');
-  const selectedStage = stages.find((s) => s.id === selectedValue);
+  const isAnySelected = allowAny && selectedValue === '*';
+  const selectedStage = isAnySelected ? null : stages.find((s) => s.id === selectedValue);
 
   // Close on outside click
   useEffect(() => {
@@ -51,7 +56,12 @@ export const StageDropdown: React.FC<StageDropdownProps> = ({ stages, value, onC
           isOpen ? 'border-purple-500 ring-1 ring-purple-500/30' : 'border-gray-700 hover:border-gray-600'
         }`}
       >
-        {selectedStage ? (
+        {isAnySelected ? (
+          <>
+            <span className="w-2.5 h-2.5 rounded-full flex-shrink-0 bg-gray-500" />
+            <span className="text-white flex-1 truncate">Any Stage</span>
+          </>
+        ) : selectedStage ? (
           <>
             <span
               className="w-2.5 h-2.5 rounded-full flex-shrink-0"
@@ -60,7 +70,7 @@ export const StageDropdown: React.FC<StageDropdownProps> = ({ stages, value, onC
             <span className="text-white flex-1 truncate">{selectedStage.name}</span>
           </>
         ) : (
-          <span className="text-gray-500 flex-1">Select stage…</span>
+          <span className="text-gray-500 flex-1">{placeholder || 'Select stage…'}</span>
         )}
         <svg
           className={`w-3.5 h-3.5 text-gray-500 transition-transform flex-shrink-0 ${isOpen ? 'rotate-180' : ''}`}
@@ -80,34 +90,24 @@ export const StageDropdown: React.FC<StageDropdownProps> = ({ stages, value, onC
           style={{ backgroundColor: '#1a1d27' }}
         >
           <div className="max-h-48 overflow-y-auto overscroll-contain">
-            {sortedStages.length === 0 ? (
+            {sortedStages.length === 0 && !allowAny ? (
               <div className="px-3 py-3 text-center text-xs text-gray-500">No stages found</div>
             ) : (
-              sortedStages.map((stage) => {
-                const isSelected = stage.id === selectedValue;
-                return (
+              <>
+                {/* "Any Stage" option */}
+                {allowAny && (
                   <button
-                    key={stage.id}
                     type="button"
-                    onClick={() => handleSelect(stage)}
-                    className={`w-full px-3 py-2.5 text-left flex items-center gap-2.5 text-sm transition-colors ${
-                      isSelected
+                    onClick={() => { onChange('*'); setIsOpen(false); }}
+                    className={`w-full px-3 py-2.5 text-left flex items-center gap-2.5 text-sm transition-colors border-b border-gray-800/50 ${
+                      isAnySelected
                         ? 'bg-purple-500/10 text-white'
                         : 'text-gray-300 hover:bg-gray-800/60 hover:text-white'
                     }`}
                   >
-                    <span
-                      className="w-3 h-3 rounded-full flex-shrink-0"
-                      style={{
-                        backgroundColor: stage.color || '#6B7280',
-                        boxShadow: isSelected
-                          ? `0 0 0 2px #1a1d27, 0 0 0 4px ${stage.color}60, 0 0 8px ${stage.color}40`
-                          : 'none',
-                      }}
-                    />
-                    <span className="flex-1 truncate">{stage.name}</span>
-                    <span className="text-[10px] text-gray-600 tabular-nums">#{stage.order}</span>
-                    {isSelected && (
+                    <span className="w-3 h-3 rounded-full flex-shrink-0 bg-gray-500" />
+                    <span className="flex-1 truncate">Any Stage</span>
+                    {isAnySelected && (
                       <svg
                         className="w-3.5 h-3.5 text-purple-400 flex-shrink-0"
                         fill="none"
@@ -119,8 +119,46 @@ export const StageDropdown: React.FC<StageDropdownProps> = ({ stages, value, onC
                       </svg>
                     )}
                   </button>
-                );
-              })
+                )}
+                {sortedStages.map((stage) => {
+                  const isSelected = stage.id === selectedValue;
+                  return (
+                    <button
+                      key={stage.id}
+                      type="button"
+                      onClick={() => handleSelect(stage)}
+                      className={`w-full px-3 py-2.5 text-left flex items-center gap-2.5 text-sm transition-colors ${
+                        isSelected
+                          ? 'bg-purple-500/10 text-white'
+                          : 'text-gray-300 hover:bg-gray-800/60 hover:text-white'
+                      }`}
+                    >
+                      <span
+                        className="w-3 h-3 rounded-full flex-shrink-0"
+                        style={{
+                          backgroundColor: stage.color || '#6B7280',
+                          boxShadow: isSelected
+                            ? `0 0 0 2px #1a1d27, 0 0 0 4px ${stage.color}60, 0 0 8px ${stage.color}40`
+                            : 'none',
+                        }}
+                      />
+                      <span className="flex-1 truncate">{stage.name}</span>
+                      <span className="text-[10px] text-gray-600 tabular-nums">#{stage.order}</span>
+                      {isSelected && (
+                        <svg
+                          className="w-3.5 h-3.5 text-purple-400 flex-shrink-0"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                          strokeWidth={2.5}
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                    </button>
+                  );
+                })}
+              </>
             )}
           </div>
         </div>

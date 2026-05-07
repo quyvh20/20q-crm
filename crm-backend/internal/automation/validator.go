@@ -75,12 +75,31 @@ func validateTrigger(data []byte, result *ValidationResult) {
 				Field:   "trigger.params",
 				Message: "deal_stage_changed requires params with 'to_stage'",
 			})
-		} else if _, ok := trigger.Params["to_stage"]; !ok {
-			result.Valid = false
-			result.Errors = append(result.Errors, ValidationError{
-				Field:   "trigger.params.to_stage",
-				Message: "deal_stage_changed requires 'to_stage' parameter",
-			})
+		} else {
+			toStage, ok := trigger.Params["to_stage"]
+			if !ok {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   "trigger.params.to_stage",
+					Message: "deal_stage_changed requires 'to_stage' parameter",
+				})
+			} else if toStr, isStr := toStage.(string); isStr && toStr == "" {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   "trigger.params.to_stage",
+					Message: "'to_stage' must not be empty — select a specific pipeline stage",
+				})
+			}
+			// from_stage is optional — validate it's a non-empty string if present
+			if fromStage, ok := trigger.Params["from_stage"]; ok {
+				if fromStr, isStr := fromStage.(string); isStr && fromStr == "" {
+					result.Valid = false
+					result.Errors = append(result.Errors, ValidationError{
+						Field:   "trigger.params.from_stage",
+						Message: "'from_stage' must not be empty (use '*' for any stage, or omit entirely)",
+					})
+				}
+			}
 		}
 	case TriggerNoActivityDays:
 		if trigger.Params == nil {

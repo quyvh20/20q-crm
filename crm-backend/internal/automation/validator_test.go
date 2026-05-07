@@ -97,6 +97,51 @@ func TestValidateWorkflowPayload_DealStageChanged_Valid(t *testing.T) {
 	}
 }
 
+func TestValidateWorkflowPayload_DealStageChanged_WildcardToStage(t *testing.T) {
+	trigger := `{"type":"deal_stage_changed","params":{"to_stage":"*"}}`
+	actions := `[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`
+	result := ValidateWorkflowPayload([]byte(trigger), nil, []byte(actions))
+	if !result.Valid {
+		t.Fatalf("expected valid with wildcard '*' to_stage, got errors: %+v", result.Errors)
+	}
+}
+
+func TestValidateWorkflowPayload_DealStageChanged_EmptyToStage(t *testing.T) {
+	trigger := `{"type":"deal_stage_changed","params":{"to_stage":""}}`
+	actions := `[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`
+	result := ValidateWorkflowPayload([]byte(trigger), nil, []byte(actions))
+	if result.Valid {
+		t.Fatal("expected invalid — empty to_stage must be rejected")
+	}
+}
+
+func TestValidateWorkflowPayload_DealStageChanged_WithFromStage(t *testing.T) {
+	trigger := `{"type":"deal_stage_changed","params":{"to_stage":"won","from_stage":"qualified"}}`
+	actions := `[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`
+	result := ValidateWorkflowPayload([]byte(trigger), nil, []byte(actions))
+	if !result.Valid {
+		t.Fatalf("expected valid with from_stage, got errors: %+v", result.Errors)
+	}
+}
+
+func TestValidateWorkflowPayload_DealStageChanged_WildcardFromStage(t *testing.T) {
+	trigger := `{"type":"deal_stage_changed","params":{"to_stage":"won","from_stage":"*"}}`
+	actions := `[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`
+	result := ValidateWorkflowPayload([]byte(trigger), nil, []byte(actions))
+	if !result.Valid {
+		t.Fatalf("expected valid with wildcard from_stage, got errors: %+v", result.Errors)
+	}
+}
+
+func TestValidateWorkflowPayload_DealStageChanged_EmptyFromStage(t *testing.T) {
+	trigger := `{"type":"deal_stage_changed","params":{"to_stage":"won","from_stage":""}}`
+	actions := `[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`
+	result := ValidateWorkflowPayload([]byte(trigger), nil, []byte(actions))
+	if result.Valid {
+		t.Fatal("expected invalid — empty from_stage must be rejected")
+	}
+}
+
 func TestValidateWorkflowPayload_NoActivityDays_RequiresParams(t *testing.T) {
 	trigger := `{"type":"no_activity_days"}`
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`
