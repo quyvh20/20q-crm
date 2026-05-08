@@ -54,13 +54,26 @@ var validUpdateOperations = map[string]bool{
 }
 
 // resolveEntity determines the target entity type from the trigger context.
-// Returns "contact" or "deal". Defaults to "contact" for backward compatibility.
+// Returns "contact", "deal", or the custom object slug.
+// Defaults to "contact" for backward compatibility.
 func resolveEntity(evalCtx EvalContext) string {
 	triggerType, _ := evalCtx.Trigger["type"].(string)
 	switch {
+	case strings.HasPrefix(triggerType, "contact"):
+		return "contact"
 	case strings.HasPrefix(triggerType, "deal"):
 		return "deal"
 	default:
+		// Custom object: extract slug from trigger type (e.g. "ticket_created" → "ticket")
+		suffixes := []string{"_created", "_updated", "_deleted", "_any"}
+		for _, suffix := range suffixes {
+			if strings.HasSuffix(triggerType, suffix) {
+				slug := strings.TrimSuffix(triggerType, suffix)
+				if slug != "" {
+					return slug
+				}
+			}
+		}
 		return "contact"
 	}
 }
@@ -85,10 +98,13 @@ func (e *UpdateRecordExecutor) Execute(ctx context.Context, run *WorkflowRun, ac
 	entity := resolveEntity(evalCtx)
 
 	switch entity {
+	case "contact":
+		return e.executeContact(ctx, run, updates, evalCtx)
 	case "deal":
 		return e.executeDeal(ctx, run, updates, evalCtx)
 	default:
-		return e.executeContact(ctx, run, updates, evalCtx)
+		// Custom object entity — update the JSONB data column
+		return e.executeCustomObject(ctx, run, updates, evalCtx, entity)
 	}
 }
 
@@ -171,6 +187,155 @@ func (e *UpdateRecordExecutor) executeContact(ctx context.Context, run *Workflow
 	output["entity"] = "contact"
 	output["updates"] = results
 	output["count"] = len(results)
+	return output, nil
+}
+
+// executeCustomObject handles updates targeting a custom object record.
+// Custom objects store data in a JSONB "data" column, so all field updates
+// are applied as patches to that column.
+func (e *UpdateRecordExecutor) executeCustomObject(ctx context.Context, run *WorkflowRun, updates []FieldUpdate, evalCtx EvalContext, slug string) (any, error) {
+	// Get entity ID from trigger payload
+	recordID := ""
+	if extra, ok := evalCtx.Extra[slug]; ok {
+		if m, ok2 := extra.(map[string]any); ok2 {
+			if id, ok3 := m["id"]; ok3 {
+				recordID = fmt.Sprintf("%v", id)
+			}
+		}
+	}
+	if recordID == "" {
+		return nil, fmt.Errorf("update_record: no %s record ID found in context", slug)
+	}
+
+	rid, err := uuid.Parse(recordID)
+	if err != nil {
+		return nil, fmt.Errorf("update_record: invalid %s record ID: %w", slug, err)
+	}
+
+	// Verify record exists and belongs to org
+	var exists bool
+	if err := e.db.WithContext(ctx).
+		Raw("SELECT EXISTS(SELECT 1 FROM custom_object_records WHERE id = ? AND org_id = ? AND deleted_at IS NULL)", rid, run.OrgID).
+		Scan(&exists).Error; err != nil {
+		return nil, fmt.Errorf("update_record: ownership check failed: %w", err)
+	}
+	if !exists {
+		return nil, fmt.Errorf("update_record: %s record %s not found in org %s", slug, recordID, run.OrgID.String())
+	}
+
+	// Read current data JSONB
+	var currentData json.RawMessage
+	if err := e.db.WithContext(ctx).
+		Raw("SELECT data FROM custom_object_records WHERE id = ?", rid).
+		Scan(&currentData).Error; err != nil {
+		return nil, fmt.Errorf("update_record: failed to read %s data: %w", slug, err)
+	}
+
+	dataMap := make(map[string]any)
+	if currentData != nil {
+		json.Unmarshal(currentData, &dataMap)
+	}
+
+	// Apply updates to the data map
+	var results []map[string]any
+	tx := e.db.WithContext(ctx).Begin()
+
+	for _, upd := range updates {
+		// Strip slug prefix from field path (e.g. "ticket.status" → "status")
+		field := upd.Field
+		if strings.HasPrefix(field, slug+".") {
+			field = strings.TrimPrefix(field, slug+".")
+		}
+
+		result := map[string]any{
+			"field": upd.Field,
+			"op":    upd.Op,
+		}
+
+		switch upd.Op {
+		case "set":
+			dataMap[field] = upd.Value
+			result["new_value"] = upd.Value
+		case "clear":
+			delete(dataMap, field)
+			result["new_value"] = nil
+		case "increment":
+			current, _ := toFloat64(dataMap[field])
+			delta, _ := toFloat64(upd.Value)
+			dataMap[field] = current + delta
+			result["new_value"] = current + delta
+		case "decrement":
+			current, _ := toFloat64(dataMap[field])
+			delta, _ := toFloat64(upd.Value)
+			dataMap[field] = current - delta
+			result["new_value"] = current - delta
+		case "add":
+			// For arrays — append values
+			existing, _ := dataMap[field].([]any)
+			if vals, ok := upd.Value.([]any); ok {
+				existing = append(existing, vals...)
+			} else {
+				existing = append(existing, upd.Value)
+			}
+			dataMap[field] = existing
+			result["new_value"] = existing
+		case "remove":
+			// For arrays — remove matching values
+			existing, _ := dataMap[field].([]any)
+			toRemove := make(map[string]bool)
+			if vals, ok := upd.Value.([]any); ok {
+				for _, v := range vals {
+					toRemove[toString(v)] = true
+				}
+			} else {
+				toRemove[toString(upd.Value)] = true
+			}
+			var filtered []any
+			for _, v := range existing {
+				if !toRemove[toString(v)] {
+					filtered = append(filtered, v)
+				}
+			}
+			dataMap[field] = filtered
+			result["new_value"] = filtered
+		default:
+			result["error"] = fmt.Sprintf("unsupported op '%s'", upd.Op)
+		}
+
+		results = append(results, result)
+	}
+
+	// Write updated data back
+	updatedJSON, err := json.Marshal(dataMap)
+	if err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("update_record: failed to marshal %s data: %w", slug, err)
+	}
+
+	if err := tx.Exec(
+		"UPDATE custom_object_records SET data = ?, updated_at = NOW() WHERE id = ?",
+		string(updatedJSON), rid,
+	).Error; err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("update_record: failed to update %s record: %w", slug, err)
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return nil, fmt.Errorf("update_record: commit failed: %w", err)
+	}
+
+	slog.Info("update_record: custom object updated",
+		"slug", slug,
+		"record_id", recordID,
+		"update_count", len(results),
+	)
+
+	output := map[string]any{
+		"entity":    slug,
+		"record_id": recordID,
+		"updates":   results,
+		"count":     len(results),
+	}
 	return output, nil
 }
 

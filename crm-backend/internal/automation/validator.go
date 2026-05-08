@@ -631,11 +631,29 @@ func validateUpdateFieldSchema(fieldPath, op string, value any, uPath string, re
 	// Determine entity from field path prefix
 	entity := "contact"
 	field := fieldPath
+	isCustomObject := false
 	if strings.HasPrefix(fieldPath, "deal.") {
 		entity = "deal"
 		field = strings.TrimPrefix(fieldPath, "deal.")
-	} else {
+	} else if strings.HasPrefix(fieldPath, "contact.") {
 		field = strings.TrimPrefix(fieldPath, "contact.")
+	} else if dotIdx := strings.IndexByte(fieldPath, '.'); dotIdx > 0 {
+		prefix := fieldPath[:dotIdx]
+		// custom_fields and tags are sub-paths of contact/deal, NOT custom objects
+		if prefix != "custom_fields" && prefix != "tags" {
+			// Custom object: e.g. "ticket.status" — skip strict field registry
+			// Custom objects store data as JSONB, so we accept any field name
+			entity = prefix
+			field = fieldPath[dotIdx+1:]
+			isCustomObject = true
+		}
+	}
+
+	// For custom objects, skip the built-in field registry check
+	// (their fields are dynamic JSONB, not static columns)
+	if isCustomObject {
+		// Still validate op is valid
+		return
 	}
 
 	fieldRegistry := contactFieldTypes
