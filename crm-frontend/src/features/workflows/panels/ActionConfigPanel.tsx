@@ -319,7 +319,16 @@ function getOperationsForFieldType(fieldType: string, pickerType?: string): Upda
 /** Resolve which entity to show fields for based on the workflow's trigger type */
 function resolveEntityFromTrigger(triggerType?: string): string[] {
   if (!triggerType) return ['contact'];
+  if (triggerType.startsWith('contact')) return ['contact'];
   if (triggerType.startsWith('deal')) return ['deal'];
+  // Custom objects: e.g. "ticket_created" → slug = "ticket"
+  const suffixes = ['_created', '_updated', '_deleted', '_any'];
+  for (const suffix of suffixes) {
+    if (triggerType.endsWith(suffix)) {
+      const slug = triggerType.slice(0, -suffix.length);
+      if (slug) return [slug];
+    }
+  }
   return ['contact'];
 }
 
@@ -329,7 +338,15 @@ const UpdateRecordParams: React.FC<ParamProps> = ({ action }) => {
   const trigger = useBuilderStore((s) => s.trigger);
 
   const entities = useMemo(() => resolveEntityFromTrigger(trigger?.type), [trigger?.type]);
-  const entityLabel = entities[0] === 'deal' ? 'deal' : 'contact';
+  // Resolve entity label/icon from schema (supports custom objects)
+  const entityKey = entities[0];
+  const entityMeta = useMemo(() => {
+    if (!schema) return { label: entityKey, icon: '📝' };
+    const all = [...schema.entities, ...(schema.custom_objects || [])];
+    const found = all.find(e => e.key === entityKey);
+    if (found) return { label: found.label || found.key, icon: (found as any).icon || (entityKey === 'deal' ? '💼' : entityKey === 'contact' ? '👤' : '📦') };
+    return { label: entityKey, icon: entityKey === 'deal' ? '💼' : entityKey === 'contact' ? '👤' : '📦' };
+  }, [schema, entityKey]);
 
   // Read updates array from params (or migrate from legacy flat format)
   const updates: FieldUpdateEntry[] = useMemo(() => {
@@ -379,9 +396,9 @@ const UpdateRecordParams: React.FC<ParamProps> = ({ action }) => {
     <div className="space-y-3">
       {/* Entity indicator */}
       <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-gray-800/50 border border-gray-700/50">
-        <span className="text-sm">{entityLabel === 'deal' ? '💼' : '👤'}</span>
+        <span className="text-sm">{entityMeta.icon}</span>
         <span className="text-xs text-gray-400">
-          Updates the <span className="font-medium text-white">{entityLabel}</span> from the trigger source
+          Updates the <span className="font-medium text-white">{entityMeta.label}</span> from the trigger source
         </span>
       </div>
 
@@ -413,7 +430,7 @@ const UpdateRecordParams: React.FC<ParamProps> = ({ action }) => {
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-800/50 border border-gray-700/50">
           <span className="text-sm">💡</span>
           <span className="text-xs text-gray-500">
-            Add one or more field updates. Each can set, add, remove, increment, decrement, or clear a {entityLabel} field.
+            Add one or more field updates. Each can set, add, remove, increment, decrement, or clear a {entityMeta.label} field.
           </span>
         </div>
       )}
