@@ -256,57 +256,13 @@ func (g *AIGateway) CompleteWithTools(ctx context.Context, orgID, userID uuid.UU
 // callCFWorkersWithTools calls Cloudflare Workers AI using the OpenAI-compatible
 // function-calling protocol and parses the tool_calls from the response.
 func (g *AIGateway) callCFWorkersWithTools(ctx context.Context, task AITask, model string, messages []Message, tools []Tool) (AIResponse, error) {
-	url := fmt.Sprintf("%s/workers-ai/%s", g.gatewayURL, model)
+	// Use OpenAI-compatible endpoint — required for hosted/pinned models
+	url := fmt.Sprintf("%s/workers-ai/v1/chat/completions", g.gatewayURL)
 
-	// Build the messages array in OpenAI format.
-	// CF Workers AI expects: [{"role":"system","content":"..."},{"role":"user","content":"..."},...]
-	var chatMsgs []map[string]interface{}
-	for _, m := range messages {
-		switch m.Role {
-		case "system", "user":
-			chatMsgs = append(chatMsgs, map[string]interface{}{
-				"role":    m.Role,
-				"content": m.Content,
-			})
-		case "assistant":
-			if len(m.ToolCalls) > 0 {
-				// Format tool calls in the OpenAI assistant message format
-				cfToolCalls := make([]map[string]interface{}, len(m.ToolCalls))
-				for i, tc := range m.ToolCalls {
-					cfToolCalls[i] = map[string]interface{}{
-						"id":   tc.ID,
-						"type": "function",
-						"function": map[string]interface{}{
-							"name":      tc.Name,
-							"arguments": string(tc.Params),
-						},
-					}
-				}
-				msg := map[string]interface{}{
-					"role":       "assistant",
-					"tool_calls": cfToolCalls,
-				}
-				if m.Content != "" {
-					msg["content"] = m.Content
-				}
-				chatMsgs = append(chatMsgs, msg)
-			} else {
-				chatMsgs = append(chatMsgs, map[string]interface{}{
-					"role":    "assistant",
-					"content": m.Content,
-				})
-			}
-		case "tool":
-			// Tool result message in OpenAI format
-			chatMsgs = append(chatMsgs, map[string]interface{}{
-				"role":         "tool",
-				"tool_call_id": m.ToolUseID,
-				"content":      m.Content,
-			})
-		}
-	}
+	chatMsgs := buildOpenAIMessages(messages)
 
 	reqBody := map[string]interface{}{
+		"model":    model,
 		"messages": chatMsgs,
 		"tools":    BuildToolsForCFWorkers(),
 	}
@@ -446,55 +402,22 @@ func (g *AIGateway) modelFor(task AITask, _ provider) string {
 	return "@cf/moonshotai/kimi-k2.6"
 }
 
-// callCFWorkers — CF AI Gateway → Cloudflare Workers AI
+// callCFWorkers — CF AI Gateway → Cloudflare Workers AI (OpenAI-compatible endpoint)
 func (g *AIGateway) callCFWorkers(ctx context.Context, task AITask, model string, messages []Message) (AIResponse, error) {
-	url := fmt.Sprintf("%s/workers-ai/%s", g.gatewayURL, model)
+	// Use OpenAI-compatible endpoint — required for hosted/pinned models (Kimi K2.6, Qwen3, etc.)
+	url := fmt.Sprintf("%s/workers-ai/v1/chat/completions", g.gatewayURL)
 
-	// Build messages in the format CF expects, handling all roles including tool results.
-	var chatMsgs []map[string]interface{}
-	for _, m := range messages {
-		switch m.Role {
-		case "system", "user":
-			chatMsgs = append(chatMsgs, map[string]interface{}{
-				"role":    m.Role,
-				"content": m.Content,
-			})
-		case "assistant":
-			if len(m.ToolCalls) > 0 {
-				cfToolCalls := make([]map[string]interface{}, len(m.ToolCalls))
-				for i, tc := range m.ToolCalls {
-					cfToolCalls[i] = map[string]interface{}{
-						"id":   tc.ID,
-						"type": "function",
-						"function": map[string]interface{}{
-							"name":      tc.Name,
-							"arguments": string(tc.Params),
-						},
-					}
-				}
-				msg := map[string]interface{}{
-					"role":       "assistant",
-					"content":    m.Content, // empty string is fine, not null
-					"tool_calls": cfToolCalls,
-				}
-				chatMsgs = append(chatMsgs, msg)
-			} else {
-				chatMsgs = append(chatMsgs, map[string]interface{}{
-					"role":    "assistant",
-					"content": m.Content,
-				})
-			}
-		case "tool":
-			chatMsgs = append(chatMsgs, map[string]interface{}{
-				"role":         "tool",
-				"tool_call_id": m.ToolUseID,
-				"content":      m.Content,
-			})
-		}
+	chatMsgs := buildOpenAIMessages(messages)
+
+	maxTokens := taskMaxTokens[task]
+	if maxTokens == 0 {
+		maxTokens = 1024
 	}
 
 	body := map[string]interface{}{
-		"messages": chatMsgs,
+		"model":      model,
+		"messages":   chatMsgs,
+		"max_tokens": maxTokens,
 	}
 
 	resp, err := g.doRequest(ctx, url, "POST", map[string]string{
@@ -525,6 +448,54 @@ func (g *AIGateway) callCFWorkers(ctx context.Context, task AITask, model string
 		InputTokens:  inputTokens,
 		OutputTokens: outputTokens,
 	}, nil
+}
+
+// buildOpenAIMessages converts internal Message structs to OpenAI-compatible format.
+func buildOpenAIMessages(messages []Message) []map[string]interface{} {
+	var chatMsgs []map[string]interface{}
+	for _, m := range messages {
+		switch m.Role {
+		case "system", "user":
+			chatMsgs = append(chatMsgs, map[string]interface{}{
+				"role":    m.Role,
+				"content": m.Content,
+			})
+		case "assistant":
+			if len(m.ToolCalls) > 0 {
+				cfToolCalls := make([]map[string]interface{}, len(m.ToolCalls))
+				for i, tc := range m.ToolCalls {
+					cfToolCalls[i] = map[string]interface{}{
+						"id":   tc.ID,
+						"type": "function",
+						"function": map[string]interface{}{
+							"name":      tc.Name,
+							"arguments": string(tc.Params),
+						},
+					}
+				}
+				msg := map[string]interface{}{
+					"role":       "assistant",
+					"tool_calls": cfToolCalls,
+				}
+				if m.Content != "" {
+					msg["content"] = m.Content
+				}
+				chatMsgs = append(chatMsgs, msg)
+			} else {
+				chatMsgs = append(chatMsgs, map[string]interface{}{
+					"role":    "assistant",
+					"content": m.Content,
+				})
+			}
+		case "tool":
+			chatMsgs = append(chatMsgs, map[string]interface{}{
+				"role":         "tool",
+				"tool_call_id": m.ToolUseID,
+				"content":      m.Content,
+			})
+		}
+	}
+	return chatMsgs
 }
 
 // parseCFResponse handles both OpenAI-compatible and legacy Workers AI response formats.
@@ -683,16 +654,13 @@ func (g *AIGateway) StreamChat(ctx context.Context, orgID, userID uuid.UUID, tas
 	}
 
 	model := g.modelFor(task, g.routePrimary(task))
-	url := fmt.Sprintf("%s/workers-ai/%s", g.gatewayURL, model)
+	// Use OpenAI-compatible endpoint — required for hosted/pinned models
+	url := fmt.Sprintf("%s/workers-ai/v1/chat/completions", g.gatewayURL)
 
-	// Build CF Workers AI streaming request.
-	// Llama 3.1 respects system-role messages in the messages array more reliably
-	// than the separate top-level "system" field.
-	var allMsgs []map[string]string
-	for _, m := range messages {
-		allMsgs = append(allMsgs, map[string]string{"role": m.Role, "content": m.Content})
-	}
+	// Build OpenAI-format messages and request body
+	allMsgs := buildOpenAIMessages(messages)
 	body := map[string]interface{}{
+		"model":    model,
 		"messages": allMsgs,
 		"stream":   true,
 	}
