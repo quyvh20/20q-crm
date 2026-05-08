@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -78,9 +79,9 @@ var taskPrimaryProvider = map[AITask]provider{
 // Optimized per-task: use the cheapest model that can handle the job well.
 // Pricing reference (per M tokens, input/output):
 //   llama-3.2-1b:          $0.027 / $0.201  — tiny, good for sentiment/short JSON
-//   qwen3-30b-a3b-fp8:     $0.051 / $0.335  — MoE, background tasks only (hallucinates for chat)
+//   qwen3-30b-a3b-fp8:     $0.051 / $0.335  — MoE, background tasks (hallucinates for chat)
 //   llama-3.2-3b:          $0.051 / $0.335  — small but capable for structured output
-//   kimi-k2.6:             $0.950 / $4.000  — frontier, user-facing chat (accurate, no hallucination)
+//   kimi-k2.6:             $0.950 / $4.000  — frontier 1T, best reasoning on Workers AI
 var taskModels = map[AITask]map[provider]string{
 	TaskAssistantChat:     {providerCFWorkers: "@cf/moonshotai/kimi-k2.6"},
 	TaskCommandCenter:     {providerCFWorkers: "@cf/moonshotai/kimi-k2.6"},
@@ -94,7 +95,6 @@ var taskModels = map[AITask]map[provider]string{
 }
 
 // taskFallbackModels — tried when the primary model fails (timeout, error, empty response).
-// Qwen3 is the fast fallback if Kimi times out on user-facing tasks.
 var taskFallbackModels = map[AITask][]string{
 	TaskAssistantChat: {"@cf/qwen/qwen3-30b-a3b-fp8"},
 	TaskCommandCenter: {"@cf/qwen/qwen3-30b-a3b-fp8"},
@@ -285,8 +285,7 @@ func (g *AIGateway) CompleteWithTools(ctx context.Context, orgID, userID uuid.UU
 // callCFWorkersWithTools calls Cloudflare Workers AI using the OpenAI-compatible
 // function-calling protocol and parses the tool_calls from the response.
 func (g *AIGateway) callCFWorkersWithTools(ctx context.Context, task AITask, model string, messages []Message, tools []Tool) (AIResponse, error) {
-	// Use OpenAI-compatible endpoint — required for hosted/pinned models
-	url := fmt.Sprintf("%s/workers-ai/v1/chat/completions", g.gatewayURL)
+	url := g.resolveModelURL(model)
 
 	chatMsgs := buildOpenAIMessages(messages)
 
@@ -431,10 +430,19 @@ func (g *AIGateway) modelFor(task AITask, _ provider) string {
 	return "@cf/moonshotai/kimi-k2.6"
 }
 
-// callCFWorkers — CF AI Gateway → Cloudflare Workers AI (OpenAI-compatible endpoint)
+// resolveModelURL returns the correct AI Gateway URL for the given model.
+// - "anthropic/..." models → /compat/chat/completions (proxied via AI Gateway)
+// - "@cf/..." models       → /workers-ai/v1/chat/completions (native Workers AI)
+func (g *AIGateway) resolveModelURL(model string) string {
+	if strings.HasPrefix(model, "anthropic/") {
+		return fmt.Sprintf("%s/compat/chat/completions", g.gatewayURL)
+	}
+	return fmt.Sprintf("%s/workers-ai/v1/chat/completions", g.gatewayURL)
+}
+
+// callCFWorkers — CF AI Gateway → Workers AI or proxied provider (OpenAI-compatible endpoint)
 func (g *AIGateway) callCFWorkers(ctx context.Context, task AITask, model string, messages []Message) (AIResponse, error) {
-	// Use OpenAI-compatible endpoint — required for hosted/pinned models (Kimi K2.6, Qwen3, etc.)
-	url := fmt.Sprintf("%s/workers-ai/v1/chat/completions", g.gatewayURL)
+	url := g.resolveModelURL(model)
 
 	chatMsgs := buildOpenAIMessages(messages)
 
@@ -471,7 +479,7 @@ func (g *AIGateway) callCFWorkers(ctx context.Context, task AITask, model string
 	}
 
 	return AIResponse{
-		Content:      responseText,
+		Content:      sanitizeKimiResponse(responseText),
 		Model:        model,
 		Provider:     string(providerCFWorkers),
 		InputTokens:  inputTokens,
@@ -683,7 +691,6 @@ func (g *AIGateway) StreamChat(ctx context.Context, orgID, userID uuid.UUID, tas
 	}
 
 	model := g.modelFor(task, g.routePrimary(task))
-	url := fmt.Sprintf("%s/workers-ai/v1/chat/completions", g.gatewayURL)
 
 	// Build models to try: primary + fallbacks
 	modelsToTry := []string{model}
@@ -711,7 +718,8 @@ func (g *AIGateway) StreamChat(ctx context.Context, orgID, userID uuid.UUID, tas
 			return err
 		}
 
-		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
+		tryURL := g.resolveModelURL(tryModel)
+		req, err := http.NewRequestWithContext(ctx, "POST", tryURL, bytes.NewReader(bodyBytes))
 		if err != nil {
 			return err
 		}
@@ -814,8 +822,11 @@ func (g *AIGateway) StreamChat(ctx context.Context, orgID, userID uuid.UUID, tas
 				text = chunk.Choices[0].Delta.Content
 			}
 			if text != "" {
-				fmt.Fprintf(w, "data: %s\n\n", text)
-				totalOutput += len(text)
+				text = sanitizeKimiResponse(text)
+				if text != "" {
+					fmt.Fprintf(w, "data: %s\n\n", text)
+					totalOutput += len(text)
+				}
 			}
 		}
 		flush()
@@ -828,6 +839,28 @@ func (g *AIGateway) StreamChat(ctx context.Context, orgID, userID uuid.UUID, tas
 	return nil
 }
 
+
+// ============================================================
+// Kimi response sanitizer — strip leaked special tokens
+// ============================================================
+
+// kimiTokenPattern matches Kimi K2.6's internal special tokens that leak into
+// streaming/non-streaming responses when the model attempts tool use without
+// proper tool-calling context. These are NOT user-visible content.
+var kimiTokenPattern = regexp.MustCompile(`<\|(?:tool_calls_section_begin|tool_calls_section_end|tool_call_begin|tool_call_end|tool_call_argument_begin|tool_call_argument_end|tool_sep|im_end|im_start)\|>`)
+
+// sanitizeKimiResponse strips Kimi's leaked internal tokens from response text.
+// This prevents raw markup like <|tool_calls_section_begin|> from appearing in
+// the user-facing chat UI.
+func sanitizeKimiResponse(text string) string {
+	cleaned := kimiTokenPattern.ReplaceAllString(text, "")
+	// Also strip function-call-like lines that Kimi emits as plain text:
+	// e.g. "functions.create_contact:0" or "functions.search_contacts:0"
+	cleaned = regexp.MustCompile(`(?m)^functions\.[a-z_]+:\d+$`).ReplaceAllString(cleaned, "")
+	// Collapse multiple newlines left by stripping
+	cleaned = regexp.MustCompile(`\n{3,}`).ReplaceAllString(cleaned, "\n\n")
+	return strings.TrimSpace(cleaned)
+}
 
 // ============================================================
 // Token estimation (rough pre-flight check)

@@ -277,7 +277,12 @@ func (h *AIHandler) Embed(c *gin.Context) {
 
 func (h *AIHandler) buildSystemPrompt(ctx context.Context, contextID *string, orgID uuid.UUID) string {
 	// Use the compiled KB prompt as base if available, fall back to generic
-	base := "You are a helpful CRM assistant. Be concise and professional."
+	base := `You are a helpful CRM assistant. Be concise and professional.
+IMPORTANT RULES:
+- Never output raw markup, XML tags, or special tokens in your response.
+- If you cannot perform an action, say so plainly in natural language.
+- Do not fabricate data. If you don't know something, say "I don't have that information."
+- Always respond in clean, human-readable text.`
 	if h.kbBuilder != nil {
 		if kbPrompt, err := h.kbBuilder.BuildSystemPrompt(ctx, orgID); err == nil && kbPrompt != "" {
 			base = kbPrompt
