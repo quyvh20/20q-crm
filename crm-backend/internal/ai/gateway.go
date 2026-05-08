@@ -319,10 +319,57 @@ func (g *AIGateway) callCFWorkersWithTools(ctx context.Context, task AITask, mod
 		return AIResponse{}, fmt.Errorf("cf workers tool call: %w", err)
 	}
 
-	// CF Workers AI response with tool_calls follows OpenAI format:
-	// { "result": { "response": "...", "tool_calls": [{"id":"..","type":"function","function":{"name":"..","arguments":"{...}"}}], "usage":{...} } }
-	// Actual CF Workers AI response shape (NOT standard OpenAI format):
-	// {"result":{"response":null,"tool_calls":[{"name":"fn","arguments":{...}}],"usage":{...}}}
+	// Hosted/pinned models (Kimi K2.6, Qwen3, etc.) return OpenAI-compatible format:
+	//   {"choices":[{"message":{"content":"...","tool_calls":[{"id":"...","type":"function","function":{"name":"...","arguments":"{...}"}}]}}],"usage":{...}}
+	// Legacy Workers AI format:
+	//   {"result":{"response":null,"tool_calls":[{"name":"fn","arguments":{...}}],"usage":{...}}}
+
+	// Try OpenAI-compatible format first
+	var oaiResp struct {
+		Choices []struct {
+			Message struct {
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					ID       string `json:"id"`
+					Type     string `json:"type"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"` // JSON string in OpenAI format
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"message"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(resp, &oaiResp); err == nil && len(oaiResp.Choices) > 0 {
+		msg := oaiResp.Choices[0].Message
+		result := AIResponse{
+			Content:      msg.Content,
+			Model:        model,
+			Provider:     string(providerCFWorkers),
+			InputTokens:  oaiResp.Usage.PromptTokens,
+			OutputTokens: oaiResp.Usage.CompletionTokens,
+		}
+		for _, tc := range msg.ToolCalls {
+			params := json.RawMessage(tc.Function.Arguments)
+			if !json.Valid(params) || len(params) == 0 {
+				params = json.RawMessage("{}")
+			}
+			result.ToolCalls = append(result.ToolCalls, ToolCall{
+				ID:     tc.ID,
+				Name:   tc.Function.Name,
+				Params: params,
+			})
+		}
+		if msg.Content != "" || len(result.ToolCalls) > 0 {
+			return result, nil
+		}
+	}
+
+	// Fallback: legacy Workers AI format
 	var cfResp struct {
 		Result struct {
 			Response  interface{} `json:"response"` // null or string
@@ -331,17 +378,15 @@ func (g *AIGateway) callCFWorkersWithTools(ctx context.Context, task AITask, mod
 				Arguments json.RawMessage `json:"arguments"` // already a JSON object
 			} `json:"tool_calls"`
 			Usage struct {
-				InputTokens  int `json:"prompt_tokens"`
-				OutputTokens int `json:"completion_tokens"`
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
 			} `json:"usage"`
 		} `json:"result"`
-		Success bool `json:"success"`
 	}
 	if err := json.Unmarshal(resp, &cfResp); err != nil {
-		return AIResponse{}, fmt.Errorf("cf workers tool unmarshal: %w (body: %s)", err, string(resp))
+		return AIResponse{}, fmt.Errorf("cf workers tool unmarshal: %w (body: %.500s)", err, string(resp))
 	}
 
-	// response is null when tool_calls are returned
 	responseText := ""
 	if cfResp.Result.Response != nil {
 		if s, ok := cfResp.Result.Response.(string); ok {
@@ -353,11 +398,10 @@ func (g *AIGateway) callCFWorkersWithTools(ctx context.Context, task AITask, mod
 		Content:      responseText,
 		Model:        model,
 		Provider:     string(providerCFWorkers),
-		InputTokens:  cfResp.Result.Usage.InputTokens,
-		OutputTokens: cfResp.Result.Usage.OutputTokens,
+		InputTokens:  cfResp.Result.Usage.PromptTokens,
+		OutputTokens: cfResp.Result.Usage.CompletionTokens,
 	}
 
-	// arguments is already a decoded JSON object (RawMessage), not a string
 	for i, tc := range cfResp.Result.ToolCalls {
 		params := tc.Arguments
 		if !json.Valid(params) || len(params) == 0 {
@@ -461,37 +505,15 @@ func (g *AIGateway) callCFWorkers(ctx context.Context, task AITask, model string
 		return AIResponse{}, err
 	}
 
-	// CF response: { "result": { "response": "...", "usage": { "prompt_tokens": N, "completion_tokens": M } } }
-	var cfResp struct {
-		Result struct {
-			Response interface{} `json:"response"` // null or string
-			Usage    struct {
-				InputTokens  int `json:"prompt_tokens"`
-				OutputTokens int `json:"completion_tokens"`
-			} `json:"usage"`
-		} `json:"result"`
-		Success bool `json:"success"`
-	}
-	if err := json.Unmarshal(resp, &cfResp); err != nil {
-		return AIResponse{}, fmt.Errorf("cf workers unmarshal: %w (raw: %.500s)", err, string(resp))
-	}
-
-	responseText := ""
-	if cfResp.Result.Response != nil {
-		switch v := cfResp.Result.Response.(type) {
-		case string:
-			responseText = v
-		default:
-			// Some models return non-string responses; marshal back to string
-			b, _ := json.Marshal(v)
-			responseText = string(b)
-		}
-	}
+	// Hosted/pinned models (Kimi K2.6, Qwen3, etc.) return OpenAI-compatible format:
+	//   {"id":"...","choices":[{"message":{"content":"..."}}],"usage":{"prompt_tokens":N,"completion_tokens":M}}
+	// Older Workers AI models return legacy format:
+	//   {"result":{"response":"...","usage":{"prompt_tokens":N,"completion_tokens":M}}}
+	responseText, inputTokens, outputTokens := parseCFResponse(resp)
 
 	if responseText == "" {
 		g.logger.Warn("CF Workers AI returned empty response",
 			zap.String("model", model),
-			zap.Bool("success", cfResp.Success),
 			zap.String("raw_response", string(resp[:min(len(resp), 500)])),
 		)
 	}
@@ -500,9 +522,51 @@ func (g *AIGateway) callCFWorkers(ctx context.Context, task AITask, model string
 		Content:      responseText,
 		Model:        model,
 		Provider:     string(providerCFWorkers),
-		InputTokens:  cfResp.Result.Usage.InputTokens,
-		OutputTokens: cfResp.Result.Usage.OutputTokens,
+		InputTokens:  inputTokens,
+		OutputTokens: outputTokens,
 	}, nil
+}
+
+// parseCFResponse handles both OpenAI-compatible and legacy Workers AI response formats.
+func parseCFResponse(data []byte) (content string, inputTokens, outputTokens int) {
+	// Try OpenAI-compatible format first (used by hosted/pinned models)
+	var oaiResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(data, &oaiResp); err == nil && len(oaiResp.Choices) > 0 && oaiResp.Choices[0].Message.Content != "" {
+		return oaiResp.Choices[0].Message.Content, oaiResp.Usage.PromptTokens, oaiResp.Usage.CompletionTokens
+	}
+
+	// Fallback: legacy Workers AI format
+	var cfResp struct {
+		Result struct {
+			Response interface{} `json:"response"`
+			Usage    struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+			} `json:"usage"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(data, &cfResp); err == nil && cfResp.Result.Response != nil {
+		switch v := cfResp.Result.Response.(type) {
+		case string:
+			content = v
+		default:
+			b, _ := json.Marshal(v)
+			content = string(b)
+		}
+		return content, cfResp.Result.Usage.PromptTokens, cfResp.Result.Usage.CompletionTokens
+	}
+
+	return "", 0, 0
 }
 
 
@@ -704,13 +768,27 @@ func (g *AIGateway) StreamChat(ctx context.Context, orgID, userID uuid.UUID, tas
 		}
 		
 		var chunk struct {
+			// OpenAI-compatible format (used by hosted/pinned models like Kimi K2.6)
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+			// Legacy Workers AI format
 			Response string `json:"response"`
 		}
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			fmt.Fprintf(w, "data: %s\n\n", payload)
 		} else {
-			fmt.Fprintf(w, "data: %s\n\n", chunk.Response)
-			totalOutput += len(chunk.Response)
+			// Extract text from whichever format is present
+			text := chunk.Response
+			if text == "" && len(chunk.Choices) > 0 {
+				text = chunk.Choices[0].Delta.Content
+			}
+			if text != "" {
+				fmt.Fprintf(w, "data: %s\n\n", text)
+				totalOutput += len(text)
+			}
 		}
 		flush()
 	}
