@@ -114,8 +114,8 @@ func TestGateway_ModelRouting_OptimizedPerTask(t *testing.T) {
 
 	// Verify each task maps to the optimal model for cost
 	expected := map[AITask]string{
-		TaskAssistantChat:     "@cf/moonshotai/kimi-k2.6",
-		TaskCommandCenter:     "@cf/moonshotai/kimi-k2.6",
+		TaskAssistantChat:     "@cf/qwen/qwen3-30b-a3b-fp8",
+		TaskCommandCenter:     "@cf/qwen/qwen3-30b-a3b-fp8",
 		TaskEmailCompose:      "@cf/qwen/qwen3-30b-a3b-fp8",
 		TaskMeetingSummary:    "@cf/qwen/qwen3-30b-a3b-fp8",
 		TaskAnalytics:         "@cf/qwen/qwen3-30b-a3b-fp8",

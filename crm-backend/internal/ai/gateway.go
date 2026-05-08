@@ -77,22 +77,28 @@ var taskPrimaryProvider = map[AITask]provider{
 // Task → model mapping per provider
 // Optimized per-task: use the cheapest model that can handle the job well.
 // Pricing reference (per M tokens, input/output):
-//   granite-4.0-h-micro:   $0.017 / $0.112  — cheapest, good for simple classification
 //   llama-3.2-1b:          $0.027 / $0.201  — tiny, good for sentiment/short JSON
 //   qwen3-30b-a3b-fp8:     $0.051 / $0.335  — MoE, great quality/price ratio, function calling
-//   glm-4.7-flash:         $0.060 / $0.400  — fast, multilingual, function calling
 //   llama-3.2-3b:          $0.051 / $0.335  — small but capable for structured output
-//   kimi-k2.6:             $0.950 / $4.000  — frontier, reserved for user-facing chat only
+//   kimi-k2.6:             $0.950 / $4.000  — frontier fallback (slow cold-start, 1T params)
 var taskModels = map[AITask]map[provider]string{
 	TaskEmailCompose:      {providerCFWorkers: "@cf/qwen/qwen3-30b-a3b-fp8"},
-	TaskAssistantChat:     {providerCFWorkers: "@cf/moonshotai/kimi-k2.6"},
+	TaskAssistantChat:     {providerCFWorkers: "@cf/qwen/qwen3-30b-a3b-fp8"},
 	TaskMeetingSummary:    {providerCFWorkers: "@cf/qwen/qwen3-30b-a3b-fp8"},
 	TaskDealScore:         {providerCFWorkers: "@cf/meta/llama-3.2-3b-instruct"},
 	TaskAnalytics:         {providerCFWorkers: "@cf/qwen/qwen3-30b-a3b-fp8"},
 	TaskSentiment:         {providerCFWorkers: "@cf/meta/llama-3.2-1b-instruct"},
 	TaskFollowup:          {providerCFWorkers: "@cf/meta/llama-3.2-3b-instruct"},
 	TaskVoiceIntelligence: {providerCFWorkers: "@cf/qwen/qwen3-30b-a3b-fp8"},
-	TaskCommandCenter:     {providerCFWorkers: "@cf/moonshotai/kimi-k2.6"},
+	TaskCommandCenter:     {providerCFWorkers: "@cf/qwen/qwen3-30b-a3b-fp8"},
+}
+
+// taskFallbackModels — tried when the primary model fails (timeout, error, empty response).
+// Kimi K2.6 is the frontier fallback for user-facing tasks that need high quality.
+var taskFallbackModels = map[AITask][]string{
+	TaskAssistantChat: {"@cf/moonshotai/kimi-k2.6"},
+	TaskCommandCenter: {"@cf/moonshotai/kimi-k2.6"},
+	TaskEmailCompose:  {"@cf/moonshotai/kimi-k2.6"},
 }
 
 // taskMaxTokens enforces strict output boundaries based on empirically measured p99 usage
@@ -177,22 +183,27 @@ func (g *AIGateway) Complete(ctx context.Context, orgID, userID uuid.UUID, task 
 		}
 	}
 
-	// All AI runs on Cloudflare Workers AI (Kimi K2.6)
-	primaryP := g.routePrimary(task)
-	chain := g.buildFallbackChain(primaryP)
+	// Try primary model, then fallbacks if available
+	primaryModel := g.modelFor(task, providerCFWorkers)
+	modelsToTry := []string{primaryModel}
+	for _, fb := range taskFallbackModels[task] {
+		if fb != primaryModel {
+			modelsToTry = append(modelsToTry, fb)
+		}
+	}
 
 	var result AIResponse
 	var err error
-	for _, p := range chain {
-		result, err = g.callProvider(ctx, task, p, messages)
+	for _, model := range modelsToTry {
+		result, err = g.callCFWorkers(ctx, task, model, messages)
 		if err == nil && result.Content != "" {
 			break
 		}
 		if err == nil && result.Content == "" {
-			err = fmt.Errorf("provider %s returned empty response", p)
+			err = fmt.Errorf("model %s returned empty response", model)
 		}
-		g.logger.Warn("provider failed, trying next",
-			zap.String("provider", string(p)),
+		g.logger.Warn("model failed, trying next",
+			zap.String("model", model),
 			zap.String("task", string(task)),
 			zap.Error(err))
 	}
@@ -230,6 +241,24 @@ func (g *AIGateway) CompleteWithTools(ctx context.Context, orgID, userID uuid.UU
 
 	model := g.modelFor(task, providerCFWorkers)
 	result, err := g.callCFWorkersWithTools(ctx, task, model, messages, tools)
+
+	// Fallback: try alternative models if primary fails
+	if (err != nil || (result.Content == "" && len(result.ToolCalls) == 0)) && len(taskFallbackModels[task]) > 0 {
+		for _, fbModel := range taskFallbackModels[task] {
+			if fbModel == model {
+				continue
+			}
+			g.logger.Warn("primary model failed for tools, trying fallback",
+				zap.String("primary", model),
+				zap.String("fallback", fbModel),
+				zap.Error(err))
+			result, err = g.callCFWorkersWithTools(ctx, task, fbModel, messages, tools)
+			if err == nil && (result.Content != "" || len(result.ToolCalls) > 0) {
+				break
+			}
+		}
+	}
+
 	if err != nil {
 		g.logger.Error("CF Workers tool call failed — returning graceful fallback",
 			zap.String("model", model),
@@ -654,46 +683,77 @@ func (g *AIGateway) StreamChat(ctx context.Context, orgID, userID uuid.UUID, tas
 	}
 
 	model := g.modelFor(task, g.routePrimary(task))
-	// Use OpenAI-compatible endpoint — required for hosted/pinned models
 	url := fmt.Sprintf("%s/workers-ai/v1/chat/completions", g.gatewayURL)
 
-	// Build OpenAI-format messages and request body
-	allMsgs := buildOpenAIMessages(messages)
-	body := map[string]interface{}{
-		"model":    model,
-		"messages": allMsgs,
-		"stream":   true,
-	}
-
-	bodyBytes, err := json.Marshal(body)
-	if err != nil {
-		return err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+g.cfToken)
-	if g.cfGatewayToken != "" {
-		req.Header.Set("cf-aig-authorization", "Bearer "+g.cfGatewayToken)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
-
-	resp, err := g.httpClient.Do(req)
-	if err != nil {
-		if isTimeoutErr(err) {
-			return ErrAITimeout{Provider: g.gatewayURL, After: 5}
+	// Build models to try: primary + fallbacks
+	modelsToTry := []string{model}
+	for _, fb := range taskFallbackModels[task] {
+		if fb != model {
+			modelsToTry = append(modelsToTry, fb)
 		}
-		return fmt.Errorf("stream request failed: %w", err)
+	}
+
+	allMsgs := buildOpenAIMessages(messages)
+
+	// Try each model until one responds successfully.
+	// Fallback is only possible BEFORE we commit SSE headers to the client.
+	var resp *http.Response
+	var lastErr error
+	for _, tryModel := range modelsToTry {
+		body := map[string]interface{}{
+			"model":    tryModel,
+			"messages": allMsgs,
+			"stream":   true,
+		}
+
+		bodyBytes, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+g.cfToken)
+		if g.cfGatewayToken != "" {
+			req.Header.Set("cf-aig-authorization", "Bearer "+g.cfGatewayToken)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "text/event-stream")
+
+		resp, err = g.httpClient.Do(req)
+		if err != nil {
+			lastErr = err
+			g.logger.Warn("stream model failed, trying next",
+				zap.String("model", tryModel), zap.Error(err))
+			continue
+		}
+
+		if resp.StatusCode >= 400 {
+			data, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			lastErr = fmt.Errorf("stream provider returned %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+			g.logger.Warn("stream model returned error, trying next",
+				zap.String("model", tryModel), zap.Int("status", resp.StatusCode))
+			continue
+		}
+
+		// Success — use this model
+		model = tryModel
+		break
+	}
+
+	if resp == nil || (resp.StatusCode >= 400) {
+		if lastErr != nil {
+			if isTimeoutErr(lastErr) {
+				return ErrAITimeout{Provider: g.gatewayURL, After: 5}
+			}
+			return fmt.Errorf("stream request failed: %w", lastErr)
+		}
+		return fmt.Errorf("stream: all models failed")
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		data, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("stream provider returned %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
-	}
 
 	// Connection established successfully — commit SSE headers BEFORE first write.
 	writeSSEHeaders()
