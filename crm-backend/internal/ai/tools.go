@@ -190,22 +190,6 @@ func AllowedTools(role string) []Tool {
 // CRMTools is kept for backward-compat with any existing callers.
 var CRMTools = allCRMTools
 
-// BuildToolsForAnthropic converts tools to Anthropic's expected format.
-func BuildToolsForAnthropic() []map[string]any {
-	return buildAnthropicTools(allCRMTools)
-}
-
-func buildAnthropicTools(tools []Tool) []map[string]any {
-	out := make([]map[string]any, len(tools))
-	for i, t := range tools {
-		out[i] = map[string]any{
-			"name":         t.Name,
-			"description":  t.Desc,
-			"input_schema": t.Params,
-		}
-	}
-	return out
-}
 
 // BuildToolsForCFWorkers converts tools to the OpenAI-compatible format.
 func BuildToolsForCFWorkers() []map[string]any {

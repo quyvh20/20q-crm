@@ -198,13 +198,9 @@ func main() {
 
 		budget := ai.NewBudgetGuard(db, redisClient)
 		gateway := ai.NewAIGateway(
-			cfg.CFAccountID, cfg.CFAIGatewayID, cfg.CFAIToken, cfg.AnthropicAPIKey,
+			cfg.CFAccountID, cfg.CFAIGatewayID, cfg.CFAIToken,
 			budget, log, cfg.CFAIGatewayToken,
 		)
-		if cfg.VercelAIGatewayURL != "" && cfg.VercelAIGatewayKey != "" {
-			gateway.SetVercelGateway(cfg.VercelAIGatewayURL, cfg.VercelAIGatewayKey)
-			log.Info("Vercel AI Gateway configured", zap.String("url", cfg.VercelAIGatewayURL))
-		}
 		embedSvc := ai.NewEmbeddingService(cfg.CFAccountID, cfg.CFAIGatewayID, cfg.CFAIToken, cfg.CFAIGatewayToken)
 		embedWorker := worker.NewEmbeddingWorker(embedSvc, db, log, 200)
 		go embedWorker.Start(context.Background(), 5)

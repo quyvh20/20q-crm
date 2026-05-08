@@ -236,24 +236,37 @@ func firstDayNextMonth() time.Time {
 	return time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC)
 }
 
-// estimateCost returns approximate USD cost based on known pricing.
-// Haiku 4.5: $1/M input, $5/M output, $0.10/M cached-read, $1.25/M cache-creation
-// Claude 3.5 Haiku: $0.80/$4.00 per 1M tokens in/out
-func estimateCost(model string, in, out, cachedRead, cacheCreation int) float64 {
-	switch {
-	case strings.Contains(model, "haiku-4.5") || strings.Contains(model, "claude-haiku-4"):
-		// Haiku 4.5 pricing
-		inputCost := float64(in) * 1.00 / 1_000_000
-		outputCost := float64(out) * 5.00 / 1_000_000
-		cachedCost := float64(cachedRead) * 0.10 / 1_000_000
-		creationCost := float64(cacheCreation) * 1.25 / 1_000_000
-		return inputCost + outputCost + cachedCost + creationCost
-	case strings.Contains(model, "claude"):
-		// Claude 3.5 Haiku fallback pricing
-		return float64(in)*0.80/1_000_000 + float64(out)*4.00/1_000_000
-	default:
-		return 0
+// estimateCost returns approximate USD cost based on official Cloudflare Workers AI pricing.
+// See: https://developers.cloudflare.com/workers-ai/platform/pricing/
+func estimateCost(model string, in, out, cachedRead, _ int) float64 {
+	// Rates are per 1M tokens (input, output) from the CF pricing page.
+	type rate struct{ inRate, outRate, cachedRate float64 }
+	rates := map[string]rate{
+		"kimi-k2.6":          {0.950, 4.000, 0.160},
+		"kimi-k2.5":          {0.600, 3.000, 0.100},
+		"qwen3-30b":          {0.051, 0.335, 0},
+		"llama-3.2-1b":       {0.027, 0.201, 0},
+		"llama-3.2-3b":       {0.051, 0.335, 0},
+		"glm-4.7":            {0.060, 0.400, 0},
+		"granite-4.0":        {0.017, 0.112, 0},
+		"llama-3.3-70b":      {0.293, 2.253, 0},
+		"llama-3.1-8b":       {0.045, 0.384, 0},
+		"gemma-4":            {0.100, 0.300, 0},
+		"gpt-oss-120b":       {0.350, 0.750, 0},
+		"gpt-oss-20b":        {0.200, 0.300, 0},
 	}
+
+	for key, r := range rates {
+		if strings.Contains(model, key) {
+			cost := float64(in)*r.inRate/1_000_000 + float64(out)*r.outRate/1_000_000
+			if r.cachedRate > 0 && cachedRead > 0 {
+				cost += float64(cachedRead) * r.cachedRate / 1_000_000
+			}
+			return cost
+		}
+	}
+	// Embeddings, Whisper, etc. — negligible cost within free tier
+	return 0
 }
 
 // GetTopUsages returns the most expensive recent usages by default, or most recent if requested.

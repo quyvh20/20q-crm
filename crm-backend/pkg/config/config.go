@@ -30,12 +30,6 @@ type Config struct {
 	CFAIGatewayID    string `mapstructure:"CF_AI_GATEWAY_ID"`
 	CFAIGatewayToken string `mapstructure:"CF_AI_GATEWAY_TOKEN"`
 
-	// AI (Anthropic - Claude fallback)
-	AnthropicAPIKey string `mapstructure:"ANTHROPIC_API_KEY"`
-
-	// AI (Vercel AI Gateway - Haiku primary for Command Center)
-	VercelAIGatewayURL string `mapstructure:"VERCEL_AI_GATEWAY_URL"`
-	VercelAIGatewayKey string `mapstructure:"VERCEL_AI_GATEWAY_KEY"`
 
 	// Payments
 	PaddleWebhookSecret string `mapstructure:"PADDLE_WEBHOOK_SECRET"`
@@ -68,9 +62,7 @@ func LoadConfig() (*Config, error) {
 	viper.BindEnv("CF_AI_TOKEN")
 	viper.BindEnv("CF_AI_GATEWAY_ID")
 	viper.BindEnv("CF_AI_GATEWAY_TOKEN")
-	viper.BindEnv("ANTHROPIC_API_KEY")
-	viper.BindEnv("VERCEL_AI_GATEWAY_URL")
-	viper.BindEnv("VERCEL_AI_GATEWAY_KEY")
+
 	viper.BindEnv("RESEND_API_KEY")
 	viper.BindEnv("R2_ACCOUNT_ID")
 	viper.BindEnv("R2_ACCESS_KEY_ID")

@@ -15,7 +15,7 @@ type DealScorePayload struct {
 	DealID     uuid.UUID `json:"deal_id"`
 }
 
-// ProcessDealScore analyzes a deal and computes a score via Anthropic.
+// ProcessDealScore analyzes a deal and computes a score via Cloudflare Workers AI.
 func ProcessDealScore(ctx context.Context, q *AIJobQueue, job *AIJob) (json.RawMessage, error) {
 	var payload DealScorePayload
 	if err := json.Unmarshal(job.Payload, &payload); err != nil {

@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
+
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -57,48 +57,55 @@ func IsAdvancedTask(t AITask) bool { return advancedTasks[t] }
 type provider string
 
 const (
-	providerCFWorkers     provider = "cloudflare"
-	providerAnthropic     provider = "anthropic"
-	providerVercelGateway provider = "vercel_gateway"
+	providerCFWorkers provider = "cloudflare"
 )
 
 // Task → primary provider mapping
+// All tasks route through Cloudflare Workers AI (@cf/moonshotai/kimi-k2.6)
 var taskPrimaryProvider = map[AITask]provider{
-	TaskEmailCompose:      providerAnthropic,
+	TaskEmailCompose:      providerCFWorkers,
 	TaskAssistantChat:     providerCFWorkers,
-	TaskMeetingSummary:    providerAnthropic,
+	TaskMeetingSummary:    providerCFWorkers,
 	TaskDealScore:         providerCFWorkers,
-	TaskAnalytics:         providerAnthropic,
+	TaskAnalytics:         providerCFWorkers,
 	TaskSentiment:         providerCFWorkers,
-	TaskFollowup:          providerAnthropic,
+	TaskFollowup:          providerCFWorkers,
 	TaskVoiceIntelligence: providerCFWorkers,
-	TaskCommandCenter:     providerVercelGateway,
+	TaskCommandCenter:     providerCFWorkers,
 }
 
 // Task → model mapping per provider
+// Optimized per-task: use the cheapest model that can handle the job well.
+// Pricing reference (per M tokens, input/output):
+//   granite-4.0-h-micro:   $0.017 / $0.112  — cheapest, good for simple classification
+//   llama-3.2-1b:          $0.027 / $0.201  — tiny, good for sentiment/short JSON
+//   qwen3-30b-a3b-fp8:     $0.051 / $0.335  — MoE, great quality/price ratio, function calling
+//   glm-4.7-flash:         $0.060 / $0.400  — fast, multilingual, function calling
+//   llama-3.2-3b:          $0.051 / $0.335  — small but capable for structured output
+//   kimi-k2.6:             $0.950 / $4.000  — frontier, reserved for user-facing chat only
 var taskModels = map[AITask]map[provider]string{
-	TaskEmailCompose:      {providerAnthropic: "claude-3-5-haiku-20241022", providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct"},
-	TaskAssistantChat:     {providerCFWorkers: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", providerAnthropic: "claude-3-5-haiku-20241022"},
-	TaskMeetingSummary:    {providerAnthropic: "claude-3-5-haiku-20241022", providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct"},
-	TaskDealScore:         {providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct", providerAnthropic: "claude-3-5-haiku-20241022"},
-	TaskAnalytics:         {providerAnthropic: "claude-3-5-haiku-20241022", providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct"},
-	TaskSentiment:         {providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct", providerAnthropic: "claude-3-5-haiku-20241022"},
-	TaskFollowup:          {providerAnthropic: "claude-3-5-haiku-20241022", providerCFWorkers: "@cf/meta/llama-3.1-8b-instruct"},
-	TaskVoiceIntelligence: {providerCFWorkers: "@cf/moonshotai/kimi-k2.6", providerAnthropic: "claude-3-5-haiku-20241022"},
-	TaskCommandCenter:     {providerVercelGateway: "anthropic/claude-haiku-4.5", providerCFWorkers: "@cf/moonshotai/kimi-k2.5"},
+	TaskEmailCompose:      {providerCFWorkers: "@cf/qwen/qwen3-30b-a3b-fp8"},
+	TaskAssistantChat:     {providerCFWorkers: "@cf/moonshotai/kimi-k2.6"},
+	TaskMeetingSummary:    {providerCFWorkers: "@cf/qwen/qwen3-30b-a3b-fp8"},
+	TaskDealScore:         {providerCFWorkers: "@cf/meta/llama-3.2-3b-instruct"},
+	TaskAnalytics:         {providerCFWorkers: "@cf/qwen/qwen3-30b-a3b-fp8"},
+	TaskSentiment:         {providerCFWorkers: "@cf/meta/llama-3.2-1b-instruct"},
+	TaskFollowup:          {providerCFWorkers: "@cf/meta/llama-3.2-3b-instruct"},
+	TaskVoiceIntelligence: {providerCFWorkers: "@cf/qwen/qwen3-30b-a3b-fp8"},
+	TaskCommandCenter:     {providerCFWorkers: "@cf/moonshotai/kimi-k2.6"},
 }
 
 // taskMaxTokens enforces strict output boundaries based on empirically measured p99 usage
 var taskMaxTokens = map[AITask]int{
-	TaskSentiment:         50,
-	TaskDealScore:         300,
-	TaskFollowup:          200,
-	TaskEmailCompose:      400,
-	TaskAssistantChat:     500,
-	TaskCommandCenter:     800,
-	TaskMeetingSummary:    1000,
-	TaskAnalytics:         1000,
-	TaskVoiceIntelligence: 1500,
+	TaskSentiment:         100,
+	TaskDealScore:         500,
+	TaskFollowup:          400,
+	TaskEmailCompose:      800,
+	TaskAssistantChat:     2048,
+	TaskCommandCenter:     2048,
+	TaskMeetingSummary:    1500,
+	TaskAnalytics:         1500,
+	TaskVoiceIntelligence: 2000,
 }
 
 func maxTokensFor(task AITask) int {
@@ -137,18 +144,15 @@ type AIResponse struct {
 // ============================================================
 
 type AIGateway struct {
-	gatewayURL        string
-	cfToken           string
-	cfGatewayToken    string
-	anthropicKey      string
-	vercelGatewayURL  string // https://ai-gateway.vercel.sh/v1
-	vercelGatewayKey  string // vck_... API key
-	httpClient        *http.Client
-	Budget            *BudgetGuard
-	logger            *zap.Logger
+	gatewayURL     string
+	cfToken        string
+	cfGatewayToken string
+	httpClient     *http.Client
+	Budget         *BudgetGuard
+	logger         *zap.Logger
 }
 
-func NewAIGateway(cfAccountID, cfAIGatewayID, cfToken, anthropicKey string, budget *BudgetGuard, logger *zap.Logger, cfGatewayToken ...string) *AIGateway {
+func NewAIGateway(cfAccountID, cfAIGatewayID, cfToken string, budget *BudgetGuard, logger *zap.Logger, cfGatewayToken ...string) *AIGateway {
 	gwTok := ""
 	if len(cfGatewayToken) > 0 {
 		gwTok = cfGatewayToken[0]
@@ -157,17 +161,10 @@ func NewAIGateway(cfAccountID, cfAIGatewayID, cfToken, anthropicKey string, budg
 		gatewayURL:     fmt.Sprintf("https://gateway.ai.cloudflare.com/v1/%s/%s", cfAccountID, cfAIGatewayID),
 		cfToken:        cfToken,
 		cfGatewayToken: gwTok,
-		anthropicKey:   anthropicKey,
 		httpClient:     &http.Client{Timeout: 120 * time.Second},
 		Budget:         budget,
 		logger:         logger,
 	}
-}
-
-// SetVercelGateway configures the Vercel AI Gateway provider.
-func (g *AIGateway) SetVercelGateway(url, key string) {
-	g.vercelGatewayURL = url
-	g.vercelGatewayKey = key
 }
 
 // Complete runs a full inference call with budget check + fallback.
@@ -180,10 +177,7 @@ func (g *AIGateway) Complete(ctx context.Context, orgID, userID uuid.UUID, task 
 		}
 	}
 
-	// Deterministic fallback chain:
-	// 1. Vercel AI Gateway (Anthropic Haiku — primary for command center)
-	// 2. CF → Anthropic (via CF AI Gateway — separate billing, reliable)
-	// 3. CF → Llama (our own Cloudflare infra — last resort, never goes down)
+	// All AI runs on Cloudflare Workers AI (Kimi K2.6)
 	primaryP := g.routePrimary(task)
 	chain := g.buildFallbackChain(primaryP)
 
@@ -219,15 +213,13 @@ func (g *AIGateway) Complete(ctx context.Context, orgID, userID uuid.UUID, task 
 			WithCache(result.CachedInputTokens, result.CacheCreationTokens),
 			WithLatency(result.LatencyMs),
 			WithStopReason(result.StopReason),
-			WithPromptHash(hashMessages(messages)),
 		)
 	}
 
 	return result, nil
 }
 
-// CompleteWithTools runs inference with tool definitions.
-// Fallback chain: Vercel (Claude) → CF Anthropic → CF Llama (guaranteed last resort)
+// CompleteWithTools runs inference with tool definitions via CF Workers AI.
 func (g *AIGateway) CompleteWithTools(ctx context.Context, orgID, userID uuid.UUID, task AITask, messages []Message, tools []Tool) (AIResponse, error) {
 	estimated := 5000 // generous estimate for tool calls
 	if g.Budget != nil {
@@ -236,57 +228,13 @@ func (g *AIGateway) CompleteWithTools(ctx context.Context, orgID, userID uuid.UU
 		}
 	}
 
-	var result AIResponse
-	var err error
-
-	// Deterministic fallback chain for tool calling:
-	// 1. Vercel AI Gateway (Haiku) — best tool calling, prompt caching
-	// 2. CF Kimi K2.5 — OUR OWN INFRA, frontier model, native multi-turn tool calling
-	// 3. CF → Anthropic — last resort Claude fallback
-	type namedCall struct {
-		name string
-		call func() (AIResponse, error)
-	}
-	chain := []namedCall{}
-
-	// 1. Always start with Vercel if configured
-	if g.vercelGatewayURL != "" && g.vercelGatewayKey != "" {
-		chain = append(chain, namedCall{
-			"vercel_gateway",
-			func() (AIResponse, error) {
-				return g.callVercelGatewayWithTools(ctx, task, g.modelFor(task, providerVercelGateway), messages, tools)
-			},
-		})
-	}
-	// 2. CF Kimi K2.5 — our own infra, always available, strongest CF model for tool calling
-	chain = append(chain, namedCall{
-		"cf_kimi_k2.5",
-		func() (AIResponse, error) {
-			return g.callCFWorkersWithTools(ctx, task, g.modelFor(task, providerCFWorkers), messages, tools)
-		},
-	})
-	// 3. Anthropic via CF Gateway — last resort
-	chain = append(chain, namedCall{
-		"cf_anthropic",
-		func() (AIResponse, error) {
-			return g.callAnthropicWithTools(ctx, task, g.modelFor(task, providerAnthropic), messages, tools)
-		},
-	})
-
-	for _, p := range chain {
-		result, err = p.call()
-		if err == nil {
-			break
-		}
-		g.logger.Warn("tool call provider failed, trying next",
-			zap.String("provider", p.name),
+	model := g.modelFor(task, providerCFWorkers)
+	result, err := g.callCFWorkersWithTools(ctx, task, model, messages, tools)
+	if err != nil {
+		g.logger.Error("CF Workers tool call failed — returning graceful fallback",
+			zap.String("model", model),
 			zap.String("task", string(task)),
 			zap.Error(err))
-	}
-
-	if err != nil {
-		// All providers failed — return graceful response, do not crash
-		g.logger.Error("all tool-call providers failed — returning graceful fallback", zap.Error(err))
 		return AIResponse{
 			Content:  "I'm having trouble connecting right now. Please try again in a moment.",
 			Provider: "fallback",
@@ -299,7 +247,6 @@ func (g *AIGateway) CompleteWithTools(ctx context.Context, orgID, userID uuid.UU
 			WithCache(result.CachedInputTokens, result.CacheCreationTokens),
 			WithLatency(result.LatencyMs),
 			WithStopReason(result.StopReason),
-			WithPromptHash(hashMessages(messages)),
 		)
 	}
 
@@ -426,137 +373,33 @@ func (g *AIGateway) callCFWorkersWithTools(ctx context.Context, task AITask, mod
 	return result, nil
 }
 
-// callAnthropicWithTools sends tool definitions to Anthropic and parses tool_use blocks.
-func (g *AIGateway) callAnthropicWithTools(ctx context.Context, task AITask, model string, messages []Message, tools []Tool) (AIResponse, error) {
-	url := fmt.Sprintf("%s/anthropic/v1/messages", g.gatewayURL)
 
-	reqBody := BuildAnthropicRequestBody(model, maxTokensFor(task), messages, tools)
 
-	resp, err := g.doRequest(ctx, url, "POST", map[string]string{
-		"x-api-key":         g.anthropicKey,
-		"anthropic-version": "2023-06-01",
-		"Content-Type":      "application/json",
-	}, reqBody)
-	if err != nil {
-		return AIResponse{}, err
-	}
-
-	// Parse Anthropic response with potential tool_use blocks
-	var anthResp struct {
-		Content []struct {
-			Type  string          `json:"type"`
-			Text  string          `json:"text,omitempty"`
-			ID    string          `json:"id,omitempty"`
-			Name  string          `json:"name,omitempty"`
-			Input json.RawMessage `json:"input,omitempty"`
-		} `json:"content"`
-		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
-		StopReason string `json:"stop_reason"`
-	}
-	if err := json.Unmarshal(resp, &anthResp); err != nil {
-		return AIResponse{}, fmt.Errorf("anthropic tool unmarshal: %w", err)
-	}
-
-	result := AIResponse{
-		Model:        model,
-		Provider:     string(providerAnthropic),
-		InputTokens:  anthResp.Usage.InputTokens,
-		OutputTokens: anthResp.Usage.OutputTokens,
-	}
-
-	for _, block := range anthResp.Content {
-		switch block.Type {
-		case "text":
-			result.Content += block.Text
-		case "tool_use":
-			result.ToolCalls = append(result.ToolCalls, ToolCall{
-				ID:     block.ID,
-				Name:   block.Name,
-				Params: block.Input,
-			})
-		}
-	}
-
-	return result, nil
-}
-
-func (g *AIGateway) routePrimary(task AITask) provider {
-	if p, ok := taskPrimaryProvider[task]; ok {
-		// If Vercel Gateway is configured, use it; otherwise fall back to CF
-		if p == providerVercelGateway && (g.vercelGatewayURL == "" || g.vercelGatewayKey == "") {
-			return providerCFWorkers
-		}
-		return p
-	}
+func (g *AIGateway) routePrimary(_ AITask) provider {
 	return providerCFWorkers
 }
 
-func (g *AIGateway) routeFallback(task AITask, used provider) provider {
-	if used == providerCFWorkers {
-		return providerAnthropic
-	}
-	return providerCFWorkers
-}
-
-// buildFallbackChain returns an ordered provider list for Complete().
-// Chain: primary → CF Kimi K2.5 (our infra, strongest) → Anthropic (last resort)
-func (g *AIGateway) buildFallbackChain(primary provider) []provider {
-	seen := map[provider]bool{}
-	var chain []provider
-	add := func(p provider) {
-		if !seen[p] {
-			seen[p] = true
-			chain = append(chain, p)
-		}
-	}
-	// 1. Primary first
-	add(primary)
-	// 2. Vercel if configured and not already primary
-	if g.vercelGatewayURL != "" && g.vercelGatewayKey != "" {
-		add(providerVercelGateway)
-	}
-	// 3. CF Kimi K2.5 — our own infra, strongest model for fallback
-	add(providerCFWorkers)
-	// 4. Anthropic via CF Gateway — last resort
-	add(providerAnthropic)
-	return chain
+// buildFallbackChain returns CF Workers only — all AI runs on Cloudflare.
+func (g *AIGateway) buildFallbackChain(_ provider) []provider {
+	return []provider{providerCFWorkers}
 }
 
 // ============================================================
 // Provider-specific call implementations
 // ============================================================
 
-func (g *AIGateway) callProvider(ctx context.Context, task AITask, p provider, messages []Message) (AIResponse, error) {
-	model := g.modelFor(task, p)
-	switch p {
-	case providerVercelGateway:
-		return g.callVercelGateway(ctx, task, model, messages)
-	case providerAnthropic:
-		return g.callAnthropic(ctx, task, model, messages)
-	case providerCFWorkers:
-		return g.callCFWorkers(ctx, task, model, messages)
-	default:
-		return AIResponse{}, fmt.Errorf("unknown provider: %s", p)
-	}
+func (g *AIGateway) callProvider(ctx context.Context, task AITask, _ provider, messages []Message) (AIResponse, error) {
+	model := g.modelFor(task, providerCFWorkers)
+	return g.callCFWorkers(ctx, task, model, messages)
 }
 
-func (g *AIGateway) modelFor(task AITask, p provider) string {
+func (g *AIGateway) modelFor(task AITask, _ provider) string {
 	if models, ok := taskModels[task]; ok {
-		if m, ok := models[p]; ok {
+		if m, ok := models[providerCFWorkers]; ok {
 			return m
 		}
 	}
-	switch p {
-	case providerVercelGateway:
-		return "anthropic/claude-haiku-4.5"
-	case providerAnthropic:
-		return "claude-3-5-haiku-20241022"
-	default:
-		return "@cf/meta/llama-3.1-8b-instruct"
-	}
+	return "@cf/moonshotai/kimi-k2.6"
 }
 
 // callCFWorkers — CF AI Gateway → Cloudflare Workers AI
@@ -662,48 +505,7 @@ func (g *AIGateway) callCFWorkers(ctx context.Context, task AITask, model string
 	}, nil
 }
 
-// callAnthropic — CF AI Gateway → Anthropic (Claude)
-func (g *AIGateway) callAnthropic(ctx context.Context, task AITask, model string, messages []Message) (AIResponse, error) {
-	url := fmt.Sprintf("%s/anthropic/v1/messages", g.gatewayURL)
 
-	reqBody := BuildAnthropicRequestBody(model, maxTokensFor(task), messages, nil)
-
-	resp, err := g.doRequest(ctx, url, "POST", map[string]string{
-		"x-api-key":         g.anthropicKey,
-		"anthropic-version": "2023-06-01",
-		"Content-Type":      "application/json",
-	}, reqBody)
-	if err != nil {
-		return AIResponse{}, err
-	}
-
-	// Anthropic response: { "content": [{"text":"..."}], "usage": { "input_tokens": N, "output_tokens": M } }
-	var anthResp struct {
-		Content []struct {
-			Text string `json:"text"`
-		} `json:"content"`
-		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
-	}
-	if err := json.Unmarshal(resp, &anthResp); err != nil {
-		return AIResponse{}, fmt.Errorf("anthropic unmarshal: %w", err)
-	}
-
-	text := ""
-	if len(anthResp.Content) > 0 {
-		text = anthResp.Content[0].Text
-	}
-
-	return AIResponse{
-		Content:      text,
-		Model:        model,
-		Provider:     string(providerAnthropic),
-		InputTokens:  anthResp.Usage.InputTokens,
-		OutputTokens: anthResp.Usage.OutputTokens,
-	}, nil
-}
 
 // ============================================================
 // HTTP helper
@@ -919,217 +721,7 @@ func (g *AIGateway) StreamChat(ctx context.Context, orgID, userID uuid.UUID, tas
 
 	return nil
 }
-// ============================================================
-// Vercel AI Gateway — Anthropic Messages API
-// ============================================================
 
-// anthropicResponse is the parsed Anthropic Messages API response.
-type anthropicResponse struct {
-	Content []struct {
-		Type  string          `json:"type"`
-		Text  string          `json:"text,omitempty"`
-		ID    string          `json:"id,omitempty"`
-		Name  string          `json:"name,omitempty"`
-		Input json.RawMessage `json:"input,omitempty"`
-	} `json:"content"`
-	Usage struct {
-		InputTokens              int `json:"input_tokens"`
-		OutputTokens             int `json:"output_tokens"`
-		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-	} `json:"usage"`
-	StopReason string `json:"stop_reason"`
-	Model      string `json:"model"`
-}
-
-// parseAnthropicResponse converts the raw Anthropic response to AIResponse.
-func parseAnthropicResponse(raw []byte, model string, latencyMs int64) (AIResponse, error) {
-	var resp anthropicResponse
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return AIResponse{}, fmt.Errorf("anthropic unmarshal: %w (body: %.500s)", err, string(raw))
-	}
-
-	result := AIResponse{
-		Model:               model,
-		Provider:            string(providerVercelGateway),
-		InputTokens:         resp.Usage.InputTokens,
-		OutputTokens:        resp.Usage.OutputTokens,
-		CachedInputTokens:   resp.Usage.CacheReadInputTokens,
-		CacheCreationTokens: resp.Usage.CacheCreationInputTokens,
-		LatencyMs:           latencyMs,
-		StopReason:          resp.StopReason,
-	}
-
-	for _, block := range resp.Content {
-		switch block.Type {
-		case "text":
-			result.Content += block.Text
-		case "tool_use":
-			params := block.Input
-			if !json.Valid(params) || len(params) == 0 {
-				params = json.RawMessage("{}")
-			}
-			result.ToolCalls = append(result.ToolCalls, ToolCall{
-				ID:     block.ID,
-				Name:   block.Name,
-				Params: params,
-			})
-		}
-	}
-
-	return result, nil
-}
-
-// buildAnthropicMessages converts our internal Message format to Anthropic
-// Messages API format, extracting system prompt separately.
-// BuildAnthropicRequestBody standardizes the construction of the JSON payload for Anthropic's Messages API.
-// CRITICAL: It explicitly injects Anthropic Prompt Caching markers `cache_control: {"type": "ephemeral"}`
-// onto the system prompt block and the final tool definition to enforce massive cost reductions.
-func BuildAnthropicRequestBody(model string, maxTokens int, messages []Message, tools []Tool) map[string]interface{} {
-	var system []map[string]interface{}
-	var chatMsgs []map[string]interface{}
-
-	for _, m := range messages {
-		switch m.Role {
-		case "system":
-			// 1. Prompt Caching: Inject cache_control on the System Prompt
-			system = append(system, map[string]interface{}{
-				"type":          "text",
-				"text":          m.Content,
-				"cache_control": map[string]string{"type": "ephemeral"},
-			})
-		case "user":
-			chatMsgs = append(chatMsgs, map[string]interface{}{
-				"role":    "user",
-				"content": m.Content,
-			})
-		case "assistant":
-			if len(m.ToolCalls) > 0 {
-				var contentBlocks []map[string]interface{}
-				if m.Content != "" {
-					contentBlocks = append(contentBlocks, map[string]interface{}{
-						"type": "text",
-						"text": m.Content,
-					})
-				}
-				for _, tc := range m.ToolCalls {
-					var input interface{}
-					json.Unmarshal(tc.Params, &input)
-					contentBlocks = append(contentBlocks, map[string]interface{}{
-						"type":  "tool_use",
-						"id":    tc.ID,
-						"name":  tc.Name,
-						"input": input,
-					})
-				}
-				chatMsgs = append(chatMsgs, map[string]interface{}{
-					"role":    "assistant",
-					"content": contentBlocks,
-				})
-			} else {
-				chatMsgs = append(chatMsgs, map[string]interface{}{
-					"role":    "assistant",
-					"content": m.Content,
-				})
-			}
-		case "tool":
-			chatMsgs = append(chatMsgs, map[string]interface{}{
-				"role": "user",
-				"content": []map[string]interface{}{
-					{
-						"type":        "tool_result",
-						"tool_use_id": m.ToolUseID,
-						"content":     m.Content,
-					},
-				},
-			})
-		}
-	}
-
-	reqBody := map[string]interface{}{
-		"model":      model,
-		"max_tokens": maxTokens,
-		"messages":   chatMsgs,
-	}
-
-	if len(system) > 0 {
-		reqBody["system"] = system
-	}
-
-	if len(tools) > 0 {
-		anthropicTools := buildAnthropicTools(tools)
-		// 2. Prompt Caching: Inject cache_control on the final Tool definition block.
-		// Combined with the system prompt cache_control above, this ensures the
-		// static prefix (system + tools) exceeds the 4096 token minimum for Haiku 4.5.
-		if len(anthropicTools) > 0 {
-			anthropicTools[len(anthropicTools)-1]["cache_control"] = map[string]string{"type": "ephemeral"}
-		}
-		reqBody["tools"] = anthropicTools
-	}
-
-	return reqBody
-}
-
-// vercelAnthropicHeaders returns auth headers for Vercel Gateway Anthropic endpoint.
-func (g *AIGateway) vercelAnthropicHeaders() map[string]string {
-	return map[string]string{
-		"x-api-key":         g.vercelGatewayKey,
-		"anthropic-version": "2023-06-01",
-		"Content-Type":      "application/json",
-	}
-}
-
-// hashMessages returns a SHA-256 hex digest of message contents for cache keying.
-func hashMessages(messages []Message) string {
-	h := sha256.New()
-	for _, m := range messages {
-		h.Write([]byte(m.Role))
-		h.Write([]byte(m.Content))
-	}
-	return fmt.Sprintf("%x", h.Sum(nil))
-}
-
-// callVercelGateway sends a completion via the Vercel AI Gateway Anthropic
-// Messages API (POST /v1/messages). Supports prompt caching via cache_control.
-func (g *AIGateway) callVercelGateway(ctx context.Context, task AITask, model string, messages []Message) (AIResponse, error) {
-	start := time.Now()
-	url := fmt.Sprintf("%s/messages", g.vercelGatewayURL)
-
-	reqBody := BuildAnthropicRequestBody(model, maxTokensFor(task), messages, nil)
-
-	resp, err := g.doRequest(ctx, url, "POST", g.vercelAnthropicHeaders(), reqBody)
-	if err != nil {
-		return AIResponse{}, fmt.Errorf("vercel gateway: %w", err)
-	}
-
-	result, err := parseAnthropicResponse(resp, model, time.Since(start).Milliseconds())
-	if err != nil {
-		return AIResponse{}, err
-	}
-
-	return result, nil
-}
-
-// callVercelGatewayWithTools sends a tool-calling request via the Vercel AI
-// Gateway Anthropic Messages API with tool definitions and prompt caching.
-func (g *AIGateway) callVercelGatewayWithTools(ctx context.Context, task AITask, model string, messages []Message, tools []Tool) (AIResponse, error) {
-	start := time.Now()
-	url := fmt.Sprintf("%s/messages", g.vercelGatewayURL)
-
-	reqBody := BuildAnthropicRequestBody(model, maxTokensFor(task), messages, tools)
-
-	resp, err := g.doRequest(ctx, url, "POST", g.vercelAnthropicHeaders(), reqBody)
-	if err != nil {
-		return AIResponse{}, fmt.Errorf("vercel gateway tool call: %w", err)
-	}
-
-	result, err := parseAnthropicResponse(resp, model, time.Since(start).Milliseconds())
-	if err != nil {
-		return AIResponse{}, err
-	}
-
-	return result, nil
-}
 
 // ============================================================
 // Token estimation (rough pre-flight check)

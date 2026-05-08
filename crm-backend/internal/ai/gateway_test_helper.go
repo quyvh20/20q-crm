@@ -21,7 +21,6 @@ func NewAIGatewayForTest(gatewayURL, cfToken string, budget *BudgetGuard, timeou
 		gatewayURL:     gatewayURL,
 		cfToken:        cfToken,
 		cfGatewayToken: gwToken,
-		anthropicKey:   "",
 		httpClient:     &http.Client{Timeout: timeout},
 		Budget:         budget,
 		logger:         zap.NewNop(),
