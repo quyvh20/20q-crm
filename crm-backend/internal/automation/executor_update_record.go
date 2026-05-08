@@ -223,17 +223,17 @@ func (e *UpdateRecordExecutor) executeCustomObject(ctx context.Context, run *Wor
 		return nil, fmt.Errorf("update_record: %s record %s not found in org %s", slug, recordID, run.OrgID.String())
 	}
 
-	// Read current data JSONB
-	var currentData json.RawMessage
+	// Read current data JSONB — scan into string first (GORM can't scan JSONB → json.RawMessage)
+	var dataStr string
 	if err := e.db.WithContext(ctx).
-		Raw("SELECT data FROM custom_object_records WHERE id = ?", rid).
-		Scan(&currentData).Error; err != nil {
+		Raw("SELECT COALESCE(data::text, '{}') FROM custom_object_records WHERE id = ?", rid).
+		Scan(&dataStr).Error; err != nil {
 		return nil, fmt.Errorf("update_record: failed to read %s data: %w", slug, err)
 	}
 
 	dataMap := make(map[string]any)
-	if currentData != nil {
-		json.Unmarshal(currentData, &dataMap)
+	if dataStr != "" {
+		json.Unmarshal([]byte(dataStr), &dataMap)
 	}
 
 	// Apply updates to the data map
