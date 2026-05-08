@@ -78,26 +78,26 @@ var taskPrimaryProvider = map[AITask]provider{
 // Optimized per-task: use the cheapest model that can handle the job well.
 // Pricing reference (per M tokens, input/output):
 //   llama-3.2-1b:          $0.027 / $0.201  — tiny, good for sentiment/short JSON
-//   qwen3-30b-a3b-fp8:     $0.051 / $0.335  — MoE, great quality/price ratio, function calling
+//   qwen3-30b-a3b-fp8:     $0.051 / $0.335  — MoE, background tasks only (hallucinates for chat)
 //   llama-3.2-3b:          $0.051 / $0.335  — small but capable for structured output
-//   kimi-k2.6:             $0.950 / $4.000  — frontier fallback (slow cold-start, 1T params)
+//   kimi-k2.6:             $0.950 / $4.000  — frontier, user-facing chat (accurate, no hallucination)
 var taskModels = map[AITask]map[provider]string{
+	TaskAssistantChat:     {providerCFWorkers: "@cf/moonshotai/kimi-k2.6"},
+	TaskCommandCenter:     {providerCFWorkers: "@cf/moonshotai/kimi-k2.6"},
 	TaskEmailCompose:      {providerCFWorkers: "@cf/qwen/qwen3-30b-a3b-fp8"},
-	TaskAssistantChat:     {providerCFWorkers: "@cf/qwen/qwen3-30b-a3b-fp8"},
 	TaskMeetingSummary:    {providerCFWorkers: "@cf/qwen/qwen3-30b-a3b-fp8"},
 	TaskDealScore:         {providerCFWorkers: "@cf/meta/llama-3.2-3b-instruct"},
 	TaskAnalytics:         {providerCFWorkers: "@cf/qwen/qwen3-30b-a3b-fp8"},
 	TaskSentiment:         {providerCFWorkers: "@cf/meta/llama-3.2-1b-instruct"},
 	TaskFollowup:          {providerCFWorkers: "@cf/meta/llama-3.2-3b-instruct"},
 	TaskVoiceIntelligence: {providerCFWorkers: "@cf/qwen/qwen3-30b-a3b-fp8"},
-	TaskCommandCenter:     {providerCFWorkers: "@cf/qwen/qwen3-30b-a3b-fp8"},
 }
 
 // taskFallbackModels — tried when the primary model fails (timeout, error, empty response).
-// Kimi K2.6 is the frontier fallback for user-facing tasks that need high quality.
+// Qwen3 is the fast fallback if Kimi times out on user-facing tasks.
 var taskFallbackModels = map[AITask][]string{
-	TaskAssistantChat: {"@cf/moonshotai/kimi-k2.6"},
-	TaskCommandCenter: {"@cf/moonshotai/kimi-k2.6"},
+	TaskAssistantChat: {"@cf/qwen/qwen3-30b-a3b-fp8"},
+	TaskCommandCenter: {"@cf/qwen/qwen3-30b-a3b-fp8"},
 	TaskEmailCompose:  {"@cf/moonshotai/kimi-k2.6"},
 }
 
