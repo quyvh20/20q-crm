@@ -132,6 +132,24 @@ func (cc *CommandCenter) Execute(
 			return
 		}
 
+		// ── Intent Router: fast-path for common actions (no AI needed) ────────
+		if intentName := MatchIntent(req.UserMessage); intentName != "" {
+			cc.logger.Info("intent_router.matched",
+				zap.String("intent", intentName),
+				zap.String("message", req.UserMessage),
+			)
+			result := cc.ExecuteIntent(ctx, intentName, orgID, userID, req.UserRole, req.UserMessage)
+			if result != nil {
+				for _, ev := range result.Events {
+					events <- ev
+				}
+				events <- CommandEvent{Type: "response", Message: result.Text, Done: true}
+				events <- CommandEvent{Type: "done", Done: true}
+				cc.persistAssistant(req.SessionID, result.Text)
+				return
+			}
+		}
+
 		// ── Build role-scoped system prompt ──────────────────────────────────
 		sysPrompt := cc.buildRolePrompt(ctx, orgID, req)
 
