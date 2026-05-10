@@ -264,3 +264,60 @@ func TestGateway_LiveIntegration(t *testing.T) {
 	}
 	t.Logf("Live test success. Tokens output: %d, content: %s", res.OutputTokens, res.Content)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. Kimi Response Sanitizer Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestSanitizeKimiResponse(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "clean text passes through",
+			input: "Here are your top deals.",
+			want:  "Here are your top deals.",
+		},
+		{
+			name:  "strips special tokens",
+			input: "<|tool_calls_section_begin|><|tool_call_begin|>function<|tool_sep|>search_deals<|tool_call_end|><|tool_calls_section_end|>",
+			want:  "functionsearch_deals",
+		},
+		{
+			name:  "strips bare function call",
+			input: "functions.search_contacts:0",
+			want:  "",
+		},
+		{
+			name:  "strips function call with JSON args",
+			input: `functions.search_deals:1{"sort_by": "value", "limit": 10}`,
+			want:  "",
+		},
+		{
+			name:  "strips prefixed function call inline",
+			input: `Let me pull the deal record to confirm if ABC is linked to this contact.functions.search_deals:1{"sort_by": "value", "limit": 10}`,
+			want:  "Let me pull the deal record to confirm if ABC is linked to this",
+		},
+		{
+			name:  "preserves useful text around leaked tokens",
+			input: "Contact Found\n\nSon Goku abc\n\nfunctions.search_contacts:1\n\nDone",
+			want:  "Contact Found\n\nSon Goku abc\n\nDone",
+		},
+		{
+			name:  "handles multiple function calls",
+			input: "checking functions.search_deals:0 and functions.search_contacts:1{\"query\": \"test\"} now",
+			want:  "checking  and  now",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeKimiResponse(tt.input)
+			if got != tt.want {
+				t.Errorf("sanitizeKimiResponse(%q) =\n  %q\nwant:\n  %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
