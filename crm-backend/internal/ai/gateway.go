@@ -183,7 +183,7 @@ func (g *AIGateway) Complete(ctx context.Context, orgID, userID uuid.UUID, task 
 		}
 	}
 
-	// Try primary model, then fallbacks if available
+	// Try primary model, then fallbacks — with automatic retry + backoff
 	primaryModel := g.modelFor(task, providerCFWorkers)
 	modelsToTry := []string{primaryModel}
 	for _, fb := range taskFallbackModels[task] {
@@ -192,31 +192,43 @@ func (g *AIGateway) Complete(ctx context.Context, orgID, userID uuid.UUID, task 
 		}
 	}
 
+	const maxRetries = 3
 	var result AIResponse
-	var err error
-	for _, model := range modelsToTry {
-		result, err = g.callCFWorkers(ctx, task, model, messages)
-		if err == nil && result.Content != "" {
-			break
+	var lastErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(1<<uint(attempt-1)) * time.Second // 1s, 2s, 4s
+			g.logger.Info("retrying after backoff",
+				zap.Int("attempt", attempt+1),
+				zap.Duration("backoff", backoff))
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return AIResponse{}, ctx.Err()
+			}
 		}
-		if err == nil && result.Content == "" {
-			err = fmt.Errorf("model %s returned empty response", model)
+
+		for _, model := range modelsToTry {
+			result, lastErr = g.callCFWorkers(ctx, task, model, messages)
+			if lastErr == nil && result.Content != "" {
+				goto success
+			}
+			if lastErr == nil && result.Content == "" {
+				lastErr = fmt.Errorf("model %s returned empty response", model)
+			}
+			g.logger.Warn("model failed, trying next",
+				zap.String("model", model),
+				zap.Int("attempt", attempt+1),
+				zap.Error(lastErr))
 		}
-		g.logger.Warn("model failed, trying next",
-			zap.String("model", model),
-			zap.String("task", string(task)),
-			zap.Error(err))
 	}
 
-	if err != nil {
-		// All providers failed — return graceful response instead of crashing
-		g.logger.Error("all providers failed — returning graceful fallback", zap.Error(err))
-		return AIResponse{
-			Content:  "I'm having trouble connecting right now. Please try again in a moment.",
-			Provider: "fallback",
-			Model:    "none",
-		}, nil
-	}
+	// All retries exhausted — return real error so caller can handle it
+	g.logger.Error("all providers failed after retries", zap.Error(lastErr), zap.Int("retries", maxRetries))
+	return AIResponse{}, fmt.Errorf("AI service unavailable: %w", lastErr)
+
+success:
 
 	// Persist usage synchronously to prevent context cancellation races
 	if g.Budget != nil {
@@ -239,37 +251,50 @@ func (g *AIGateway) CompleteWithTools(ctx context.Context, orgID, userID uuid.UU
 		}
 	}
 
-	model := g.modelFor(task, providerCFWorkers)
-	result, err := g.callCFWorkersWithTools(ctx, task, model, messages, tools)
-
-	// Fallback: try alternative models if primary fails
-	if (err != nil || (result.Content == "" && len(result.ToolCalls) == 0)) && len(taskFallbackModels[task]) > 0 {
-		for _, fbModel := range taskFallbackModels[task] {
-			if fbModel == model {
-				continue
-			}
-			g.logger.Warn("primary model failed for tools, trying fallback",
-				zap.String("primary", model),
-				zap.String("fallback", fbModel),
-				zap.Error(err))
-			result, err = g.callCFWorkersWithTools(ctx, task, fbModel, messages, tools)
-			if err == nil && (result.Content != "" || len(result.ToolCalls) > 0) {
-				break
-			}
+	primaryModel := g.modelFor(task, providerCFWorkers)
+	modelsToTry := []string{primaryModel}
+	for _, fb := range taskFallbackModels[task] {
+		if fb != primaryModel {
+			modelsToTry = append(modelsToTry, fb)
 		}
 	}
 
-	if err != nil {
-		g.logger.Error("CF Workers tool call failed — returning graceful fallback",
-			zap.String("model", model),
-			zap.String("task", string(task)),
-			zap.Error(err))
-		return AIResponse{
-			Content:  "I'm having trouble connecting right now. Please try again in a moment.",
-			Provider: "fallback",
-			Model:    "none",
-		}, nil
+	const maxRetries = 3
+	var result AIResponse
+	var lastErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
+			g.logger.Info("retrying tool call after backoff",
+				zap.Int("attempt", attempt+1),
+				zap.Duration("backoff", backoff))
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return AIResponse{}, ctx.Err()
+			}
+		}
+
+		for _, model := range modelsToTry {
+			result, lastErr = g.callCFWorkersWithTools(ctx, task, model, messages, tools)
+			if lastErr == nil && (result.Content != "" || len(result.ToolCalls) > 0) {
+				goto toolSuccess
+			}
+			if lastErr == nil {
+				lastErr = fmt.Errorf("model %s returned empty tool response", model)
+			}
+			g.logger.Warn("tool model failed, trying next",
+				zap.String("model", model),
+				zap.Int("attempt", attempt+1),
+				zap.Error(lastErr))
+		}
 	}
+
+	g.logger.Error("all tool providers failed after retries", zap.Error(lastErr), zap.Int("retries", maxRetries))
+	return AIResponse{}, fmt.Errorf("AI service unavailable: %w", lastErr)
+
+toolSuccess:
 
 	if g.Budget != nil {
 		g.Budget.Record(ctx, orgID, userID, task, result.Model, result.Provider, result.InputTokens, result.OutputTokens,

@@ -191,7 +191,8 @@ func (cc *CommandCenter) Execute(
 		// ── First AI call with tools ─────────────────────────────────────────
 		response, err := cc.gateway.CompleteWithTools(ctx, orgID, userID, TaskCommandCenter, messages, tools)
 		if err != nil {
-			events <- CommandEvent{Type: "error", Message: fmt.Sprintf("AI error: %v", err)}
+			cc.logger.Error("command_center.ai_call_failed", zap.Error(err))
+			events <- CommandEvent{Type: "response", Message: "⏳ I'm still processing — please try again in a few seconds.", Done: true}
 			events <- CommandEvent{Type: "done", Done: true}
 			return
 		}
