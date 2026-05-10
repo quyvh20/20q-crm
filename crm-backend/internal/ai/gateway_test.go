@@ -266,7 +266,7 @@ func TestGateway_LiveIntegration(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 5. Kimi Response Sanitizer Tests
+// Kimi Response Sanitizer Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestSanitizeKimiResponse(t *testing.T) {
@@ -277,38 +277,53 @@ func TestSanitizeKimiResponse(t *testing.T) {
 	}{
 		{
 			name:  "clean text passes through",
-			input: "Here are your top deals.",
-			want:  "Here are your top deals.",
+			input: "Here are your deals.",
+			want:  "Here are your deals.",
 		},
 		{
 			name:  "strips special tokens",
-			input: "<|tool_calls_section_begin|><|tool_call_begin|>function<|tool_sep|>search_deals<|tool_call_end|><|tool_calls_section_end|>",
-			want:  "functionsearch_deals",
+			input: "<|tool_calls_section_begin|><|tool_call_begin|>function_name<|tool_call_end|><|tool_calls_section_end|>Hello",
+			want:  "function_nameHello",
 		},
 		{
-			name:  "strips bare function call",
-			input: "functions.search_contacts:0",
-			want:  "",
+			name:  "strips simple function call",
+			input: "Let me check. functions.search_contacts:0",
+			want:  "Let me check.",
 		},
 		{
 			name:  "strips function call with JSON args",
-			input: `functions.search_deals:1{"sort_by": "value", "limit": 10}`,
+			input: `Let me search. functions.search_deals:1{"sort_by": "value", "limit": 10}`,
+			want:  "Let me search.",
+		},
+		{
+			name:  "strips dotted prefix function call",
+			input: `contact.functions.search_deals:1{"sort_by": "value", "limit": 10}`,
 			want:  "",
 		},
 		{
-			name:  "strips prefixed function call inline",
-			input: `Let me pull the deal record to confirm if ABC is linked to this contact.functions.search_deals:1{"sort_by": "value", "limit": 10}`,
-			want:  "Let me pull the deal record to confirm if ABC is linked to this",
+			name:  "strips function call mid-text with period separation",
+			input: "I found the contact. Let me pull the deal. functions.search_deals:1{\"limit\": 5, \"query\": \"ABC\"}",
+			want:  "I found the contact. Let me pull the deal.",
 		},
 		{
-			name:  "preserves useful text around leaked tokens",
-			input: "Contact Found\n\nSon Goku abc\n\nfunctions.search_contacts:1\n\nDone",
-			want:  "Contact Found\n\nSon Goku abc\n\nDone",
+			name:  "strips glued function call",
+			input: "contact.functions.search_deals:1{\"limit\": 5, \"query\": \"ABC\"}",
+			want:  "",
 		},
 		{
-			name:  "handles multiple function calls",
-			input: "checking functions.search_deals:0 and functions.search_contacts:1{\"query\": \"test\"} now",
-			want:  "checking  and  now",
+			name:  "strips orphaned JSON arg block",
+			input: "Let me check\n{\"sort_by\": \"value\", \"limit\": 10}\nDone.",
+			want:  "Let me check\n\nDone.",
+		},
+		{
+			name:  "preserves normal JSON in text",
+			input: "The API returned a JSON object with results.",
+			want:  "The API returned a JSON object with results.",
+		},
+		{
+			name:  "collapses excessive newlines",
+			input: "Line 1\n\n\n\n\nLine 2",
+			want:  "Line 1\n\nLine 2",
 		},
 	}
 
@@ -316,7 +331,7 @@ func TestSanitizeKimiResponse(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := sanitizeKimiResponse(tt.input)
 			if got != tt.want {
-				t.Errorf("sanitizeKimiResponse(%q) =\n  %q\nwant:\n  %q", tt.input, got, tt.want)
+				t.Errorf("sanitizeKimiResponse(%q)\n  got:  %q\n  want: %q", tt.input, got, tt.want)
 			}
 		})
 	}

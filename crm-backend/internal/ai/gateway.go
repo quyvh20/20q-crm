@@ -849,24 +849,30 @@ func (g *AIGateway) StreamChat(ctx context.Context, orgID, userID uuid.UUID, tas
 // proper tool-calling context. These are NOT user-visible content.
 var kimiTokenPattern = regexp.MustCompile(`<\|(?:tool_calls_section_begin|tool_calls_section_end|tool_call_begin|tool_call_end|tool_call_argument_begin|tool_call_argument_end|tool_sep|im_end|im_start)\|>`)
 
-// kimiFuncCallPattern matches Kimi's leaked function-call syntax in ALL observed forms:
-//   "functions.search_contacts:0"                              (bare, own line)
-//   "functions.search_deals:1{"sort_by":"value","limit":10}"   (with JSON args)
-//   "contact.functions.search_deals:1{"sort_by":"value"}"      (prefixed with object name)
-//   inline: "...to this contact.functions.search_deals:1{...}" (embedded in sentence)
-var kimiFuncCallPattern = regexp.MustCompile(`(?:\w+\.)?functions\.[a-z_]+:\d+(?:\{[^}]*\})?`)
+// kimiFuncCallPattern matches Kimi's hallucinated function call syntax in all observed forms:
+//   "functions.search_contacts:0"
+//   "contact.functions.search_deals:1{"sort_by":"value","limit":10}"
+//   "text.functions.navigate_to:0"
+// These appear when Kimi tries to use tools as plain text instead of proper tool_calls.
+var kimiFuncCallPattern = regexp.MustCompile(`(?:\w+\.)*functions\.[a-z_]+:\d+(?:\{[^}]*\})?`)
+
+// kimiJSONArgBlock matches orphaned JSON argument blocks that Kimi emits on their own lines
+// after a function call line, e.g.:
+//   {"sort_by": "value", "limit": 10}
+// Only matches when the JSON is on its own line and looks like tool arguments.
+var kimiJSONArgBlock = regexp.MustCompile(`(?m)^\s*\{"[a-z_]+":\s*(?:"[^"]*"|\d+|true|false)(?:,\s*"[a-z_]+":\s*(?:"[^"]*"|\d+|true|false))*\}\s*$`)
 
 // sanitizeKimiResponse strips Kimi's leaked internal tokens from response text.
-// This prevents raw markup like <|tool_calls_section_begin|> and
-// function-call syntax from appearing in the user-facing chat UI.
+// This prevents raw markup like <|tool_calls_section_begin|> from appearing in
+// the user-facing chat UI.
 func sanitizeKimiResponse(text string) string {
 	cleaned := kimiTokenPattern.ReplaceAllString(text, "")
-	// Strip function-call-like fragments (inline or standalone)
+	// Strip hallucinated function call syntax (all observed forms)
 	cleaned = kimiFuncCallPattern.ReplaceAllString(cleaned, "")
+	// Strip orphaned JSON argument blocks on their own lines
+	cleaned = kimiJSONArgBlock.ReplaceAllString(cleaned, "")
 	// Collapse multiple newlines left by stripping
 	cleaned = regexp.MustCompile(`\n{3,}`).ReplaceAllString(cleaned, "\n\n")
-	// Clean up trailing whitespace on lines after stripping inline fragments
-	cleaned = regexp.MustCompile(`(?m) +$`).ReplaceAllString(cleaned, "")
 	return strings.TrimSpace(cleaned)
 }
 

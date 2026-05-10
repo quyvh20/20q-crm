@@ -33,14 +33,15 @@ function ContactForm({ payload, onSuccess, onCancel }: Props) {
     setErrors({});
     try {
       const [first, ...rest] = name.trim().split(' ');
-      await createContact({
+      const result = await createContact({
         first_name: first,
         last_name: rest.join(' ') || '',
         email: email || undefined,
         phone: phone || undefined,
       });
       setDone(true);
-      setTimeout(() => onSuccess(`✅ Contact **${name}** created successfully!`), 900);
+      const idRef = result?.id ? ` (id: ${result.id})` : '';
+      setTimeout(() => onSuccess(`✅ Contact **${name}**${idRef} created successfully!`), 900);
     } catch (err) {
       setErrors({ _form: err instanceof Error ? err.message : 'Failed to create contact' });
     } finally {
@@ -114,7 +115,7 @@ function DealForm({ payload, onSuccess, onCancel }: Props) {
     setLoading(true);
     setErrors({});
     try {
-      await createDeal({
+      const result = await createDeal({
         title: title.trim(),
         value:       value       ? Number(value)       : undefined,
         stage_id:    stageId     ? stageId             : undefined,
@@ -122,7 +123,8 @@ function DealForm({ payload, onSuccess, onCancel }: Props) {
       });
       setDone(true);
       const valueStr = value ? ` ($${Number(value).toLocaleString()})` : '';
-      setTimeout(() => onSuccess(`✅ Deal **${title}**${valueStr} created successfully!`), 900);
+      const idRef = result?.id ? ` (id: ${result.id})` : '';
+      setTimeout(() => onSuccess(`✅ Deal **${title}**${valueStr}${idRef} created successfully!`), 900);
     } catch (err) {
       setErrors({ _form: err instanceof Error ? err.message : 'Failed to create deal' });
     } finally {

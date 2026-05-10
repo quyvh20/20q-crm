@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -132,9 +131,6 @@ func (cc *CommandCenter) Execute(
 			events <- CommandEvent{Type: "response", Message: replyContent, Done: true}
 			events <- CommandEvent{Type: "done", Done: true}
 			cc.persistAssistant(req.SessionID, replyContent)
-			// Push confirmed action result to session context
-			cc.sessionCtx.Push(req.SessionID, "confirmed_"+req.ConfirmedTool,
-				fmt.Sprintf("User confirmed %s: %s", req.ConfirmedTool, string(result)))
 			return
 		}
 
@@ -174,10 +170,6 @@ func (cc *CommandCenter) Execute(
 		messages := []Message{{Role: "system", Content: sysPrompt}}
 		for _, h := range req.History {
 			messages = append(messages, Message{Role: h.Role, Content: h.Content})
-			// Scan assistant messages for form-created records to push to session context
-			if h.Role == "assistant" && cc.sessionCtx != nil {
-				cc.extractHistoryContext(req.SessionID, h.Content)
-			}
 		}
 		messages = append(messages, Message{Role: "user", Content: req.UserMessage})
 
@@ -505,26 +497,6 @@ func (cc *CommandCenter) persistAssistant(sessionID uuid.UUID, content string) {
 		Role:      "assistant",
 		Content:   content,
 	})
-}
-
-// extractHistoryContext scans assistant messages from the chat history
-// for form-created records (contacts, deals) and pushes them to the session
-// context cache. This ensures the AI has memory of records created via
-// frontend inline forms that never went through the backend intent router.
-var historyContactCreated = regexp.MustCompile(`(?i)contact\s+\*\*(.+?)\*\*\s+created`)
-var historyDealCreated = regexp.MustCompile(`(?i)deal\s+\*\*(.+?)\*\*\s+\(\$([0-9,.]+)\)\s+created`)
-
-func (cc *CommandCenter) extractHistoryContext(sessionID uuid.UUID, content string) {
-	// Match "Contact **Son Goku** created successfully!"
-	if m := historyContactCreated.FindStringSubmatch(content); len(m) > 1 {
-		cc.sessionCtx.Push(sessionID, "form_create_contact",
-			fmt.Sprintf("User created contact: %s (via form, just now in this session)", m[1]))
-	}
-	// Match "Deal **ABC Noon** ($36) created successfully!"
-	if m := historyDealCreated.FindStringSubmatch(content); len(m) > 2 {
-		cc.sessionCtx.Push(sessionID, "form_create_deal",
-			fmt.Sprintf("User created deal: %s value=$%s (via form, just now in this session)", m[1], m[2]))
-	}
 }
 
 // truncateToolResult caps tool result JSON at 2KB for token efficiency.
