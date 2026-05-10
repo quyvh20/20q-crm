@@ -247,7 +247,7 @@ func main() {
 		userHandler := delivery.NewUserHandler(userRepo)
 
 		kbRepo := repository.NewKnowledgeBaseRepository(db)
-		kbBuilder := ai.NewKnowledgeBuilder(kbRepo, redisClient)
+		kbBuilder := ai.NewKnowledgeBuilder(kbRepo, orgSettingsUC, redisClient)
 		kbUseCase := usecase.NewKnowledgeBaseUseCase(kbRepo, kbBuilder)
 		kbHandler := delivery.NewKnowledgeHandler(kbUseCase)
 

@@ -257,10 +257,11 @@ func (cc *CommandCenter) Execute(
 				var p map[string]interface{}
 				json.Unmarshal(tc.Params, &p)
 				formData, _ := json.Marshal(map[string]any{
-					"form_type":     "contact",
-					"prefill_name":  p["prefill_name"],
-					"prefill_email": p["prefill_email"],
-					"prefill_phone": p["prefill_phone"],
+					"form_type":             "contact",
+					"prefill_name":          p["prefill_name"],
+					"prefill_email":         p["prefill_email"],
+					"prefill_phone":         p["prefill_phone"],
+					"prefill_custom_fields": p["custom_fields"],
 				})
 				events <- CommandEvent{Type: "form", Data: formData}
 				continue // don't add to remainingWrites
@@ -269,11 +270,12 @@ func (cc *CommandCenter) Execute(
 				var p map[string]interface{}
 				json.Unmarshal(tc.Params, &p)
 				formData, _ := json.Marshal(map[string]any{
-					"form_type":          "deal",
-					"prefill_title":      p["prefill_title"],
-					"prefill_value":      p["prefill_value"],
-					"prefill_contact_id": p["contact_id"],
-					"prefill_contact_name": p["contact_name"],
+					"form_type":             "deal",
+					"prefill_title":         p["prefill_title"],
+					"prefill_value":         p["prefill_value"],
+					"prefill_contact_id":    p["contact_id"],
+					"prefill_contact_name":  p["contact_name"],
+					"prefill_custom_fields": p["custom_fields"],
 				})
 				events <- CommandEvent{Type: "form", Data: formData}
 				continue // don't add to remainingWrites

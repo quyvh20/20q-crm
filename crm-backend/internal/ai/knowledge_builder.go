@@ -13,14 +13,16 @@ import (
 
 // KnowledgeBuilder builds a company-aware system prompt from the knowledge base.
 type KnowledgeBuilder struct {
-	repo    domain.KnowledgeBaseRepository
-	redis   *redis.Client
+	repo       domain.KnowledgeBaseRepository
+	settingsUC domain.OrgSettingsUseCase
+	redis      *redis.Client
 }
 
-func NewKnowledgeBuilder(repo domain.KnowledgeBaseRepository, redisClient *redis.Client) *KnowledgeBuilder {
+func NewKnowledgeBuilder(repo domain.KnowledgeBaseRepository, settingsUC domain.OrgSettingsUseCase, redisClient *redis.Client) *KnowledgeBuilder {
 	return &KnowledgeBuilder{
-		repo:  repo,
-		redis: redisClient,
+		repo:       repo,
+		settingsUC: settingsUC,
+		redis:      redisClient,
 	}
 }
 
@@ -58,6 +60,24 @@ func (b *KnowledgeBuilder) BuildSystemPrompt(ctx context.Context, orgID uuid.UUI
 		return "(not configured yet)"
 	}
 
+	// ── Build Schema Section ──
+	var schemaBuilder string
+	for _, entityType := range []string{"contact", "deal"} {
+		if fields, err := b.settingsUC.GetFieldDefs(ctx, orgID, entityType); err == nil && len(fields) > 0 {
+			schemaBuilder += fmt.Sprintf("\n%s fields:\n", entityType)
+			for _, f := range fields {
+				req := ""
+				if f.Required {
+					req = " (REQUIRED)"
+				}
+				schemaBuilder += fmt.Sprintf("- %s [%s]%s: %s\n", f.Key, f.Type, req, f.Label)
+			}
+		}
+	}
+	if schemaBuilder == "" {
+		schemaBuilder = "(no custom schema defined)"
+	}
+
 	prompt := fmt.Sprintf(`You are an AI sales assistant.
 
 COMPANY:
@@ -75,17 +95,22 @@ OUR PROCESS:
 COMPETITIVE ADVANTAGES:
 %s
 
+CRM SCHEMA (Available Custom Fields):
+%s
+
 CRITICAL INSTRUCTIONS:
 - Always communicate in the tone defined in the Sales Playbook
 - Reference specific products, prices, and USPs when composing emails or recommendations
 - Use the objection handling scripts when customer concerns arise
 - When drafting emails, include the company name and a relevant USP naturally
+- When calling form tools (e.g. create_contact, create_deal), you MUST extract relevant values from the user's message and put them in the 'custom_fields' property mapping to the keys defined in the CRM SCHEMA above.
 - Keep all responses concise and action-oriented`,
 		getSection("company"),
 		getSection("products"),
 		getSection("playbook"),
 		getSection("process"),
 		getSection("competitors"),
+		schemaBuilder,
 	)
 
 	// Cache for 30 minutes

@@ -18,7 +18,7 @@ function ContactForm({ payload, onSuccess, onCancel }: Props) {
   const [email, setEmail] = useState(payload.prefill_email || '');
   const [phone, setPhone] = useState(payload.prefill_phone || '');
   const [companyId] = useState('');
-  const [customFields, setCustomFields] = useState<Record<string, unknown>>({});
+  const [customFields, setCustomFields] = useState<Record<string, unknown>>(payload.prefill_custom_fields || {});
   const [fieldDefs, setFieldDefs] = useState<CustomFieldDef[]>([]);
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -125,7 +125,7 @@ function DealForm({ payload, onSuccess, onCancel }: Props) {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [contactSearch, setContactSearch] = useState(payload.prefill_contact_name || '');
   const [stages, setStages] = useState<PipelineStage[]>([]);
-  const [customFields, setCustomFields] = useState<Record<string, unknown>>({});
+  const [customFields, setCustomFields] = useState<Record<string, unknown>>(payload.prefill_custom_fields || {});
   const [fieldDefs, setFieldDefs] = useState<CustomFieldDef[]>([]);
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});

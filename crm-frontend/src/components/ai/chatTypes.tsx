@@ -36,6 +36,8 @@ export interface FormPayload {
   prefill_value?: number;
   prefill_contact_id?: string;
   prefill_contact_name?: string;
+  // custom fields for both
+  prefill_custom_fields?: Record<string, unknown>;
 }
 
 export interface NavigatePayload {
