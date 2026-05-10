@@ -140,23 +140,26 @@ var allCRMTools = []Tool{
 	},
 	{
 		Name: "create_contact",
-		Desc: "Show an inline form so the user can create a new contact. Use this whenever the user asks to add or create a contact.",
+		Desc: "Show an inline form so the user can create a new contact. Use this whenever the user asks to add or create a contact. Pre-fill as many fields as you can from the conversation context.",
 		Params: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"prefill_name":  map[string]any{"type": "string", "description": "pre-fill the name field"},
 				"prefill_email": map[string]any{"type": "string", "description": "pre-fill the email field"},
+				"prefill_phone": map[string]any{"type": "string", "description": "pre-fill the phone field"},
 			},
 		},
 	},
 	{
 		Name: "create_deal",
-		Desc: "Show an inline form so the user can create a new deal. Use this whenever the user asks to add, create, or log a new deal. Do NOT redirect to any page.",
+		Desc: "Show an inline form so the user can create a new deal. Use this whenever the user asks to add, create, or log a new deal. Do NOT redirect to any page. If the user mentions a contact (e.g. 'for this contact'), pass their contact_id and contact_name from the session context.",
 		Params: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"prefill_title": map[string]any{"type": "string", "description": "pre-fill the deal title"},
-				"prefill_value": map[string]any{"type": "number", "description": "pre-fill the deal value amount"},
+				"prefill_title":   map[string]any{"type": "string", "description": "pre-fill the deal title"},
+				"prefill_value":   map[string]any{"type": "number", "description": "pre-fill the deal value amount"},
+				"contact_id":      map[string]any{"type": "string", "description": "UUID of the contact to link this deal to"},
+				"contact_name":    map[string]any{"type": "string", "description": "display name of the linked contact"},
 			},
 		},
 	},

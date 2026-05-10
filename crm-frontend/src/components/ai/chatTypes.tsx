@@ -30,9 +30,12 @@ export interface FormPayload {
   // contact prefills
   prefill_name?: string;
   prefill_email?: string;
+  prefill_phone?: string;
   // deal prefills
   prefill_title?: string;
   prefill_value?: number;
+  prefill_contact_id?: string;
+  prefill_contact_name?: string;
 }
 
 export interface NavigatePayload {

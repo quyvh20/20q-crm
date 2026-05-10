@@ -135,7 +135,14 @@ func (cc *CommandCenter) Execute(
 		}
 
 		// ── Intent Router: fast-path for common actions (no AI needed) ────────
-		if intentName := MatchIntent(req.UserMessage); intentName != "" {
+		// Skip intent router if message has contextual references (e.g., "this contact",
+		// "for them") — these need AI reasoning with session context to resolve.
+		needsContext := hasContextualReferences(req.UserMessage)
+		intentName := ""
+		if !needsContext {
+			intentName = MatchIntent(req.UserMessage)
+		}
+		if intentName != "" {
 			cc.logger.Info("intent_router.matched",
 				zap.String("intent", intentName),
 				zap.String("message", req.UserMessage),
@@ -154,6 +161,11 @@ func (cc *CommandCenter) Execute(
 				}
 				return
 			}
+		}
+		if needsContext {
+			cc.logger.Info("intent_router.skipped_contextual",
+				zap.String("message", req.UserMessage),
+			)
 		}
 
 		// ── Build role-scoped system prompt ──────────────────────────────────
@@ -248,6 +260,7 @@ func (cc *CommandCenter) Execute(
 					"form_type":     "contact",
 					"prefill_name":  p["prefill_name"],
 					"prefill_email": p["prefill_email"],
+					"prefill_phone": p["prefill_phone"],
 				})
 				events <- CommandEvent{Type: "form", Data: formData}
 				continue // don't add to remainingWrites
@@ -256,9 +269,11 @@ func (cc *CommandCenter) Execute(
 				var p map[string]interface{}
 				json.Unmarshal(tc.Params, &p)
 				formData, _ := json.Marshal(map[string]any{
-					"form_type":     "deal",
-					"prefill_title": p["prefill_title"],
-					"prefill_value": p["prefill_value"],
+					"form_type":          "deal",
+					"prefill_title":      p["prefill_title"],
+					"prefill_value":      p["prefill_value"],
+					"prefill_contact_id": p["contact_id"],
+					"prefill_contact_name": p["contact_name"],
 				})
 				events <- CommandEvent{Type: "form", Data: formData}
 				continue // don't add to remainingWrites

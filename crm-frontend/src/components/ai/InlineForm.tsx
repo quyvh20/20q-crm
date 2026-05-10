@@ -16,7 +16,7 @@ interface Props {
 function ContactForm({ payload, onSuccess, onCancel }: Props) {
   const [name, setName] = useState(payload.prefill_name || '');
   const [email, setEmail] = useState(payload.prefill_email || '');
-  const [phone, setPhone] = useState('');
+  const [phone, setPhone] = useState(payload.prefill_phone || '');
   const [companyId] = useState('');
   const [customFields, setCustomFields] = useState<Record<string, unknown>>({});
   const [fieldDefs, setFieldDefs] = useState<CustomFieldDef[]>([]);
@@ -121,9 +121,9 @@ function DealForm({ payload, onSuccess, onCancel }: Props) {
   const [value, setValue] = useState(payload.prefill_value != null ? String(payload.prefill_value) : '');
   const [probability, setProbability] = useState('20');
   const [stageId, setStageId] = useState('');
-  const [contactId, setContactId] = useState('');
+  const [contactId, setContactId] = useState(payload.prefill_contact_id || '');
   const [contacts, setContacts] = useState<Contact[]>([]);
-  const [contactSearch, setContactSearch] = useState('');
+  const [contactSearch, setContactSearch] = useState(payload.prefill_contact_name || '');
   const [stages, setStages] = useState<PipelineStage[]>([]);
   const [customFields, setCustomFields] = useState<Record<string, unknown>>({});
   const [fieldDefs, setFieldDefs] = useState<CustomFieldDef[]>([]);
@@ -137,7 +137,9 @@ function DealForm({ payload, onSuccess, onCancel }: Props) {
       .then(s => { setStages(s); if (s.length > 0) setStageId(s[0].id); })
       .catch(() => {});
     getFieldDefs('deal').then(setFieldDefs).catch(() => {});
-    getContacts({ limit: 20 })
+    // Load contacts — include the pre-filled contact name as search term
+    const searchQ = payload.prefill_contact_name || '';
+    getContacts({ q: searchQ || undefined, limit: 20 })
       .then(r => setContacts(r.contacts))
       .catch(() => {});
   }, []);

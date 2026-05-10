@@ -504,6 +504,29 @@ Just type naturally — I'll figure it out! 💡`,
 // Helpers
 // ============================================================
 
+// contextualPhrases are patterns that indicate the user is referencing
+// something from the conversation (e.g. a just-created contact or deal).
+// When detected, the intent router is bypassed so the AI can reason
+// about the session context.
+var contextualPhrases = []string{
+	"this contact", "that contact", "the contact", "for them", "for him", "for her",
+	"this deal", "that deal", "the deal", "same contact", "same deal",
+	"for this", "for that", "link to", "linked to", "associate with",
+	"the one i just", "i just created", "just made", "just added",
+}
+
+// hasContextualReferences returns true if the message contains pronouns
+// or references that need AI reasoning to resolve.
+func hasContextualReferences(message string) bool {
+	lower := strings.ToLower(message)
+	for _, phrase := range contextualPhrases {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
 // extractAfterKeyword extracts text after a matched keyword.
 // e.g., "create contact John Doe" → "John Doe"
 func extractAfterKeyword(message string, keywords []string) string {
