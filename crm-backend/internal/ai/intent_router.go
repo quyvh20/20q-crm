@@ -515,15 +515,29 @@ var contextualPhrases = []string{
 	"the one i just", "i just created", "just made", "just added",
 }
 
-// hasContextualReferences returns true if the message contains pronouns
-// or references that need AI reasoning to resolve.
-func hasContextualReferences(message string) bool {
+// needsAIReasoning returns true if the message contains pronouns,
+// references, or complex multiple parameters that need AI reasoning to resolve.
+func needsAIReasoning(message string) bool {
 	lower := strings.ToLower(message)
 	for _, phrase := range contextualPhrases {
 		if strings.Contains(lower, phrase) {
 			return true
 		}
 	}
+	
+	// Complex extractions (emails, multiple fields, specific names)
+	if strings.Contains(lower, "@") || strings.Contains(lower, "with email") || strings.Contains(lower, "phone") {
+		return true // likely contact with multiple fields
+	}
+	
+	if strings.Contains(lower, "worth") || strings.Contains(lower, "value") || strings.Contains(lower, "dollar") || strings.Contains(lower, "$") {
+		return true // likely deal with value
+	}
+	
+	if strings.Contains(lower, "for ") && (strings.Contains(lower, "deal") || strings.Contains(lower, "task")) {
+		return true // "deal for Jane", "task for Bob"
+	}
+	
 	return false
 }
 

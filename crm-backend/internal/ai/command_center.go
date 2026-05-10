@@ -136,8 +136,8 @@ func (cc *CommandCenter) Execute(
 
 		// ── Intent Router: fast-path for common actions (no AI needed) ────────
 		// Skip intent router if message has contextual references (e.g., "this contact",
-		// "for them") — these need AI reasoning with session context to resolve.
-		needsContext := hasContextualReferences(req.UserMessage)
+		// "for them") or complex parameters — these need AI reasoning to resolve.
+		needsContext := needsAIReasoning(req.UserMessage)
 		intentName := ""
 		if !needsContext {
 			intentName = MatchIntent(req.UserMessage)
@@ -163,7 +163,7 @@ func (cc *CommandCenter) Execute(
 			}
 		}
 		if needsContext {
-			cc.logger.Info("intent_router.skipped_contextual",
+			cc.logger.Info("intent_router.skipped_for_ai",
 				zap.String("message", req.UserMessage),
 			)
 		}

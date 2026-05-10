@@ -144,9 +144,9 @@ var allCRMTools = []Tool{
 		Params: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"prefill_name":  map[string]any{"type": "string", "description": "pre-fill the name field"},
-				"prefill_email": map[string]any{"type": "string", "description": "pre-fill the email field"},
-				"prefill_phone": map[string]any{"type": "string", "description": "pre-fill the phone field"},
+				"prefill_name":  map[string]any{"type": "string", "description": "Extract ONLY the person's name (e.g. 'Jane Doe')"},
+				"prefill_email": map[string]any{"type": "string", "description": "Extract ONLY the valid email address"},
+				"prefill_phone": map[string]any{"type": "string", "description": "Extract ONLY the phone number"},
 			},
 		},
 	},
@@ -156,8 +156,8 @@ var allCRMTools = []Tool{
 		Params: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"prefill_title":   map[string]any{"type": "string", "description": "pre-fill the deal title"},
-				"prefill_value":   map[string]any{"type": "number", "description": "pre-fill the deal value amount"},
+				"prefill_title":   map[string]any{"type": "string", "description": "Generate a brief professional title for the deal"},
+				"prefill_value":   map[string]any{"type": "number", "description": "Extract ONLY the numeric value (e.g., 5000 from '5000 dollars')"},
 				"contact_id":      map[string]any{"type": "string", "description": "UUID of the contact to link this deal to"},
 				"contact_name":    map[string]any{"type": "string", "description": "display name of the linked contact"},
 			},
