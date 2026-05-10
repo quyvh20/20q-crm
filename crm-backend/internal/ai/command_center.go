@@ -455,9 +455,15 @@ log_activity — Log call/email/meeting/note against contact or deal. Requires t
 
 compose_email — Draft email for a contact. Requires contact_id and instruction.
 
-create_contact — Inline form for new contact. Pre-fill name/email if mentioned.
+create_contact — Inline form for new contact. Pre-fill name/email/phone if mentioned in conversation.
 
-create_deal — Inline form for new deal. Pre-fill title/value if mentioned. Never redirect.
+create_deal — Inline form for new deal. Pre-fill title/value if mentioned. CRITICAL: If the user references a contact (e.g., "for this contact", "for them", "create a deal for quansah"), you MUST resolve the contact_id and contact_name from the SESSION CONTEXT and pass them as parameters. This auto-links the deal to the contact in the form.
+
+SESSION CONTEXT AWARENESS:
+- You have access to session context showing records previously created or viewed in this conversation.
+- When the user says "this contact", "that deal", "for them" — look in the session context to find the referenced record and use its UUID.
+- When creating a deal linked to a contact, always pass both contact_id and contact_name.
+- When the user mentions a name from the conversation history, find its UUID from the session context.
 
 FORMATTING:
 - Tables for multi-record results. Bullets for single records. One sentence for confirmations.
