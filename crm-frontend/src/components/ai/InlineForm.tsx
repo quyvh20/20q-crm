@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import type { FormPayload } from './chatTypes';
-import { createContact, createDeal, getStages, type PipelineStage } from '../../lib/api';
+import {
+  createContact, createDeal, getStages, getFieldDefs, getContacts,
+  type PipelineStage, type CustomFieldDef, type Contact,
+} from '../../lib/api';
 
 interface Props {
   payload: FormPayload;
@@ -14,14 +17,27 @@ function ContactForm({ payload, onSuccess, onCancel }: Props) {
   const [name, setName] = useState(payload.prefill_name || '');
   const [email, setEmail] = useState(payload.prefill_email || '');
   const [phone, setPhone] = useState('');
+  const [companyId] = useState('');
+  const [customFields, setCustomFields] = useState<Record<string, unknown>>({});
+  const [fieldDefs, setFieldDefs] = useState<CustomFieldDef[]>([]);
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [done, setDone] = useState(false);
+
+  useEffect(() => {
+    getFieldDefs('contact').then(setFieldDefs).catch(() => {});
+  }, []);
 
   const validate = () => {
     const e: Record<string, string> = {};
     if (!name.trim()) e.name = 'Full name is required';
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) e.email = 'Enter a valid email address';
+    // Validate required custom fields
+    for (const def of fieldDefs) {
+      if (def.required && !customFields[def.key]) {
+        e[`cf_${def.key}`] = `${def.label} is required`;
+      }
+    }
     return e;
   };
 
@@ -38,7 +54,9 @@ function ContactForm({ payload, onSuccess, onCancel }: Props) {
         last_name: rest.join(' ') || '',
         email: email || undefined,
         phone: phone || undefined,
-      });
+        company_id: companyId || undefined,
+        custom_fields: Object.keys(customFields).length > 0 ? customFields : undefined,
+      } as Parameters<typeof createContact>[0]);
       setDone(true);
       const idRef = result?.id ? ` (id: ${result.id})` : '';
       setTimeout(() => onSuccess(`✅ Contact **${name}**${idRef} created successfully!`), 900);
@@ -70,6 +88,26 @@ function ContactForm({ payload, onSuccess, onCancel }: Props) {
           onChange={e => setPhone(e.target.value)} placeholder="+1 555 000 0000" />
       </Field>
 
+      {/* Dynamic custom fields */}
+      {fieldDefs.length > 0 && (
+        <>
+          <div style={styles.customFieldDivider}>
+            <div style={styles.dividerLine} />
+            <span style={styles.dividerLabel}>Custom Fields</span>
+            <div style={styles.dividerLine} />
+          </div>
+          {fieldDefs.map(def => (
+            <CustomFieldInput
+              key={def.key}
+              def={def}
+              value={customFields[def.key]}
+              error={errors[`cf_${def.key}`]}
+              onChange={v => setCustomFields(prev => ({ ...prev, [def.key]: v }))}
+            />
+          ))}
+        </>
+      )}
+
       {errors._form && <p style={styles.formError}>{errors._form}</p>}
       <FormActions loading={loading} onCancel={onCancel} submitLabel="Create Contact" />
     </form>
@@ -83,20 +121,37 @@ function DealForm({ payload, onSuccess, onCancel }: Props) {
   const [value, setValue] = useState(payload.prefill_value != null ? String(payload.prefill_value) : '');
   const [probability, setProbability] = useState('20');
   const [stageId, setStageId] = useState('');
+  const [contactId, setContactId] = useState('');
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [contactSearch, setContactSearch] = useState('');
   const [stages, setStages] = useState<PipelineStage[]>([]);
+  const [customFields, setCustomFields] = useState<Record<string, unknown>>({});
+  const [fieldDefs, setFieldDefs] = useState<CustomFieldDef[]>([]);
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [done, setDone] = useState(false);
 
-  // Load pipeline stages on mount
+  // Load pipeline stages + custom fields on mount
   useEffect(() => {
     getStages()
-      .then(s => {
-        setStages(s);
-        if (s.length > 0) setStageId(s[0].id);
-      })
-      .catch(() => { /* silently skip if stages unavailable */ });
+      .then(s => { setStages(s); if (s.length > 0) setStageId(s[0].id); })
+      .catch(() => {});
+    getFieldDefs('deal').then(setFieldDefs).catch(() => {});
+    getContacts({ limit: 20 })
+      .then(r => setContacts(r.contacts))
+      .catch(() => {});
   }, []);
+
+  // Search contacts when typing
+  useEffect(() => {
+    if (!contactSearch.trim()) return;
+    const timer = setTimeout(() => {
+      getContacts({ q: contactSearch, limit: 10 })
+        .then(r => setContacts(r.contacts))
+        .catch(() => {});
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [contactSearch]);
 
   const validate = () => {
     const e: Record<string, string> = {};
@@ -105,6 +160,12 @@ function DealForm({ payload, onSuccess, onCancel }: Props) {
     if (value && Number(value) < 0) e.value = 'Value cannot be negative';
     const prob = Number(probability);
     if (probability && (isNaN(prob) || prob < 0 || prob > 100)) e.probability = 'Probability must be 0–100';
+    // Validate required custom fields
+    for (const def of fieldDefs) {
+      if (def.required && !customFields[def.key]) {
+        e[`cf_${def.key}`] = `${def.label} is required`;
+      }
+    }
     return e;
   };
 
@@ -120,11 +181,17 @@ function DealForm({ payload, onSuccess, onCancel }: Props) {
         value:       value       ? Number(value)       : undefined,
         stage_id:    stageId     ? stageId             : undefined,
         probability: probability ? Number(probability) : undefined,
+        contact_id:  contactId   ? contactId           : undefined,
       });
       setDone(true);
       const valueStr = value ? ` ($${Number(value).toLocaleString()})` : '';
       const idRef = result?.id ? ` (id: ${result.id})` : '';
-      setTimeout(() => onSuccess(`✅ Deal **${title}**${valueStr}${idRef} created successfully!`), 900);
+      const contactName = contactId
+        ? contacts.find(c => c.id === contactId)
+          ? ` linked to **${contacts.find(c => c.id === contactId)!.first_name} ${contacts.find(c => c.id === contactId)!.last_name}**`
+          : ''
+        : '';
+      setTimeout(() => onSuccess(`✅ Deal **${title}**${valueStr}${contactName}${idRef} created successfully!`), 900);
     } catch (err) {
       setErrors({ _form: err instanceof Error ? err.message : 'Failed to create deal' });
     } finally {
@@ -149,6 +216,35 @@ function DealForm({ payload, onSuccess, onCancel }: Props) {
           placeholder="0" />
       </Field>
 
+      {/* Contact selector with search */}
+      <Field label="Link to Contact">
+        <input
+          style={fieldInputStyle(false)}
+          value={contactSearch}
+          onChange={e => { setContactSearch(e.target.value); setContactId(''); }}
+          placeholder="Search contacts…"
+        />
+        {contacts.length > 0 && (
+          <select
+            style={{ ...styles.select, marginTop: 4 }}
+            value={contactId}
+            onChange={e => {
+              setContactId(e.target.value);
+              const c = contacts.find(ct => ct.id === e.target.value);
+              if (c) setContactSearch(`${c.first_name} ${c.last_name}`.trim());
+            }}
+          >
+            <option value="">— None —</option>
+            {contacts.map(c => (
+              <option key={c.id} value={c.id}>
+                {`${c.first_name} ${c.last_name}`.trim()}
+                {c.email ? ` (${c.email})` : ''}
+              </option>
+            ))}
+          </select>
+        )}
+      </Field>
+
       {stages.length > 0 && (
         <Field label="Pipeline Stage">
           <select style={styles.select} value={stageId} onChange={e => setStageId(e.target.value)}>
@@ -166,9 +262,99 @@ function DealForm({ payload, onSuccess, onCancel }: Props) {
           placeholder="20" />
       </Field>
 
+      {/* Dynamic custom fields */}
+      {fieldDefs.length > 0 && (
+        <>
+          <div style={styles.customFieldDivider}>
+            <div style={styles.dividerLine} />
+            <span style={styles.dividerLabel}>Custom Fields</span>
+            <div style={styles.dividerLine} />
+          </div>
+          {fieldDefs.map(def => (
+            <CustomFieldInput
+              key={def.key}
+              def={def}
+              value={customFields[def.key]}
+              error={errors[`cf_${def.key}`]}
+              onChange={v => setCustomFields(prev => ({ ...prev, [def.key]: v }))}
+            />
+          ))}
+        </>
+      )}
+
       {errors._form && <p style={styles.formError}>{errors._form}</p>}
       <FormActions loading={loading} onCancel={onCancel} submitLabel="Create Deal" />
     </form>
+  );
+}
+
+// ── Custom Field Input (inline-styled for chat panel) ──────────────────────────
+
+function CustomFieldInput({
+  def, value, error, onChange,
+}: {
+  def: CustomFieldDef;
+  value: unknown;
+  error?: string;
+  onChange: (v: unknown) => void;
+}) {
+  const label = `${def.label}${def.required ? ' *' : ''}`;
+
+  if (def.type === 'boolean') {
+    return (
+      <Field label={label} error={error}>
+        <label style={styles.checkboxRow}>
+          <input
+            type="checkbox"
+            checked={!!value}
+            onChange={e => onChange(e.target.checked)}
+            style={styles.checkbox}
+          />
+          <span style={styles.checkboxLabel}>{value ? 'Yes' : 'No'}</span>
+        </label>
+      </Field>
+    );
+  }
+
+  if (def.type === 'select') {
+    return (
+      <Field label={label} error={error}>
+        <select
+          style={styles.select}
+          value={(value as string) ?? ''}
+          onChange={e => onChange(e.target.value || null)}
+        >
+          <option value="">Select {def.label.toLowerCase()}…</option>
+          {def.options?.map(opt => (
+            <option key={opt} value={opt}>{opt}</option>
+          ))}
+        </select>
+      </Field>
+    );
+  }
+
+  // text, number, date, url
+  const inputType: Record<string, string> = {
+    text: 'text', number: 'number', date: 'date', url: 'url',
+  };
+
+  return (
+    <Field label={label} error={error}>
+      <input
+        style={fieldInputStyle(!!error)}
+        type={inputType[def.type] || 'text'}
+        value={value !== undefined && value !== null ? String(value) : ''}
+        onChange={e => {
+          const v = e.target.value;
+          if (def.type === 'number') {
+            onChange(v === '' ? null : parseFloat(v));
+          } else {
+            onChange(v);
+          }
+        }}
+        placeholder={def.type === 'url' ? 'https://example.com' : `Enter ${def.label.toLowerCase()}`}
+      />
+    </Field>
   );
 }
 
@@ -244,6 +430,8 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--card)',
     animation: 'fadeSlide 0.2s ease',
     boxShadow: '0 2px 12px rgba(0,0,0,0.06)',
+    maxHeight: 420,
+    overflowY: 'auto',
   },
   header: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 },
   headerIcon: { fontSize: 16 },
@@ -318,4 +506,38 @@ const styles: Record<string, React.CSSProperties> = {
   },
   successIcon: { fontSize: 20 },
   successText: { margin: 0, fontSize: 13, color: 'var(--foreground)', lineHeight: 1.5 },
+  customFieldDivider: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    margin: '12px 0 8px',
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    background: 'var(--border)',
+  },
+  dividerLabel: {
+    fontSize: 9,
+    fontWeight: 700,
+    color: 'var(--muted-foreground)',
+    textTransform: 'uppercase',
+    letterSpacing: '0.08em',
+  },
+  checkboxRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    cursor: 'pointer',
+    padding: '4px 0',
+  },
+  checkbox: {
+    width: 16,
+    height: 16,
+    cursor: 'pointer',
+  },
+  checkboxLabel: {
+    fontSize: 13,
+    color: 'var(--muted-foreground)',
+  },
 };

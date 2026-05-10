@@ -162,8 +162,16 @@ func navResult(path, label string) *IntentResult {
 }
 
 func (cc *CommandCenter) intentCreateContact(message string) *IntentResult {
-	// Try to extract name from message like "create contact John Doe"
-	name := extractAfterKeyword(message, []string{"create contact ", "new contact ", "add contact "})
+	// Try to extract name from message — support multiple phrasing styles:
+	// "create contact John Doe", "create a contact name shimpson",
+	// "add contact named Jane", "new contact called Bob"
+	name := extractAfterKeyword(message, []string{
+		"create a contact named ", "create a contact name ", "create a contact called ",
+		"create contact named ", "create contact name ", "create contact called ",
+		"add a contact named ", "add a contact name ", "add a contact called ",
+		"new contact named ", "new contact name ", "new contact called ",
+		"create a contact ", "create contact ", "new contact ", "add contact ", "add a contact ",
+	})
 	formData, _ := json.Marshal(map[string]any{
 		"form_type":    "contact",
 		"prefill_name": name,
@@ -177,7 +185,13 @@ func (cc *CommandCenter) intentCreateContact(message string) *IntentResult {
 }
 
 func (cc *CommandCenter) intentCreateDeal(message string) *IntentResult {
-	title := extractAfterKeyword(message, []string{"create deal ", "new deal ", "add deal "})
+	title := extractAfterKeyword(message, []string{
+		"create a deal named ", "create a deal called ", "create a deal name ",
+		"create deal named ", "create deal called ", "create deal name ",
+		"add a deal named ", "add a deal called ",
+		"new deal named ", "new deal called ",
+		"create a deal ", "create deal ", "new deal ", "add deal ", "add a deal ",
+	})
 	formData, _ := json.Marshal(map[string]any{
 		"form_type":     "deal",
 		"prefill_title": title,
