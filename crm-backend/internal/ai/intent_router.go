@@ -24,8 +24,9 @@ import (
 
 // IntentResult holds the output of an intent execution.
 type IntentResult struct {
-	Text   string         // Markdown response text
-	Events []CommandEvent // Extra SSE events (navigate, form, etc.)
+	Text           string         // Markdown response text
+	Events         []CommandEvent // Extra SSE events (navigate, form, etc.)
+	ContextSummary string         // Compact context for session cache (AI follow-up memory)
 }
 
 // intent is a single matchable action.
@@ -248,7 +249,32 @@ func (cc *CommandCenter) intentSearchDeals(
 			d.Title, d.ID.String(), status, d.Value, stage, d.Probability))
 	}
 
-	return &IntentResult{Text: b.String()}
+	// Build compact context for AI follow-up
+	var cs strings.Builder
+	cs.WriteString(fmt.Sprintf("Showed %d deals:", len(deals)))
+	for _, d := range deals {
+		stage := ""
+		if d.Stage != nil {
+			stage = d.Stage.Name
+		}
+		contact := ""
+		if d.Contact != nil {
+			contact = strings.TrimSpace(d.Contact.FirstName + " " + d.Contact.LastName)
+		}
+		cs.WriteString(fmt.Sprintf(" [%s id=%s val=$%.0f stage=%s prob=%d%%",
+			d.Title, d.ID.String(), d.Value, stage, d.Probability))
+		if contact != "" {
+			cs.WriteString(fmt.Sprintf(" contact=%s", contact))
+		}
+		if d.IsWon {
+			cs.WriteString(" WON")
+		} else if d.IsLost {
+			cs.WriteString(" LOST")
+		}
+		cs.WriteString("]")
+	}
+
+	return &IntentResult{Text: b.String(), ContextSummary: cs.String()}
 }
 
 func (cc *CommandCenter) intentSearchContacts(
@@ -295,7 +321,22 @@ func (cc *CommandCenter) intentSearchContacts(
 		b.WriteString(fmt.Sprintf("| [%s](#%s) | %s | %s |\n", name, c.ID.String(), email, company))
 	}
 
-	return &IntentResult{Text: b.String()}
+	// Build compact context for AI follow-up
+	var cs strings.Builder
+	cs.WriteString(fmt.Sprintf("Showed %d contacts:", len(contacts)))
+	for _, c := range contacts {
+		name := strings.TrimSpace(c.FirstName + " " + c.LastName)
+		cs.WriteString(fmt.Sprintf(" [%s id=%s", name, c.ID.String()))
+		if c.Email != nil {
+			cs.WriteString(fmt.Sprintf(" email=%s", *c.Email))
+		}
+		if c.Company != nil {
+			cs.WriteString(fmt.Sprintf(" company=%s", c.Company.Name))
+		}
+		cs.WriteString("]")
+	}
+
+	return &IntentResult{Text: b.String(), ContextSummary: cs.String()}
 }
 
 func (cc *CommandCenter) intentMyTasks(
@@ -339,7 +380,18 @@ func (cc *CommandCenter) intentMyTasks(
 		b.WriteString(fmt.Sprintf("| %s | %s %s | %s |\n", t.Title, priorityIcon, t.Priority, due))
 	}
 
-	return &IntentResult{Text: b.String()}
+	// Build compact context for AI follow-up
+	var cs strings.Builder
+	cs.WriteString(fmt.Sprintf("Showed %d pending tasks:", len(tasks)))
+	for _, t := range tasks {
+		due := ""
+		if t.DueAt != nil {
+			due = t.DueAt.Format("2006-01-02")
+		}
+		cs.WriteString(fmt.Sprintf(" [%s priority=%s due=%s]", t.Title, t.Priority, due))
+	}
+
+	return &IntentResult{Text: b.String(), ContextSummary: cs.String()}
 }
 
 func (cc *CommandCenter) intentAnalytics(

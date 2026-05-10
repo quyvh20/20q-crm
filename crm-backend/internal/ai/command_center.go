@@ -56,6 +56,7 @@ type CommandCenter struct {
 	taskRepo         domain.TaskRepository
 	activityRepo     domain.ActivityRepository
 	sessionRepo      domain.ChatSessionRepository
+	sessionCtx       *SessionContextCache
 	logger           *zap.Logger
 }
 
@@ -77,6 +78,7 @@ func NewCommandCenter(
 		taskRepo:         taskRepo,
 		activityRepo:     activityRepo,
 		sessionRepo:      sessionRepo,
+		sessionCtx:       NewSessionContextCache(),
 		logger:           logger,
 	}
 }
@@ -146,12 +148,21 @@ func (cc *CommandCenter) Execute(
 				events <- CommandEvent{Type: "response", Message: result.Text, Done: true}
 				events <- CommandEvent{Type: "done", Done: true}
 				cc.persistAssistant(req.SessionID, result.Text)
+				// Push structured context to session cache for AI follow-ups
+				if result.ContextSummary != "" {
+					cc.sessionCtx.Push(req.SessionID, intentName, result.ContextSummary)
+				}
 				return
 			}
 		}
 
 		// ── Build role-scoped system prompt ──────────────────────────────────
 		sysPrompt := cc.buildRolePrompt(ctx, orgID, req)
+
+		// Inject session context from intent router results (deals, contacts shown earlier)
+		if sessionContext := cc.sessionCtx.BuildContextPrompt(req.SessionID); sessionContext != "" {
+			sysPrompt += sessionContext
+		}
 
 		events <- CommandEvent{Type: "thinking", Message: "Analyzing your request..."}
 
@@ -273,6 +284,18 @@ func (cc *CommandCenter) Execute(
 			}(i, tc)
 		}
 		wg.Wait()
+
+		// Push tool results to session context for follow-up memory
+		for _, r := range readResults {
+			if r.name != "" && len(r.output) > 0 {
+				// Store compact version (max 500 chars)
+				summary := fmt.Sprintf("AI tool %s returned: %s", r.name, string(r.output))
+				if len(summary) > 500 {
+					summary = summary[:500] + "..."
+				}
+				cc.sessionCtx.Push(req.SessionID, "ai_tool_"+r.name, summary)
+			}
+		}
 
 		// For writes — emit confirm events instead of executing
 		for _, tc := range writeCalls {
