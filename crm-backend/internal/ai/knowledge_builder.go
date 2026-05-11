@@ -33,6 +33,11 @@ func (b *KnowledgeBuilder) cacheKey(orgID uuid.UUID) string {
 	return fmt.Sprintf("kb_prompt:%s", orgID)
 }
 
+// SetCustomObjectUC sets the custom object use case (used to break circular init).
+func (b *KnowledgeBuilder) SetCustomObjectUC(uc domain.CustomObjectUseCase) {
+	b.customObjUC = uc
+}
+
 // BustCache removes the cached prompt for an org (call on KB update).
 func (b *KnowledgeBuilder) BustCache(ctx context.Context, orgID uuid.UUID) {
 	if b.redis != nil {

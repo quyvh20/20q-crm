@@ -16,11 +16,16 @@ import (
 )
 
 type orgSettingsUseCase struct {
-	repo domain.OrgSettingsRepository
+	repo        domain.OrgSettingsRepository
+	cacheBuster domain.SchemaCacheBuster
 }
 
-func NewOrgSettingsUseCase(repo domain.OrgSettingsRepository) domain.OrgSettingsUseCase {
-	return &orgSettingsUseCase{repo: repo}
+func NewOrgSettingsUseCase(repo domain.OrgSettingsRepository, cacheBuster ...domain.SchemaCacheBuster) domain.OrgSettingsUseCase {
+	var cb domain.SchemaCacheBuster
+	if len(cacheBuster) > 0 {
+		cb = cacheBuster[0]
+	}
+	return &orgSettingsUseCase{repo: repo, cacheBuster: cb}
 }
 
 // keyRegex enforces snake_case keys: lowercase letters, digits, underscores.
@@ -110,6 +115,7 @@ func (uc *orgSettingsUseCase) CreateFieldDef(ctx context.Context, orgID uuid.UUI
 	if err := uc.saveDefs(ctx, orgID, all); err != nil {
 		return nil, err
 	}
+	uc.bustSchemaCache(ctx, orgID)
 	return &def, nil
 }
 
@@ -161,6 +167,7 @@ func (uc *orgSettingsUseCase) UpdateFieldDef(ctx context.Context, orgID uuid.UUI
 	if err := uc.saveDefs(ctx, orgID, all); err != nil {
 		return nil, err
 	}
+	uc.bustSchemaCache(ctx, orgID)
 	return &all[idx], nil
 }
 
@@ -187,7 +194,11 @@ func (uc *orgSettingsUseCase) DeleteFieldDef(ctx context.Context, orgID uuid.UUI
 		return domain.NewAppError(404, fmt.Sprintf("field '%s' not found", key))
 	}
 
-	return uc.saveDefs(ctx, orgID, filtered)
+	if err := uc.saveDefs(ctx, orgID, filtered); err != nil {
+		return err
+	}
+	uc.bustSchemaCache(ctx, orgID)
+	return nil
 }
 
 // ============================================================
@@ -247,6 +258,13 @@ func (uc *orgSettingsUseCase) ValidateCustomFields(ctx context.Context, orgID uu
 // Helpers
 // ============================================================
 
+// bustSchemaCache invalidates the AI knowledge builder cache so the AI
+// immediately sees field definition changes.
+func (uc *orgSettingsUseCase) bustSchemaCache(ctx context.Context, orgID uuid.UUID) {
+	if uc.cacheBuster != nil {
+		uc.cacheBuster.BustCache(ctx, orgID)
+	}
+}
 func validateFieldValue(def domain.CustomFieldDef, val interface{}) error {
 	if val == nil {
 		return nil

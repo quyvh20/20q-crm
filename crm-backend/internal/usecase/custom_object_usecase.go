@@ -13,11 +13,16 @@ import (
 )
 
 type customObjectUseCase struct {
-	repo domain.CustomObjectRepository
+	repo         domain.CustomObjectRepository
+	cacheBuster  domain.SchemaCacheBuster
 }
 
-func NewCustomObjectUseCase(repo domain.CustomObjectRepository) domain.CustomObjectUseCase {
-	return &customObjectUseCase{repo: repo}
+func NewCustomObjectUseCase(repo domain.CustomObjectRepository, cacheBuster ...domain.SchemaCacheBuster) domain.CustomObjectUseCase {
+	var cb domain.SchemaCacheBuster
+	if len(cacheBuster) > 0 {
+		cb = cacheBuster[0]
+	}
+	return &customObjectUseCase{repo: repo, cacheBuster: cb}
 }
 
 var slugRegex = regexp.MustCompile(`^[a-z][a-z0-9_]{0,49}$`)
@@ -96,6 +101,7 @@ func (uc *customObjectUseCase) CreateDef(ctx context.Context, orgID uuid.UUID, i
 	if err := uc.repo.CreateDef(ctx, def); err != nil {
 		return nil, err
 	}
+	uc.bustSchemaCache(ctx, orgID)
 	return def, nil
 }
 
@@ -131,6 +137,7 @@ func (uc *customObjectUseCase) UpdateDef(ctx context.Context, orgID uuid.UUID, s
 	if err := uc.repo.UpdateDef(ctx, def); err != nil {
 		return nil, err
 	}
+	uc.bustSchemaCache(ctx, orgID)
 	return def, nil
 }
 
@@ -142,7 +149,11 @@ func (uc *customObjectUseCase) DeleteDef(ctx context.Context, orgID uuid.UUID, s
 	if def == nil {
 		return &domain.AppError{Code: http.StatusNotFound, Message: "custom object not found"}
 	}
-	return uc.repo.SoftDeleteDef(ctx, orgID, def.ID)
+	if err := uc.repo.SoftDeleteDef(ctx, orgID, def.ID); err != nil {
+		return err
+	}
+	uc.bustSchemaCache(ctx, orgID)
+	return nil
 }
 
 // ============================================================
@@ -257,6 +268,13 @@ func (uc *customObjectUseCase) DeleteRecord(ctx context.Context, orgID uuid.UUID
 // Helpers
 // ============================================================
 
+// bustSchemaCache invalidates the AI knowledge builder cache so the AI
+// immediately sees new/updated custom objects.
+func (uc *customObjectUseCase) bustSchemaCache(ctx context.Context, orgID uuid.UUID) {
+	if uc.cacheBuster != nil {
+		uc.cacheBuster.BustCache(ctx, orgID)
+	}
+}
 // validateFieldDefs checks all field definitions in the JSON array.
 func (uc *customObjectUseCase) validateFieldDefs(fieldsJSON domain.JSON) error {
 	var fields []domain.CustomFieldDef

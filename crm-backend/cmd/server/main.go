@@ -206,12 +206,21 @@ func main() {
 		go embedWorker.Start(context.Background(), 5)
 
 		orgSettingsRepo := repository.NewOrgSettingsRepository(db)
-		orgSettingsUC := usecase.NewOrgSettingsUseCase(orgSettingsRepo)
+		orgSettingsUC := usecase.NewOrgSettingsUseCase(orgSettingsRepo) // cache buster injected below
 		settingsHandler := delivery.NewSettingsHandler(orgSettingsUC)
 
 		customObjRepo := repository.NewCustomObjectRepository(db)
-		customObjUC := usecase.NewCustomObjectUseCase(customObjRepo)
+
+		// KB builder needs customObjUC and orgSettingsUC, but both need kbBuilder for cache busting.
+		// Create kbBuilder first (without customObjUC), then inject dependencies.
+		kbRepo := repository.NewKnowledgeBaseRepository(db)
+		kbBuilder := ai.NewKnowledgeBuilder(kbRepo, orgSettingsUC, nil, redisClient) // customObjUC set below
+
+		customObjUC := usecase.NewCustomObjectUseCase(customObjRepo, kbBuilder)
 		customObjHandler := delivery.NewCustomObjectHandler(customObjUC)
+
+		// Inject customObjUC into kbBuilder so it can read custom objects for schema
+		kbBuilder.SetCustomObjectUC(customObjUC)
 
 		contactRepo := repository.NewContactRepository(db)
 		contactUseCase := usecase.NewContactUseCase(contactRepo, embedWorker, embedSvc)
@@ -246,8 +255,6 @@ func main() {
 		userRepo := repository.NewUserRepository(db)
 		userHandler := delivery.NewUserHandler(userRepo)
 
-		kbRepo := repository.NewKnowledgeBaseRepository(db)
-		kbBuilder := ai.NewKnowledgeBuilder(kbRepo, orgSettingsUC, customObjUC, redisClient)
 		kbUseCase := usecase.NewKnowledgeBaseUseCase(kbRepo, kbBuilder)
 		kbHandler := delivery.NewKnowledgeHandler(kbUseCase)
 

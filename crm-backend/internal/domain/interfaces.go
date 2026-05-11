@@ -559,6 +559,12 @@ type KnowledgeBaseRepository interface {
 	Upsert(ctx context.Context, entry *KnowledgeBaseEntry) error
 }
 
+// SchemaCacheBuster is implemented by the KnowledgeBuilder to allow
+// non-AI packages to invalidate the AI schema cache.
+type SchemaCacheBuster interface {
+	BustCache(ctx context.Context, orgID uuid.UUID)
+}
+
 type KnowledgeBaseUseCase interface {
 	ListSections(ctx context.Context, orgID uuid.UUID) ([]KnowledgeBaseEntry, error)
 	GetSection(ctx context.Context, orgID uuid.UUID, section string) (*KnowledgeBaseEntry, error)
