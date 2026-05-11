@@ -91,16 +91,26 @@ export default function ChatPanel({ open, onClose }: Props) {
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const bottomAnchorRef = useRef<HTMLDivElement>(null);
 
   // Persist session to sessionStorage whenever it changes
   useEffect(() => {
     saveSession(sessionId, messages);
   }, [sessionId, messages]);
 
-  // Scroll to bottom on new messages
+  // Scroll to bottom on new messages, forms, or confirm banners
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages, streaming]);
+  }, [messages, streaming, pendingForm, pendingConfirm]);
+
+  // When a form appears, scroll the bottom anchor into view to ensure buttons are visible
+  useEffect(() => {
+    if (pendingForm || pendingConfirm) {
+      setTimeout(() => {
+        bottomAnchorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      }, 100);
+    }
+  }, [pendingForm, pendingConfirm]);
 
   // Focus input when panel opens
   useEffect(() => {
@@ -368,6 +378,9 @@ export default function ChatPanel({ open, onClose }: Props) {
               <span style={styles.thinkingDot} />
             </div>
           )}
+
+          {/* Bottom anchor — ensures forms scroll fully into view */}
+          <div ref={bottomAnchorRef} style={{ minHeight: 1, flexShrink: 0 }} />
         </div>
 
         {/* Input */}
@@ -462,7 +475,7 @@ const styles: Record<string, React.CSSProperties> = {
   body: {
     flex: 1,
     overflowY: 'auto',
-    padding: '14px 14px 6px',
+    padding: '14px 14px 20px',
     display: 'flex',
     flexDirection: 'column',
     gap: 2,

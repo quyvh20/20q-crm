@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import type { FormPayload } from './chatTypes';
 import {
   createContact, createDeal, getStages, getFieldDefs, getContacts,
@@ -23,10 +23,16 @@ function ContactForm({ payload, onSuccess, onCancel }: Props) {
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [done, setDone] = useState(false);
+  const formEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     getFieldDefs('contact').then(setFieldDefs).catch(() => {});
   }, []);
+
+  // Scroll form buttons into view when form first renders or fieldDefs load
+  useEffect(() => {
+    setTimeout(() => formEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 150);
+  }, [fieldDefs]);
 
   const validate = () => {
     const e: Record<string, string> = {};
@@ -90,6 +96,7 @@ function ContactForm({ payload, onSuccess, onCancel }: Props) {
       )}
       {errors._form && <p className="ai-f-form-err">{errors._form}</p>}
       <FormActions loading={loading} onCancel={onCancel} submitLabel="Create Contact" />
+      <div ref={formEndRef} />
       <style>{formCSS}</style>
     </form>
   );
@@ -111,13 +118,18 @@ function DealForm({ payload, onSuccess, onCancel }: Props) {
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [done, setDone] = useState(false);
-
+  const formEndRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     getStages().then(st => { setStages(st); if (st.length > 0) setStageId(st[0].id); }).catch(() => {});
     getFieldDefs('deal').then(setFieldDefs).catch(() => {});
     const sq = payload.prefill_contact_name || '';
     getContacts({ q: sq || undefined, limit: 20 }).then(r => setContacts(r.contacts)).catch(() => {});
   }, []);
+
+  // Scroll form buttons into view when form first renders or fieldDefs load
+  useEffect(() => {
+    setTimeout(() => formEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 150);
+  }, [fieldDefs, stages]);
 
   useEffect(() => {
     if (!contactSearch.trim()) return;
@@ -223,6 +235,7 @@ function DealForm({ payload, onSuccess, onCancel }: Props) {
       )}
       {errors._form && <p className="ai-f-form-err">{errors._form}</p>}
       <FormActions loading={loading} onCancel={onCancel} submitLabel="Create Deal" />
+      <div ref={formEndRef} />
       <style>{formCSS}</style>
     </form>
   );
