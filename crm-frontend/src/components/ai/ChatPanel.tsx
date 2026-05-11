@@ -170,7 +170,7 @@ export default function ChatPanel({ open, onClose }: Props) {
       (event: CommandEvent) => {
         switch (event.type) {
           case 'thinking':
-            updateLastAssistant(() => event.message || 'Thinking…');
+            // Ignored — streaming dots indicator is visible while loading
             break;
           case 'tool_result':
             // Tool results are intermediate; the final summary will overwrite

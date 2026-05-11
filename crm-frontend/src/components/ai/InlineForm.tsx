@@ -32,7 +32,6 @@ function ContactForm({ payload, onSuccess, onCancel }: Props) {
     const e: Record<string, string> = {};
     if (!name.trim()) e.name = 'Full name is required';
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) e.email = 'Enter a valid email address';
-    // Validate required custom fields
     for (const def of fieldDefs) {
       if (def.required && !customFields[def.key]) {
         e[`cf_${def.key}`] = `${def.label} is required`;
@@ -67,50 +66,57 @@ function ContactForm({ payload, onSuccess, onCancel }: Props) {
     }
   };
 
-  if (done) return <SuccessCard icon="👤" message={`Contact **${name}** created!`} />;
+  if (done) return <ModalShell onClose={onCancel}><SuccessCard icon="👤" message={`Contact **${name}** created!`} /></ModalShell>;
 
   return (
-    <form onSubmit={submit} style={styles.wrapper} noValidate>
-      <FormHeader icon="👤" title="New Contact" />
+    <ModalShell onClose={onCancel}>
+      <form onSubmit={submit} noValidate>
+        <FormHeader icon="👤" title="New Contact" subtitle="Fill in the details below" />
 
-      <Field label="Full Name *" error={errors.name}>
-        <input style={fieldInputStyle(!!errors.name)} value={name}
-          onChange={e => { setName(e.target.value); setErrors(p => ({ ...p, name: '' })); }}
-          placeholder="Jane Smith" autoFocus />
-      </Field>
-      <Field label="Email" error={errors.email}>
-        <input style={fieldInputStyle(!!errors.email)} type="email" value={email}
-          onChange={e => { setEmail(e.target.value); setErrors(p => ({ ...p, email: '' })); }}
-          placeholder="jane@example.com" />
-      </Field>
-      <Field label="Phone">
-        <input style={fieldInputStyle(false)} value={phone}
-          onChange={e => setPhone(e.target.value)} placeholder="+1 555 000 0000" />
-      </Field>
+        <div style={s.grid2}>
+          <Field label="Full Name" required error={errors.name}>
+            <input style={fieldInputStyle(!!errors.name)} value={name}
+              onChange={e => { setName(e.target.value); setErrors(p => ({ ...p, name: '' })); }}
+              placeholder="Jane Smith" autoFocus />
+          </Field>
+          <Field label="Email" error={errors.email}>
+            <input style={fieldInputStyle(!!errors.email)} type="email" value={email}
+              onChange={e => { setEmail(e.target.value); setErrors(p => ({ ...p, email: '' })); }}
+              placeholder="jane@example.com" />
+          </Field>
+        </div>
 
-      {/* Dynamic custom fields */}
-      {fieldDefs.length > 0 && (
-        <>
-          <div style={styles.customFieldDivider}>
-            <div style={styles.dividerLine} />
-            <span style={styles.dividerLabel}>Custom Fields</span>
-            <div style={styles.dividerLine} />
-          </div>
-          {fieldDefs.map(def => (
-            <CustomFieldInput
-              key={def.key}
-              def={def}
-              value={customFields[def.key]}
-              error={errors[`cf_${def.key}`]}
-              onChange={v => setCustomFields(prev => ({ ...prev, [def.key]: v }))}
-            />
-          ))}
-        </>
-      )}
+        <Field label="Phone">
+          <input style={fieldInputStyle(false)} value={phone}
+            onChange={e => setPhone(e.target.value)} placeholder="+1 555 000 0000" />
+        </Field>
 
-      {errors._form && <p style={styles.formError}>{errors._form}</p>}
-      <FormActions loading={loading} onCancel={onCancel} submitLabel="Create Contact" />
-    </form>
+        {/* Dynamic custom fields */}
+        {fieldDefs.length > 0 && (
+          <>
+            <div style={s.sectionDivider}>
+              <div style={s.dividerLine} />
+              <span style={s.dividerLabel}>Custom Fields</span>
+              <div style={s.dividerLine} />
+            </div>
+            <div style={s.grid2}>
+              {fieldDefs.map(def => (
+                <CustomFieldInput
+                  key={def.key}
+                  def={def}
+                  value={customFields[def.key]}
+                  error={errors[`cf_${def.key}`]}
+                  onChange={v => setCustomFields(prev => ({ ...prev, [def.key]: v }))}
+                />
+              ))}
+            </div>
+          </>
+        )}
+
+        {errors._form && <p style={s.formError}>{errors._form}</p>}
+        <FormActions loading={loading} onCancel={onCancel} submitLabel="Create Contact" />
+      </form>
+    </ModalShell>
   );
 }
 
@@ -131,20 +137,17 @@ function DealForm({ payload, onSuccess, onCancel }: Props) {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [done, setDone] = useState(false);
 
-  // Load pipeline stages + custom fields on mount
   useEffect(() => {
     getStages()
-      .then(s => { setStages(s); if (s.length > 0) setStageId(s[0].id); })
+      .then(st => { setStages(st); if (st.length > 0) setStageId(st[0].id); })
       .catch(() => {});
     getFieldDefs('deal').then(setFieldDefs).catch(() => {});
-    // Load contacts — include the pre-filled contact name as search term
     const searchQ = payload.prefill_contact_name || '';
     getContacts({ q: searchQ || undefined, limit: 20 })
       .then(r => setContacts(r.contacts))
       .catch(() => {});
   }, []);
 
-  // Search contacts when typing
   useEffect(() => {
     if (!contactSearch.trim()) return;
     const timer = setTimeout(() => {
@@ -162,7 +165,6 @@ function DealForm({ payload, onSuccess, onCancel }: Props) {
     if (value && Number(value) < 0) e.value = 'Value cannot be negative';
     const prob = Number(probability);
     if (probability && (isNaN(prob) || prob < 0 || prob > 100)) e.probability = 'Probability must be 0–100';
-    // Validate required custom fields
     for (const def of fieldDefs) {
       if (def.required && !customFields[def.key]) {
         e[`cf_${def.key}`] = `${def.label} is required`;
@@ -201,96 +203,102 @@ function DealForm({ payload, onSuccess, onCancel }: Props) {
     }
   };
 
-  if (done) return <SuccessCard icon="💼" message={`Deal **${title}** created!`} />;
+  if (done) return <ModalShell onClose={onCancel}><SuccessCard icon="💼" message={`Deal **${title}** created!`} /></ModalShell>;
 
   return (
-    <form onSubmit={submit} style={styles.wrapper} noValidate>
-      <FormHeader icon="💼" title="New Deal" />
+    <ModalShell onClose={onCancel}>
+      <form onSubmit={submit} noValidate>
+        <FormHeader icon="💼" title="New Deal" subtitle="Set up deal details" />
 
-      <Field label="Deal Title *" error={errors.title}>
-        <input style={fieldInputStyle(!!errors.title)} value={title}
-          onChange={e => { setTitle(e.target.value); setErrors(p => ({ ...p, title: '' })); }}
-          placeholder="e.g. Acme Corp - Enterprise Plan" autoFocus />
-      </Field>
-      <Field label="Value ($)" error={errors.value}>
-        <input style={fieldInputStyle(!!errors.value)} type="number" min="0" value={value}
-          onChange={e => { setValue(e.target.value); setErrors(p => ({ ...p, value: '' })); }}
-          placeholder="0" />
-      </Field>
-
-      {/* Contact selector with search */}
-      <Field label="Link to Contact">
-        <input
-          style={fieldInputStyle(false)}
-          value={contactSearch}
-          onChange={e => { setContactSearch(e.target.value); setContactId(''); }}
-          placeholder="Search contacts…"
-        />
-        {contacts.length > 0 && (
-          <select
-            style={{ ...styles.select, marginTop: 4 }}
-            value={contactId}
-            onChange={e => {
-              setContactId(e.target.value);
-              const c = contacts.find(ct => ct.id === e.target.value);
-              if (c) setContactSearch(`${c.first_name} ${c.last_name}`.trim());
-            }}
-          >
-            <option value="">— None —</option>
-            {contacts.map(c => (
-              <option key={c.id} value={c.id}>
-                {`${c.first_name} ${c.last_name}`.trim()}
-                {c.email ? ` (${c.email})` : ''}
-              </option>
-            ))}
-          </select>
-        )}
-      </Field>
-
-      {stages.length > 0 && (
-        <Field label="Pipeline Stage">
-          <select style={styles.select} value={stageId} onChange={e => setStageId(e.target.value)}>
-            {stages.map(s => (
-              <option key={s.id} value={s.id}>{s.name}</option>
-            ))}
-          </select>
+        <Field label="Deal Title" required error={errors.title}>
+          <input style={fieldInputStyle(!!errors.title)} value={title}
+            onChange={e => { setTitle(e.target.value); setErrors(p => ({ ...p, title: '' })); }}
+            placeholder="e.g. Acme Corp - Enterprise Plan" autoFocus />
         </Field>
-      )}
 
-      <Field label="Win Probability (%)" error={errors.probability}>
-        <input style={fieldInputStyle(!!errors.probability)} type="number" min="0" max="100"
-          value={probability}
-          onChange={e => { setProbability(e.target.value); setErrors(p => ({ ...p, probability: '' })); }}
-          placeholder="20" />
-      </Field>
+        <div style={s.grid2}>
+          <Field label="Value ($)" error={errors.value}>
+            <input style={fieldInputStyle(!!errors.value)} type="number" min="0" value={value}
+              onChange={e => { setValue(e.target.value); setErrors(p => ({ ...p, value: '' })); }}
+              placeholder="0" />
+          </Field>
+          <Field label="Win Probability (%)" error={errors.probability}>
+            <input style={fieldInputStyle(!!errors.probability)} type="number" min="0" max="100"
+              value={probability}
+              onChange={e => { setProbability(e.target.value); setErrors(p => ({ ...p, probability: '' })); }}
+              placeholder="20" />
+          </Field>
+        </div>
 
-      {/* Dynamic custom fields */}
-      {fieldDefs.length > 0 && (
-        <>
-          <div style={styles.customFieldDivider}>
-            <div style={styles.dividerLine} />
-            <span style={styles.dividerLabel}>Custom Fields</span>
-            <div style={styles.dividerLine} />
-          </div>
-          {fieldDefs.map(def => (
-            <CustomFieldInput
-              key={def.key}
-              def={def}
-              value={customFields[def.key]}
-              error={errors[`cf_${def.key}`]}
-              onChange={v => setCustomFields(prev => ({ ...prev, [def.key]: v }))}
-            />
-          ))}
-        </>
-      )}
+        {/* Contact selector */}
+        <Field label="Link to Contact">
+          <input
+            style={fieldInputStyle(false)}
+            value={contactSearch}
+            onChange={e => { setContactSearch(e.target.value); setContactId(''); }}
+            placeholder="Search contacts…"
+          />
+          {contacts.length > 0 && (
+            <select
+              style={{ ...s.select, marginTop: 6 }}
+              value={contactId}
+              onChange={e => {
+                setContactId(e.target.value);
+                const c = contacts.find(ct => ct.id === e.target.value);
+                if (c) setContactSearch(`${c.first_name} ${c.last_name}`.trim());
+              }}
+            >
+              <option value="">— None —</option>
+              {contacts.map(c => (
+                <option key={c.id} value={c.id}>
+                  {`${c.first_name} ${c.last_name}`.trim()}
+                  {c.email ? ` (${c.email})` : ''}
+                </option>
+              ))}
+            </select>
+          )}
+        </Field>
 
-      {errors._form && <p style={styles.formError}>{errors._form}</p>}
-      <FormActions loading={loading} onCancel={onCancel} submitLabel="Create Deal" />
-    </form>
+        {stages.length > 0 && (
+          <Field label="Pipeline Stage">
+            <select style={s.select} value={stageId} onChange={e => setStageId(e.target.value)}>
+              {stages.map(st => (
+                <option key={st.id} value={st.id}>{st.name}</option>
+              ))}
+            </select>
+          </Field>
+        )}
+
+        {/* Dynamic custom fields */}
+        {fieldDefs.length > 0 && (
+          <>
+            <div style={s.sectionDivider}>
+              <div style={s.dividerLine} />
+              <span style={s.dividerLabel}>Custom Fields</span>
+              <div style={s.dividerLine} />
+            </div>
+            <div style={s.grid2}>
+              {fieldDefs.map(def => (
+                <CustomFieldInput
+                  key={def.key}
+                  def={def}
+                  value={customFields[def.key]}
+                  error={errors[`cf_${def.key}`]}
+                  onChange={v => setCustomFields(prev => ({ ...prev, [def.key]: v }))}
+                />
+              ))}
+            </div>
+          </>
+        )}
+
+        {errors._form && <p style={s.formError}>{errors._form}</p>}
+        <FormActions loading={loading} onCancel={onCancel} submitLabel="Create Deal" />
+      </form>
+    </ModalShell>
   );
 }
 
-// ── Custom Field Input (inline-styled for chat panel) ──────────────────────────
+// ── Custom Field Input ────────────────────────────────────────────────────────
 
 function CustomFieldInput({
   def, value, error, onChange,
@@ -300,19 +308,15 @@ function CustomFieldInput({
   error?: string;
   onChange: (v: unknown) => void;
 }) {
-  const label = `${def.label}${def.required ? ' *' : ''}`;
+  const label = def.label;
+  const req = def.required;
 
   if (def.type === 'boolean') {
     return (
-      <Field label={label} error={error}>
-        <label style={styles.checkboxRow}>
-          <input
-            type="checkbox"
-            checked={!!value}
-            onChange={e => onChange(e.target.checked)}
-            style={styles.checkbox}
-          />
-          <span style={styles.checkboxLabel}>{value ? 'Yes' : 'No'}</span>
+      <Field label={label} required={req} error={error}>
+        <label style={s.checkboxRow}>
+          <input type="checkbox" checked={!!value} onChange={e => onChange(e.target.checked)} style={s.checkbox} />
+          <span style={s.checkboxLabel}>{value ? 'Yes' : 'No'}</span>
         </label>
       </Field>
     );
@@ -320,12 +324,8 @@ function CustomFieldInput({
 
   if (def.type === 'select') {
     return (
-      <Field label={label} error={error}>
-        <select
-          style={styles.select}
-          value={(value as string) ?? ''}
-          onChange={e => onChange(e.target.value || null)}
-        >
+      <Field label={label} required={req} error={error}>
+        <select style={s.select} value={(value as string) ?? ''} onChange={e => onChange(e.target.value || null)}>
           <option value="">Select {def.label.toLowerCase()}…</option>
           {def.options?.map(opt => (
             <option key={opt} value={opt}>{opt}</option>
@@ -335,24 +335,18 @@ function CustomFieldInput({
     );
   }
 
-  // text, number, date, url
-  const inputType: Record<string, string> = {
-    text: 'text', number: 'number', date: 'date', url: 'url',
-  };
+  const inputType: Record<string, string> = { text: 'text', number: 'number', date: 'date', url: 'url' };
 
   return (
-    <Field label={label} error={error}>
+    <Field label={label} required={req} error={error}>
       <input
         style={fieldInputStyle(!!error)}
         type={inputType[def.type] || 'text'}
         value={value !== undefined && value !== null ? String(value) : ''}
         onChange={e => {
           const v = e.target.value;
-          if (def.type === 'number') {
-            onChange(v === '' ? null : parseFloat(v));
-          } else {
-            onChange(v);
-          }
+          if (def.type === 'number') onChange(v === '' ? null : parseFloat(v));
+          else onChange(v);
         }}
         placeholder={def.type === 'url' ? 'https://example.com' : `Enter ${def.label.toLowerCase()}`}
       />
@@ -360,32 +354,56 @@ function CustomFieldInput({
   );
 }
 
+// ── Modal Shell ───────────────────────────────────────────────────────────────
+
+function ModalShell({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+  // Close on Escape
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onClose]);
+
+  return (
+    <>
+      <div className="ai-form-backdrop" onClick={onClose} />
+      <div className="ai-form-modal">
+        {children}
+      </div>
+      <style>{modalCSS}</style>
+    </>
+  );
+}
+
 // ── Shared sub-components ─────────────────────────────────────────────────────
 
-function FormHeader({ icon, title }: { icon: string; title: string }) {
+function FormHeader({ icon, title, subtitle }: { icon: string; title: string; subtitle: string }) {
   return (
-    <div style={styles.header}>
-      <span style={styles.headerIcon}>{icon}</span>
-      <span style={styles.headerTitle}>{title}</span>
+    <div style={s.header}>
+      <div style={s.headerIconWrap}><span style={s.headerIcon}>{icon}</span></div>
+      <div>
+        <h3 style={s.headerTitle}>{title}</h3>
+        <p style={s.headerSubtitle}>{subtitle}</p>
+      </div>
     </div>
   );
 }
 
-function Field({ label, error, children }: { label: string; error?: string; children: React.ReactNode }) {
+function Field({ label, required, error, children }: { label: string; required?: boolean; error?: string; children: React.ReactNode }) {
   return (
-    <div style={styles.field}>
-      <label style={styles.label}>{label}</label>
+    <div style={s.field}>
+      <label style={s.label}>{label}{required && <span style={s.required}> *</span>}</label>
       {children}
-      {error && <p style={styles.fieldError}>{error}</p>}
+      {error && <p style={s.fieldError}>{error}</p>}
     </div>
   );
 }
 
 function FormActions({ loading, onCancel, submitLabel }: { loading: boolean; onCancel: () => void; submitLabel: string }) {
   return (
-    <div style={styles.actions}>
-      <button type="button" style={styles.cancelBtn} onClick={onCancel} disabled={loading}>Cancel</button>
-      <button type="submit" style={{ ...styles.submitBtn, opacity: loading ? 0.7 : 1 }} disabled={loading}>
+    <div style={s.actions}>
+      <button type="button" className="ai-form-cancel-btn" onClick={onCancel} disabled={loading}>Cancel</button>
+      <button type="submit" className="ai-form-submit-btn" disabled={loading}>
         {loading ? 'Saving…' : submitLabel}
       </button>
     </div>
@@ -393,12 +411,11 @@ function FormActions({ loading, onCancel, submitLabel }: { loading: boolean; onC
 }
 
 function SuccessCard({ icon, message }: { icon: string; message: string }) {
-  // Parse **bold** inline
   const parts = message.split(/\*\*(.*?)\*\*/g);
   return (
-    <div style={styles.successCard}>
-      <span style={styles.successIcon}>{icon}</span>
-      <p style={styles.successText}>
+    <div style={s.successCard}>
+      <div style={s.successIconWrap}><span style={{ fontSize: 28 }}>{icon}</span></div>
+      <p style={s.successText}>
         {parts.map((p, i) => i % 2 === 1 ? <strong key={i}>{p}</strong> : p)}
       </p>
     </div>
@@ -407,9 +424,9 @@ function SuccessCard({ icon, message }: { icon: string; message: string }) {
 
 function fieldInputStyle(hasError: boolean): React.CSSProperties {
   return {
-    ...styles.input,
-    borderColor: hasError ? '#dc2626' : 'var(--border)',
-    boxShadow: hasError ? '0 0 0 2px rgba(220,38,38,0.12)' : undefined,
+    ...s.input,
+    borderColor: hasError ? '#ef4444' : 'var(--border, #e5e7eb)',
+    boxShadow: hasError ? '0 0 0 3px rgba(239,68,68,0.1)' : undefined,
   };
 }
 
@@ -421,125 +438,198 @@ export default function InlineForm(props: Props) {
   return null;
 }
 
-// ── Styles ────────────────────────────────────────────────────────────────────
+// ── Modal CSS ─────────────────────────────────────────────────────────────────
 
-const styles: Record<string, React.CSSProperties> = {
-  wrapper: {
-    border: '1px solid var(--border)',
-    borderRadius: 14,
-    padding: '14px 16px',
-    marginBottom: 6,
-    background: 'var(--card)',
-    animation: 'fadeSlide 0.2s ease',
-    boxShadow: '0 2px 12px rgba(0,0,0,0.06)',
-    maxHeight: 420,
-    overflowY: 'auto',
+const modalCSS = `
+  .ai-form-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.4);
+    backdrop-filter: blur(4px);
+    z-index: 1100;
+    animation: aiFadeIn 0.2s ease;
+  }
+  .ai-form-modal {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 480px;
+    max-width: calc(100vw - 32px);
+    max-height: calc(100vh - 64px);
+    overflow-y: auto;
+    background: var(--card, #fff);
+    border-radius: 20px;
+    box-shadow: 0 24px 64px rgba(0,0,0,0.18), 0 0 0 1px rgba(0,0,0,0.05);
+    z-index: 1101;
+    padding: 28px 32px 24px;
+    animation: aiSlideUp 0.25s cubic-bezier(0.16,1,0.3,1);
+  }
+  @keyframes aiFadeIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+  @keyframes aiSlideUp {
+    from { opacity: 0; transform: translate(-50%, -46%); }
+    to   { opacity: 1; transform: translate(-50%, -50%); }
+  }
+  .ai-form-cancel-btn {
+    padding: 10px 20px;
+    border-radius: 10px;
+    border: 1px solid var(--border, #e5e7eb);
+    background: transparent;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted-foreground, #6b7280);
+    transition: all 0.15s;
+  }
+  .ai-form-cancel-btn:hover {
+    background: var(--background, #f9fafb);
+    border-color: var(--foreground, #374151);
+    color: var(--foreground, #374151);
+  }
+  .ai-form-submit-btn {
+    padding: 10px 24px;
+    border-radius: 10px;
+    border: none;
+    background: linear-gradient(135deg, #f59e0b, #ef4444);
+    color: #fff;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 700;
+    transition: all 0.15s;
+    box-shadow: 0 2px 8px rgba(245,158,11,0.3);
+  }
+  .ai-form-submit-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(245,158,11,0.4);
+  }
+  .ai-form-submit-btn:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+    transform: none;
+  }
+  .ai-form-modal input:focus,
+  .ai-form-modal select:focus {
+    border-color: #f59e0b !important;
+    box-shadow: 0 0 0 3px rgba(245,158,11,0.12) !important;
+    outline: none;
+  }
+`;
+
+// ── Inline styles ─────────────────────────────────────────────────────────────
+
+const s: Record<string, React.CSSProperties> = {
+  header: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 14,
+    marginBottom: 24,
+    paddingBottom: 20,
+    borderBottom: '1px solid var(--border, #e5e7eb)',
   },
-  header: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 },
-  headerIcon: { fontSize: 16 },
-  headerTitle: { fontWeight: 700, fontSize: 14, color: 'var(--foreground)' },
-  field: { marginBottom: 10 },
+  headerIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    background: 'linear-gradient(135deg, rgba(245,158,11,0.12), rgba(239,68,68,0.08))',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  headerIcon: { fontSize: 22 },
+  headerTitle: { margin: 0, fontSize: 18, fontWeight: 700, color: 'var(--foreground, #111)' },
+  headerSubtitle: { margin: '2px 0 0', fontSize: 13, color: 'var(--muted-foreground, #6b7280)' },
+  grid2: {
+    display: 'grid',
+    gridTemplateColumns: '1fr 1fr',
+    gap: '0 16px',
+  },
+  field: { marginBottom: 16 },
   label: {
     display: 'block',
-    fontSize: 10,
-    fontWeight: 700,
-    color: 'var(--muted-foreground)',
-    marginBottom: 3,
-    textTransform: 'uppercase',
-    letterSpacing: '0.06em',
+    fontSize: 12,
+    fontWeight: 600,
+    color: 'var(--foreground, #374151)',
+    marginBottom: 6,
   },
+  required: { color: '#ef4444' },
   input: {
     width: '100%',
-    border: '1px solid var(--border)',
-    borderRadius: 8,
-    padding: '7px 10px',
-    fontSize: 13,
-    background: 'var(--background)',
-    color: 'var(--foreground)',
-    boxSizing: 'border-box',
+    border: '1.5px solid var(--border, #e5e7eb)',
+    borderRadius: 10,
+    padding: '10px 14px',
+    fontSize: 14,
+    background: 'var(--background, #f9fafb)',
+    color: 'var(--foreground, #111)',
+    boxSizing: 'border-box' as const,
     outline: 'none',
     transition: 'border-color 0.15s, box-shadow 0.15s',
     fontFamily: 'inherit',
   },
   select: {
     width: '100%',
-    border: '1px solid var(--border)',
-    borderRadius: 8,
-    padding: '7px 10px',
-    fontSize: 13,
-    background: 'var(--background)',
-    color: 'var(--foreground)',
-    boxSizing: 'border-box',
+    border: '1.5px solid var(--border, #e5e7eb)',
+    borderRadius: 10,
+    padding: '10px 14px',
+    fontSize: 14,
+    background: 'var(--background, #f9fafb)',
+    color: 'var(--foreground, #111)',
+    boxSizing: 'border-box' as const,
     outline: 'none',
     cursor: 'pointer',
     fontFamily: 'inherit',
   },
-  fieldError: { color: '#dc2626', fontSize: 11, margin: '3px 0 0', fontWeight: 500 },
+  fieldError: { color: '#ef4444', fontSize: 11, margin: '4px 0 0', fontWeight: 500 },
   formError: {
-    color: '#dc2626',
-    fontSize: 12,
-    margin: '6px 0 4px',
-    padding: '6px 10px',
-    background: 'rgba(220,38,38,0.06)',
-    borderRadius: 6,
-    border: '1px solid rgba(220,38,38,0.2)',
+    color: '#ef4444',
+    fontSize: 13,
+    margin: '8px 0',
+    padding: '10px 14px',
+    background: 'rgba(239,68,68,0.06)',
+    borderRadius: 10,
+    border: '1px solid rgba(239,68,68,0.15)',
   },
-  actions: { display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 },
-  cancelBtn: {
-    padding: '6px 14px', borderRadius: 8,
-    border: '1px solid var(--border)', background: 'transparent',
-    cursor: 'pointer', fontSize: 12, color: 'var(--muted-foreground)',
+  sectionDivider: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 12,
+    margin: '20px 0 16px',
   },
-  submitBtn: {
-    padding: '6px 16px', borderRadius: 8, border: 'none',
-    background: 'linear-gradient(135deg, #f59e0b, #ef4444)',
-    color: '#fff', cursor: 'pointer', fontSize: 12, fontWeight: 700,
-    transition: 'opacity 0.15s',
+  dividerLine: { flex: 1, height: 1, background: 'var(--border, #e5e7eb)' },
+  dividerLabel: {
+    fontSize: 10,
+    fontWeight: 700,
+    color: 'var(--muted-foreground, #9ca3af)',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.1em',
+  },
+  actions: {
+    display: 'flex',
+    gap: 12,
+    justifyContent: 'flex-end',
+    marginTop: 24,
+    paddingTop: 20,
+    borderTop: '1px solid var(--border, #e5e7eb)',
   },
   successCard: {
-    border: '1px solid #22c55e',
-    borderRadius: 12,
-    padding: '12px 14px',
-    background: 'linear-gradient(135deg, rgba(34,197,94,0.08), rgba(16,185,129,0.04))',
+    textAlign: 'center' as const,
+    padding: '32px 24px',
+  },
+  successIconWrap: {
+    width: 64,
+    height: 64,
+    borderRadius: 20,
+    background: 'linear-gradient(135deg, rgba(34,197,94,0.12), rgba(16,185,129,0.08))',
     display: 'flex',
     alignItems: 'center',
-    gap: 10,
-    animation: 'fadeSlide 0.25s ease',
+    justifyContent: 'center',
+    margin: '0 auto 16px',
   },
-  successIcon: { fontSize: 20 },
-  successText: { margin: 0, fontSize: 13, color: 'var(--foreground)', lineHeight: 1.5 },
-  customFieldDivider: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    margin: '12px 0 8px',
-  },
-  dividerLine: {
-    flex: 1,
-    height: 1,
-    background: 'var(--border)',
-  },
-  dividerLabel: {
-    fontSize: 9,
-    fontWeight: 700,
-    color: 'var(--muted-foreground)',
-    textTransform: 'uppercase',
-    letterSpacing: '0.08em',
-  },
-  checkboxRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    cursor: 'pointer',
-    padding: '4px 0',
-  },
-  checkbox: {
-    width: 16,
-    height: 16,
-    cursor: 'pointer',
-  },
-  checkboxLabel: {
-    fontSize: 13,
-    color: 'var(--muted-foreground)',
-  },
+  successText: { margin: 0, fontSize: 15, color: 'var(--foreground)', lineHeight: 1.6 },
+  checkboxRow: { display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '6px 0' },
+  checkbox: { width: 18, height: 18, cursor: 'pointer', accentColor: '#f59e0b' },
+  checkboxLabel: { fontSize: 14, color: 'var(--foreground, #374151)' },
 };

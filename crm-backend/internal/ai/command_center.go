@@ -112,7 +112,7 @@ func (cc *CommandCenter) Execute(
 
 		// ── Handle confirmed write actions ───────────────────────────────────
 		if req.Confirmed && req.ConfirmedTool != "" {
-			events <- CommandEvent{Type: "thinking", Message: "Executing confirmed action..."}
+			// Streaming dots will show via the frontend while processing
 			var params map[string]interface{}
 			json.Unmarshal(req.ConfirmedArgs, &params)
 			call := ToolCall{Name: req.ConfirmedTool, Params: req.ConfirmedArgs}
@@ -176,7 +176,6 @@ func (cc *CommandCenter) Execute(
 			sysPrompt += sessionContext
 		}
 
-		events <- CommandEvent{Type: "thinking", Message: "Analyzing your request..."}
 
 		// ── Build messages array (system + history + new user message) ───────
 		messages := []Message{{Role: "system", Content: sysPrompt}}
