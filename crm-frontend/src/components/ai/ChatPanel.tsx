@@ -140,9 +140,7 @@ export default function ChatPanel({ open, onClose }: Props) {
     };
     if (!isConfirmed) addMessage(userMsg);
 
-    // Placeholder assistant message
-    const assistantId = crypto.randomUUID();
-    addMessage({ id: assistantId, role: 'assistant', content: '', timestamp: new Date() });
+    // No placeholder bubble — streaming dots indicator is shown instead
 
     setStreaming(true);
     setPendingConfirm(null);
@@ -157,7 +155,7 @@ export default function ChatPanel({ open, onClose }: Props) {
     // Safety timeout — if streaming doesn't finish in 60s, force-reset the UI
     const safetyTimer = setTimeout(() => {
       setStreaming(false);
-      updateLastAssistant(prev => prev || '⚠️ Request timed out. Please try again.');
+      addMessage({ id: crypto.randomUUID(), role: 'assistant', content: '⚠️ Request timed out. Please try again.', timestamp: new Date() });
     }, 60_000);
 
     sendCommand(
@@ -176,32 +174,59 @@ export default function ChatPanel({ open, onClose }: Props) {
             // Tool results are intermediate; the final summary will overwrite
             break;
           case 'response':
-            updateLastAssistant(() => event.message || '');
+            if (event.message) {
+              // If no assistant bubble exists yet, create one
+              setMessages(prev => {
+                const lastIsAssistant = prev.length > 0 && prev[prev.length - 1].role === 'assistant';
+                if (lastIsAssistant) {
+                  const copy = [...prev];
+                  copy[copy.length - 1] = { ...copy[copy.length - 1], content: event.message || '' };
+                  return copy;
+                }
+                return [...prev, { id: crypto.randomUUID(), role: 'assistant', content: event.message || '', timestamp: new Date() }];
+              });
+            }
             break;
           case 'navigate': {
             const navData = event.data as NavigatePayload;
             if (navData?.path) {
-              updateLastAssistant(prev => prev + (prev ? '\n\n' : '') + `🔗 Navigating to **${navData.label || navData.path}**…`);
+              const navMsg = `🔗 Navigating to **${navData.label || navData.path}**…`;
+              addMessage({ id: crypto.randomUUID(), role: 'assistant', content: navMsg, timestamp: new Date() });
               setTimeout(() => navigate(navData.path), 800);
             }
             break;
           }
           case 'form':
+            // Remove empty assistant bubble if the form IS the response
+            setMessages(prev => {
+              const last = prev[prev.length - 1];
+              if (last && last.role === 'assistant' && !last.content) return prev.slice(0, -1);
+              return prev;
+            });
             setPendingForm(event.data as FormPayload);
             break;
           case 'confirm':
             setPendingConfirm(event.data as ConfirmPayload);
             break;
           case 'error':
-            updateLastAssistant(() => `⚠️ ${event.message || 'Something went wrong.'}`);
+            addMessage({ id: crypto.randomUUID(), role: 'assistant', content: `⚠️ ${event.message || 'Something went wrong.'}`, timestamp: new Date() });
             setStreaming(false);
             clearTimeout(safetyTimer);
             break;
         }
       },
-      () => { setStreaming(false); clearTimeout(safetyTimer); },
+      () => {
+        setStreaming(false);
+        clearTimeout(safetyTimer);
+        // Clean up any trailing empty assistant messages
+        setMessages(prev => {
+          const last = prev[prev.length - 1];
+          if (last && last.role === 'assistant' && !last.content) return prev.slice(0, -1);
+          return prev;
+        });
+      },
       (err: string) => {
-        updateLastAssistant(() => `⚠️ ${err}`);
+        addMessage({ id: crypto.randomUUID(), role: 'assistant', content: `⚠️ ${err}`, timestamp: new Date() });
         setStreaming(false);
         clearTimeout(safetyTimer);
       },

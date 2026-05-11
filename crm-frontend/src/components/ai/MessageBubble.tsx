@@ -24,35 +24,32 @@ export default function MessageBubble({ message }: Props) {
     );
   }
 
+  // Don't render empty assistant messages (streaming dots handle the loading state)
+  if (!message.content) return null;
+
   return (
     <div style={styles.assistantRow}>
       <div style={styles.avatarDot}>✦</div>
       <div style={styles.assistantBubble} className="ai-markdown-content">
-        {message.content ? (
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            components={{
-              code({ node, inline, className, children, ...props }: any) {
-                const match = /language-(\w+)/.exec(className || '');
-                const language = match ? match[1] : '';
-                
-                if (!inline && match) {
-                  return <CodeBlock language={language} value={String(children).replace(/\n$/, '')} />;
-                }
-                
-                return (
-                  <code className={className} style={styles.inlineCode} {...props}>
-                    {children}
-                  </code>
-                );
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={{
+            code({ node, inline, className, children, ...props }: any) {
+              const match = /language-(\w+)/.exec(className || '');
+              const language = match ? match[1] : '';
+              if (!inline && match) {
+                return <CodeBlock language={language} value={String(children).replace(/\n$/, '')} />;
               }
-            }}
-          >
-            {message.content}
-          </ReactMarkdown>
-        ) : (
-          <span style={styles.placeholder}>Thinking…</span>
-        )}
+              return (
+                <code className={className} style={styles.inlineCode} {...props}>
+                  {children}
+                </code>
+              );
+            }
+          }}
+        >
+          {message.content}
+        </ReactMarkdown>
       </div>
       <style>{bubbleCSS}</style>
     </div>
