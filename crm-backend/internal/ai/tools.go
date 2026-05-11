@@ -1,6 +1,9 @@
 package ai
 
-import "encoding/json"
+import (
+	"crm-backend/internal/domain"
+	"encoding/json"
+)
 
 // Tool represents an AI function-calling tool definition.
 type Tool struct {
@@ -140,28 +143,26 @@ var allCRMTools = []Tool{
 	},
 	{
 		Name: "create_contact",
-		Desc: "Show an inline form so the user can create a new contact. Use this whenever the user asks to add or create a contact. Pre-fill as many fields as you can from the conversation context.",
+		Desc: "Show an inline form so the user can create a new contact. Use this whenever the user asks to add or create a contact. You MUST extract and pre-fill ALL fields you can from the user's message.",
 		Params: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"prefill_name":  map[string]any{"type": "string", "description": "Extract ONLY the person's name (e.g. 'Jane Doe')"},
-				"prefill_email": map[string]any{"type": "string", "description": "Extract ONLY the valid email address"},
-				"prefill_phone": map[string]any{"type": "string", "description": "Extract ONLY the phone number"},
-				"custom_fields": map[string]any{"type": "object", "description": "Map of custom field keys to their extracted values, using the keys defined in the CRM SCHEMA. Example: {\"cf_industry\": \"Tech\"}"},
+				"prefill_name":  map[string]any{"type": "string", "description": "Extract the person's full name"},
+				"prefill_email": map[string]any{"type": "string", "description": "Extract the email address"},
+				"prefill_phone": map[string]any{"type": "string", "description": "Extract the phone number"},
 			},
 		},
 	},
 	{
 		Name: "create_deal",
-		Desc: "Show an inline form so the user can create a new deal. Use this whenever the user asks to add, create, or log a new deal. Do NOT redirect to any page. If the user mentions a contact (e.g. 'for this contact'), pass their contact_id and contact_name from the session context.",
+		Desc: "Show an inline form so the user can create a new deal. You MUST extract and pre-fill ALL fields. If the user mentions a contact, pass their contact_id and contact_name from the session context.",
 		Params: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"prefill_title":   map[string]any{"type": "string", "description": "Generate a brief professional title for the deal"},
-				"prefill_value":   map[string]any{"type": "number", "description": "Extract ONLY the numeric value (e.g., 5000 from '5000 dollars')"},
+				"prefill_title":   map[string]any{"type": "string", "description": "A brief professional title for the deal"},
+				"prefill_value":   map[string]any{"type": "number", "description": "The deal's monetary value as a number"},
 				"contact_id":      map[string]any{"type": "string", "description": "UUID of the contact to link this deal to"},
 				"contact_name":    map[string]any{"type": "string", "description": "display name of the linked contact"},
-				"custom_fields":   map[string]any{"type": "object", "description": "Map of custom field keys to their extracted values, using the keys defined in the CRM SCHEMA. Example: {\"cf_source\": \"Web\"}"},
 			},
 		},
 	},
@@ -177,19 +178,92 @@ var readOnlyToolNames = map[string]bool{
 
 // AllowedTools returns the subset of tools a given role may call.
 func AllowedTools(role string) []Tool {
-	switch role {
-	case "viewer":
-		var tools []Tool
-		for _, t := range allCRMTools {
+	return AllowedToolsWithSchema(role, nil, nil)
+}
+
+// AllowedToolsWithSchema returns tools with org-specific custom fields injected
+// as first-class parameters into create_contact and create_deal.
+// Custom fields appear identically to base fields (e.g., prefill_name), so the
+// AI model treats them with equal priority.
+func AllowedToolsWithSchema(role string, contactFields []domain.CustomFieldDef, dealFields []domain.CustomFieldDef) []Tool {
+	// Deep-copy tools so we don't mutate the global slice
+	tools := make([]Tool, len(allCRMTools))
+	for i, t := range allCRMTools {
+		tools[i] = Tool{Name: t.Name, Desc: t.Desc, Params: deepCopyMap(t.Params)}
+	}
+
+	// Inject custom fields into create_contact and create_deal
+	for i := range tools {
+		switch tools[i].Name {
+		case "create_contact":
+			injectCustomFieldParams(&tools[i], contactFields)
+		case "create_deal":
+			injectCustomFieldParams(&tools[i], dealFields)
+		}
+	}
+
+	// Role filter
+	if role == "viewer" {
+		var filtered []Tool
+		for _, t := range tools {
 			if readOnlyToolNames[t.Name] {
-				tools = append(tools, t)
+				filtered = append(filtered, t)
 			}
 		}
-		return tools
-	default:
-		// owner, admin, manager, sales_rep all get full set
-		return allCRMTools
+		return filtered
 	}
+	return tools
+}
+
+// injectCustomFieldParams adds custom field definitions as explicit tool parameters.
+// e.g., a custom field {Key: "industry", Label: "Industry", Type: "text"} becomes:
+//   "cf_industry": {"type": "string", "description": "Industry (text). Extract this value if mentioned."}
+func injectCustomFieldParams(tool *Tool, fields []domain.CustomFieldDef) {
+	if len(fields) == 0 {
+		return
+	}
+	props, ok := tool.Params["properties"].(map[string]any)
+	if !ok {
+		return
+	}
+	for _, f := range fields {
+		jsonType := "string"
+		switch f.Type {
+		case "number":
+			jsonType = "number"
+		case "boolean":
+			jsonType = "boolean"
+		}
+		reqHint := ""
+		if f.Required {
+			reqHint = " REQUIRED."
+		}
+		paramDef := map[string]any{
+			"type":        jsonType,
+			"description": f.Label + " (" + f.Type + ")." + reqHint + " Extract this value if the user mentions it.",
+		}
+		if f.Type == "select" && len(f.Options) > 0 {
+			paramDef["enum"] = f.Options
+		}
+		props["cf_"+f.Key] = paramDef
+	}
+}
+
+// deepCopyMap creates a shallow-ish copy of a map[string]any, deep-copying
+// nested maps so mutations don't affect the original.
+func deepCopyMap(m map[string]any) map[string]any {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		if sub, ok := v.(map[string]any); ok {
+			out[k] = deepCopyMap(sub)
+		} else {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // CRMTools is kept for backward-compat with any existing callers.

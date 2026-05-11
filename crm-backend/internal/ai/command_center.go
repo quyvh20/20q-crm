@@ -185,8 +185,10 @@ func (cc *CommandCenter) Execute(
 		}
 		messages = append(messages, Message{Role: "user", Content: req.UserMessage})
 
-		// ── Get allowed tools for this role ──────────────────────────────────
-		tools := AllowedTools(req.UserRole)
+		// ── Get allowed tools for this role (with dynamic custom fields) ────
+		contactFields, _ := cc.knowledgeBuilder.settingsUC.GetFieldDefs(ctx, orgID, "contact")
+		dealFields, _ := cc.knowledgeBuilder.settingsUC.GetFieldDefs(ctx, orgID, "deal")
+		tools := AllowedToolsWithSchema(req.UserRole, contactFields, dealFields)
 
 		// ── First AI call with tools ─────────────────────────────────────────
 		response, err := cc.gateway.CompleteWithTools(ctx, orgID, userID, TaskCommandCenter, messages, tools)
@@ -257,12 +259,13 @@ func (cc *CommandCenter) Execute(
 			if tc.Name == "create_contact" {
 				var p map[string]interface{}
 				json.Unmarshal(tc.Params, &p)
+				cfMap := extractCustomFieldParams(p)
 				formData, _ := json.Marshal(map[string]any{
 					"form_type":             "contact",
 					"prefill_name":          p["prefill_name"],
 					"prefill_email":         p["prefill_email"],
 					"prefill_phone":         p["prefill_phone"],
-					"prefill_custom_fields": p["custom_fields"],
+					"prefill_custom_fields": cfMap,
 				})
 				events <- CommandEvent{Type: "form", Data: formData}
 				continue // don't add to remainingWrites
@@ -270,13 +273,14 @@ func (cc *CommandCenter) Execute(
 			if tc.Name == "create_deal" {
 				var p map[string]interface{}
 				json.Unmarshal(tc.Params, &p)
+				cfMap := extractCustomFieldParams(p)
 				formData, _ := json.Marshal(map[string]any{
 					"form_type":             "deal",
 					"prefill_title":         p["prefill_title"],
 					"prefill_value":         p["prefill_value"],
 					"prefill_contact_id":    p["contact_id"],
 					"prefill_contact_name":  p["contact_name"],
-					"prefill_custom_fields": p["custom_fields"],
+					"prefill_custom_fields": cfMap,
 				})
 				events <- CommandEvent{Type: "form", Data: formData}
 				continue // don't add to remainingWrites
@@ -913,3 +917,18 @@ func scopeLabel(role, entity string) string {
 	return "org-wide " + entity
 }
 
+// extractCustomFieldParams collects any "cf_*" prefixed parameters from an AI
+// tool call response and returns them as a map[string]any keyed by the original
+// field key (e.g., "cf_industry" → "industry": value).
+func extractCustomFieldParams(params map[string]interface{}) map[string]any {
+	cfMap := make(map[string]any)
+	for k, v := range params {
+		if len(k) > 3 && k[:3] == "cf_" && v != nil {
+			cfMap[k[3:]] = v // strip "cf_" prefix → original field key
+		}
+	}
+	if len(cfMap) == 0 {
+		return nil
+	}
+	return cfMap
+}
