@@ -447,7 +447,7 @@ TOOL USAGE GUIDE:
 
 search_contacts — Search contacts by name, email, or company. Use sort_by="name" for alphabetical, sort_by="created_at" for recent. Limit 5-10 for summaries, up to 15 for full lists. Never fabricate data.
 
-search_deals — Pipeline queries. Filter by stage_name, status (active/won/lost), min_value, days_inactive. Use sort_by="value" desc for "biggest deals", sort_by="probability" for "most likely to close". Format as table with Title, Value, Stage, Probability columns.
+search_deals — Pipeline queries. Use query to find a specific deal by name/title (e.g. query="ABC Noon"). Filter by stage_name, status (active/won/lost), min_value, days_inactive. Use sort_by="value" desc for "biggest deals", sort_by="probability" for "most likely to close". When user asks about a SPECIFIC deal by name, ALWAYS pass the deal name as query. Format as table with Title, Value, Stage, Probability columns.
 
 get_analytics — Aggregated metrics: "revenue", "pipeline", "performance" (managers+), "forecast" (managers+). Sales reps see own data only.
 
@@ -638,6 +638,7 @@ func (cc *CommandCenter) toolSearchContacts(ctx context.Context, orgID, userID u
 
 // toolSearchDeals: sales_rep sees only their own deals; others see all org deals.
 func (cc *CommandCenter) toolSearchDeals(ctx context.Context, orgID, userID uuid.UUID, role string, params map[string]interface{}) json.RawMessage {
+	query, _ := params["query"].(string)
 	limit := 10
 	if l, ok := params["limit"].(float64); ok && l > 0 {
 		limit = int(l)
@@ -651,6 +652,7 @@ func (cc *CommandCenter) toolSearchDeals(ctx context.Context, orgID, userID uuid
 	sortOrder, _ := params["sort_order"].(string)
 
 	filter := domain.DealFilter{
+		Q:         query,
 		Limit:     limit,
 		SortBy:    sortBy,
 		SortOrder: sortOrder,

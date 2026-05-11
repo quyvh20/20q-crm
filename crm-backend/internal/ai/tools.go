@@ -44,10 +44,11 @@ var allCRMTools = []Tool{
 	},
 	{
 		Name: "search_deals",
-		Desc: "Find and list deals. Supports sorting by value/probability for 'top N' queries. Returns empty_message when no results.",
+		Desc: "Find and list deals by name, stage, value, or status. Use query to search for specific deals by title. Returns empty_message when no results.",
 		Params: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
+				"query":          map[string]any{"type": "string", "description": "search by deal title or keyword"},
 				"stage_name":    map[string]any{"type": "string", "description": "filter by pipeline stage name"},
 				"days_inactive": map[string]any{"type": "integer", "description": "return deals with no activity in N days"},
 				"min_value":     map[string]any{"type": "number", "description": "only deals worth at least this amount"},
