@@ -317,7 +317,7 @@ func (g *AIGateway) callCFWorkersWithTools(ctx context.Context, task AITask, mod
 	reqBody := map[string]interface{}{
 		"model":    model,
 		"messages": chatMsgs,
-		"tools":    BuildToolsForCFWorkers(),
+		"tools":    buildCFTools(tools),
 	}
 
 	resp, err := g.doRequest(ctx, url, "POST", map[string]string{
