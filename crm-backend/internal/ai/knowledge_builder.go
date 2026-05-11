@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -13,16 +14,18 @@ import (
 
 // KnowledgeBuilder builds a company-aware system prompt from the knowledge base.
 type KnowledgeBuilder struct {
-	repo       domain.KnowledgeBaseRepository
-	settingsUC domain.OrgSettingsUseCase
-	redis      *redis.Client
+	repo        domain.KnowledgeBaseRepository
+	settingsUC  domain.OrgSettingsUseCase
+	customObjUC domain.CustomObjectUseCase
+	redis       *redis.Client
 }
 
-func NewKnowledgeBuilder(repo domain.KnowledgeBaseRepository, settingsUC domain.OrgSettingsUseCase, redisClient *redis.Client) *KnowledgeBuilder {
+func NewKnowledgeBuilder(repo domain.KnowledgeBaseRepository, settingsUC domain.OrgSettingsUseCase, customObjUC domain.CustomObjectUseCase, redisClient *redis.Client) *KnowledgeBuilder {
 	return &KnowledgeBuilder{
-		repo:       repo,
-		settingsUC: settingsUC,
-		redis:      redisClient,
+		repo:        repo,
+		settingsUC:  settingsUC,
+		customObjUC: customObjUC,
+		redis:       redisClient,
 	}
 }
 
@@ -60,20 +63,68 @@ func (b *KnowledgeBuilder) BuildSystemPrompt(ctx context.Context, orgID uuid.UUI
 		return "(not configured yet)"
 	}
 
-	// ── Build Schema Section ──
+	// ── Build Schema Section (base objects + custom objects) ──
 	var schemaBuilder string
+
+	// Base objects: contact, deal — with their custom fields
 	for _, entityType := range []string{"contact", "deal"} {
+		schemaBuilder += fmt.Sprintf("\n## %s (base object)\n", entityType)
+		schemaBuilder += fmt.Sprintf("Base fields: standard CRM %s fields (name, email, phone for contacts; title, value, stage for deals)\n", entityType)
 		if fields, err := b.settingsUC.GetFieldDefs(ctx, orgID, entityType); err == nil && len(fields) > 0 {
-			schemaBuilder += fmt.Sprintf("\n%s fields:\n", entityType)
+			schemaBuilder += "Custom fields:\n"
 			for _, f := range fields {
 				req := ""
 				if f.Required {
 					req = " (REQUIRED)"
 				}
-				schemaBuilder += fmt.Sprintf("- %s [%s]%s: %s\n", f.Key, f.Type, req, f.Label)
+				opts := ""
+				if f.Type == "select" && len(f.Options) > 0 {
+					optsJSON, _ := json.Marshal(f.Options)
+					opts = fmt.Sprintf(" options=%s", string(optsJSON))
+				}
+				schemaBuilder += fmt.Sprintf("- %s [%s]%s%s: %s\n", f.Key, f.Type, req, opts, f.Label)
+			}
+		} else {
+			schemaBuilder += "Custom fields: (none)\n"
+		}
+	}
+
+	// Custom objects — dynamic, org-specific
+	if b.customObjUC != nil {
+		if defs, err := b.customObjUC.ListDefs(ctx, orgID); err == nil && len(defs) > 0 {
+			for _, def := range defs {
+				schemaBuilder += fmt.Sprintf("\n## %s (custom object, slug: \"%s\", icon: %s)\n", def.Label, def.Slug, def.Icon)
+				schemaBuilder += fmt.Sprintf("Use search_objects with object_slug=\"%s\" to query. Use create_object_record with object_slug=\"%s\" to create.\n", def.Slug, def.Slug)
+
+				// Parse fields from JSONB
+				var fields []struct {
+					Key      string   `json:"key"`
+					Label    string   `json:"label"`
+					Type     string   `json:"type"`
+					Required bool     `json:"required"`
+					Options  []string `json:"options,omitempty"`
+				}
+				if err := json.Unmarshal(def.Fields, &fields); err == nil && len(fields) > 0 {
+					schemaBuilder += "Fields:\n"
+					for _, f := range fields {
+						req := ""
+						if f.Required {
+							req = " (REQUIRED)"
+						}
+						opts := ""
+						if f.Type == "select" && len(f.Options) > 0 {
+							optsJSON, _ := json.Marshal(f.Options)
+							opts = fmt.Sprintf(" options=%s", string(optsJSON))
+						}
+						schemaBuilder += fmt.Sprintf("- %s [%s]%s%s: %s\n", f.Key, f.Type, req, opts, f.Label)
+					}
+				} else {
+					schemaBuilder += "Fields: (none defined)\n"
+				}
 			}
 		}
 	}
+
 	if schemaBuilder == "" {
 		schemaBuilder = "(no custom schema defined)"
 	}
@@ -95,7 +146,7 @@ OUR PROCESS:
 COMPETITIVE ADVANTAGES:
 %s
 
-CRM SCHEMA (Available Custom Fields):
+CRM SCHEMA (All Objects & Fields — use this to understand what data exists in the org):
 %s
 
 CRITICAL INSTRUCTIONS:
@@ -104,6 +155,7 @@ CRITICAL INSTRUCTIONS:
 - Use the objection handling scripts when customer concerns arise
 - When drafting emails, include the company name and a relevant USP naturally
 - When calling form tools (e.g. create_contact, create_deal), you MUST extract relevant values from the user's message and put them in the 'custom_fields' property mapping to the keys defined in the CRM SCHEMA above.
+- For custom objects, use search_objects and create_object_record tools with the correct object_slug from the schema.
 - Keep all responses concise and action-oriented`,
 		getSection("company"),
 		getSection("products"),

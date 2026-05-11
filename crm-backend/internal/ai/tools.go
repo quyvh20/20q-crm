@@ -167,12 +167,39 @@ var allCRMTools = []Tool{
 			},
 		},
 	},
+	{
+		Name: "search_objects",
+		Desc: "Search any object type (base or custom) by its slug. Use the CRM SCHEMA to find the correct object_slug. Returns matching records with their field data.",
+		Params: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"object_slug": map[string]any{"type": "string", "description": "the slug of the object type from the CRM schema (e.g. 'ticket', 'product', 'contact', 'deal')"},
+				"query":       map[string]any{"type": "string", "description": "search term to filter records by display name or field values"},
+				"limit":       map[string]any{"type": "integer", "description": "max results (default 10, max 20)"},
+			},
+			"required": []string{"object_slug"},
+		},
+	},
+	{
+		Name: "create_object_record",
+		Desc: "Create a new record for any custom object type. Use the CRM SCHEMA to know which fields are available and required. Pass field values as key-value pairs in the 'fields' parameter.",
+		Params: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"object_slug":  map[string]any{"type": "string", "description": "the slug of the custom object type from the CRM schema"},
+				"display_name": map[string]any{"type": "string", "description": "a human-readable name for this record"},
+				"fields":       map[string]any{"type": "object", "description": "key-value pairs matching the field keys from the CRM schema"},
+			},
+			"required": []string{"object_slug", "display_name"},
+		},
+	},
 }
 
 // readOnlyTools — only safe read tools for viewers.
 var readOnlyToolNames = map[string]bool{
 	"search_contacts": true,
 	"search_deals":    true,
+	"search_objects":  true,
 	"get_analytics":   true,
 	"navigate_to":     true,
 }

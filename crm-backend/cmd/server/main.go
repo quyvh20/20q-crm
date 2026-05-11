@@ -247,7 +247,7 @@ func main() {
 		userHandler := delivery.NewUserHandler(userRepo)
 
 		kbRepo := repository.NewKnowledgeBaseRepository(db)
-		kbBuilder := ai.NewKnowledgeBuilder(kbRepo, orgSettingsUC, redisClient)
+		kbBuilder := ai.NewKnowledgeBuilder(kbRepo, orgSettingsUC, customObjUC, redisClient)
 		kbUseCase := usecase.NewKnowledgeBaseUseCase(kbRepo, kbBuilder)
 		kbHandler := delivery.NewKnowledgeHandler(kbUseCase)
 
@@ -256,7 +256,7 @@ func main() {
 		chatSessionRepo := repository.NewChatSessionRepository(db)
 		chatSessionHandler := delivery.NewChatSessionHandler(chatSessionRepo)
 
-		commandCenter := ai.NewCommandCenter(gateway, kbBuilder, contactRepo, dealRepo, taskRepo, activityRepo, chatSessionRepo, log)
+		commandCenter := ai.NewCommandCenter(gateway, kbBuilder, contactRepo, dealRepo, taskRepo, activityRepo, chatSessionRepo, customObjUC, log)
 		commandHandler := delivery.NewCommandHandler(commandCenter)
 
 		eventsHandler := delivery.NewEventsHandler(redisClient)

@@ -56,6 +56,7 @@ type CommandCenter struct {
 	taskRepo         domain.TaskRepository
 	activityRepo     domain.ActivityRepository
 	sessionRepo      domain.ChatSessionRepository
+	customObjUC      domain.CustomObjectUseCase
 	sessionCtx       *SessionContextCache
 	logger           *zap.Logger
 }
@@ -68,6 +69,7 @@ func NewCommandCenter(
 	taskRepo domain.TaskRepository,
 	activityRepo domain.ActivityRepository,
 	sessionRepo domain.ChatSessionRepository,
+	customObjUC domain.CustomObjectUseCase,
 	logger *zap.Logger,
 ) *CommandCenter {
 	return &CommandCenter{
@@ -78,6 +80,7 @@ func NewCommandCenter(
 		taskRepo:         taskRepo,
 		activityRepo:     activityRepo,
 		sessionRepo:      sessionRepo,
+		customObjUC:      customObjUC,
 		sessionCtx:       NewSessionContextCache(),
 		logger:           logger,
 	}
@@ -465,6 +468,10 @@ create_contact — Inline form for new contact. You MUST extract and pass ALL av
 
 create_deal — Inline form for new deal. Extract title/value and ALL custom field parameters (cf_*). CRITICAL: If the user references a contact, resolve contact_id and contact_name from SESSION CONTEXT. Do NOT show a text table — call the tool immediately.
 
+search_objects — Universal object search. Works for ANY object type (base or custom). Pass the object_slug from the CRM SCHEMA section. Use query to filter by name. Example: search_objects(object_slug="ticket", query="billing issue"). ALWAYS check the CRM SCHEMA to find the correct slug.
+
+create_object_record — Create a record for any custom object. Pass object_slug, display_name, and fields (key-value pairs matching the schema). Example: create_object_record(object_slug="ticket", display_name="Billing Issue #123", fields={"subject": "Cannot process payment", "priority": "high"}).
+
 SESSION CONTEXT AWARENESS:
 - You have access to session context showing records previously created or viewed in this conversation.
 - When the user says "this contact", "that deal", "for them" — look in the session context to find the referenced record and use its UUID.
@@ -566,6 +573,10 @@ func (cc *CommandCenter) executeTool(ctx context.Context, orgID, userID uuid.UUI
 	case "create_deal":
 		out, _ := json.Marshal(map[string]any{"form_type": "deal", "prefill_title": params["prefill_title"], "prefill_value": params["prefill_value"]})
 		return out
+	case "search_objects":
+		return cc.toolSearchObjects(ctx, orgID, params)
+	case "create_object_record":
+		return cc.toolCreateObjectRecord(ctx, orgID, userID, params)
 	default:
 		out, _ := json.Marshal(map[string]any{"error": "unknown tool: " + call.Name})
 		return out
@@ -932,4 +943,120 @@ func extractCustomFieldParams(params map[string]interface{}) map[string]any {
 		return nil
 	}
 	return cfMap
+}
+
+// ─── Custom Object Tools ─────────────────────────────────────────────────────
+
+// toolSearchObjects queries any custom object by its slug.
+func (cc *CommandCenter) toolSearchObjects(ctx context.Context, orgID uuid.UUID, params map[string]interface{}) json.RawMessage {
+	slug, _ := params["object_slug"].(string)
+	if slug == "" {
+		out, _ := json.Marshal(map[string]any{"error": "object_slug is required"})
+		return out
+	}
+
+	query, _ := params["query"].(string)
+	limit := 10
+	if l, ok := params["limit"].(float64); ok && l > 0 {
+		limit = int(l)
+		if limit > 20 {
+			limit = 20
+		}
+	}
+
+	// For base objects, delegate to existing tools
+	if slug == "contact" || slug == "contacts" {
+		return cc.toolSearchContacts(ctx, orgID, uuid.Nil, "owner", map[string]interface{}{"query": query, "limit": float64(limit)})
+	}
+	if slug == "deal" || slug == "deals" {
+		return cc.toolSearchDeals(ctx, orgID, uuid.Nil, "owner", map[string]interface{}{"query": query, "limit": float64(limit)})
+	}
+
+	// Custom object search
+	if cc.customObjUC == nil {
+		out, _ := json.Marshal(map[string]any{"error": "custom objects not configured"})
+		return out
+	}
+
+	records, total, err := cc.customObjUC.ListRecords(ctx, orgID, slug, domain.RecordFilter{
+		Q:     query,
+		Limit: limit,
+	})
+	if err != nil {
+		out, _ := json.Marshal(map[string]any{"error": "Object type '" + slug + "' not found or query failed"})
+		return out
+	}
+
+	if len(records) == 0 {
+		out, _ := json.Marshal(map[string]any{"count": 0, "object_type": slug, "records": []any{}, "empty_message": "No " + slug + " records found matching your criteria."})
+		return out
+	}
+
+	simplified := make([]map[string]interface{}, len(records))
+	for i, r := range records {
+		m := map[string]interface{}{
+			"id":           r.ID,
+			"display_name": r.DisplayName,
+			"created_at":   r.CreatedAt.Format("2006-01-02"),
+		}
+		// Parse JSONB data fields into the result
+		var data map[string]interface{}
+		if err := json.Unmarshal(r.Data, &data); err == nil {
+			for k, v := range data {
+				m[k] = v
+			}
+		}
+		simplified[i] = m
+	}
+	out, _ := json.Marshal(map[string]any{"count": len(records), "total": total, "object_type": slug, "records": simplified})
+	return out
+}
+
+// toolCreateObjectRecord creates a record for a custom object.
+func (cc *CommandCenter) toolCreateObjectRecord(ctx context.Context, orgID, userID uuid.UUID, params map[string]interface{}) json.RawMessage {
+	slug, _ := params["object_slug"].(string)
+	if slug == "" {
+		out, _ := json.Marshal(map[string]any{"error": "object_slug is required"})
+		return out
+	}
+	displayName, _ := params["display_name"].(string)
+	if displayName == "" {
+		out, _ := json.Marshal(map[string]any{"error": "display_name is required"})
+		return out
+	}
+
+	if cc.customObjUC == nil {
+		out, _ := json.Marshal(map[string]any{"error": "custom objects not configured"})
+		return out
+	}
+
+	// Build fields map from params, include display_name as a data field too
+	fields := make(map[string]interface{})
+	if f, ok := params["fields"].(map[string]interface{}); ok {
+		fields = f
+	}
+
+	// Marshal fields map into JSON for the Data field
+	dataJSON, err := json.Marshal(fields)
+	if err != nil {
+		out, _ := json.Marshal(map[string]any{"error": "invalid fields data"})
+		return out
+	}
+
+	record, err := cc.customObjUC.CreateRecord(ctx, orgID, userID, slug, domain.CreateRecordInput{
+		Data: dataJSON,
+	})
+	if err != nil {
+		out, _ := json.Marshal(map[string]any{"error": "Failed to create " + slug + " record: " + err.Error()})
+		return out
+	}
+
+	out, _ := json.Marshal(map[string]any{
+		"success":      true,
+		"id":           record.ID,
+		"display_name": record.DisplayName,
+		"object_type":  slug,
+		"message":      slug + " record '" + displayName + "' created successfully",
+	})
+	return out
 }
