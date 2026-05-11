@@ -379,8 +379,8 @@ export default function ChatPanel({ open, onClose }: Props) {
             </div>
           )}
 
-          {/* Bottom anchor — ensures forms scroll fully into view */}
-          <div ref={bottomAnchorRef} style={{ minHeight: 1, flexShrink: 0 }} />
+          {/* Bottom spacer — gives forms clearance above the input bar */}
+          <div ref={bottomAnchorRef} style={{ minHeight: (pendingForm || pendingConfirm) ? 12 : 1, flexShrink: 0 }} />
         </div>
 
         {/* Input */}

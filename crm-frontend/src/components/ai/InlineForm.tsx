@@ -345,8 +345,8 @@ const formCSS = `
     background: var(--card, #fff);
     border: 1px solid var(--border, #e5e7eb);
     border-radius: 16px;
-    padding: 16px;
-    margin: 4px 0 8px;
+    padding: 16px 16px 18px;
+    margin: 4px 0 12px;
     box-shadow: 0 2px 12px rgba(0,0,0,0.06);
     animation: fadeSlide 0.22s ease;
     overflow: hidden;
