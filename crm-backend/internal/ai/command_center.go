@@ -360,7 +360,7 @@ func (cc *CommandCenter) Execute(
 
 		finalResp, err := cc.gateway.Complete(ctx, orgID, userID, TaskCommandCenter, messages)
 		if err != nil {
-			events <- CommandEvent{Type: "error", Message: fmt.Sprintf("AI error: %v", err)}
+			cc.logger.Error("command_center.summary_failed", zap.Error(err))
 			events <- CommandEvent{Type: "done", Done: true}
 			return
 		}
