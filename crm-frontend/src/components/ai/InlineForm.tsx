@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import type { FormPayload } from './chatTypes';
 import {
   createContact, createDeal, getStages, getFieldDefs, getContacts,
-  type PipelineStage, type CustomFieldDef, type Contact,
+  getObjectDef, createObjectRecord,
+  type PipelineStage, type CustomFieldDef, type Contact, type CustomObjectDef,
 } from '../../lib/api';
 
 interface Props {
@@ -330,11 +331,132 @@ function SuccessCard({ icon, message }: { icon: string; message: string }) {
   );
 }
 
+// ── Custom Object Form (dynamic, schema-driven) ──────────────────────────────
+
+function CustomObjectForm({ payload, onSuccess, onCancel }: Props) {
+  const slug = payload.object_slug || '';
+  const [objectDef, setObjectDef] = useState<CustomObjectDef | null>(null);
+  const [displayName, setDisplayName] = useState(payload.prefill_display_name || '');
+  const [fieldValues, setFieldValues] = useState<Record<string, unknown>>(payload.prefill_fields || {});
+  const [loading, setLoading] = useState(false);
+  const [loadingSchema, setLoadingSchema] = useState(true);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [done, setDone] = useState(false);
+  const formEndRef = useRef<HTMLDivElement>(null);
+
+  // Fetch the object schema on mount
+  useEffect(() => {
+    if (!slug) {
+      setLoadingSchema(false);
+      return;
+    }
+    getObjectDef(slug)
+      .then(def => {
+        setObjectDef(def);
+        // Auto-populate display_name from schema's first text field if not prefilled
+        if (!displayName && payload.prefill_fields) {
+          const firstTextField = def.fields?.find(f => f.type === 'text');
+          if (firstTextField && payload.prefill_fields[firstTextField.key]) {
+            setDisplayName(String(payload.prefill_fields[firstTextField.key]));
+          }
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoadingSchema(false));
+  }, [slug]);
+
+  // Scroll form buttons into view when schema loads
+  useEffect(() => {
+    if (!loadingSchema) {
+      setTimeout(() => formEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 150);
+    }
+  }, [loadingSchema]);
+
+  const fields = objectDef?.fields || [];
+  const icon = objectDef?.icon || '📦';
+  const label = objectDef?.label || slug;
+
+  const validate = () => {
+    const e: Record<string, string> = {};
+    if (!displayName.trim()) e.display_name = 'Name is required';
+    for (const def of fields) {
+      if (def.required && (fieldValues[def.key] === undefined || fieldValues[def.key] === null || fieldValues[def.key] === '')) {
+        e[`f_${def.key}`] = `${def.label} is required`;
+      }
+    }
+    return e;
+  };
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const errs = validate();
+    if (Object.keys(errs).length > 0) { setErrors(errs); return; }
+    setLoading(true); setErrors({});
+    try {
+      // Build data payload: include display_name as a field + all form field values
+      const data: Record<string, unknown> = { display_name: displayName.trim() };
+      for (const def of fields) {
+        if (fieldValues[def.key] !== undefined && fieldValues[def.key] !== null && fieldValues[def.key] !== '') {
+          data[def.key] = fieldValues[def.key];
+        }
+      }
+      const result = await createObjectRecord(slug, { data });
+      setDone(true);
+      const idRef = result?.id ? ` (id: ${result.id})` : '';
+      setTimeout(() => onSuccess(`✅ ${label} **${displayName}**${idRef} created successfully!`), 800);
+    } catch (err) {
+      setErrors({ _form: err instanceof Error ? err.message : `Failed to create ${label}` });
+    } finally { setLoading(false); }
+  };
+
+  if (done) return <SuccessCard icon={icon} message={`${label} **${displayName}** created!`} />;
+
+  // Loading skeleton
+  if (loadingSchema) {
+    return (
+      <div className="ai-inline-form" style={{ textAlign: 'center', padding: '24px 16px' }}>
+        <div style={{ fontSize: 18, marginBottom: 8 }}>{icon}</div>
+        <p style={{ fontSize: 13, color: 'var(--muted-foreground)' }}>Loading {slug} schema…</p>
+        <style>{formCSS}</style>
+      </div>
+    );
+  }
+
+  return (
+    <form onSubmit={submit} className="ai-inline-form" noValidate>
+      <FormHeader icon={icon} title={`New ${label}`} />
+      <Field label="Display Name" required error={errors.display_name}>
+        <input className="ai-f-input" data-err={errors.display_name ? '1' : ''} value={displayName}
+          onChange={e => { setDisplayName(e.target.value); setErrors(p => ({ ...p, display_name: '' })); }}
+          placeholder={`Enter ${label.toLowerCase()} name`} autoFocus />
+      </Field>
+      {fields.length > 0 && (
+        <>
+          <div className="ai-f-divider"><span>Fields</span></div>
+          {fields.map(def => (
+            <CustomFieldInput key={def.key} def={def} value={fieldValues[def.key]}
+              error={errors[`f_${def.key}`]}
+              onChange={v => {
+                setFieldValues(prev => ({ ...prev, [def.key]: v }));
+                setErrors(prev => ({ ...prev, [`f_${def.key}`]: '' }));
+              }} />
+          ))}
+        </>
+      )}
+      {errors._form && <p className="ai-f-form-err">{errors._form}</p>}
+      <FormActions loading={loading} onCancel={onCancel} submitLabel={`Create ${label}`} />
+      <div ref={formEndRef} />
+      <style>{formCSS}</style>
+    </form>
+  );
+}
+
 // ── Router entry point ────────────────────────────────────────────────────────
 
 export default function InlineForm(props: Props) {
   if (props.payload.form_type === 'deal') return <DealForm {...props} />;
   if (props.payload.form_type === 'contact') return <ContactForm {...props} />;
+  if (props.payload.form_type === 'custom_object') return <CustomObjectForm {...props} />;
   return null;
 }
 

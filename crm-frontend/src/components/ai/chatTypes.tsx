@@ -26,7 +26,7 @@ export interface ConfirmPayload {
 }
 
 export interface FormPayload {
-  form_type: 'contact' | 'deal';
+  form_type: 'contact' | 'deal' | 'custom_object';
   // contact prefills
   prefill_name?: string;
   prefill_email?: string;
@@ -38,6 +38,10 @@ export interface FormPayload {
   prefill_contact_name?: string;
   // custom fields for both
   prefill_custom_fields?: Record<string, unknown>;
+  // custom object prefills
+  object_slug?: string;
+  prefill_display_name?: string;
+  prefill_fields?: Record<string, unknown>;
 }
 
 export interface NavigatePayload {

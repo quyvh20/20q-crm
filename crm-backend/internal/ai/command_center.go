@@ -218,13 +218,14 @@ func (cc *CommandCenter) Execute(
 		}
 
 		// ── Separate safe reads from writes that need confirmation ────────────
-		// create_deal / create_contact → form events (not DB writes, handled below)
+		// create_deal / create_contact / create_object_record → form events (not DB writes, handled below)
 		writeTools := map[string]bool{
-			"update_deal":    true,
-			"create_task":    true,
-			"log_activity":   true,
-			"create_contact": true,
-			"create_deal":    true,
+			"update_deal":           true,
+			"create_task":           true,
+			"log_activity":          true,
+			"create_contact":        true,
+			"create_deal":           true,
+			"create_object_record":  true,
 		}
 		var readCalls, writeCalls []ToolCall
 		for _, tc := range response.ToolCalls {
@@ -254,7 +255,7 @@ func (cc *CommandCenter) Execute(
 			}
 		}
 
-		// Special: create_contact / create_deal — emit form events immediately (no DB call)
+		// Special: create_contact / create_deal / create_object_record — emit form events immediately (no DB call)
 		// Process ALL form tools, not just the first one
 		var remainingWrites []ToolCall
 		for _, tc := range writeCalls {
@@ -283,6 +284,21 @@ func (cc *CommandCenter) Execute(
 					"prefill_contact_id":    p["contact_id"],
 					"prefill_contact_name":  p["contact_name"],
 					"prefill_custom_fields": cfMap,
+				})
+				events <- CommandEvent{Type: "form", Data: formData}
+				continue // don't add to remainingWrites
+			}
+			if tc.Name == "create_object_record" {
+				var p map[string]interface{}
+				json.Unmarshal(tc.Params, &p)
+				slug, _ := p["object_slug"].(string)
+				displayName, _ := p["display_name"].(string)
+				fields, _ := p["fields"].(map[string]interface{})
+				formData, _ := json.Marshal(map[string]any{
+					"form_type":       "custom_object",
+					"object_slug":     slug,
+					"prefill_display_name": displayName,
+					"prefill_fields":  fields,
 				})
 				events <- CommandEvent{Type: "form", Data: formData}
 				continue // don't add to remainingWrites
@@ -443,7 +459,7 @@ CORE RULES (MUST follow every reply):
 3. EXECUTE, DON'T REDIRECT: If a task involves CRM data, call the tool directly. NEVER say "navigate to the Deals page" as an alternative to doing it yourself.
 4. PROACTIVE: For queries like "filter leads" or "top contacts" — call the tool immediately.
 5. CONCISE: Keep responses short and action-oriented. No fluff, no filler paragraphs. Use tables for lists, bullets for single records. Save tokens.
-6. WRITE SAFETY: For destructive actions (update_deal, create_task, log_activity), show a confirmation banner first. EXCEPTION: create_contact and create_deal ALWAYS call the tool directly — the inline form IS the user's confirmation step. NEVER show a text confirmation table for contact/deal creation. Just call the tool immediately with all extracted data.
+6. WRITE SAFETY: For destructive actions (update_deal, create_task, log_activity), show a confirmation banner first. EXCEPTION: create_contact, create_deal, and create_object_record ALWAYS call the tool directly — the inline form IS the user's confirmation step. NEVER show a text confirmation table for contact/deal/custom object creation. Just call the tool immediately with all extracted data.
 7. LANGUAGE: Reply in the same language the user writes in.
 
 TOOL USAGE GUIDE:
@@ -470,7 +486,7 @@ create_deal — Inline form for new deal. Extract title/value and ALL custom fie
 
 search_objects — Universal object search. Works for ANY object type (base or custom). Pass the object_slug from the CRM SCHEMA section. Use query to filter by name. Example: search_objects(object_slug="ticket", query="billing issue"). ALWAYS check the CRM SCHEMA to find the correct slug.
 
-create_object_record — Create a record for any custom object. Pass object_slug, display_name, and fields (key-value pairs matching the schema). Example: create_object_record(object_slug="ticket", display_name="Billing Issue #123", fields={"subject": "Cannot process payment", "priority": "high"}).
+create_object_record — Inline form for new custom object records. Works like create_contact / create_deal: call the tool immediately with all extracted data. The inline form IS the user's confirmation step. Pass object_slug, display_name, and fields (key-value pairs matching the schema). NEVER show a text confirmation table — call the tool immediately. Example: create_object_record(object_slug="ticket", display_name="Billing Issue #123", fields={"subject": "Cannot process payment", "priority": "high"}).
 
 SESSION CONTEXT AWARENESS:
 - You have access to session context showing records previously created or viewed in this conversation.
@@ -517,6 +533,13 @@ func (cc *CommandCenter) describeWrite(tc ToolCall) string {
 		return fmt.Sprintf("Log %v activity: **%v**", p["type"], p["title"])
 	case "create_contact":
 		return fmt.Sprintf("Create new contact: **%v**", p["prefill_name"])
+	case "create_object_record":
+		slug, _ := p["object_slug"].(string)
+		name, _ := p["display_name"].(string)
+		if name == "" {
+			name = "new record"
+		}
+		return fmt.Sprintf("Create %s: **%s**", slug, name)
 	}
 	return tc.Name
 }
