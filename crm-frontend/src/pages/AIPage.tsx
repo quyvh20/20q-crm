@@ -85,7 +85,7 @@ export default function AIPage() {
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [pendingConfirm, setPendingConfirm] = useState<ConfirmPayload | null>(null);
-  const [pendingForm, setPendingForm] = useState<FormPayload | null>(null);
+  const [formQueue, setFormQueue] = useState<FormPayload[]>([]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -95,13 +95,13 @@ export default function AIPage() {
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages, streaming, pendingForm, pendingConfirm]);
+  }, [messages, streaming, formQueue, pendingConfirm]);
 
   useEffect(() => {
-    if (pendingForm || pendingConfirm) {
+    if (formQueue.length > 0 || pendingConfirm) {
       setTimeout(() => bottomAnchorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }), 100);
     }
-  }, [pendingForm, pendingConfirm]);
+  }, [formQueue, pendingConfirm]);
 
   useEffect(() => { setTimeout(() => inputRef.current?.focus(), 150); }, []);
 
@@ -137,7 +137,7 @@ export default function AIPage() {
 
     setStreaming(true);
     setPendingConfirm(null);
-    setPendingForm(null);
+    setFormQueue([]);
 
     const historyMessages = messages
       .filter(m => m.content)
@@ -189,7 +189,7 @@ export default function AIPage() {
               if (last && last.role === 'assistant' && !last.content) return prev.slice(0, -1);
               return prev;
             });
-            setPendingForm(event.data as FormPayload);
+            setFormQueue(prev => [...prev, event.data as FormPayload]);
             break;
           case 'confirm':
             setPendingConfirm(event.data as ConfirmPayload);
@@ -237,7 +237,7 @@ export default function AIPage() {
     setSessionId(nextId);
     setMessages([]);
     setPendingConfirm(null);
-    setPendingForm(null);
+    setFormQueue([]);
     saveSession(nextId, []);
   };
 
@@ -304,19 +304,34 @@ export default function AIPage() {
             />
           )}
 
-          {/* Inline form */}
-          {pendingForm && !streaming && (
-            <InlineForm
-              payload={pendingForm}
-              onSuccess={msg => {
-                setPendingForm(null);
-                addMessage({ id: crypto.randomUUID(), role: 'assistant', content: msg, timestamp: new Date() });
-              }}
-              onCancel={() => {
-                setPendingForm(null);
-                addMessage({ id: crypto.randomUUID(), role: 'assistant', content: 'No problem — form dismissed.', timestamp: new Date() });
-              }}
-            />
+          {/* Inline form queue */}
+          {formQueue.length > 0 && !streaming && (
+            <>
+              {formQueue.length > 1 && (
+                <div className="ai-page-form-counter">
+                  Form 1 of {formQueue.length} — {formQueue.length - 1} more after this
+                </div>
+              )}
+              <InlineForm
+                key={formQueue[0]?.form_type + '-' + formQueue[0]?.prefill_display_name + '-' + formQueue.length}
+                payload={formQueue[0]}
+                onSuccess={msg => {
+                  addMessage({ id: crypto.randomUUID(), role: 'assistant', content: msg, timestamp: new Date() });
+                  setFormQueue(prev => prev.slice(1));
+                }}
+                onCancel={() => {
+                  const remaining = formQueue.length - 1;
+                  setFormQueue([]);
+                  addMessage({
+                    id: crypto.randomUUID(), role: 'assistant',
+                    content: remaining > 0
+                      ? `Form dismissed — cancelled this and ${remaining} remaining form${remaining > 1 ? 's' : ''}.`
+                      : 'No problem — form dismissed.',
+                    timestamp: new Date(),
+                  });
+                }}
+              />
+            </>
           )}
 
           {/* Streaming indicator */}
@@ -604,5 +619,25 @@ const pageCSS = `
   /* ── Inline form gets more breathing room ── */
   .ai-page-column .ai-inline-form {
     max-width: 520px;
+  }
+
+  /* ── Form queue counter ── */
+  .ai-page-form-counter {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border-radius: 20px;
+    background: linear-gradient(135deg, rgba(245, 158, 11, 0.1), rgba(239, 68, 68, 0.08));
+    border: 1px solid rgba(245, 158, 11, 0.25);
+    font-size: 12px;
+    font-weight: 600;
+    color: #b45309;
+    margin-bottom: 4px;
+    animation: fadeSlide 0.2s ease;
+  }
+  @keyframes fadeSlide {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
   }
 `;
