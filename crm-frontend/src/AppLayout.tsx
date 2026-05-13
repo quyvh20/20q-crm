@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from "react";
 import { useAuth } from "./lib/auth";
-import ChatPanel from "./components/ai/ChatPanel";
 import SearchBar from "./components/common/SearchBar";
 import AIUsageWidget from "./components/settings/AIUsageWidget";
 import WelcomeModal from "./components/onboarding/WelcomeModal";
@@ -16,13 +15,6 @@ export default function AppLayout({ children }: AppLayoutProps) {
   const [customObjects, setCustomObjects] = useState<CustomObjectDef[]>([]);
   const [showWelcome, setShowWelcome] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  const [chatOpen, setChatOpen] = useState(() => localStorage.getItem('chat_panel_open') === 'true');
-
-  const toggleChat = () => {
-    const next = !chatOpen;
-    setChatOpen(next);
-    localStorage.setItem('chat_panel_open', String(next));
-  };
 
   useEffect(() => {
     Promise.all([
@@ -52,6 +44,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
             <a href="/contacts" className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">Contacts</a>
             <a href="/deals" className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">Deals</a>
             <a href="/voice" className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">🎙 Voice Notes</a>
+            <a href="/ai" className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">✦ AI Assistant</a>
             <a href="/workflows" className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">⚡ Automations</a>
             {customObjects.map(obj => (
               <a key={obj.slug} href={`/objects/${obj.slug}`}
@@ -92,7 +85,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
         )}
       </aside>
 
-      <div className="flex-1 flex flex-col min-w-0" style={{ marginRight: chatOpen ? 340 : 0, transition: 'margin-right 0.22s cubic-bezier(0.16,1,0.3,1)' }}>
+      <div className="flex-1 flex flex-col min-w-0">
         <header className="h-16 border-b bg-card flex items-center justify-between px-6">
           <div className="md:hidden">
             <h1 className="text-xl font-bold tracking-tight">Guerrilla CRM</h1>
@@ -105,25 +98,6 @@ export default function AppLayout({ children }: AppLayoutProps) {
                 {activeWorkspace.org_name}
               </span>
             )}
-            {/* AI Chat toggle */}
-            <button
-              onClick={toggleChat}
-              title="AI Assistant"
-              style={{
-                width: 36, height: 36, borderRadius: 10,
-                background: chatOpen
-                  ? 'linear-gradient(135deg, #f59e0b, #ef4444)'
-                  : 'transparent',
-                border: '1px solid var(--border)',
-                cursor: 'pointer',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 16,
-                color: chatOpen ? '#fff' : 'var(--muted-foreground)',
-                transition: 'all 0.15s',
-              }}
-            >
-              ✦
-            </button>
             {user?.avatar_url ? (
               <img src={user.avatar_url} alt="" className="h-8 w-8 rounded-full object-cover" />
             ) : (
@@ -142,8 +116,6 @@ export default function AppLayout({ children }: AppLayoutProps) {
           )}
         </main>
       </div>
-      <ChatPanel open={chatOpen} onClose={() => { setChatOpen(false); localStorage.setItem('chat_panel_open', 'false'); }} />
-
       {showWelcome && !isLoading && (
         <WelcomeModal onComplete={() => setShowWelcome(false)} />
       )}

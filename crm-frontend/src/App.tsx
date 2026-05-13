@@ -18,6 +18,7 @@ import VoicePage from './pages/VoicePage';
 import { WorkflowList } from './features/workflows/WorkflowList';
 import { WorkflowBuilder } from './features/workflows/WorkflowBuilder';
 import { RunHistory } from './features/workflows/RunHistory';
+import AIPage from './pages/AIPage';
 
 // Initialize Sentry
 const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN;
@@ -132,6 +133,11 @@ function App() {
             <Route path="/voice" element={
               <ProtectedRoute>
                 <AppLayout><VoicePage /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/ai" element={
+              <ProtectedRoute>
+                <AppLayout><AIPage /></AppLayout>
               </ProtectedRoute>
             } />
             <Route path="/workflows" element={
