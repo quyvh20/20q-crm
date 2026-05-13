@@ -348,6 +348,13 @@ func (cc *CommandCenter) Execute(
 			events <- CommandEvent{Type: "confirm", Data: confirmData}
 		}
 
+		// If ALL tool calls were form events (no reads to summarize, no writes to confirm),
+		// skip the summary AI call — the form IS the response. No stray "}" bubbles.
+		if len(readCalls) == 0 && len(writeCalls) == 0 {
+			events <- CommandEvent{Type: "done", Done: true}
+			return
+		}
+
 		// Build final message list for AI summary
 		messages = append(messages, Message{
 			Role:      "assistant",
@@ -371,10 +378,7 @@ func (cc *CommandCenter) Execute(
 		if len(writeCalls) > 0 {
 			summaryContent = confirmDirective
 		}
-		// Only add the summary user message when there are actual read results to summarize
-		if len(readCalls) > 0 || len(writeCalls) > 0 {
-			messages = append(messages, Message{Role: "user", Content: summaryContent})
-		}
+		messages = append(messages, Message{Role: "user", Content: summaryContent})
 
 		finalResp, err := cc.gateway.Complete(ctx, orgID, userID, TaskCommandCenter, messages)
 		if err != nil {
