@@ -115,7 +115,7 @@ func (cc *CommandCenter) Execute(
 
 		// ── Handle confirmed write actions ───────────────────────────────────
 		if req.Confirmed && req.ConfirmedTool != "" {
-			// Streaming dots will show via the frontend while processing
+			events <- CommandEvent{Type: "thinking", Message: "Executing action…"}
 			var params map[string]interface{}
 			json.Unmarshal(req.ConfirmedArgs, &params)
 			call := ToolCall{Name: req.ConfirmedTool, Params: req.ConfirmedArgs}
@@ -171,6 +171,9 @@ func (cc *CommandCenter) Execute(
 			)
 		}
 
+		// ── Emit thinking event so the user gets real-time feedback ─────────
+		events <- CommandEvent{Type: "thinking", Message: "Analyzing your request…"}
+
 		// ── Build role-scoped system prompt ──────────────────────────────────
 		sysPrompt := cc.buildRolePrompt(ctx, orgID, req)
 
@@ -193,6 +196,7 @@ func (cc *CommandCenter) Execute(
 		tools := AllowedToolsWithSchema(req.UserRole, contactFields, dealFields)
 
 		// ── First AI call with tools ─────────────────────────────────────────
+		events <- CommandEvent{Type: "thinking", Message: "Thinking…"}
 		response, err := cc.gateway.CompleteWithTools(ctx, orgID, userID, TaskCommandCenter, messages, tools)
 		if err != nil {
 			cc.logger.Error("command_center.ai_call_failed", zap.Error(err))
@@ -308,6 +312,9 @@ func (cc *CommandCenter) Execute(
 		writeCalls = remainingWrites
 
 		// Execute read-only tool calls in parallel
+		if len(readCalls) > 0 {
+			events <- CommandEvent{Type: "thinking", Message: "Searching CRM data…"}
+		}
 		type toolResult struct {
 			name   string
 			output json.RawMessage
@@ -380,6 +387,7 @@ func (cc *CommandCenter) Execute(
 		}
 		messages = append(messages, Message{Role: "user", Content: summaryContent})
 
+		events <- CommandEvent{Type: "thinking", Message: "Preparing your answer…"}
 		finalResp, err := cc.gateway.Complete(ctx, orgID, userID, TaskCommandCenter, messages)
 		if err != nil {
 			cc.logger.Error("command_center.summary_failed", zap.Error(err))

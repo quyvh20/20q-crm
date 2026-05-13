@@ -958,13 +958,14 @@ export async function sendCommand(
 
     const jsonBody = JSON.stringify(body);
 
-    // Helper to make the fetch with current token
+    // Helper to make the fetch with current token — use SSE streaming endpoint
     const doFetch = () => {
       const token = localStorage.getItem('access_token');
-      return fetch(`${API_URL}/api/ai/command-sync`, {
+      return fetch(`${API_URL}/api/ai/command`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: jsonBody,
@@ -1003,22 +1004,53 @@ export async function sendCommand(
     }
 
     if (!res.ok) {
+      // Non-SSE error responses (budget exceeded, plan error, etc.)
       const json = await res.json().catch(() => ({}));
       onError?.(json.error || `HTTP ${res.status}`);
       return;
     }
 
-    const json = await res.json();
-    const events: CommandEvent[] = json.events || [];
+    // ── Stream SSE events as they arrive ──────────────────────────────
+    const reader = res.body?.getReader();
+    if (!reader) {
+      onError?.('No response stream available');
+      return;
+    }
 
-    // Replay events sequentially for smooth UX
-    for (const event of events) {
-      onEvent?.(event);
-      if (event.type === 'done') {
-        onDone?.();
-        return;
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const raw = line.slice(6);
+        if (raw === '[DONE]') {
+          onDone?.();
+          return;
+        }
+        try {
+          // The backend escapes newlines in JSON as \\n — unescape them
+          const unescaped = raw.replace(/\\n/g, '\n');
+          const event = JSON.parse(unescaped) as CommandEvent;
+          onEvent?.(event);
+          if (event.type === 'done') {
+            onDone?.();
+            return;
+          }
+        } catch {
+          // Skip malformed SSE chunks gracefully
+        }
       }
     }
+
+    // Stream ended without explicit done — still call onDone
     onDone?.();
   } catch (err) {
     onError?.(err instanceof Error ? err.message : 'Command failed');

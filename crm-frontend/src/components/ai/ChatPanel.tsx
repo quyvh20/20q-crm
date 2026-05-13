@@ -86,6 +86,7 @@ export default function ChatPanel({ open, onClose }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>(() => loadSession().messages);
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
+  const [thinkingMessage, setThinkingMessage] = useState('');
   const [pendingConfirm, setPendingConfirm] = useState<ConfirmPayload | null>(null);
   const [pendingForm, setPendingForm] = useState<FormPayload | null>(null);
 
@@ -153,6 +154,7 @@ export default function ChatPanel({ open, onClose }: Props) {
     // No placeholder bubble — streaming dots indicator is shown instead
 
     setStreaming(true);
+    setThinkingMessage('');
     setPendingConfirm(null);
     setPendingForm(null);
 
@@ -178,7 +180,8 @@ export default function ChatPanel({ open, onClose }: Props) {
       (event: CommandEvent) => {
         switch (event.type) {
           case 'thinking':
-            // Ignored — streaming dots indicator is visible while loading
+            // Show real-time progress text from the backend
+            if (event.message) setThinkingMessage(event.message);
             break;
           case 'tool_result':
             // Tool results are intermediate; the final summary will overwrite
@@ -376,6 +379,9 @@ export default function ChatPanel({ open, onClose }: Props) {
               <span style={styles.thinkingDot} />
               <span style={styles.thinkingDot} />
               <span style={styles.thinkingDot} />
+              {thinkingMessage && (
+                <span style={styles.thinkingText}>{thinkingMessage}</span>
+              )}
             </div>
           )}
 
@@ -522,6 +528,12 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '50%',
     background: '#f59e0b',
     display: 'inline-block',
+  },
+  thinkingText: {
+    fontSize: 12,
+    color: 'var(--muted-foreground, #9ca3af)',
+    fontStyle: 'italic',
+    marginLeft: 4,
   },
   inputArea: {
     borderTop: '1px solid var(--border)',

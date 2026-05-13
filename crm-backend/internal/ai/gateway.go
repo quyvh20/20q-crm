@@ -167,7 +167,7 @@ func NewAIGateway(cfAccountID, cfAIGatewayID, cfToken string, budget *BudgetGuar
 		gatewayURL:     fmt.Sprintf("https://gateway.ai.cloudflare.com/v1/%s/%s", cfAccountID, cfAIGatewayID),
 		cfToken:        cfToken,
 		cfGatewayToken: gwTok,
-		httpClient:     &http.Client{Timeout: 120 * time.Second},
+		httpClient:     &http.Client{Timeout: 45 * time.Second},
 		Budget:         budget,
 		logger:         logger,
 	}
