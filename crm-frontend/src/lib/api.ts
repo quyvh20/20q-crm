@@ -1036,9 +1036,9 @@ export async function sendCommand(
           return;
         }
         try {
-          // The backend escapes newlines in JSON as \\n — unescape them
-          const unescaped = raw.replace(/\\n/g, '\n');
-          const event = JSON.parse(unescaped) as CommandEvent;
+          // Parse the SSE event JSON directly — json.Marshal on the backend
+          // already produces valid JSON with properly escaped characters.
+          const event = JSON.parse(raw) as CommandEvent;
           onEvent?.(event);
           if (event.type === 'done') {
             onDone?.();
