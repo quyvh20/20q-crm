@@ -193,6 +193,20 @@ var allCRMTools = []Tool{
 			"required": []string{"object_slug", "display_name"},
 		},
 	},
+	{
+		Name: "update_object_record",
+		Desc: "Update an existing custom object record. Can change the display_name and/or field values. Use search_objects first to find the record's ID.",
+		Params: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"object_slug":  map[string]any{"type": "string", "description": "the slug of the custom object type from the CRM schema"},
+				"record_id":    map[string]any{"type": "string", "description": "UUID of the record to update (from search_objects results)"},
+				"display_name": map[string]any{"type": "string", "description": "new display name for the record (optional, only if renaming)"},
+				"fields":       map[string]any{"type": "object", "description": "key-value pairs of fields to update — only include fields that should change"},
+			},
+			"required": []string{"object_slug", "record_id"},
+		},
+	},
 }
 
 // readOnlyTools — only safe read tools for viewers.

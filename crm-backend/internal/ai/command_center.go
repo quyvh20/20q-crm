@@ -224,12 +224,13 @@ func (cc *CommandCenter) Execute(
 		// ── Separate safe reads from writes that need confirmation ────────────
 		// create_deal / create_contact / create_object_record → form events (not DB writes, handled below)
 		writeTools := map[string]bool{
-			"update_deal":           true,
-			"create_task":           true,
-			"log_activity":          true,
-			"create_contact":        true,
-			"create_deal":           true,
-			"create_object_record":  true,
+			"update_deal":             true,
+			"create_task":             true,
+			"log_activity":            true,
+			"create_contact":          true,
+			"create_deal":             true,
+			"create_object_record":    true,
+			"update_object_record":    true,
 		}
 		var readCalls, writeCalls []ToolCall
 		for _, tc := range response.ToolCalls {
@@ -505,6 +506,8 @@ search_objects — Universal object search. Works for ANY object type (base or c
 
 create_object_record — Inline form for new custom object records. Works like create_contact / create_deal: call the tool immediately with all extracted data. The inline form IS the user's confirmation step. Pass object_slug, display_name, and fields (key-value pairs matching the schema). NEVER show a text confirmation table — call the tool immediately. Example: create_object_record(object_slug="ticket", display_name="Billing Issue #123", fields={"subject": "Cannot process payment", "priority": "high"}).
 
+update_object_record — Update an existing custom object record's name or fields. REQUIRES the record's UUID. If the user references a record by name, FIRST call search_objects to find its ID, then call update_object_record with the record_id. Pass only the fields that should change. Example: update_object_record(object_slug="ticket", record_id="uuid-here", display_name="New Name", fields={"priority": "low"}).
+
 SESSION CONTEXT AWARENESS:
 - You have access to session context showing records previously created or viewed in this conversation.
 - When the user says "this contact", "that deal", "for them" — look in the session context to find the referenced record and use its UUID.
@@ -557,6 +560,13 @@ func (cc *CommandCenter) describeWrite(tc ToolCall) string {
 			name = "new record"
 		}
 		return fmt.Sprintf("Create %s: **%s**", slug, name)
+	case "update_object_record":
+		slug, _ := p["object_slug"].(string)
+		newName, _ := p["display_name"].(string)
+		if newName != "" {
+			return fmt.Sprintf("Rename %s record to **%s**", slug, newName)
+		}
+		return fmt.Sprintf("Update %s record", slug)
 	}
 	return tc.Name
 }
@@ -617,6 +627,8 @@ func (cc *CommandCenter) executeTool(ctx context.Context, orgID, userID uuid.UUI
 		return cc.toolSearchObjects(ctx, orgID, params)
 	case "create_object_record":
 		return cc.toolCreateObjectRecord(ctx, orgID, userID, params)
+	case "update_object_record":
+		return cc.toolUpdateObjectRecord(ctx, orgID, params)
 	default:
 		out, _ := json.Marshal(map[string]any{"error": "unknown tool: " + call.Name})
 		return out
@@ -1097,6 +1109,63 @@ func (cc *CommandCenter) toolCreateObjectRecord(ctx context.Context, orgID, user
 		"display_name": record.DisplayName,
 		"object_type":  slug,
 		"message":      slug + " record '" + displayName + "' created successfully",
+	})
+	return out
+}
+
+// toolUpdateObjectRecord updates an existing custom object record.
+func (cc *CommandCenter) toolUpdateObjectRecord(ctx context.Context, orgID uuid.UUID, params map[string]interface{}) json.RawMessage {
+	slug, _ := params["object_slug"].(string)
+	if slug == "" {
+		out, _ := json.Marshal(map[string]any{"error": "object_slug is required"})
+		return out
+	}
+	recordIDStr, _ := params["record_id"].(string)
+	if recordIDStr == "" {
+		out, _ := json.Marshal(map[string]any{"error": "record_id is required"})
+		return out
+	}
+	recordID, err := uuid.Parse(recordIDStr)
+	if err != nil {
+		out, _ := json.Marshal(map[string]any{"error": "invalid record_id: " + recordIDStr})
+		return out
+	}
+
+	if cc.customObjUC == nil {
+		out, _ := json.Marshal(map[string]any{"error": "custom objects not configured"})
+		return out
+	}
+
+	// Build the update input
+	input := domain.UpdateRecordInput{}
+
+	// Update display_name if provided
+	if newName, ok := params["display_name"].(string); ok && newName != "" {
+		input.DisplayName = &newName
+	}
+
+	// Update fields if provided — merge with existing data
+	if fields, ok := params["fields"].(map[string]interface{}); ok && len(fields) > 0 {
+		dataJSON, err := json.Marshal(fields)
+		if err != nil {
+			out, _ := json.Marshal(map[string]any{"error": "invalid fields data"})
+			return out
+		}
+		input.Data = dataJSON
+	}
+
+	record, err := cc.customObjUC.UpdateRecord(ctx, orgID, slug, recordID, input)
+	if err != nil {
+		out, _ := json.Marshal(map[string]any{"error": "Failed to update " + slug + " record: " + err.Error()})
+		return out
+	}
+
+	out, _ := json.Marshal(map[string]any{
+		"success":      true,
+		"id":           record.ID,
+		"display_name": record.DisplayName,
+		"object_type":  slug,
+		"message":      slug + " record updated successfully",
 	})
 	return out
 }
