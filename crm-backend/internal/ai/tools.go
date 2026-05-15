@@ -195,7 +195,7 @@ var allCRMTools = []Tool{
 	},
 	{
 		Name: "update_object_record",
-		Desc: "Update an existing custom object record. Can change the display_name and/or field values. Use search_objects first to find the record's ID.",
+		Desc: "Update any record (contact, deal, or custom object). Use search_objects first to find the record's ID. For contacts: display_name becomes first+last name, fields supports first_name, last_name, email, phone. For custom objects: pass display_name and/or fields.",
 		Params: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

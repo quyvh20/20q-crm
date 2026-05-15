@@ -506,7 +506,7 @@ search_objects — Universal object search. Works for ANY object type (base or c
 
 create_object_record — Inline form for new custom object records. Works like create_contact / create_deal: call the tool immediately with all extracted data. The inline form IS the user's confirmation step. Pass object_slug, display_name, and fields (key-value pairs matching the schema). NEVER show a text confirmation table — call the tool immediately. Example: create_object_record(object_slug="ticket", display_name="Billing Issue #123", fields={"subject": "Cannot process payment", "priority": "high"}).
 
-update_object_record — Update an existing custom object record's name or fields. REQUIRES the record's UUID. If the user references a record by name, FIRST call search_objects to find its ID, then call update_object_record with the record_id. Pass only the fields that should change. Example: update_object_record(object_slug="ticket", record_id="uuid-here", display_name="New Name", fields={"priority": "low"}).
+update_object_record — Update ANY record (contact, deal, or custom object). Works for ALL object types. REQUIRES the record's UUID. If the user references a record by name, FIRST call search_objects to find its ID, then call update_object_record. For contacts: display_name splits into first/last name, fields supports first_name, last_name, email, phone. For deals: delegates to update_deal. For custom objects: pass display_name and/or fields to change. Example: update_object_record(object_slug="contact", record_id="uuid", display_name="John Doe", fields={"email": "new@email.com"}).
 
 SESSION CONTEXT AWARENESS:
 - You have access to session context showing records previously created or viewed in this conversation.
@@ -1114,6 +1114,7 @@ func (cc *CommandCenter) toolCreateObjectRecord(ctx context.Context, orgID, user
 }
 
 // toolUpdateObjectRecord updates an existing custom object record.
+// For base types (contact, deal), it delegates to the appropriate repository.
 func (cc *CommandCenter) toolUpdateObjectRecord(ctx context.Context, orgID uuid.UUID, params map[string]interface{}) json.RawMessage {
 	slug, _ := params["object_slug"].(string)
 	if slug == "" {
@@ -1131,20 +1132,29 @@ func (cc *CommandCenter) toolUpdateObjectRecord(ctx context.Context, orgID uuid.
 		return out
 	}
 
+	// ── Route base types to their native repositories ─────────────────────
+	if slug == "contact" || slug == "contacts" {
+		return cc.toolUpdateContact(ctx, orgID, recordID, params)
+	}
+	if slug == "deal" || slug == "deals" {
+		// Reuse existing update_deal tool by mapping params
+		params["deal_id"] = recordIDStr
+		if newName, ok := params["display_name"].(string); ok && newName != "" {
+			params["deal_title"] = newName
+		}
+		return cc.toolUpdateDeal(ctx, orgID, uuid.Nil, "owner", params)
+	}
+
+	// ── Custom object update ──────────────────────────────────────────────
 	if cc.customObjUC == nil {
 		out, _ := json.Marshal(map[string]any{"error": "custom objects not configured"})
 		return out
 	}
 
-	// Build the update input
 	input := domain.UpdateRecordInput{}
-
-	// Update display_name if provided
 	if newName, ok := params["display_name"].(string); ok && newName != "" {
 		input.DisplayName = &newName
 	}
-
-	// Update fields if provided — merge with existing data
 	if fields, ok := params["fields"].(map[string]interface{}); ok && len(fields) > 0 {
 		dataJSON, err := json.Marshal(fields)
 		if err != nil {
@@ -1166,6 +1176,68 @@ func (cc *CommandCenter) toolUpdateObjectRecord(ctx context.Context, orgID uuid.
 		"display_name": record.DisplayName,
 		"object_type":  slug,
 		"message":      slug + " record updated successfully",
+	})
+	return out
+}
+
+// toolUpdateContact handles contact updates via the unified update_object_record tool.
+func (cc *CommandCenter) toolUpdateContact(ctx context.Context, orgID, contactID uuid.UUID, params map[string]interface{}) json.RawMessage {
+	contact, err := cc.contactRepo.GetByID(ctx, orgID, contactID)
+	if err != nil || contact == nil {
+		out, _ := json.Marshal(map[string]any{"error": "contact not found"})
+		return out
+	}
+
+	// Map display_name → first/last name
+	if newName, ok := params["display_name"].(string); ok && newName != "" {
+		parts := strings.SplitN(newName, " ", 2)
+		contact.FirstName = parts[0]
+		if len(parts) > 1 {
+			contact.LastName = parts[1]
+		} else {
+			contact.LastName = ""
+		}
+	}
+
+	// Map individual fields from the "fields" parameter
+	if fields, ok := params["fields"].(map[string]interface{}); ok {
+		if v, ok := fields["first_name"].(string); ok {
+			contact.FirstName = v
+		}
+		if v, ok := fields["last_name"].(string); ok {
+			contact.LastName = v
+		}
+		if v, ok := fields["email"].(string); ok {
+			contact.Email = &v
+		}
+		if v, ok := fields["phone"].(string); ok {
+			contact.Phone = &v
+		}
+		// Collect remaining fields as custom_fields
+		cfMap := make(map[string]interface{})
+		knownKeys := map[string]bool{"first_name": true, "last_name": true, "email": true, "phone": true}
+		for k, v := range fields {
+			if !knownKeys[k] {
+				cfMap[k] = v
+			}
+		}
+		if len(cfMap) > 0 {
+			cfJSON, _ := json.Marshal(cfMap)
+			contact.CustomFields = cfJSON
+		}
+	}
+
+	if err := cc.contactRepo.Update(ctx, contact); err != nil {
+		out, _ := json.Marshal(map[string]any{"error": "Failed to update contact: " + err.Error()})
+		return out
+	}
+
+	out, _ := json.Marshal(map[string]any{
+		"success":    true,
+		"id":         contact.ID,
+		"name":       strings.TrimSpace(contact.FirstName + " " + contact.LastName),
+		"object_type": "contact",
+		"message":    "Contact updated successfully",
 	})
 	return out
 }
