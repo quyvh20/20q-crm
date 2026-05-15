@@ -356,9 +356,9 @@ func (cc *CommandCenter) Execute(
 			events <- CommandEvent{Type: "confirm", Data: confirmData}
 		}
 
-		// If ALL tool calls were form events (no reads to summarize, no writes to confirm),
-		// skip the summary AI call — the form IS the response. No stray "}" bubbles.
-		if len(readCalls) == 0 && len(writeCalls) == 0 {
+		// If no reads to summarize, skip the summary AI call.
+		// The confirm banner (or form) IS the response — no AI text needed.
+		if len(readCalls) == 0 {
 			events <- CommandEvent{Type: "done", Done: true}
 			return
 		}
@@ -381,7 +381,7 @@ func (cc *CommandCenter) Execute(
 		// CRITICAL MEMORY TRICK: We force the AI to embed the UUID in markdown links.
 		// That way, the UUID is saved in the chat history text, allowing the AI to recall it for follow-up actions like "Update the second one"!
 		const summaryDirective = "Summarize the results above clearly. Use rich markdown (tables, lists, bold text). IMPORTANT: When listing records (deals, contacts, tasks), you MUST embed their UUID invisibly using markdown empty links, e.g., `[Deal Name](#uuid)`. You must do this so you can remember their IDs for follow-up actions."
-		const confirmDirective = "Acknowledge what you found and state what action is pending user confirmation. Keep this confirmation concise."
+		const confirmDirective = "Briefly summarize ONLY the search results you found. Do NOT describe or mention any pending action — the system will show a separate confirmation banner for that. Keep your response to 1-2 sentences."
 		summaryContent := summaryDirective
 		if len(writeCalls) > 0 {
 			summaryContent = confirmDirective
@@ -562,9 +562,18 @@ func (cc *CommandCenter) describeWrite(tc ToolCall) string {
 		return fmt.Sprintf("Create %s: **%s**", slug, name)
 	case "update_object_record":
 		slug, _ := p["object_slug"].(string)
-		newName, _ := p["display_name"].(string)
-		if newName != "" {
-			return fmt.Sprintf("Rename %s record to **%s**", slug, newName)
+		// Build a human-readable description of what's changing
+		var changes []string
+		if newName, ok := p["display_name"].(string); ok && newName != "" {
+			changes = append(changes, fmt.Sprintf("name → **%s**", newName))
+		}
+		if fields, ok := p["fields"].(map[string]interface{}); ok {
+			for k, v := range fields {
+				changes = append(changes, fmt.Sprintf("%s → **%v**", k, v))
+			}
+		}
+		if len(changes) > 0 {
+			return fmt.Sprintf("Update %s — %s", slug, strings.Join(changes, ", "))
 		}
 		return fmt.Sprintf("Update %s record", slug)
 	}
