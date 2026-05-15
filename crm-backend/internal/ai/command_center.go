@@ -356,13 +356,50 @@ func (cc *CommandCenter) Execute(
 			events <- CommandEvent{Type: "confirm", Data: confirmData}
 		}
 
-		// If no reads to summarize, skip the summary AI call.
-		// The confirm banner (or form) IS the response — no AI text needed.
-		if len(readCalls) == 0 {
+		// If writes are pending, skip the expensive summary AI call.
+		// The confirm banner describes the action; we only need a brief search summary.
+		if len(writeCalls) > 0 {
+			// Build a lightweight summary from read results if any
+			if len(readCalls) > 0 {
+				var summaryParts []string
+				for _, r := range readResults {
+					// Extract key info from tool results
+					var parsed map[string]interface{}
+					if err := json.Unmarshal(r.output, &parsed); err == nil {
+						if count, ok := parsed["count"].(float64); ok {
+							objType, _ := parsed["object_type"].(string)
+							if objType == "" {
+								objType = r.name
+							}
+							if records, ok := parsed["records"].([]interface{}); ok && int(count) > 0 && len(records) > 0 {
+								// Get first record name
+								if first, ok := records[0].(map[string]interface{}); ok {
+									name := ""
+									if n, ok := first["name"].(string); ok {
+										name = n
+									} else if n, ok := first["display_name"].(string); ok {
+										name = n
+									}
+									if name != "" {
+										summaryParts = append(summaryParts, fmt.Sprintf("Found **%s** (%s).", name, objType))
+									} else {
+										summaryParts = append(summaryParts, fmt.Sprintf("Found %d %s record(s).", int(count), objType))
+									}
+								}
+							}
+						}
+					}
+				}
+				if len(summaryParts) > 0 {
+					summaryText := strings.Join(summaryParts, " ")
+					events <- CommandEvent{Type: "response", Message: summaryText, Done: false}
+				}
+			}
 			events <- CommandEvent{Type: "done", Done: true}
 			return
 		}
 
+		// No writes — pure read flow. Ask AI to summarize tool results with rich markdown.
 		// Build final message list for AI summary
 		messages = append(messages, Message{
 			Role:      "assistant",
@@ -377,16 +414,10 @@ func (cc *CommandCenter) Execute(
 			})
 		}
 
-		// Ask AI to summarize tool results — use rich markdown but keep confirmations brief
 		// CRITICAL MEMORY TRICK: We force the AI to embed the UUID in markdown links.
 		// That way, the UUID is saved in the chat history text, allowing the AI to recall it for follow-up actions like "Update the second one"!
 		const summaryDirective = "Summarize the results above clearly. Use rich markdown (tables, lists, bold text). IMPORTANT: When listing records (deals, contacts, tasks), you MUST embed their UUID invisibly using markdown empty links, e.g., `[Deal Name](#uuid)`. You must do this so you can remember their IDs for follow-up actions."
-		const confirmDirective = "Briefly summarize ONLY the search results you found. Do NOT describe or mention any pending action — the system will show a separate confirmation banner for that. Keep your response to 1-2 sentences."
-		summaryContent := summaryDirective
-		if len(writeCalls) > 0 {
-			summaryContent = confirmDirective
-		}
-		messages = append(messages, Message{Role: "user", Content: summaryContent})
+		messages = append(messages, Message{Role: "user", Content: summaryDirective})
 
 		events <- CommandEvent{Type: "thinking", Message: "Preparing your answer…"}
 		finalResp, err := cc.gateway.Complete(ctx, orgID, userID, TaskCommandCenter, messages)
@@ -506,7 +537,10 @@ search_objects — Universal object search. Works for ANY object type (base or c
 
 create_object_record — Inline form for new custom object records. Works like create_contact / create_deal: call the tool immediately with all extracted data. The inline form IS the user's confirmation step. Pass object_slug, display_name, and fields (key-value pairs matching the schema). NEVER show a text confirmation table — call the tool immediately. Example: create_object_record(object_slug="ticket", display_name="Billing Issue #123", fields={"subject": "Cannot process payment", "priority": "high"}).
 
-update_object_record — Update ANY record (contact, deal, or custom object). Works for ALL object types. REQUIRES the record's UUID. If the user references a record by name, FIRST call search_objects to find its ID, then call update_object_record. For contacts: display_name splits into first/last name, fields supports first_name, last_name, email, phone. For deals: delegates to update_deal. For custom objects: pass display_name and/or fields to change. Example: update_object_record(object_slug="contact", record_id="uuid", display_name="John Doe", fields={"email": "new@email.com"}).
+update_object_record — Update ANY record (contact, deal, or custom object). REQUIRES the record's UUID.
+  If the user references a record by name, FIRST call search_objects to find its ID. Once you have the UUID, IMMEDIATELY call update_object_record — do NOT ask the user for confirmation in text. The system shows a confirmation banner automatically.
+  For contacts: display_name splits into first/last name, fields supports first_name, last_name, email, phone.
+  For custom objects: pass display_name and/or fields to change.
 
 SESSION CONTEXT AWARENESS:
 - You have access to session context showing records previously created or viewed in this conversation.
