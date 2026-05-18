@@ -302,6 +302,9 @@ func main() {
 		// Wire custom object create/update → automation trigger
 		customObjHandler.SetEventEmitter(autoEngine.TriggerEvent)
 
+		// Wire deal stage change → automation trigger
+		dealHandler.SetEventEmitter(autoEngine.TriggerEvent)
+
 		log.Info("All routes registered (including automation)")
 	} else {
 		log.Warn("Database not connected — routes skipped")

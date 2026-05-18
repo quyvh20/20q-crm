@@ -16,6 +16,7 @@ export const RunHistory: React.FC = () => {
   const [actionLogs, setActionLogs] = useState<ActionLog[]>([]);
   const [loadingLogs, setLoadingLogs] = useState(false);
 
+  // Full fetch — shows the loading spinner (used on initial mount + page changes).
   const fetchRuns = useCallback(async () => {
     if (!id) return;
     setLoading(true);
@@ -33,6 +34,31 @@ export const RunHistory: React.FC = () => {
       setLoading(false);
     }
   }, [id, page]);
+
+  // Silent background refresh — no spinner, used by the polling interval.
+  const silentRefresh = useCallback(async () => {
+    if (!id) return;
+    try {
+      const [wf, runsResp] = await Promise.all([
+        getWorkflow(id),
+        getWorkflowRuns(id, page),
+      ]);
+      setWorkflow(wf);
+      setRuns(runsResp.runs || []);
+      setTotal(runsResp.total);
+    } catch (e) {
+      console.error('Background refresh failed:', e);
+    }
+  }, [id, page]);
+
+  // Auto-poll every 5 s while any run is pending or running.
+  const ACTIVE_STATUSES = ['pending', 'running'];
+  useEffect(() => {
+    const hasActive = runs.some((r) => ACTIVE_STATUSES.includes(r.status));
+    if (!hasActive) return;
+    const interval = setInterval(silentRefresh, 5000);
+    return () => clearInterval(interval);
+  }, [runs, silentRefresh]);
 
   useEffect(() => {
     fetchRuns();

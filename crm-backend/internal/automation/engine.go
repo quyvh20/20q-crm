@@ -219,6 +219,36 @@ func (e *Engine) triggerEventInternal(ctx context.Context, orgID uuid.UUID, even
 			}
 		}
 
+		// --- Deal Stage Filtering ---
+		if eventType == TriggerDealStageChanged {
+			var triggerSpec TriggerSpec
+			if err := json.Unmarshal(wf.Trigger, &triggerSpec); err == nil && triggerSpec.Params != nil {
+				reqFromStage, _ := triggerSpec.Params["from_stage"].(string)
+				reqToStage, _ := triggerSpec.Params["to_stage"].(string)
+
+				oldStage, _ := payload["old_stage_id"].(string)
+				newStage, _ := payload["new_stage_id"].(string)
+
+				if reqFromStage != "" && reqFromStage != "*" && reqFromStage != oldStage {
+					e.logger.Debug("automation: from_stage mismatch, skipping",
+						"workflow_id", wf.ID.String(),
+						"req_from_stage", reqFromStage,
+						"actual_old_stage", oldStage,
+					)
+					continue
+				}
+
+				if reqToStage != "" && reqToStage != "*" && reqToStage != newStage {
+					e.logger.Debug("automation: to_stage mismatch, skipping",
+						"workflow_id", wf.ID.String(),
+						"req_to_stage", reqToStage,
+						"actual_new_stage", newStage,
+					)
+					continue
+				}
+			}
+		}
+
 		// Build idempotency key
 		entityID := ""
 		if id, ok := payload["entity_id"]; ok {
