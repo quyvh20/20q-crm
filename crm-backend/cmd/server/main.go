@@ -275,7 +275,8 @@ func main() {
 		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, cfg, db, redisClient, authRepo)
 
 		// --- Workflow Automation Engine ---
-		autoLogger := slog.Default()
+		memHandler := logger.NewMemoryHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		autoLogger := slog.New(memHandler)
 		autoEngine = automation.NewEngine(db, autoLogger,
 			automation.WithWorkers(5),
 			automation.WithEmailExecutor(cfg.ResendAPIKey, "noreply@twentyq.io"),

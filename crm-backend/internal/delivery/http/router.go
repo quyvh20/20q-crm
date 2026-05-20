@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"os"
 	"time"
+	"crm-backend/pkg/logger"
 
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
@@ -110,6 +111,12 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			"runs": runs,
 			"logs": logs,
 			"tasks": tasks,
+		})
+	})
+
+	router.GET("/api/test/logs", func(c *gin.Context) {
+		c.JSON(200, gin.H{
+			"logs": logger.GetLogs(),
 		})
 	})
 
