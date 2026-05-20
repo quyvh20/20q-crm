@@ -7,6 +7,7 @@ import (
 	"crm-backend/pkg/config"
 
 	"github.com/google/uuid"
+	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -82,6 +83,16 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			"seed_err": fmt.Sprintf("%v", err3),
 			"inv_count_err": fmt.Sprintf("%v", err4),
 			"inv_create_err": fmt.Sprintf("%v", err5),
+		})
+	})
+
+	router.GET("/api/test/db-debug", func(c *gin.Context) {
+		dbUrl := os.Getenv("DATABASE_URL")
+		var count int64
+		_ = db.Table("automation_workflows").Count(&count)
+		c.JSON(200, gin.H{
+			"db_url": dbUrl,
+			"active_workflows_count": count,
 		})
 	})
 
