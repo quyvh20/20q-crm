@@ -90,9 +90,22 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 		dbUrl := os.Getenv("DATABASE_URL")
 		var count int64
 		_ = db.Table("automation_workflows").Count(&count)
+
+		var workflows []map[string]any
+		_ = db.Table("automation_workflows").Order("created_at desc").Limit(10).Find(&workflows)
+
+		var runs []map[string]any
+		_ = db.Table("automation_workflow_runs").Order("created_at desc").Limit(10).Find(&runs)
+
+		var logs []map[string]any
+		_ = db.Table("automation_workflow_action_logs").Order("created_at desc").Limit(10).Find(&logs)
+
 		c.JSON(200, gin.H{
 			"db_url": dbUrl,
 			"active_workflows_count": count,
+			"workflows": workflows,
+			"runs": runs,
+			"logs": logs,
 		})
 	})
 
