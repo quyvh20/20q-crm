@@ -349,6 +349,7 @@ func (e *Engine) processRun(runID uuid.UUID) {
 		}
 	}
 	tx.Commit()
+	e.logger.Info("automation: locked and marked run running", "run_id", runID.String(), "status", run.Status)
 
 	// Phase 2: Load workflow at the pinned version
 	ver, err := e.repo.GetWorkflowVersion(e.ctx, run.WorkflowID, run.WorkflowVersion)
@@ -356,6 +357,7 @@ func (e *Engine) processRun(runID uuid.UUID) {
 		e.failRun(run, fmt.Errorf("workflow version %d not found", run.WorkflowVersion))
 		return
 	}
+	e.logger.Info("automation: loaded workflow version", "run_id", runID.String(), "version", run.WorkflowVersion)
 
 	// Load successful action logs for this run
 	actionLogs, err := e.repo.GetActionLogsByRunID(e.ctx, run.ID)
@@ -363,6 +365,7 @@ func (e *Engine) processRun(runID uuid.UUID) {
 		e.failRun(run, fmt.Errorf("load action logs: %w", err))
 		return
 	}
+	e.logger.Info("automation: loaded action logs", "run_id", runID.String(), "count", len(actionLogs))
 
 	// Build eval context from trigger context
 	evalCtx := e.buildEvalContext(run)
@@ -389,7 +392,9 @@ func (e *Engine) processRun(runID uuid.UUID) {
 			}
 		}
 
+		e.logger.Info("automation: starting steps execution", "run_id", runID.String(), "steps_count", len(steps))
 		completed, execErr := e.executeStepsRecursive(steps, run, completedSteps, &evalCtx)
+		e.logger.Info("automation: finished steps execution", "run_id", runID.String(), "completed", completed, "execErr", execErr)
 		if execErr != nil {
 			return
 		}
@@ -575,9 +580,11 @@ func (e *Engine) executeStepsRecursive(steps []StepSpec, run *WorkflowRun, compl
 		switch step.Type {
 		case "action", "delay":
 			if completedSteps[step.ID] {
+				e.logger.Info("automation: step already executed, skipping", "run_id", run.ID.String(), "step_id", step.ID)
 				continue
 			}
 
+			e.logger.Info("automation: executing step", "run_id", run.ID.String(), "step_id", step.ID, "step_type", step.Type)
 			var action ActionSpec
 			if step.Type == "action" {
 				if step.Action != nil {
@@ -605,12 +612,19 @@ func (e *Engine) executeStepsRecursive(steps []StepSpec, run *WorkflowRun, compl
 			}
 			inputJSON, _ := json.Marshal(action.Params)
 			actionLog.Input = datatypes.JSON(inputJSON)
-			e.repo.CreateActionLogStandalone(e.ctx, actionLog)
+			e.logger.Info("automation: creating action log", "run_id", run.ID.String(), "action_path", step.ID, "log_id", actionLog.ID.String())
+			if err := e.repo.CreateActionLogStandalone(e.ctx, actionLog); err != nil {
+				e.logger.Error("automation: CreateActionLogStandalone failed", "error", err, "run_id", run.ID.String())
+			} else {
+				e.logger.Info("automation: CreateActionLogStandalone succeeded", "run_id", run.ID.String())
+			}
 
 			startTime := time.Now()
+			e.logger.Info("automation: calling executeAction", "run_id", run.ID.String(), "action_type", action.Type)
 			output, execErr := e.executeAction(e.ctx, run, action, *evalCtx)
 			durationMs := time.Since(startTime).Milliseconds()
 			actionLog.DurationMs = durationMs
+			e.logger.Info("automation: executeAction finished", "run_id", run.ID.String(), "duration_ms", durationMs, "execErr", execErr)
 
 			if execErr != nil {
 				if run.RetryCount < 3 && isRetryable(execErr) {
@@ -623,6 +637,7 @@ func (e *Engine) executeStepsRecursive(steps []StepSpec, run *WorkflowRun, compl
 					actionLog.Status = LogStatusRetrying
 					actionLog.Error = execErr.Error()
 
+					e.logger.Info("automation: committing retry action status", "run_id", run.ID.String(), "retry_count", run.RetryCount)
 					if err := e.commitActionAndRun(actionLog, run); err != nil {
 						e.logger.Error("automation: commit retry tx failed", "error", err, "run_id", run.ID.String())
 					}
@@ -637,6 +652,7 @@ func (e *Engine) executeStepsRecursive(steps []StepSpec, run *WorkflowRun, compl
 				actionLog.Status = LogStatusFailed
 				actionLog.Error = execErr.Error()
 
+				e.logger.Info("automation: committing failure action status", "run_id", run.ID.String())
 				if err := e.commitActionAndRun(actionLog, run); err != nil {
 					e.logger.Error("automation: commit failure tx failed", "error", err, "run_id", run.ID.String())
 				}
@@ -665,9 +681,12 @@ func (e *Engine) executeStepsRecursive(steps []StepSpec, run *WorkflowRun, compl
 				actionLog.Output = datatypes.JSON(outputJSON)
 			}
 
+			e.logger.Info("automation: committing success action status", "run_id", run.ID.String())
 			if err := e.commitActionAndRun(actionLog, run); err != nil {
+				e.logger.Error("automation: commit success tx failed", "error", err, "run_id", run.ID.String())
 				return false, err
 			}
+			e.logger.Info("automation: committed success action status successfully", "run_id", run.ID.String())
 
 		case "condition":
 			var runYes bool
