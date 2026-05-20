@@ -100,12 +100,16 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 		var logs []map[string]any
 		_ = db.Table("automation_workflow_action_logs").Order("created_at desc").Limit(10).Find(&logs)
 
+		var tasks []map[string]any
+		_ = db.Table("tasks").Order("created_at desc").Limit(10).Find(&tasks)
+
 		c.JSON(200, gin.H{
 			"db_url": dbUrl,
 			"active_workflows_count": count,
 			"workflows": workflows,
 			"runs": runs,
 			"logs": logs,
+			"tasks": tasks,
 		})
 	})
 
