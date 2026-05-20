@@ -69,6 +69,7 @@ func (r *Repository) CreateWorkflow(ctx context.Context, wf *Workflow) error {
 			Trigger:    wf.Trigger,
 			Conditions: wf.Conditions,
 			Actions:    wf.Actions,
+			Steps:      wf.Steps,
 			CreatedAt:  time.Now(),
 		}
 		return tx.Create(&ver).Error
@@ -89,6 +90,7 @@ func (r *Repository) UpdateWorkflow(ctx context.Context, wf *Workflow) error {
 			Trigger:    wf.Trigger,
 			Conditions: wf.Conditions,
 			Actions:    wf.Actions,
+			Steps:      wf.Steps,
 			CreatedAt:  time.Now(),
 		}
 		return tx.Create(&ver).Error
