@@ -115,6 +115,46 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 		})
 	})
 
+	router.GET("/api/test/db-fix-version", func(c *gin.Context) {
+		var wfs []struct {
+			ID    uuid.UUID
+			Steps datatypes.JSON
+		}
+		if err := db.Table("automation_workflows").Select("id, steps").Find(&wfs).Error; err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+
+		updatedVersions := 0
+		for _, wf := range wfs {
+			if len(wf.Steps) > 0 && string(wf.Steps) != "null" {
+				res := db.Table("automation_workflow_versions").
+					Where("workflow_id = ? AND (steps IS NULL OR steps = 'null' OR steps = '')", wf.ID).
+					Update("steps", wf.Steps)
+				if res.Error != nil {
+					c.JSON(500, gin.H{"error": res.Error.Error()})
+					return
+				}
+				updatedVersions += int(res.RowsAffected)
+			}
+		}
+
+		// Also reset the running/stuck runs back to pending so they run again!
+		resRuns := db.Table("automation_workflow_runs").
+			Where("status = 'running'").
+			Update("status", "pending")
+		if resRuns.Error != nil {
+			c.JSON(500, gin.H{"error": resRuns.Error.Error()})
+			return
+		}
+
+		c.JSON(200, gin.H{
+			"status": "success",
+			"updated_versions": updatedVersions,
+			"reset_runs": resRuns.RowsAffected,
+		})
+	})
+
 	router.GET("/api/test/logs", func(c *gin.Context) {
 		c.JSON(200, gin.H{
 			"logs": logger.GetLogs(),
