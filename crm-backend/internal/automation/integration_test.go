@@ -1308,6 +1308,7 @@ func TestIntegration_RecursiveTreeExecution(t *testing.T) {
 		Name:      "Tree-based workflow",
 		IsActive:  true,
 		Trigger:   datatypes.JSON(triggerJSON),
+		Actions:   datatypes.JSON("[]"),
 		Steps:     datatypes.JSON(stepsJSON),
 		Version:   1,
 		CreatedBy: uuid.New(),
@@ -1319,6 +1320,7 @@ func TestIntegration_RecursiveTreeExecution(t *testing.T) {
 		WorkflowID: wf.ID,
 		Version:    1,
 		Trigger:    wf.Trigger,
+		Actions:    wf.Actions,
 		Steps:      wf.Steps,
 		CreatedAt:  time.Now(),
 	}
