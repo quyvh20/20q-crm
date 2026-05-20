@@ -1273,7 +1273,7 @@ func TestIntegration_RecursiveTreeExecution(t *testing.T) {
 				Rules: []ConditionRule{
 					{
 						Field:    "contact.is_vip",
-						Operator: "==",
+						Operator: "eq",
 						Value:    "true",
 					},
 				},
