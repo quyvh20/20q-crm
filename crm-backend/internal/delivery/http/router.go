@@ -131,7 +131,7 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			if len(wf.Steps) > 0 && string(wf.Steps) != "null" {
 				res := db.Table("automation_workflow_versions").
 					Where("workflow_id = ? AND (steps IS NULL OR steps = 'null' OR steps = '')", wf.ID).
-					Update("steps", wf.Steps)
+					Update("steps", gorm.Expr("?::jsonb", string(wf.Steps)))
 				if res.Error != nil {
 					c.JSON(500, gin.H{"error": res.Error.Error()})
 					return
