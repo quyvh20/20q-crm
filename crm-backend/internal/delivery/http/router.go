@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"os"
+	"runtime"
 	"time"
 	"crm-backend/pkg/logger"
 
@@ -118,6 +119,12 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 		c.JSON(200, gin.H{
 			"logs": logger.GetLogs(),
 		})
+	})
+
+	router.GET("/api/test/goroutines", func(c *gin.Context) {
+		buf := make([]byte, 1<<20)
+		n := runtime.Stack(buf, true)
+		c.Data(200, "text/plain; charset=utf-8", buf[:n])
 	})
 
 	api := router.Group("/api")
