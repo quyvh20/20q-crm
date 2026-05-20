@@ -40,7 +40,7 @@ function deriveObjectSlug(triggerType: string): string {
 }
 
 export const ConditionConfigPanel: React.FC = () => {
-  const { trigger, conditions, setConditions, schema, schemaLoading, schemaError, invalidateSchema, errors, fetchObjectFields } = useBuilderStore();
+  const { trigger, conditions, setConditions, schema, schemaLoading, schemaError, invalidateSchema, errors, fetchObjectFields, selectedNodeId, findStep, updateStep } = useBuilderStore();
 
   // Derive firesOn + object from current trigger
   const firesOn = useMemo<FiresOn>(() => {
@@ -79,10 +79,28 @@ export const ConditionConfigPanel: React.FC = () => {
   };
   useEffect(() => () => clearTimeout(resetTimer.current), []);
 
-  const group: ConditionGroup = conditions || { op: 'AND', rules: [] };
+  const isGlobalConditions = selectedNodeId === 'conditions';
+  const step = useMemo(() => {
+    if (isGlobalConditions || !selectedNodeId) return null;
+    return findStep(selectedNodeId);
+  }, [selectedNodeId, findStep, isGlobalConditions]);
+
+  const group: ConditionGroup = useMemo(() => {
+    if (isGlobalConditions) {
+      return conditions || { op: 'AND', rules: [] };
+    }
+    if (step && step.type === 'condition') {
+      return step.condition || { op: 'AND', rules: [] };
+    }
+    return { op: 'AND', rules: [] };
+  }, [isGlobalConditions, conditions, step]);
 
   const updateGroup = (updates: Partial<ConditionGroup>) => {
-    setConditions({ ...group, ...updates });
+    if (isGlobalConditions) {
+      setConditions({ ...group, ...updates });
+    } else if (step) {
+      updateStep(step.id, { condition: { ...group, ...updates } });
+    }
   };
 
   const addRule = () => {
@@ -101,7 +119,11 @@ export const ConditionConfigPanel: React.FC = () => {
   const removeRule = (index: number) => {
     const newRules = group.rules.filter((_, i) => i !== index);
     if (newRules.length === 0) {
-      setConditions(null);
+      if (isGlobalConditions) {
+        setConditions(null);
+      } else if (step) {
+        updateStep(step.id, { condition: { op: 'AND', rules: [] } });
+      }
     } else {
       updateGroup({ rules: newRules });
     }

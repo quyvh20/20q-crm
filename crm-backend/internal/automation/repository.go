@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
 
@@ -41,6 +42,9 @@ func (r *Repository) AutoMigrate() error {
 	r.db.Exec(`CREATE INDEX IF NOT EXISTS idx_wf_action_logs_run_action ON automation_workflow_action_logs (run_id, action_idx)`)
 	r.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_wf_versions_wf_ver ON automation_workflow_versions (workflow_id, version)`)
 	r.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_wf_runs_wf_idemp ON automation_workflow_runs (workflow_id, idempotency_key)`)
+
+	// Run data migration from actions -> steps
+	_ = r.MigrateFlatActionsToSteps(context.Background())
 
 	return nil
 }
@@ -456,3 +460,84 @@ func searchSubstring(s, substr string) bool {
 	}
 	return false
 }
+
+// MigrateFlatActionsToSteps automatically converts older flat actions workflows to recursive steps tree.
+func (r *Repository) MigrateFlatActionsToSteps(ctx context.Context) error {
+	// 1. Migrate workflows table
+	var workflows []Workflow
+	if err := r.db.WithContext(ctx).Where("steps IS NULL OR steps = 'null'::jsonb").Find(&workflows).Error; err != nil {
+		return err
+	}
+	for _, wf := range workflows {
+		if len(wf.Actions) == 0 || string(wf.Actions) == "null" {
+			continue
+		}
+		var actions []ActionSpec
+		if err := json.Unmarshal(wf.Actions, &actions); err != nil {
+			continue
+		}
+		var steps []StepSpec
+		for _, action := range actions {
+			if action.Type == "delay" {
+				steps = append(steps, StepSpec{
+					Type:   "delay",
+					ID:     action.ID,
+					Params: action.Params,
+				})
+			} else {
+				a := action
+				steps = append(steps, StepSpec{
+					Type:   "action",
+					ID:     action.ID,
+					Action: &a,
+				})
+			}
+		}
+		stepsJSON, err := json.Marshal(steps)
+		if err != nil {
+			continue
+		}
+		wf.Steps = datatypes.JSON(stepsJSON)
+		_ = r.db.WithContext(ctx).Model(&wf).Update("steps", wf.Steps).Error
+	}
+
+	// 2. Migrate workflow versions table
+	var versions []WorkflowVersion
+	if err := r.db.WithContext(ctx).Where("steps IS NULL OR steps = 'null'::jsonb").Find(&versions).Error; err != nil {
+		return err
+	}
+	for _, ver := range versions {
+		if len(ver.Actions) == 0 || string(ver.Actions) == "null" {
+			continue
+		}
+		var actions []ActionSpec
+		if err := json.Unmarshal(ver.Actions, &actions); err != nil {
+			continue
+		}
+		var steps []StepSpec
+		for _, action := range actions {
+			if action.Type == "delay" {
+				steps = append(steps, StepSpec{
+					Type:   "delay",
+					ID:     action.ID,
+					Params: action.Params,
+				})
+			} else {
+				a := action
+				steps = append(steps, StepSpec{
+					Type:   "action",
+					ID:     action.ID,
+					Action: &a,
+				})
+			}
+		}
+		stepsJSON, err := json.Marshal(steps)
+		if err != nil {
+			continue
+		}
+		ver.Steps = datatypes.JSON(stepsJSON)
+		_ = r.db.WithContext(ctx).Model(&ver).Update("steps", ver.Steps).Error
+	}
+	return nil
+}
+

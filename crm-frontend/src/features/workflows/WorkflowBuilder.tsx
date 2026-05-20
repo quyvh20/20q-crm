@@ -10,17 +10,11 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from '@dnd-kit/core';
-import {
-  SortableContext,
-  sortableKeyboardCoordinates,
-  verticalListSortingStrategy,
-} from '@dnd-kit/sortable';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useBuilderStore, generateActionId } from './store';
 import { TriggerNode } from './nodes/TriggerNode';
 import { ConditionNode } from './nodes/ConditionNode';
-import { ActionNode } from './nodes/ActionNode';
-import { AddNodeButton } from './nodes/AddNodeButton';
+import { WorkflowStepList } from './nodes/WorkflowStepList';
 import { TriggerConfigPanel } from './panels/TriggerConfigPanel';
 import { ConditionConfigPanel } from './panels/ConditionConfigPanel';
 import { ActionConfigPanel } from './panels/ActionConfigPanel';
@@ -48,15 +42,15 @@ export const WorkflowBuilder: React.FC = () => {
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+    useSensor(KeyboardSensor, { coordinateGetter: () => ({ x: 0, y: 0 }) })
   );
 
-  const [activeDragType, setActiveDragType] = useState<ActionType | null>(null);
+  const [activeDragType, setActiveDragType] = useState<string | null>(null);
 
   const handleDragStart = useCallback((event: DragStartEvent) => {
     const data = event.active.data.current;
     if (data?.source === 'palette') {
-      setActiveDragType(data.actionType as ActionType);
+      setActiveDragType(data.actionType as string);
     }
   }, []);
 
@@ -70,25 +64,65 @@ export const WorkflowBuilder: React.FC = () => {
 
       // Palette → drop zone
       if (activeData?.source === 'palette' && over.id.toString().startsWith('dropzone-')) {
-        const targetIndex = overData?.targetIndex ?? store.actions.length;
-        const actionType = activeData.actionType as ActionType;
-        store.insertAction(
-          {
-            type: actionType,
-            id: generateActionId(),
-            params: getDefaultParams(actionType),
-          },
-          targetIndex
-        );
+        const parentId = overData?.parentId ?? null;
+        const branch = overData?.branch ?? null;
+        const targetIndex = overData?.targetIndex ?? 0;
+        const actionType = activeData.actionType as string;
+
+        const id = generateActionId();
+        if (actionType === 'condition') {
+          store.addStep(
+            {
+              id,
+              type: 'condition',
+              condition: {
+                op: 'AND',
+                rules: [{ field: '', operator: 'eq', value: '' }],
+              },
+              yes_steps: [],
+              no_steps: [],
+            },
+            parentId,
+            branch,
+            targetIndex
+          );
+        } else {
+          store.addStep(
+            {
+              id,
+              type: actionType === 'delay' ? 'delay' : 'action',
+              action: actionType === 'delay' ? undefined : {
+                id,
+                type: actionType as any,
+                params: getDefaultParams(actionType as any),
+              },
+              params: actionType === 'delay' ? getDefaultParams('delay') : undefined,
+            },
+            parentId,
+            branch,
+            targetIndex
+          );
+        }
         return;
       }
 
       // Reorder within canvas
       if (activeData?.source === 'canvas') {
         const fromIdx = activeData.index;
-        const overAction = store.actions.findIndex((a) => a.id === over.id);
-        if (overAction !== -1 && fromIdx !== overAction) {
-          store.reorderActions(fromIdx, overAction);
+        if (over.id.toString().startsWith('dropzone-')) {
+          const parentId = overData?.parentId ?? null;
+          const branch = overData?.branch ?? null;
+          const targetIndex = overData?.targetIndex ?? 0;
+          store.reorderSteps(parentId, branch, fromIdx, targetIndex);
+        } else {
+          const activeStep = store.findStep(active.id.toString());
+          const overStep = store.findStep(over.id.toString());
+          if (activeStep && overStep) {
+            const overIndex = store.steps.findIndex((s) => s.id === over.id);
+            if (overIndex !== -1 && fromIdx !== overIndex) {
+              store.reorderSteps(null, null, fromIdx, overIndex);
+            }
+          }
         }
       }
     },
@@ -127,13 +161,19 @@ export const WorkflowBuilder: React.FC = () => {
   const renderConfigPanel = () => {
     if (store.selectedNodeId === 'trigger') return <TriggerConfigPanel />;
     if (store.selectedNodeId === 'conditions') return <ConditionConfigPanel />;
-    if (store.selectedNodeId && store.actions.find((a) => a.id === store.selectedNodeId)) {
-      return <ActionConfigPanel />;
+    if (store.selectedNodeId) {
+      const step = store.findStep(store.selectedNodeId);
+      if (step) {
+        if (step.type === 'condition') {
+          return <ConditionConfigPanel />;
+        }
+        return <ActionConfigPanel />;
+      }
     }
     return <ActionPalette />;
   };
 
-   return (
+  return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd2}>
       <div className="flex h-[calc(100vh-64px)]">
         {/* Left sidebar — palette + config */}
@@ -145,10 +185,11 @@ export const WorkflowBuilder: React.FC = () => {
               onChange={(e) => store.setName(e.target.value)}
               placeholder="Workflow name..."
               className={`w-full bg-transparent text-lg font-semibold text-white placeholder-gray-600 focus:outline-none border-b-2 pb-1 ${
-                store.errors.name ? 'border-red-500' : 'border-transparent focus:border-indigo-500'
+                store.errors.name || store.errors.steps ? 'border-red-500' : 'border-transparent focus:border-indigo-500'
               }`}
             />
             {store.errors.name && <p className="text-xs text-red-400 mt-1">{store.errors.name[0]}</p>}
+            {store.errors.steps && <p className="text-xs text-red-400 mt-1">{store.errors.steps[0]}</p>}
             <textarea
               value={store.description}
               onChange={(e) => store.setDescription(e.target.value)}
@@ -215,23 +256,14 @@ export const WorkflowBuilder: React.FC = () => {
             {/* Conditions */}
             <ConditionNode conditions={store.conditions} />
 
-            {/* Actions with sortable */}
-            <SortableContext
-              items={store.actions.map((a) => a.id)}
-              strategy={verticalListSortingStrategy}
-            >
-              <AddNodeButton index={0} />
-              {store.actions.map((action, idx) => (
-                <React.Fragment key={action.id}>
-                  <ActionNode action={action} index={idx} />
-                  <AddNodeButton index={idx + 1} />
-                </React.Fragment>
-              ))}
-            </SortableContext>
+            {/* Recursive Steps tree */}
+            <div className="w-full flex flex-col items-center">
+              <WorkflowStepList steps={store.steps || []} parentId={null} branch={null} />
+            </div>
 
-            {store.actions.length === 0 && (
+            {(store.steps || []).length === 0 && (
               <div className="text-center py-8 text-gray-600">
-                <p className="text-sm">Drag actions from the sidebar or click + to add steps</p>
+                <p className="text-sm">Drag actions/conditions from the sidebar or click + to add steps</p>
               </div>
             )}
           </div>
@@ -243,9 +275,11 @@ export const WorkflowBuilder: React.FC = () => {
         {activeDragType ? (
           <div className="flex items-center gap-3 p-3 rounded-xl border border-indigo-500 bg-gray-800 shadow-lg shadow-indigo-500/20 opacity-90">
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center text-sm">
-              {ACTION_ICONS[activeDragType]}
+              {activeDragType === 'condition' ? '🔀' : ACTION_ICONS[activeDragType as ActionType] || '⚙️'}
             </div>
-            <span className="text-sm text-white font-medium">{ACTION_LABELS[activeDragType]}</span>
+            <span className="text-sm text-white font-medium">
+              {activeDragType === 'condition' ? 'Condition Split' : ACTION_LABELS[activeDragType as ActionType]}
+            </span>
           </div>
         ) : null}
       </DragOverlay>
@@ -253,7 +287,7 @@ export const WorkflowBuilder: React.FC = () => {
   );
 };
 
-function getDefaultParams(type: ActionType): Record<string, unknown> {
+function getDefaultParams(type: string): Record<string, unknown> {
   switch (type) {
     case 'send_email':
       return { to: '', subject: '', body_html: '' };

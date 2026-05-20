@@ -26,6 +26,16 @@ export interface ActionSpec {
   params: Record<string, unknown>;
 }
 
+export interface WorkflowStep {
+  id: string;
+  type: 'action' | 'condition' | 'delay';
+  action?: ActionSpec;
+  condition?: ConditionGroup;
+  params?: Record<string, unknown>;
+  yes_steps?: WorkflowStep[];
+  no_steps?: WorkflowStep[];
+}
+
 export interface Workflow {
   id: string;
   org_id: string;
@@ -35,6 +45,7 @@ export interface Workflow {
   trigger: TriggerSpec;
   conditions: ConditionGroup | null;
   actions: ActionSpec[];
+  steps?: WorkflowStep[];
   action_count: number;
   version: number;
   created_by: string;
@@ -52,7 +63,7 @@ export interface WorkflowRun {
   status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
   trigger_context: Record<string, unknown>;
   current_action_idx: number;
-  completed_actions: number[] | null;
+  completed_actions: (number | string)[] | null;
   last_error?: string;
   retry_count: number;
   started_at?: string;
@@ -64,6 +75,7 @@ export interface ActionLog {
   id: string;
   run_id: string;
   action_idx: number;
+  action_path?: string;
   action_type: string;
   status: 'success' | 'failed' | 'retrying';
   input?: Record<string, unknown>;

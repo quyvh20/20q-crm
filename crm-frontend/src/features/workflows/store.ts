@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { TriggerSpec, ConditionGroup, ActionSpec } from './types';
+import type { TriggerSpec, ConditionGroup, ActionSpec, WorkflowStep } from './types';
 import { workflowSchema, validateActionIds, validateConditionDepth } from './schemas';
 import { createWorkflow, updateWorkflow, getWorkflow, getWorkflowSchema, getObjectFields, type WorkflowSchema, type FieldItem } from './api';
 import { isNoValueOperator } from './useSchema';
@@ -12,7 +12,8 @@ interface BuilderState {
   trigger: TriggerSpec | null;
   conditions: ConditionGroup | null;
   actions: ActionSpec[];
-  selectedNodeId: string | null; // 'trigger' | 'conditions' | action.id
+  steps: WorkflowStep[];
+  selectedNodeId: string | null; // 'trigger' | 'conditions' | action.id | step.id
   isDirty: boolean;
   errors: Record<string, string[]>;
   saving: boolean;
@@ -36,6 +37,10 @@ interface BuilderState {
   updateAction: (id: string, patch: Partial<ActionSpec>) => void;
   removeAction: (id: string) => void;
   reorderActions: (fromIdx: number, toIdx: number) => void;
+  addStep: (step: WorkflowStep, parentId: string | null, branch: 'yes' | 'no' | null, index?: number) => void;
+  updateStep: (id: string, patch: Partial<WorkflowStep>) => void;
+  removeStep: (id: string) => void;
+  reorderSteps: (parentId: string | null, branch: 'yes' | 'no' | null, fromIdx: number, toIdx: number) => void;
   selectNode: (id: string | null) => void;
   validate: () => boolean;
   save: () => Promise<void>;
@@ -43,6 +48,7 @@ interface BuilderState {
   fetchSchema: () => Promise<void>;
   invalidateSchema: () => void;
   fetchObjectFields: (slug: string, forceRefresh?: boolean) => Promise<void>;
+  findStep: (id: string) => WorkflowStep | undefined;
   reset: () => void;
 }
 
@@ -51,6 +57,189 @@ function arrayMove<T>(arr: T[], from: number, to: number): T[] {
   const [item] = result.splice(from, 1);
   result.splice(to, 0, item);
   return result;
+}
+
+function findStepInTree(steps: WorkflowStep[], id: string): WorkflowStep | undefined {
+  for (const step of steps) {
+    if (step.id === id) return step;
+    if (step.yes_steps) {
+      const found = findStepInTree(step.yes_steps, id);
+      if (found) return found;
+    }
+    if (step.no_steps) {
+      const found = findStepInTree(step.no_steps, id);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
+function findAndModifySteps(
+  steps: WorkflowStep[],
+  targetId: string,
+  modifyFn: (step: WorkflowStep) => WorkflowStep | null
+): WorkflowStep[] {
+  const result: WorkflowStep[] = [];
+  for (const step of steps) {
+    if (step.id === targetId) {
+      const modified = modifyFn(step);
+      if (modified !== null) {
+        result.push(modified);
+      }
+    } else {
+      const newStep = { ...step };
+      if (step.yes_steps) {
+        newStep.yes_steps = findAndModifySteps(step.yes_steps, targetId, modifyFn);
+      }
+      if (step.no_steps) {
+        newStep.no_steps = findAndModifySteps(step.no_steps, targetId, modifyFn);
+      }
+      result.push(newStep);
+    }
+  }
+  return result;
+}
+
+function addStepToTree(
+  steps: WorkflowStep[],
+  parentId: string | null,
+  branch: 'yes' | 'no' | null,
+  newStep: WorkflowStep,
+  index?: number
+): WorkflowStep[] {
+  if (parentId === null) {
+    const result = [...steps];
+    if (index !== undefined) {
+      result.splice(index, 0, newStep);
+    } else {
+      result.push(newStep);
+    }
+    return result;
+  }
+
+  return steps.map((step) => {
+    if (step.id === parentId) {
+      const updated = { ...step };
+      if (branch === 'yes') {
+        const yesList = [...(step.yes_steps || [])];
+        if (index !== undefined) {
+          yesList.splice(index, 0, newStep);
+        } else {
+          yesList.push(newStep);
+        }
+        updated.yes_steps = yesList;
+      } else if (branch === 'no') {
+        const noList = [...(step.no_steps || [])];
+        if (index !== undefined) {
+          noList.splice(index, 0, newStep);
+        } else {
+          noList.push(newStep);
+        }
+        updated.no_steps = noList;
+      }
+      return updated;
+    }
+
+    const nextStep = { ...step };
+    if (step.yes_steps) {
+      nextStep.yes_steps = addStepToTree(step.yes_steps, parentId, branch, newStep, index);
+    }
+    if (step.no_steps) {
+      nextStep.no_steps = addStepToTree(step.no_steps, parentId, branch, newStep, index);
+    }
+    return nextStep;
+  });
+}
+
+function reorderStepsInTree(
+  steps: WorkflowStep[],
+  parentId: string | null,
+  branch: 'yes' | 'no' | null,
+  fromIdx: number,
+  toIdx: number
+): WorkflowStep[] {
+  if (parentId === null) {
+    return arrayMove(steps, fromIdx, toIdx);
+  }
+
+  return steps.map((step) => {
+    if (step.id === parentId) {
+      const updated = { ...step };
+      if (branch === 'yes') {
+        updated.yes_steps = arrayMove(step.yes_steps || [], fromIdx, toIdx);
+      } else if (branch === 'no') {
+        updated.no_steps = arrayMove(step.no_steps || [], fromIdx, toIdx);
+      }
+      return updated;
+    }
+
+    const nextStep = { ...step };
+    if (step.yes_steps) {
+      nextStep.yes_steps = reorderStepsInTree(step.yes_steps, parentId, branch, fromIdx, toIdx);
+    }
+    if (step.no_steps) {
+      nextStep.no_steps = reorderStepsInTree(step.no_steps, parentId, branch, fromIdx, toIdx);
+    }
+    return nextStep;
+  });
+}
+
+function flattenSteps(steps: WorkflowStep[]): ActionSpec[] {
+  const result: ActionSpec[] = [];
+  for (const step of steps) {
+    if (step.type === 'action' && step.action) {
+      result.push(step.action);
+    } else if (step.type === 'delay') {
+      result.push({
+        id: step.id,
+        type: 'delay',
+        params: step.params || {},
+      });
+    }
+    if (step.yes_steps) {
+      result.push(...flattenSteps(step.yes_steps));
+    }
+    if (step.no_steps) {
+      result.push(...flattenSteps(step.no_steps));
+    }
+  }
+  return result;
+}
+
+function cleanSteps(steps: WorkflowStep[]): WorkflowStep[] {
+  return steps.map((step) => {
+    const cleaned = { ...step };
+    if (step.type === 'action' && step.action) {
+      const a = step.action;
+      if (a.type === 'send_email') {
+        const params = { ...a.params };
+        const cc = typeof params.cc === 'string' ? params.cc.trim() : '';
+        if (!cc) {
+          delete params.cc;
+        }
+        cleaned.action = { ...a, params };
+      } else if (a.type === 'update_record' || (a.type as string) === 'update_contact') {
+        const params: Record<string, unknown> = {};
+        if (Array.isArray(a.params.updates)) {
+          params.updates = (a.params.updates as Array<Record<string, unknown>>).map((u) => {
+            const clean: Record<string, unknown> = { field: u.field, op: u.op };
+            if (u.op !== 'clear' && u.value !== undefined && u.value !== null) {
+              clean.value = u.value;
+            }
+            return clean;
+          });
+        }
+        cleaned.action = { ...a, params };
+      }
+    }
+    if (step.yes_steps) {
+      cleaned.yes_steps = cleanSteps(step.yes_steps);
+    }
+    if (step.no_steps) {
+      cleaned.no_steps = cleanSteps(step.no_steps);
+    }
+    return cleaned;
+  });
 }
 
 let idCounter = 0;
@@ -77,6 +266,7 @@ const initialState = {
   trigger: null as TriggerSpec | null,
   conditions: null as ConditionGroup | null,
   actions: [] as ActionSpec[],
+  steps: [] as WorkflowStep[],
   selectedNodeId: null as string | null,
   isDirty: false,
   errors: {} as Record<string, string[]>,
@@ -122,33 +312,79 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
 
   setConditions: (conditions) => set({ conditions, isDirty: true }),
 
-  insertAction: (action, index) =>
+  insertAction: (action, index) => {
+    const step: WorkflowStep = {
+      id: action.id,
+      type: action.type === 'delay' ? 'delay' : 'action',
+      action: action.type === 'delay' ? undefined : action,
+      params: action.type === 'delay' ? action.params : undefined,
+    };
+    get().addStep(step, null, null, index);
+  },
+
+  updateAction: (id, patch) => {
+    get().updateStep(id, { action: patch as ActionSpec });
+  },
+
+  removeAction: (id) => {
+    get().removeStep(id);
+  },
+
+  reorderActions: (fromIdx, toIdx) => {
+    get().reorderSteps(null, null, fromIdx, toIdx);
+  },
+
+  addStep: (step, parentId, branch, index) =>
     set((s) => {
-      const actions = [...s.actions];
-      actions.splice(index, 0, action);
-      return { actions, isDirty: true };
+      const steps = addStepToTree(s.steps || [], parentId, branch, step, index);
+      const actions = flattenSteps(steps);
+      return { steps, actions, isDirty: true };
     }),
 
-  updateAction: (id, patch) =>
-    set((s) => ({
-      actions: s.actions.map((a) =>
-        a.id === id ? { ...a, ...patch, params: { ...a.params, ...(patch.params || {}) } } : a
-      ),
-      isDirty: true,
-    })),
+  updateStep: (id, patch) =>
+    set((s) => {
+      const steps = findAndModifySteps(s.steps || [], id, (step) => {
+        if (step.type === 'delay' && patch.action) {
+          return {
+            ...step,
+            params: { ...(step.params || {}), ...(patch.action.params || {}) },
+          };
+        }
+        if (step.type === 'action' && step.action && patch.action) {
+          return {
+            ...step,
+            ...patch,
+            action: {
+              ...step.action,
+              ...patch.action,
+              params: { ...step.action.params, ...(patch.action.params || {}) },
+            },
+          };
+        }
+        return { ...step, ...patch };
+      });
+      const actions = flattenSteps(steps);
+      return { steps, actions, isDirty: true };
+    }),
 
-  removeAction: (id) =>
-    set((s) => ({
-      actions: s.actions.filter((a) => a.id !== id),
-      selectedNodeId: s.selectedNodeId === id ? null : s.selectedNodeId,
-      isDirty: true,
-    })),
+  removeStep: (id) =>
+    set((s) => {
+      const steps = findAndModifySteps(s.steps || [], id, () => null);
+      const actions = flattenSteps(steps);
+      return {
+        steps,
+        actions,
+        selectedNodeId: s.selectedNodeId === id ? null : s.selectedNodeId,
+        isDirty: true,
+      };
+    }),
 
-  reorderActions: (fromIdx, toIdx) =>
-    set((s) => ({
-      actions: arrayMove(s.actions, fromIdx, toIdx),
-      isDirty: true,
-    })),
+  reorderSteps: (parentId, branch, fromIdx, toIdx) =>
+    set((s) => {
+      const steps = reorderStepsInTree(s.steps || [], parentId, branch, fromIdx, toIdx);
+      const actions = flattenSteps(steps);
+      return { steps, actions, isDirty: true };
+    }),
 
   selectNode: (id) => set({ selectedNodeId: id }),
 
@@ -192,8 +428,8 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       }
     }
 
-    if (state.actions.length === 0) {
-      errors.actions = ['At least one action is required'];
+    if (state.steps.length === 0) {
+      errors.steps = ['At least one action or condition is required'];
     }
 
     // Validate with zod
@@ -392,6 +628,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
         trigger: cleanedTrigger,
         conditions: state.conditions,
         actions: cleanedActions,
+        steps: cleanSteps(state.steps || []),
       };
 
       if (state.workflowId) {
@@ -408,6 +645,14 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
 
   loadWorkflow: async (id) => {
     const wf = await getWorkflow(id);
+    const loadedSteps = wf.steps && wf.steps.length > 0
+      ? wf.steps
+      : (wf.actions || []).map((a) => ({
+          id: a.id,
+          type: a.type === 'delay' ? 'delay' : 'action',
+          action: a.type === 'delay' ? undefined : a,
+          params: a.type === 'delay' ? a.params : undefined,
+        } as WorkflowStep));
     set({
       workflowId: wf.id,
       name: wf.name,
@@ -415,7 +660,8 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       isActive: wf.is_active,
       trigger: wf.trigger,
       conditions: wf.conditions,
-      actions: wf.actions,
+      actions: wf.actions || [],
+      steps: loadedSteps,
       isDirty: false,
       errors: {},
       selectedNodeId: null,
@@ -477,6 +723,8 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       delete fieldFetchPromises[slug];
     }
   },
+
+  findStep: (id) => findStepInTree(get().steps || [], id),
 
   reset: () => {
     // Preserve schema and fieldCache across resets — they don't change when navigating between workflows

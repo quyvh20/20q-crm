@@ -1235,3 +1235,187 @@ func TestIntegration_DeactivateMidRun_CompletesButNoNewRuns(t *testing.T) {
 	assert.Equal(t, int64(1), runCount,
 		"no new run should be created after workflow deactivation")
 }
+
+// ============================================================
+// Integration Test 10: Recursive Tree Execution (P13 tree)
+// ============================================================
+
+func TestIntegration_RecursiveTreeExecution(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	orgID := uuid.New()
+	repo := NewRepository(db)
+	executor := &countingExecutor{}
+
+	// Create a steps-based workflow
+	trigger := TriggerSpec{Type: TriggerContactCreated}
+	triggerJSON, _ := json.Marshal(trigger)
+
+	steps := []StepSpec{
+		{
+			ID:   "action_1",
+			Type: "action",
+			Action: &ActionSpec{
+				ID:   "action_1",
+				Type: "test_action",
+			},
+		},
+		{
+			ID:   "cond_1",
+			Type: "condition",
+			Condition: &ConditionGroup{
+				Op: "AND",
+				Rules: []ConditionRule{
+					{
+						Field:    "contact.is_vip",
+						Operator: "==",
+						Value:    "true",
+					},
+				},
+			},
+			YesSteps: []StepSpec{
+				{
+					ID:   "action_yes",
+					Type: "action",
+					Action: &ActionSpec{
+						ID:   "action_yes",
+						Type: "test_action",
+					},
+				},
+			},
+			NoSteps: []StepSpec{
+				{
+					ID:   "action_no",
+					Type: "action",
+					Action: &ActionSpec{
+						ID:   "action_no",
+						Type: "test_action",
+					},
+				},
+			},
+		},
+	}
+	stepsJSON, _ := json.Marshal(steps)
+
+	wf := &Workflow{
+		ID:        uuid.New(),
+		OrgID:     orgID,
+		Name:      "Tree-based workflow",
+		IsActive:  true,
+		Trigger:   datatypes.JSON(triggerJSON),
+		Steps:     datatypes.JSON(stepsJSON),
+		Version:   1,
+		CreatedBy: uuid.New(),
+	}
+	require.NoError(t, db.Create(wf).Error)
+
+	ver := &WorkflowVersion{
+		ID:         uuid.New(),
+		WorkflowID: wf.ID,
+		Version:    1,
+		Trigger:    wf.Trigger,
+		Steps:      wf.Steps,
+		CreatedAt:  time.Now(),
+	}
+	require.NoError(t, db.Create(ver).Error)
+
+	// --- Case 1: is_vip == true ---
+	engine1 := makeEngine(db, map[string]ActionExecutor{"test_action": executor})
+	defer engine1.cancel()
+
+	triggerCtx1, _ := json.Marshal(map[string]any{
+		"contact": map[string]any{
+			"id":     uuid.New().String(),
+			"email":  "vip@example.com",
+			"is_vip": "true",
+		},
+		"trigger": map[string]any{"type": TriggerContactCreated},
+	})
+
+	run1 := &WorkflowRun{
+		ID:              uuid.New(),
+		WorkflowID:      wf.ID,
+		WorkflowVersion: 1,
+		OrgID:           orgID,
+		Status:          StatusPending,
+		TriggerContext:  datatypes.JSON(triggerCtx1),
+		IdempotencyKey:  fmt.Sprintf("tree-vip-%s", uuid.New().String()),
+	}
+	_, err := repo.CreateRun(context.Background(), run1)
+	require.NoError(t, err)
+
+	engine1.processRun(run1.ID)
+
+	// Verify run1 completed successfully
+	finalRun1, err := repo.GetRunByID(context.Background(), run1.ID)
+	require.NoError(t, err)
+	assert.Equal(t, StatusCompleted, finalRun1.Status)
+
+	// Verify executed action logs
+	logs1, err := repo.GetActionLogsByRunID(context.Background(), run1.ID)
+	require.NoError(t, err)
+
+	executed1 := make(map[string]bool)
+	for _, l := range logs1 {
+		if l.Status == LogStatusSuccess {
+			executed1[l.ActionPath] = true
+		}
+	}
+	assert.True(t, executed1["action_1"], "action_1 should execute")
+	assert.True(t, executed1["action_yes"], "action_yes should execute")
+	assert.False(t, executed1["action_no"], "action_no should NOT execute")
+
+	// --- Case 2: is_vip == false ---
+	// Reset executor stats
+	executor.mu.Lock()
+	executor.calls = nil
+	executor.count = 0
+	executor.mu.Unlock()
+
+	triggerCtx2, _ := json.Marshal(map[string]any{
+		"contact": map[string]any{
+			"id":     uuid.New().String(),
+			"email":  "regular@example.com",
+			"is_vip": "false",
+		},
+		"trigger": map[string]any{"type": TriggerContactCreated},
+	})
+
+	run2 := &WorkflowRun{
+		ID:              uuid.New(),
+		WorkflowID:      wf.ID,
+		WorkflowVersion: 1,
+		OrgID:           orgID,
+		Status:          StatusPending,
+		TriggerContext:  datatypes.JSON(triggerCtx2),
+		IdempotencyKey:  fmt.Sprintf("tree-regular-%s", uuid.New().String()),
+	}
+	_, err = repo.CreateRun(context.Background(), run2)
+	require.NoError(t, err)
+
+	engine1.processRun(run2.ID)
+
+	// Verify run2 completed successfully
+	finalRun2, err := repo.GetRunByID(context.Background(), run2.ID)
+	require.NoError(t, err)
+	assert.Equal(t, StatusCompleted, finalRun2.Status)
+
+	// Verify executed action logs
+	logs2, err := repo.GetActionLogsByRunID(context.Background(), run2.ID)
+	require.NoError(t, err)
+
+	executed2 := make(map[string]bool)
+	for _, l := range logs2 {
+		if l.Status == LogStatusSuccess {
+			executed2[l.ActionPath] = true
+		}
+	}
+	assert.True(t, executed2["action_1"], "action_1 should execute")
+	assert.False(t, executed2["action_yes"], "action_yes should NOT execute")
+	assert.True(t, executed2["action_no"], "action_no should execute")
+}

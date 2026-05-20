@@ -20,8 +20,8 @@ type ValidationResult struct {
 	Warnings []string          `json:"warnings,omitempty"`
 }
 
-// ValidateWorkflowPayload validates trigger, conditions, and actions payloads.
-func ValidateWorkflowPayload(triggerJSON, conditionsJSON, actionsJSON []byte) *ValidationResult {
+// ValidateWorkflowPayload validates trigger, conditions, and actions/steps payloads.
+func ValidateWorkflowPayload(triggerJSON, conditionsJSON, actionsJSON []byte, stepsJSON ...[]byte) *ValidationResult {
 	result := &ValidationResult{Valid: true}
 
 	// Validate trigger
@@ -32,10 +32,129 @@ func ValidateWorkflowPayload(triggerJSON, conditionsJSON, actionsJSON []byte) *V
 		validateConditions(conditionsJSON, result)
 	}
 
-	// Validate actions
-	validateActions(actionsJSON, result)
+	// Validate steps (recursive tree) or legacy actions (flat array)
+	var steps []byte
+	if len(stepsJSON) > 0 {
+		steps = stepsJSON[0]
+	}
+
+	if len(steps) > 0 && string(steps) != "null" && string(steps) != "[]" {
+		validateSteps(steps, result)
+	} else {
+		validateActions(actionsJSON, result)
+	}
 
 	return result
+}
+
+func validateSteps(data []byte, result *ValidationResult) {
+	var steps []StepSpec
+	if err := json.Unmarshal(data, &steps); err != nil {
+		result.Valid = false
+		result.Errors = append(result.Errors, ValidationError{
+			Field:   "steps",
+			Message: fmt.Sprintf("invalid steps JSON: %s", err.Error()),
+		})
+		return
+	}
+
+	idSet := make(map[string]bool)
+	validateStepsRecursive(steps, "steps", idSet, result)
+}
+
+func validateStepsRecursive(steps []StepSpec, path string, idSet map[string]bool, result *ValidationResult) {
+	for i, step := range steps {
+		stepPath := fmt.Sprintf("%s[%d]", path, i)
+
+		if step.ID == "" {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   stepPath + ".id",
+				Message: "step id is required",
+			})
+		} else if idSet[step.ID] {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   stepPath + ".id",
+				Message: fmt.Sprintf("duplicate step id: '%s'", step.ID),
+			})
+		} else {
+			idSet[step.ID] = true
+		}
+
+		switch step.Type {
+		case "action":
+			if step.Action == nil {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   stepPath + ".action",
+					Message: "action property is required for step type 'action'",
+				})
+				continue
+			}
+			if step.Action.ID == "" {
+				step.Action.ID = step.ID
+			}
+			if step.Action.ID != step.ID {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   stepPath + ".action.id",
+					Message: fmt.Sprintf("action id '%s' must match step id '%s'", step.Action.ID, step.ID),
+				})
+			}
+			if !ValidActionTypes[step.Action.Type] {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   stepPath + ".action.type",
+					Message: fmt.Sprintf("unknown action type: '%s'", step.Action.Type),
+				})
+			}
+			validateActionParams(*step.Action, stepPath+".action", result)
+
+		case "condition":
+			if step.Condition == nil {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   stepPath + ".condition",
+					Message: "condition property is required for step type 'condition'",
+				})
+			} else {
+				if depth := getConditionDepth(*step.Condition); depth > 3 {
+					result.Valid = false
+					result.Errors = append(result.Errors, ValidationError{
+						Field:   stepPath + ".condition",
+						Message: fmt.Sprintf("condition nesting depth %d exceeds maximum of 3", depth),
+					})
+				}
+				validateConditionRules(step.Condition.Rules, stepPath+".condition", result)
+			}
+			validateStepsRecursive(step.YesSteps, stepPath+".yes_steps", idSet, result)
+			validateStepsRecursive(step.NoSteps, stepPath+".no_steps", idSet, result)
+
+		case "delay":
+			if step.Params == nil {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   stepPath + ".params",
+					Message: "delay requires params with 'duration_sec'",
+				})
+			} else {
+				dummyAction := ActionSpec{
+					Type:   ActionDelay,
+					ID:     step.ID,
+					Params: step.Params,
+				}
+				validateActionParams(dummyAction, stepPath, result)
+			}
+
+		default:
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   stepPath + ".type",
+				Message: fmt.Sprintf("unknown step type: '%s'", step.Type),
+			})
+		}
+	}
 }
 
 func validateTrigger(data []byte, result *ValidationResult) {

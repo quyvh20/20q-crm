@@ -15,7 +15,8 @@ type CreateWorkflowRequest struct {
 	Description string          `json:"description" binding:"max=1000"`
 	Trigger     datatypes.JSON  `json:"trigger" binding:"required"`
 	Conditions  datatypes.JSON  `json:"conditions"`
-	Actions     datatypes.JSON  `json:"actions" binding:"required"`
+	Actions     datatypes.JSON  `json:"actions"`
+	Steps       datatypes.JSON  `json:"steps"`
 }
 
 // UpdateWorkflowRequest is the request body for updating a workflow.
@@ -25,6 +26,7 @@ type UpdateWorkflowRequest struct {
 	Trigger     datatypes.JSON  `json:"trigger"`
 	Conditions  datatypes.JSON  `json:"conditions"`
 	Actions     datatypes.JSON  `json:"actions"`
+	Steps       datatypes.JSON  `json:"steps"`
 }
 
 // TestRunRequest is the request body for a dry-run.
@@ -44,6 +46,7 @@ type WorkflowResponse struct {
 	Trigger       datatypes.JSON `json:"trigger"`
 	Conditions    datatypes.JSON `json:"conditions"`
 	Actions       datatypes.JSON `json:"actions"`
+	Steps         datatypes.JSON `json:"steps,omitempty"`
 	ActionCount   int            `json:"action_count"`
 	Version       int            `json:"version"`
 	CreatedBy     uuid.UUID      `json:"created_by"`
@@ -89,6 +92,7 @@ type ActionLogResponse struct {
 	ID         uuid.UUID      `json:"id"`
 	RunID      uuid.UUID      `json:"run_id"`
 	ActionIdx  int            `json:"action_idx"`
+	ActionPath string         `json:"action_path,omitempty"`
 	ActionType string         `json:"action_type"`
 	Status     string         `json:"status"`
 	Input      datatypes.JSON `json:"input,omitempty"`
@@ -134,9 +138,14 @@ type WebhookInboundResponse struct {
 
 // ToWorkflowResponse converts a Workflow model to a response DTO.
 func ToWorkflowResponse(wf *Workflow) WorkflowResponse {
-	// Count actions from JSON array
+	// Count actions from JSON array or steps tree
 	var actionCount int
-	if wf.Actions != nil {
+	if len(wf.Steps) > 0 && string(wf.Steps) != "null" {
+		var steps []StepSpec
+		if err := json.Unmarshal(wf.Steps, &steps); err == nil {
+			actionCount = countStepsList(steps)
+		}
+	} else if wf.Actions != nil {
 		var actions []json.RawMessage
 		if err := json.Unmarshal(wf.Actions, &actions); err == nil {
 			actionCount = len(actions)
@@ -152,12 +161,26 @@ func ToWorkflowResponse(wf *Workflow) WorkflowResponse {
 		Trigger:     wf.Trigger,
 		Conditions:  wf.Conditions,
 		Actions:     wf.Actions,
+		Steps:       wf.Steps,
 		ActionCount: actionCount,
 		Version:     wf.Version,
 		CreatedBy:   wf.CreatedBy,
 		CreatedAt:   wf.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		UpdatedAt:   wf.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 	}
+}
+
+func countStepsList(steps []StepSpec) int {
+	count := 0
+	for _, s := range steps {
+		if s.Type == "action" || s.Type == "delay" {
+			count++
+		} else if s.Type == "condition" {
+			count += countStepsList(s.YesSteps)
+			count += countStepsList(s.NoSteps)
+		}
+	}
+	return count
 }
 
 // ToWorkflowResponseWithRun converts a Workflow model to a response DTO with last run info.
@@ -200,6 +223,7 @@ func ToActionLogResponse(log *WorkflowActionLog) ActionLogResponse {
 		ID:         log.ID,
 		RunID:      log.RunID,
 		ActionIdx:  log.ActionIdx,
+		ActionPath: log.ActionPath,
 		ActionType: log.ActionType,
 		Status:     log.Status,
 		Input:      log.Input,

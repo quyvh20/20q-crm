@@ -357,15 +357,75 @@ func (e *Engine) processRun(runID uuid.UUID) {
 		return
 	}
 
-	// Parse actions
+	// Load successful action logs for this run
+	actionLogs, err := e.repo.GetActionLogsByRunID(e.ctx, run.ID)
+	if err != nil {
+		e.failRun(run, fmt.Errorf("load action logs: %w", err))
+		return
+	}
+
+	// Build eval context from trigger context
+	evalCtx := e.buildEvalContext(run)
+
+	// Check if this is a steps-based (P13 tree) workflow
+	if len(ver.Steps) > 0 && string(ver.Steps) != "null" {
+		var steps []StepSpec
+		if err := json.Unmarshal(ver.Steps, &steps); err != nil {
+			e.failRun(run, fmt.Errorf("parse steps: %w", err))
+			return
+		}
+
+		// Populate evalCtx.Actions from successful action logs
+		completedSteps := make(map[string]bool)
+		for _, log := range actionLogs {
+			if log.Status == LogStatusSuccess {
+				completedSteps[log.ActionPath] = true
+				if len(log.Output) > 0 && string(log.Output) != "null" {
+					var outputVal any
+					if err := json.Unmarshal(log.Output, &outputVal); err == nil {
+						evalCtx.Actions[log.ActionPath] = outputVal
+					}
+				}
+			}
+		}
+
+		completed, execErr := e.executeStepsRecursive(steps, run, completedSteps, &evalCtx)
+		if execErr != nil {
+			return
+		}
+		if completed {
+			now := time.Now()
+			run.Status = StatusCompleted
+			run.FinishedAt = &now
+			if err := e.repo.UpdateRunStandalone(e.ctx, run); err != nil {
+				e.logger.Error("automation: failed to mark run completed", "error", err)
+			}
+			e.logger.Info("automation: run completed", "run_id", run.ID.String())
+		}
+		return
+	}
+
+	// Parse legacy flat actions
 	var actions []ActionSpec
 	if err := json.Unmarshal(ver.Actions, &actions); err != nil {
 		e.failRun(run, fmt.Errorf("parse actions: %w", err))
 		return
 	}
 
-	// Build eval context from trigger context
-	evalCtx := e.buildEvalContext(run)
+	// Populate evalCtx.Actions from successful action logs for legacy flat actions
+	for _, log := range actionLogs {
+		if log.Status == LogStatusSuccess {
+			if log.ActionIdx >= 0 && log.ActionIdx < len(actions) {
+				actionID := actions[log.ActionIdx].ID
+				if len(log.Output) > 0 && string(log.Output) != "null" {
+					var outputVal any
+					if err := json.Unmarshal(log.Output, &outputVal); err == nil {
+						evalCtx.Actions[actionID] = outputVal
+					}
+				}
+			}
+		}
+	}
 
 	// Evaluate conditions
 	if ver.Conditions != nil && len(ver.Conditions) > 0 {
@@ -504,6 +564,152 @@ func (e *Engine) processRun(runID uuid.UUID) {
 			"actions_count", len(actions),
 		)
 	}
+}
+
+func (e *Engine) executeStepsRecursive(steps []StepSpec, run *WorkflowRun, completedSteps map[string]bool, evalCtx *EvalContext) (bool, error) {
+	for _, step := range steps {
+		if e.ctx.Err() != nil {
+			return false, e.ctx.Err()
+		}
+
+		switch step.Type {
+		case "action", "delay":
+			if completedSteps[step.ID] {
+				continue
+			}
+
+			var action ActionSpec
+			if step.Type == "action" {
+				if step.Action != nil {
+					action = *step.Action
+				}
+				if action.ID == "" {
+					action.ID = step.ID
+				}
+			} else {
+				action = ActionSpec{
+					Type:   ActionDelay,
+					ID:     step.ID,
+					Params: step.Params,
+				}
+			}
+
+			actionLog := &WorkflowActionLog{
+				ID:         uuid.New(),
+				RunID:      run.ID,
+				ActionPath: step.ID,
+				ActionType: action.Type,
+				Status:     "running",
+				AttemptNo:  run.RetryCount + 1,
+				CreatedAt:  time.Now(),
+			}
+			inputJSON, _ := json.Marshal(action.Params)
+			actionLog.Input = datatypes.JSON(inputJSON)
+			e.repo.CreateActionLogStandalone(e.ctx, actionLog)
+
+			startTime := time.Now()
+			output, execErr := e.executeAction(e.ctx, run, action, *evalCtx)
+			durationMs := time.Since(startTime).Milliseconds()
+			actionLog.DurationMs = durationMs
+
+			if execErr != nil {
+				if run.RetryCount < 3 && isRetryable(execErr) {
+					run.RetryCount++
+					retryAt := time.Now().Add(backoff(run.RetryCount))
+					run.NextRetryAt = &retryAt
+					run.Status = StatusPending
+					run.LastError = execErr.Error()
+
+					actionLog.Status = LogStatusRetrying
+					actionLog.Error = execErr.Error()
+
+					if err := e.commitActionAndRun(actionLog, run); err != nil {
+						e.logger.Error("automation: commit retry tx failed", "error", err, "run_id", run.ID.String())
+					}
+					return false, execErr
+				}
+
+				now := time.Now()
+				run.Status = StatusFailed
+				run.LastError = execErr.Error()
+				run.FinishedAt = &now
+
+				actionLog.Status = LogStatusFailed
+				actionLog.Error = execErr.Error()
+
+				if err := e.commitActionAndRun(actionLog, run); err != nil {
+					e.logger.Error("automation: commit failure tx failed", "error", err, "run_id", run.ID.String())
+				}
+				return false, execErr
+			}
+
+			if evalCtx.Actions == nil {
+				evalCtx.Actions = make(map[string]any)
+			}
+			evalCtx.Actions[step.ID] = output
+
+			completedSteps[step.ID] = true
+			var completedList []string
+			for k := range completedSteps {
+				completedList = append(completedList, k)
+			}
+			completedJSON, _ := json.Marshal(completedList)
+			run.CompletedActions = datatypes.JSON(completedJSON)
+			run.RetryCount = 0
+			run.LastError = ""
+			run.NextRetryAt = nil
+
+			actionLog.Status = LogStatusSuccess
+			if output != nil {
+				outputJSON, _ := json.Marshal(output)
+				actionLog.Output = datatypes.JSON(outputJSON)
+			}
+
+			if err := e.commitActionAndRun(actionLog, run); err != nil {
+				return false, err
+			}
+
+		case "condition":
+			var runYes bool
+			if hasAnyStepExecuted(step.YesSteps, completedSteps) {
+				runYes = true
+			} else if hasAnyStepExecuted(step.NoSteps, completedSteps) {
+				runYes = false
+			} else {
+				if step.Condition != nil {
+					runYes = EvaluateConditions(*step.Condition, *evalCtx)
+				}
+			}
+
+			if runYes {
+				completed, err := e.executeStepsRecursive(step.YesSteps, run, completedSteps, evalCtx)
+				if err != nil || !completed {
+					return completed, err
+				}
+			} else {
+				completed, err := e.executeStepsRecursive(step.NoSteps, run, completedSteps, evalCtx)
+				if err != nil || !completed {
+					return completed, err
+				}
+			}
+		}
+	}
+	return true, nil
+}
+
+func hasAnyStepExecuted(steps []StepSpec, completedSteps map[string]bool) bool {
+	for _, s := range steps {
+		if s.Type == "action" || s.Type == "delay" {
+			if completedSteps[s.ID] {
+				return true
+			}
+		} else if s.Type == "condition" {
+			if hasAnyStepExecuted(s.YesSteps, completedSteps) || hasAnyStepExecuted(s.NoSteps, completedSteps) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // commitActionAndRun atomically updates an action log and its parent run in a single transaction.

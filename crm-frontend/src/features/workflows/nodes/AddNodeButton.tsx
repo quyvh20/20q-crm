@@ -1,17 +1,24 @@
 import React, { useState } from 'react';
 import { useDroppable } from '@dnd-kit/core';
 import { useBuilderStore, generateActionId } from '../store';
-import { ACTION_LABELS, ACTION_ICONS, type ActionType } from '../types';
 
-const ACTION_TYPES: ActionType[] = [
-  'send_email', 'create_task', 'assign_user', 'send_webhook', 'delay',
+const STEP_TYPES = [
+  { type: 'send_email', label: 'Send Email', icon: '✉️' },
+  { type: 'create_task', label: 'Create Task', icon: '✅' },
+  { type: 'assign_user', label: 'Assign User', icon: '👤' },
+  { type: 'send_webhook', label: 'Send Webhook', icon: '🔗' },
+  { type: 'delay', label: 'Delay', icon: '⏱️' },
+  { type: 'update_record', label: 'Update Record', icon: '📝' },
+  { type: 'condition', label: 'Condition Split', icon: '🔀' },
 ];
 
 interface AddNodeButtonProps {
+  parentId: string | null;
+  branch: 'yes' | 'no' | null;
   index: number;
 }
 
-function getDefaultParams(type: ActionType): Record<string, unknown> {
+function getDefaultParams(type: string): Record<string, unknown> {
   switch (type) {
     case 'send_email':
       return { to: '', subject: '', body_html: '' };
@@ -28,24 +35,50 @@ function getDefaultParams(type: ActionType): Record<string, unknown> {
   }
 }
 
-export const AddNodeButton: React.FC<AddNodeButtonProps> = ({ index }) => {
+export const AddNodeButton: React.FC<AddNodeButtonProps> = ({ parentId, branch, index }) => {
   const [showMenu, setShowMenu] = useState(false);
-  const insertAction = useBuilderStore((s) => s.insertAction);
+  const addStep = useBuilderStore((s) => s.addStep);
 
   const { isOver, setNodeRef } = useDroppable({
-    id: `dropzone-${index}`,
-    data: { targetIndex: index },
+    id: `dropzone-${parentId ?? 'root'}-${branch ?? 'main'}-${index}`,
+    data: { parentId, branch, targetIndex: index },
   });
 
-  const handleAddAction = (type: ActionType) => {
-    insertAction(
-      {
-        type,
-        id: generateActionId(),
-        params: getDefaultParams(type),
-      },
-      index
-    );
+  const handleAddStep = (type: string) => {
+    const id = generateActionId();
+    if (type === 'condition') {
+      addStep(
+        {
+          id,
+          type: 'condition',
+          condition: {
+            op: 'AND',
+            rules: [{ field: '', operator: 'eq', value: '' }],
+          },
+          yes_steps: [],
+          no_steps: [],
+        },
+        parentId,
+        branch,
+        index
+      );
+    } else {
+      addStep(
+        {
+          id,
+          type: type === 'delay' ? 'delay' : 'action',
+          action: type === 'delay' ? undefined : {
+            id,
+            type: type as any,
+            params: getDefaultParams(type),
+          },
+          params: type === 'delay' ? getDefaultParams('delay') : undefined,
+        },
+        parentId,
+        branch,
+        index
+      );
+    }
     setShowMenu(false);
   };
 
@@ -57,7 +90,7 @@ export const AddNodeButton: React.FC<AddNodeButtonProps> = ({ index }) => {
         onClick={() => setShowMenu(!showMenu)}
         className={`
           flex items-center justify-center w-8 h-8 rounded-full border-2 border-dashed
-          transition-all duration-200 cursor-pointer
+          transition-all duration-200 cursor-pointer z-10
           ${isOver
             ? 'border-emerald-400 bg-emerald-400/20 scale-125'
             : 'border-gray-600 hover:border-indigo-400 hover:bg-indigo-400/10'}
@@ -71,16 +104,16 @@ export const AddNodeButton: React.FC<AddNodeButtonProps> = ({ index }) => {
         <>
           <div className="fixed inset-0 z-40" onClick={() => setShowMenu(false)} />
           <div className="absolute top-16 z-50 w-48 py-1 bg-gray-800 border border-gray-700 rounded-xl shadow-xl shadow-black/40 animate-in fade-in slide-in-from-top-2 duration-150">
-            {ACTION_TYPES.map((type) => (
+            {STEP_TYPES.map((item) => (
               <button
-                key={type}
-                onClick={() => handleAddAction(type)}
+                key={item.type}
+                onClick={() => handleAddStep(item.type)}
                 className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-gray-300 hover:bg-gray-700 hover:text-white transition-colors"
               >
                 <span className="w-6 h-6 rounded-md bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center text-xs">
-                  {ACTION_ICONS[type]}
+                  {item.icon}
                 </span>
-                {ACTION_LABELS[type]}
+                {item.label}
               </button>
             ))}
           </div>

@@ -1,9 +1,14 @@
 import React from 'react';
 import { useDraggable } from '@dnd-kit/core';
-import { ACTION_LABELS, ACTION_ICONS, type ActionType } from '../types';
 
-const ACTION_TYPES: ActionType[] = [
-  'send_email', 'create_task', 'assign_user', 'send_webhook', 'delay', 'update_record',
+const PALETTE_ITEMS = [
+  { type: 'send_email', label: 'Send Email', icon: '✉️' },
+  { type: 'create_task', label: 'Create Task', icon: '✅' },
+  { type: 'assign_user', label: 'Assign User', icon: '👤' },
+  { type: 'send_webhook', label: 'Send Webhook', icon: '🔗' },
+  { type: 'delay', label: 'Delay', icon: '⏱️' },
+  { type: 'update_record', label: 'Update Record', icon: '📝' },
+  { type: 'condition', label: 'Condition Split', icon: '🔀' },
 ];
 
 export const ActionPalette: React.FC = () => {
@@ -11,14 +16,14 @@ export const ActionPalette: React.FC = () => {
     <div className="space-y-2">
       <h4 className="text-xs uppercase tracking-wider text-gray-400 font-semibold px-1">Actions</h4>
       <p className="text-xs text-gray-500 px-1">Drag to add to workflow</p>
-      {ACTION_TYPES.map((type) => (
-        <PaletteItem key={type} type={type} />
+      {PALETTE_ITEMS.map((item) => (
+        <PaletteItem key={item.type} type={item.type} label={item.label} icon={item.icon} />
       ))}
     </div>
   );
 };
 
-const PaletteItem: React.FC<{ type: ActionType }> = ({ type }) => {
+const PaletteItem: React.FC<{ type: string; label: string; icon: string }> = ({ type, label, icon }) => {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `palette-${type}`,
     data: { source: 'palette', actionType: type },
@@ -36,9 +41,9 @@ const PaletteItem: React.FC<{ type: ActionType }> = ({ type }) => {
       `}
     >
       <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center text-sm">
-        {ACTION_ICONS[type]}
+        {icon}
       </div>
-      <span className="text-sm text-white font-medium">{ACTION_LABELS[type]}</span>
+      <span className="text-sm text-white font-medium">{label}</span>
     </div>
   );
 };

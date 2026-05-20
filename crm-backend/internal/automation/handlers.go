@@ -92,7 +92,7 @@ func (h *Handler) CreateWorkflow(c *gin.Context) {
 	}
 
 	// Validate JSON payloads
-	result := ValidateWorkflowPayload(req.Trigger, req.Conditions, req.Actions)
+	result := ValidateWorkflowPayload(req.Trigger, req.Conditions, req.Actions, req.Steps)
 	if !result.Valid {
 		h.errorResponse(c, http.StatusBadRequest, "VALIDATION_FAILED", "workflow payload validation failed", result.Errors)
 		return
@@ -105,6 +105,7 @@ func (h *Handler) CreateWorkflow(c *gin.Context) {
 		Trigger:     req.Trigger,
 		Conditions:  req.Conditions,
 		Actions:     req.Actions,
+		Steps:       req.Steps,
 		CreatedBy:   userID,
 	}
 
@@ -216,9 +217,12 @@ func (h *Handler) UpdateWorkflow(c *gin.Context) {
 	if req.Actions != nil {
 		wf.Actions = req.Actions
 	}
+	if req.Steps != nil {
+		wf.Steps = req.Steps
+	}
 
 	// Re-validate
-	result := ValidateWorkflowPayload(wf.Trigger, wf.Conditions, wf.Actions)
+	result := ValidateWorkflowPayload(wf.Trigger, wf.Conditions, wf.Actions, wf.Steps)
 	if !result.Valid {
 		h.errorResponse(c, http.StatusBadRequest, "VALIDATION_FAILED", "workflow payload validation failed", result.Errors)
 		return

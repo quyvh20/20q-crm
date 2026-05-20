@@ -19,6 +19,7 @@ type Workflow struct {
 	Trigger     datatypes.JSON `gorm:"type:jsonb;not null" json:"trigger"`
 	Conditions  datatypes.JSON `gorm:"type:jsonb" json:"conditions"`
 	Actions     datatypes.JSON `gorm:"type:jsonb;not null" json:"actions"`
+	Steps       datatypes.JSON `gorm:"type:jsonb" json:"steps,omitempty"`
 	Version     int            `gorm:"not null;default:1" json:"version"`
 	CreatedBy   uuid.UUID      `gorm:"type:uuid;not null" json:"created_by"`
 	CreatedAt   time.Time      `json:"created_at"`
@@ -36,6 +37,7 @@ type WorkflowVersion struct {
 	Trigger    datatypes.JSON `gorm:"type:jsonb;not null" json:"trigger"`
 	Conditions datatypes.JSON `gorm:"type:jsonb" json:"conditions"`
 	Actions    datatypes.JSON `gorm:"type:jsonb;not null" json:"actions"`
+	Steps      datatypes.JSON `gorm:"type:jsonb" json:"steps,omitempty"`
 	CreatedAt  time.Time      `json:"created_at"`
 }
 
@@ -69,6 +71,7 @@ type WorkflowActionLog struct {
 	ID         uuid.UUID      `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
 	RunID      uuid.UUID      `gorm:"type:uuid;not null;index" json:"run_id"`
 	ActionIdx  int            `gorm:"not null" json:"action_idx"`
+	ActionPath string         `gorm:"size:255;index" json:"action_path"`
 	ActionType string         `gorm:"size:50;not null" json:"action_type"`
 	Status     string         `gorm:"size:20;not null" json:"status"` // success|failed|retrying
 	Input      datatypes.JSON `gorm:"type:jsonb" json:"input,omitempty"`
@@ -131,6 +134,18 @@ type ActionSpec struct {
 	ID     string         `json:"id"`
 	Params map[string]any `json:"params,omitempty"`
 }
+
+// StepSpec represents a step in a recursive workflow steps tree.
+type StepSpec struct {
+	Type      string          `json:"type"` // "action" | "condition" | "delay"
+	ID        string          `json:"id"`
+	Action    *ActionSpec     `json:"action,omitempty"`
+	Condition *ConditionGroup `json:"condition,omitempty"`
+	Params    map[string]any  `json:"params,omitempty"`
+	YesSteps  []StepSpec      `json:"yes_steps,omitempty"`
+	NoSteps   []StepSpec      `json:"no_steps,omitempty"`
+}
+
 
 // EvalContext holds all the data available for template interpolation and condition evaluation.
 type EvalContext struct {
