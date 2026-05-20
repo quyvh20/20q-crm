@@ -52,12 +52,42 @@ export const RunHistory: React.FC = () => {
   }, [id, page]);
 
   // Auto-poll every 5 s while any run is pending or running.
+  // Pauses when the tab is hidden; resumes (with an immediate refresh) when visible.
   const ACTIVE_STATUSES = ['pending', 'running'];
   useEffect(() => {
     const hasActive = runs.some((r) => ACTIVE_STATUSES.includes(r.status));
     if (!hasActive) return;
-    const interval = setInterval(silentRefresh, 5000);
-    return () => clearInterval(interval);
+
+    let interval: ReturnType<typeof setInterval> | null = null;
+
+    const start = () => {
+      if (interval) return; // already running
+      interval = setInterval(silentRefresh, 5000);
+    };
+
+    const stop = () => {
+      if (interval) {
+        clearInterval(interval);
+        interval = null;
+      }
+    };
+
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        stop();
+      } else {
+        silentRefresh(); // immediate refresh on tab return
+        start();
+      }
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    if (!document.hidden) start(); // only start if tab is currently visible
+
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   }, [runs, silentRefresh]);
 
   useEffect(() => {
