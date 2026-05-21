@@ -591,3 +591,62 @@ func buildNestedConditionSteps(depth int) []StepSpec {
 	}}
 }
 
+// --- Empty branches (no panic) ---
+
+func TestValidateSteps_EmptyBranches_NilBoth(t *testing.T) {
+	steps := []StepSpec{{
+		Type: "condition",
+		ID:   "c1",
+		Condition: &ConditionGroup{
+			Op:    "AND",
+			Rules: []ConditionRule{{Field: "contact.email", Operator: "eq", Value: "x@y.com"}},
+		},
+		YesSteps: nil,
+		NoSteps:  nil,
+	}}
+	stepsJSON, _ := json.Marshal(steps)
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(`[]`), stepsJSON)
+	if !result.Valid {
+		t.Fatalf("expected valid with nil branches, got errors: %+v", result.Errors)
+	}
+}
+
+func TestValidateSteps_EmptyBranches_EmptySlices(t *testing.T) {
+	steps := []StepSpec{{
+		Type: "condition",
+		ID:   "c1",
+		Condition: &ConditionGroup{
+			Op:    "AND",
+			Rules: []ConditionRule{{Field: "contact.email", Operator: "eq", Value: "x@y.com"}},
+		},
+		YesSteps: []StepSpec{},
+		NoSteps:  []StepSpec{},
+	}}
+	stepsJSON, _ := json.Marshal(steps)
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(`[]`), stepsJSON)
+	if !result.Valid {
+		t.Fatalf("expected valid with empty branches, got errors: %+v", result.Errors)
+	}
+}
+
+func TestValidateSteps_EmptyBranches_OnePopulatedOneNil(t *testing.T) {
+	steps := []StepSpec{{
+		Type: "condition",
+		ID:   "c1",
+		Condition: &ConditionGroup{
+			Op:    "AND",
+			Rules: []ConditionRule{{Field: "contact.email", Operator: "eq", Value: "x@y.com"}},
+		},
+		YesSteps: []StepSpec{{
+			Type:   "action",
+			ID:     "a1",
+			Action: &ActionSpec{Type: "send_email", ID: "a1", Params: map[string]any{"to": "a@b.com"}},
+		}},
+		NoSteps: nil,
+	}}
+	stepsJSON, _ := json.Marshal(steps)
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(`[]`), stepsJSON)
+	if !result.Valid {
+		t.Fatalf("expected valid with one populated branch, got errors: %+v", result.Errors)
+	}
+}

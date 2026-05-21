@@ -46,6 +46,9 @@ func (r *Repository) AutoMigrate() error {
 	// Run data migration from actions -> steps
 	_ = r.MigrateFlatActionsToSteps(context.Background())
 
+	// Backfill action_path from action_idx for legacy action logs (idempotent)
+	r.db.Exec(`UPDATE automation_workflow_action_logs SET action_path = action_idx::text WHERE action_path = '' OR action_path IS NULL`)
+
 	return nil
 }
 
