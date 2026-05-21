@@ -59,10 +59,22 @@ func validateSteps(data []byte, result *ValidationResult) {
 	}
 
 	idSet := make(map[string]bool)
-	validateStepsRecursive(steps, "steps", idSet, result)
+	validateStepsRecursive(steps, "steps", 0, idSet, result)
 }
 
-func validateStepsRecursive(steps []StepSpec, path string, idSet map[string]bool, result *ValidationResult) {
+// MaxStepTreeDepth is the maximum allowed nesting depth for the steps tree.
+// Depth 0 = top-level steps, depth 1 = inside a condition branch, etc.
+const MaxStepTreeDepth = 5
+
+func validateStepsRecursive(steps []StepSpec, path string, depth int, idSet map[string]bool, result *ValidationResult) {
+	if depth > MaxStepTreeDepth {
+		result.Valid = false
+		result.Errors = append(result.Errors, ValidationError{
+			Field:   path,
+			Message: fmt.Sprintf("step tree depth %d exceeds maximum of %d", depth, MaxStepTreeDepth),
+		})
+		return
+	}
 	for i, step := range steps {
 		stepPath := fmt.Sprintf("%s[%d]", path, i)
 
@@ -128,8 +140,8 @@ func validateStepsRecursive(steps []StepSpec, path string, idSet map[string]bool
 				}
 				validateConditionRules(step.Condition.Rules, stepPath+".condition", result)
 			}
-			validateStepsRecursive(step.YesSteps, stepPath+".yes_steps", idSet, result)
-			validateStepsRecursive(step.NoSteps, stepPath+".no_steps", idSet, result)
+			validateStepsRecursive(step.YesSteps, stepPath+".yes_steps", depth+1, idSet, result)
+			validateStepsRecursive(step.NoSteps, stepPath+".no_steps", depth+1, idSet, result)
 
 		case "delay":
 			if step.Delay == nil {

@@ -2,6 +2,8 @@ package automation
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -523,3 +525,69 @@ func TestIsEmailOrTemplate(t *testing.T) {
 		}
 	}
 }
+
+// --- Step tree depth validation ---
+
+func TestValidateSteps_TreeDepth_AtMax_Valid(t *testing.T) {
+	// Build a tree that is exactly MaxStepTreeDepth deep (depth 0..5 = 6 levels)
+	// Each level is a condition step with a single action in the yes branch at the deepest level.
+	steps := buildNestedConditionSteps(MaxStepTreeDepth)
+	stepsJSON, _ := json.Marshal(steps)
+	trigger := []byte(`{"type":"contact_created"}`)
+	actions := []byte(`[]`)
+	result := ValidateWorkflowPayload(trigger, nil, actions, stepsJSON)
+	if !result.Valid {
+		t.Fatalf("expected valid at depth=%d, got errors: %+v", MaxStepTreeDepth, result.Errors)
+	}
+}
+
+func TestValidateSteps_TreeDepth_ExceedsMax_Invalid(t *testing.T) {
+	// Build a tree that is MaxStepTreeDepth+1 deep — should be rejected
+	steps := buildNestedConditionSteps(MaxStepTreeDepth + 1)
+	stepsJSON, _ := json.Marshal(steps)
+	trigger := []byte(`{"type":"contact_created"}`)
+	actions := []byte(`[]`)
+	result := ValidateWorkflowPayload(trigger, nil, actions, stepsJSON)
+	if result.Valid {
+		t.Fatalf("expected invalid at depth=%d, got valid", MaxStepTreeDepth+1)
+	}
+	found := false
+	for _, e := range result.Errors {
+		if e.Field != "" && len(e.Message) > 0 {
+			if strings.Contains(e.Message, "step tree depth") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected 'step tree depth' error, got: %+v", result.Errors)
+	}
+}
+
+// buildNestedConditionSteps builds a steps tree nested to the given depth.
+// Depth 0 = single action at top level; depth N = N levels of condition branches.
+func buildNestedConditionSteps(depth int) []StepSpec {
+	if depth <= 0 {
+		return []StepSpec{{
+			Type: "action",
+			ID:   "leaf",
+			Action: &ActionSpec{
+				Type:   "send_email",
+				ID:     "leaf",
+				Params: map[string]any{"to": "a@b.com"},
+			},
+		}}
+	}
+	return []StepSpec{{
+		Type: "condition",
+		ID:   fmt.Sprintf("cond_%d", depth),
+		Condition: &ConditionGroup{
+			Op: "AND",
+			Rules: []ConditionRule{
+				{Field: "contact.email", Operator: "eq", Value: "x@y.com"},
+			},
+		},
+		YesSteps: buildNestedConditionSteps(depth - 1),
+	}}
+}
+
