@@ -193,7 +193,7 @@ function flattenSteps(steps: WorkflowStep[]): ActionSpec[] {
       result.push({
         id: step.id,
         type: 'delay',
-        params: step.params || {},
+        params: step.delay ? { duration_sec: step.delay.duration_sec } : {},
       });
     }
     if (step.yes_steps) {
@@ -317,7 +317,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       id: action.id,
       type: action.type === 'delay' ? 'delay' : 'action',
       action: action.type === 'delay' ? undefined : action,
-      params: action.type === 'delay' ? action.params : undefined,
+      delay: action.type === 'delay' ? { duration_sec: Number(action.params?.duration_sec) || 60 } : undefined,
     };
     get().addStep(step, null, null, index);
   },
@@ -345,9 +345,13 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
     set((s) => {
       const steps = findAndModifySteps(s.steps || [], id, (step) => {
         if (step.type === 'delay' && patch.action) {
+          const delayParams = patch.action.params as any;
           return {
             ...step,
-            params: { ...(step.params || {}), ...(patch.action.params || {}) },
+            delay: {
+              ...(step.delay || { duration_sec: 60 }),
+              ...(delayParams?.duration_sec !== undefined ? { duration_sec: Number(delayParams.duration_sec) } : {}),
+            },
           };
         }
         if (step.type === 'action' && step.action && patch.action) {
