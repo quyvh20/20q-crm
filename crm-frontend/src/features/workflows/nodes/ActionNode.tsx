@@ -12,7 +12,7 @@ interface ActionNodeProps {
 /** Generate a short human-readable subtitle for the step node on the canvas */
 function getStepSummary(step: WorkflowStep): string | null {
   if (step.type === 'delay') {
-    const sec = Number(step.params?.duration_sec) || 0;
+    const sec = Number(step.delay?.duration_sec) || 0;
     if (sec <= 0) return null;
     const units: [number, string][] = [[86400, 'day'], [3600, 'hour'], [60, 'minute'], [1, 'second']];
     for (const [factor, label] of units) {

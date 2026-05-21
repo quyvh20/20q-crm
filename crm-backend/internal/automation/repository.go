@@ -482,9 +482,9 @@ func (r *Repository) MigrateFlatActionsToSteps(ctx context.Context) error {
 		for _, action := range actions {
 			if action.Type == "delay" {
 				steps = append(steps, StepSpec{
-					Type:   "delay",
-					ID:     action.ID,
-					Params: action.Params,
+					Type:  "delay",
+					ID:    action.ID,
+					Delay: delayParamsFromMap(action.Params),
 				})
 			} else {
 				a := action
@@ -520,9 +520,9 @@ func (r *Repository) MigrateFlatActionsToSteps(ctx context.Context) error {
 		for _, action := range actions {
 			if action.Type == "delay" {
 				steps = append(steps, StepSpec{
-					Type:   "delay",
-					ID:     action.ID,
-					Params: action.Params,
+					Type:  "delay",
+					ID:    action.ID,
+					Delay: delayParamsFromMap(action.Params),
 				})
 			} else {
 				a := action

@@ -135,17 +135,37 @@ type ActionSpec struct {
 	Params map[string]any `json:"params,omitempty"`
 }
 
+// DelayParams holds the typed parameters for a delay step.
+type DelayParams struct {
+	DurationSec int `json:"duration_sec"`
+}
+
 // StepSpec represents a step in a recursive workflow steps tree.
 type StepSpec struct {
 	Type      string          `json:"type"` // "action" | "condition" | "delay"
 	ID        string          `json:"id"`
 	Action    *ActionSpec     `json:"action,omitempty"`
 	Condition *ConditionGroup `json:"condition,omitempty"`
-	Params    map[string]any  `json:"params,omitempty"`
+	Delay     *DelayParams    `json:"delay,omitempty"`
 	YesSteps  []StepSpec      `json:"yes_steps,omitempty"`
 	NoSteps   []StepSpec      `json:"no_steps,omitempty"`
 }
 
+
+// delayParamsFromMap converts a legacy action params map to a typed *DelayParams.
+func delayParamsFromMap(m map[string]any) *DelayParams {
+	if m == nil {
+		return nil
+	}
+	sec := 0
+	switch v := m["duration_sec"].(type) {
+	case float64:
+		sec = int(v)
+	case int:
+		sec = v
+	}
+	return &DelayParams{DurationSec: sec}
+}
 
 // EvalContext holds all the data available for template interpolation and condition evaluation.
 type EvalContext struct {

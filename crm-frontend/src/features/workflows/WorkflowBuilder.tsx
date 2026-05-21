@@ -96,7 +96,7 @@ export const WorkflowBuilder: React.FC = () => {
                 type: actionType as any,
                 params: getDefaultParams(actionType as any),
               },
-              params: actionType === 'delay' ? getDefaultParams('delay') : undefined,
+              delay: actionType === 'delay' ? { duration_sec: 60 } : undefined,
             },
             parentId,
             branch,

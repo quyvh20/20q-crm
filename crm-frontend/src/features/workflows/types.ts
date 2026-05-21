@@ -26,12 +26,16 @@ export interface ActionSpec {
   params: Record<string, unknown>;
 }
 
+export interface DelayParams {
+  duration_sec: number;
+}
+
 export interface WorkflowStep {
   id: string;
   type: 'action' | 'condition' | 'delay';
   action?: ActionSpec;
   condition?: ConditionGroup;
-  params?: Record<string, unknown>;
+  delay?: DelayParams;
   yes_steps?: WorkflowStep[];
   no_steps?: WorkflowStep[];
 }

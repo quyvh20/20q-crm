@@ -132,17 +132,19 @@ func validateStepsRecursive(steps []StepSpec, path string, idSet map[string]bool
 			validateStepsRecursive(step.NoSteps, stepPath+".no_steps", idSet, result)
 
 		case "delay":
-			if step.Params == nil {
+			if step.Delay == nil {
 				result.Valid = false
 				result.Errors = append(result.Errors, ValidationError{
-					Field:   stepPath + ".params",
-					Message: "delay requires params with 'duration_sec'",
+					Field:   stepPath + ".delay",
+					Message: "delay requires 'delay' with 'duration_sec'",
 				})
 			} else {
 				dummyAction := ActionSpec{
-					Type:   ActionDelay,
-					ID:     step.ID,
-					Params: step.Params,
+					Type: ActionDelay,
+					ID:   step.ID,
+					Params: map[string]any{
+						"duration_sec": step.Delay.DurationSec,
+					},
 				}
 				validateActionParams(dummyAction, stepPath, result)
 			}

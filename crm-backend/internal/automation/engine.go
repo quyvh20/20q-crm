@@ -594,10 +594,14 @@ func (e *Engine) executeStepsRecursive(steps []StepSpec, run *WorkflowRun, compl
 					action.ID = step.ID
 				}
 			} else {
+				delayParams := map[string]any{}
+				if step.Delay != nil {
+					delayParams["duration_sec"] = step.Delay.DurationSec
+				}
 				action = ActionSpec{
 					Type:   ActionDelay,
 					ID:     step.ID,
-					Params: step.Params,
+					Params: delayParams,
 				}
 			}
 
