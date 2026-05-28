@@ -110,10 +110,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     try {
+      const activeOrgId = localStorage.getItem('active_workspace_id');
       const res = await fetch(`${API_URL}/api/auth/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh_token: refreshToken }),
+        body: JSON.stringify({
+          refresh_token: refreshToken,
+          ...(activeOrgId ? { org_id: activeOrgId } : {}),
+        }),
       });
 
       if (!res.ok) {
@@ -169,6 +173,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               setWorkspaces(json.data.workspaces);
               const active = findActiveWorkspace(json.data.workspaces);
               setActiveWorkspace(active);
+
+              // Check if JWT org matches the active workspace.
+              // If not (e.g., token was refreshed for wrong org), auto-switch.
+              if (active) {
+                try {
+                  const parts = token.split('.');
+                  if (parts.length === 3) {
+                    const payload = JSON.parse(atob(parts[1]));
+                    if (payload.org_id && payload.org_id !== active.org_id) {
+                      console.log('[AuthProvider] JWT org mismatch, auto-switching workspace');
+                      const result = await apiSwitchWorkspace(active.org_id);
+                      localStorage.setItem('access_token', result.access_token);
+                      localStorage.setItem('refresh_token', result.refresh_token);
+                      setAccessToken(result.access_token);
+                      if (result.workspaces) {
+                        setWorkspaces(result.workspaces);
+                        const switched = result.workspaces.find(w => w.org_id === active.org_id) || null;
+                        setActiveWorkspace(switched);
+                      }
+                    }
+                  }
+                } catch (switchErr) {
+                  console.warn('[AuthProvider] Auto-switch failed:', switchErr);
+                }
+              }
             }
           }
         } else if (res.status === 401) {

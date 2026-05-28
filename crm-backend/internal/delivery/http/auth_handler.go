@@ -62,7 +62,7 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.authUC.RefreshToken(c.Request.Context(), input.RefreshToken)
+	resp, err := h.authUC.RefreshToken(c.Request.Context(), input)
 	if err != nil {
 		handleAppError(c, err)
 		return

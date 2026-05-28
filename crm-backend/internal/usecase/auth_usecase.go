@@ -329,8 +329,8 @@ func (uc *authUseCase) ListWorkspaces(ctx context.Context, userID uuid.UUID) ([]
 	return workspaces, nil
 }
 
-func (uc *authUseCase) RefreshToken(ctx context.Context, refreshToken string) (*domain.AuthResponse, error) {
-	tokenHash := hashToken(refreshToken)
+func (uc *authUseCase) RefreshToken(ctx context.Context, input domain.RefreshInput) (*domain.AuthResponse, error) {
+	tokenHash := hashToken(input.RefreshToken)
 
 	storedToken, err := uc.authRepo.GetRefreshTokenByHash(ctx, tokenHash)
 	if err != nil {
@@ -359,11 +359,27 @@ func (uc *authUseCase) RefreshToken(ctx context.Context, refreshToken string) (*
 	var activeOrgID uuid.UUID
 	var activeRole string
 	if len(orgUsers) > 0 {
+		// Default: first org
 		activeOrgID = orgUsers[0].OrgID
 		if orgUsers[0].Role != nil {
 			activeRole = orgUsers[0].Role.Name
 		} else {
 			activeRole = "viewer"
+		}
+
+		// If caller specified an org_id, find that org and use its role
+		if input.OrgID != nil && *input.OrgID != uuid.Nil {
+			for _, ou := range orgUsers {
+				if ou.OrgID == *input.OrgID {
+					activeOrgID = ou.OrgID
+					if ou.Role != nil {
+						activeRole = ou.Role.Name
+					} else {
+						activeRole = "viewer"
+					}
+					break
+				}
+			}
 		}
 	}
 

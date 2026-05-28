@@ -22,7 +22,8 @@ type LoginInput struct {
 }
 
 type RefreshInput struct {
-	RefreshToken string `json:"refresh_token" binding:"required"`
+	RefreshToken string     `json:"refresh_token" binding:"required"`
+	OrgID        *uuid.UUID `json:"org_id"` // optional: refresh into a specific workspace
 }
 
 type SwitchWorkspaceInput struct {
@@ -108,7 +109,7 @@ type AuthRepository interface {
 type AuthUseCase interface {
 	Register(ctx context.Context, input RegisterInput) (*AuthResponse, error)
 	Login(ctx context.Context, input LoginInput) (*AuthResponse, error)
-	RefreshToken(ctx context.Context, refreshToken string) (*AuthResponse, error)
+	RefreshToken(ctx context.Context, input RefreshInput) (*AuthResponse, error)
 	Logout(ctx context.Context, refreshToken string) error
 	GetMe(ctx context.Context, userID uuid.UUID) (*User, error)
 	GoogleLogin(ctx context.Context, code string) (*AuthResponse, error)

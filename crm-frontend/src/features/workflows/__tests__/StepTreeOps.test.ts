@@ -3099,7 +3099,7 @@ describe('TestDnd_DragFromPaletteIntoYesBranch', () => {
 
   it('drops create_task into empty yes branch', () => {
     useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
-    const id = paletteDrop('create_task', 'c1');
+    paletteDrop('create_task', 'c1');
 
     const yes = useBuilderStore.getState().steps[0].yes_steps!;
     expect(yes).toHaveLength(1);
