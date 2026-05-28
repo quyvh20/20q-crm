@@ -2050,3 +2050,690 @@ describe('isDescendant — cycle detection scenario', () => {
   });
 });
 
+// ═════════════════════════════════════════════════════════════════════
+// TestStore_InsertStepIntoYesBranch
+// End-to-end: store.addStep → yes branch → verify tree, path,
+//             flattened actions, immutability
+// ═════════════════════════════════════════════════════════════════════
+describe('TestStore_InsertStepIntoYesBranch', () => {
+  it('inserts a single action into an empty yes branch', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('y1'), 'c1', 'yes');
+
+    const { steps } = useBuilderStore.getState();
+    expect(steps[0].yes_steps).toHaveLength(1);
+    expect(steps[0].yes_steps![0].id).toBe('y1');
+    expect(steps[0].yes_steps![0].type).toBe('action');
+  });
+
+  it('appends multiple actions to yes branch in order', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('y1'), 'c1', 'yes');
+    useBuilderStore.getState().addStep(mkAction('y2'), 'c1', 'yes');
+    useBuilderStore.getState().addStep(mkAction('y3'), 'c1', 'yes');
+
+    const yes = useBuilderStore.getState().steps[0].yes_steps!;
+    expect(yes.map((s) => s.id)).toEqual(['y1', 'y2', 'y3']);
+  });
+
+  it('inserts at specific index within yes branch', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('y1'), 'c1', 'yes');
+    useBuilderStore.getState().addStep(mkAction('y3'), 'c1', 'yes');
+    // Insert y2 at index 1 (between y1 and y3)
+    useBuilderStore.getState().addStep(mkAction('y2'), 'c1', 'yes', 1);
+
+    const yes = useBuilderStore.getState().steps[0].yes_steps!;
+    expect(yes.map((s) => s.id)).toEqual(['y1', 'y2', 'y3']);
+  });
+
+  it('prepends at index 0 in yes branch', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('y2'), 'c1', 'yes');
+    useBuilderStore.getState().addStep(mkAction('y1'), 'c1', 'yes', 0);
+
+    const yes = useBuilderStore.getState().steps[0].yes_steps!;
+    expect(yes[0].id).toBe('y1');
+    expect(yes[1].id).toBe('y2');
+  });
+
+  it('does NOT affect no branch', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [], [mkAction('n1')]),
+      null,
+      null
+    );
+    useBuilderStore.getState().addStep(mkAction('y1'), 'c1', 'yes');
+    useBuilderStore.getState().addStep(mkAction('y2'), 'c1', 'yes');
+
+    const root = useBuilderStore.getState().steps[0];
+    expect(root.yes_steps!.map((s) => s.id)).toEqual(['y1', 'y2']);
+    expect(root.no_steps!.map((s) => s.id)).toEqual(['n1']);
+  });
+
+  it('does NOT affect root-level siblings', () => {
+    useBuilderStore.getState().addStep(mkAction('root1'), null, null);
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('y1'), 'c1', 'yes');
+
+    const { steps } = useBuilderStore.getState();
+    expect(steps[0].id).toBe('root1');
+    expect(steps[0].type).toBe('action');
+    expect(steps[1].yes_steps![0].id).toBe('y1');
+  });
+
+  it('getStepAtPath resolves the inserted step', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('y1'), 'c1', 'yes');
+    useBuilderStore.getState().addStep(mkAction('y2'), 'c1', 'yes');
+
+    const { steps } = useBuilderStore.getState();
+    const path = [{ index: 0 }, { branch: 'yes' as const, index: 1 }];
+    const found = getStepAtPath(steps, path);
+    expect(found?.id).toBe('y2');
+  });
+
+  it('getParentPath of inserted step resolves to the condition', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('y1'), 'c1', 'yes');
+
+    const { steps } = useBuilderStore.getState();
+    const childPath = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+    const parentPath = getParentPath(childPath)!;
+    const parent = getStepAtPath(steps, parentPath);
+    expect(parent?.id).toBe('c1');
+  });
+
+  it('syncs flattened actions after yes branch insert', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('y1'), 'c1', 'yes');
+    useBuilderStore.getState().addStep(mkDelay('d1', 120), 'c1', 'yes');
+
+    const { actions } = useBuilderStore.getState();
+    const ids = actions.map((a) => a.id);
+    expect(ids).toContain('y1');
+    expect(ids).toContain('d1');
+  });
+
+  it('sets isDirty after yes branch insert', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    // Reset dirty to test the insert triggers it
+    useBuilderStore.setState({ isDirty: false });
+    useBuilderStore.getState().addStep(mkAction('y1'), 'c1', 'yes');
+    expect(useBuilderStore.getState().isDirty).toBe(true);
+  });
+
+  it('does not mutate previous steps reference (immutability)', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('y1'), 'c1', 'yes');
+
+    const before = useBuilderStore.getState().steps;
+    const beforeYes = before[0].yes_steps!;
+
+    useBuilderStore.getState().addStep(mkAction('y2'), 'c1', 'yes');
+
+    const after = useBuilderStore.getState().steps;
+    // Root array is a new reference
+    expect(after).not.toBe(before);
+    // Condition step is a new reference
+    expect(after[0]).not.toBe(before[0]);
+    // Old yes_steps was NOT mutated
+    expect(beforeYes).toHaveLength(1);
+    expect(after[0].yes_steps).toHaveLength(2);
+  });
+
+  it('does not mutate the inserted step object', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    const original = mkAction('y1');
+    const originalCopy = { ...original };
+    useBuilderStore.getState().addStep(original, 'c1', 'yes');
+
+    // Original object should not have been modified
+    expect(original).toEqual(originalCopy);
+  });
+
+  it('inserts delay into yes branch', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    useBuilderStore.getState().addStep(mkDelay('d1', 300), 'c1', 'yes');
+
+    const yes = useBuilderStore.getState().steps[0].yes_steps!;
+    expect(yes).toHaveLength(1);
+    expect(yes[0].type).toBe('delay');
+    expect(yes[0].delay!.duration_sec).toBe(300);
+  });
+
+  it('inserts nested condition into yes branch', () => {
+    useBuilderStore.getState().addStep(mkCondition('outer'), null, null);
+    useBuilderStore.getState().addStep(mkCondition('inner'), 'outer', 'yes');
+
+    const yes = useBuilderStore.getState().steps[0].yes_steps!;
+    expect(yes).toHaveLength(1);
+    expect(yes[0].type).toBe('condition');
+    expect(yes[0].id).toBe('inner');
+    expect(yes[0].yes_steps).toEqual([]);
+    expect(yes[0].no_steps).toEqual([]);
+  });
+
+  it('inserts into nested condition yes → yes (depth 2)', () => {
+    const inner = mkCondition('inner');
+    const outer = mkCondition('outer', [inner]);
+    useBuilderStore.getState().addStep(outer, null, null);
+    useBuilderStore.getState().addStep(mkAction('deep'), 'inner', 'yes');
+
+    const { steps } = useBuilderStore.getState();
+    const deepStep = steps[0].yes_steps![0].yes_steps![0];
+    expect(deepStep.id).toBe('deep');
+
+    // Verify via path
+    const path = [
+      { index: 0 },
+      { branch: 'yes' as const, index: 0 },
+      { branch: 'yes' as const, index: 0 },
+    ];
+    expect(getStepAtPath(steps, path)?.id).toBe('deep');
+  });
+
+  it('realistic workflow: root action + condition with mixed yes branch', () => {
+    useBuilderStore.getState().addStep(mkAction('email'), null, null);
+    useBuilderStore.getState().addStep(mkCondition('check'), null, null);
+    useBuilderStore.getState().addStep(mkAction('task'), 'check', 'yes');
+    useBuilderStore.getState().addStep(mkDelay('wait', 3600), 'check', 'yes');
+    useBuilderStore.getState().addStep(mkAction('webhook'), 'check', 'yes');
+
+    const { steps, actions } = useBuilderStore.getState();
+    expect(steps).toHaveLength(2);
+
+    const yes = steps[1].yes_steps!;
+    expect(yes).toHaveLength(3);
+    expect(yes.map((s) => s.id)).toEqual(['task', 'wait', 'webhook']);
+    expect(yes[0].type).toBe('action');
+    expect(yes[1].type).toBe('delay');
+    expect(yes[2].type).toBe('action');
+
+    // Flattened actions should include all
+    const flatIds = actions.map((a) => a.id);
+    expect(flatIds).toContain('email');
+    expect(flatIds).toContain('task');
+    expect(flatIds).toContain('wait');
+    expect(flatIds).toContain('webhook');
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// TestStore_MoveStepBetweenBranches
+// Cross-branch move = findStep → removeStep → addStep to new branch.
+// Verifies tree shape, branch isolation, path resolution, flattened
+// actions sync, immutability.
+// ═════════════════════════════════════════════════════════════════════
+describe('TestStore_MoveStepBetweenBranches', () => {
+  /** Helper: move a step from wherever it is to a new branch */
+  function moveBetweenBranches(
+    stepId: string,
+    destParentId: string | null,
+    destBranch: 'yes' | 'no' | null,
+    destIndex?: number
+  ) {
+    const store = useBuilderStore.getState();
+    const step = store.findStep(stepId);
+    if (!step) throw new Error(`Step ${stepId} not found`);
+    // Clone to avoid reference issues after removal
+    const clone = JSON.parse(JSON.stringify(step)) as WorkflowStep;
+    store.removeStep(stepId);
+    useBuilderStore.getState().addStep(clone, destParentId, destBranch, destIndex);
+  }
+
+  // ── yes → no ──────────────────────────────────────────────────────
+  it('moves action from yes branch to no branch', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1'), mkAction('y2')], [mkAction('n1')]),
+      null, null
+    );
+    moveBetweenBranches('y2', 'c1', 'no');
+
+    const root = useBuilderStore.getState().steps[0];
+    expect(root.yes_steps!.map((s) => s.id)).toEqual(['y1']);
+    expect(root.no_steps!.map((s) => s.id)).toEqual(['n1', 'y2']);
+  });
+
+  it('moves action from yes to no at specific index', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1')], [mkAction('n1'), mkAction('n2')]),
+      null, null
+    );
+    moveBetweenBranches('y1', 'c1', 'no', 1);
+
+    const root = useBuilderStore.getState().steps[0];
+    expect(root.yes_steps).toHaveLength(0);
+    expect(root.no_steps!.map((s) => s.id)).toEqual(['n1', 'y1', 'n2']);
+  });
+
+  // ── no → yes ──────────────────────────────────────────────────────
+  it('moves action from no branch to yes branch', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1')], [mkAction('n1'), mkAction('n2')]),
+      null, null
+    );
+    moveBetweenBranches('n1', 'c1', 'yes');
+
+    const root = useBuilderStore.getState().steps[0];
+    expect(root.yes_steps!.map((s) => s.id)).toEqual(['y1', 'n1']);
+    expect(root.no_steps!.map((s) => s.id)).toEqual(['n2']);
+  });
+
+  // ── branch → root ────────────────────────────────────────────────
+  it('moves action from yes branch to root level', () => {
+    useBuilderStore.getState().addStep(mkAction('root1'), null, null);
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1'), mkAction('y2')]),
+      null, null
+    );
+    moveBetweenBranches('y1', null, null, 0);
+
+    const { steps } = useBuilderStore.getState();
+    expect(steps[0].id).toBe('y1');
+    expect(steps[1].id).toBe('root1');
+    expect(steps[2].id).toBe('c1');
+    expect(steps[2].yes_steps!.map((s) => s.id)).toEqual(['y2']);
+  });
+
+  // ── root → branch ────────────────────────────────────────────────
+  it('moves action from root level into yes branch', () => {
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    moveBetweenBranches('a1', 'c1', 'yes', 0);
+
+    const { steps } = useBuilderStore.getState();
+    // a1 removed from root, only condition remains
+    expect(steps).toHaveLength(1);
+    expect(steps[0].id).toBe('c1');
+    expect(steps[0].yes_steps!.map((s) => s.id)).toEqual(['a1']);
+  });
+
+  it('moves action from root into no branch', () => {
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    useBuilderStore.getState().addStep(mkCondition('c1', [], [mkAction('n1')]), null, null);
+    moveBetweenBranches('a1', 'c1', 'no');
+
+    const { steps } = useBuilderStore.getState();
+    expect(steps).toHaveLength(1);
+    expect(steps[0].no_steps!.map((s) => s.id)).toEqual(['n1', 'a1']);
+  });
+
+  // ── across different conditions ────────────────────────────────────
+  it('moves action between branches of different conditions', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1')]),
+      null, null
+    );
+    useBuilderStore.getState().addStep(
+      mkCondition('c2', [], [mkAction('n2')]),
+      null, null
+    );
+    // Move y1 from c1.yes to c2.no
+    moveBetweenBranches('y1', 'c2', 'no');
+
+    const { steps } = useBuilderStore.getState();
+    expect(steps[0].yes_steps).toHaveLength(0);
+    expect(steps[1].no_steps!.map((s) => s.id)).toEqual(['n2', 'y1']);
+  });
+
+  // ── move delay ────────────────────────────────────────────────────
+  it('moves delay from yes to no branch', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkDelay('d1', 300)], [mkAction('n1')]),
+      null, null
+    );
+    moveBetweenBranches('d1', 'c1', 'no', 0);
+
+    const root = useBuilderStore.getState().steps[0];
+    expect(root.yes_steps).toHaveLength(0);
+    expect(root.no_steps![0].id).toBe('d1');
+    expect(root.no_steps![0].type).toBe('delay');
+    expect(root.no_steps![0].delay!.duration_sec).toBe(300);
+  });
+
+  // ── move condition (subtree) ──────────────────────────────────────
+  it('moves nested condition with its subtree from yes to no', () => {
+    const inner = mkCondition('inner', [mkAction('deep')]);
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [inner], [mkAction('n1')]),
+      null, null
+    );
+    moveBetweenBranches('inner', 'c1', 'no', 0);
+
+    const root = useBuilderStore.getState().steps[0];
+    expect(root.yes_steps).toHaveLength(0);
+    expect(root.no_steps![0].id).toBe('inner');
+    expect(root.no_steps![0].yes_steps![0].id).toBe('deep');
+    expect(root.no_steps![1].id).toBe('n1');
+  });
+
+  // ── deep nesting ──────────────────────────────────────────────────
+  it('moves step from depth-2 yes branch to depth-1 no branch', () => {
+    const inner = mkCondition('inner', [mkAction('deep_action')]);
+    const outer = mkCondition('outer', [inner], [mkAction('outer_no')]);
+    useBuilderStore.getState().addStep(outer, null, null);
+
+    // Move deep_action from inner.yes to outer.no
+    moveBetweenBranches('deep_action', 'outer', 'no');
+
+    const { steps } = useBuilderStore.getState();
+    const outerStep = steps[0];
+    expect(outerStep.yes_steps![0].yes_steps).toHaveLength(0); // inner.yes is now empty
+    expect(outerStep.no_steps!.map((s) => s.id)).toEqual(['outer_no', 'deep_action']);
+  });
+
+  // ── flattened actions sync ────────────────────────────────────────
+  it('syncs flattened actions after cross-branch move', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1'), mkDelay('d1', 60)], [mkAction('n1')]),
+      null, null
+    );
+    const beforeActions = useBuilderStore.getState().actions.map((a) => a.id);
+    expect(beforeActions).toContain('y1');
+
+    moveBetweenBranches('y1', 'c1', 'no');
+
+    const afterActions = useBuilderStore.getState().actions.map((a) => a.id);
+    // y1 should still be in flattened list (just moved, not deleted)
+    expect(afterActions).toContain('y1');
+    expect(afterActions).toContain('n1');
+    expect(afterActions).toContain('d1');
+  });
+
+  // ── isDirty ───────────────────────────────────────────────────────
+  it('sets isDirty after cross-branch move', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1')]),
+      null, null
+    );
+    useBuilderStore.setState({ isDirty: false });
+
+    moveBetweenBranches('y1', 'c1', 'no');
+    expect(useBuilderStore.getState().isDirty).toBe(true);
+  });
+
+  // ── immutability ──────────────────────────────────────────────────
+  it('does not mutate previous state references', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1'), mkAction('y2')], [mkAction('n1')]),
+      null, null
+    );
+    const before = useBuilderStore.getState().steps;
+    const beforeYes = before[0].yes_steps!;
+    const beforeNo = before[0].no_steps!;
+
+    moveBetweenBranches('y1', 'c1', 'no');
+
+    const after = useBuilderStore.getState().steps;
+    // References should be new
+    expect(after).not.toBe(before);
+    expect(after[0]).not.toBe(before[0]);
+    // Old arrays not mutated
+    expect(beforeYes).toHaveLength(2);
+    expect(beforeNo).toHaveLength(1);
+    // New arrays updated
+    expect(after[0].yes_steps).toHaveLength(1);
+    expect(after[0].no_steps).toHaveLength(2);
+  });
+
+  // ── path resolution after move ────────────────────────────────────
+  it('getStepAtPath resolves moved step at new location', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1')], [mkAction('n1')]),
+      null, null
+    );
+    moveBetweenBranches('y1', 'c1', 'no', 0);
+
+    const { steps } = useBuilderStore.getState();
+    // y1 is now at no_steps[0]
+    const path = [{ index: 0 }, { branch: 'no' as const, index: 0 }];
+    expect(getStepAtPath(steps, path)?.id).toBe('y1');
+    // Old location should be empty
+    const oldPath = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+    expect(getStepAtPath(steps, oldPath)).toBeUndefined();
+  });
+
+  // ── emptying a branch ─────────────────────────────────────────────
+  it('moving the last step out of a branch leaves it empty', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('only')]),
+      null, null
+    );
+    moveBetweenBranches('only', 'c1', 'no');
+
+    const root = useBuilderStore.getState().steps[0];
+    expect(root.yes_steps).toHaveLength(0);
+    expect(root.no_steps!.map((s) => s.id)).toEqual(['only']);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// TestStore_RemoveStepCascadesChildren
+// Removing a condition step should cascade-remove ALL descendants
+// from the tree, flattened actions, and selectedNodeId.
+// ═════════════════════════════════════════════════════════════════════
+describe('TestStore_RemoveStepCascadesChildren', () => {
+  it('removes condition with yes-only children → children gone from tree', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1'), mkAction('y2')]),
+      null, null
+    );
+    useBuilderStore.getState().removeStep('c1');
+
+    const { steps } = useBuilderStore.getState();
+    expect(steps).toHaveLength(0);
+  });
+
+  it('removes condition with both branches → all children gone', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1'), mkDelay('d1')], [mkAction('n1'), mkAction('n2')]),
+      null, null
+    );
+    useBuilderStore.getState().removeStep('c1');
+
+    expect(useBuilderStore.getState().steps).toHaveLength(0);
+    expect(useBuilderStore.getState().actions).toHaveLength(0);
+  });
+
+  it('flattened actions purged for all descendant actions', () => {
+    useBuilderStore.getState().addStep(mkAction('root_a'), null, null);
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1'), mkDelay('d1', 120)], [mkAction('n1')]),
+      null, null
+    );
+
+    // Before: 4 flattened actions
+    const before = useBuilderStore.getState().actions.map((a) => a.id);
+    expect(before).toContain('root_a');
+    expect(before).toContain('y1');
+    expect(before).toContain('d1');
+    expect(before).toContain('n1');
+
+    useBuilderStore.getState().removeStep('c1');
+
+    // After: only root_a remains
+    const after = useBuilderStore.getState().actions.map((a) => a.id);
+    expect(after).toEqual(['root_a']);
+  });
+
+  it('findStep returns undefined for all removed descendants', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1'), mkAction('y2')], [mkAction('n1')]),
+      null, null
+    );
+    useBuilderStore.getState().removeStep('c1');
+
+    const store = useBuilderStore.getState();
+    expect(store.findStep('c1')).toBeUndefined();
+    expect(store.findStep('y1')).toBeUndefined();
+    expect(store.findStep('y2')).toBeUndefined();
+    expect(store.findStep('n1')).toBeUndefined();
+  });
+
+  it('depth-2 cascade: outer condition with nested condition', () => {
+    const inner = mkCondition('inner', [mkAction('deep_y')], [mkAction('deep_n')]);
+    const outer = mkCondition('outer', [inner, mkAction('y_sibling')], [mkAction('n1')]);
+    useBuilderStore.getState().addStep(outer, null, null);
+
+    useBuilderStore.getState().removeStep('outer');
+
+    expect(useBuilderStore.getState().steps).toHaveLength(0);
+    expect(useBuilderStore.getState().actions).toHaveLength(0);
+
+    const store = useBuilderStore.getState();
+    expect(store.findStep('outer')).toBeUndefined();
+    expect(store.findStep('inner')).toBeUndefined();
+    expect(store.findStep('deep_y')).toBeUndefined();
+    expect(store.findStep('deep_n')).toBeUndefined();
+    expect(store.findStep('y_sibling')).toBeUndefined();
+    expect(store.findStep('n1')).toBeUndefined();
+  });
+
+  it('depth-3 cascade: triple-nested conditions', () => {
+    const l3 = mkCondition('L3', [mkAction('leaf')]);
+    const l2 = mkCondition('L2', [l3]);
+    const l1 = mkCondition('L1', [l2]);
+    useBuilderStore.getState().addStep(l1, null, null);
+
+    useBuilderStore.getState().removeStep('L1');
+
+    expect(useBuilderStore.getState().steps).toHaveLength(0);
+    const store = useBuilderStore.getState();
+    for (const id of ['L1', 'L2', 'L3', 'leaf']) {
+      expect(store.findStep(id)).toBeUndefined();
+    }
+  });
+
+  it('removing inner condition preserves outer and siblings', () => {
+    const inner = mkCondition('inner', [mkAction('deep')]);
+    const outer = mkCondition('outer', [inner, mkAction('kept')], [mkAction('n1')]);
+    useBuilderStore.getState().addStep(outer, null, null);
+
+    useBuilderStore.getState().removeStep('inner');
+
+    const root = useBuilderStore.getState().steps[0];
+    expect(root.id).toBe('outer');
+    expect(root.yes_steps!.map((s) => s.id)).toEqual(['kept']);
+    expect(root.no_steps!.map((s) => s.id)).toEqual(['n1']);
+
+    const store = useBuilderStore.getState();
+    expect(store.findStep('inner')).toBeUndefined();
+    expect(store.findStep('deep')).toBeUndefined();
+    expect(store.findStep('kept')).toBeDefined();
+    expect(store.findStep('n1')).toBeDefined();
+  });
+
+  it('root-level siblings untouched when condition is removed', () => {
+    useBuilderStore.getState().addStep(mkAction('before'), null, null);
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1')], [mkAction('n1')]),
+      null, null
+    );
+
+    useBuilderStore.getState().removeStep('c1');
+
+    const { steps } = useBuilderStore.getState();
+    expect(steps).toHaveLength(1);
+    expect(steps[0].id).toBe('before');
+  });
+
+  it('clears selectedNodeId when selected child is cascade-removed', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1')]),
+      null, null
+    );
+    useBuilderStore.getState().selectNode('y1');
+    expect(useBuilderStore.getState().selectedNodeId).toBe('y1');
+
+    useBuilderStore.getState().removeStep('c1');
+
+    expect(useBuilderStore.getState().selectedNodeId).toBeNull();
+  });
+
+  it('clears selectedNodeId when the removed condition itself was selected', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1')]),
+      null, null
+    );
+    useBuilderStore.getState().selectNode('c1');
+
+    useBuilderStore.getState().removeStep('c1');
+
+    expect(useBuilderStore.getState().selectedNodeId).toBeNull();
+  });
+
+  it('sets isDirty after cascade removal', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1')]),
+      null, null
+    );
+    useBuilderStore.setState({ isDirty: false });
+
+    useBuilderStore.getState().removeStep('c1');
+
+    expect(useBuilderStore.getState().isDirty).toBe(true);
+  });
+
+  it('immutability: previous state refs not mutated during cascade', () => {
+    useBuilderStore.getState().addStep(mkAction('root_a'), null, null);
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1')], [mkAction('n1')]),
+      null, null
+    );
+
+    const before = useBuilderStore.getState().steps;
+    const beforeActions = useBuilderStore.getState().actions;
+
+    useBuilderStore.getState().removeStep('c1');
+
+    const after = useBuilderStore.getState().steps;
+    const afterActions = useBuilderStore.getState().actions;
+
+    // New references
+    expect(after).not.toBe(before);
+    expect(afterActions).not.toBe(beforeActions);
+    // Old refs not mutated
+    expect(before).toHaveLength(2);
+    expect(beforeActions.length).toBeGreaterThan(1);
+    // New state correct
+    expect(after).toHaveLength(1);
+  });
+
+  it('cascade with mixed types: action + delay + condition children', () => {
+    const inner = mkCondition('inner_c', [mkAction('inner_a')]);
+    useBuilderStore.getState().addStep(
+      mkCondition('c1',
+        [mkAction('y_action'), mkDelay('y_delay', 300), inner],
+        [mkAction('n_action')]
+      ),
+      null, null
+    );
+
+    useBuilderStore.getState().removeStep('c1');
+
+    expect(useBuilderStore.getState().steps).toHaveLength(0);
+    expect(useBuilderStore.getState().actions).toHaveLength(0);
+    const store = useBuilderStore.getState();
+    for (const id of ['c1', 'y_action', 'y_delay', 'inner_c', 'inner_a', 'n_action']) {
+      expect(store.findStep(id)).toBeUndefined();
+    }
+  });
+
+  it('removing condition from no_steps of a parent condition', () => {
+    const child = mkCondition('child', [mkAction('grandchild')]);
+    const parent = mkCondition('parent', [mkAction('y1')], [child, mkAction('n_sibling')]);
+    useBuilderStore.getState().addStep(parent, null, null);
+
+    useBuilderStore.getState().removeStep('child');
+
+    const root = useBuilderStore.getState().steps[0];
+    expect(root.no_steps!.map((s) => s.id)).toEqual(['n_sibling']);
+    expect(useBuilderStore.getState().findStep('child')).toBeUndefined();
+    expect(useBuilderStore.getState().findStep('grandchild')).toBeUndefined();
+    // parent and siblings intact
+    expect(useBuilderStore.getState().findStep('parent')).toBeDefined();
+    expect(useBuilderStore.getState().findStep('y1')).toBeDefined();
+    expect(useBuilderStore.getState().findStep('n_sibling')).toBeDefined();
+  });
+});

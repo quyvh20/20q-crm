@@ -469,10 +469,13 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
     set((s) => {
       const steps = findAndModifySteps(s.steps || [], id, () => null);
       const actions = flattenSteps(steps);
+      // Clear selection if the removed step (or any cascade-removed child) was selected
+      const selId = s.selectedNodeId;
+      const selStillExists = selId ? !!findStepInTree(steps, selId) : false;
       return {
         steps,
         actions,
-        selectedNodeId: s.selectedNodeId === id ? null : s.selectedNodeId,
+        selectedNodeId: selStillExists ? selId : null,
         isDirty: true,
       };
     }),
