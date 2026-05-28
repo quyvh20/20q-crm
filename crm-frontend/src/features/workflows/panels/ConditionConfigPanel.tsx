@@ -40,7 +40,7 @@ function deriveObjectSlug(triggerType: string): string {
 }
 
 export const ConditionConfigPanel: React.FC = () => {
-  const { trigger, conditions, setConditions, schema, schemaLoading, schemaError, invalidateSchema, errors, fetchObjectFields, selectedNodeId, findStep, updateStep } = useBuilderStore();
+  const { trigger, conditions, setConditions, schema, schemaLoading, schemaError, invalidateSchema, errors, fetchObjectFields, selectedNodeId, steps, findStep, updateStep } = useBuilderStore();
 
   // Derive firesOn + object from current trigger
   const firesOn = useMemo<FiresOn>(() => {
@@ -80,10 +80,13 @@ export const ConditionConfigPanel: React.FC = () => {
   useEffect(() => () => clearTimeout(resetTimer.current), []);
 
   const isGlobalConditions = selectedNodeId === 'conditions';
+  // NOTE: `steps` in deps is critical — `findStep` is a stable function ref
+  // that never changes, so without `steps` this memo would go stale after
+  // every updateStep call, causing field picks and value edits to not reflect.
   const step = useMemo(() => {
     if (isGlobalConditions || !selectedNodeId) return null;
     return findStep(selectedNodeId);
-  }, [selectedNodeId, findStep, isGlobalConditions]);
+  }, [selectedNodeId, findStep, isGlobalConditions, steps]);
 
   const group: ConditionGroup = useMemo(() => {
     if (isGlobalConditions) {
