@@ -39,12 +39,44 @@ export const actionSpecSchema = z.object({
   params: z.record(z.string(), z.unknown()),
 });
 
+export const delayParamsSchema = z.object({
+  duration_sec: z.number().int().positive('Delay duration must be positive'),
+});
+
+const stepTypes = ['action', 'condition', 'delay'] as const;
+
+/**
+ * Recursive StepSpec schema mirroring backend StepSpec exactly:
+ *   type: "action" | "condition" | "delay"
+ *   id: string
+ *   action?: ActionSpec      (when type = "action")
+ *   condition?: ConditionGroup (when type = "condition")
+ *   delay?: DelayParams      (when type = "delay")
+ *   yes_steps?: StepSpec[]   (when type = "condition")
+ *   no_steps?: StepSpec[]    (when type = "condition")
+ */
+export const stepSpecSchema: z.ZodType<any> = z.lazy(() =>
+  z.object({
+    type: z.enum(stepTypes),
+    id: z.string().min(1, 'Step ID is required'),
+    action: actionSpecSchema.optional(),
+    condition: z.object({
+      op: z.enum(groupOps),
+      rules: z.array(conditionRuleSchema).min(1),
+    }).optional(),
+    delay: delayParamsSchema.optional(),
+    yes_steps: z.array(stepSpecSchema).optional(),
+    no_steps: z.array(stepSpecSchema).optional(),
+  })
+);
+
 export const workflowSchema = z.object({
   name: z.string().min(1, 'Name is required').max(200),
   description: z.string().max(1000).optional().default(''),
   trigger: triggerSpecSchema,
   conditions: conditionGroupSchema,
   actions: z.array(actionSpecSchema).min(1, 'At least one action is required'),
+  steps: z.array(stepSpecSchema).optional(),
 });
 
 // Validate no duplicate action IDs

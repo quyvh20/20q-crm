@@ -537,6 +537,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       trigger: state.trigger,
       conditions: state.conditions,
       actions: state.actions,
+      steps: state.steps,
     });
 
     if (!result.success) {
