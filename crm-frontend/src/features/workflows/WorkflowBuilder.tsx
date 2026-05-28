@@ -1,4 +1,4 @@
-import React, { useEffect, useCallback, useState } from 'react';
+import React, { useEffect, useCallback, useState, useMemo } from 'react';
 import {
   DndContext,
   DragOverlay,
@@ -11,8 +11,9 @@ import {
   type DragStartEvent,
 } from '@dnd-kit/core';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useBuilderStore, generateActionId, getStepAtPath, type StepPath } from './store';
+import { useBuilderStore, generateActionId, getStepAtPath, isDescendant, type StepPath } from './store';
 import type { WorkflowStep } from './types';
+import { WorkflowDragContext, type DragContextValue } from './DragContext';
 import { TriggerNode } from './nodes/TriggerNode';
 import { ConditionNode } from './nodes/ConditionNode';
 import { WorkflowStepList } from './nodes/WorkflowStepList';
@@ -24,28 +25,30 @@ import type { ActionType } from './types';
 import { ACTION_LABELS, ACTION_ICONS } from './types';
 
 /**
- * Walk the step tree to check if `ancestorId` contains `descendantId`
- * somewhere in its subtree. Used as a cycle guard for cross-branch DnD.
+ * Resolve the full StepPath for a given step ID by searching the tree.
+ * Returns the path if found, or null.
  */
-function isStepAncestor(steps: WorkflowStep[], ancestorId: string, descendantId: string): boolean {
-  function findInTree(nodes: WorkflowStep[]): boolean {
-    for (const node of nodes) {
-      if (node.id === ancestorId) {
-        // Found the ancestor — now check if descendantId is inside its subtree
-        return containsId(node, descendantId);
-      }
-      if (node.yes_steps && findInTree(node.yes_steps)) return true;
-      if (node.no_steps && findInTree(node.no_steps)) return true;
+function resolvePathById(steps: WorkflowStep[], targetId: string, currentPath: StepPath = []): StepPath | null {
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    const seg = currentPath.length > 0 && currentPath[currentPath.length - 1]?.branch
+      ? { index: i, branch: currentPath[currentPath.length - 1]!.branch! } as StepPath[number]
+      : { index: i } as StepPath[number];
+
+    // For root level, build a simple path
+    const myPath: StepPath = [...currentPath.slice(0, -1), seg];
+
+    if (step.id === targetId) return myPath;
+    if (step.yes_steps) {
+      const found = resolvePathById(step.yes_steps, targetId, [...myPath, { index: 0, branch: 'yes' }]);
+      if (found) return found;
     }
-    return false;
+    if (step.no_steps) {
+      const found = resolvePathById(step.no_steps, targetId, [...myPath, { index: 0, branch: 'no' }]);
+      if (found) return found;
+    }
   }
-  function containsId(node: WorkflowStep, targetId: string): boolean {
-    if (node.id === targetId) return true;
-    if (node.yes_steps) for (const c of node.yes_steps) { if (containsId(c, targetId)) return true; }
-    if (node.no_steps) for (const c of node.no_steps) { if (containsId(c, targetId)) return true; }
-    return false;
-  }
-  return findInTree(steps);
+  return null;
 }
 
 export const WorkflowBuilder: React.FC = () => {
@@ -73,15 +76,18 @@ export const WorkflowBuilder: React.FC = () => {
 
   const [activeDragType, setActiveDragType] = useState<string | null>(null);
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
+  const [activeDragPath, setActiveDragPath] = useState<StepPath | null>(null);
 
   const handleDragStart = useCallback((event: DragStartEvent) => {
     const data = event.active.data.current;
     if (data?.source === 'palette') {
       setActiveDragType(data.actionType as string);
       setActiveDragId(null);
+      setActiveDragPath(null);
     } else if (data?.source === 'canvas') {
       setActiveDragId(event.active.id.toString());
       setActiveDragType(null);
+      setActiveDragPath(data.path as StepPath);
     }
   }, []);
 
@@ -193,14 +199,12 @@ export const WorkflowBuilder: React.FC = () => {
           const draggedStep = store.findStep(active.id.toString());
           if (!draggedStep) return;
 
-          // If the destination is inside the dragged step's subtree, block it
+          // Cycle guard: if the drop target is inside the dragged step's subtree, block it.
+          // Use isDescendant(srcPath, destPath) — true means destPath is inside srcPath.
           if (destParentId) {
-            const destParentStep = store.findStep(destParentId);
-            if (destParentStep) {
-              // Walk up from destParent to check if we'd hit the dragged step
-              if (isStepAncestor(store.steps || [], active.id.toString(), destParentId)) {
-                return; // Block cycle
-              }
+            const destParentPath = resolvePathById(store.steps || [], destParentId);
+            if (destParentPath && isDescendant(srcPath, destParentPath)) {
+              return; // Block — would create a cycle
             }
           }
 
@@ -236,10 +240,17 @@ export const WorkflowBuilder: React.FC = () => {
     (event: DragEndEvent) => {
       setActiveDragType(null);
       setActiveDragId(null);
+      setActiveDragPath(null);
       handleDragEnd(event);
     },
     [handleDragEnd]
   );
+
+  // Context value for drop zone validity feedback
+  const dragCtx = useMemo<DragContextValue>(() => ({
+    activeDragPath,
+    activeDragStepId: activeDragId,
+  }), [activeDragPath, activeDragId]);
 
   const handleSave = async () => {
     if (!store.validate()) return; // show validation errors first
@@ -279,6 +290,7 @@ export const WorkflowBuilder: React.FC = () => {
 
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd2}>
+    <WorkflowDragContext.Provider value={dragCtx}>
       <div className="flex h-[calc(100vh-64px)]">
         {/* Left sidebar — palette + config */}
         <div className="w-80 border-r border-gray-800 bg-gray-900/95 flex flex-col overflow-hidden">
@@ -406,6 +418,7 @@ export const WorkflowBuilder: React.FC = () => {
           })()
         ) : null}
       </DragOverlay>
+    </WorkflowDragContext.Provider>
     </DndContext>
   );
 };

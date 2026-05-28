@@ -2,7 +2,7 @@ import React from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { ACTION_LABELS, ACTION_ICONS, type WorkflowStep } from '../types';
-import { useBuilderStore, type StepPath } from '../store';
+import { useBuilderStore, generateActionId, type StepPath } from '../store';
 
 interface ActionNodeProps {
   step: WorkflowStep;
@@ -31,8 +31,31 @@ function stepLabel(path: StepPath): string {
 }
 
 export const ActionNode: React.FC<ActionNodeProps> = ({ step, path }) => {
-  const { selectedNodeId, selectNode, removeStep } = useBuilderStore();
+  const { selectedNodeId, selectNode, removeStep, updateStep } = useBuilderStore();
   const isSelected = selectedNodeId === step.id;
+
+  /** Wrap this action inside a new condition split (action becomes first yes_step) */
+  const convertToCondition = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    // Transform the current step into a condition split,
+    // placing the original action as the first step in the Yes branch
+    const originalAction: WorkflowStep = {
+      id: generateActionId(),
+      type: step.type,
+      action: step.action ? { ...step.action, id: generateActionId() } : undefined,
+      delay: step.delay ? { ...step.delay } : undefined,
+    };
+    updateStep(step.id, {
+      type: 'condition',
+      condition: { op: 'AND', rules: [{ field: '', operator: 'eq', value: '' }] },
+      yes_steps: [originalAction],
+      no_steps: [],
+      // Clear action/delay fields since it's now a condition
+      action: undefined,
+      delay: undefined,
+    });
+    selectNode(step.id);
+  };
 
   const {
     attributes,
@@ -64,7 +87,7 @@ export const ActionNode: React.FC<ActionNodeProps> = ({ step, path }) => {
       style={style}
       onClick={() => selectNode(step.id)}
       className={`
-        relative p-4 rounded-xl cursor-pointer transition-all duration-200
+        group/action relative p-4 rounded-xl cursor-pointer transition-all duration-200
         border-2 ${isSelected ? 'border-emerald-500' : 'border-gray-700'}
         ${isSelected ? 'bg-emerald-500/10 shadow-lg shadow-emerald-500/20' : 'bg-gray-800/80 hover:bg-gray-800'}
       `}
@@ -85,6 +108,14 @@ export const ActionNode: React.FC<ActionNodeProps> = ({ step, path }) => {
             {label}
           </p>
         </div>
+        {/* Convert to condition split */}
+        <button
+          onClick={convertToCondition}
+          title="Convert to condition split"
+          className="w-7 h-7 rounded-full flex items-center justify-center text-gray-500 hover:text-purple-400 hover:bg-purple-400/10 transition-colors opacity-0 group-hover/action:opacity-100"
+        >
+          🔀
+        </button>
         <button
           onClick={(e) => {
             e.stopPropagation();

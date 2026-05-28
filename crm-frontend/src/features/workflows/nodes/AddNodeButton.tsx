@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useDroppable } from '@dnd-kit/core';
-import { useBuilderStore, generateActionId } from '../store';
+import { useBuilderStore, generateActionId, isDescendant, type StepPath } from '../store';
+import { useWorkflowDrag } from '../DragContext';
 
 const STEP_TYPES = [
   { type: 'send_email', label: 'Send Email', icon: '✉️' },
@@ -38,11 +39,50 @@ function getDefaultParams(type: string): Record<string, unknown> {
 export const AddNodeButton: React.FC<AddNodeButtonProps> = ({ parentId, branch, index }) => {
   const [showMenu, setShowMenu] = useState(false);
   const addStep = useBuilderStore((s) => s.addStep);
+  const { activeDragPath, activeDragStepId } = useWorkflowDrag();
 
   const { isOver, setNodeRef } = useDroppable({
     id: `dropzone-${parentId ?? 'root'}-${branch ?? 'main'}-${index}`,
     data: { parentId, branch, targetIndex: index },
   });
+
+  /**
+   * Determine if this drop zone would create a cycle.
+   * A drop is invalid when the dragged step's path is an ancestor of this
+   * drop zone's path — i.e., the user is trying to drop a step into its
+   * own subtree.
+   *
+   * Also invalid: dropping a step on itself (same parentId + same index in
+   * same branch).
+   */
+  const isInvalidDrop = useMemo(() => {
+    if (!activeDragPath || !activeDragStepId) return false;
+    // If this drop zone is inside a condition branch, check ancestry
+    if (parentId) {
+      // Build the drop zone's path: the parent condition is at activeDragPath's
+      // ancestor. We need to check if dragging srcPath into a zone under parentId
+      // would create a cycle. If parentId === activeDragStepId, that's a self-drop
+      // into the same step's branch — which is actually valid for conditions.
+      // The actual cycle is: srcPath is a strict prefix of destPath.
+
+      // Quick check: if the parent of this drop zone IS the dragged step,
+      // and the dragged step is a condition, that's fine (dropping into own branch
+      // is moving within, not a cycle). But if the parent is a DESCENDANT
+      // of the dragged step, that IS a cycle.
+      if (parentId === activeDragStepId) {
+        // Dropping into own condition branches — this is OK for conditions
+        return false;
+      }
+      // Check if this drop zone's parent is inside the dragged step's subtree
+      // We approximate: get the store's steps and find the parentId's path
+      const steps = useBuilderStore.getState().steps || [];
+      const parentPath = findPathById(steps, parentId);
+      if (parentPath && isDescendant(activeDragPath, parentPath)) {
+        return true; // cycle!
+      }
+    }
+    return false;
+  }, [activeDragPath, activeDragStepId, parentId]);
 
   const handleAddStep = (type: string) => {
     const id = generateActionId();
@@ -82,6 +122,11 @@ export const AddNodeButton: React.FC<AddNodeButtonProps> = ({ parentId, branch, 
     setShowMenu(false);
   };
 
+  // Visual states
+  const isDragging = activeDragPath !== null || activeDragStepId !== null;
+  const isValidHover = isOver && !isInvalidDrop;
+  const isInvalidHover = isOver && isInvalidDrop;
+
   return (
     <div className="flex flex-col items-center py-1 relative">
       <div className="w-px h-6 bg-gray-700" />
@@ -91,12 +136,22 @@ export const AddNodeButton: React.FC<AddNodeButtonProps> = ({ parentId, branch, 
         className={`
           flex items-center justify-center w-8 h-8 rounded-full border-2 border-dashed
           transition-all duration-200 cursor-pointer z-10
-          ${isOver
+          ${isInvalidHover
+            ? 'border-red-400 bg-red-400/20 scale-110 cursor-not-allowed'
+            : isValidHover
             ? 'border-emerald-400 bg-emerald-400/20 scale-125'
+            : isDragging
+            ? 'border-gray-500 bg-gray-800/50'
             : 'border-gray-600 hover:border-indigo-400 hover:bg-indigo-400/10'}
         `}
       >
-        <span className={`text-sm transition-colors ${isOver ? 'text-emerald-400' : 'text-gray-500 hover:text-indigo-400'}`}>+</span>
+        <span className={`text-sm transition-colors ${
+          isInvalidHover ? 'text-red-400'
+          : isValidHover ? 'text-emerald-400'
+          : 'text-gray-500 hover:text-indigo-400'
+        }`}>
+          {isInvalidHover ? '✕' : '+'}
+        </span>
       </div>
 
       {/* Quick-add dropdown menu */}
@@ -124,3 +179,32 @@ export const AddNodeButton: React.FC<AddNodeButtonProps> = ({ parentId, branch, 
     </div>
   );
 };
+
+/**
+ * Find the path of a step by its ID in the tree.
+ * Simple tree walk — used only during drag validation.
+ */
+function findPathById(
+  steps: { id: string; yes_steps?: any[]; no_steps?: any[] }[],
+  targetId: string,
+  basePath: StepPath = [],
+): StepPath | null {
+  for (let i = 0; i < steps.length; i++) {
+    const branchSeg = basePath.length > 0 ? basePath[basePath.length - 1]?.branch : undefined;
+    const seg: StepPath[number] = branchSeg
+      ? { index: i, branch: branchSeg }
+      : { index: i };
+    const myPath: StepPath = [...basePath.slice(0, -1), seg];
+
+    if (steps[i].id === targetId) return myPath;
+    if (steps[i].yes_steps) {
+      const found = findPathById(steps[i].yes_steps!, targetId, [...myPath, { index: 0, branch: 'yes' }]);
+      if (found) return found;
+    }
+    if (steps[i].no_steps) {
+      const found = findPathById(steps[i].no_steps!, targetId, [...myPath, { index: 0, branch: 'no' }]);
+      if (found) return found;
+    }
+  }
+  return null;
+}
