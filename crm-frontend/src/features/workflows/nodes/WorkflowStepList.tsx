@@ -11,19 +11,30 @@ interface WorkflowStepListProps {
 }
 
 export const WorkflowStepList: React.FC<WorkflowStepListProps> = ({ steps, parentId, branch }) => {
+  // A condition is a terminal divergence — no steps can follow it at the
+  // same level, so we cut the list at the first condition.
+  const condIdx = steps.findIndex((s) => s.type === 'condition');
+  const visibleSteps = condIdx >= 0 ? steps.slice(0, condIdx + 1) : steps;
+
   return (
     <SortableContext
-      items={steps.map((s) => s.id)}
+      items={visibleSteps.map((s) => s.id)}
       strategy={verticalListSortingStrategy}
     >
       <div className="flex flex-col items-center w-full">
         <AddNodeButton parentId={parentId} branch={branch} index={0} />
-        {steps.map((step, idx) => (
-          <React.Fragment key={step.id}>
-            <StepRenderer step={step} index={idx} />
-            <AddNodeButton parentId={parentId} branch={branch} index={idx + 1} />
-          </React.Fragment>
-        ))}
+        {visibleSteps.map((step, idx) => {
+          const isCondition = step.type === 'condition';
+          return (
+            <React.Fragment key={step.id}>
+              <StepRenderer step={step} index={idx} />
+              {/* No AddNodeButton after a condition — flow diverges into branches */}
+              {!isCondition && (
+                <AddNodeButton parentId={parentId} branch={branch} index={idx + 1} />
+              )}
+            </React.Fragment>
+          );
+        })}
       </div>
     </SortableContext>
   );
