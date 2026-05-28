@@ -3017,3 +3017,380 @@ describe('TestPathUtil_IsDescendant', () => {
     });
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════
+// TestDnd_DragFromPaletteIntoYesBranch
+// Simulates the exact store operations that handleDragEnd performs
+// when a palette item is dropped onto a yes-branch drop zone:
+//   store.addStep(newStep, parentId, 'yes', targetIndex)
+// ═════════════════════════════════════════════════════════════════════
+describe('TestDnd_DragFromPaletteIntoYesBranch', () => {
+  // ── Helpers: simulate palette → drop zone step construction ──────
+  // These mirror WorkflowBuilder.handleDragEnd + getDefaultParams
+
+  function paletteDrop(
+    actionType: string,
+    parentId: string,
+    targetIndex?: number,
+  ) {
+    const id = `pal_${actionType}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    if (actionType === 'condition') {
+      useBuilderStore.getState().addStep(
+        {
+          id,
+          type: 'condition',
+          condition: { op: 'AND', rules: [{ field: '', operator: 'eq', value: '' }] },
+          yes_steps: [],
+          no_steps: [],
+        },
+        parentId,
+        'yes',
+        targetIndex,
+      );
+    } else if (actionType === 'delay') {
+      useBuilderStore.getState().addStep(
+        {
+          id,
+          type: 'delay',
+          delay: { duration_sec: 60 },
+        },
+        parentId,
+        'yes',
+        targetIndex,
+      );
+    } else {
+      const params: Record<string, unknown> = (() => {
+        switch (actionType) {
+          case 'send_email': return { to: '', subject: '', body_html: '' };
+          case 'create_task': return { title: '', priority: 'medium', due_in_days: 3 };
+          case 'assign_user': return { entity: 'contact', strategy: 'round_robin' };
+          case 'send_webhook': return { url: '', method: 'POST', timeout_sec: 10 };
+          case 'update_record': return {};
+          default: return {};
+        }
+      })();
+      useBuilderStore.getState().addStep(
+        {
+          id,
+          type: 'action',
+          action: { id, type: actionType as any, params },
+        },
+        parentId,
+        'yes',
+        targetIndex,
+      );
+    }
+    return id;
+  }
+
+  // ── Basic: single drop into empty yes branch ─────────────────────
+
+  it('drops send_email into empty yes branch', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    const id = paletteDrop('send_email', 'c1');
+
+    const yes = useBuilderStore.getState().steps[0].yes_steps!;
+    expect(yes).toHaveLength(1);
+    expect(yes[0].id).toBe(id);
+    expect(yes[0].type).toBe('action');
+    expect(yes[0].action!.type).toBe('send_email');
+    expect(yes[0].action!.params).toEqual({ to: '', subject: '', body_html: '' });
+  });
+
+  it('drops create_task into empty yes branch', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    const id = paletteDrop('create_task', 'c1');
+
+    const yes = useBuilderStore.getState().steps[0].yes_steps!;
+    expect(yes).toHaveLength(1);
+    expect(yes[0].action!.type).toBe('create_task');
+    expect(yes[0].action!.params).toEqual({ title: '', priority: 'medium', due_in_days: 3 });
+  });
+
+  it('drops assign_user into empty yes branch', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    paletteDrop('assign_user', 'c1');
+
+    const yes = useBuilderStore.getState().steps[0].yes_steps!;
+    expect(yes[0].action!.type).toBe('assign_user');
+    expect(yes[0].action!.params).toEqual({ entity: 'contact', strategy: 'round_robin' });
+  });
+
+  it('drops send_webhook into empty yes branch', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    paletteDrop('send_webhook', 'c1');
+
+    const yes = useBuilderStore.getState().steps[0].yes_steps!;
+    expect(yes[0].action!.type).toBe('send_webhook');
+    expect(yes[0].action!.params).toEqual({ url: '', method: 'POST', timeout_sec: 10 });
+  });
+
+  it('drops update_record into empty yes branch', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    paletteDrop('update_record', 'c1');
+
+    const yes = useBuilderStore.getState().steps[0].yes_steps!;
+    expect(yes[0].action!.type).toBe('update_record');
+  });
+
+  it('drops delay into empty yes branch', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    paletteDrop('delay', 'c1');
+
+    const yes = useBuilderStore.getState().steps[0].yes_steps!;
+    expect(yes).toHaveLength(1);
+    expect(yes[0].type).toBe('delay');
+    expect(yes[0].delay!.duration_sec).toBe(60);
+  });
+
+  it('drops condition into empty yes branch (nested condition)', () => {
+    useBuilderStore.getState().addStep(mkCondition('outer'), null, null);
+    paletteDrop('condition', 'outer');
+
+    const yes = useBuilderStore.getState().steps[0].yes_steps!;
+    expect(yes).toHaveLength(1);
+    expect(yes[0].type).toBe('condition');
+    expect(yes[0].condition).toBeDefined();
+    expect(yes[0].yes_steps).toEqual([]);
+    expect(yes[0].no_steps).toEqual([]);
+  });
+
+  // ── Index targeting ──────────────────────────────────────────────
+
+  it('drops at index 0 (prepend) in yes branch with existing steps', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('existing1'), 'c1', 'yes');
+    useBuilderStore.getState().addStep(mkAction('existing2'), 'c1', 'yes');
+
+    const id = paletteDrop('send_email', 'c1', 0);
+    const yes = useBuilderStore.getState().steps[0].yes_steps!;
+    expect(yes.map((s) => s.id)).toEqual([id, 'existing1', 'existing2']);
+  });
+
+  it('drops at middle index in yes branch', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a'), 'c1', 'yes');
+    useBuilderStore.getState().addStep(mkAction('c'), 'c1', 'yes');
+
+    const id = paletteDrop('create_task', 'c1', 1);
+    const yes = useBuilderStore.getState().steps[0].yes_steps!;
+    expect(yes.map((s) => s.id)).toEqual(['a', id, 'c']);
+  });
+
+  it('drops at end index appends', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a'), 'c1', 'yes');
+    useBuilderStore.getState().addStep(mkAction('b'), 'c1', 'yes');
+
+    const id = paletteDrop('delay', 'c1', 2);
+    const yes = useBuilderStore.getState().steps[0].yes_steps!;
+    expect(yes.map((s) => s.id)).toEqual(['a', 'b', id]);
+  });
+
+  it('drops with no explicit index appends to end', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a'), 'c1', 'yes');
+    const id = paletteDrop('send_webhook', 'c1');
+
+    const yes = useBuilderStore.getState().steps[0].yes_steps!;
+    expect(yes[yes.length - 1].id).toBe(id);
+  });
+
+  // ── Isolation: no branch + root unaffected ───────────────────────
+
+  it('does not affect the no branch', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [], [mkAction('n1'), mkAction('n2')]),
+      null,
+      null,
+    );
+    paletteDrop('send_email', 'c1');
+    paletteDrop('delay', 'c1');
+
+    const root = useBuilderStore.getState().steps[0];
+    expect(root.yes_steps).toHaveLength(2);
+    // No branch untouched
+    expect(root.no_steps!.map((s) => s.id)).toEqual(['n1', 'n2']);
+  });
+
+  it('does not affect root-level steps', () => {
+    useBuilderStore.getState().addStep(mkAction('root1'), null, null);
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('root2'), null, null);
+    paletteDrop('create_task', 'c1');
+
+    const { steps } = useBuilderStore.getState();
+    expect(steps.map((s) => s.id)).toEqual(['root1', 'c1', 'root2']);
+    expect(steps[1].yes_steps).toHaveLength(1);
+  });
+
+  it('does not affect a sibling condition\'s branches', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1', [mkAction('c1y1')]), null, null);
+    useBuilderStore.getState().addStep(mkCondition('c2'), null, null);
+    paletteDrop('send_email', 'c2');
+
+    const { steps } = useBuilderStore.getState();
+    expect(steps[0].yes_steps!.map((s) => s.id)).toEqual(['c1y1']);
+    expect(steps[1].yes_steps).toHaveLength(1);
+  });
+
+  // ── Path resolution ──────────────────────────────────────────────
+
+  it('getStepAtPath resolves palette-dropped step in yes branch', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    const id = paletteDrop('send_email', 'c1');
+
+    const { steps } = useBuilderStore.getState();
+    const path = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+    const found = getStepAtPath(steps, path);
+    expect(found?.id).toBe(id);
+    expect(found?.action?.type).toBe('send_email');
+  });
+
+  it('getStepAtPath resolves dropped step at specific index', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a'), 'c1', 'yes');
+    useBuilderStore.getState().addStep(mkAction('b'), 'c1', 'yes');
+    const id = paletteDrop('delay', 'c1', 1);
+
+    const { steps } = useBuilderStore.getState();
+    const path = [{ index: 0 }, { branch: 'yes' as const, index: 1 }];
+    const found = getStepAtPath(steps, path);
+    expect(found?.id).toBe(id);
+    expect(found?.type).toBe('delay');
+  });
+
+  // ── Nested conditions (palette drop into depth-2 yes branch) ─────
+
+  it('drops into nested condition\'s yes branch (depth 2)', () => {
+    const inner = mkCondition('inner');
+    const outer = mkCondition('outer', [inner]);
+    useBuilderStore.getState().addStep(outer, null, null);
+    const id = paletteDrop('send_email', 'inner');
+
+    const { steps } = useBuilderStore.getState();
+    const deepStep = steps[0].yes_steps![0].yes_steps![0];
+    expect(deepStep.id).toBe(id);
+    expect(deepStep.action!.type).toBe('send_email');
+  });
+
+  it('getStepAtPath resolves depth-2 palette-dropped step', () => {
+    const inner = mkCondition('inner');
+    const outer = mkCondition('outer', [inner]);
+    useBuilderStore.getState().addStep(outer, null, null);
+    const id = paletteDrop('create_task', 'inner');
+
+    const { steps } = useBuilderStore.getState();
+    const path = [
+      { index: 0 },
+      { branch: 'yes' as const, index: 0 },
+      { branch: 'yes' as const, index: 0 },
+    ];
+    const found = getStepAtPath(steps, path);
+    expect(found?.id).toBe(id);
+  });
+
+  it('drops multiple items into nested yes branch preserving order', () => {
+    const inner = mkCondition('inner');
+    const outer = mkCondition('outer', [inner]);
+    useBuilderStore.getState().addStep(outer, null, null);
+
+    const id1 = paletteDrop('send_email', 'inner');
+    const id2 = paletteDrop('delay', 'inner');
+    const id3 = paletteDrop('create_task', 'inner', 0);
+
+    const deep = useBuilderStore.getState().steps[0].yes_steps![0].yes_steps!;
+    expect(deep.map((s) => s.id)).toEqual([id3, id1, id2]);
+  });
+
+  // ── isDescendant cycle guard (palette drops can't create cycles,
+  //    but verify isDescendant reports correctly for the new step) ───
+
+  it('isDescendant returns true for palette-dropped step relative to parent condition', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    paletteDrop('send_email', 'c1');
+
+    const ancestorPath = [{ index: 0 }];
+    const childPath = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+    expect(isDescendant(ancestorPath, childPath)).toBe(true);
+  });
+
+  it('isDescendant returns false for sibling conditions after palette drop', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    useBuilderStore.getState().addStep(mkCondition('c2'), null, null);
+    paletteDrop('send_email', 'c1');
+    paletteDrop('delay', 'c2');
+
+    // c1's child is NOT a descendant of c2
+    const c1Child = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+    const c2Path = [{ index: 1 }];
+    expect(isDescendant(c2Path, c1Child)).toBe(false);
+  });
+
+  // ── Flattened actions sync ───────────────────────────────────────
+
+  it('syncs flattened actions after palette drops into yes branch', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    const id1 = paletteDrop('send_email', 'c1');
+    const id2 = paletteDrop('create_task', 'c1');
+    const id3 = paletteDrop('delay', 'c1');
+
+    const { actions } = useBuilderStore.getState();
+    const ids = actions.map((a) => a.id);
+    expect(ids).toContain(id1);
+    expect(ids).toContain(id2);
+    expect(ids).toContain(id3);
+  });
+
+  // ── State flags ──────────────────────────────────────────────────
+
+  it('sets isDirty after palette drop into yes branch', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    useBuilderStore.setState({ isDirty: false });
+    paletteDrop('send_email', 'c1');
+    expect(useBuilderStore.getState().isDirty).toBe(true);
+  });
+
+  // ── Immutability ─────────────────────────────────────────────────
+
+  it('does not mutate previous steps reference', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    paletteDrop('send_email', 'c1');
+
+    const before = useBuilderStore.getState().steps;
+    const beforeYes = before[0].yes_steps!;
+
+    paletteDrop('create_task', 'c1');
+
+    const after = useBuilderStore.getState().steps;
+    expect(after).not.toBe(before);
+    expect(after[0]).not.toBe(before[0]);
+    expect(beforeYes).toHaveLength(1);
+    expect(after[0].yes_steps).toHaveLength(2);
+  });
+
+  // ── Batch: all 7 palette types into one yes branch ───────────────
+
+  it('drops all 7 palette types into the same yes branch', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+
+    const types = [
+      'send_email', 'create_task', 'assign_user',
+      'send_webhook', 'delay', 'update_record', 'condition',
+    ];
+    const ids = types.map((t) => paletteDrop(t, 'c1'));
+
+    const yes = useBuilderStore.getState().steps[0].yes_steps!;
+    expect(yes).toHaveLength(7);
+    expect(yes.map((s) => s.id)).toEqual(ids);
+
+    // Verify types
+    expect(yes[0].type).toBe('action');
+    expect(yes[1].type).toBe('action');
+    expect(yes[2].type).toBe('action');
+    expect(yes[3].type).toBe('action');
+    expect(yes[4].type).toBe('delay');
+    expect(yes[5].type).toBe('action');
+    expect(yes[6].type).toBe('condition');
+  });
+});
