@@ -11,7 +11,8 @@ import {
   type DragStartEvent,
 } from '@dnd-kit/core';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useBuilderStore, generateActionId } from './store';
+import { useBuilderStore, generateActionId, getStepAtPath, type StepPath } from './store';
+import type { WorkflowStep } from './types';
 import { TriggerNode } from './nodes/TriggerNode';
 import { ConditionNode } from './nodes/ConditionNode';
 import { WorkflowStepList } from './nodes/WorkflowStepList';
@@ -21,6 +22,31 @@ import { ActionConfigPanel } from './panels/ActionConfigPanel';
 import { ActionPalette } from './panels/ActionPalette';
 import type { ActionType } from './types';
 import { ACTION_LABELS, ACTION_ICONS } from './types';
+
+/**
+ * Walk the step tree to check if `ancestorId` contains `descendantId`
+ * somewhere in its subtree. Used as a cycle guard for cross-branch DnD.
+ */
+function isStepAncestor(steps: WorkflowStep[], ancestorId: string, descendantId: string): boolean {
+  function findInTree(nodes: WorkflowStep[]): boolean {
+    for (const node of nodes) {
+      if (node.id === ancestorId) {
+        // Found the ancestor — now check if descendantId is inside its subtree
+        return containsId(node, descendantId);
+      }
+      if (node.yes_steps && findInTree(node.yes_steps)) return true;
+      if (node.no_steps && findInTree(node.no_steps)) return true;
+    }
+    return false;
+  }
+  function containsId(node: WorkflowStep, targetId: string): boolean {
+    if (node.id === targetId) return true;
+    if (node.yes_steps) for (const c of node.yes_steps) { if (containsId(c, targetId)) return true; }
+    if (node.no_steps) for (const c of node.no_steps) { if (containsId(c, targetId)) return true; }
+    return false;
+  }
+  return findInTree(steps);
+}
 
 export const WorkflowBuilder: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -46,14 +72,28 @@ export const WorkflowBuilder: React.FC = () => {
   );
 
   const [activeDragType, setActiveDragType] = useState<string | null>(null);
+  const [activeDragId, setActiveDragId] = useState<string | null>(null);
 
   const handleDragStart = useCallback((event: DragStartEvent) => {
     const data = event.active.data.current;
     if (data?.source === 'palette') {
       setActiveDragType(data.actionType as string);
+      setActiveDragId(null);
+    } else if (data?.source === 'canvas') {
+      setActiveDragId(event.active.id.toString());
+      setActiveDragType(null);
     }
   }, []);
 
+  /**
+   * Unified drag-end handler supporting:
+   * 1. Palette → drop zone (any branch/root)
+   * 2. Same-branch reorder (reorderSteps)
+   * 3. Cross-branch / cross-tree move (removeStep + addStep)
+   *
+   * Drop zone data shape:  { parentId, branch, targetIndex }
+   * Canvas drag data shape: { source: 'canvas', path: StepPath }
+   */
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
       const { active, over } = event;
@@ -61,9 +101,10 @@ export const WorkflowBuilder: React.FC = () => {
 
       const activeData = active.data.current;
       const overData = over.data.current;
+      const isDropZone = over.id.toString().startsWith('dropzone-');
 
-      // Palette → drop zone
-      if (activeData?.source === 'palette' && over.id.toString().startsWith('dropzone-')) {
+      // ── 1. Palette → drop zone ─────────────────────────────────────
+      if (activeData?.source === 'palette' && isDropZone) {
         const parentId = overData?.parentId ?? null;
         const branch = overData?.branch ?? null;
         const targetIndex = overData?.targetIndex ?? 0;
@@ -106,22 +147,84 @@ export const WorkflowBuilder: React.FC = () => {
         return;
       }
 
-      // Reorder within canvas
-      if (activeData?.source === 'canvas') {
-        const fromIdx = activeData.index;
-        if (over.id.toString().startsWith('dropzone-')) {
-          const parentId = overData?.parentId ?? null;
-          const branch = overData?.branch ?? null;
-          const targetIndex = overData?.targetIndex ?? 0;
-          store.reorderSteps(parentId, branch, fromIdx, targetIndex);
+      // ── 2 & 3. Canvas step → drop zone (reorder or cross-move) ────
+      if (activeData?.source === 'canvas' && isDropZone) {
+        const srcPath: StepPath = activeData.path;
+        const destParentId: string | null = overData?.parentId ?? null;
+        const destBranch: 'yes' | 'no' | null = overData?.branch ?? null;
+        const destIndex: number = overData?.targetIndex ?? 0;
+
+        // Derive source's parentId/branch/index from path
+        const srcSegment = srcPath[srcPath.length - 1];
+        if (!srcSegment) return;
+        const srcIndex = srcSegment.index;
+
+        // Determine source container
+        let srcParentId: string | null = null;
+        let srcBranch: 'yes' | 'no' | null = null;
+
+        if (srcPath.length === 1) {
+          // Root level
+          srcParentId = null;
+          srcBranch = null;
         } else {
-          const activeStep = store.findStep(active.id.toString());
-          const overStep = store.findStep(over.id.toString());
-          if (activeStep && overStep) {
-            const overIndex = store.steps.findIndex((s) => s.id === over.id);
-            if (overIndex !== -1 && fromIdx !== overIndex) {
-              store.reorderSteps(null, null, fromIdx, overIndex);
+          // Inside a branch — the parent is the condition step at srcPath[:-1]
+          const parentPath = srcPath.slice(0, -1);
+          const parentStep = getStepAtPath(store.steps || [], parentPath);
+          srcParentId = parentStep?.id ?? null;
+          srcBranch = srcSegment.branch ?? null;
+        }
+
+        // Check: same container? → reorder within
+        const sameContainer = srcParentId === destParentId && srcBranch === destBranch;
+
+        if (sameContainer) {
+          // Adjust destination index: if dragging down within the same list,
+          // removing the item shifts indices
+          let adjustedDest = destIndex;
+          if (srcIndex < destIndex) {
+            adjustedDest = destIndex - 1;
+          }
+          if (srcIndex !== adjustedDest) {
+            store.reorderSteps(srcParentId, srcBranch, srcIndex, adjustedDest);
+          }
+        } else {
+          // Cross-branch / cross-tree move
+          const draggedStep = store.findStep(active.id.toString());
+          if (!draggedStep) return;
+
+          // If the destination is inside the dragged step's subtree, block it
+          if (destParentId) {
+            const destParentStep = store.findStep(destParentId);
+            if (destParentStep) {
+              // Walk up from destParent to check if we'd hit the dragged step
+              if (isStepAncestor(store.steps || [], active.id.toString(), destParentId)) {
+                return; // Block cycle
+              }
             }
+          }
+
+          // Clone, remove, re-add
+          const clone = JSON.parse(JSON.stringify(draggedStep)) as WorkflowStep;
+          store.removeStep(active.id.toString());
+          // After removal, indices may have shifted. Use getState for fresh data.
+          useBuilderStore.getState().addStep(clone, destParentId, destBranch, destIndex);
+        }
+        return;
+      }
+
+      // ── 4. Canvas step → another canvas step (drop directly on a step) ─
+      if (activeData?.source === 'canvas' && !isDropZone) {
+        // Dropped on another step — find the over step's position and
+        // treat it as a reorder to that index in the root list
+        const activeStep = store.findStep(active.id.toString());
+        const overStep = store.findStep(over.id.toString());
+        if (activeStep && overStep) {
+          const rootSteps = store.steps || [];
+          const fromIdx = rootSteps.findIndex((s) => s.id === active.id);
+          const toIdx = rootSteps.findIndex((s) => s.id === over.id);
+          if (fromIdx !== -1 && toIdx !== -1 && fromIdx !== toIdx) {
+            store.reorderSteps(null, null, fromIdx, toIdx);
           }
         }
       }
@@ -132,6 +235,7 @@ export const WorkflowBuilder: React.FC = () => {
   const handleDragEnd2 = useCallback(
     (event: DragEndEvent) => {
       setActiveDragType(null);
+      setActiveDragId(null);
       handleDragEnd(event);
     },
     [handleDragEnd]
@@ -281,6 +385,25 @@ export const WorkflowBuilder: React.FC = () => {
               {activeDragType === 'condition' ? 'Condition Split' : ACTION_LABELS[activeDragType as ActionType]}
             </span>
           </div>
+        ) : activeDragId ? (
+          (() => {
+            const step = store.findStep(activeDragId);
+            if (!step) return null;
+            const icon = step.type === 'condition' ? '🔀'
+              : step.type === 'delay' ? '⏱️'
+              : ACTION_ICONS[step.action?.type as ActionType] || '⚙️';
+            const label = step.type === 'condition' ? 'Condition Split'
+              : step.type === 'delay' ? 'Delay'
+              : ACTION_LABELS[step.action?.type as ActionType] || 'Step';
+            return (
+              <div className="flex items-center gap-3 p-3 rounded-xl border border-purple-500 bg-gray-800 shadow-lg shadow-purple-500/20 opacity-90">
+                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-400 to-fuchsia-500 flex items-center justify-center text-sm">
+                  {icon}
+                </div>
+                <span className="text-sm text-white font-medium">{label}</span>
+              </div>
+            );
+          })()
         ) : null}
       </DragOverlay>
     </DndContext>
