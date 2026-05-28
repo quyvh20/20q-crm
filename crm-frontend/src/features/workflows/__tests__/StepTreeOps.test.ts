@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { useBuilderStore, getStepAtPath, getParentPath } from '../store';
+import { useBuilderStore, getStepAtPath, getParentPath, isDescendant } from '../store';
 import type { WorkflowStep } from '../types';
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -1836,3 +1836,217 @@ describe('getParentPath — composition with getStepAtPath', () => {
     expect(parent?.id).toBe('c1');
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════
+// isDescendant — true cases (child is inside ancestor's subtree)
+// ═════════════════════════════════════════════════════════════════════
+describe('isDescendant — true cases', () => {
+  it('direct child in yes branch', () => {
+    const ancestor = [{ index: 0 }];
+    const child = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+    expect(isDescendant(ancestor, child)).toBe(true);
+  });
+
+  it('direct child in no branch', () => {
+    const ancestor = [{ index: 0 }];
+    const child = [{ index: 0 }, { branch: 'no' as const, index: 0 }];
+    expect(isDescendant(ancestor, child)).toBe(true);
+  });
+
+  it('grandchild (depth 2)', () => {
+    const ancestor = [{ index: 0 }];
+    const child = [
+      { index: 0 },
+      { branch: 'yes' as const, index: 0 },
+      { branch: 'no' as const, index: 1 },
+    ];
+    expect(isDescendant(ancestor, child)).toBe(true);
+  });
+
+  it('great-grandchild (depth 3)', () => {
+    const ancestor = [{ index: 0 }];
+    const child = [
+      { index: 0 },
+      { branch: 'yes' as const, index: 0 },
+      { branch: 'yes' as const, index: 0 },
+      { branch: 'no' as const, index: 2 },
+    ];
+    expect(isDescendant(ancestor, child)).toBe(true);
+  });
+
+  it('ancestor is a branch step, child is deeper', () => {
+    const ancestor = [
+      { index: 1 },
+      { branch: 'yes' as const, index: 0 },
+    ];
+    const child = [
+      { index: 1 },
+      { branch: 'yes' as const, index: 0 },
+      { branch: 'no' as const, index: 0 },
+    ];
+    expect(isDescendant(ancestor, child)).toBe(true);
+  });
+
+  it('ancestor at depth 2, child at depth 4', () => {
+    const ancestor = [
+      { index: 0 },
+      { branch: 'no' as const, index: 1 },
+      { branch: 'yes' as const, index: 0 },
+    ];
+    const child = [
+      { index: 0 },
+      { branch: 'no' as const, index: 1 },
+      { branch: 'yes' as const, index: 0 },
+      { branch: 'yes' as const, index: 0 },
+      { branch: 'no' as const, index: 0 },
+    ];
+    expect(isDescendant(ancestor, child)).toBe(true);
+  });
+
+  it('child differs only in the last segment index', () => {
+    const ancestor = [{ index: 0 }];
+    const child = [{ index: 0 }, { branch: 'yes' as const, index: 5 }];
+    expect(isDescendant(ancestor, child)).toBe(true);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// isDescendant — false cases (not a descendant)
+// ═════════════════════════════════════════════════════════════════════
+describe('isDescendant — false cases', () => {
+  it('same path is NOT a descendant (not strict)', () => {
+    const path = [{ index: 0 }];
+    expect(isDescendant(path, path)).toBe(false);
+  });
+
+  it('same deep path is NOT a descendant', () => {
+    const path = [
+      { index: 0 },
+      { branch: 'yes' as const, index: 1 },
+      { branch: 'no' as const, index: 0 },
+    ];
+    expect(isDescendant(path, path)).toBe(false);
+  });
+
+  it('child is shorter than ancestor (ancestor would be descendant)', () => {
+    const ancestor = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+    const child = [{ index: 0 }];
+    expect(isDescendant(ancestor, child)).toBe(false);
+  });
+
+  it('different root index', () => {
+    const ancestor = [{ index: 0 }];
+    const child = [{ index: 1 }, { branch: 'yes' as const, index: 0 }];
+    expect(isDescendant(ancestor, child)).toBe(false);
+  });
+
+  it('same root but different branch at second level', () => {
+    const ancestor = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+    const child = [
+      { index: 0 },
+      { branch: 'no' as const, index: 0 },
+      { branch: 'yes' as const, index: 0 },
+    ];
+    expect(isDescendant(ancestor, child)).toBe(false);
+  });
+
+  it('same root and branch but different index at second level', () => {
+    const ancestor = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+    const child = [
+      { index: 0 },
+      { branch: 'yes' as const, index: 1 },
+      { branch: 'yes' as const, index: 0 },
+    ];
+    expect(isDescendant(ancestor, child)).toBe(false);
+  });
+
+  it('siblings at root are NOT descendants of each other', () => {
+    const a = [{ index: 0 }];
+    const b = [{ index: 1 }];
+    expect(isDescendant(a, b)).toBe(false);
+    expect(isDescendant(b, a)).toBe(false);
+  });
+
+  it('siblings in same branch are NOT descendants', () => {
+    const a = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+    const b = [{ index: 0 }, { branch: 'yes' as const, index: 1 }];
+    expect(isDescendant(a, b)).toBe(false);
+    expect(isDescendant(b, a)).toBe(false);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// isDescendant — empty path edge cases
+// ═════════════════════════════════════════════════════════════════════
+describe('isDescendant — empty path edge cases', () => {
+  it('empty ancestor returns false (root array is not a step)', () => {
+    expect(isDescendant([], [{ index: 0 }])).toBe(false);
+  });
+
+  it('empty child returns false', () => {
+    expect(isDescendant([{ index: 0 }], [])).toBe(false);
+  });
+
+  it('both empty returns false', () => {
+    expect(isDescendant([], [])).toBe(false);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// isDescendant — cycle detection scenario
+// ═════════════════════════════════════════════════════════════════════
+describe('isDescendant — cycle detection scenario', () => {
+  it('prevents moving a condition into its own yes branch', () => {
+    // Scenario: user drags condition at [0] into [0].yes_steps
+    // The destination [0, yes, N] is a descendant of [0]
+    const condPath = [{ index: 0 }];
+    const destPath = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+    expect(isDescendant(condPath, destPath)).toBe(true);
+    // Move should be blocked
+  });
+
+  it('prevents moving a condition into its grandchild branch', () => {
+    const condPath = [{ index: 0 }];
+    const destPath = [
+      { index: 0 },
+      { branch: 'yes' as const, index: 0 },
+      { branch: 'no' as const, index: 0 },
+    ];
+    expect(isDescendant(condPath, destPath)).toBe(true);
+  });
+
+  it('allows moving a step to a sibling branch (not a descendant)', () => {
+    // Moving step from [0, yes, 0] to [0, no, 0] — different branch
+    const fromPath = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+    const toPath = [{ index: 0 }, { branch: 'no' as const, index: 0 }];
+    expect(isDescendant(fromPath, toPath)).toBe(false);
+    // Move should be allowed
+  });
+
+  it('allows moving a step to a different root subtree', () => {
+    const fromPath = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+    const toPath = [{ index: 1 }, { branch: 'yes' as const, index: 0 }];
+    expect(isDescendant(fromPath, toPath)).toBe(false);
+  });
+
+  it('allows moving root step to another root position', () => {
+    const fromPath = [{ index: 0 }];
+    const toPath = [{ index: 2 }];
+    expect(isDescendant(fromPath, toPath)).toBe(false);
+  });
+
+  it('real-world: deep inner condition cannot be moved into itself', () => {
+    const innerCondPath = [
+      { index: 0 },
+      { branch: 'yes' as const, index: 1 },
+    ];
+    const deepChild = [
+      { index: 0 },
+      { branch: 'yes' as const, index: 1 },
+      { branch: 'no' as const, index: 0 },
+      { branch: 'yes' as const, index: 0 },
+    ];
+    expect(isDescendant(innerCondPath, deepChild)).toBe(true);
+  });
+});
+

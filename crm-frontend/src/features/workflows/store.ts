@@ -124,6 +124,35 @@ export function getParentPath(path: StepPath): StepPath | undefined {
   return path.slice(0, -1);
 }
 
+/**
+ * Check whether `childPath` is a descendant of `ancestorPath`.
+ *
+ * Returns `true` if `ancestorPath` is a strict prefix of `childPath`,
+ * meaning the step at `childPath` lives somewhere inside the subtree
+ * rooted at `ancestorPath`.
+ *
+ * Useful for **cycle detection** when moving steps: a step cannot be
+ * moved into its own subtree.
+ *
+ * - `isDescendant([], [{ index: 0 }])` → false (empty = root array, not a step)
+ * - `isDescendant([{ index: 0 }], [{ index: 0 }])` → false (same path, not a descendant)
+ * - `isDescendant([{ index: 0 }], [{ index: 0 }, { branch: 'yes', index: 1 }])` → true
+ */
+export function isDescendant(ancestorPath: StepPath, childPath: StepPath): boolean {
+  // A descendant must be strictly longer
+  if (childPath.length <= ancestorPath.length) return false;
+  // Empty ancestor path = root array, not a step node
+  if (ancestorPath.length === 0) return false;
+
+  for (let i = 0; i < ancestorPath.length; i++) {
+    const a = ancestorPath[i];
+    const c = childPath[i];
+    if (a.index !== c.index) return false;
+    if (a.branch !== c.branch) return false;
+  }
+  return true;
+}
+
 function findStepInTree(steps: WorkflowStep[], id: string): WorkflowStep | undefined {
   for (const step of steps) {
     if (step.id === id) return step;
