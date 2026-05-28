@@ -2737,3 +2737,283 @@ describe('TestStore_RemoveStepCascadesChildren', () => {
     expect(useBuilderStore.getState().findStep('n_sibling')).toBeDefined();
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════
+// TestPathUtil_IsDescendant
+// Integration tests: build real trees via store, compute paths,
+// then verify isDescendant for DnD cycle detection.
+// ═════════════════════════════════════════════════════════════════════
+describe('TestPathUtil_IsDescendant', () => {
+  // ── Pure path tests (completeness) ────────────────────────────────
+  describe('strict prefix semantics', () => {
+    it('child must be strictly longer than ancestor', () => {
+      const p = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+      expect(isDescendant(p, p)).toBe(false); // same length
+    });
+
+    it('ancestor longer than child → false', () => {
+      const longer = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+      const shorter = [{ index: 0 }];
+      expect(isDescendant(longer, shorter)).toBe(false);
+    });
+
+    it('prefix match with extra segment → true', () => {
+      const ancestor = [{ index: 2 }];
+      const child = [{ index: 2 }, { branch: 'no' as const, index: 3 }];
+      expect(isDescendant(ancestor, child)).toBe(true);
+    });
+
+    it('first segment index mismatch → false', () => {
+      const ancestor = [{ index: 0 }];
+      const child = [{ index: 1 }, { branch: 'yes' as const, index: 0 }];
+      expect(isDescendant(ancestor, child)).toBe(false);
+    });
+
+    it('branch mismatch at second segment → false', () => {
+      const ancestor = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+      const child = [{ index: 0 }, { branch: 'no' as const, index: 0 }, { branch: 'yes' as const, index: 0 }];
+      expect(isDescendant(ancestor, child)).toBe(false);
+    });
+
+    it('index mismatch at second segment → false', () => {
+      const ancestor = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+      const child = [{ index: 0 }, { branch: 'yes' as const, index: 1 }, { branch: 'yes' as const, index: 0 }];
+      expect(isDescendant(ancestor, child)).toBe(false);
+    });
+
+    it('undefined vs defined branch → false', () => {
+      // First segment has no branch, second has branch
+      const ancestor = [{ index: 0 }];
+      const child = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+      // This IS a descendant because [0] is a prefix of [0, yes:0]
+      expect(isDescendant(ancestor, child)).toBe(true);
+    });
+  });
+
+  // ── Empty/edge ────────────────────────────────────────────────────
+  describe('empty and single-element paths', () => {
+    it('empty ancestor, non-empty child → false', () => {
+      expect(isDescendant([], [{ index: 0 }])).toBe(false);
+    });
+
+    it('non-empty ancestor, empty child → false', () => {
+      expect(isDescendant([{ index: 0 }], [])).toBe(false);
+    });
+
+    it('both empty → false', () => {
+      expect(isDescendant([], [])).toBe(false);
+    });
+
+    it('single root vs single root (same) → false', () => {
+      expect(isDescendant([{ index: 0 }], [{ index: 0 }])).toBe(false);
+    });
+
+    it('single root vs different root → false', () => {
+      expect(isDescendant([{ index: 0 }], [{ index: 1 }])).toBe(false);
+    });
+  });
+
+  // ── Symmetry ──────────────────────────────────────────────────────
+  describe('asymmetry: isDescendant(a, b) !== isDescendant(b, a)', () => {
+    it('parent→child true, child→parent false', () => {
+      const parent = [{ index: 0 }];
+      const child = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+      expect(isDescendant(parent, child)).toBe(true);
+      expect(isDescendant(child, parent)).toBe(false);
+    });
+
+    it('deep ancestor→descendant true, reverse false', () => {
+      const ancestor = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+      const desc = [
+        { index: 0 },
+        { branch: 'yes' as const, index: 0 },
+        { branch: 'no' as const, index: 1 },
+        { branch: 'yes' as const, index: 0 },
+      ];
+      expect(isDescendant(ancestor, desc)).toBe(true);
+      expect(isDescendant(desc, ancestor)).toBe(false);
+    });
+  });
+
+  // ── Sibling detection ─────────────────────────────────────────────
+  describe('siblings are NOT descendants', () => {
+    it('root siblings', () => {
+      expect(isDescendant([{ index: 0 }], [{ index: 1 }])).toBe(false);
+      expect(isDescendant([{ index: 1 }], [{ index: 0 }])).toBe(false);
+    });
+
+    it('same-branch siblings', () => {
+      const a = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+      const b = [{ index: 0 }, { branch: 'yes' as const, index: 1 }];
+      expect(isDescendant(a, b)).toBe(false);
+      expect(isDescendant(b, a)).toBe(false);
+    });
+
+    it('cross-branch siblings (yes vs no at same level)', () => {
+      const yes = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+      const no = [{ index: 0 }, { branch: 'no' as const, index: 0 }];
+      expect(isDescendant(yes, no)).toBe(false);
+      expect(isDescendant(no, yes)).toBe(false);
+    });
+  });
+
+  // ── Store-integrated: build tree, compute paths, check ────────────
+  describe('with store-built trees', () => {
+    it('root step is ancestor of its yes-branch child', () => {
+      useBuilderStore.getState().addStep(mkCondition('c1', [mkAction('y1')]), null, null);
+
+      const condPath = [{ index: 0 }];
+      const childPath = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+
+      // Verify paths resolve correctly
+      const { steps } = useBuilderStore.getState();
+      expect(getStepAtPath(steps, condPath)?.id).toBe('c1');
+      expect(getStepAtPath(steps, childPath)?.id).toBe('y1');
+
+      expect(isDescendant(condPath, childPath)).toBe(true);
+      expect(isDescendant(childPath, condPath)).toBe(false);
+    });
+
+    it('nested condition: outer is ancestor of inner child', () => {
+      const inner = mkCondition('inner', [mkAction('deep')]);
+      useBuilderStore.getState().addStep(mkCondition('outer', [inner]), null, null);
+
+      const outerPath = [{ index: 0 }];
+      const innerPath = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+      const deepPath = [
+        { index: 0 },
+        { branch: 'yes' as const, index: 0 },
+        { branch: 'yes' as const, index: 0 },
+      ];
+
+      expect(isDescendant(outerPath, innerPath)).toBe(true);
+      expect(isDescendant(outerPath, deepPath)).toBe(true);
+      expect(isDescendant(innerPath, deepPath)).toBe(true);
+      // Reverse should all be false
+      expect(isDescendant(innerPath, outerPath)).toBe(false);
+      expect(isDescendant(deepPath, outerPath)).toBe(false);
+      expect(isDescendant(deepPath, innerPath)).toBe(false);
+    });
+
+    it('two root conditions are NOT ancestors of each other', () => {
+      useBuilderStore.getState().addStep(mkCondition('c1', [mkAction('y1')]), null, null);
+      useBuilderStore.getState().addStep(mkCondition('c2', [mkAction('y2')]), null, null);
+
+      const c1Path = [{ index: 0 }];
+      const c2Path = [{ index: 1 }];
+      const c1Child = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+      const c2Child = [{ index: 1 }, { branch: 'yes' as const, index: 0 }];
+
+      expect(isDescendant(c1Path, c2Path)).toBe(false);
+      expect(isDescendant(c2Path, c1Path)).toBe(false);
+      // c1 is NOT ancestor of c2's children
+      expect(isDescendant(c1Path, c2Child)).toBe(false);
+      expect(isDescendant(c2Path, c1Child)).toBe(false);
+    });
+
+    it('DnD guard: cannot drag condition into its own yes branch', () => {
+      useBuilderStore.getState().addStep(
+        mkCondition('c1', [mkAction('y1'), mkAction('y2')], [mkAction('n1')]),
+        null, null
+      );
+      const dragSource = [{ index: 0 }]; // the condition itself
+      const dropTarget = [{ index: 0 }, { branch: 'yes' as const, index: 2 }]; // after y2
+      expect(isDescendant(dragSource, dropTarget)).toBe(true);
+      // DnD handler should BLOCK this move
+    });
+
+    it('DnD guard: cannot drag condition into its own no branch', () => {
+      useBuilderStore.getState().addStep(
+        mkCondition('c1', [mkAction('y1')], [mkAction('n1')]),
+        null, null
+      );
+      const dragSource = [{ index: 0 }];
+      const dropTarget = [{ index: 0 }, { branch: 'no' as const, index: 1 }];
+      expect(isDescendant(dragSource, dropTarget)).toBe(true);
+    });
+
+    it('DnD allowed: drag yes-child to no-branch (sibling branches)', () => {
+      useBuilderStore.getState().addStep(
+        mkCondition('c1', [mkAction('y1')], [mkAction('n1')]),
+        null, null
+      );
+      const dragSource = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+      const dropTarget = [{ index: 0 }, { branch: 'no' as const, index: 1 }];
+      expect(isDescendant(dragSource, dropTarget)).toBe(false);
+      // DnD handler should ALLOW this move
+    });
+
+    it('DnD allowed: drag nested step to different root condition', () => {
+      useBuilderStore.getState().addStep(mkCondition('c1', [mkAction('y1')]), null, null);
+      useBuilderStore.getState().addStep(mkCondition('c2'), null, null);
+
+      const dragSource = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+      const dropTarget = [{ index: 1 }, { branch: 'yes' as const, index: 0 }];
+      expect(isDescendant(dragSource, dropTarget)).toBe(false);
+    });
+
+    it('DnD guard: deep condition cannot be moved into its own subtree', () => {
+      // outer → yes → inner → yes → deep_action
+      const inner = mkCondition('inner', [mkAction('deep')]);
+      useBuilderStore.getState().addStep(mkCondition('outer', [inner]), null, null);
+
+      // Trying to drag 'inner' into inner's own yes branch
+      const innerPath = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+      const intoInnerYes = [
+        { index: 0 },
+        { branch: 'yes' as const, index: 0 },
+        { branch: 'yes' as const, index: 1 }, // after deep
+      ];
+      expect(isDescendant(innerPath, intoInnerYes)).toBe(true);
+    });
+
+    it('getParentPath result is ancestor of original path', () => {
+      useBuilderStore.getState().addStep(
+        mkCondition('c1', [mkAction('y1')]),
+        null, null
+      );
+      const childPath = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+      const parentPath = getParentPath(childPath)!;
+
+      // Parent is ancestor of child
+      expect(isDescendant(parentPath, childPath)).toBe(true);
+      // Child is NOT ancestor of parent
+      expect(isDescendant(childPath, parentPath)).toBe(false);
+    });
+  });
+
+  // ── Long paths (stress) ───────────────────────────────────────────
+  describe('deep path stress', () => {
+    it('depth-5 descendant check', () => {
+      const ancestor = [
+        { index: 0 },
+        { branch: 'yes' as const, index: 0 },
+      ];
+      const deep = [
+        { index: 0 },
+        { branch: 'yes' as const, index: 0 },
+        { branch: 'no' as const, index: 1 },
+        { branch: 'yes' as const, index: 0 },
+        { branch: 'no' as const, index: 2 },
+        { branch: 'yes' as const, index: 0 },
+      ];
+      expect(isDescendant(ancestor, deep)).toBe(true);
+    });
+
+    it('depth-5 with mismatch at segment 3 → false', () => {
+      const ancestor = [
+        { index: 0 },
+        { branch: 'yes' as const, index: 0 },
+        { branch: 'no' as const, index: 1 },
+      ];
+      const notDescendant = [
+        { index: 0 },
+        { branch: 'yes' as const, index: 0 },
+        { branch: 'no' as const, index: 2 }, // index differs
+        { branch: 'yes' as const, index: 0 },
+        { branch: 'no' as const, index: 0 },
+      ];
+      expect(isDescendant(ancestor, notDescendant)).toBe(false);
+    });
+  });
+});
