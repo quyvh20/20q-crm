@@ -59,6 +59,59 @@ function arrayMove<T>(arr: T[], from: number, to: number): T[] {
   return result;
 }
 
+// ── Path-based tree navigation ───────────────────────────────────────
+
+/**
+ * A segment in a step path.
+ * - The first segment has only `index` (position in root steps array).
+ * - Subsequent segments have `branch` ('yes' | 'no') and `index`
+ *   (position within that branch's child array).
+ */
+export interface StepPathSegment {
+  branch?: 'yes' | 'no';
+  index: number;
+}
+
+/** A full path from root to a specific step in the tree. */
+export type StepPath = StepPathSegment[];
+
+/**
+ * Resolve a step from the tree using a path address.
+ *
+ * Path examples:
+ * - `[{ index: 0 }]` → steps[0]
+ * - `[{ index: 1 }, { branch: 'yes', index: 2 }]` → steps[1].yes_steps[2]
+ * - `[{ index: 0 }, { branch: 'no', index: 0 }, { branch: 'yes', index: 1 }]`
+ *   → steps[0].no_steps[0].yes_steps[1]
+ *
+ * Returns `undefined` if any segment is out of bounds or the branch doesn't exist.
+ */
+export function getStepAtPath(steps: WorkflowStep[], path: StepPath): WorkflowStep | undefined {
+  if (path.length === 0) return undefined;
+
+  const [head, ...rest] = path;
+
+  // First segment: index into root array
+  const step = steps[head.index];
+  if (!step) return undefined;
+
+  // If no more segments, this is the target
+  if (rest.length === 0) return step;
+
+  // Remaining segments navigate into branches
+  const next = rest[0];
+  if (!next.branch) return undefined;
+
+  const children = next.branch === 'yes' ? step.yes_steps : step.no_steps;
+  if (!children) return undefined;
+
+  // Recurse: the remaining path is relative to the branch children array
+  // Re-pack: next segment becomes the new "root" segment (strip branch, keep index)
+  return getStepAtPath(children, rest.map((seg, i) =>
+    i === 0 ? { index: seg.index } : seg
+  ));
+}
+
 function findStepInTree(steps: WorkflowStep[], id: string): WorkflowStep | undefined {
   for (const step of steps) {
     if (step.id === id) return step;

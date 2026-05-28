@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { useBuilderStore } from '../store';
+import { useBuilderStore, getStepAtPath } from '../store';
 import type { WorkflowStep } from '../types';
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -1447,5 +1447,249 @@ describe('reorderSteps — edge cases', () => {
 
     const ids = useBuilderStore.getState().steps.map((s) => s.id);
     expect(ids).toEqual(['a1', 'a2']);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// getStepAtPath — root level
+// ═════════════════════════════════════════════════════════════════════
+describe('getStepAtPath — root level', () => {
+  it('resolves step at root index 0', () => {
+    const steps = [mkAction('a1'), mkAction('a2'), mkAction('a3')];
+    const result = getStepAtPath(steps, [{ index: 0 }]);
+    expect(result?.id).toBe('a1');
+  });
+
+  it('resolves step at root index 1', () => {
+    const steps = [mkAction('a1'), mkAction('a2')];
+    const result = getStepAtPath(steps, [{ index: 1 }]);
+    expect(result?.id).toBe('a2');
+  });
+
+  it('resolves step at last root index', () => {
+    const steps = [mkAction('a1'), mkAction('a2'), mkAction('a3')];
+    const result = getStepAtPath(steps, [{ index: 2 }]);
+    expect(result?.id).toBe('a3');
+  });
+
+  it('resolves condition step at root', () => {
+    const steps = [mkCondition('c1', [mkAction('y1')])];
+    const result = getStepAtPath(steps, [{ index: 0 }]);
+    expect(result?.id).toBe('c1');
+    expect(result?.type).toBe('condition');
+  });
+
+  it('resolves delay step at root', () => {
+    const steps = [mkDelay('d1', 120)];
+    const result = getStepAtPath(steps, [{ index: 0 }]);
+    expect(result?.id).toBe('d1');
+    expect(result?.type).toBe('delay');
+    expect(result?.delay!.duration_sec).toBe(120);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// getStepAtPath — branch navigation
+// ═════════════════════════════════════════════════════════════════════
+describe('getStepAtPath — branch navigation', () => {
+  it('navigates into yes_steps[0]', () => {
+    const steps = [mkCondition('c1', [mkAction('y1'), mkAction('y2')])];
+    const result = getStepAtPath(steps, [{ index: 0 }, { branch: 'yes', index: 0 }]);
+    expect(result?.id).toBe('y1');
+  });
+
+  it('navigates into yes_steps[1]', () => {
+    const steps = [mkCondition('c1', [mkAction('y1'), mkAction('y2')])];
+    const result = getStepAtPath(steps, [{ index: 0 }, { branch: 'yes', index: 1 }]);
+    expect(result?.id).toBe('y2');
+  });
+
+  it('navigates into no_steps[0]', () => {
+    const steps = [mkCondition('c1', [], [mkAction('n1')])];
+    const result = getStepAtPath(steps, [{ index: 0 }, { branch: 'no', index: 0 }]);
+    expect(result?.id).toBe('n1');
+  });
+
+  it('navigates yes and no independently', () => {
+    const steps = [mkCondition('c1', [mkAction('y1')], [mkAction('n1')])];
+    const yes = getStepAtPath(steps, [{ index: 0 }, { branch: 'yes', index: 0 }]);
+    const no = getStepAtPath(steps, [{ index: 0 }, { branch: 'no', index: 0 }]);
+    expect(yes?.id).toBe('y1');
+    expect(no?.id).toBe('n1');
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// getStepAtPath — deep nesting (2-3 levels)
+// ═════════════════════════════════════════════════════════════════════
+describe('getStepAtPath — deep nesting', () => {
+  it('navigates depth 2: root → yes → yes', () => {
+    const inner = mkCondition('inner', [mkAction('deep')]);
+    const outer = mkCondition('outer', [inner]);
+    const steps = [outer];
+
+    const result = getStepAtPath(steps, [
+      { index: 0 },
+      { branch: 'yes', index: 0 },
+      { branch: 'yes', index: 0 },
+    ]);
+    expect(result?.id).toBe('deep');
+  });
+
+  it('navigates depth 2: root → yes → no', () => {
+    const inner = mkCondition('inner', [], [mkAction('deep_no')]);
+    const outer = mkCondition('outer', [inner]);
+    const steps = [outer];
+
+    const result = getStepAtPath(steps, [
+      { index: 0 },
+      { branch: 'yes', index: 0 },
+      { branch: 'no', index: 0 },
+    ]);
+    expect(result?.id).toBe('deep_no');
+  });
+
+  it('navigates depth 3', () => {
+    const l3 = mkCondition('L3', [mkAction('bottom')]);
+    const l2 = mkCondition('L2', [l3]);
+    const l1 = mkCondition('L1', [l2]);
+    const steps = [l1];
+
+    const result = getStepAtPath(steps, [
+      { index: 0 },
+      { branch: 'yes', index: 0 },
+      { branch: 'yes', index: 0 },
+      { branch: 'yes', index: 0 },
+    ]);
+    expect(result?.id).toBe('bottom');
+  });
+
+  it('navigates mixed branches: yes → no → yes', () => {
+    const l3 = mkCondition('L3', [mkAction('target')]);
+    const l2 = mkCondition('L2', [], [l3]);
+    const l1 = mkCondition('L1', [l2]);
+    const steps = [l1];
+
+    const result = getStepAtPath(steps, [
+      { index: 0 },
+      { branch: 'yes', index: 0 },
+      { branch: 'no', index: 0 },
+      { branch: 'yes', index: 0 },
+    ]);
+    expect(result?.id).toBe('target');
+  });
+
+  it('resolves non-zero indexes at each level', () => {
+    const inner = mkCondition('inner', [mkAction('y0'), mkAction('y1'), mkAction('y2')]);
+    const outer = mkCondition('outer', [mkAction('skip'), inner]);
+    const steps = [mkAction('root0'), outer];
+
+    const result = getStepAtPath(steps, [
+      { index: 1 },         // outer (root index 1)
+      { branch: 'yes', index: 1 },  // inner (yes index 1)
+      { branch: 'yes', index: 2 },  // y2 (yes index 2)
+    ]);
+    expect(result?.id).toBe('y2');
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// getStepAtPath — out of bounds & missing
+// ═════════════════════════════════════════════════════════════════════
+describe('getStepAtPath — out of bounds & missing', () => {
+  it('returns undefined for empty path', () => {
+    const steps = [mkAction('a1')];
+    expect(getStepAtPath(steps, [])).toBeUndefined();
+  });
+
+  it('returns undefined for empty steps array', () => {
+    expect(getStepAtPath([], [{ index: 0 }])).toBeUndefined();
+  });
+
+  it('returns undefined for root index out of bounds', () => {
+    const steps = [mkAction('a1')];
+    expect(getStepAtPath(steps, [{ index: 5 }])).toBeUndefined();
+  });
+
+  it('returns undefined for negative root index', () => {
+    const steps = [mkAction('a1'), mkAction('a2')];
+    expect(getStepAtPath(steps, [{ index: -1 }])).toBeUndefined();
+  });
+
+  it('returns undefined when branch does not exist (no yes_steps)', () => {
+    const steps = [mkAction('a1')]; // action has no branches
+    expect(getStepAtPath(steps, [
+      { index: 0 },
+      { branch: 'yes', index: 0 },
+    ])).toBeUndefined();
+  });
+
+  it('returns undefined when branch child index is out of bounds', () => {
+    const steps = [mkCondition('c1', [mkAction('y1')])];
+    expect(getStepAtPath(steps, [
+      { index: 0 },
+      { branch: 'yes', index: 99 },
+    ])).toBeUndefined();
+  });
+
+  it('returns undefined when navigating into empty branch', () => {
+    const steps = [mkCondition('c1')]; // empty yes/no
+    expect(getStepAtPath(steps, [
+      { index: 0 },
+      { branch: 'yes', index: 0 },
+    ])).toBeUndefined();
+  });
+
+  it('returns undefined when second segment has no branch', () => {
+    const steps = [mkCondition('c1', [mkAction('y1')])];
+    // Second segment missing branch field — invalid
+    expect(getStepAtPath(steps, [
+      { index: 0 },
+      { index: 0 },
+    ])).toBeUndefined();
+  });
+
+  it('returns undefined when path overshoots depth', () => {
+    const steps = [mkCondition('c1', [mkAction('y1')])];
+    // y1 is an action, has no branches, but path tries to go deeper
+    expect(getStepAtPath(steps, [
+      { index: 0 },
+      { branch: 'yes', index: 0 },
+      { branch: 'yes', index: 0 },
+    ])).toBeUndefined();
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// getStepAtPath — integration with store
+// ═════════════════════════════════════════════════════════════════════
+describe('getStepAtPath — integration with store', () => {
+  it('resolves a step built via addStep', () => {
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('y1'), 'c1', 'yes');
+
+    const { steps } = useBuilderStore.getState();
+    const result = getStepAtPath(steps, [
+      { index: 1 },
+      { branch: 'yes', index: 0 },
+    ]);
+    expect(result?.id).toBe('y1');
+  });
+
+  it('returns the same step object as findStep for the same target', () => {
+    const inner = mkCondition('inner', [mkAction('target')]);
+    const outer = mkCondition('outer', [inner]);
+    useBuilderStore.getState().addStep(outer, null, null);
+
+    const { steps } = useBuilderStore.getState();
+    const byPath = getStepAtPath(steps, [
+      { index: 0 },
+      { branch: 'yes', index: 0 },
+      { branch: 'yes', index: 0 },
+    ]);
+    const byId = useBuilderStore.getState().findStep('target');
+
+    expect(byPath).toBe(byId);
   });
 });
