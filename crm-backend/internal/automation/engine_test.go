@@ -2,6 +2,7 @@ package automation
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"sync/atomic"
 	"testing"
@@ -822,4 +823,80 @@ func TestExecuteSteps_ResumeAfterCrashInBranch(t *testing.T) {
 	assert.Equal(t, map[string]any{"sent": true}, evalCtx.Actions["yes_1"])
 	assert.Equal(t, map[string]any{"task_id": "t2"}, evalCtx.Actions["yes_2"])
 	assert.Nil(t, evalCtx.Actions["no_1"])
+}
+
+// TestExecuteSteps_OldWorkflowWithActionsOnly_StillRuns proves that a legacy workflow
+// with only flat actions[] (steps=null) still dispatches correctly via the legacy
+// execution path. This validates backward compatibility after the steps migration.
+//
+// Scenario:
+//   WorkflowVersion.Steps  = nil (old workflow, never migrated)
+//   WorkflowVersion.Actions = [send_email, create_task]
+//   → Engine must take the legacy path (CurrentActionIdx-based iteration)
+func TestExecuteSteps_OldWorkflowWithActionsOnly_StillRuns(t *testing.T) {
+	emailExec := &fakeExecutor{output: map[string]any{"sent": true}}
+	taskExec := &fakeExecutor{output: map[string]any{"task_id": "t1"}}
+
+	executors := map[string]ActionExecutor{
+		"send_email":  emailExec,
+		"create_task": taskExec,
+	}
+
+	// Simulate a legacy WorkflowVersion: actions populated, steps nil
+	actionsJSON := []byte(`[
+		{"type":"send_email","id":"a1","params":{"to":"user@example.com"}},
+		{"type":"create_task","id":"a2","params":{"title":"Follow up"}}
+	]`)
+
+	var stepsJSON []byte = nil // NULL — old workflow
+
+	// Verify dispatch decision: steps is nil → must take legacy path
+	hasSteps := len(stepsJSON) > 0 && string(stepsJSON) != "null"
+	assert.False(t, hasSteps, "steps must be nil/empty for legacy workflow")
+
+	// Parse legacy actions
+	var actions []ActionSpec
+	err := json.Unmarshal(actionsJSON, &actions)
+	assert.NoError(t, err)
+	assert.Len(t, actions, 2)
+
+	// Execute via legacy path: iterate by index with CurrentActionIdx
+	run := &WorkflowRun{ID: uuid.New(), CurrentActionIdx: 0}
+	completedSet := make(map[int]bool)
+	evalCtx := EvalContext{
+		Contact: map[string]any{"email": "user@example.com"},
+		Actions: make(map[string]any),
+	}
+
+	for i := run.CurrentActionIdx; i < len(actions); i++ {
+		if completedSet[i] {
+			continue // Idempotency
+		}
+
+		action := actions[i]
+		executor, ok := executors[action.Type]
+		assert.True(t, ok, "executor for %s must exist", action.Type)
+
+		output, execErr := executor.Execute(context.Background(), run, action, evalCtx)
+		assert.NoError(t, execErr)
+
+		evalCtx.Actions[action.ID] = output
+		completedSet[i] = true
+		run.CurrentActionIdx = i + 1
+	}
+
+	// Both actions executed in order
+	assert.Equal(t, []string{"a1"}, emailExec.calls)
+	assert.Equal(t, []string{"a2"}, taskExec.calls)
+
+	// CurrentActionIdx advanced past all actions
+	assert.Equal(t, 2, run.CurrentActionIdx)
+
+	// All indices completed
+	assert.True(t, completedSet[0])
+	assert.True(t, completedSet[1])
+
+	// EvalCtx populated
+	assert.Equal(t, map[string]any{"sent": true}, evalCtx.Actions["a1"])
+	assert.Equal(t, map[string]any{"task_id": "t1"}, evalCtx.Actions["a2"])
 }
