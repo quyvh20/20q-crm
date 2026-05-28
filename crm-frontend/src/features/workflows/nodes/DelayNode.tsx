@@ -2,11 +2,11 @@ import React from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { WorkflowStep } from '../types';
-import { useBuilderStore } from '../store';
+import { useBuilderStore, type StepPath } from '../store';
 
 interface DelayNodeProps {
   step: WorkflowStep;
-  index: number;
+  path: StepPath;
 }
 
 /** Format delay duration into a human-readable string */
@@ -22,7 +22,13 @@ function formatDelay(sec: number): string {
   return `Wait ${sec}s`;
 }
 
-export const DelayNode: React.FC<DelayNodeProps> = ({ step, index }) => {
+/** Derive a display step number from the path (last segment index + 1) */
+function stepLabel(path: StepPath): string {
+  const last = path[path.length - 1];
+  return `Step ${last ? last.index + 1 : 1}`;
+}
+
+export const DelayNode: React.FC<DelayNodeProps> = ({ step, path }) => {
   const { selectedNodeId, selectNode, removeStep } = useBuilderStore();
   const isSelected = selectedNodeId === step.id;
 
@@ -35,7 +41,7 @@ export const DelayNode: React.FC<DelayNodeProps> = ({ step, index }) => {
     isDragging,
   } = useSortable({
     id: step.id,
-    data: { source: 'canvas', index },
+    data: { source: 'canvas', path },
   });
 
   const style = {
@@ -69,7 +75,7 @@ export const DelayNode: React.FC<DelayNodeProps> = ({ step, index }) => {
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-xs uppercase tracking-wider text-gray-400 font-semibold">
-            Step {index + 1}
+            {stepLabel(path)}
           </p>
           <p className="text-sm font-medium text-white truncate">
             Delay

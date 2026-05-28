@@ -1,17 +1,18 @@
 import React from 'react';
 import type { WorkflowStep } from '../types';
-import { useBuilderStore } from '../store';
+import { useBuilderStore, type StepPath } from '../store';
 import { WorkflowStepList } from './WorkflowStepList';
 
 interface ConditionSplitNodeProps {
   step: WorkflowStep;
-  index: number;
+  path: StepPath;
 }
 
-export const ConditionSplitNode: React.FC<ConditionSplitNodeProps> = ({ step, index }) => {
+export const ConditionSplitNode: React.FC<ConditionSplitNodeProps> = ({ step, path }) => {
   const { selectedNodeId, selectNode, removeStep, errors } = useBuilderStore();
   const isSelected = selectedNodeId === step.id;
-  const hasError = !!errors[`step.${step.id}`] || !!errors[`steps.${index}.condition`];
+  const lastIdx = path[path.length - 1]?.index ?? 0;
+  const hasError = !!errors[`step.${step.id}`] || !!errors[`steps.${lastIdx}.condition`];
 
   const rules = step.condition?.rules ?? [];
   const ruleCount = rules.length;
@@ -56,7 +57,7 @@ export const ConditionSplitNode: React.FC<ConditionSplitNodeProps> = ({ step, in
         </div>
         {hasError && (
           <p className="text-xs text-red-400 mt-2">
-            {errors[`step.${step.id}`]?.[0] || errors[`steps.${index}.condition`]?.[0] || 'Invalid conditions'}
+            {errors[`step.${step.id}`]?.[0] || errors[`steps.${lastIdx}.condition`]?.[0] || 'Invalid conditions'}
           </p>
         )}
       </div>
@@ -81,6 +82,7 @@ export const ConditionSplitNode: React.FC<ConditionSplitNodeProps> = ({ step, in
               steps={step.yes_steps || []}
               parentId={step.id}
               branch="yes"
+              parentPath={path}
             />
           </div>
         </div>
@@ -97,6 +99,7 @@ export const ConditionSplitNode: React.FC<ConditionSplitNodeProps> = ({ step, in
               steps={step.no_steps || []}
               parentId={step.id}
               branch="no"
+              parentPath={path}
             />
           </div>
         </div>
