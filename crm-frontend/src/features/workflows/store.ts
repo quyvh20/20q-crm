@@ -736,3 +736,29 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
     set({ ...initialState, schema, schemaError, fieldCache, errors: {} });
   },
 }));
+
+// Sync steps and actions automatically if either is updated directly (e.g. in tests via setState)
+useBuilderStore.subscribe((state, prevState) => {
+  if (state.actions === prevState?.actions && state.steps === prevState?.steps) return;
+
+  // 1. If actions was populated directly but steps is empty:
+  if (state.actions && state.actions.length > 0 && (!state.steps || state.steps.length === 0)) {
+    const steps = state.actions.map(
+      (a) =>
+        ({
+          id: a.id,
+          type: a.type === 'delay' ? 'delay' : 'action',
+          action: a.type === 'delay' ? undefined : a,
+          delay: a.type === 'delay' ? { duration_sec: Number(a.params?.duration_sec) || 60 } : undefined,
+        } as WorkflowStep)
+    );
+    useBuilderStore.setState({ steps });
+  }
+
+  // 2. If steps was populated directly but actions is empty:
+  if (state.steps && state.steps.length > 0 && (!state.actions || state.actions.length === 0)) {
+    const actions = flattenSteps(state.steps);
+    useBuilderStore.setState({ actions });
+  }
+});
+
