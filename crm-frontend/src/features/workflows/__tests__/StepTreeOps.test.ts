@@ -700,3 +700,383 @@ describe('removeStep — edge cases', () => {
     expect(ids).toEqual(['a2', 'a3']);
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════
+// updateStep — action param merge
+// ═════════════════════════════════════════════════════════════════════
+describe('updateStep — action param merge', () => {
+  it('merges new params into existing action params', () => {
+    const step = mkAction('a1');
+    useBuilderStore.getState().addStep(step, null, null);
+
+    useBuilderStore.getState().updateStep('a1', {
+      action: { id: 'a1', type: 'create_task', params: { priority: 'high' } },
+    });
+
+    const updated = useBuilderStore.getState().steps[0];
+    expect(updated.action!.params.title).toBe('Task a1'); // preserved
+    expect(updated.action!.params.priority).toBe('high'); // added
+  });
+
+  it('overwrites existing param value', () => {
+    const step = mkAction('a1');
+    useBuilderStore.getState().addStep(step, null, null);
+
+    useBuilderStore.getState().updateStep('a1', {
+      action: { id: 'a1', type: 'create_task', params: { title: 'Updated Title' } },
+    });
+
+    const updated = useBuilderStore.getState().steps[0];
+    expect(updated.action!.params.title).toBe('Updated Title');
+  });
+
+  it('preserves action type and id', () => {
+    const step = mkAction('a1');
+    useBuilderStore.getState().addStep(step, null, null);
+
+    useBuilderStore.getState().updateStep('a1', {
+      action: { id: 'a1', type: 'create_task', params: { due_in_days: 5 } },
+    });
+
+    const updated = useBuilderStore.getState().steps[0];
+    expect(updated.action!.id).toBe('a1');
+    expect(updated.action!.type).toBe('create_task');
+  });
+
+  it('merges multiple params at once', () => {
+    const step: WorkflowStep = {
+      id: 'email1',
+      type: 'action',
+      action: {
+        id: 'email1',
+        type: 'send_email',
+        params: { to: '{{contact.email}}', subject: 'Hello' },
+      },
+    };
+    useBuilderStore.getState().addStep(step, null, null);
+
+    useBuilderStore.getState().updateStep('email1', {
+      action: {
+        id: 'email1',
+        type: 'send_email',
+        params: { subject: 'Updated', body_html: '<p>Hi</p>' },
+      },
+    });
+
+    const updated = useBuilderStore.getState().steps[0];
+    expect(updated.action!.params.to).toBe('{{contact.email}}'); // preserved
+    expect(updated.action!.params.subject).toBe('Updated'); // overwritten
+    expect(updated.action!.params.body_html).toBe('<p>Hi</p>'); // added
+  });
+
+  it('sets isDirty = true', () => {
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    useBuilderStore.setState({ isDirty: false });
+
+    useBuilderStore.getState().updateStep('a1', {
+      action: { id: 'a1', type: 'create_task', params: { title: 'New' } },
+    });
+
+    expect(useBuilderStore.getState().isDirty).toBe(true);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// updateStep — delay step update
+// ═════════════════════════════════════════════════════════════════════
+describe('updateStep — delay step', () => {
+  it('updates duration_sec via action patch (shim path)', () => {
+    useBuilderStore.getState().addStep(mkDelay('d1', 60), null, null);
+
+    // This is how updateAction calls it: patch.action.params.duration_sec
+    useBuilderStore.getState().updateStep('d1', {
+      action: { id: 'd1', type: 'delay', params: { duration_sec: 300 } },
+    });
+
+    const updated = useBuilderStore.getState().steps[0];
+    expect(updated.type).toBe('delay');
+    expect(updated.delay!.duration_sec).toBe(300);
+  });
+
+  it('preserves delay type when updating duration', () => {
+    useBuilderStore.getState().addStep(mkDelay('d1', 120), null, null);
+
+    useBuilderStore.getState().updateStep('d1', {
+      action: { id: 'd1', type: 'delay', params: { duration_sec: 600 } },
+    });
+
+    const updated = useBuilderStore.getState().steps[0];
+    expect(updated.type).toBe('delay');
+    expect(updated.id).toBe('d1');
+    // Should not have an action field
+    expect(updated.action).toBeUndefined();
+  });
+
+  it('updates delay via direct delay patch', () => {
+    useBuilderStore.getState().addStep(mkDelay('d1', 60), null, null);
+
+    useBuilderStore.getState().updateStep('d1', {
+      delay: { duration_sec: 900 },
+    });
+
+    const updated = useBuilderStore.getState().steps[0];
+    expect(updated.delay!.duration_sec).toBe(900);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// updateStep — condition step patch
+// ═════════════════════════════════════════════════════════════════════
+describe('updateStep — condition step', () => {
+  it('updates condition rules via patch', () => {
+    const cond = mkCondition('c1');
+    useBuilderStore.getState().addStep(cond, null, null);
+
+    const newCondition = {
+      op: 'OR' as const,
+      rules: [{ field: 'contact.name', operator: 'contains', value: 'John' }],
+    };
+    useBuilderStore.getState().updateStep('c1', { condition: newCondition });
+
+    const updated = useBuilderStore.getState().steps[0];
+    expect(updated.condition!.op).toBe('OR');
+    expect(updated.condition!.rules[0].field).toBe('contact.name');
+  });
+
+  it('preserves yes_steps and no_steps when updating condition', () => {
+    const cond = mkCondition('c1', [mkAction('y1')], [mkAction('n1')]);
+    useBuilderStore.getState().addStep(cond, null, null);
+
+    useBuilderStore.getState().updateStep('c1', {
+      condition: { op: 'OR', rules: [] },
+    });
+
+    const updated = useBuilderStore.getState().steps[0];
+    expect(updated.yes_steps!.map((s) => s.id)).toEqual(['y1']);
+    expect(updated.no_steps!.map((s) => s.id)).toEqual(['n1']);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// updateStep — in condition branches (deep)
+// ═════════════════════════════════════════════════════════════════════
+describe('updateStep — in condition branches', () => {
+  it('updates a step in yes_steps', () => {
+    const cond = mkCondition('c1', [mkAction('y1')]);
+    useBuilderStore.getState().addStep(cond, null, null);
+
+    useBuilderStore.getState().updateStep('y1', {
+      action: { id: 'y1', type: 'create_task', params: { title: 'Updated Y1' } },
+    });
+
+    const yes = useBuilderStore.getState().steps[0].yes_steps!;
+    expect(yes[0].action!.params.title).toBe('Updated Y1');
+  });
+
+  it('updates a step in no_steps', () => {
+    const cond = mkCondition('c1', [], [mkAction('n1')]);
+    useBuilderStore.getState().addStep(cond, null, null);
+
+    useBuilderStore.getState().updateStep('n1', {
+      action: { id: 'n1', type: 'create_task', params: { title: 'Updated N1' } },
+    });
+
+    const no = useBuilderStore.getState().steps[0].no_steps!;
+    expect(no[0].action!.params.title).toBe('Updated N1');
+  });
+
+  it('updates a step at depth 2', () => {
+    const inner = mkCondition('inner', [mkAction('deep')]);
+    const outer = mkCondition('outer', [inner]);
+    useBuilderStore.getState().addStep(outer, null, null);
+
+    useBuilderStore.getState().updateStep('deep', {
+      action: { id: 'deep', type: 'create_task', params: { title: 'Deep Update' } },
+    });
+
+    const deepStep = useBuilderStore.getState().steps[0].yes_steps![0].yes_steps![0];
+    expect(deepStep.action!.params.title).toBe('Deep Update');
+  });
+
+  it('does not touch siblings when updating in a branch', () => {
+    const cond = mkCondition('c1', [mkAction('y1'), mkAction('y2')], [mkAction('n1')]);
+    useBuilderStore.getState().addStep(cond, null, null);
+
+    useBuilderStore.getState().updateStep('y1', {
+      action: { id: 'y1', type: 'create_task', params: { title: 'Changed' } },
+    });
+
+    const root = useBuilderStore.getState().steps[0];
+    expect(root.yes_steps![0].action!.params.title).toBe('Changed');
+    expect(root.yes_steps![1].action!.params.title).toBe('Task y2'); // untouched
+    expect(root.no_steps![0].action!.params.title).toBe('Task n1'); // untouched
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// updateStep — immutability guarantees
+// ═════════════════════════════════════════════════════════════════════
+describe('updateStep — immutability', () => {
+  it('returns new root array reference', () => {
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    const before = useBuilderStore.getState().steps;
+
+    useBuilderStore.getState().updateStep('a1', {
+      action: { id: 'a1', type: 'create_task', params: { title: 'New' } },
+    });
+    const after = useBuilderStore.getState().steps;
+
+    expect(before).not.toBe(after);
+  });
+
+  it('returns new step reference for updated step', () => {
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    const beforeStep = useBuilderStore.getState().steps[0];
+
+    useBuilderStore.getState().updateStep('a1', {
+      action: { id: 'a1', type: 'create_task', params: { title: 'New' } },
+    });
+    const afterStep = useBuilderStore.getState().steps[0];
+
+    expect(beforeStep).not.toBe(afterStep);
+  });
+
+  it('does not mutate old step params object', () => {
+    const step: WorkflowStep = {
+      id: 'a1',
+      type: 'action',
+      action: { id: 'a1', type: 'send_email', params: { to: 'x@y.com', subject: 'Old' } },
+    };
+    useBuilderStore.getState().addStep(step, null, null);
+
+    const beforeParams = useBuilderStore.getState().steps[0].action!.params;
+
+    useBuilderStore.getState().updateStep('a1', {
+      action: { id: 'a1', type: 'send_email', params: { subject: 'New' } },
+    });
+
+    // Old params reference must be unchanged
+    expect(beforeParams.subject).toBe('Old');
+    // New params have the update
+    expect(useBuilderStore.getState().steps[0].action!.params.subject).toBe('New');
+  });
+
+  it('does not mutate original condition when updating branch step', () => {
+    const cond = mkCondition('c1', [mkAction('y1')]);
+    useBuilderStore.getState().addStep(cond, null, null);
+
+    const beforeCond = useBuilderStore.getState().steps[0];
+
+    useBuilderStore.getState().updateStep('y1', {
+      action: { id: 'y1', type: 'create_task', params: { title: 'New' } },
+    });
+
+    const afterCond = useBuilderStore.getState().steps[0];
+    expect(beforeCond).not.toBe(afterCond);
+    // Old branch child should still have old title
+    expect(beforeCond.yes_steps![0].action!.params.title).toBe('Task y1');
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// updateStep — actions sync
+// ═════════════════════════════════════════════════════════════════════
+describe('updateStep — actions sync', () => {
+  it('syncs flattened actions after root action update', () => {
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a2'), null, null);
+
+    useBuilderStore.getState().updateStep('a1', {
+      action: { id: 'a1', type: 'create_task', params: { title: 'Synced' } },
+    });
+
+    const actions = useBuilderStore.getState().actions;
+    expect(actions[0].params.title).toBe('Synced');
+    expect(actions[1].params.title).toBe('Task a2');
+  });
+
+  it('syncs flattened actions after branch action update', () => {
+    const cond = mkCondition('c1', [mkAction('y1')]);
+    useBuilderStore.getState().addStep(cond, null, null);
+
+    useBuilderStore.getState().updateStep('y1', {
+      action: { id: 'y1', type: 'create_task', params: { title: 'Branch Updated' } },
+    });
+
+    const actions = useBuilderStore.getState().actions;
+    const y1Action = actions.find((a) => a.id === 'y1');
+    expect(y1Action!.params.title).toBe('Branch Updated');
+  });
+
+  it('syncs delay update to actions', () => {
+    useBuilderStore.getState().addStep(mkDelay('d1', 60), null, null);
+
+    useBuilderStore.getState().updateStep('d1', {
+      action: { id: 'd1', type: 'delay', params: { duration_sec: 999 } },
+    });
+
+    const actions = useBuilderStore.getState().actions;
+    expect(actions[0].id).toBe('d1');
+    expect(actions[0].params.duration_sec).toBe(999);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// updateStep — edge cases
+// ═════════════════════════════════════════════════════════════════════
+describe('updateStep — edge cases', () => {
+  it('nonexistent id: tree unchanged', () => {
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+
+    useBuilderStore.getState().updateStep('ghost', {
+      action: { id: 'ghost', type: 'create_task', params: { title: 'Nope' } },
+    });
+
+    const step = useBuilderStore.getState().steps[0];
+    expect(step.action!.params.title).toBe('Task a1');
+  });
+
+  it('empty patch object: step unchanged except for spread', () => {
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+
+    useBuilderStore.getState().updateStep('a1', {});
+
+    const step = useBuilderStore.getState().steps[0];
+    expect(step.id).toBe('a1');
+    expect(step.type).toBe('action');
+    expect(step.action!.params.title).toBe('Task a1');
+  });
+
+  it('sequential updates accumulate', () => {
+    const step: WorkflowStep = {
+      id: 'e1',
+      type: 'action',
+      action: { id: 'e1', type: 'send_email', params: { to: 'a@b.com' } },
+    };
+    useBuilderStore.getState().addStep(step, null, null);
+
+    useBuilderStore.getState().updateStep('e1', {
+      action: { id: 'e1', type: 'send_email', params: { subject: 'First' } },
+    });
+    useBuilderStore.getState().updateStep('e1', {
+      action: { id: 'e1', type: 'send_email', params: { body_html: '<p>Body</p>' } },
+    });
+
+    const updated = useBuilderStore.getState().steps[0];
+    expect(updated.action!.params.to).toBe('a@b.com');
+    expect(updated.action!.params.subject).toBe('First');
+    expect(updated.action!.params.body_html).toBe('<p>Body</p>');
+  });
+
+  it('update delay in a branch', () => {
+    const cond = mkCondition('c1', [mkDelay('d1', 60)]);
+    useBuilderStore.getState().addStep(cond, null, null);
+
+    useBuilderStore.getState().updateStep('d1', {
+      action: { id: 'd1', type: 'delay', params: { duration_sec: 7200 } },
+    });
+
+    const delay = useBuilderStore.getState().steps[0].yes_steps![0];
+    expect(delay.delay!.duration_sec).toBe(7200);
+  });
+});
