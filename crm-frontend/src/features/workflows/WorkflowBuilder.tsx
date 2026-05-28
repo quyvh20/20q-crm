@@ -199,9 +199,12 @@ export const WorkflowBuilder: React.FC = () => {
           const draggedStep = store.findStep(active.id.toString());
           if (!draggedStep) return;
 
-          // Cycle guard: if the drop target is inside the dragged step's subtree, block it.
-          // Use isDescendant(srcPath, destPath) — true means destPath is inside srcPath.
+          // Cycle guard: if the drop target IS the dragged step or inside
+          // its subtree, block the move.
           if (destParentId) {
+            if (destParentId === active.id.toString()) {
+              return; // Block — can't drop into yourself
+            }
             const destParentPath = resolvePathById(store.steps || [], destParentId);
             if (destParentPath && isDescendant(srcPath, destParentPath)) {
               return; // Block — would create a cycle

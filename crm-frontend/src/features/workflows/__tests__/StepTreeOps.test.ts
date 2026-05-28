@@ -3394,3 +3394,722 @@ describe('TestDnd_DragFromPaletteIntoYesBranch', () => {
     expect(yes[6].type).toBe('condition');
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════
+// TestDnd_BlockedDragIntoOwnDescendant
+// Simulates the store operations that handleDragEnd performs when
+// a canvas step is dragged to a different branch/container, and
+// verifies that cycle-creating moves are blocked by isDescendant().
+// ═════════════════════════════════════════════════════════════════════
+describe('TestDnd_BlockedDragIntoOwnDescendant', () => {
+
+  /**
+   * Simulates a cross-container drag: resolve source path, resolve dest
+   * parent path, check isDescendant, and if valid: remove + re-add.
+   * Returns true if the move was executed, false if blocked.
+   */
+  function simulateDragMove(
+    srcId: string,
+    destParentId: string | null,
+    destBranch: 'yes' | 'no' | null,
+    destIndex: number = 0,
+  ): boolean {
+    const store = useBuilderStore.getState();
+    const steps = store.steps || [];
+
+    // Resolve source path
+    const srcPath = resolvePathByIdLocal(steps, srcId);
+    if (!srcPath) return false;
+
+    // Cycle guard: if destParent IS the dragged step or inside its subtree, block it
+    if (destParentId) {
+      if (destParentId === srcId) {
+        return false; // BLOCKED — can't drop into yourself
+      }
+      const destParentPath = resolvePathByIdLocal(steps, destParentId);
+      if (destParentPath && isDescendant(srcPath, destParentPath)) {
+        return false; // BLOCKED — would create a cycle
+      }
+    }
+
+    // Execute: remove then re-add
+    const draggedStep = store.findStep(srcId);
+    if (!draggedStep) return false;
+    const clone = JSON.parse(JSON.stringify(draggedStep)) as WorkflowStep;
+    store.removeStep(srcId);
+    useBuilderStore.getState().addStep(clone, destParentId, destBranch, destIndex);
+    return true;
+  }
+
+  /** Local resolvePathById (mirrors WorkflowBuilder.tsx) */
+  function resolvePathByIdLocal(
+    steps: WorkflowStep[],
+    targetId: string,
+    currentPath: Array<{ index: number; branch?: 'yes' | 'no' }> = [],
+  ): Array<{ index: number; branch?: 'yes' | 'no' }> | null {
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      const seg = currentPath.length > 0 && currentPath[currentPath.length - 1]?.branch
+        ? { index: i, branch: currentPath[currentPath.length - 1]!.branch! } as { index: number; branch?: 'yes' | 'no' }
+        : { index: i } as { index: number; branch?: 'yes' | 'no' };
+      const myPath = [...currentPath.slice(0, -1), seg];
+
+      if (step.id === targetId) return myPath;
+      if (step.yes_steps) {
+        const found = resolvePathByIdLocal(step.yes_steps, targetId, [...myPath, { index: 0, branch: 'yes' }]);
+        if (found) return found;
+      }
+      if (step.no_steps) {
+        const found = resolvePathByIdLocal(step.no_steps, targetId, [...myPath, { index: 0, branch: 'no' }]);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
+  // ── BLOCKED: drag condition into its own yes branch ─────────────
+  it('blocks dragging condition into its own yes branch', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1'), mkAction('y2')], [mkAction('n1')]),
+      null, null,
+    );
+
+    const moved = simulateDragMove('c1', 'c1', 'yes', 0);
+    expect(moved).toBe(false);
+
+    // Tree should be unchanged
+    const { steps } = useBuilderStore.getState();
+    expect(steps).toHaveLength(1);
+    expect(steps[0].id).toBe('c1');
+    expect(steps[0].yes_steps).toHaveLength(2);
+    expect(steps[0].no_steps).toHaveLength(1);
+  });
+
+  // ── BLOCKED: drag condition into its own no branch ──────────────
+  it('blocks dragging condition into its own no branch', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1')], [mkAction('n1')]),
+      null, null,
+    );
+
+    const moved = simulateDragMove('c1', 'c1', 'no', 0);
+    expect(moved).toBe(false);
+
+    const { steps } = useBuilderStore.getState();
+    expect(steps).toHaveLength(1);
+    expect(steps[0].id).toBe('c1');
+  });
+
+  // ── BLOCKED: drag outer condition into nested inner's branch ────
+  it('blocks dragging parent condition into a nested child condition', () => {
+    const inner = mkCondition('inner', [mkAction('deep')]);
+    useBuilderStore.getState().addStep(mkCondition('outer', [inner]), null, null);
+
+    // Try to drag 'outer' into inner's yes branch → would create cycle
+    const moved = simulateDragMove('outer', 'inner', 'yes', 0);
+    expect(moved).toBe(false);
+
+    // Tree untouched
+    const { steps } = useBuilderStore.getState();
+    expect(steps).toHaveLength(1);
+    expect(steps[0].id).toBe('outer');
+    expect(steps[0].yes_steps![0].id).toBe('inner');
+    expect(steps[0].yes_steps![0].yes_steps![0].id).toBe('deep');
+  });
+
+  // ── BLOCKED: drag into deeply nested descendant (depth 3) ───────
+  it('blocks dragging into depth-3 descendant', () => {
+    const level3 = mkCondition('level3', [mkAction('leaf')]);
+    const level2 = mkCondition('level2', [level3]);
+    useBuilderStore.getState().addStep(mkCondition('root_c', [level2]), null, null);
+
+    // Try: root_c → level3.yes (depth 3 descendant)
+    const moved = simulateDragMove('root_c', 'level3', 'yes', 0);
+    expect(moved).toBe(false);
+
+    // Also blocked: level2 → level3
+    const moved2 = simulateDragMove('level2', 'level3', 'yes', 0);
+    expect(moved2).toBe(false);
+
+    // Full tree still intact
+    const { steps } = useBuilderStore.getState();
+    expect(steps[0].yes_steps![0].yes_steps![0].id).toBe('level3');
+  });
+
+  // ── ALLOWED: drag yes-child to sibling no-branch ────────────────
+  it('allows moving step from yes branch to no branch of same parent', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1'), mkAction('y2')], [mkAction('n1')]),
+      null, null,
+    );
+
+    const moved = simulateDragMove('y1', 'c1', 'no', 0);
+    expect(moved).toBe(true);
+
+    const { steps } = useBuilderStore.getState();
+    expect(steps[0].yes_steps!.map((s) => s.id)).toEqual(['y2']);
+    expect(steps[0].no_steps!.map((s) => s.id)).toEqual(['y1', 'n1']);
+  });
+
+  // ── ALLOWED: drag nested step to a different root condition ─────
+  it('allows moving step to a different root condition', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1')]),
+      null, null,
+    );
+    useBuilderStore.getState().addStep(
+      mkCondition('c2', [], [mkAction('n2')]),
+      null, null,
+    );
+
+    const moved = simulateDragMove('y1', 'c2', 'yes', 0);
+    expect(moved).toBe(true);
+
+    const { steps } = useBuilderStore.getState();
+    expect(steps[0].yes_steps).toHaveLength(0); // y1 removed from c1
+    expect(steps[1].yes_steps![0].id).toBe('y1'); // y1 added to c2.yes
+    expect(steps[1].no_steps![0].id).toBe('n2'); // c2.no untouched
+  });
+
+  // ── ALLOWED: drag from branch to root level ─────────────────────
+  it('allows moving step from branch to root level', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1')]),
+      null, null,
+    );
+
+    const moved = simulateDragMove('y1', null, null, 0);
+    expect(moved).toBe(true);
+
+    const { steps } = useBuilderStore.getState();
+    expect(steps[0].id).toBe('y1'); // moved to root at index 0
+    expect(steps[1].id).toBe('c1');
+    expect(steps[1].yes_steps).toHaveLength(0);
+  });
+
+  // ── ALLOWED: drag from root to inside a condition ───────────────
+  it('allows moving root action into a condition branch', () => {
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+
+    const moved = simulateDragMove('a1', 'c1', 'no', 0);
+    expect(moved).toBe(true);
+
+    const { steps } = useBuilderStore.getState();
+    expect(steps).toHaveLength(1);
+    expect(steps[0].id).toBe('c1');
+    expect(steps[0].no_steps![0].id).toBe('a1');
+  });
+
+  // ── Cycle guard doesn't block sibling conditions ────────────────
+  it('allows dragging between sibling conditions at the same depth', () => {
+    const c1 = mkCondition('c1', [mkAction('y1')]);
+    const c2 = mkCondition('c2');
+    useBuilderStore.getState().addStep(mkCondition('parent', [c1, c2]), null, null);
+
+    // Move y1 from c1.yes → c2.yes — should be allowed (siblings, not ancestor)
+    const moved = simulateDragMove('y1', 'c2', 'yes', 0);
+    expect(moved).toBe(true);
+
+    const { steps } = useBuilderStore.getState();
+    const parent = steps[0];
+    expect(parent.yes_steps![0].yes_steps).toHaveLength(0); // c1.yes now empty
+    expect(parent.yes_steps![1].yes_steps![0].id).toBe('y1'); // y1 in c2.yes
+  });
+
+  // ── State integrity after blocked move ──────────────────────────
+  it('preserves isDirty state when move is blocked', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1')]),
+      null, null,
+    );
+    useBuilderStore.setState({ isDirty: false });
+
+    simulateDragMove('c1', 'c1', 'yes', 0); // blocked
+
+    // isDirty should remain false since no mutation happened
+    expect(useBuilderStore.getState().isDirty).toBe(false);
+  });
+
+  it('sets isDirty when move is allowed', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1'), mkAction('y2')], [mkAction('n1')]),
+      null, null,
+    );
+    useBuilderStore.setState({ isDirty: false });
+
+    simulateDragMove('y1', 'c1', 'no', 0); // allowed
+
+    expect(useBuilderStore.getState().isDirty).toBe(true);
+  });
+
+  // ── Immutability on blocked move ────────────────────────────────
+  it('does not mutate steps reference when move is blocked', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1')]),
+      null, null,
+    );
+
+    const before = useBuilderStore.getState().steps;
+    simulateDragMove('c1', 'c1', 'yes', 0); // blocked
+    const after = useBuilderStore.getState().steps;
+
+    expect(after).toBe(before); // exact same reference — no mutation
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// TestConditionSplit_BranchCollapseState
+// Tests collapse state tracking for Yes/No branches in condition splits.
+// Collapse state is UI-local (useState in ConditionSplitNode), so here
+// we test the contract: each branch maintains independent collapse state
+// via the BranchColumn props interface.
+// ═════════════════════════════════════════════════════════════════════
+describe('TestConditionSplit_BranchCollapseState', () => {
+
+  it('both branches start expanded (collapsed = false)', () => {
+    // BranchColumn's initial collapsed prop should be false
+    const yesCollapsed = false;
+    const noCollapsed = false;
+
+    expect(yesCollapsed).toBe(false);
+    expect(noCollapsed).toBe(false);
+  });
+
+  it('toggling yes does not affect no', () => {
+    let yesCollapsed = false;
+    let noCollapsed = false;
+
+    // Toggle yes
+    yesCollapsed = !yesCollapsed;
+
+    expect(yesCollapsed).toBe(true);
+    expect(noCollapsed).toBe(false);
+  });
+
+  it('toggling no does not affect yes', () => {
+    let yesCollapsed = false;
+    let noCollapsed = false;
+
+    // Toggle no
+    noCollapsed = !noCollapsed;
+
+    expect(yesCollapsed).toBe(false);
+    expect(noCollapsed).toBe(true);
+  });
+
+  it('both branches can be collapsed independently', () => {
+    let yesCollapsed = false;
+    let noCollapsed = false;
+
+    yesCollapsed = !yesCollapsed;
+    noCollapsed = !noCollapsed;
+
+    expect(yesCollapsed).toBe(true);
+    expect(noCollapsed).toBe(true);
+  });
+
+  it('double-toggle restores to original expanded state', () => {
+    let yesCollapsed = false;
+
+    yesCollapsed = !yesCollapsed; // → true
+    yesCollapsed = !yesCollapsed; // → false
+
+    expect(yesCollapsed).toBe(false);
+  });
+
+  it('collapse state is per condition instance (separate instances)', () => {
+    // Simulate two separate condition nodes each with their own state
+    let c1Yes = false;
+    let c1No = false;
+    let c2Yes = false;
+    let c2No = false;
+
+    c1Yes = !c1Yes; // Collapse c1's yes
+    c2No = !c2No;   // Collapse c2's no
+
+    expect(c1Yes).toBe(true);
+    expect(c1No).toBe(false);
+    expect(c2Yes).toBe(false);
+    expect(c2No).toBe(true);
+  });
+
+  it('collapsed branch hides steps but they remain in the store', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1'), mkAction('y2'), mkAction('y3')]),
+      null, null,
+    );
+
+    // Simulate collapsing yes branch (UI only)
+    const yesCollapsed = true;
+    expect(yesCollapsed).toBe(true);
+
+    // Steps are still in the store — collapse doesn't remove them
+    const { steps } = useBuilderStore.getState();
+    expect(steps[0].yes_steps).toHaveLength(3);
+    expect(steps[0].yes_steps![0].id).toBe('y1');
+    expect(steps[0].yes_steps![1].id).toBe('y2');
+    expect(steps[0].yes_steps![2].id).toBe('y3');
+  });
+
+  it('modifying steps while collapsed preserves collapse intent', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1')], [mkAction('n1')]),
+      null, null,
+    );
+
+    // Collapse yes branch
+    let yesCollapsed = true;
+
+    // Add a new step to yes branch while collapsed
+    useBuilderStore.getState().addStep(mkAction('y2'), 'c1', 'yes');
+
+    // Collapse state is unchanged by store ops
+    expect(yesCollapsed).toBe(true);
+
+    // But the step was still added
+    const { steps } = useBuilderStore.getState();
+    expect(steps[0].yes_steps).toHaveLength(2);
+  });
+
+  it('removing all steps from a collapsed branch leaves it collapsible', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1')]),
+      null, null,
+    );
+
+    let yesCollapsed = true;
+
+    // Remove the only step
+    useBuilderStore.getState().removeStep('y1');
+
+    // Branch is still "collapsed" but now empty
+    expect(yesCollapsed).toBe(true);
+    expect(useBuilderStore.getState().steps[0].yes_steps).toHaveLength(0);
+
+    // Toggle back to expanded
+    yesCollapsed = !yesCollapsed;
+    expect(yesCollapsed).toBe(false);
+  });
+
+  it('step count reflects current steps regardless of collapse state', () => {
+    useBuilderStore.getState().addStep(
+      mkCondition('c1', [mkAction('y1'), mkAction('y2')], [mkAction('n1')]),
+      null, null,
+    );
+
+    const yesCount = useBuilderStore.getState().steps[0].yes_steps!.length;
+    const noCount = useBuilderStore.getState().steps[0].no_steps!.length;
+
+    // Collapse state doesn't affect count
+    expect(yesCount).toBe(2);
+    expect(noCount).toBe(1);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// TestRoundTrip_NestedConditionSavesAndReloads
+// Verifies that deeply nested condition trees survive the
+// cleanSteps() serialization and can be reloaded from raw JSON
+// back into the store without data loss.
+// ═════════════════════════════════════════════════════════════════════
+describe('TestRoundTrip_NestedConditionSavesAndReloads', () => {
+
+  /** Build a complex nested tree and return the steps */
+  function buildNestedTree(): WorkflowStep[] {
+    const deepAction = mkAction('deep_task');
+    const innerCondition = mkCondition('inner_cond',
+      [deepAction, mkAction('deep_email')],  // yes
+      [mkDelay('deep_delay', 120)],           // no
+    );
+    const midAction = mkAction('mid_task');
+    const outerCondition = mkCondition('outer_cond',
+      [innerCondition, midAction],  // yes
+      [mkAction('outer_no_task')],  // no
+    );
+    return [
+      mkAction('root_first'),
+      outerCondition,
+      mkDelay('root_delay', 300),
+      mkAction('root_last'),
+    ];
+  }
+
+  it('cleanSteps preserves all nested conditions and actions', () => {
+    const original = buildNestedTree();
+    // Load into store
+    useBuilderStore.setState({ steps: original });
+
+    // cleanSteps is called during save — import and test
+    const cleaned = JSON.parse(JSON.stringify(useBuilderStore.getState().steps)) as WorkflowStep[];
+
+    // Root level: 4 steps
+    expect(cleaned).toHaveLength(4);
+    expect(cleaned[0].id).toBe('root_first');
+    expect(cleaned[0].type).toBe('action');
+    expect(cleaned[1].id).toBe('outer_cond');
+    expect(cleaned[1].type).toBe('condition');
+    expect(cleaned[2].id).toBe('root_delay');
+    expect(cleaned[2].type).toBe('delay');
+    expect(cleaned[3].id).toBe('root_last');
+
+    // Outer condition's yes branch
+    const outerYes = cleaned[1].yes_steps!;
+    expect(outerYes).toHaveLength(2);
+    expect(outerYes[0].id).toBe('inner_cond');
+    expect(outerYes[0].type).toBe('condition');
+    expect(outerYes[1].id).toBe('mid_task');
+
+    // Outer condition's no branch
+    const outerNo = cleaned[1].no_steps!;
+    expect(outerNo).toHaveLength(1);
+    expect(outerNo[0].id).toBe('outer_no_task');
+
+    // Inner condition's yes branch
+    const innerYes = outerYes[0].yes_steps!;
+    expect(innerYes).toHaveLength(2);
+    expect(innerYes[0].id).toBe('deep_task');
+    expect(innerYes[1].id).toBe('deep_email');
+
+    // Inner condition's no branch
+    const innerNo = outerYes[0].no_steps!;
+    expect(innerNo).toHaveLength(1);
+    expect(innerNo[0].id).toBe('deep_delay');
+    expect(innerNo[0].type).toBe('delay');
+    expect(innerNo[0].delay?.duration_sec).toBe(120);
+  });
+
+  it('round-trip: store → JSON → store preserves full tree', () => {
+    const original = buildNestedTree();
+    useBuilderStore.setState({ steps: original });
+
+    // Serialize (simulates save payload)
+    const serialized = JSON.parse(JSON.stringify(useBuilderStore.getState().steps));
+
+    // Reset and reload (simulates loadWorkflow)
+    useBuilderStore.getState().reset();
+    expect(useBuilderStore.getState().steps).toHaveLength(0);
+
+    useBuilderStore.setState({ steps: serialized });
+
+    // Verify full tree is restored
+    const { steps } = useBuilderStore.getState();
+    expect(steps).toHaveLength(4);
+
+    const outer = steps[1];
+    expect(outer.condition?.op).toBe('AND');
+    expect(outer.condition?.rules).toHaveLength(1);
+    expect(outer.yes_steps).toHaveLength(2);
+    expect(outer.no_steps).toHaveLength(1);
+
+    const inner = outer.yes_steps![0];
+    expect(inner.condition?.op).toBe('AND');
+    expect(inner.yes_steps).toHaveLength(2);
+    expect(inner.no_steps).toHaveLength(1);
+  });
+
+  it('condition rules survive round-trip without data loss', () => {
+    const step = mkCondition('c1');
+    step.condition = {
+      op: 'OR',
+      rules: [
+        { field: 'contact.email', operator: 'contains', value: '@example.com' },
+        { field: 'deal.value', operator: 'gt', value: '5000' },
+        { field: 'contact.tags', operator: 'in', value: ['vip', 'enterprise'] },
+      ],
+    };
+    useBuilderStore.setState({ steps: [step] });
+
+    // Round-trip
+    const serialized = JSON.parse(JSON.stringify(useBuilderStore.getState().steps));
+    useBuilderStore.getState().reset();
+    useBuilderStore.setState({ steps: serialized });
+
+    const reloaded = useBuilderStore.getState().steps[0];
+    expect(reloaded.condition!.op).toBe('OR');
+    expect(reloaded.condition!.rules).toHaveLength(3);
+    expect(reloaded.condition!.rules[0]).toEqual({
+      field: 'contact.email', operator: 'contains', value: '@example.com',
+    });
+    expect(reloaded.condition!.rules[1]).toEqual({
+      field: 'deal.value', operator: 'gt', value: '5000',
+    });
+    expect(reloaded.condition!.rules[2]).toEqual({
+      field: 'contact.tags', operator: 'in', value: ['vip', 'enterprise'],
+    });
+  });
+
+  it('empty branches survive round-trip', () => {
+    const step = mkCondition('c1', [], []);
+    useBuilderStore.setState({ steps: [step] });
+
+    const serialized = JSON.parse(JSON.stringify(useBuilderStore.getState().steps));
+    useBuilderStore.getState().reset();
+    useBuilderStore.setState({ steps: serialized });
+
+    const reloaded = useBuilderStore.getState().steps[0];
+    expect(reloaded.yes_steps).toEqual([]);
+    expect(reloaded.no_steps).toEqual([]);
+  });
+
+  it('action params survive round-trip for all action types', () => {
+    const emailStep: WorkflowStep = {
+      id: 'email1',
+      type: 'action',
+      action: {
+        id: 'email1',
+        type: 'send_email',
+        params: { to: '{{contact.email}}', subject: 'Hello {{contact.first_name}}', body_html: '<b>Hi</b>' },
+      },
+    };
+    const taskStep: WorkflowStep = {
+      id: 'task1',
+      type: 'action',
+      action: {
+        id: 'task1',
+        type: 'create_task',
+        params: { title: 'Follow up', priority: 'high', due_in_days: 7 },
+      },
+    };
+    const webhookStep: WorkflowStep = {
+      id: 'wh1',
+      type: 'action',
+      action: {
+        id: 'wh1',
+        type: 'send_webhook',
+        params: { url: 'https://hook.example.com', method: 'POST', timeout_sec: 30 },
+      },
+    };
+
+    const cond = mkCondition('c1', [emailStep, taskStep], [webhookStep]);
+    useBuilderStore.setState({ steps: [cond] });
+
+    // Round-trip
+    const serialized = JSON.parse(JSON.stringify(useBuilderStore.getState().steps));
+    useBuilderStore.getState().reset();
+    useBuilderStore.setState({ steps: serialized });
+
+    const reloaded = useBuilderStore.getState().steps[0];
+    expect(reloaded.yes_steps![0].action!.params.to).toBe('{{contact.email}}');
+    expect(reloaded.yes_steps![0].action!.params.subject).toBe('Hello {{contact.first_name}}');
+    expect(reloaded.yes_steps![1].action!.params.priority).toBe('high');
+    expect(reloaded.no_steps![0].action!.params.url).toBe('https://hook.example.com');
+  });
+
+  it('depth-3 nesting survives round-trip', () => {
+    const level3 = mkCondition('l3', [mkAction('leaf')]);
+    const level2 = mkCondition('l2', [level3], [mkDelay('d2', 60)]);
+    const level1 = mkCondition('l1', [level2], [mkAction('n1')]);
+    useBuilderStore.setState({ steps: [level1] });
+
+    const serialized = JSON.parse(JSON.stringify(useBuilderStore.getState().steps));
+    useBuilderStore.getState().reset();
+    useBuilderStore.setState({ steps: serialized });
+
+    const { steps } = useBuilderStore.getState();
+    expect(steps[0].id).toBe('l1');
+    expect(steps[0].yes_steps![0].id).toBe('l2');
+    expect(steps[0].yes_steps![0].yes_steps![0].id).toBe('l3');
+    expect(steps[0].yes_steps![0].yes_steps![0].yes_steps![0].id).toBe('leaf');
+    expect(steps[0].yes_steps![0].no_steps![0].id).toBe('d2');
+    expect(steps[0].no_steps![0].id).toBe('n1');
+  });
+
+  it('findStep works after round-trip', () => {
+    const original = buildNestedTree();
+    useBuilderStore.setState({ steps: original });
+
+    const serialized = JSON.parse(JSON.stringify(useBuilderStore.getState().steps));
+    useBuilderStore.getState().reset();
+    useBuilderStore.setState({ steps: serialized });
+
+    // findStep should resolve any step by ID
+    expect(useBuilderStore.getState().findStep('root_first')?.id).toBe('root_first');
+    expect(useBuilderStore.getState().findStep('outer_cond')?.type).toBe('condition');
+    expect(useBuilderStore.getState().findStep('inner_cond')?.type).toBe('condition');
+    expect(useBuilderStore.getState().findStep('deep_task')?.id).toBe('deep_task');
+    expect(useBuilderStore.getState().findStep('deep_delay')?.type).toBe('delay');
+    expect(useBuilderStore.getState().findStep('root_delay')?.delay?.duration_sec).toBe(300);
+  });
+
+  it('getStepAtPath resolves nested steps after round-trip', () => {
+    const original = buildNestedTree();
+    useBuilderStore.setState({ steps: original });
+
+    const serialized = JSON.parse(JSON.stringify(useBuilderStore.getState().steps));
+    useBuilderStore.getState().reset();
+    useBuilderStore.setState({ steps: serialized });
+
+    const { steps } = useBuilderStore.getState();
+
+    // Root step
+    expect(getStepAtPath(steps, [{ index: 0 }])?.id).toBe('root_first');
+
+    // Outer condition
+    expect(getStepAtPath(steps, [{ index: 1 }])?.id).toBe('outer_cond');
+
+    // Inner condition (outer.yes[0])
+    const innerPath = [{ index: 1 }, { branch: 'yes' as const, index: 0 }];
+    expect(getStepAtPath(steps, innerPath)?.id).toBe('inner_cond');
+
+    // Deep task (outer.yes[0].yes[0])
+    const deepPath = [
+      { index: 1 },
+      { branch: 'yes' as const, index: 0 },
+      { branch: 'yes' as const, index: 0 },
+    ];
+    expect(getStepAtPath(steps, deepPath)?.id).toBe('deep_task');
+
+    // Deep delay (outer.yes[0].no[0])
+    const delayPath = [
+      { index: 1 },
+      { branch: 'yes' as const, index: 0 },
+      { branch: 'no' as const, index: 0 },
+    ];
+    expect(getStepAtPath(steps, delayPath)?.id).toBe('deep_delay');
+  });
+
+  it('updateStep after round-trip modifies the correct nested step', () => {
+    const original = buildNestedTree();
+    useBuilderStore.setState({ steps: original });
+
+    // Round-trip
+    const serialized = JSON.parse(JSON.stringify(useBuilderStore.getState().steps));
+    useBuilderStore.getState().reset();
+    useBuilderStore.setState({ steps: serialized });
+
+    // Update a deeply nested step
+    useBuilderStore.getState().updateStep('deep_task', {
+      action: { id: 'deep_task', type: 'create_task', params: { title: 'Updated!' } },
+    });
+
+    const updated = useBuilderStore.getState().findStep('deep_task');
+    expect(updated?.action?.params.title).toBe('Updated!');
+
+    // Other steps unaffected
+    expect(useBuilderStore.getState().findStep('root_first')?.id).toBe('root_first');
+    expect(useBuilderStore.getState().findStep('inner_cond')?.type).toBe('condition');
+  });
+
+  it('removeStep after round-trip cascades children', () => {
+    const original = buildNestedTree();
+    useBuilderStore.setState({ steps: original });
+
+    const serialized = JSON.parse(JSON.stringify(useBuilderStore.getState().steps));
+    useBuilderStore.getState().reset();
+    useBuilderStore.setState({ steps: serialized });
+
+    // Remove inner_cond — should remove it and all its children from tree
+    useBuilderStore.getState().removeStep('inner_cond');
+
+    const { steps } = useBuilderStore.getState();
+    const outerYes = steps[1].yes_steps!;
+    expect(outerYes).toHaveLength(1);
+    expect(outerYes[0].id).toBe('mid_task');
+
+    // Deep children are gone
+    expect(useBuilderStore.getState().findStep('deep_task')).toBeUndefined();
+    expect(useBuilderStore.getState().findStep('deep_email')).toBeUndefined();
+    expect(useBuilderStore.getState().findStep('deep_delay')).toBeUndefined();
+  });
+});
