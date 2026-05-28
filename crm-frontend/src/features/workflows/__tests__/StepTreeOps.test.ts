@@ -1080,3 +1080,372 @@ describe('updateStep — edge cases', () => {
     expect(delay.delay!.duration_sec).toBe(7200);
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════
+// reorderSteps (moveStep) — root level
+// ═════════════════════════════════════════════════════════════════════
+describe('reorderSteps — root level', () => {
+  it('moves first to last (0 → 2)', () => {
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a2'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a3'), null, null);
+
+    useBuilderStore.getState().reorderSteps(null, null, 0, 2);
+
+    const ids = useBuilderStore.getState().steps.map((s) => s.id);
+    expect(ids).toEqual(['a2', 'a3', 'a1']);
+  });
+
+  it('moves last to first (2 → 0)', () => {
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a2'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a3'), null, null);
+
+    useBuilderStore.getState().reorderSteps(null, null, 2, 0);
+
+    const ids = useBuilderStore.getState().steps.map((s) => s.id);
+    expect(ids).toEqual(['a3', 'a1', 'a2']);
+  });
+
+  it('moves middle element forward (1 → 2)', () => {
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a2'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a3'), null, null);
+
+    useBuilderStore.getState().reorderSteps(null, null, 1, 2);
+
+    const ids = useBuilderStore.getState().steps.map((s) => s.id);
+    expect(ids).toEqual(['a1', 'a3', 'a2']);
+  });
+
+  it('moves middle element backward (1 → 0)', () => {
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a2'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a3'), null, null);
+
+    useBuilderStore.getState().reorderSteps(null, null, 1, 0);
+
+    const ids = useBuilderStore.getState().steps.map((s) => s.id);
+    expect(ids).toEqual(['a2', 'a1', 'a3']);
+  });
+
+  it('reorders 2 elements (swap)', () => {
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a2'), null, null);
+
+    useBuilderStore.getState().reorderSteps(null, null, 0, 1);
+
+    const ids = useBuilderStore.getState().steps.map((s) => s.id);
+    expect(ids).toEqual(['a2', 'a1']);
+  });
+
+  it('sets isDirty = true', () => {
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a2'), null, null);
+    useBuilderStore.setState({ isDirty: false });
+
+    useBuilderStore.getState().reorderSteps(null, null, 0, 1);
+
+    expect(useBuilderStore.getState().isDirty).toBe(true);
+  });
+
+  it('preserves step content after reorder', () => {
+    const email: WorkflowStep = {
+      id: 'e1',
+      type: 'action',
+      action: { id: 'e1', type: 'send_email', params: { to: 'x@y.com' } },
+    };
+    useBuilderStore.getState().addStep(email, null, null);
+    useBuilderStore.getState().addStep(mkAction('a2'), null, null);
+
+    useBuilderStore.getState().reorderSteps(null, null, 0, 1);
+
+    const movedStep = useBuilderStore.getState().steps[1];
+    expect(movedStep.id).toBe('e1');
+    expect(movedStep.action!.type).toBe('send_email');
+    expect(movedStep.action!.params.to).toBe('x@y.com');
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// reorderSteps — within condition branches
+// ═════════════════════════════════════════════════════════════════════
+describe('reorderSteps — within condition branches', () => {
+  it('reorders within yes_steps', () => {
+    const cond = mkCondition('c1', [mkAction('y1'), mkAction('y2'), mkAction('y3')]);
+    useBuilderStore.getState().addStep(cond, null, null);
+
+    useBuilderStore.getState().reorderSteps('c1', 'yes', 0, 2);
+
+    const yes = useBuilderStore.getState().steps[0].yes_steps!;
+    expect(yes.map((s) => s.id)).toEqual(['y2', 'y3', 'y1']);
+  });
+
+  it('reorders within no_steps', () => {
+    const cond = mkCondition('c1', [], [mkAction('n1'), mkAction('n2'), mkAction('n3')]);
+    useBuilderStore.getState().addStep(cond, null, null);
+
+    useBuilderStore.getState().reorderSteps('c1', 'no', 2, 0);
+
+    const no = useBuilderStore.getState().steps[0].no_steps!;
+    expect(no.map((s) => s.id)).toEqual(['n3', 'n1', 'n2']);
+  });
+
+  it('does not touch other branch when reordering yes', () => {
+    const cond = mkCondition('c1', [mkAction('y1'), mkAction('y2')], [mkAction('n1'), mkAction('n2')]);
+    useBuilderStore.getState().addStep(cond, null, null);
+
+    useBuilderStore.getState().reorderSteps('c1', 'yes', 0, 1);
+
+    const root = useBuilderStore.getState().steps[0];
+    expect(root.yes_steps!.map((s) => s.id)).toEqual(['y2', 'y1']);
+    expect(root.no_steps!.map((s) => s.id)).toEqual(['n1', 'n2']); // untouched
+  });
+
+  it('does not touch root steps when reordering branch', () => {
+    useBuilderStore.getState().addStep(mkAction('root1'), null, null);
+    const cond = mkCondition('c1', [mkAction('y1'), mkAction('y2')]);
+    useBuilderStore.getState().addStep(cond, null, null);
+    useBuilderStore.getState().addStep(mkAction('root2'), null, null);
+
+    useBuilderStore.getState().reorderSteps('c1', 'yes', 0, 1);
+
+    const rootIds = useBuilderStore.getState().steps.map((s) => s.id);
+    expect(rootIds).toEqual(['root1', 'c1', 'root2']); // root unchanged
+    expect(useBuilderStore.getState().steps[1].yes_steps!.map((s) => s.id)).toEqual(['y2', 'y1']);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// reorderSteps — deeply nested
+// ═════════════════════════════════════════════════════════════════════
+describe('reorderSteps — deeply nested', () => {
+  it('reorders within a nested condition yes_steps (depth 2)', () => {
+    const inner = mkCondition('inner', [mkAction('d1'), mkAction('d2'), mkAction('d3')]);
+    const outer = mkCondition('outer', [inner]);
+    useBuilderStore.getState().addStep(outer, null, null);
+
+    useBuilderStore.getState().reorderSteps('inner', 'yes', 2, 0);
+
+    const innerYes = useBuilderStore.getState().steps[0].yes_steps![0].yes_steps!;
+    expect(innerYes.map((s) => s.id)).toEqual(['d3', 'd1', 'd2']);
+  });
+
+  it('reorders within a nested condition no_steps (depth 2)', () => {
+    const inner = mkCondition('inner', [], [mkAction('n1'), mkAction('n2')]);
+    const outer = mkCondition('outer', [inner]);
+    useBuilderStore.getState().addStep(outer, null, null);
+
+    useBuilderStore.getState().reorderSteps('inner', 'no', 0, 1);
+
+    const innerNo = useBuilderStore.getState().steps[0].yes_steps![0].no_steps!;
+    expect(innerNo.map((s) => s.id)).toEqual(['n2', 'n1']);
+  });
+
+  it('leaves outer branches untouched when reordering inner', () => {
+    const inner = mkCondition('inner', [mkAction('i1'), mkAction('i2')]);
+    const outer = mkCondition('outer', [inner, mkAction('outerY')], [mkAction('outerN')]);
+    useBuilderStore.getState().addStep(outer, null, null);
+
+    useBuilderStore.getState().reorderSteps('inner', 'yes', 0, 1);
+
+    const root = useBuilderStore.getState().steps[0];
+    // Inner reordered
+    expect(root.yes_steps![0].yes_steps!.map((s) => s.id)).toEqual(['i2', 'i1']);
+    // Outer branches untouched
+    expect(root.yes_steps![1].id).toBe('outerY');
+    expect(root.no_steps![0].id).toBe('outerN');
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// reorderSteps — immutability guarantees
+// ═════════════════════════════════════════════════════════════════════
+describe('reorderSteps — immutability', () => {
+  it('returns new root array reference', () => {
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a2'), null, null);
+    const before = useBuilderStore.getState().steps;
+
+    useBuilderStore.getState().reorderSteps(null, null, 0, 1);
+    const after = useBuilderStore.getState().steps;
+
+    expect(before).not.toBe(after);
+  });
+
+  it('does not mutate original root array', () => {
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a2'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a3'), null, null);
+    const before = useBuilderStore.getState().steps;
+    const beforeIds = before.map((s) => s.id);
+
+    useBuilderStore.getState().reorderSteps(null, null, 0, 2);
+
+    // Original captured array must still have original order
+    expect(before.map((s) => s.id)).toEqual(beforeIds);
+  });
+
+  it('does not mutate original branch array', () => {
+    const cond = mkCondition('c1', [mkAction('y1'), mkAction('y2'), mkAction('y3')]);
+    useBuilderStore.getState().addStep(cond, null, null);
+
+    const beforeYes = useBuilderStore.getState().steps[0].yes_steps!;
+
+    useBuilderStore.getState().reorderSteps('c1', 'yes', 0, 2);
+
+    // Old yes_steps array is unchanged
+    expect(beforeYes.map((s) => s.id)).toEqual(['y1', 'y2', 'y3']);
+    // New yes_steps is reordered
+    expect(useBuilderStore.getState().steps[0].yes_steps!.map((s) => s.id)).toEqual(['y2', 'y3', 'y1']);
+  });
+
+  it('creates new condition step reference when branch is reordered', () => {
+    const cond = mkCondition('c1', [mkAction('y1'), mkAction('y2')]);
+    useBuilderStore.getState().addStep(cond, null, null);
+
+    const beforeCond = useBuilderStore.getState().steps[0];
+
+    useBuilderStore.getState().reorderSteps('c1', 'yes', 0, 1);
+
+    const afterCond = useBuilderStore.getState().steps[0];
+    expect(beforeCond).not.toBe(afterCond);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// reorderSteps — actions sync
+// ═════════════════════════════════════════════════════════════════════
+describe('reorderSteps — actions sync', () => {
+  it('syncs flattened actions after root reorder', () => {
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a2'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a3'), null, null);
+
+    useBuilderStore.getState().reorderSteps(null, null, 0, 2);
+
+    const actionIds = useBuilderStore.getState().actions.map((a) => a.id);
+    expect(actionIds).toEqual(['a2', 'a3', 'a1']);
+  });
+
+  it('syncs flattened actions after branch reorder', () => {
+    useBuilderStore.getState().addStep(mkAction('root'), null, null);
+    const cond = mkCondition('c1', [mkAction('y1'), mkAction('y2')]);
+    useBuilderStore.getState().addStep(cond, null, null);
+
+    useBuilderStore.getState().reorderSteps('c1', 'yes', 0, 1);
+
+    const actionIds = useBuilderStore.getState().actions.map((a) => a.id);
+    // root stays first, then flattened branch steps in new order
+    expect(actionIds[0]).toBe('root');
+    expect(actionIds).toContain('y1');
+    expect(actionIds).toContain('y2');
+    // y2 should come before y1 in the flattened output
+    expect(actionIds.indexOf('y2')).toBeLessThan(actionIds.indexOf('y1'));
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// reorderActions shim
+// ═════════════════════════════════════════════════════════════════════
+describe('reorderActions shim', () => {
+  it('delegates to reorderSteps with parentId=null', () => {
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a2'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a3'), null, null);
+
+    useBuilderStore.getState().reorderActions(2, 0);
+
+    const ids = useBuilderStore.getState().steps.map((s) => s.id);
+    expect(ids).toEqual(['a3', 'a1', 'a2']);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// reorderSteps — mixed step types
+// ═════════════════════════════════════════════════════════════════════
+describe('reorderSteps — mixed types', () => {
+  it('reorders action and delay steps at root', () => {
+    useBuilderStore.getState().addStep(mkDelay('d1', 60), null, null);
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+
+    useBuilderStore.getState().reorderSteps(null, null, 2, 0);
+
+    const ids = useBuilderStore.getState().steps.map((s) => s.id);
+    expect(ids).toEqual(['c1', 'd1', 'a1']);
+  });
+
+  it('reorders condition with children — subtree stays intact', () => {
+    const condWithKids = mkCondition('c1', [mkAction('y1')], [mkAction('n1')]);
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    useBuilderStore.getState().addStep(condWithKids, null, null);
+
+    useBuilderStore.getState().reorderSteps(null, null, 1, 0);
+
+    const steps = useBuilderStore.getState().steps;
+    expect(steps[0].id).toBe('c1');
+    expect(steps[0].yes_steps!.map((s) => s.id)).toEqual(['y1']);
+    expect(steps[0].no_steps!.map((s) => s.id)).toEqual(['n1']);
+    expect(steps[1].id).toBe('a1');
+  });
+
+  it('reorders delays in a branch', () => {
+    const cond = mkCondition('c1', [mkDelay('d1'), mkAction('a1'), mkDelay('d2')]);
+    useBuilderStore.getState().addStep(cond, null, null);
+
+    useBuilderStore.getState().reorderSteps('c1', 'yes', 0, 2);
+
+    const yes = useBuilderStore.getState().steps[0].yes_steps!;
+    expect(yes.map((s) => s.id)).toEqual(['a1', 'd2', 'd1']);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// reorderSteps — edge cases
+// ═════════════════════════════════════════════════════════════════════
+describe('reorderSteps — edge cases', () => {
+  it('same from and to index: no change', () => {
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a2'), null, null);
+
+    useBuilderStore.getState().reorderSteps(null, null, 0, 0);
+
+    const ids = useBuilderStore.getState().steps.map((s) => s.id);
+    expect(ids).toEqual(['a1', 'a2']);
+  });
+
+  it('single element array reorder: no crash', () => {
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+
+    useBuilderStore.getState().reorderSteps(null, null, 0, 0);
+
+    expect(useBuilderStore.getState().steps).toHaveLength(1);
+    expect(useBuilderStore.getState().steps[0].id).toBe('a1');
+  });
+
+  it('sequential reorders produce correct final order', () => {
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a2'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a3'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a4'), null, null);
+
+    // a1,a2,a3,a4 → move 0→3 → a2,a3,a4,a1
+    useBuilderStore.getState().reorderSteps(null, null, 0, 3);
+    // a2,a3,a4,a1 → move 1→0 → a3,a2,a4,a1
+    useBuilderStore.getState().reorderSteps(null, null, 1, 0);
+
+    const ids = useBuilderStore.getState().steps.map((s) => s.id);
+    expect(ids).toEqual(['a3', 'a2', 'a4', 'a1']);
+  });
+
+  it('nonexistent parentId: root unchanged', () => {
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a2'), null, null);
+
+    useBuilderStore.getState().reorderSteps('ghost', 'yes', 0, 1);
+
+    const ids = useBuilderStore.getState().steps.map((s) => s.id);
+    expect(ids).toEqual(['a1', 'a2']);
+  });
+});
