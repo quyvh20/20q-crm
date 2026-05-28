@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import type { WorkflowStep, ConditionRule } from '../types';
 import { useBuilderStore, type StepPath } from '../store';
-import { WorkflowStepList } from './WorkflowStepList';
+import { BranchColumn } from './BranchColumn';
 
 interface ConditionSplitNodeProps {
   step: WorkflowStep;
@@ -43,84 +43,6 @@ function ruleSummary(rule: ConditionRule): string {
   const display = Array.isArray(val) ? val.join(', ') : String(val);
   return `${field} ${op} "${display}"`;
 }
-
-// ── BranchColumn ─────────────────────────────────────────────────────
-interface BranchColumnProps {
-  label: string;
-  icon: string;
-  colorClass: string;
-  bgClass: string;
-  borderClass: string;
-  steps: WorkflowStep[];
-  parentId: string;
-  branch: 'yes' | 'no';
-  parentPath: StepPath;
-  collapsed: boolean;
-  onToggle: () => void;
-}
-
-const BranchColumn: React.FC<BranchColumnProps> = ({
-  label, icon, colorClass, bgClass, borderClass,
-  steps, parentId, branch, parentPath,
-  collapsed, onToggle,
-}) => {
-  const count = steps.length;
-  return (
-    <div className="flex flex-col items-center w-1/2 px-4">
-      {/* Vertical branch line */}
-      <div className="w-px h-4 bg-gray-700" />
-
-      {/* Branch label + collapse chevron */}
-      <button
-        onClick={(e) => { e.stopPropagation(); onToggle(); }}
-        className={`
-          flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold mb-2
-          transition-all duration-200 cursor-pointer select-none
-          ${bgClass} ${borderClass} ${colorClass}
-          hover:brightness-125
-        `}
-      >
-        <span>{icon}</span>
-        <span>{label}</span>
-        {count > 0 && (
-          <span className="ml-0.5 px-1.5 py-0 rounded-full bg-black/20 text-[10px] font-mono">
-            {count}
-          </span>
-        )}
-        <svg
-          className={`w-3 h-3 transition-transform duration-200 ${collapsed ? '-rotate-90' : 'rotate-0'}`}
-          fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
-
-      {/* Collapsible content */}
-      <div
-        className={`
-          w-full overflow-hidden transition-all duration-300 ease-in-out
-          ${collapsed ? 'max-h-0 opacity-0' : 'max-h-[2000px] opacity-100'}
-        `}
-      >
-        <div className="w-full bg-gray-950/40 p-4 rounded-2xl border border-gray-800/50">
-          <WorkflowStepList
-            steps={steps}
-            parentId={parentId}
-            branch={branch}
-            parentPath={parentPath}
-          />
-        </div>
-      </div>
-
-      {/* Collapsed placeholder */}
-      {collapsed && count > 0 && (
-        <p className={`text-[10px] mt-1 ${colorClass} opacity-60`}>
-          {count} step{count !== 1 ? 's' : ''} hidden
-        </p>
-      )}
-    </div>
-  );
-};
 
 // ── ConditionSplitNode ───────────────────────────────────────────────
 export const ConditionSplitNode: React.FC<ConditionSplitNodeProps> = ({ step, path }) => {
