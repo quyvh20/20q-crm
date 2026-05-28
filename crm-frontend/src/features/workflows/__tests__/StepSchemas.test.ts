@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
   stepSpecSchema,
   delayParamsSchema,
-  actionSpecSchema,
   workflowSchema,
 } from '../schemas';
 

@@ -1,8 +1,7 @@
 import React from 'react';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import type { WorkflowStep } from '../types';
-import { ActionNode } from './ActionNode';
-import { ConditionSplitNode } from './ConditionSplitNode';
+import { StepRenderer } from './StepRenderer';
 import { AddNodeButton } from './AddNodeButton';
 
 interface WorkflowStepListProps {
@@ -21,11 +20,7 @@ export const WorkflowStepList: React.FC<WorkflowStepListProps> = ({ steps, paren
         <AddNodeButton parentId={parentId} branch={branch} index={0} />
         {steps.map((step, idx) => (
           <React.Fragment key={step.id}>
-            {step.type === 'condition' ? (
-              <ConditionSplitNode step={step} index={idx} />
-            ) : (
-              <ActionNode step={step} index={idx} />
-            )}
+            <StepRenderer step={step} index={idx} />
             <AddNodeButton parentId={parentId} branch={branch} index={idx + 1} />
           </React.Fragment>
         ))}

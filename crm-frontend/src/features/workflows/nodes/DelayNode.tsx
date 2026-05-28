@@ -1,30 +1,28 @@
 import React from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { ACTION_LABELS, ACTION_ICONS, type WorkflowStep } from '../types';
+import type { WorkflowStep } from '../types';
 import { useBuilderStore } from '../store';
 
-interface ActionNodeProps {
+interface DelayNodeProps {
   step: WorkflowStep;
   index: number;
 }
 
-/** Generate a short human-readable subtitle for the action step node */
-function getStepSummary(step: WorkflowStep): string | null {
-  const action = step.action;
-  if (!action) return null;
-
-  switch (action.type) {
-    case 'send_email':
-      return action.params.subject ? String(action.params.subject) : null;
-    case 'send_webhook':
-      return action.params.url ? String(action.params.url) : null;
-    default:
-      return typeof action.params.title === 'string' && action.params.title ? action.params.title : null;
+/** Format delay duration into a human-readable string */
+function formatDelay(sec: number): string {
+  if (sec <= 0) return 'Configure delay';
+  const units: [number, string][] = [[86400, 'day'], [3600, 'hour'], [60, 'minute'], [1, 'second']];
+  for (const [factor, label] of units) {
+    if (sec >= factor && sec % factor === 0) {
+      const v = sec / factor;
+      return `Wait ${v} ${label}${v !== 1 ? 's' : ''}`;
+    }
   }
+  return `Wait ${sec}s`;
 }
 
-export const ActionNode: React.FC<ActionNodeProps> = ({ step, index }) => {
+export const DelayNode: React.FC<DelayNodeProps> = ({ step, index }) => {
   const { selectedNodeId, selectNode, removeStep } = useBuilderStore();
   const isSelected = selectedNodeId === step.id;
 
@@ -47,10 +45,8 @@ export const ActionNode: React.FC<ActionNodeProps> = ({ step, index }) => {
     minWidth: 280,
   };
 
-  const summary = getStepSummary(step);
-  const type = step.action?.type || 'update_record';
-  const label = ACTION_LABELS[type] || 'Update Record';
-  const icon = ACTION_ICONS[type] || '⚙️';
+  const sec = Number(step.delay?.duration_sec) || 0;
+  const summary = formatDelay(sec);
 
   return (
     <div
@@ -59,24 +55,24 @@ export const ActionNode: React.FC<ActionNodeProps> = ({ step, index }) => {
       onClick={() => selectNode(step.id)}
       className={`
         relative p-4 rounded-xl cursor-pointer transition-all duration-200
-        border-2 ${isSelected ? 'border-emerald-500' : 'border-gray-700'}
-        ${isSelected ? 'bg-emerald-500/10 shadow-lg shadow-emerald-500/20' : 'bg-gray-800/80 hover:bg-gray-800'}
+        border-2 ${isSelected ? 'border-amber-500' : 'border-gray-700'}
+        ${isSelected ? 'bg-amber-500/10 shadow-lg shadow-amber-500/20' : 'bg-gray-800/80 hover:bg-gray-800'}
       `}
     >
       <div className="flex items-center gap-3">
         <div
           {...attributes}
           {...listeners}
-          className="w-10 h-10 rounded-lg bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center text-lg cursor-grab active:cursor-grabbing"
+          className="w-10 h-10 rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center text-lg cursor-grab active:cursor-grabbing"
         >
-          {icon}
+          ⏱️
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-xs uppercase tracking-wider text-gray-400 font-semibold">
             Step {index + 1}
           </p>
           <p className="text-sm font-medium text-white truncate">
-            {label}
+            Delay
           </p>
         </div>
         <button
@@ -89,11 +85,9 @@ export const ActionNode: React.FC<ActionNodeProps> = ({ step, index }) => {
           ✕
         </button>
       </div>
-      {summary && (
-        <p className="text-xs text-gray-400 mt-2 truncate pl-13">
-          {summary}
-        </p>
-      )}
+      <p className="text-xs text-gray-400 mt-2 truncate pl-13">
+        {summary}
+      </p>
     </div>
   );
 };
