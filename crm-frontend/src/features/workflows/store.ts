@@ -112,6 +112,18 @@ export function getStepAtPath(steps: WorkflowStep[], path: StepPath): WorkflowSt
   ));
 }
 
+/**
+ * Return the parent path by removing the last segment.
+ *
+ * - `[{ index: 0 }, { branch: 'yes', index: 1 }]` → `[{ index: 0 }]`
+ * - `[{ index: 2 }]` → `[]` (root step → parent is the root array)
+ * - `[]` → `undefined` (empty path has no parent)
+ */
+export function getParentPath(path: StepPath): StepPath | undefined {
+  if (path.length === 0) return undefined;
+  return path.slice(0, -1);
+}
+
 function findStepInTree(steps: WorkflowStep[], id: string): WorkflowStep | undefined {
   for (const step of steps) {
     if (step.id === id) return step;

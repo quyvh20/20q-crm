@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { useBuilderStore, getStepAtPath } from '../store';
+import { useBuilderStore, getStepAtPath, getParentPath } from '../store';
 import type { WorkflowStep } from '../types';
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -1691,5 +1691,148 @@ describe('getStepAtPath — integration with store', () => {
     const byId = useBuilderStore.getState().findStep('target');
 
     expect(byPath).toBe(byId);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// getParentPath — basic cases
+// ═════════════════════════════════════════════════════════════════════
+describe('getParentPath — basic cases', () => {
+  it('parent of root step is empty path', () => {
+    const result = getParentPath([{ index: 0 }]);
+    expect(result).toEqual([]);
+  });
+
+  it('parent of root step at index 2 is empty path', () => {
+    const result = getParentPath([{ index: 2 }]);
+    expect(result).toEqual([]);
+  });
+
+  it('parent of yes branch child is the condition', () => {
+    const result = getParentPath([{ index: 0 }, { branch: 'yes', index: 1 }]);
+    expect(result).toEqual([{ index: 0 }]);
+  });
+
+  it('parent of no branch child is the condition', () => {
+    const result = getParentPath([{ index: 1 }, { branch: 'no', index: 0 }]);
+    expect(result).toEqual([{ index: 1 }]);
+  });
+
+  it('parent of depth-2 step is the depth-1 condition', () => {
+    const path = [
+      { index: 0 },
+      { branch: 'yes' as const, index: 0 },
+      { branch: 'yes' as const, index: 2 },
+    ];
+    const result = getParentPath(path);
+    expect(result).toEqual([
+      { index: 0 },
+      { branch: 'yes', index: 0 },
+    ]);
+  });
+
+  it('parent of depth-3 step removes last segment', () => {
+    const path = [
+      { index: 1 },
+      { branch: 'no' as const, index: 0 },
+      { branch: 'yes' as const, index: 1 },
+      { branch: 'no' as const, index: 0 },
+    ];
+    const result = getParentPath(path);
+    expect(result).toEqual([
+      { index: 1 },
+      { branch: 'no', index: 0 },
+      { branch: 'yes', index: 1 },
+    ]);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// getParentPath — edge cases
+// ═════════════════════════════════════════════════════════════════════
+describe('getParentPath — edge cases', () => {
+  it('returns undefined for empty path', () => {
+    expect(getParentPath([])).toBeUndefined();
+  });
+
+  it('does not mutate the original path array', () => {
+    const path = [
+      { index: 0 },
+      { branch: 'yes' as const, index: 1 },
+      { branch: 'no' as const, index: 0 },
+    ];
+    const pathCopy = [...path];
+    getParentPath(path);
+    expect(path).toEqual(pathCopy);
+    expect(path).toHaveLength(3);
+  });
+
+  it('returned path is a new array (not same reference)', () => {
+    const path = [{ index: 0 }, { branch: 'yes' as const, index: 0 }];
+    const parent = getParentPath(path);
+    expect(parent).not.toBe(path);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// getParentPath — composition with getStepAtPath
+// ═════════════════════════════════════════════════════════════════════
+describe('getParentPath — composition with getStepAtPath', () => {
+  it('getStepAtPath(getParentPath(path)) returns the parent step', () => {
+    const inner = mkCondition('inner', [mkAction('target')]);
+    const outer = mkCondition('outer', [inner]);
+    const steps = [outer];
+
+    const targetPath = [
+      { index: 0 },
+      { branch: 'yes' as const, index: 0 },
+      { branch: 'yes' as const, index: 0 },
+    ];
+
+    const parentPath = getParentPath(targetPath)!;
+    const parent = getStepAtPath(steps, parentPath);
+    expect(parent?.id).toBe('inner');
+  });
+
+  it('grandparent via double getParentPath', () => {
+    const inner = mkCondition('inner', [mkAction('target')]);
+    const outer = mkCondition('outer', [inner]);
+    const steps = [outer];
+
+    const targetPath = [
+      { index: 0 },
+      { branch: 'yes' as const, index: 0 },
+      { branch: 'yes' as const, index: 0 },
+    ];
+
+    const grandparentPath = getParentPath(getParentPath(targetPath)!)!;
+    const grandparent = getStepAtPath(steps, grandparentPath);
+    expect(grandparent?.id).toBe('outer');
+  });
+
+  it('root parent path resolves to undefined with getStepAtPath (empty path)', () => {
+    const steps = [mkAction('a1')];
+    const rootPath = [{ index: 0 }];
+    const parentPath = getParentPath(rootPath)!;
+
+    expect(parentPath).toEqual([]);
+    expect(getStepAtPath(steps, parentPath)).toBeUndefined();
+  });
+
+  it('works with store-built tree', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('y1'), 'c1', 'yes');
+    useBuilderStore.getState().addStep(mkAction('y2'), 'c1', 'yes');
+
+    const { steps } = useBuilderStore.getState();
+
+    const childPath = [{ index: 0 }, { branch: 'yes' as const, index: 1 }];
+    const parentPath = getParentPath(childPath)!;
+
+    const child = getStepAtPath(steps, childPath);
+    const parent = getStepAtPath(steps, parentPath);
+
+    expect(child?.id).toBe('y2');
+    expect(parent?.id).toBe('c1');
   });
 });
