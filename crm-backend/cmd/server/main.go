@@ -59,63 +59,7 @@ func main() {
 		}
 	}
 
-	db, err := database.NewConnection(cfg.DatabaseURL)
-	if err != nil {
-		log.Fatal("Failed to connect to database", zap.Error(err))
-	}
-	if db != nil {
-		log.Info("Database connection established")
-		db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(255) DEFAULT ''`)
-		db.Exec(`UPDATE users SET full_name = TRIM(first_name || ' ' || last_name) WHERE full_name = '' OR full_name IS NULL`)
-		db.Exec(`ALTER TABLE organizations ADD COLUMN IF NOT EXISTS type VARCHAR(50) DEFAULT 'company'`)
-		db.Exec(`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS owner_user_id UUID REFERENCES users(id) ON DELETE SET NULL`)
-		db.Exec(`CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts(owner_user_id)`)
-
-		db.AutoMigrate(&domain.Role{}, &domain.RolePermission{}, &domain.OrgUser{}, &domain.KnowledgeBaseEntry{}, &domain.AITokenUsage{}, &domain.RecordShare{}, &domain.OrgInvitation{}, &domain.ChatSession{}, &domain.ChatMessage{}, &domain.VoiceNote{})
-
-		// Explicit column guards for voice_notes — AutoMigrate won't add columns to pre-existing tables that diverge
-		db.Exec(`CREATE TABLE IF NOT EXISTS voice_notes (
-			id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-			org_id UUID NOT NULL,
-			user_id UUID NOT NULL,
-			created_at TIMESTAMPTZ DEFAULT NOW(),
-			updated_at TIMESTAMPTZ DEFAULT NOW()
-		)`)
-		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS org_id UUID`)
-		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS user_id UUID`)
-		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS contact_id UUID REFERENCES contacts(id) ON DELETE SET NULL`)
-		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS deal_id UUID REFERENCES deals(id) ON DELETE SET NULL`)
-		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS file_url TEXT NOT NULL DEFAULT ''`)
-		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS duration_seconds INT NOT NULL DEFAULT 0`)
-		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS language_code VARCHAR(10) DEFAULT 'en'`)
-		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'uploaded'`)
-		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS transcript TEXT`)
-		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS summary TEXT`)
-		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS key_points JSONB DEFAULT '[]'`)
-		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS action_items JSONB DEFAULT '[]'`)
-		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS extracted_contact_updates JSONB DEFAULT '{}'`)
-		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS sentiment VARCHAR(50)`)
-		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS error_message TEXT`)
-		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`)
-		db.Exec(`CREATE INDEX IF NOT EXISTS idx_voice_notes_org ON voice_notes(org_id)`)
-		db.Exec(`CREATE INDEX IF NOT EXISTS idx_voice_notes_user ON voice_notes(user_id)`)
-		db.Exec(`CREATE INDEX IF NOT EXISTS idx_voice_notes_contact ON voice_notes(contact_id)`)
-		db.Exec(`CREATE INDEX IF NOT EXISTS idx_voice_notes_deal ON voice_notes(deal_id)`)
-
-		log.Info("Seeding system roles...")
-		if err := repository.SeedSystemRoles(db); err != nil {
-			log.Error("Failed to seed system roles", zap.Error(err))
-		}
-	}
-
-	redisClient, err := cache.NewRedisClient(cfg.RedisURL)
-	if err != nil {
-		log.Fatal("Failed to connect to Redis", zap.Error(err))
-	}
-	if redisClient != nil {
-		log.Info("Redis connection established")
-	}
-
+	// ── Phase 1: Start HTTP server immediately (healthcheck must respond fast) ──
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.MaxMultipartMemory = 500 << 20 // 500 MB
@@ -177,6 +121,78 @@ func main() {
 		})
 	})
 
+	// Start the server immediately so the healthcheck passes while
+	// we connect to DB/Redis and run migrations in the foreground.
+	srv := &http.Server{
+		Addr:    ":" + cfg.Port,
+		Handler: router,
+	}
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal("Failed to start server", zap.Error(err))
+		}
+	}()
+	log.Info("Server listening (health endpoint ready)", zap.String("port", cfg.Port))
+
+	// ── Phase 2: Connect to services (may be slow on cold start) ──
+	db, err := database.NewConnection(cfg.DatabaseURL)
+	if err != nil {
+		log.Fatal("Failed to connect to database", zap.Error(err))
+	}
+	if db != nil {
+		log.Info("Database connection established")
+		db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(255) DEFAULT ''`)
+		db.Exec(`UPDATE users SET full_name = TRIM(first_name || ' ' || last_name) WHERE full_name = '' OR full_name IS NULL`)
+		db.Exec(`ALTER TABLE organizations ADD COLUMN IF NOT EXISTS type VARCHAR(50) DEFAULT 'company'`)
+		db.Exec(`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS owner_user_id UUID REFERENCES users(id) ON DELETE SET NULL`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts(owner_user_id)`)
+
+		db.AutoMigrate(&domain.Role{}, &domain.RolePermission{}, &domain.OrgUser{}, &domain.KnowledgeBaseEntry{}, &domain.AITokenUsage{}, &domain.RecordShare{}, &domain.OrgInvitation{}, &domain.ChatSession{}, &domain.ChatMessage{}, &domain.VoiceNote{})
+
+		// Explicit column guards for voice_notes — AutoMigrate won't add columns to pre-existing tables that diverge
+		db.Exec(`CREATE TABLE IF NOT EXISTS voice_notes (
+			id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			org_id UUID NOT NULL,
+			user_id UUID NOT NULL,
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			updated_at TIMESTAMPTZ DEFAULT NOW()
+		)`)
+		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS org_id UUID`)
+		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS user_id UUID`)
+		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS contact_id UUID REFERENCES contacts(id) ON DELETE SET NULL`)
+		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS deal_id UUID REFERENCES deals(id) ON DELETE SET NULL`)
+		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS file_url TEXT NOT NULL DEFAULT ''`)
+		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS duration_seconds INT NOT NULL DEFAULT 0`)
+		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS language_code VARCHAR(10) DEFAULT 'en'`)
+		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'uploaded'`)
+		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS transcript TEXT`)
+		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS summary TEXT`)
+		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS key_points JSONB DEFAULT '[]'`)
+		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS action_items JSONB DEFAULT '[]'`)
+		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS extracted_contact_updates JSONB DEFAULT '{}'`)
+		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS sentiment VARCHAR(50)`)
+		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS error_message TEXT`)
+		db.Exec(`ALTER TABLE voice_notes ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_voice_notes_org ON voice_notes(org_id)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_voice_notes_user ON voice_notes(user_id)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_voice_notes_contact ON voice_notes(contact_id)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_voice_notes_deal ON voice_notes(deal_id)`)
+
+		log.Info("Seeding system roles...")
+		if err := repository.SeedSystemRoles(db); err != nil {
+			log.Error("Failed to seed system roles", zap.Error(err))
+		}
+	}
+
+	redisClient, err := cache.NewRedisClient(cfg.RedisURL)
+	if err != nil {
+		log.Fatal("Failed to connect to Redis", zap.Error(err))
+	}
+	if redisClient != nil {
+		log.Info("Redis connection established")
+	}
+
+	// ── Phase 3: Register DB-dependent routes ──
 	var autoEngine *automation.Engine
 	if db != nil {
 		authRepo := repository.NewAuthRepository(db)
@@ -312,18 +328,7 @@ func main() {
 		log.Warn("Database not connected — routes skipped")
 	}
 
-
-	srv := &http.Server{
-		Addr:    ":" + cfg.Port,
-		Handler: router,
-	}
-
-	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal("Failed to start server", zap.Error(err))
-		}
-	}()
-	log.Info("Server listening", zap.String("port", cfg.Port))
+	log.Info("All services connected, routes registered")
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
