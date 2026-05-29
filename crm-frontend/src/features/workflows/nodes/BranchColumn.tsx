@@ -61,7 +61,7 @@ export const BranchColumn: React.FC<BranchColumnProps> = ({
   const count = steps.length;
 
   return (
-    <div className="flex flex-col items-center w-1/2 px-4">
+    <div className="flex flex-col items-center flex-1 min-w-[280px] px-4">
       {/* ─── Vertical connector from parent ─── */}
       <div className="w-px h-4 bg-gray-700" />
 

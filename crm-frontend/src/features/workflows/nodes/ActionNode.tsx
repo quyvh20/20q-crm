@@ -30,7 +30,7 @@ function stepLabel(path: StepPath): string {
   return `Step ${last ? last.index + 1 : 1}`;
 }
 
-export const ActionNode: React.FC<ActionNodeProps> = ({ step, path }) => {
+const ActionNodeInner: React.FC<ActionNodeProps> = ({ step, path }) => {
   const { selectedNodeId, selectNode, removeStep, updateStep } = useBuilderStore();
   const isSelected = selectedNodeId === step.id;
 
@@ -134,3 +134,5 @@ export const ActionNode: React.FC<ActionNodeProps> = ({ step, path }) => {
     </div>
   );
 };
+
+export const ActionNode = React.memo(ActionNodeInner);

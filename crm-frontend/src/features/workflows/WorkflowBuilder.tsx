@@ -291,6 +291,38 @@ export const WorkflowBuilder: React.FC = () => {
     return <ActionPalette />;
   };
 
+  // ── Mobile guard ─────────────────────────────────────────────────────
+  // Workflow builder requires drag-and-drop and nested branch rendering
+  // which is not usable on small screens.
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 768);
+    check();
+    window.addEventListener('resize', check);
+    return () => window.removeEventListener('resize', check);
+  }, []);
+
+  if (isMobile) {
+    return (
+      <div className="flex flex-col items-center justify-center h-[calc(100vh-64px)] bg-gray-950 px-6 text-center">
+        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-3xl mb-6">
+          🖥️
+        </div>
+        <h2 className="text-xl font-semibold text-white mb-3">Desktop Required</h2>
+        <p className="text-sm text-gray-400 max-w-sm mb-6">
+          The Workflow Builder uses drag-and-drop and nested branching that requires a wider screen.
+          Please open this page on a desktop or tablet in landscape mode.
+        </p>
+        <button
+          onClick={() => navigate('/workflows')}
+          className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 to-purple-500 text-white font-medium text-sm hover:from-indigo-600 hover:to-purple-600 transition-all"
+        >
+          ← Back to Workflows
+        </button>
+      </div>
+    );
+  }
+
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd2}>
     <WorkflowDragContext.Provider value={dragCtx}>

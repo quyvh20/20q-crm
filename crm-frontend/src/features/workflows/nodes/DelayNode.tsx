@@ -28,7 +28,7 @@ function stepLabel(path: StepPath): string {
   return `Step ${last ? last.index + 1 : 1}`;
 }
 
-export const DelayNode: React.FC<DelayNodeProps> = ({ step, path }) => {
+const DelayNodeInner: React.FC<DelayNodeProps> = ({ step, path }) => {
   const { selectedNodeId, selectNode, removeStep } = useBuilderStore();
   const isSelected = selectedNodeId === step.id;
 
@@ -97,3 +97,5 @@ export const DelayNode: React.FC<DelayNodeProps> = ({ step, path }) => {
     </div>
   );
 };
+
+export const DelayNode = React.memo(DelayNodeInner);

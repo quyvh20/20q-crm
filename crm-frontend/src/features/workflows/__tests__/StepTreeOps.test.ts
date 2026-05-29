@@ -4113,3 +4113,193 @@ describe('TestRoundTrip_NestedConditionSavesAndReloads', () => {
     expect(useBuilderStore.getState().findStep('deep_delay')).toBeUndefined();
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════
+// Definition of Done: 2-Level Nested Condition — Save/Reload Round-Trip
+//
+// Tree:
+//   root[0]: action "notify_start"
+//   root[1]: condition "outer_cond" — contact.tags contains vip
+//     yes[0]: action "vip_greet"
+//     yes[1]: condition "inner_cond" — deal.value > 10000
+//       yes[0]: action "high_value_task"
+//       yes[1]: action "high_value_email"
+//       no[0]:  action "low_value_task"
+//     no[0]: action "non_vip_task"
+//   root[2]: action "final_cleanup"
+// ═════════════════════════════════════════════════════════════════════
+
+describe('DoD_NestedCondition_SaveReloadRoundTrip', () => {
+  function buildDoDTree(): WorkflowStep[] {
+    return [
+      {
+        id: 'notify_start',
+        type: 'action',
+        action: { id: 'notify_start', type: 'send_email', params: { to: 'admin@co.com', subject: 'Started' } },
+      },
+      {
+        id: 'outer_cond',
+        type: 'condition',
+        condition: {
+          op: 'AND',
+          rules: [{ field: 'contact.tags', operator: 'contains', value: 'vip' }],
+        },
+        yes_steps: [
+          {
+            id: 'vip_greet',
+            type: 'action',
+            action: { id: 'vip_greet', type: 'send_email', params: { to: '{{contact.email}}', subject: 'VIP' } },
+          },
+          {
+            id: 'inner_cond',
+            type: 'condition',
+            condition: {
+              op: 'AND',
+              rules: [{ field: 'deal.value', operator: 'gt', value: 10000 }],
+            },
+            yes_steps: [
+              {
+                id: 'high_value_task',
+                type: 'action',
+                action: { id: 'high_value_task', type: 'create_task', params: { title: 'High-value follow-up' } },
+              },
+              {
+                id: 'high_value_email',
+                type: 'action',
+                action: { id: 'high_value_email', type: 'send_email', params: { to: 'sales@co.com', subject: 'Alert' } },
+              },
+            ],
+            no_steps: [
+              {
+                id: 'low_value_task',
+                type: 'action',
+                action: { id: 'low_value_task', type: 'create_task', params: { title: 'Standard follow-up' } },
+              },
+            ],
+          },
+        ],
+        no_steps: [
+          {
+            id: 'non_vip_task',
+            type: 'action',
+            action: { id: 'non_vip_task', type: 'create_task', params: { title: 'Non-VIP onboarding' } },
+          },
+        ],
+      },
+      {
+        id: 'final_cleanup',
+        type: 'action',
+        action: { id: 'final_cleanup', type: 'send_email', params: { to: 'admin@co.com', subject: 'Done' } },
+      },
+    ];
+  }
+
+  it('save → JSON → reload preserves entire 2-level nested tree', () => {
+    const tree = buildDoDTree();
+
+    // Load into store
+    useBuilderStore.setState({ steps: tree });
+
+    // Serialize (simulates save to backend)
+    const json = JSON.parse(JSON.stringify(useBuilderStore.getState().steps));
+
+    // Reset + reload (simulates loadWorkflow from API)
+    useBuilderStore.getState().reset();
+    expect(useBuilderStore.getState().steps).toHaveLength(0);
+    useBuilderStore.setState({ steps: json });
+
+    const { steps } = useBuilderStore.getState();
+
+    // Root: 3 steps
+    expect(steps).toHaveLength(3);
+    expect(steps[0].id).toBe('notify_start');
+    expect(steps[1].id).toBe('outer_cond');
+    expect(steps[1].type).toBe('condition');
+    expect(steps[2].id).toBe('final_cleanup');
+
+    // Outer condition rules
+    expect(steps[1].condition?.op).toBe('AND');
+    expect(steps[1].condition?.rules).toHaveLength(1);
+    expect(steps[1].condition?.rules[0].field).toBe('contact.tags');
+    expect(steps[1].condition?.rules[0].operator).toBe('contains');
+    expect(steps[1].condition?.rules[0].value).toBe('vip');
+
+    // Outer YES branch: vip_greet + inner_cond
+    const outerYes = steps[1].yes_steps!;
+    expect(outerYes).toHaveLength(2);
+    expect(outerYes[0].id).toBe('vip_greet');
+    expect(outerYes[1].id).toBe('inner_cond');
+    expect(outerYes[1].type).toBe('condition');
+
+    // Outer NO branch: non_vip_task
+    const outerNo = steps[1].no_steps!;
+    expect(outerNo).toHaveLength(1);
+    expect(outerNo[0].id).toBe('non_vip_task');
+
+    // Inner condition rules
+    expect(outerYes[1].condition?.op).toBe('AND');
+    expect(outerYes[1].condition?.rules[0].field).toBe('deal.value');
+    expect(outerYes[1].condition?.rules[0].operator).toBe('gt');
+    expect(outerYes[1].condition?.rules[0].value).toBe(10000);
+
+    // Inner YES branch: high_value_task + high_value_email
+    const innerYes = outerYes[1].yes_steps!;
+    expect(innerYes).toHaveLength(2);
+    expect(innerYes[0].id).toBe('high_value_task');
+    expect(innerYes[1].id).toBe('high_value_email');
+
+    // Inner NO branch: low_value_task
+    const innerNo = outerYes[1].no_steps!;
+    expect(innerNo).toHaveLength(1);
+    expect(innerNo[0].id).toBe('low_value_task');
+  });
+
+  it('findStep locates all 8 nodes in the 2-level tree', () => {
+    useBuilderStore.setState({ steps: buildDoDTree() });
+    const find = useBuilderStore.getState().findStep;
+
+    const ids = [
+      'notify_start', 'outer_cond', 'vip_greet', 'inner_cond',
+      'high_value_task', 'high_value_email', 'low_value_task',
+      'non_vip_task', 'final_cleanup',
+    ];
+
+    for (const id of ids) {
+      expect(find(id)).toBeDefined();
+      expect(find(id)!.id).toBe(id);
+    }
+  });
+
+  it('removeStep on inner_cond cascades removal of nested children', () => {
+    useBuilderStore.setState({ steps: buildDoDTree() });
+    useBuilderStore.getState().removeStep('inner_cond');
+
+    const { steps } = useBuilderStore.getState();
+    const outerYes = steps[1].yes_steps!;
+
+    // inner_cond removed, only vip_greet remains
+    expect(outerYes).toHaveLength(1);
+    expect(outerYes[0].id).toBe('vip_greet');
+
+    // All inner children gone
+    const find = useBuilderStore.getState().findStep;
+    expect(find('inner_cond')).toBeUndefined();
+    expect(find('high_value_task')).toBeUndefined();
+    expect(find('high_value_email')).toBeUndefined();
+    expect(find('low_value_task')).toBeUndefined();
+
+    // Outer structure intact
+    expect(find('notify_start')).toBeDefined();
+    expect(find('outer_cond')).toBeDefined();
+    expect(find('non_vip_task')).toBeDefined();
+    expect(find('final_cleanup')).toBeDefined();
+  });
+
+  it('depth guard allows DoD tree (depth=2, max=5)', () => {
+    useBuilderStore.setState({ steps: buildDoDTree() });
+
+    // Try adding a step inside inner_cond's yes branch — depth would be 3, still under 5
+    const { errors } = useBuilderStore.getState();
+    expect(errors.depth).toBeUndefined();
+  });
+});

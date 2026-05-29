@@ -52,8 +52,10 @@ export const ConditionSplitNode: React.FC<ConditionSplitNodeProps> = ({ step, pa
   const hasError = !!errors[`step.${step.id}`] || !!errors[`steps.${lastIdx}.condition`];
 
   const rules = step.condition?.rules ?? [];
-  const ruleCount = rules.length;
+  const configuredRules = rules.filter((r) => r.field && r.field !== '');
+  const ruleCount = configuredRules.length;
   const op = step.condition?.op ?? 'AND';
+  const hasUnconfiguredRules = rules.length > 0 && ruleCount === 0;
 
   // Local collapse state — preserved across re-renders
   const [yesCollapsed, setYesCollapsed] = useState(false);
@@ -61,7 +63,7 @@ export const ConditionSplitNode: React.FC<ConditionSplitNodeProps> = ({ step, pa
 
   // Build condition summary text
   const summary = ruleCount > 0
-    ? rules.slice(0, 2).map((r) => ruleSummary(r)).join(` ${op} `)
+    ? configuredRules.slice(0, 2).map((r) => ruleSummary(r)).join(` ${op} `)
       + (ruleCount > 2 ? ` ${op} +${ruleCount - 2} more` : '')
     : null;
 
@@ -94,6 +96,9 @@ export const ConditionSplitNode: React.FC<ConditionSplitNodeProps> = ({ step, pa
                 ? `${ruleCount} rule${ruleCount !== 1 ? 's' : ''} (${op})`
                 : 'Configure Conditions'}
             </p>
+            {hasUnconfiguredRules && (
+              <p className="text-[10px] text-amber-400 mt-0.5">⚠ Needs configuration</p>
+            )}
           </div>
 
           {/* Edit button — opens the side panel */}
@@ -141,7 +146,7 @@ export const ConditionSplitNode: React.FC<ConditionSplitNodeProps> = ({ step, pa
       <div className="w-px h-6 bg-gray-700" />
 
       {/* ─── Branching columns container ─── */}
-      <div className="relative flex justify-center w-full max-w-5xl">
+      <div className="relative flex justify-center w-full overflow-x-auto">
         {/* Horizontal connector line */}
         <div className="absolute top-0 left-1/4 right-1/4 h-px bg-gray-700" />
 

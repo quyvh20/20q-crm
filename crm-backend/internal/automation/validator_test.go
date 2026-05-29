@@ -554,13 +554,13 @@ func TestValidateSteps_TreeDepth_ExceedsMax_Invalid(t *testing.T) {
 	found := false
 	for _, e := range result.Errors {
 		if e.Field != "" && len(e.Message) > 0 {
-			if strings.Contains(e.Message, "step tree depth") {
+			if strings.Contains(e.Message, "nesting is too deep") {
 				found = true
 			}
 		}
 	}
 	if !found {
-		t.Fatalf("expected 'step tree depth' error, got: %+v", result.Errors)
+		t.Fatalf("expected 'nesting is too deep' error, got: %+v", result.Errors)
 	}
 }
 
@@ -650,3 +650,45 @@ func TestValidateSteps_EmptyBranches_OnePopulatedOneNil(t *testing.T) {
 		t.Fatalf("expected valid with one populated branch, got errors: %+v", result.Errors)
 	}
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Empty branch validation tests (pitfall #6)
+// ═══════════════════════════════════════════════════════════════════
+
+func TestValidation_EmptyBranches_Valid(t *testing.T) {
+	steps := []StepSpec{{
+		Type:      "condition",
+		ID:        "c1",
+		Condition: &ConditionGroup{Op: "AND", Rules: []ConditionRule{{Field: "contact.email", Operator: "eq", Value: "x"}}},
+		YesSteps:  []StepSpec{},
+		NoSteps:   []StepSpec{},
+	}}
+	stepsJSON, _ := json.Marshal(steps)
+	trigger := `{"type":"contact_created"}`
+
+	result := ValidateWorkflowPayload([]byte(trigger), nil, nil, stepsJSON)
+	if !result.Valid {
+		t.Fatalf("empty branches should be valid, got errors: %+v", result.Errors)
+	}
+}
+
+func TestValidation_NilBranches_Valid(t *testing.T) {
+	stepsJSON := []byte(`[{"type":"condition","id":"c1","condition":{"op":"AND","rules":[{"field":"contact.email","operator":"eq","value":"x"}]}}]`)
+	trigger := `{"type":"contact_created"}`
+
+	result := ValidateWorkflowPayload([]byte(trigger), nil, nil, stepsJSON)
+	if !result.Valid {
+		t.Fatalf("nil branches should be valid, got errors: %+v", result.Errors)
+	}
+}
+
+func TestValidation_EmptyStepsList_FallsBackToActions(t *testing.T) {
+	trigger := `{"type":"contact_created"}`
+	actions := `[{"type":"send_email","id":"a1","params":{"to":"a@b.com"}}]`
+
+	result := ValidateWorkflowPayload([]byte(trigger), nil, []byte(actions), []byte("[]"))
+	if !result.Valid {
+		t.Fatalf("empty steps should fall back to actions, got errors: %+v", result.Errors)
+	}
+}
+

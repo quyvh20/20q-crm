@@ -153,6 +153,46 @@ export function isDescendant(ancestorPath: StepPath, childPath: StepPath): boole
   return true;
 }
 
+/** Maximum nesting depth for condition steps (must match backend MaxStepTreeDepth) */
+export const MAX_STEP_TREE_DEPTH = 5;
+
+/** Calculate the nesting depth of a parent step by ID. Root = 0, inside one condition = 1, etc. */
+function getStepDepth(steps: WorkflowStep[], parentId: string | null): number {
+  if (!parentId) return 0;
+
+  function findDepth(list: WorkflowStep[], depth: number): number {
+    for (const step of list) {
+      if (step.id === parentId) return depth;
+      if (step.type === 'condition') {
+        if (step.yes_steps) {
+          const d = findDepth(step.yes_steps, depth + 1);
+          if (d >= 0) return d;
+        }
+        if (step.no_steps) {
+          const d = findDepth(step.no_steps, depth + 1);
+          if (d >= 0) return d;
+        }
+      }
+    }
+    return -1;
+  }
+
+  return Math.max(0, findDepth(steps, 0));
+}
+
+/** Calculate the max depth of a step subtree (condition nesting). */
+function getSubtreeDepth(step: WorkflowStep): number {
+  if (step.type !== 'condition') return 0;
+  let maxChild = 0;
+  for (const child of step.yes_steps || []) {
+    maxChild = Math.max(maxChild, getSubtreeDepth(child));
+  }
+  for (const child of step.no_steps || []) {
+    maxChild = Math.max(maxChild, getSubtreeDepth(child));
+  }
+  return 1 + maxChild;
+}
+
 function findStepInTree(steps: WorkflowStep[], id: string): WorkflowStep | undefined {
   for (const step of steps) {
     if (step.id === id) return step;
@@ -430,6 +470,21 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
 
   addStep: (step, parentId, branch, index) =>
     set((s) => {
+      // Depth guard: check if adding this step would exceed max depth
+      if (parentId && branch) {
+        const parentDepth = getStepDepth(s.steps || [], parentId);
+        const subtreeDepth = getSubtreeDepth(step);
+        // parentDepth = how deep the parent is. Adding into a branch adds 1.
+        // If the step itself is a condition tree, add its subtree depth.
+        if (parentDepth + 1 + subtreeDepth > MAX_STEP_TREE_DEPTH) {
+          return {
+            errors: {
+              ...s.errors,
+              depth: [`Cannot add step: nesting would exceed maximum depth of ${MAX_STEP_TREE_DEPTH} levels`],
+            },
+          };
+        }
+      }
       const steps = addStepToTree(s.steps || [], parentId, branch, step, index);
       const actions = flattenSteps(steps);
       return { steps, actions, isDirty: true };
@@ -607,6 +662,27 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
           errors.trigger.push('Source object is no longer accessible');
         }
       }
+    }
+
+    // Validate condition steps inside the step tree — flag empty conditions
+    function validateStepConditions(steps: WorkflowStep[], pathPrefix: string) {
+      for (let i = 0; i < steps.length; i++) {
+        const s = steps[i];
+        if (s.type === 'condition') {
+          const rules = s.condition?.rules ?? [];
+          const configured = rules.filter((r) => r.field && r.field !== '');
+          if (configured.length === 0) {
+            const key = `step.${s.id}`;
+            errors[key] = ['Configure at least one condition rule with a field'];
+          }
+          // Recurse into branches
+          if (s.yes_steps) validateStepConditions(s.yes_steps, `${pathPrefix}${i}.yes_steps.`);
+          if (s.no_steps) validateStepConditions(s.no_steps, `${pathPrefix}${i}.no_steps.`);
+        }
+      }
+    }
+    if (state.steps && state.steps.length > 0) {
+      validateStepConditions(state.steps, 'steps.');
     }
 
     // Validate email addresses in send_email actions

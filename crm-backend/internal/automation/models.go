@@ -18,6 +18,10 @@ type Workflow struct {
 	IsActive    bool           `gorm:"not null;default:false;index" json:"is_active"`
 	Trigger     datatypes.JSON `gorm:"type:jsonb;not null" json:"trigger"`
 	Conditions  datatypes.JSON `gorm:"type:jsonb" json:"conditions"`
+	// Actions is the DEPRECATED flat action list. Kept for rollback compatibility.
+	// All new workflows use Steps (recursive tree). The frontend always writes both.
+	// Target removal: 2026-09-01 (3 months after Steps GA).
+	// Before removal: run migration to verify all workflows have Steps populated.
 	Actions     datatypes.JSON `gorm:"type:jsonb;not null" json:"actions"`
 	Steps       datatypes.JSON `gorm:"type:jsonb" json:"steps,omitempty"`
 	Version     int            `gorm:"not null;default:1" json:"version"`
@@ -36,6 +40,7 @@ type WorkflowVersion struct {
 	Version    int            `gorm:"not null" json:"version"`
 	Trigger    datatypes.JSON `gorm:"type:jsonb;not null" json:"trigger"`
 	Conditions datatypes.JSON `gorm:"type:jsonb" json:"conditions"`
+	// Actions is DEPRECATED — see Workflow.Actions for details.
 	Actions    datatypes.JSON `gorm:"type:jsonb;not null" json:"actions"`
 	Steps      datatypes.JSON `gorm:"type:jsonb" json:"steps,omitempty"`
 	CreatedAt  time.Time      `json:"created_at"`

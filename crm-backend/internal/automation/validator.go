@@ -71,7 +71,7 @@ func validateStepsRecursive(steps []StepSpec, path string, depth int, idSet map[
 		result.Valid = false
 		result.Errors = append(result.Errors, ValidationError{
 			Field:   path,
-			Message: fmt.Sprintf("step tree depth %d exceeds maximum of %d", depth, MaxStepTreeDepth),
+			Message: fmt.Sprintf("condition nesting is too deep (depth %d, max %d). Tip: flatten using AND/OR groups instead of nested conditions", depth, MaxStepTreeDepth),
 		})
 		return
 	}

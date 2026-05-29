@@ -900,3 +900,99 @@ func TestExecuteSteps_OldWorkflowWithActionsOnly_StillRuns(t *testing.T) {
 	assert.Equal(t, map[string]any{"sent": true}, evalCtx.Actions["a1"])
 	assert.Equal(t, map[string]any{"task_id": "t1"}, evalCtx.Actions["a2"])
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Empty branch safety tests (pitfall #6)
+// ═══════════════════════════════════════════════════════════════════
+
+// TestEmptyBranch_YesNil verifies that nil yes_steps doesn't panic.
+func TestEmptyBranch_YesNil(t *testing.T) {
+	completedSteps := make(map[string]bool)
+
+	// nil branches — hasAnyStepExecuted must handle gracefully
+	assert.False(t, hasAnyStepExecuted(nil, completedSteps))
+	assert.False(t, hasAnyStepExecuted([]StepSpec{}, completedSteps))
+
+	// Verify condition evaluation still works
+	cond := ConditionGroup{Op: "AND", Rules: []ConditionRule{{Field: "contact.email", Operator: "eq", Value: "a@b.com"}}}
+	evalCtx := EvalContext{
+		Contact: map[string]any{"email": "a@b.com"},
+		Actions: make(map[string]any),
+	}
+	assert.True(t, EvaluateConditions(cond, evalCtx))
+}
+
+// TestEmptyBranch_YesEmpty verifies that []StepSpec{} works correctly.
+func TestEmptyBranch_YesEmpty(t *testing.T) {
+	steps := []StepSpec{{
+		Type:      "condition",
+		ID:        "c1",
+		Condition: &ConditionGroup{Op: "AND", Rules: []ConditionRule{{Field: "contact.email", Operator: "eq", Value: "a@b.com"}}},
+		YesSteps:  []StepSpec{},
+		NoSteps:   []StepSpec{},
+	}}
+
+	completedSteps := make(map[string]bool)
+	assert.False(t, hasAnyStepExecuted(steps[0].YesSteps, completedSteps))
+	assert.False(t, hasAnyStepExecuted(steps[0].NoSteps, completedSteps))
+
+	// JSON round-trip preserves structure
+	data, err := json.Marshal(steps)
+	assert.NoError(t, err)
+	var parsed []StepSpec
+	err = json.Unmarshal(data, &parsed)
+	assert.NoError(t, err)
+	assert.Len(t, parsed, 1)
+	assert.Equal(t, "condition", parsed[0].Type)
+}
+
+// TestEmptyBranch_BothNil verifies both nil branches and nil map.
+func TestEmptyBranch_BothNil(t *testing.T) {
+	var nilSteps []StepSpec
+	assert.False(t, hasAnyStepExecuted(nilSteps, make(map[string]bool)))
+	assert.False(t, hasAnyStepExecuted(nil, nil))
+}
+
+// TestEmptyBranch_MixedBranches verifies one empty and one populated branch.
+func TestEmptyBranch_MixedBranches(t *testing.T) {
+	steps := []StepSpec{{
+		Type:      "condition",
+		ID:        "c1",
+		Condition: &ConditionGroup{Op: "AND"},
+		YesSteps: []StepSpec{{
+			Type:   "action",
+			ID:     "a1",
+			Action: &ActionSpec{Type: "send_email", ID: "a1", Params: map[string]any{"to": "test@test.com"}},
+		}},
+		NoSteps: nil,
+	}}
+
+	completedSteps := make(map[string]bool)
+	assert.False(t, hasAnyStepExecuted(steps[0].NoSteps, completedSteps))
+	assert.False(t, hasAnyStepExecuted(steps[0].YesSteps, completedSteps))
+
+	completedSteps["a1"] = true
+	assert.True(t, hasAnyStepExecuted(steps[0].YesSteps, completedSteps))
+	assert.False(t, hasAnyStepExecuted(steps[0].NoSteps, completedSteps))
+}
+
+// TestEmptyBranch_NestedEmptyBranches verifies recursive empty branch handling.
+func TestEmptyBranch_NestedEmptyBranches(t *testing.T) {
+	steps := []StepSpec{{
+		Type:      "condition",
+		ID:        "c1",
+		Condition: &ConditionGroup{Op: "AND"},
+		YesSteps: []StepSpec{{
+			Type:      "condition",
+			ID:        "c2",
+			Condition: &ConditionGroup{Op: "OR"},
+			YesSteps:  nil,
+			NoSteps:   []StepSpec{},
+		}},
+		NoSteps: nil,
+	}}
+
+	completedSteps := make(map[string]bool)
+	assert.False(t, hasAnyStepExecuted(steps, completedSteps))
+}
+

@@ -467,6 +467,13 @@ func searchSubstring(s, substr string) bool {
 }
 
 // MigrateFlatActionsToSteps automatically converts older flat actions workflows to recursive steps tree.
+//
+// DEPRECATED: Legacy actions→steps conversion.
+// Deadline: 2026-09-01. After this date, remove this fallback and require Steps.
+// Before removing, verify zero rows from:
+//
+//	SELECT count(*) FROM automation_workflows
+//	WHERE (steps IS NULL OR steps::text = 'null') AND deleted_at IS NULL;
 func (r *Repository) MigrateFlatActionsToSteps(ctx context.Context) error {
 	// 1. Migrate workflows table
 	var workflows []Workflow
