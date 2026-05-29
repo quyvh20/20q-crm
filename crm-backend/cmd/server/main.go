@@ -28,6 +28,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
 
@@ -198,9 +199,22 @@ func main() {
 		}
 	}
 
-	redisClient, err := cache.NewRedisClient(cfg.RedisURL)
+	var redisClient *redis.Client
+	for attempt := 1; attempt <= 5; attempt++ {
+		redisClient, err = cache.NewRedisClient(cfg.RedisURL)
+		if err == nil {
+			break
+		}
+		wait := time.Duration(1<<uint(attempt)) * time.Second
+		log.Warn("Redis connection failed, retrying...",
+			zap.Int("attempt", attempt),
+			zap.Duration("backoff", wait),
+			zap.Error(err),
+		)
+		time.Sleep(wait)
+	}
 	if err != nil {
-		log.Warn("Redis connection failed, continuing without cache", zap.Error(err))
+		log.Fatal("Failed to connect to Redis after 5 attempts", zap.Error(err))
 	}
 	if redisClient != nil {
 		log.Info("Redis connection established")
