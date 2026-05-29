@@ -741,9 +741,13 @@ func (e *UpdateRecordExecutor) handleCustomField(ctx context.Context, tx *gorm.D
 		return map[string]any{"field": "custom_fields." + cfKey, "op": op, "value": value}, nil
 
 	case "increment":
-		delta := getIntParam(params, "value")
-		if delta == 0 {
-			delta = 1
+		// resolveNumericParam (not getIntParam) so templated deltas like
+		// {{trigger.amount}} resolve to their real value and fractional amounts
+		// survive — matching the numeric-column increment path. A missing/non-numeric
+		// value errors rather than silently defaulting to 1.
+		delta, ok := resolveNumericParam(params, "value", evalCtx)
+		if !ok {
+			return nil, fmt.Errorf("'increment' on custom field '%s' requires a numeric 'value'", cfKey)
 		}
 		err := tx.WithContext(ctx).
 			Table(table).
@@ -758,9 +762,9 @@ func (e *UpdateRecordExecutor) handleCustomField(ctx context.Context, tx *gorm.D
 		return map[string]any{"field": "custom_fields." + cfKey, "op": "increment", "delta": delta}, nil
 
 	case "decrement":
-		delta := getIntParam(params, "value")
-		if delta == 0 {
-			delta = 1
+		delta, ok := resolveNumericParam(params, "value", evalCtx)
+		if !ok {
+			return nil, fmt.Errorf("'decrement' on custom field '%s' requires a numeric 'value'", cfKey)
 		}
 		err := tx.WithContext(ctx).
 			Table(table).

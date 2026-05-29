@@ -2,6 +2,7 @@ package automation
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/google/uuid"
@@ -235,6 +236,53 @@ func TestUpdateRecord_DealNumericColumnIncrement(t *testing.T) {
 		Where("id = ?", dealID).Scan(&deal).Error)
 	assert.InDelta(t, 1250.50, deal.Value, 0.001, "value should increment by the fractional delta")
 	assert.Equal(t, 25, deal.Probability, "probability should decrement by 15")
+}
+
+// TestUpdateRecord_DealCustomFieldIncrement_TemplatedAndFractional guards the fix for
+// the getIntParam quirk: a templated delta ({{trigger.bump}}) must increment by its
+// resolved value (not silently become 1), and a fractional literal delta must survive.
+func TestUpdateRecord_DealCustomFieldIncrement_TemplatedAndFractional(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	seedDealStageTables(t, db)
+
+	orgID := uuid.New()
+	dealID := uuid.New()
+	require.NoError(t, db.Exec(`INSERT INTO deals (id, org_id, title, custom_fields) VALUES (?, ?, 'Acme', '{"score": 10}'::jsonb)`, dealID, orgID).Error)
+
+	exec := NewUpdateRecordExecutor(db)
+	run := &WorkflowRun{ID: uuid.New(), WorkflowID: uuid.New(), OrgID: orgID}
+	action := ActionSpec{Type: ActionUpdateRecord, ID: "ur1", Params: map[string]any{
+		"updates": []any{
+			// Templated delta — pre-fix this resolved to 0 → coerced to 1.
+			map[string]any{"field": "deal.custom_fields.score", "op": "increment", "value": "{{trigger.bump}}"},
+			// Fractional literal on a not-yet-present key (COALESCE 0 + 2.5).
+			map[string]any{"field": "deal.custom_fields.commission", "op": "increment", "value": 2.5},
+		},
+	}}
+	evalCtx := EvalContext{
+		Deal:    map[string]any{"id": dealID.String()},
+		Trigger: map[string]any{"type": "deal_updated", "bump": "5"},
+	}
+
+	_, err := exec.Execute(context.Background(), run, action, evalCtx)
+	require.NoError(t, err)
+
+	var cfStr string
+	require.NoError(t, db.Table("deals").
+		Select("custom_fields::text").
+		Where("id = ?", dealID).Scan(&cfStr).Error)
+	var cf map[string]any
+	require.NoError(t, json.Unmarshal([]byte(cfStr), &cf))
+
+	score, _ := toFloat64(cf["score"])
+	commission, _ := toFloat64(cf["commission"])
+	assert.Equal(t, 15.0, score, "score should increment by the resolved template value (5), not 1")
+	assert.InDelta(t, 2.5, commission, 0.001, "fractional delta must survive")
 }
 
 // TestUpdateRecord_DealStageChange_UnknownStageRolledBack verifies that pointing at a
