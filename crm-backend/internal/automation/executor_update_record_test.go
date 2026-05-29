@@ -464,7 +464,6 @@ func TestValidateActions_UpdateRecord_DealFieldValid(t *testing.T) {
 			"updates": []any{
 				map[string]any{"field": "deal.title", "op": "set", "value": "Big Deal"},
 				map[string]any{"field": "deal.value", "op": "set", "value": "50000"},
-				map[string]any{"field": "deal.is_won", "op": "set", "value": true},
 			},
 		}},
 	}
@@ -492,19 +491,28 @@ func TestValidateActions_UpdateRecord_DealUnknownFieldRejected(t *testing.T) {
 	}
 }
 
-func TestValidateActions_UpdateRecord_DealIncrementOnBooleanRejected(t *testing.T) {
-	actions := []ActionSpec{
-		{Type: "update_record", ID: "ur1", Params: map[string]any{
-			"updates": []any{
-				map[string]any{"field": "deal.is_won", "op": "increment", "value": 1},
-			},
-		}},
-	}
-	data, _ := json.Marshal(actions)
-	result := &ValidationResult{Valid: true}
-	validateActions(data, result)
-	if result.Valid {
-		t.Fatal("expected invalid: can't increment a boolean field")
+// Regression (won/lost backdoor): is_won/is_lost must NOT be directly settable via
+// update_record. Winning or losing a deal goes through a stage change so the flags
+// stay coupled with closed_at + a stage_change activity (see handleDealStageChange).
+// A bare boolean write would mark a deal won while it still sits in an open stage
+// with no closed_at — a state no other write path in the system can produce.
+func TestValidateActions_UpdateRecord_DealWonLostFlagsRejected(t *testing.T) {
+	for _, field := range []string{"deal.is_won", "deal.is_lost"} {
+		t.Run(field, func(t *testing.T) {
+			actions := []ActionSpec{
+				{Type: "update_record", ID: "ur1", Params: map[string]any{
+					"updates": []any{
+						map[string]any{"field": field, "op": "set", "value": true},
+					},
+				}},
+			}
+			data, _ := json.Marshal(actions)
+			result := &ValidationResult{Valid: true}
+			validateActions(data, result)
+			if result.Valid {
+				t.Fatalf("expected invalid: %s must not be directly settable (use a won/lost stage change)", field)
+			}
+		})
 	}
 }
 

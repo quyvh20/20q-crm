@@ -735,6 +735,13 @@ var contactFieldTypes = map[string]string{
 // "stage"/"stage_id" are intentionally absent — the deal stage is a managed field
 // handled by a dedicated branch in validateUpdateFieldSchema (set-only) and routed
 // through handleDealStageChange at execution time for activity logging.
+//
+// "is_won"/"is_lost" are intentionally absent for the same reason: they are managed
+// by the stage change (a won/lost stage sets is_won/is_lost + closed_at + a
+// stage_change activity together). A direct boolean write would mark a deal won while
+// it still sits in an open stage with no closed_at — a state no other write path in
+// the system can produce. KEEP IN SYNC with the columnMap in handleDealColumn
+// (executor_update_record.go).
 var dealFieldTypes = map[string]string{
 	"title":         "string",
 	"value":         "number",
@@ -742,8 +749,6 @@ var dealFieldTypes = map[string]string{
 	"contact_id":    "string",
 	"company_id":    "string",
 	"owner_user_id": "string",
-	"is_won":        "boolean",
-	"is_lost":       "boolean",
 }
 
 // opsValidForType defines which operations are valid per field type.

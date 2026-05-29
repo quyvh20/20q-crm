@@ -475,6 +475,12 @@ func (e *UpdateRecordExecutor) handleContactColumn(ctx context.Context, tx *gorm
 // stage_id is intentionally absent: stage changes are handled by
 // handleDealStageChange so they preserve the activity log + won/lost flags.
 func (e *UpdateRecordExecutor) handleDealColumn(ctx context.Context, tx *gorm.DB, orgID, dealID uuid.UUID, field, op string, params map[string]any, evalCtx EvalContext) (map[string]any, error) {
+	// is_won / is_lost are intentionally absent: like stage_id, they are managed
+	// fields. Winning or losing a deal happens by moving it to a won/lost stage
+	// (handleDealStageChange), which keeps is_won/is_lost coupled with closed_at and
+	// a stage_change activity. A bare boolean write here would mark a deal won while
+	// it still sits in an open stage with no closed_at — a state no other write path
+	// in the system can produce. KEEP IN SYNC with dealFieldTypes in validator.go.
 	columnMap := map[string]string{
 		"title":         "title",
 		"value":         "value",
@@ -482,8 +488,6 @@ func (e *UpdateRecordExecutor) handleDealColumn(ctx context.Context, tx *gorm.DB
 		"contact_id":    "contact_id",
 		"company_id":    "company_id",
 		"owner_user_id": "owner_user_id",
-		"is_won":        "is_won",
-		"is_lost":       "is_lost",
 	}
 	// value (money) and probability (0-100) are numeric → support increment/decrement.
 	numericCols := map[string]bool{"value": true, "probability": true}
