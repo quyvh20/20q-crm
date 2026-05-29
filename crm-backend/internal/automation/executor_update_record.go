@@ -546,9 +546,19 @@ func (e *UpdateRecordExecutor) handleDealStageChange(ctx context.Context, tx *go
 	}
 
 	// Build the deal update — mirror dealUseCase.ChangeStage side effects.
+	//
+	// is_won/is_lost/closed_at are a pure function of the destination stage: they are
+	// seeded to the "open stage" values (false/false/NULL) and overwritten only when the
+	// target is a won/lost stage. This is why we use a map (not a struct) with .Updates —
+	// a map writes every key, including false and nil, so moving a previously won/lost
+	// deal to an open stage CLEARS the terminal state instead of leaving it stale (which
+	// would drop the reopened deal from is_won=false/is_lost=false reports like Forecast).
 	updateCols := map[string]any{
 		"stage_id":   stageID,
 		"updated_at": gorm.Expr("NOW()"),
+		"is_won":     false,
+		"is_lost":    false,
+		"closed_at":  nil,
 	}
 	activityTitle := fmt.Sprintf("Stage changed to %s", stage.Name)
 	if stage.IsWon {

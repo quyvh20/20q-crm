@@ -473,3 +473,59 @@ func TestUpdateRecord_DealScalarColumnSet_NoSideEffects(t *testing.T) {
 	require.NoError(t, db.Table("activities").Where("deal_id = ?", dealID).Count(&activityCount).Error)
 	assert.Equal(t, int64(0), activityCount, "a non-stage column update must not create a stage_change activity")
 }
+
+// TestUpdateRecord_DealStageChange_ReopenClearsTerminalState verifies that is_won/
+// is_lost/closed_at are a pure function of the destination stage: moving an ALREADY-WON
+// deal to an open stage must CLEAR the terminal state, not leave it stale. A stale
+// is_won=true with an open stage_id is the contradictory state that would, e.g., hide
+// the reopened deal from is_won=false/is_lost=false reports like Forecast. This mirrors
+// the same fix in dealUseCase.ChangeStage (KEEP IN SYNC).
+func TestUpdateRecord_DealStageChange_ReopenClearsTerminalState(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	seedDealStageTables(t, db)
+
+	orgID := uuid.New()
+	wonStageID := uuid.New()
+	openStageID := uuid.New()
+	dealID := uuid.New()
+
+	require.NoError(t, db.Exec(`INSERT INTO pipeline_stages (id, org_id, name, position, is_won) VALUES (?, ?, 'Closed Won', 2, true)`, wonStageID, orgID).Error)
+	require.NoError(t, db.Exec(`INSERT INTO pipeline_stages (id, org_id, name, position) VALUES (?, ?, 'Negotiation', 1)`, openStageID, orgID).Error)
+	// A deal that is already won: in the won stage, is_won=true, closed_at set.
+	require.NoError(t, db.Exec(`INSERT INTO deals (id, org_id, title, stage_id, is_won, closed_at) VALUES (?, ?, 'Acme', ?, true, NOW())`, dealID, orgID, wonStageID).Error)
+
+	exec := NewUpdateRecordExecutor(db)
+	run := &WorkflowRun{ID: uuid.New(), WorkflowID: uuid.New(), OrgID: orgID}
+	action := ActionSpec{Type: ActionUpdateRecord, ID: "ur1", Params: map[string]any{
+		"updates": []any{
+			map[string]any{"field": "deal.stage", "op": "set", "value": openStageID.String()},
+		},
+	}}
+	evalCtx := EvalContext{
+		Deal:    map[string]any{"id": dealID.String()},
+		Trigger: map[string]any{"type": "deal_stage_changed"},
+	}
+
+	_, err := exec.Execute(context.Background(), run, action, evalCtx)
+	require.NoError(t, err)
+
+	var deal struct {
+		StageID  *uuid.UUID `gorm:"column:stage_id"`
+		IsWon    bool       `gorm:"column:is_won"`
+		IsLost   bool       `gorm:"column:is_lost"`
+		ClosedAt *string    `gorm:"column:closed_at"`
+	}
+	require.NoError(t, db.Table("deals").
+		Select("stage_id, is_won, is_lost, closed_at").
+		Where("id = ?", dealID).Scan(&deal).Error)
+	require.NotNil(t, deal.StageID)
+	assert.Equal(t, openStageID, *deal.StageID, "deal should have moved to the open stage")
+	assert.False(t, deal.IsWon, "reopening to an open stage must clear is_won")
+	assert.False(t, deal.IsLost, "is_lost must remain false")
+	assert.Nil(t, deal.ClosedAt, "reopening to an open stage must clear closed_at")
+}

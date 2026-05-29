@@ -122,6 +122,11 @@ func (uc *dealUseCase) Delete(ctx context.Context, orgID, id uuid.UUID) error {
 // raw SQL inside its own transaction (it cannot reuse this method without breaking
 // that transaction boundary — see the note there). If you change the side-effects
 // here, update handleDealStageChange too.
+//
+// is_won/is_lost/closed_at are a pure function of the destination stage: a won/lost
+// stage sets them, and ANY open stage clears them — so reopening a closed deal does
+// not leave stale flags (which would hide it from is_won=false/is_lost=false reports
+// like Forecast).
 func (uc *dealUseCase) ChangeStage(ctx context.Context, orgID, dealID uuid.UUID, input domain.UpdateDealStageInput) (*domain.Deal, error) {
 	deal, err := uc.dealRepo.GetByID(ctx, orgID, dealID)
 	if err != nil || deal == nil {
@@ -141,10 +146,12 @@ func (uc *dealUseCase) ChangeStage(ctx context.Context, orgID, dealID uuid.UUID,
 
 	if stage.IsWon {
 		deal.IsWon = true
+		deal.IsLost = false
 		now := time.Now()
 		deal.ClosedAt = &now
 		activityTitle = "Deal won! 🏆"
 	} else if stage.IsLost {
+		deal.IsWon = false
 		deal.IsLost = true
 		now := time.Now()
 		deal.ClosedAt = &now
@@ -153,6 +160,12 @@ func (uc *dealUseCase) ChangeStage(ctx context.Context, orgID, dealID uuid.UUID,
 		} else {
 			activityTitle = "Deal lost"
 		}
+	} else {
+		// Open stage: clear any prior terminal state so the flags always reflect the
+		// current stage (reopening a previously won/lost deal).
+		deal.IsWon = false
+		deal.IsLost = false
+		deal.ClosedAt = nil
 	}
 
 	if err := uc.dealRepo.Update(ctx, deal); err != nil {
