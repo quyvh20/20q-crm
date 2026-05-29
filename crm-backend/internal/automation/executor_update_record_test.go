@@ -523,3 +523,60 @@ func TestValidateActions_UpdateRecord_DealCustomFieldAccepted(t *testing.T) {
 		t.Errorf("deal custom field should be accepted, got errors: %+v", result.Errors)
 	}
 }
+
+// ── Deal stage (P14): "deal.stage" / "deal.stage_id", set-only ──────
+
+func TestValidateActions_UpdateRecord_DealStageValid(t *testing.T) {
+	// The builder emits the schema path "deal.stage" (picker_type=stage); the value
+	// is the target stage's UUID. This must validate.
+	actions := []ActionSpec{
+		{Type: "update_record", ID: "ur1", Params: map[string]any{
+			"updates": []any{
+				map[string]any{"field": "deal.stage", "op": "set", "value": "11111111-1111-1111-1111-111111111111"},
+			},
+		}},
+	}
+	data, _ := json.Marshal(actions)
+	result := &ValidationResult{Valid: true}
+	validateActions(data, result)
+	if !result.Valid {
+		t.Errorf("deal.stage set should be valid, got errors: %+v", result.Errors)
+	}
+}
+
+func TestValidateActions_UpdateRecord_DealStageIDLegacyValid(t *testing.T) {
+	// Legacy / AI-generated workflows may use the raw column name "deal.stage_id".
+	actions := []ActionSpec{
+		{Type: "update_record", ID: "ur1", Params: map[string]any{
+			"updates": []any{
+				map[string]any{"field": "deal.stage_id", "op": "set", "value": "{{trigger.to_stage}}"},
+			},
+		}},
+	}
+	data, _ := json.Marshal(actions)
+	result := &ValidationResult{Valid: true}
+	validateActions(data, result)
+	if !result.Valid {
+		t.Errorf("deal.stage_id set should be valid, got errors: %+v", result.Errors)
+	}
+}
+
+func TestValidateActions_UpdateRecord_DealStageNonSetRejected(t *testing.T) {
+	// Only "set" (move the deal to a stage) is meaningful — clear/add/etc. must fail
+	// at validation rather than surfacing as a runtime executor error.
+	for _, op := range []string{"clear", "add", "increment", "remove"} {
+		actions := []ActionSpec{
+			{Type: "update_record", ID: "ur1", Params: map[string]any{
+				"updates": []any{
+					map[string]any{"field": "deal.stage", "op": op, "value": "11111111-1111-1111-1111-111111111111"},
+				},
+			}},
+		}
+		data, _ := json.Marshal(actions)
+		result := &ValidationResult{Valid: true}
+		validateActions(data, result)
+		if result.Valid {
+			t.Errorf("deal.stage op '%s' should be rejected (set-only)", op)
+		}
+	}
+}

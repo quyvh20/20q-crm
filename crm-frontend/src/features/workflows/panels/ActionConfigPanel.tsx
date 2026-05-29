@@ -306,12 +306,15 @@ interface FieldUpdateEntry {
 
 /** Which operations are valid for each field type */
 function getOperationsForFieldType(fieldType: string, pickerType?: string): UpdateOperation[] {
+  // Deal stage: managed field — moving to a stage is the only meaningful op.
+  // The backend routes this through changeDealStage (activity log + won/lost flags).
+  if (pickerType === 'stage') return ['set'];
   // Tags / array: all array ops
   if (pickerType === 'tag') return ['set', 'add', 'remove', 'clear'];
   if (fieldType === 'array') return ['set', 'add', 'remove', 'clear'];
   // Numbers: set, add (→set), increment, decrement, clear
   if (fieldType === 'number') return ['set', 'add', 'increment', 'decrement', 'clear'];
-  // Scalars (string, boolean, select, date, user, stage):
+  // Scalars (string, boolean, select, date, user):
   // set, add (→set fallback), clear. 'remove' excluded for scalars.
   return ['set', 'add', 'clear'];
 }

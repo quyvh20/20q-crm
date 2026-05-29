@@ -381,6 +381,11 @@ func (e *UpdateRecordExecutor) executeDeal(ctx context.Context, run *WorkflowRun
 			var result map[string]any
 			var err error
 			switch {
+			case field == "stage" || field == "stage_id":
+				// Stage changes route through changeDealStage semantics (P14) so they
+				// record an activity log + is_won/is_lost/closed_at, identical to a
+				// stage change made via the CRM UI — never a bare stage_id column write.
+				result, err = e.handleDealStageChange(ctx, tx, run, did, op, updateParams, evalCtx)
 			case strings.HasPrefix(field, "custom_fields."):
 				cfKey := strings.TrimPrefix(field, "custom_fields.")
 				result, err = e.handleCustomField(ctx, tx, "deals", run.OrgID, did, cfKey, op, updateParams, evalCtx)
@@ -465,19 +470,109 @@ func (e *UpdateRecordExecutor) handleContactColumn(ctx context.Context, tx *gorm
 }
 
 // handleDealColumn updates a direct column on the deals table.
+//
+// stage_id is intentionally absent: stage changes are handled by
+// handleDealStageChange so they preserve the activity log + won/lost flags.
 func (e *UpdateRecordExecutor) handleDealColumn(ctx context.Context, tx *gorm.DB, orgID, dealID uuid.UUID, field, op string, params map[string]any, evalCtx EvalContext) (map[string]any, error) {
 	columnMap := map[string]string{
-		"title":           "title",
-		"value":           "value",
-		"probability":     "probability",
-		"stage_id":        "stage_id",
-		"contact_id":      "contact_id",
-		"company_id":      "company_id",
-		"owner_user_id":   "owner_user_id",
-		"is_won":          "is_won",
-		"is_lost":         "is_lost",
+		"title":         "title",
+		"value":         "value",
+		"probability":   "probability",
+		"contact_id":    "contact_id",
+		"company_id":    "company_id",
+		"owner_user_id": "owner_user_id",
+		"is_won":        "is_won",
+		"is_lost":       "is_lost",
 	}
 	return e.handleGenericColumn(ctx, tx, "deals", columnMap, orgID, dealID, field, op, params, evalCtx)
+}
+
+// handleDealStageChange moves a deal to a new pipeline stage and records the same
+// side effects a normal stage change produces: is_won / is_lost / closed_at flags
+// and an auto-created "stage_change" activity. This mirrors dealUseCase.ChangeStage
+// so a stage change driven by automation is indistinguishable from one made through
+// the CRM UI (P14).
+//
+// Runs inside the caller's transaction (tx) so it commits/rolls back atomically with
+// sibling field updates. Like the rest of this executor, it uses direct SQL and does
+// NOT emit a deal_stage_changed event — that is what stops a stage-change automation
+// from re-triggering itself (see the infinite-loop note on Execute).
+//
+// Only "set" is supported: the value is the target stage's UUID (the StageDropdown in
+// the builder emits the stage ID).
+func (e *UpdateRecordExecutor) handleDealStageChange(ctx context.Context, tx *gorm.DB, run *WorkflowRun, dealID uuid.UUID, op string, params map[string]any, evalCtx EvalContext) (map[string]any, error) {
+	orgID := run.OrgID
+	if op != "set" {
+		return nil, fmt.Errorf("stage only supports the 'set' operation, got '%s'", op)
+	}
+
+	stageIDStr := getStringParam(params, "value", evalCtx)
+	if stageIDStr == "" {
+		return nil, fmt.Errorf("'value' (target stage ID) is required to change the stage")
+	}
+	stageID, err := uuid.Parse(stageIDStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid stage ID '%s': %w", stageIDStr, err)
+	}
+
+	// Load the target stage (scoped to org) for its name + won/lost flags.
+	var stage struct {
+		Name   string `gorm:"column:name"`
+		IsWon  bool   `gorm:"column:is_won"`
+		IsLost bool   `gorm:"column:is_lost"`
+		Found  bool   `gorm:"column:found"`
+	}
+	if err := tx.WithContext(ctx).
+		Table("pipeline_stages").
+		Select("name, is_won, is_lost, true AS found").
+		Where("id = ? AND org_id = ? AND deleted_at IS NULL", stageID, orgID).
+		Scan(&stage).Error; err != nil {
+		return nil, fmt.Errorf("load target stage: %w", err)
+	}
+	if !stage.Found {
+		return nil, fmt.Errorf("stage %s not found in org %s", stageID, orgID.String())
+	}
+
+	// Build the deal update — mirror dealUseCase.ChangeStage side effects.
+	updateCols := map[string]any{
+		"stage_id":   stageID,
+		"updated_at": gorm.Expr("NOW()"),
+	}
+	activityTitle := fmt.Sprintf("Stage changed to %s", stage.Name)
+	if stage.IsWon {
+		updateCols["is_won"] = true
+		updateCols["closed_at"] = gorm.Expr("NOW()")
+		activityTitle = "Deal won! 🏆"
+	} else if stage.IsLost {
+		updateCols["is_lost"] = true
+		updateCols["closed_at"] = gorm.Expr("NOW()")
+		activityTitle = "Deal lost"
+	}
+
+	if err := tx.WithContext(ctx).
+		Table("deals").
+		Where("id = ? AND org_id = ?", dealID, orgID).
+		Updates(updateCols).Error; err != nil {
+		return nil, fmt.Errorf("update stage: %w", err)
+	}
+
+	// Auto-create the stage_change activity (same type the UI path records).
+	if err := tx.WithContext(ctx).Exec(
+		`INSERT INTO activities (id, org_id, type, deal_id, title, occurred_at, created_at, updated_at)
+		 VALUES (?, ?, 'stage_change', ?, ?, NOW(), NOW(), NOW())`,
+		uuid.New(), orgID, dealID, activityTitle,
+	).Error; err != nil {
+		return nil, fmt.Errorf("create stage_change activity: %w", err)
+	}
+
+	return map[string]any{
+		"field":    "stage",
+		"op":       "set",
+		"stage_id": stageID.String(),
+		"is_won":   stage.IsWon,
+		"is_lost":  stage.IsLost,
+		"activity": activityTitle,
+	}, nil
 }
 
 // handleGenericColumn updates a direct column on any table.

@@ -731,16 +731,19 @@ var contactFieldTypes = map[string]string{
 }
 
 // dealFieldTypes maps built-in deal column paths to their data types.
+//
+// "stage"/"stage_id" are intentionally absent — the deal stage is a managed field
+// handled by a dedicated branch in validateUpdateFieldSchema (set-only) and routed
+// through handleDealStageChange at execution time for activity logging.
 var dealFieldTypes = map[string]string{
-	"title":           "string",
-	"value":           "number",
-	"probability":     "number",
-	"stage_id":        "string",
-	"contact_id":      "string",
-	"company_id":      "string",
-	"owner_user_id":   "string",
-	"is_won":          "boolean",
-	"is_lost":         "boolean",
+	"title":         "string",
+	"value":         "number",
+	"probability":   "number",
+	"contact_id":    "string",
+	"company_id":    "string",
+	"owner_user_id": "string",
+	"is_won":        "boolean",
+	"is_lost":       "boolean",
 }
 
 // opsValidForType defines which operations are valid per field type.
@@ -786,6 +789,22 @@ func validateUpdateFieldSchema(fieldPath, op string, value any, uPath string, re
 	// (their fields are dynamic JSONB, not static columns)
 	if isCustomObject {
 		// Still validate op is valid
+		return
+	}
+
+	// Deal stage is a managed field (P14). The builder exposes it as "deal.stage"
+	// (picker_type=stage); it maps to the stage_id column and triggers the same
+	// is_won/is_lost/closed_at + activity side effects as a normal stage change.
+	// Both the "deal.stage" path and the legacy "deal.stage_id" path are accepted,
+	// and only "set" (move the deal to a stage) is meaningful.
+	if entity == "deal" && (field == "stage" || field == "stage_id") {
+		if op != "set" {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   uPath + ".op",
+				Message: fmt.Sprintf("deal stage only supports the 'set' operation, got '%s'", op),
+			})
+		}
 		return
 	}
 
