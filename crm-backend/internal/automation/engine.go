@@ -168,12 +168,22 @@ func (e *Engine) TriggerEvent(ctx context.Context, orgID uuid.UUID, eventType st
 	}()
 }
 
+// isInternalUpdate reports whether a trigger payload was produced by the automation
+// engine itself (e.g. an update_record action mutating the triggering entity). Such
+// events must not re-trigger workflows, or a "modify the entity on change" workflow
+// would loop forever (contact_updated → update_record → contact_updated → ∞). The
+// payload must carry _internal_update=true (a real bool) to be treated as internal.
+func isInternalUpdate(payload map[string]any) bool {
+	internal, ok := payload["_internal_update"].(bool)
+	return ok && internal
+}
+
 func (e *Engine) triggerEventInternal(ctx context.Context, orgID uuid.UUID, eventType string, payload map[string]any) error {
 	// ── Infinite-loop guard ────────────────────────────────────────────
 	// If the event was caused by the automation engine itself (e.g. an
 	// update_contact action modifying a contact), skip re-triggering to
 	// prevent contact_updated → update_contact → contact_updated → ∞.
-	if internal, ok := payload["_internal_update"].(bool); ok && internal {
+	if isInternalUpdate(payload) {
 		e.logger.Debug("automation: skipping re-trigger (internal update)",
 			"event_type", eventType,
 			"org_id", orgID.String(),

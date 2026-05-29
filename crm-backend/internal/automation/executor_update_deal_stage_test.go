@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
 
@@ -328,4 +330,146 @@ func TestUpdateRecord_DealStageChange_UnknownStageRolledBack(t *testing.T) {
 	var count int64
 	require.NoError(t, db.Table("activities").Where("deal_id = ?", dealID).Count(&count).Error)
 	assert.Equal(t, int64(0), count, "no activity should be written on failure")
+}
+
+// TestUpdateRecord_DealStageChange_DoesNotReTrigger is the infinite-loop guard (the
+// "does not emit trigger" guarantee): a workflow triggered by deal_stage_changed whose
+// action moves the deal to another stage must not cause itself — or any other
+// deal_stage_changed workflow — to fire again. The stage change is applied via direct
+// SQL inside the executor and emits no event, so processing the single run created by a
+// genuine trigger must leave exactly one run. Without this, a "move stage on stage
+// change" workflow would loop forever.
+func TestUpdateRecord_DealStageChange_DoesNotReTrigger(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	seedDealStageTables(t, db)
+
+	orgID := uuid.New()
+	leadStageID := uuid.New()
+	wonStageID := uuid.New()
+	dealID := uuid.New()
+
+	require.NoError(t, db.Exec(`INSERT INTO pipeline_stages (id, org_id, name, position, is_won) VALUES (?, ?, 'Lead', 0, false)`, leadStageID, orgID).Error)
+	require.NoError(t, db.Exec(`INSERT INTO pipeline_stages (id, org_id, name, position, is_won) VALUES (?, ?, 'Closed Won', 1, true)`, wonStageID, orgID).Error)
+	require.NoError(t, db.Exec(`INSERT INTO deals (id, org_id, title, stage_id) VALUES (?, ?, 'Acme', ?)`, dealID, orgID, leadStageID).Error)
+
+	// Active workflow: on any deal_stage_changed → move the deal to the won stage.
+	// Trigger has no params, so the engine's from/to stage filter is a no-op.
+	trigger, _ := json.Marshal(map[string]any{"type": TriggerDealStageChanged})
+	actions, _ := json.Marshal([]ActionSpec{
+		{ID: "ur1", Type: ActionUpdateRecord, Params: map[string]any{
+			"updates": []any{
+				map[string]any{"field": "deal.stage", "op": "set", "value": wonStageID.String()},
+			},
+		}},
+	})
+	wf := &Workflow{
+		ID: uuid.New(), OrgID: orgID, Name: "move-stage-on-stage-change",
+		IsActive: true, Trigger: datatypes.JSON(trigger), Actions: datatypes.JSON(actions),
+		Version: 1, CreatedBy: uuid.New(),
+	}
+	require.NoError(t, db.Create(wf).Error)
+	require.NoError(t, db.Create(&WorkflowVersion{
+		ID: uuid.New(), WorkflowID: wf.ID, Version: 1,
+		Trigger: wf.Trigger, Actions: wf.Actions, CreatedAt: time.Now(),
+	}).Error)
+
+	repo := NewRepository(db)
+	engine := makeEngine(db, map[string]ActionExecutor{
+		ActionUpdateRecord: NewUpdateRecordExecutor(db),
+	})
+	defer engine.cancel()
+
+	// Fire a genuine (external, no _internal_update) deal_stage_changed trigger.
+	// This must create exactly one run — also confirming the workflow is wired to fire,
+	// so the "still one run" assertion below is the loop guard, not a misconfiguration.
+	payload := map[string]any{
+		"entity_id": dealID.String(),
+		"deal":      map[string]any{"id": dealID.String()},
+		"trigger":   map[string]any{"type": TriggerDealStageChanged},
+	}
+	require.NoError(t, engine.triggerEventInternal(context.Background(), orgID, TriggerDealStageChanged, payload))
+
+	var runs []WorkflowRun
+	require.NoError(t, db.Where("workflow_id = ?", wf.ID).Find(&runs).Error)
+	require.Len(t, runs, 1, "the external trigger must create exactly one run")
+
+	// Process the run — its update_record action moves the deal's stage.
+	engine.processRun(runs[0].ID)
+
+	// The action actually ran: deal moved to the won stage (proves we're testing a real
+	// stage change, not a no-op).
+	var deal struct {
+		StageID *uuid.UUID `gorm:"column:stage_id"`
+		IsWon   bool       `gorm:"column:is_won"`
+	}
+	require.NoError(t, db.Table("deals").Select("stage_id, is_won").Where("id = ?", dealID).Scan(&deal).Error)
+	require.NotNil(t, deal.StageID)
+	assert.Equal(t, wonStageID, *deal.StageID, "deal should have moved to the won stage")
+	assert.True(t, deal.IsWon)
+
+	finalRun, err := repo.GetRunByID(context.Background(), runs[0].ID)
+	require.NoError(t, err)
+	assert.Equal(t, StatusCompleted, finalRun.Status)
+
+	// The guard: the stage change must NOT have re-triggered deal_stage_changed.
+	var runCount int64
+	require.NoError(t, db.Model(&WorkflowRun{}).Where("workflow_id = ?", wf.ID).Count(&runCount).Error)
+	assert.Equal(t, int64(1), runCount,
+		"a stage change made by the workflow must not create a second run (no infinite loop)")
+}
+
+// TestUpdateRecord_DealScalarColumnSet_NoSideEffects verifies a plain non-stage column
+// update (set deal.title) is written directly via handleDealColumn and carries NONE of
+// the managed stage-change side effects: no is_won/is_lost/closed_at change, and no
+// activity row. Only the stage field gets the managed path — this pins that boundary.
+func TestUpdateRecord_DealScalarColumnSet_NoSideEffects(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	seedDealStageTables(t, db)
+
+	orgID := uuid.New()
+	dealID := uuid.New()
+	require.NoError(t, db.Exec(`INSERT INTO deals (id, org_id, title) VALUES (?, ?, 'Old title')`, dealID, orgID).Error)
+
+	exec := NewUpdateRecordExecutor(db)
+	run := &WorkflowRun{ID: uuid.New(), WorkflowID: uuid.New(), OrgID: orgID}
+	action := ActionSpec{Type: ActionUpdateRecord, ID: "ur1", Params: map[string]any{
+		"updates": []any{
+			map[string]any{"field": "deal.title", "op": "set", "value": "New title"},
+		},
+	}}
+	evalCtx := EvalContext{
+		Deal:    map[string]any{"id": dealID.String()},
+		Trigger: map[string]any{"type": "deal_updated"},
+	}
+
+	_, err := exec.Execute(context.Background(), run, action, evalCtx)
+	require.NoError(t, err)
+
+	var deal struct {
+		Title    string  `gorm:"column:title"`
+		IsWon    bool    `gorm:"column:is_won"`
+		IsLost   bool    `gorm:"column:is_lost"`
+		ClosedAt *string `gorm:"column:closed_at"`
+	}
+	require.NoError(t, db.Table("deals").
+		Select("title, is_won, is_lost, closed_at").
+		Where("id = ?", dealID).Scan(&deal).Error)
+	assert.Equal(t, "New title", deal.Title, "title column should be updated directly")
+	assert.False(t, deal.IsWon, "a non-stage update must not set is_won")
+	assert.False(t, deal.IsLost, "a non-stage update must not set is_lost")
+	assert.Nil(t, deal.ClosedAt, "a non-stage update must not set closed_at")
+
+	var activityCount int64
+	require.NoError(t, db.Table("activities").Where("deal_id = ?", dealID).Count(&activityCount).Error)
+	assert.Equal(t, int64(0), activityCount, "a non-stage column update must not create a stage_change activity")
 }

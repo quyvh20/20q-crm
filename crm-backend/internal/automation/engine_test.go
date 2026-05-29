@@ -27,6 +27,34 @@ func TestIsRetryable(t *testing.T) {
 	})
 }
 
+// TestIsInternalUpdate pins the infinite-loop guard predicate: only a payload carrying
+// _internal_update=true (a real bool) is treated as engine-originated and skipped from
+// re-triggering. This runs without a DB/Docker, so unlike the end-to-end stage-change
+// loop test it executes in CI under -short.
+func TestIsInternalUpdate(t *testing.T) {
+	t.Run("true → internal", func(t *testing.T) {
+		assert.True(t, isInternalUpdate(map[string]any{"_internal_update": true}))
+	})
+
+	t.Run("false → external", func(t *testing.T) {
+		assert.False(t, isInternalUpdate(map[string]any{"_internal_update": false}))
+	})
+
+	t.Run("absent → external", func(t *testing.T) {
+		assert.False(t, isInternalUpdate(map[string]any{"deal": map[string]any{"id": "x"}}))
+	})
+
+	t.Run("nil payload → external", func(t *testing.T) {
+		assert.False(t, isInternalUpdate(nil))
+	})
+
+	t.Run("wrong type (string \"true\") → external", func(t *testing.T) {
+		// Defends against a JSON payload where the flag arrived as a string — it must
+		// NOT count as internal, or a real external event could be silently dropped.
+		assert.False(t, isInternalUpdate(map[string]any{"_internal_update": "true"}))
+	})
+}
+
 func TestBackoff(t *testing.T) {
 	assert.Equal(t, 30*time.Second, backoff(1))
 	assert.Equal(t, 2*time.Minute, backoff(2))
