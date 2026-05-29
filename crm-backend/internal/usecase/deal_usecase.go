@@ -116,6 +116,12 @@ func (uc *dealUseCase) Delete(ctx context.Context, orgID, id uuid.UUID) error {
 // ChangeStage — core business logic with auto-activity creation
 // ============================================================
 
+// KEEP IN SYNC: the stage side-effects below (is_won/is_lost/closed_at + the
+// "stage_change" activity) are mirrored by the workflow automation path,
+// automation.UpdateRecordExecutor.handleDealStageChange, which applies them via
+// raw SQL inside its own transaction (it cannot reuse this method without breaking
+// that transaction boundary — see the note there). If you change the side-effects
+// here, update handleDealStageChange too.
 func (uc *dealUseCase) ChangeStage(ctx context.Context, orgID, dealID uuid.UUID, input domain.UpdateDealStageInput) (*domain.Deal, error) {
 	deal, err := uc.dealRepo.GetByID(ctx, orgID, dealID)
 	if err != nil || deal == nil {

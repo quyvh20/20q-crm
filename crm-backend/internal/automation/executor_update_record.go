@@ -492,14 +492,19 @@ func (e *UpdateRecordExecutor) handleDealColumn(ctx context.Context, tx *gorm.DB
 
 // handleDealStageChange moves a deal to a new pipeline stage and records the same
 // side effects a normal stage change produces: is_won / is_lost / closed_at flags
-// and an auto-created "stage_change" activity. This mirrors dealUseCase.ChangeStage
-// so a stage change driven by automation is indistinguishable from one made through
-// the CRM UI (P14).
+// and an auto-created "stage_change" activity, so a stage change driven by automation
+// is indistinguishable from one made through the CRM UI (P14).
+//
+// KEEP IN SYNC: these side-effects intentionally duplicate dealUseCase.ChangeStage.
+// We do NOT call that method because (1) it runs on its own db-bound repos, so calling
+// it would commit the stage change outside this executor's transaction and break the
+// all-or-nothing guarantee across a multi-field updates[] array, and (2) it would
+// invert layering (the engine holds only *gorm.DB, no usecase). If you change the
+// stage side-effects in ChangeStage, change them here too. The drift is guarded by
+// the TestUpdateRecord_DealStageChange_* integration tests.
 //
 // Runs inside the caller's transaction (tx) so it commits/rolls back atomically with
-// sibling field updates. Like the rest of this executor, it uses direct SQL and does
-// NOT emit a deal_stage_changed event — that is what stops a stage-change automation
-// from re-triggering itself (see the infinite-loop note on Execute).
+// sibling field updates, via direct SQL — like the rest of this executor.
 //
 // Only "set" is supported: the value is the target stage's UUID (the StageDropdown in
 // the builder emits the stage ID).

@@ -129,6 +129,70 @@ func TestUpdateRecord_DealStageChange_WritesActivityLog(t *testing.T) {
 	assert.Equal(t, "Deal won! 🏆", *activities[0].Title)
 }
 
+// TestUpdateRecord_DealStageChange_PlainStage covers the non-won/non-lost branch:
+// moving to an ordinary stage sets stage_id, leaves is_won/is_lost/closed_at untouched,
+// and logs an activity titled "Stage changed to <name>". Together with the won-path
+// test this guards the side-effects that duplicate dealUseCase.ChangeStage.
+func TestUpdateRecord_DealStageChange_PlainStage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	seedDealStageTables(t, db)
+
+	orgID := uuid.New()
+	leadStageID := uuid.New()
+	negotiationStageID := uuid.New()
+	dealID := uuid.New()
+
+	require.NoError(t, db.Exec(`INSERT INTO pipeline_stages (id, org_id, name, position) VALUES (?, ?, 'Lead', 0)`, leadStageID, orgID).Error)
+	require.NoError(t, db.Exec(`INSERT INTO pipeline_stages (id, org_id, name, position) VALUES (?, ?, 'Negotiation', 1)`, negotiationStageID, orgID).Error)
+	require.NoError(t, db.Exec(`INSERT INTO deals (id, org_id, title, stage_id) VALUES (?, ?, 'Acme', ?)`, dealID, orgID, leadStageID).Error)
+
+	exec := NewUpdateRecordExecutor(db)
+	run := &WorkflowRun{ID: uuid.New(), WorkflowID: uuid.New(), OrgID: orgID}
+	action := ActionSpec{Type: ActionUpdateRecord, ID: "ur1", Params: map[string]any{
+		"updates": []any{
+			map[string]any{"field": "deal.stage", "op": "set", "value": negotiationStageID.String()},
+		},
+	}}
+	evalCtx := EvalContext{
+		Deal:    map[string]any{"id": dealID.String()},
+		Trigger: map[string]any{"type": "deal_updated"},
+	}
+
+	_, err := exec.Execute(context.Background(), run, action, evalCtx)
+	require.NoError(t, err)
+
+	var deal struct {
+		StageID  *uuid.UUID `gorm:"column:stage_id"`
+		IsWon    bool       `gorm:"column:is_won"`
+		IsLost   bool       `gorm:"column:is_lost"`
+		ClosedAt *string    `gorm:"column:closed_at"`
+	}
+	require.NoError(t, db.Table("deals").
+		Select("stage_id, is_won, is_lost, closed_at").
+		Where("id = ?", dealID).Scan(&deal).Error)
+	require.NotNil(t, deal.StageID)
+	assert.Equal(t, negotiationStageID, *deal.StageID)
+	assert.False(t, deal.IsWon, "a plain stage must not set is_won")
+	assert.False(t, deal.IsLost, "a plain stage must not set is_lost")
+	assert.Nil(t, deal.ClosedAt, "a plain stage must not set closed_at")
+
+	var activity struct {
+		Type  string  `gorm:"column:type"`
+		Title *string `gorm:"column:title"`
+	}
+	require.NoError(t, db.Table("activities").
+		Select("type, title").
+		Where("deal_id = ?", dealID).Scan(&activity).Error)
+	assert.Equal(t, "stage_change", activity.Type)
+	require.NotNil(t, activity.Title)
+	assert.Equal(t, "Stage changed to Negotiation", *activity.Title)
+}
+
 // TestUpdateRecord_DealNumericColumnIncrement verifies increment/decrement on the
 // built-in numeric columns (value, probability) actually mutates the row — the
 // validator already permitted these ops; this is the executor side that now matches.
