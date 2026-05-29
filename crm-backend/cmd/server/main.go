@@ -28,6 +28,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 func main() {
@@ -134,10 +135,23 @@ func main() {
 	}()
 	log.Info("Server listening (health endpoint ready)", zap.String("port", cfg.Port))
 
-	// ── Phase 2: Connect to services (may be slow on cold start) ──
-	db, err := database.NewConnection(cfg.DatabaseURL)
+	// ── Phase 2: Connect to services (retry on cold start) ──
+	var db *gorm.DB
+	for attempt := 1; attempt <= 5; attempt++ {
+		db, err = database.NewConnection(cfg.DatabaseURL)
+		if err == nil {
+			break
+		}
+		wait := time.Duration(1<<uint(attempt)) * time.Second // 2s, 4s, 8s, 16s, 32s
+		log.Warn("Database connection failed, retrying...",
+			zap.Int("attempt", attempt),
+			zap.Duration("backoff", wait),
+			zap.Error(err),
+		)
+		time.Sleep(wait)
+	}
 	if err != nil {
-		log.Fatal("Failed to connect to database", zap.Error(err))
+		log.Fatal("Failed to connect to database after 5 attempts", zap.Error(err))
 	}
 	if db != nil {
 		log.Info("Database connection established")
@@ -186,7 +200,7 @@ func main() {
 
 	redisClient, err := cache.NewRedisClient(cfg.RedisURL)
 	if err != nil {
-		log.Fatal("Failed to connect to Redis", zap.Error(err))
+		log.Warn("Redis connection failed, continuing without cache", zap.Error(err))
 	}
 	if redisClient != nil {
 		log.Info("Redis connection established")
