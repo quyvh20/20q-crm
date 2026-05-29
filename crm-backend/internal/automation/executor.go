@@ -100,6 +100,21 @@ func getIntParam(params map[string]any, key string) int {
 	}
 }
 
+// resolveNumericParam extracts a numeric param as float64, interpolating templates
+// for string values (e.g. "{{trigger.amount}}"). Returns ok=false when the param is
+// missing or not coercible to a number. Used for increment/decrement deltas, where a
+// fractional amount (money) must survive — unlike getIntParam.
+func resolveNumericParam(params map[string]any, key string, evalCtx EvalContext) (float64, bool) {
+	val, ok := params[key]
+	if !ok {
+		return 0, false
+	}
+	if s, isStr := val.(string); isStr {
+		val = InterpolateTemplate(s, evalCtx)
+	}
+	return toFloat64(val)
+}
+
 // getMapParam extracts a map[string]string param with template interpolation.
 func getMapParam(params map[string]any, key string, evalCtx EvalContext) map[string]string {
 	val, ok := params[key]

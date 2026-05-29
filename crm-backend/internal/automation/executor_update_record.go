@@ -457,6 +457,7 @@ func (e *UpdateRecordExecutor) parseUpdates(params map[string]any) ([]FieldUpdat
 }
 
 // handleContactColumn updates a direct column on the contacts table.
+// Contacts have no numeric columns, so increment/decrement is never valid here.
 func (e *UpdateRecordExecutor) handleContactColumn(ctx context.Context, tx *gorm.DB, orgID, contactID uuid.UUID, field, op string, params map[string]any, evalCtx EvalContext) (map[string]any, error) {
 	columnMap := map[string]string{
 		"first_name":    "first_name",
@@ -466,7 +467,7 @@ func (e *UpdateRecordExecutor) handleContactColumn(ctx context.Context, tx *gorm
 		"owner_user_id": "owner_user_id",
 		"company_id":    "company_id",
 	}
-	return e.handleGenericColumn(ctx, tx, "contacts", columnMap, orgID, contactID, field, op, params, evalCtx)
+	return e.handleGenericColumn(ctx, tx, "contacts", columnMap, nil, orgID, contactID, field, op, params, evalCtx)
 }
 
 // handleDealColumn updates a direct column on the deals table.
@@ -484,7 +485,9 @@ func (e *UpdateRecordExecutor) handleDealColumn(ctx context.Context, tx *gorm.DB
 		"is_won":        "is_won",
 		"is_lost":       "is_lost",
 	}
-	return e.handleGenericColumn(ctx, tx, "deals", columnMap, orgID, dealID, field, op, params, evalCtx)
+	// value (money) and probability (0-100) are numeric → support increment/decrement.
+	numericCols := map[string]bool{"value": true, "probability": true}
+	return e.handleGenericColumn(ctx, tx, "deals", columnMap, numericCols, orgID, dealID, field, op, params, evalCtx)
 }
 
 // handleDealStageChange moves a deal to a new pipeline stage and records the same
@@ -576,7 +579,11 @@ func (e *UpdateRecordExecutor) handleDealStageChange(ctx context.Context, tx *go
 }
 
 // handleGenericColumn updates a direct column on any table.
-func (e *UpdateRecordExecutor) handleGenericColumn(ctx context.Context, tx *gorm.DB, table string, columnMap map[string]string, orgID, recordID uuid.UUID, field, op string, params map[string]any, evalCtx EvalContext) (map[string]any, error) {
+//
+// numericCols lists the columns that accept increment/decrement (a delta added to
+// COALESCE(col, 0)). Columns absent from it reject increment/decrement, matching
+// the validator's type rules (numeric fields only).
+func (e *UpdateRecordExecutor) handleGenericColumn(ctx context.Context, tx *gorm.DB, table string, columnMap map[string]string, numericCols map[string]bool, orgID, recordID uuid.UUID, field, op string, params map[string]any, evalCtx EvalContext) (map[string]any, error) {
 	column, ok := columnMap[field]
 	if !ok {
 		valid := make([]string, 0, len(columnMap))
@@ -604,7 +611,24 @@ func (e *UpdateRecordExecutor) handleGenericColumn(ctx context.Context, tx *gorm
 		}
 		return map[string]any{"field": field, "op": "clear"}, nil
 	case "increment", "decrement":
-		return nil, fmt.Errorf("'%s' is not supported on column field '%s' (use on number custom fields)", op, field)
+		if !numericCols[field] {
+			return nil, fmt.Errorf("'%s' is not supported on non-numeric column field '%s' (use on a number field or number custom field)", op, field)
+		}
+		delta, ok := resolveNumericParam(params, "value", evalCtx)
+		if !ok {
+			return nil, fmt.Errorf("'%s' on column '%s' requires a numeric 'value'", op, field)
+		}
+		if op == "decrement" {
+			delta = -delta
+		}
+		// column comes from the hardcoded columnMap (not user input) → safe to embed.
+		err := tx.WithContext(ctx).Table(table).
+			Where("id = ? AND org_id = ?", recordID, orgID).
+			Update(column, gorm.Expr("COALESCE("+column+", 0) + ?", delta)).Error
+		if err != nil {
+			return nil, fmt.Errorf("%s error: %w", op, err)
+		}
+		return map[string]any{"field": field, "op": op, "delta": delta}, nil
 	case "remove":
 		return nil, fmt.Errorf("'remove' is not supported on scalar column field '%s'", field)
 	default:

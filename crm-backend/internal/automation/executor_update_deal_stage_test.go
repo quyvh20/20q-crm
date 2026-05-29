@@ -129,6 +129,50 @@ func TestUpdateRecord_DealStageChange_WritesActivityLog(t *testing.T) {
 	assert.Equal(t, "Deal won! 🏆", *activities[0].Title)
 }
 
+// TestUpdateRecord_DealNumericColumnIncrement verifies increment/decrement on the
+// built-in numeric columns (value, probability) actually mutates the row — the
+// validator already permitted these ops; this is the executor side that now matches.
+// A fractional delta must survive on the money column.
+func TestUpdateRecord_DealNumericColumnIncrement(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	seedDealStageTables(t, db)
+
+	orgID := uuid.New()
+	dealID := uuid.New()
+	require.NoError(t, db.Exec(`INSERT INTO deals (id, org_id, title, value, probability) VALUES (?, ?, 'Acme', 1000.00, 40)`, dealID, orgID).Error)
+
+	exec := NewUpdateRecordExecutor(db)
+	run := &WorkflowRun{ID: uuid.New(), WorkflowID: uuid.New(), OrgID: orgID}
+	action := ActionSpec{Type: ActionUpdateRecord, ID: "ur1", Params: map[string]any{
+		"updates": []any{
+			map[string]any{"field": "deal.value", "op": "increment", "value": 250.50},
+			map[string]any{"field": "deal.probability", "op": "decrement", "value": 15},
+		},
+	}}
+	evalCtx := EvalContext{
+		Deal:    map[string]any{"id": dealID.String()},
+		Trigger: map[string]any{"type": "deal_updated"},
+	}
+
+	_, err := exec.Execute(context.Background(), run, action, evalCtx)
+	require.NoError(t, err)
+
+	var deal struct {
+		Value       float64 `gorm:"column:value"`
+		Probability int     `gorm:"column:probability"`
+	}
+	require.NoError(t, db.Table("deals").
+		Select("value, probability").
+		Where("id = ?", dealID).Scan(&deal).Error)
+	assert.InDelta(t, 1250.50, deal.Value, 0.001, "value should increment by the fractional delta")
+	assert.Equal(t, 25, deal.Probability, "probability should decrement by 15")
+}
+
 // TestUpdateRecord_DealStageChange_UnknownStageRolledBack verifies that pointing at a
 // stage from another org (or a non-existent one) fails and writes nothing — no deal
 // mutation, no orphan activity.

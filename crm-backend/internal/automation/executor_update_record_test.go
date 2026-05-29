@@ -561,6 +561,51 @@ func TestValidateActions_UpdateRecord_DealStageIDLegacyValid(t *testing.T) {
 	}
 }
 
+func TestValidateActions_UpdateRecord_DealValueIncrementValid(t *testing.T) {
+	// deal.value / deal.probability are numeric columns: increment/decrement is valid
+	// at validation AND now executes (handleGenericColumn supports numeric columns).
+	for _, tc := range []struct {
+		field string
+		op    string
+	}{
+		{"deal.value", "increment"},
+		{"deal.value", "decrement"},
+		{"deal.probability", "increment"},
+	} {
+		actions := []ActionSpec{
+			{Type: "update_record", ID: "ur1", Params: map[string]any{
+				"updates": []any{
+					map[string]any{"field": tc.field, "op": tc.op, "value": 10},
+				},
+			}},
+		}
+		data, _ := json.Marshal(actions)
+		result := &ValidationResult{Valid: true}
+		validateActions(data, result)
+		if !result.Valid {
+			t.Errorf("%s %s should be valid, got errors: %+v", tc.field, tc.op, result.Errors)
+		}
+	}
+}
+
+func TestValidateActions_UpdateRecord_DealStringIncrementRejected(t *testing.T) {
+	// increment on a non-numeric column (title is a string) is rejected at validation;
+	// handleGenericColumn's numericCols guard is the defense-in-depth backstop.
+	actions := []ActionSpec{
+		{Type: "update_record", ID: "ur1", Params: map[string]any{
+			"updates": []any{
+				map[string]any{"field": "deal.title", "op": "increment", "value": 1},
+			},
+		}},
+	}
+	data, _ := json.Marshal(actions)
+	result := &ValidationResult{Valid: true}
+	validateActions(data, result)
+	if result.Valid {
+		t.Fatal("expected invalid: cannot increment a string column 'deal.title'")
+	}
+}
+
 func TestValidateActions_UpdateRecord_DealStageNonSetRejected(t *testing.T) {
 	// Only "set" (move the deal to a stage) is meaningful — clear/add/etc. must fail
 	// at validation rather than surfacing as a runtime executor error.
