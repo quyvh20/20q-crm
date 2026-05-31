@@ -5,7 +5,7 @@ import { z } from 'zod';
 // ============================================================
 
 const groupOps = ['AND', 'OR'] as const;
-const actionTypes = ['send_email', 'create_task', 'assign_user', 'send_webhook', 'delay', 'update_record'] as const;
+const actionTypes = ['send_email', 'create_task', 'assign_user', 'send_webhook', 'delay', 'update_record', 'log_activity'] as const;
 
 export const triggerSpecSchema = z.object({
   type: z.string().min(1, 'Trigger type is required'),
