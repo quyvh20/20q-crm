@@ -19,6 +19,8 @@ function getStepSummary(step: WorkflowStep): string | null {
       return action.params.subject ? String(action.params.subject) : null;
     case 'send_webhook':
       return action.params.url ? String(action.params.url) : null;
+    case 'log_activity':
+      return action.params.title ? String(action.params.title) : null;
     default:
       return typeof action.params.title === 'string' && action.params.title ? action.params.title : null;
   }

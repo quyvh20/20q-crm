@@ -106,6 +106,9 @@ func (e *Engine) Start() {
 		e.executors[ActionUpdateRecord] = executor
 		e.executors[ActionUpdateContact] = executor // backward compat
 	}
+	if _, ok := e.executors[ActionLogActivity]; !ok {
+		e.executors[ActionLogActivity] = NewActivityExecutor(e.db)
+	}
 
 	// Run migrations
 	if err := e.repo.AutoMigrate(); err != nil {

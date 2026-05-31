@@ -200,6 +200,7 @@ const (
 	ActionSendWebhook    = "send_webhook"
 	ActionDelay          = "delay"
 	ActionUpdateRecord   = "update_record"
+	ActionLogActivity    = "log_activity"
 	ActionUpdateContact  = "update_contact" // DEPRECATED alias: kept for backward compat with saved workflows
 )
 
@@ -322,5 +323,14 @@ var ValidActionTypes = map[string]bool{
 	ActionSendWebhook:   true,
 	ActionDelay:         true,
 	ActionUpdateRecord:  true,
+	ActionLogActivity:   true,
 	ActionUpdateContact: true, // backward compat
+}
+
+// validActivityTypes is the set of user-selectable activity types for the
+// log_activity action, shared by the validator and the executor. The activities
+// enum also includes "stage_change", which is system-managed and intentionally
+// excluded here.
+var validActivityTypes = map[string]bool{
+	"call": true, "meeting": true, "note": true, "email": true,
 }

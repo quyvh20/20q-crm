@@ -33,6 +33,7 @@ export const ActionConfigPanel: React.FC = () => {
       {action.type === 'send_webhook' && <WebhookParams action={action} setParam={setParam} />}
       {action.type === 'delay' && <DelayParams action={action} setParam={setParam} />}
       {action.type === 'update_record' && <UpdateRecordParams action={action} setParam={setParam} />}
+      {action.type === 'log_activity' && <ActivityParams action={action} setParam={setParam} />}
       {/* backward compat for saved workflows */}
       {(action.type as string) === 'update_contact' && <UpdateRecordParams action={action} setParam={setParam} />}
 
@@ -65,6 +66,62 @@ const EmailParams: React.FC<ParamProps> = ({ action, setParam }) => (
     />
   </div>
 );
+
+// --- Log Activity params ---
+
+const ACTIVITY_TYPES = [
+  { value: 'call',    label: 'Call',    icon: '📞' },
+  { value: 'meeting', label: 'Meeting', icon: '🤝' },
+  { value: 'note',    label: 'Note',    icon: '📝' },
+  { value: 'email',   label: 'Email',   icon: '✉️' },
+] as const;
+
+const ActivityParams: React.FC<ParamProps> = ({ action, setParam }) => {
+  const raw = String(action.params.activity_type || '');
+  // Unknown/absent values display Note as selected (Req 5.5)
+  const selected = ACTIVITY_TYPES.some((t) => t.value === raw) ? raw : 'note';
+
+  return (
+    <div className="space-y-3">
+      {/* Type picker — segmented buttons (Req 5.1, 5.2, 5.3, 5.4) */}
+      <div>
+        <label className="block text-sm text-gray-400 mb-1">Type</label>
+        <div className="flex rounded-lg overflow-hidden border border-gray-700">
+          {ACTIVITY_TYPES.map((t) => (
+            <button
+              key={t.value}
+              type="button"
+              onClick={() => setParam('activity_type', t.value)}
+              className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${
+                selected === t.value
+                  ? 'bg-emerald-500/20 text-emerald-300'
+                  : 'bg-gray-800 text-gray-400 hover:text-white'
+              }`}
+            >
+              {t.icon} {t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Title + Body — verbatim template storage via TemplateInput (Req 6) */}
+      <TemplateInput
+        label="Title"
+        value={String(action.params.title || '')}
+        onChange={(v) => setParam('title', v)}
+        placeholder="Logged a call with {{contact.first_name}}"
+      />
+      <TemplateInput
+        label="Body"
+        value={String(action.params.body || '')}
+        onChange={(v) => setParam('body', v)}
+        placeholder="Notes — click {x} to insert variables"
+        multiline
+        rows={4}
+      />
+    </div>
+  );
+};
 
 const TaskParams: React.FC<ParamProps> = ({ action, setParam }) => {
   const schema = useBuilderStore((s) => s.schema);

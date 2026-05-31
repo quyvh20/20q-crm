@@ -458,7 +458,7 @@ export const WorkflowBuilder: React.FC = () => {
   );
 };
 
-function getDefaultParams(type: string): Record<string, unknown> {
+export function getDefaultParams(type: string): Record<string, unknown> {
   switch (type) {
     case 'send_email':
       return { to: '', subject: '', body_html: '' };
@@ -470,6 +470,8 @@ function getDefaultParams(type: string): Record<string, unknown> {
       return { url: '', method: 'POST', timeout_sec: 10 };
     case 'delay':
       return { duration_sec: 60 };
+    case 'log_activity':
+      return { activity_type: 'note', title: '', body: '' };
     default:
       return {};
   }

@@ -57,6 +57,12 @@ crm-backend/stream_test.json
 *.ps1
 *.wav
 
+# Planning docs
+workflow_builder_improvement_plan.md
+
+# Specs
+.kiro/specs/log-activity-action/
+
 # Binary / media (add exceptions if needed)
 *.mp3
 *.mp4

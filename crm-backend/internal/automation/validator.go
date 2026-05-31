@@ -661,6 +661,33 @@ func validateActionParams(action ActionSpec, path string, result *ValidationResu
 				}
 			}
 		}
+	case ActionLogActivity:
+		// activity_type: required, must be one of call/meeting/note/email
+		atRaw, ok := action.Params["activity_type"]
+		atStr, _ := atRaw.(string)
+		if !ok || strings.TrimSpace(atStr) == "" {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   path + ".params.activity_type",
+				Message: "log_activity requires 'activity_type' parameter",
+			})
+		} else if !validActivityTypes[atStr] {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   path + ".params.activity_type",
+				Message: fmt.Sprintf("invalid activity_type: '%s'. Valid: call, meeting, note, email", atStr),
+			})
+		}
+		// title: required, non-empty, non-whitespace
+		titleRaw, ok := action.Params["title"]
+		titleStr, _ := titleRaw.(string)
+		if !ok || strings.TrimSpace(titleStr) == "" {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   path + ".params.title",
+				Message: "log_activity requires a non-empty 'title' parameter",
+			})
+		}
 	}
 
 	// Check for template references (warning, not block)

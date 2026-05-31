@@ -8,6 +8,7 @@ const PALETTE_ITEMS = [
   { type: 'send_webhook', label: 'Send Webhook', icon: '🔗' },
   { type: 'delay', label: 'Delay', icon: '⏱️' },
   { type: 'update_record', label: 'Update Record', icon: '📝' },
+  { type: 'log_activity', label: 'Log Activity', icon: '📞' },
   { type: 'condition', label: 'Condition Split', icon: '🔀' },
 ];
 
