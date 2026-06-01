@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -49,13 +50,17 @@ func (e *ActivityExecutor) Execute(ctx context.Context, run *WorkflowRun, action
 		return nil, fmt.Errorf("log_activity: no valid contact or deal identifier in trigger context")
 	}
 
-	// 5. Insert exactly one row; occurred_at = DB NOW(); user_id = NULL.
+	// 5. Insert exactly one row; occurred_at/created_at = DB NOW(); user_id = NULL.
+	// RETURNING created_at reads back the DB-generated server timestamp so it can be
+	// surfaced in the output map (no second round-trip, no clock skew with Go's time).
 	activityID := uuid.New()
-	err := e.db.WithContext(ctx).Exec(
+	var createdAt time.Time
+	err := e.db.WithContext(ctx).Raw(
 		`INSERT INTO activities (id, org_id, type, contact_id, deal_id, user_id, title, body, occurred_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, NULL, ?, ?, NOW(), NOW(), NOW())`,
+		 VALUES (?, ?, ?, ?, ?, NULL, ?, ?, NOW(), NOW(), NOW())
+		 RETURNING created_at`,
 		activityID, run.OrgID, activityType, contactID, dealID, title, bodyPtr,
-	).Error
+	).Scan(&createdAt).Error
 	if err != nil {
 		return nil, fmt.Errorf("log_activity: %w", err) // non-retryable (Req 9.2)
 	}
@@ -66,12 +71,14 @@ func (e *ActivityExecutor) Execute(ctx context.Context, run *WorkflowRun, action
 		"workflow_run_id", run.ID.String(),
 	)
 
-	// 6. Output map (Req 3.8). nil ids serialize as JSON null.
+	// 6. Output map (Req 3.8). nil ids serialize as JSON null. created_at is the
+	// DB server timestamp (RFC3339) so later steps can reference actions.<id>.created_at.
 	return map[string]any{
 		"activity_id":   activityID.String(),
 		"activity_type": activityType,
 		"contact_id":    uuidOrNil(contactID),
 		"deal_id":       uuidOrNil(dealID),
+		"created_at":    createdAt.Format(time.RFC3339),
 	}, nil
 }
 
