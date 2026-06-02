@@ -767,7 +767,10 @@ func (e *UpdateRecordExecutor) handleCustomField(ctx context.Context, tx *gorm.D
 			Table(table).
 			Where("id = ? AND org_id = ?", recordID, orgID).
 			Update("custom_fields", gorm.Expr(
-				"COALESCE(custom_fields, '{}'::jsonb) || jsonb_build_object(?, (COALESCE((custom_fields->>?)::numeric, 0) + ?)::numeric)",
+				// Cast both key params to ::text: jsonb_build_object is VARIADIC "any" (its
+				// key param has no inferable type → 42P18), and ->> has text/int overloads
+				// (an uncast param is ambiguous). The delta is inferred numeric from the +.
+				"COALESCE(custom_fields, '{}'::jsonb) || jsonb_build_object(?::text, (COALESCE((custom_fields->>?::text)::numeric, 0) + ?)::numeric)",
 				cfKey, cfKey, delta,
 			)).Error
 		if err != nil {
@@ -784,7 +787,9 @@ func (e *UpdateRecordExecutor) handleCustomField(ctx context.Context, tx *gorm.D
 			Table(table).
 			Where("id = ? AND org_id = ?", recordID, orgID).
 			Update("custom_fields", gorm.Expr(
-				"COALESCE(custom_fields, '{}'::jsonb) || jsonb_build_object(?, (COALESCE((custom_fields->>?)::numeric, 0) - ?)::numeric)",
+				// See the increment path: ::text casts disambiguate jsonb_build_object's
+				// VARIADIC "any" key and the ->> text/int overload (42P18 otherwise).
+				"COALESCE(custom_fields, '{}'::jsonb) || jsonb_build_object(?::text, (COALESCE((custom_fields->>?::text)::numeric, 0) - ?)::numeric)",
 				cfKey, cfKey, delta,
 			)).Error
 		if err != nil {
