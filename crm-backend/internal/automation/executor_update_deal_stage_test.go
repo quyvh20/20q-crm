@@ -322,10 +322,14 @@ func TestUpdateRecord_DealStageChange_UnknownStageRolledBack(t *testing.T) {
 	_, err := exec.Execute(context.Background(), run, action, evalCtx)
 	require.Error(t, err, "unknown stage should fail")
 
-	// Deal still in the original stage, and no activity was written.
-	var stageID uuid.UUID
-	require.NoError(t, db.Table("deals").Select("stage_id").Where("id = ?", dealID).Scan(&stageID).Error)
-	assert.Equal(t, leadStageID, stageID, "deal stage must be unchanged on failure")
+	// Deal still in the original stage, and no activity was written. Scan into a struct
+	// (not a bare uuid.UUID) so GORM uses the field's sql.Scanner — scanning a single
+	// column straight into a [16]byte uuid.UUID makes it assign the string per-byte.
+	var deal struct {
+		StageID uuid.UUID `gorm:"column:stage_id"`
+	}
+	require.NoError(t, db.Table("deals").Select("stage_id").Where("id = ?", dealID).Scan(&deal).Error)
+	assert.Equal(t, leadStageID, deal.StageID, "deal stage must be unchanged on failure")
 
 	var count int64
 	require.NoError(t, db.Table("activities").Where("deal_id = ?", dealID).Count(&count).Error)

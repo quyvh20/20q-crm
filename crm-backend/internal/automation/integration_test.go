@@ -1368,9 +1368,12 @@ func TestIntegration_RecursiveTreeExecution(t *testing.T) {
 			executed1[l.ActionPath] = true
 		}
 	}
-	assert.True(t, executed1["action_1"], "action_1 should execute")
-	assert.True(t, executed1["action_yes"], "action_yes should execute")
-	assert.False(t, executed1["action_no"], "action_no should NOT execute")
+	// Action logs are keyed by structural step path (BuildStepPath), not step ID:
+	// action_1 is root index 0 ("0"); the condition is root index 1, so its yes/no
+	// children are "1|yes|0" / "1|no|0".
+	assert.True(t, executed1["0"], "action_1 (path 0) should execute")
+	assert.True(t, executed1["1|yes|0"], "action_yes (path 1|yes|0) should execute")
+	assert.False(t, executed1["1|no|0"], "action_no (path 1|no|0) should NOT execute")
 
 	// --- Case 2: is_vip == false ---
 	// Reset executor stats
@@ -1417,7 +1420,7 @@ func TestIntegration_RecursiveTreeExecution(t *testing.T) {
 			executed2[l.ActionPath] = true
 		}
 	}
-	assert.True(t, executed2["action_1"], "action_1 should execute")
-	assert.False(t, executed2["action_yes"], "action_yes should NOT execute")
-	assert.True(t, executed2["action_no"], "action_no should execute")
+	assert.True(t, executed2["0"], "action_1 (path 0) should execute")
+	assert.False(t, executed2["1|yes|0"], "action_yes (path 1|yes|0) should NOT execute")
+	assert.True(t, executed2["1|no|0"], "action_no (path 1|no|0) should execute")
 }
