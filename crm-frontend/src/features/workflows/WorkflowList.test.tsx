@@ -1,0 +1,276 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { WorkflowList } from './WorkflowList';
+import { getWorkflows } from './api';
+import type { Workflow, WorkflowListResponse } from './types';
+
+/**
+ * WorkflowList Run Now integration tests — Requirements 8.1, 8.2.
+ *
+ * Task 8.1 added a "▶ Run Now" button to each per-row action cluster; clicking
+ * it sets the modal target to that workflow and renders `RunNowModal`. These
+ * tests assert:
+ *   - a Run Now control is rendered for EACH workflow row (Req 8.1), and
+ *   - clicking a row's Run Now control opens the modal for THAT workflow (Req 8.2).
+ *
+ * We mock `./api` so the `getWorkflows` effect resolves with fixtures and the
+ * other client functions never hit the network. We stub `./RunNowModal` with a
+ * lightweight double that surfaces the workflow it was opened for (the modal's
+ * own behavior is covered by RunNowModal.test.tsx), keeping these tests focused
+ * on WorkflowList's rendering + open-on-click wiring. `react-router-dom`'s
+ * `useNavigate` is mocked to a no-op since navigation is not under test here.
+ */
+
+vi.mock('./api', () => ({
+  getWorkflows: vi.fn(),
+  deleteWorkflow: vi.fn(),
+  toggleWorkflow: vi.fn(),
+}));
+
+// Mutable auth state so individual tests can drive the caller's role/id. WorkflowList
+// uses `useAuth` to decide whether to show the Run Now control (owner/admin/manager, or
+// the workflow's creator). Defaults to a privileged caller in beforeEach so the existing
+// rendering/open-on-click tests see the control on every row.
+const mockAuth = vi.hoisted(() => ({
+  user: { id: 'user-1' } as { id: string } | null,
+  currentRole: 'admin' as string,
+}));
+vi.mock('../../lib/auth', () => ({
+  useAuth: () => mockAuth,
+}));
+
+// Stable navigate spy; WorkflowList only consumes `useNavigate` from the router.
+const mockNavigate = vi.hoisted(() => vi.fn());
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
+  return { ...actual, useNavigate: () => mockNavigate };
+});
+
+// Lightweight RunNowModal double: renders an identifiable dialog that carries
+// the targeted workflow's id and name, plus a Close button wired to onClose.
+// This lets us assert WHICH workflow's modal opened without exercising the real
+// modal's EntityPicker / confirm flow (covered by RunNowModal.test.tsx).
+vi.mock('./RunNowModal', async (importOriginal) => {
+  // Keep the real pure helpers (canRunWorkflowNow / entityKindForTrigger) — WorkflowList
+  // uses canRunWorkflowNow to gate the control — while stubbing only the modal component.
+  const actual = await importOriginal<typeof import('./RunNowModal')>();
+  const React = await import('react');
+  return {
+    ...actual,
+    RunNowModal: ({
+      workflow,
+      onClose,
+      onSuccess,
+    }: {
+      workflow: Workflow;
+      onClose: () => void;
+      onSuccess: (runId: string) => void;
+    }) =>
+      React.createElement(
+        'div',
+        {
+          role: 'dialog',
+          'data-testid': 'run-now-modal',
+          'data-workflow-id': workflow.id,
+        },
+        React.createElement('span', { 'data-testid': 'run-now-modal-workflow' }, workflow.name),
+        React.createElement('button', { type: 'button', onClick: onClose }, 'Close modal'),
+        // Stands in for the modal's real "confirm → POST → onSuccess" path so the host's
+        // toast/navigation wiring can be exercised without the real submit flow.
+        React.createElement(
+          'button',
+          { type: 'button', onClick: () => onSuccess('run-started-1') },
+          'Simulate run started',
+        ),
+      ),
+  };
+});
+
+const mockGetWorkflows = vi.mocked(getWorkflows);
+
+function makeWorkflow(over: Partial<Workflow> = {}): Workflow {
+  return {
+    id: 'wf-1',
+    org_id: 'org-1',
+    name: 'Welcome Email',
+    description: '',
+    is_active: true,
+    trigger: { type: 'contact_created' },
+    conditions: null,
+    actions: [],
+    action_count: 0,
+    version: 1,
+    created_by: 'user-1',
+    created_at: '2024-01-01T00:00:00Z',
+    updated_at: '2024-01-01T00:00:00Z',
+    last_run_status: null,
+    last_run_at: null,
+    ...over,
+  };
+}
+
+function listResponse(workflows: Workflow[]): WorkflowListResponse {
+  return { workflows, total: workflows.length, page: 1, size: 20 };
+}
+
+const TWO_WORKFLOWS: Workflow[] = [
+  makeWorkflow({ id: 'wf-contact', name: 'Welcome Email', trigger: { type: 'contact_created' } }),
+  makeWorkflow({ id: 'wf-deal', name: 'Deal Won Alert', trigger: { type: 'deal_stage_changed' } }),
+];
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mockGetWorkflows.mockResolvedValue(listResponse(TWO_WORKFLOWS));
+  // Default to a privileged caller so the Run Now control renders on every row.
+  mockAuth.user = { id: 'user-1' };
+  mockAuth.currentRole = 'admin';
+});
+
+// ── Req 8.1: a Run Now control is displayed for EACH workflow row ──────
+describe('WorkflowList — Run Now control per row', () => {
+  it('renders one Run Now button for every workflow in the list (Req 8.1)', async () => {
+    render(<WorkflowList />);
+
+    // Wait for the workflows to load and the rows to render.
+    await screen.findByText('Welcome Email');
+    expect(screen.getByText('Deal Won Alert')).toBeInTheDocument();
+
+    // Exactly one "Run Now" control per row (the stubbed modal is closed, so it
+    // contributes no competing "Run Now" buttons).
+    const runNowButtons = screen.getAllByRole('button', { name: /Run Now/i });
+    expect(runNowButtons).toHaveLength(2);
+  });
+});
+
+// ── Req 8.2: activating a row's Run Now opens the modal for THAT workflow ──
+describe('WorkflowList — opening the Run Now modal', () => {
+  it('opens the modal for the clicked workflow (Req 8.2)', async () => {
+    const user = userEvent.setup();
+    render(<WorkflowList />);
+
+    await screen.findByText('Welcome Email');
+
+    // No modal until a Run Now control is activated.
+    expect(screen.queryByTestId('run-now-modal')).not.toBeInTheDocument();
+
+    // Click the FIRST row's Run Now control.
+    const runNowButtons = screen.getAllByRole('button', { name: /Run Now/i });
+    await user.click(runNowButtons[0]);
+
+    // The modal opens for the first workflow specifically.
+    const modal = await screen.findByTestId('run-now-modal');
+    expect(modal).toHaveAttribute('data-workflow-id', 'wf-contact');
+    expect(screen.getByTestId('run-now-modal-workflow')).toHaveTextContent('Welcome Email');
+  });
+
+  it('opens the modal for the SECOND workflow when its Run Now control is clicked (Req 8.2)', async () => {
+    const user = userEvent.setup();
+    render(<WorkflowList />);
+
+    await screen.findByText('Deal Won Alert');
+
+    const runNowButtons = screen.getAllByRole('button', { name: /Run Now/i });
+    await user.click(runNowButtons[1]);
+
+    const modal = await screen.findByTestId('run-now-modal');
+    expect(modal).toHaveAttribute('data-workflow-id', 'wf-deal');
+    expect(screen.getByTestId('run-now-modal-workflow')).toHaveTextContent('Deal Won Alert');
+  });
+
+  it('closes the modal when the modal requests it, leaving no dialog open (Req 8.2)', async () => {
+    const user = userEvent.setup();
+    render(<WorkflowList />);
+
+    await screen.findByText('Welcome Email');
+
+    await user.click(screen.getAllByRole('button', { name: /Run Now/i })[0]);
+    expect(await screen.findByTestId('run-now-modal')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Close modal' }));
+
+    await waitFor(() => expect(screen.queryByTestId('run-now-modal')).not.toBeInTheDocument());
+  });
+});
+
+// ── DoD: success surfaces a "Run started" toast linking to the run detail ─────
+describe('WorkflowList — run-started toast and View run link', () => {
+  it('shows a "Run started" toast whose "View run" link navigates to the run detail', async () => {
+    const user = userEvent.setup();
+    render(<WorkflowList />);
+    await screen.findByText('Welcome Email');
+
+    // Open the modal for the first workflow, then have it report a created run.
+    await user.click(screen.getAllByRole('button', { name: /Run Now/i })[0]);
+    await user.click(await screen.findByRole('button', { name: 'Simulate run started' }));
+
+    // A success toast names the workflow and carries a "View run" link.
+    expect(await screen.findByText(/Run started for "Welcome Email"/i)).toBeInTheDocument();
+    const viewRun = screen.getByRole('button', { name: /View run/i });
+
+    // Clicking it navigates to THIS workflow's run history, highlighting the created run
+    // so RunHistory can auto-open its detail.
+    await user.click(viewRun);
+    expect(mockNavigate).toHaveBeenCalledWith('/workflows/wf-contact/history', {
+      state: { highlightRunId: 'run-started-1' },
+    });
+  });
+});
+
+// ── Run Now visibility mirrors backend authorization (creator allowance) ──────
+describe('WorkflowList — Run Now visibility by permission', () => {
+  it('shows Run Now on every row for a privileged role regardless of creator', async () => {
+    // Manager who created neither workflow still sees both controls.
+    mockAuth.currentRole = 'manager';
+    mockAuth.user = { id: 'someone-else' };
+    mockGetWorkflows.mockResolvedValue(
+      listResponse([
+        makeWorkflow({ id: 'wf-a', name: 'Alpha', created_by: 'author-x' }),
+        makeWorkflow({ id: 'wf-b', name: 'Beta', created_by: 'author-y' }),
+      ]),
+    );
+
+    render(<WorkflowList />);
+    await screen.findByText('Alpha');
+
+    expect(screen.getAllByRole('button', { name: /Run Now/i })).toHaveLength(2);
+  });
+
+  it('hides Run Now for a non-privileged caller on workflows they did not create', async () => {
+    mockAuth.currentRole = 'viewer';
+    mockAuth.user = { id: 'viewer-1' };
+    mockGetWorkflows.mockResolvedValue(
+      listResponse([makeWorkflow({ id: 'wf-foreign', name: 'Not Mine', created_by: 'author-x' })]),
+    );
+
+    render(<WorkflowList />);
+    await screen.findByText('Not Mine');
+
+    expect(screen.queryByRole('button', { name: /Run Now/i })).not.toBeInTheDocument();
+  });
+
+  it('shows Run Now to a non-privileged caller only on workflows they created', async () => {
+    // A viewer who created exactly one of the two listed workflows.
+    mockAuth.currentRole = 'viewer';
+    mockAuth.user = { id: 'viewer-1' };
+    mockGetWorkflows.mockResolvedValue(
+      listResponse([
+        makeWorkflow({ id: 'wf-mine', name: 'My Flow', created_by: 'viewer-1' }),
+        makeWorkflow({ id: 'wf-theirs', name: 'Their Flow', created_by: 'author-x' }),
+      ]),
+    );
+
+    const user = userEvent.setup();
+    render(<WorkflowList />);
+    await screen.findByText('My Flow');
+
+    // Exactly one control — on the workflow the viewer created — and clicking it opens
+    // that workflow's modal.
+    const runNowButtons = screen.getAllByRole('button', { name: /Run Now/i });
+    expect(runNowButtons).toHaveLength(1);
+
+    await user.click(runNowButtons[0]);
+    const modal = await screen.findByTestId('run-now-modal');
+    expect(modal).toHaveAttribute('data-workflow-id', 'wf-mine');
+  });
+});

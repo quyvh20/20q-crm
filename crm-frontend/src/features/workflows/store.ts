@@ -6,6 +6,9 @@ import { isNoValueOperator } from './useSchema';
 
 interface BuilderState {
   workflowId: string | null;
+  /** Creator user id of the loaded/created workflow; null for an unsaved draft.
+   *  Used to gate the in-builder "Run Now" control (creator allowance). */
+  createdBy: string | null;
   name: string;
   description: string;
   isActive: boolean;
@@ -394,6 +397,7 @@ function extractObjectSlug(type: string): string {
 
 const initialState = {
   workflowId: null as string | null,
+  createdBy: null as string | null,
   name: '',
   description: '',
   isActive: false,
@@ -813,7 +817,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
         await updateWorkflow(state.workflowId, payload);
       } else {
         const wf = await createWorkflow(payload);
-        set({ workflowId: wf.id });
+        set({ workflowId: wf.id, createdBy: wf.created_by ?? null });
       }
       set({ isDirty: false });
     } finally {
@@ -833,6 +837,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
         } as WorkflowStep));
     set({
       workflowId: wf.id,
+      createdBy: wf.created_by ?? null,
       name: wf.name,
       description: wf.description,
       isActive: wf.is_active,

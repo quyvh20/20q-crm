@@ -21,8 +21,10 @@ import { TriggerConfigPanel } from './panels/TriggerConfigPanel';
 import { ConditionConfigPanel } from './panels/ConditionConfigPanel';
 import { ActionConfigPanel } from './panels/ActionConfigPanel';
 import { ActionPalette } from './panels/ActionPalette';
+import { RunNowModal, builderRunNowAvailability } from './RunNowModal';
+import { useAuth } from '../../lib/auth';
 import type { ActionType } from './types';
-import { ACTION_LABELS, ACTION_ICONS } from './types';
+import { ACTION_LABELS, ACTION_ICONS, TRIGGER_LABELS } from './types';
 
 /**
  * Resolve the full StepPath for a given step ID by searching the tree.
@@ -55,6 +57,19 @@ export const WorkflowBuilder: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const store = useBuilderStore();
+  const { user, currentRole } = useAuth();
+
+  // In-builder "Run Now": shown only for a saved workflow the caller may run, and
+  // disabled while there are unsaved edits (it executes the persisted version).
+  const [showRunNow, setShowRunNow] = useState(false);
+  const runNow = builderRunNowAvailability({
+    workflowId: store.workflowId,
+    createdBy: store.createdBy,
+    trigger: store.trigger,
+    isDirty: store.isDirty,
+    role: currentRole,
+    userId: user?.id,
+  });
 
   useEffect(() => {
     // Fetch schema once on builder mount (cached in store + deduped)
@@ -326,6 +341,18 @@ export const WorkflowBuilder: React.FC = () => {
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd2}>
     <WorkflowDragContext.Provider value={dragCtx}>
+      {/* Run Now modal — only reachable when runNow.visible (saved + authorized). On
+          success, jump to this workflow's run history to watch the run. */}
+      {showRunNow && store.workflowId && store.trigger && (
+        <RunNowModal
+          workflow={{ id: store.workflowId, name: store.name, trigger: store.trigger }}
+          onClose={() => setShowRunNow(false)}
+          onSuccess={(runId) => {
+            setShowRunNow(false);
+            navigate(`/workflows/${store.workflowId}/history`, { state: { highlightRunId: runId } });
+          }}
+        />
+      )}
       <div className="flex h-[calc(100vh-64px)]">
         {/* Left sidebar — palette + config */}
         <div className="w-80 border-r border-gray-800 bg-gray-900/95 flex flex-col overflow-hidden">
@@ -394,7 +421,35 @@ export const WorkflowBuilder: React.FC = () => {
         </div>
 
         {/* Canvas area */}
-        <div className="flex-1 bg-gray-950 overflow-auto" onClick={handleCanvasClick}>
+        <div className="flex-1 flex flex-col bg-gray-950 overflow-hidden">
+          {/* Top header bar — workflow title + Run Now */}
+          <div className="flex items-center justify-between gap-4 px-6 py-3 border-b border-gray-800 bg-gray-900/40 shrink-0">
+            <div className="min-w-0">
+              <h2 className="text-sm font-semibold text-white truncate">
+                {store.name || 'Untitled workflow'}
+              </h2>
+              <p className="text-xs text-gray-500 truncate">
+                ⚡ {store.trigger ? (TRIGGER_LABELS[store.trigger.type] ?? store.trigger.type) : 'No trigger set'}
+              </p>
+            </div>
+            {runNow.visible && (
+              <button
+                onClick={() => setShowRunNow(true)}
+                disabled={!runNow.enabled}
+                title={
+                  runNow.enabled
+                    ? 'Run this workflow now against a sample record'
+                    : 'Save changes first — Run Now executes the saved version'
+                }
+                className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-indigo-500/10"
+              >
+                ▶ Run Now
+              </button>
+            )}
+          </div>
+
+          {/* Scrollable canvas */}
+          <div className="flex-1 overflow-auto" onClick={handleCanvasClick}>
           <div className="min-h-full flex flex-col items-center py-12 px-8" onClick={handleCanvasClick}>
             {/* Trigger */}
             <TriggerNode trigger={store.trigger} />
@@ -417,6 +472,7 @@ export const WorkflowBuilder: React.FC = () => {
                 <p className="text-sm">Drag actions/conditions from the sidebar or click + to add steps</p>
               </div>
             )}
+          </div>
           </div>
         </div>
       </div>

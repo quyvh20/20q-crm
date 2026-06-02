@@ -314,6 +314,58 @@ func (e *Engine) triggerEventInternal(ctx context.Context, orgID uuid.UUID, even
 	return nil
 }
 
+// RunWorkflowNow creates and dispatches a real run for exactly one workflow (Run Now,
+// P20), reusing the existing run-creation and worker-dispatch machinery while bypassing
+// the natural-event semantics that do not apply to a manual run.
+//
+// Unlike triggerEventInternal it does NOT call GetActiveWorkflowsByTrigger (so an
+// inactive/draft workflow still runs — Req 6.4), does NOT apply the _internal_update
+// guard or the watch_field/stage trigger-level filters (so a manual run is never
+// silently skipped), and does NOT fan out — it targets only wf.ID, creating exactly one
+// run for the targeted workflow (Req 6.1, 6.2). It uses a unique-per-call idempotency
+// key so CreateRun always inserts a new run regardless of any prior trigger (Req 6.5),
+// sets the run's OrgID to the caller's org and stores the constructed Trigger_Context
+// (Req 6.6). A synchronous run-creation failure is returned to the caller with no run id
+// so the handler can respond 500 (Req 6.7).
+func (e *Engine) RunWorkflowNow(ctx context.Context, orgID uuid.UUID, wf *Workflow, eventType string, payload map[string]any) (uuid.UUID, error) {
+	triggerCtx, err := json.Marshal(payload)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("marshal trigger context: %w", err)
+	}
+
+	run := &WorkflowRun{
+		ID:              uuid.New(),
+		WorkflowID:      wf.ID,
+		WorkflowVersion: wf.Version,
+		OrgID:           orgID,
+		Status:          StatusPending,
+		TriggerContext:  datatypes.JSON(triggerCtx),
+		IdempotencyKey:  newRunNowIdempotencyKey(),
+	}
+
+	inserted, err := e.repo.CreateRun(ctx, run)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("create run: %w", err)
+	}
+	if !inserted {
+		// Astronomically unlikely with a unique per-call UUID key; treat as failure
+		// so the handler returns no run id rather than reporting a phantom success.
+		return uuid.Nil, fmt.Errorf("run not created (idempotency collision)")
+	}
+
+	// Reuse the existing dispatch tail; the scheduler is the fallback if the channel
+	// is full, mirroring triggerEventInternal.
+	select {
+	case e.jobs <- WorkflowRunJob{RunID: run.ID}:
+	default:
+		e.logger.Warn("automation: jobs channel full, run_now run will be picked up by scheduler",
+			"run_id", run.ID.String(),
+		)
+	}
+
+	return run.ID, nil
+}
+
 // worker is the main processing loop for each worker goroutine.
 func (e *Engine) worker(id int) {
 	defer e.wg.Done()

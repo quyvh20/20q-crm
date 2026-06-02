@@ -34,6 +34,15 @@ type TestRunRequest struct {
 	Context map[string]any `json:"context" binding:"required"`
 }
 
+// RunNowRequest is the request body for POST /api/workflows/:id/run.
+// Exactly one of ContactID / DealID must be a non-empty, valid UUID string.
+// Plain string fields (no binding:"required") let the handler distinguish the
+// both-present, neither-present, and invalid-UUID cases and emit precise 400 errors.
+type RunNowRequest struct {
+	ContactID string `json:"contact_id"`
+	DealID    string `json:"deal_id"`
+}
+
 // --- Response DTOs ---
 
 // WorkflowResponse is the response for a single workflow.
@@ -114,6 +123,12 @@ type TestRunAction struct {
 	ID             string         `json:"id"`
 	Type           string         `json:"type"`
 	ResolvedParams map[string]any `json:"resolved_params"`
+}
+
+// RunNowResponse is the success body (HTTP 201) for POST /api/workflows/:id/run.
+type RunNowResponse struct {
+	ID     uuid.UUID `json:"id"`     // created Workflow_Run id
+	Status string    `json:"status"` // run status, e.g. "pending"
 }
 
 // ErrorResponse is the standard error response.

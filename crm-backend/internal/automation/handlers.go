@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -68,6 +69,11 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerF
 		workflows.DELETE("/:id", requireRole("admin", "manager"), h.DeleteWorkflow)
 		workflows.POST("/:id/toggle", requireRole("admin", "manager"), h.ToggleWorkflow)
 		workflows.POST("/:id/test-run", requireRole("admin", "manager"), h.TestRun)
+		// Run Now intentionally has NO requireRole guard: authorization is enforced inside
+		// h.RunNow (owner/admin/manager may run any workflow; any other caller may run only
+		// a workflow they created — the creator allowance). A static route guard cannot
+		// express the creator check because it needs the loaded workflow's CreatedBy.
+		workflows.POST("/:id/run", h.RunNow)
 		workflows.GET("/:id/runs", h.ListRuns)
 		workflows.GET("/runs/:runId", h.GetRunDetail)
 	}
@@ -350,6 +356,131 @@ func (h *Handler) TestRun(c *gin.Context) {
 		"data": TestRunResponse{
 			ConditionResult: conditionResult,
 			Actions:         testActions,
+		},
+	})
+}
+
+// RunNow handles POST /api/workflows/:id/run — a real, single-workflow execution
+// against a sample contact or deal. Unlike TestRun (a dry run with no side effects and
+// no Workflow_Run), RunNow drives the Automation_Engine to create and execute a real run
+// for ONLY the workflow identified by :id, with all side effects.
+//
+// Validation follows a fixed rejection order, returning early on the first failure so a
+// request is rejected at the most specific applicable stage and no run is created for a
+// rejected request (Req 1.3, 2.x, 3.1, 4.4, 6.7, 7.5). The compatibility check runs
+// before entity loading and run creation so an incompatible request can never produce a
+// created-then-failed run (Req 4.4).
+//
+// Authorization is enforced here rather than via route middleware: owner/admin/manager may
+// run any workflow in the org, while any other caller may run ONLY a workflow they created
+// (creator allowance, see authorizeRunNow). The check runs right after the workflow is
+// loaded — it needs the workflow's CreatedBy — and before any side effect, so an
+// unauthorized request yields 403 and never creates a run.
+func (h *Handler) RunNow(c *gin.Context) {
+	// Auth / org context — getContext writes the 401 itself (Req 1.3). userID identifies
+	// the caller for the creator allowance below.
+	orgID, userID := h.getContext(c)
+	if orgID == uuid.Nil {
+		return
+	}
+
+	// Path :id must be a valid UUID (Req 2.6).
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		h.errorResponse(c, http.StatusBadRequest, "INVALID_ID", "invalid workflow ID", nil)
+		return
+	}
+
+	// Bind body and classify it into exactly one entity target (Req 2.1–2.5).
+	var req RunNowRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.errorResponse(c, http.StatusBadRequest, "INVALID_REQUEST", "invalid request body", nil)
+		return
+	}
+
+	kind, entityID, err := classifyRunNowRequest(req)
+	if err != nil {
+		if errors.Is(err, ErrRunNowInvalidUUID) {
+			h.errorResponse(c, http.StatusBadRequest, "INVALID_ID", err.Error(), nil)
+		} else {
+			h.errorResponse(c, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+		}
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	// Workflow must exist within the caller's org (Req 1.5, 3.1).
+	wf, err := h.repo.GetWorkflowByID(ctx, orgID, id)
+	if err != nil || wf == nil {
+		h.errorResponse(c, http.StatusNotFound, "NOT_FOUND", "workflow not found", nil)
+		return
+	}
+
+	// Authorization (creator allowance): owner/admin/manager may run any workflow in the
+	// org; any other caller may run only a workflow they created. Enforced after the load
+	// (needs wf.CreatedBy) and before any side effect, so an unauthorized request never
+	// creates a run.
+	roleVal, _ := c.Get("role")
+	role, _ := roleVal.(string)
+	if !authorizeRunNow(role, userID, wf.CreatedBy) {
+		h.errorResponse(c, http.StatusForbidden, "FORBIDDEN",
+			"you do not have permission to run this workflow", nil)
+		return
+	}
+
+	// Resolve the workflow's trigger type from wf.Trigger (a datatypes.JSON holding a
+	// TriggerSpec) the same way the scheduler/validator/engine do.
+	var triggerSpec TriggerSpec
+	_ = json.Unmarshal(wf.Trigger, &triggerSpec)
+	triggerType := triggerSpec.Type
+
+	// Compatibility check BEFORE loading the entity or creating any run (Req 4.1–4.4).
+	expectedKind := entityKindForTrigger(triggerType)
+	if expectedKind == "" || expectedKind != kind {
+		h.errorResponse(c, http.StatusBadRequest, "INCOMPATIBLE_ENTITY",
+			fmt.Sprintf("workflow trigger type %q is not compatible with the selected %s entity", triggerType, kind),
+			nil)
+		return
+	}
+
+	// Load the entity scoped to org. A nil map means not found (Req 3.2–3.4); a returned
+	// error is an internal failure.
+	var entity map[string]any
+	switch kind {
+	case "contact":
+		entity, err = h.loadContactForRun(ctx, orgID, entityID)
+	case "deal":
+		entity, err = h.loadDealForRun(ctx, orgID, entityID)
+	}
+	if err != nil {
+		h.logger.Error("run now: failed to load entity", "error", err, "kind", kind, "entity_id", entityID.String())
+		h.errorResponse(c, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load entity", nil)
+		return
+	}
+	if entity == nil {
+		h.errorResponse(c, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("%s not found", kind), nil)
+		return
+	}
+
+	// Build the Trigger_Context mirroring a real event payload (source = run_now,
+	// no _internal_update marker) — Req 5.1–5.6.
+	payload := buildRunNowTriggerContext(kind, triggerType, entity)
+
+	// Targeted real execution. A synchronous failure yields a 500 with no run id
+	// (Req 6.7, 7.5).
+	runID, err := h.engine.RunWorkflowNow(ctx, orgID, wf, triggerType, payload)
+	if err != nil {
+		h.logger.Error("run now: failed to initiate run", "error", err, "workflow_id", wf.ID.String())
+		h.errorResponse(c, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to initiate run", nil)
+		return
+	}
+
+	// Success: 201 with the created run's id and status (Req 7.2, 7.3).
+	c.JSON(http.StatusCreated, gin.H{
+		"data": RunNowResponse{
+			ID:     runID,
+			Status: StatusPending,
 		},
 	})
 }

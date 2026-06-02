@@ -1,8 +1,16 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getWorkflows, deleteWorkflow, toggleWorkflow } from './api';
+import { RunNowModal, canRunWorkflowNow } from './RunNowModal';
 import type { Workflow } from './types';
 import { TRIGGER_LABELS, STATUS_COLORS } from './types';
+import { useAuth } from '../../lib/auth';
+
+/** Optional actionable link rendered inside a toast (e.g. "View run"). */
+interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
 
 export const WorkflowList: React.FC = () => {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
@@ -10,12 +18,19 @@ export const WorkflowList: React.FC = () => {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [filterActive, setFilterActive] = useState<boolean | undefined>(undefined);
-  const [toast, setToast] = useState<{ message: string; type: 'error' | 'success' } | null>(null);
+  const [toast, setToast] = useState<{ message: string; type: 'error' | 'success'; action?: ToastAction } | null>(null);
+  const [runNowTarget, setRunNowTarget] = useState<Workflow | null>(null);
   const navigate = useNavigate();
+  const { user, currentRole } = useAuth();
 
-  const showToast = (message: string, type: 'error' | 'success' = 'error') => {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 3000);
+  const showToast = (
+    message: string,
+    type: 'error' | 'success' = 'error',
+    action?: ToastAction,
+  ) => {
+    setToast({ message, type, action });
+    // Success toasts with an action stay a bit longer so the user can click through.
+    setTimeout(() => setToast(null), action ? 6000 : 3000);
   };
 
   const fetchWorkflows = useCallback(async () => {
@@ -84,16 +99,46 @@ export const WorkflowList: React.FC = () => {
 
   return (
     <div className="max-w-5xl mx-auto py-8 px-4">
+      {/* Run Now modal — opens for the targeted workflow, clears target on close */}
+      {runNowTarget && (
+        <RunNowModal
+          workflow={runNowTarget}
+          onClose={() => setRunNowTarget(null)}
+          onSuccess={(runId) => {
+            const wf = runNowTarget;
+            showToast(
+              `Run started for "${wf.name}"`,
+              'success',
+              {
+                label: 'View run',
+                onClick: () => navigate(`/workflows/${wf.id}/history`, { state: { highlightRunId: runId } }),
+              },
+            );
+          }}
+        />
+      )}
+
       {/* Toast notification */}
       {toast && (
         <div
-          className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-xl shadow-lg text-sm font-medium transition-all animate-in slide-in-from-top-2 ${
+          className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-xl shadow-lg text-sm font-medium transition-all animate-in slide-in-from-top-2 flex items-center gap-3 ${
             toast.type === 'error'
               ? 'bg-red-500/90 text-white'
               : 'bg-emerald-500/90 text-white'
           }`}
         >
-          {toast.message}
+          <span>{toast.message}</span>
+          {toast.action && (
+            <button
+              onClick={() => {
+                toast.action!.onClick();
+                setToast(null);
+              }}
+              className="underline underline-offset-2 font-semibold hover:opacity-80 transition-opacity whitespace-nowrap"
+            >
+              {toast.action.label}
+            </button>
+          )}
         </div>
       )}
 
@@ -198,6 +243,18 @@ export const WorkflowList: React.FC = () => {
 
                 {/* Actions */}
                 <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                  {/* Run Now is shown only to callers the backend would authorize
+                      (owner/admin/manager, or the workflow's creator) so a forbidden
+                      caller isn't offered a control that would 403. */}
+                  {canRunWorkflowNow(currentRole, user?.id, wf) && (
+                    <button
+                      onClick={() => setRunNowTarget(wf)}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20 transition-colors"
+                      title="Run this workflow now against a sample record"
+                    >
+                      ▶ Run Now
+                    </button>
+                  )}
                   <button
                     onClick={() => navigate(`/workflows/${wf.id}/history`)}
                     className="px-3 py-1.5 rounded-lg text-xs bg-gray-700 text-gray-300 hover:text-white hover:bg-gray-600 transition-colors"

@@ -101,6 +101,30 @@ export async function testRunWorkflow(id: string, context: Record<string, unknow
   return json.data as TestRunResponse;
 }
 
+export interface RunNowResult {
+  /** Created Workflow_Run id */
+  id: string;
+  /** Run status, e.g. "pending" */
+  status: string;
+}
+
+/**
+ * POST /api/workflows/:id/run — real, single-workflow execution against a sample
+ * contact or deal. Exactly one of contact_id / deal_id must be provided.
+ */
+export async function runNowWorkflow(
+  id: string,
+  entity: { contact_id: string } | { deal_id: string },
+): Promise<RunNowResult> {
+  const res = await apiFetch(`/api/workflows/${id}/run`, {
+    method: 'POST',
+    body: JSON.stringify(entity),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error?.message || 'Failed to run workflow');
+  return json.data as RunNowResult;
+}
+
 // --- Runs ---
 
 export async function getWorkflowRuns(workflowId: string, page = 1, size = 20): Promise<{

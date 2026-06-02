@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { getWorkflowRuns, getRunDetail, getWorkflow } from './api';
 import type { WorkflowRun, ActionLog, Workflow } from './types';
 import { STATUS_COLORS, ACTION_LABELS } from './types';
@@ -7,6 +7,13 @@ import { STATUS_COLORS, ACTION_LABELS } from './types';
 export const RunHistory: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
+  // A run id handed over via navigation state — set by the "Run started" toast's
+  // "View run" link and by the builder's Run Now. When present, auto-open that run's
+  // detail and scroll/flash it once it appears in the loaded list.
+  const highlightRunId = (location.state as { highlightRunId?: string } | null)?.highlightRunId ?? null;
+  const [flashRunId, setFlashRunId] = useState<string | null>(null);
+  const [highlightHandled, setHighlightHandled] = useState(false);
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
   const [total, setTotal] = useState(0);
@@ -94,11 +101,9 @@ export const RunHistory: React.FC = () => {
     fetchRuns();
   }, [fetchRuns]);
 
-  const handleSelectRun = async (runId: string) => {
-    if (selectedRunId === runId) {
-      setSelectedRunId(null);
-      return;
-    }
+  // Open a run's detail (load its action logs). Always selects — never toggles — so it
+  // can be driven both by a user click and by the highlight effect below.
+  const openRunDetail = useCallback(async (runId: string) => {
     setSelectedRunId(runId);
     setLoadingLogs(true);
     try {
@@ -109,7 +114,32 @@ export const RunHistory: React.FC = () => {
     } finally {
       setLoadingLogs(false);
     }
+  }, []);
+
+  const handleSelectRun = (runId: string) => {
+    if (selectedRunId === runId) {
+      setSelectedRunId(null);
+      return;
+    }
+    openRunDetail(runId);
   };
+
+  // Arriving with a highlightRunId (from a Run Now toast / builder Run Now): open that
+  // run's detail, scroll it into view, and flash it briefly. Runs once, after the run
+  // shows up in the loaded list.
+  useEffect(() => {
+    if (highlightHandled || !highlightRunId) return;
+    if (!runs.some((r) => r.id === highlightRunId)) return; // wait until the run is loaded
+    setHighlightHandled(true);
+    openRunDetail(highlightRunId);
+    setFlashRunId(highlightRunId);
+    const el = document.getElementById(`run-${highlightRunId}`);
+    if (el && typeof el.scrollIntoView === 'function') {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    const t = setTimeout(() => setFlashRunId(null), 2500);
+    return () => clearTimeout(t);
+  }, [runs, highlightRunId, highlightHandled, openRunDetail]);
 
   const totalPages = Math.ceil(total / 20);
 
@@ -145,12 +175,13 @@ export const RunHistory: React.FC = () => {
       ) : (
         <div className="space-y-2">
           {runs.map((run) => (
-            <div key={run.id}>
+            <div key={run.id} id={`run-${run.id}`}>
               <div
                 onClick={() => handleSelectRun(run.id)}
                 className={`
                   bg-gray-800/60 border rounded-xl p-4 cursor-pointer transition-all
                   ${selectedRunId === run.id ? 'border-indigo-500 bg-gray-800' : 'border-gray-700 hover:border-gray-600'}
+                  ${flashRunId === run.id ? 'ring-2 ring-indigo-400/70' : ''}
                 `}
               >
                 <div className="flex items-center gap-4">
