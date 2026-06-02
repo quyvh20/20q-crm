@@ -85,27 +85,26 @@ export const EntityPicker: React.FC<EntityPickerProps> = ({ kind, onSelect }) =>
     return () => clearTimeout(timer);
   }, [query]);
 
-  // Run the search whenever the debounced query (or kind) changes.
+  // Run the search whenever the debounced query (or kind) changes. An empty query is
+  // NOT a no-op: it fetches a default first page so the picker opens as a ready-to-pick
+  // list (a searchable picklist), and typing narrows it. Case is handled server-side
+  // (contacts: tsvector 'simple'; deals: LOWER(title) LIKE LOWER(q)), so the query is
+  // forwarded verbatim and any casing matches.
   useEffect(() => {
-    if (!debouncedQuery) {
-      setResults([]);
-      setLoading(false);
-      setError(null);
-      return;
-    }
-
     const reqId = ++reqIdRef.current;
     setLoading(true);
     setError(null);
 
     (async () => {
       try {
+        // Omit q entirely when empty so the API returns its default first page.
+        const q = debouncedQuery || undefined;
         let candidates: EntityCandidate[];
         if (kind === 'contact') {
-          const { contacts } = await getContacts({ q: debouncedQuery, limit: RESULT_LIMIT });
+          const { contacts } = await getContacts({ q, limit: RESULT_LIMIT });
           candidates = (contacts || []).map(contactToCandidate);
         } else {
-          const { deals } = await getDeals({ q: debouncedQuery, limit: RESULT_LIMIT });
+          const { deals } = await getDeals({ q, limit: RESULT_LIMIT });
           candidates = (deals || []).map(dealToCandidate);
         }
         // Ignore responses superseded by a newer request.
@@ -148,12 +147,10 @@ export const EntityPicker: React.FC<EntityPickerProps> = ({ kind, onSelect }) =>
           </div>
         ) : error ? (
           <p className="py-3 text-sm text-red-400">{error}</p>
-        ) : !debouncedQuery ? (
-          <p className="py-3 text-sm text-gray-500">
-            Type to search for a {kind} to run this workflow against.
-          </p>
         ) : results.length === 0 ? (
-          <p className="py-3 text-sm text-gray-500">No {kind}s match “{debouncedQuery}”.</p>
+          <p className="py-3 text-sm text-gray-500">
+            {debouncedQuery ? `No ${kind}s match “${debouncedQuery}”.` : `No ${kind}s found.`}
+          </p>
         ) : (
           <ul className="space-y-1.5" role="listbox" aria-label={`${kind} results`}>
             {results.map((candidate) => {

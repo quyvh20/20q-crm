@@ -103,7 +103,8 @@ describe('EntityPicker — search results', () => {
     expect(screen.getByText('Alan Turing')).toBeInTheDocument();
     expect(screen.getAllByRole('option')).toHaveLength(2);
     // Query is forwarded to the search endpoint (debounced + trimmed) with a limit.
-    expect(mockGetContacts).toHaveBeenCalledWith({ q: 'a', limit: 10 });
+    // Wait for the typed-query call specifically — a mount preload (no q) fires first.
+    await waitFor(() => expect(mockGetContacts).toHaveBeenCalledWith({ q: 'a', limit: 10 }), { timeout: 2000 });
   });
 });
 
@@ -128,8 +129,9 @@ describe('EntityPicker — compatible entity mode', () => {
     await user.type(screen.getByLabelText('Search deals'), 'acme');
 
     await waitFor(() => expect(screen.getByText('Acme Expansion')).toBeInTheDocument(), { timeout: 2000 });
+    // Wait for the typed-query call (a mount preload with no q fires first).
+    await waitFor(() => expect(mockGetDeals).toHaveBeenCalledWith({ q: 'acme', limit: 10 }), { timeout: 2000 });
     expect(mockGetContacts).not.toHaveBeenCalled();
-    expect(mockGetDeals).toHaveBeenCalledWith({ q: 'acme', limit: 10 });
   });
 });
 
@@ -197,8 +199,38 @@ describe('EntityPicker — selection invalidation', () => {
 
     const dealInput = screen.getByLabelText('Search deals') as HTMLInputElement;
     expect(dealInput.value).toBe('');
-    expect(screen.queryByRole('option')).not.toBeInTheDocument();
+    // Stale contact selection/results are cleared on the kind switch...
     expect(screen.queryByText('Ada Lovelace')).not.toBeInTheDocument();
-    expect(screen.getByText(/Type to search for a deal/i)).toBeInTheDocument();
+    // ...and the deal kind loads its own default list (empty in this test's mock).
+    await screen.findByText(/No deals found/i);
+    expect(screen.queryByRole('option')).not.toBeInTheDocument();
+  });
+});
+
+// ── Picklist behavior: preloaded list + case-insensitive search ────────
+describe('EntityPicker — initial list and case', () => {
+  it('loads a default list on open, before any typing', async () => {
+    mockGetContacts.mockResolvedValue({
+      contacts: [makeContact({ id: 'c1', first_name: 'Ada', last_name: 'Lovelace' })],
+      meta: META,
+    });
+
+    render(<EntityPicker kind="contact" onSelect={vi.fn()} />);
+
+    // The list appears with nothing typed (searchable picklist), fetched with no q.
+    expect(await screen.findByText('Ada Lovelace')).toBeInTheDocument();
+    expect(mockGetContacts).toHaveBeenCalledWith({ q: undefined, limit: 10 });
+  });
+
+  it('forwards the query verbatim regardless of case (server search is case-insensitive)', async () => {
+    const user = userEvent.setup();
+    mockGetContacts.mockResolvedValue({ contacts: [makeContact()], meta: META });
+
+    render(<EntityPicker kind="contact" onSelect={vi.fn()} />);
+    await user.type(screen.getByLabelText('Search contacts'), 'ADA');
+
+    // The picker does not alter case; the backend (tsvector 'simple' / LOWER(title)
+    // LIKE LOWER(q)) matches case-insensitively, so uppercase input still resolves.
+    await waitFor(() => expect(mockGetContacts).toHaveBeenCalledWith({ q: 'ADA', limit: 10 }));
   });
 });
