@@ -1,6 +1,7 @@
 package automation
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -76,6 +77,16 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerF
 		workflows.POST("/:id/run", h.RunNow)
 		workflows.GET("/:id/runs", h.ListRuns)
 		workflows.GET("/runs/:runId", h.GetRunDetail)
+	}
+
+	// Webhook setup (P17): per-org inbound token + signing-secret management.
+	// Admin/manager only — these expose/rotate the org's signing credential.
+	webhooks := router.Group("/api/webhooks")
+	webhooks.Use(authMiddleware)
+	{
+		webhooks.GET("/token", requireRole("admin", "manager"), h.GetWebhookToken)
+		webhooks.POST("/reveal-secret", requireRole("admin", "manager"), h.RevealWebhookSecret)
+		webhooks.POST("/regenerate-secret", requireRole("admin", "manager"), h.RegenerateWebhookSecret)
 	}
 
 	// Public webhook inbound
@@ -724,6 +735,129 @@ func (h *Handler) WebhookInbound(c *gin.Context) {
 	})
 }
 
+// GetWebhookToken handles GET /api/webhooks/token.
+//
+// It returns the current org's inbound-webhook token, a MASKED secret (last 4
+// chars only), and the absolute URL external systems POST to — so the builder's
+// webhook trigger can show real setup instructions (P17). The full secret is
+// never returned here; it is shown exactly once by RegenerateWebhookSecret. The
+// token (with a secret) is created on first call so the URL is always available.
+// Admin/manager only.
+func (h *Handler) GetWebhookToken(c *gin.Context) {
+	orgID, _ := h.getContext(c)
+	if orgID == uuid.Nil {
+		return
+	}
+
+	token, err := h.getOrCreateOrgToken(c.Request.Context(), orgID)
+	if err != nil {
+		h.logger.Error("get/create org webhook token failed", "error", err)
+		h.errorResponse(c, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load webhook token", nil)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"data": WebhookTokenResponse{
+			Token:        token.Token,
+			SecretMasked: maskSecret(token.Secret),
+			URL:          inboundWebhookURL(requestScheme(c), c.Request.Host, token.Token),
+		},
+	})
+}
+
+// RevealWebhookSecret handles POST /api/webhooks/reveal-secret.
+//
+// It returns the org's CURRENT signing secret in full, for on-demand reveal/copy
+// in the setup UI — the listing GET only ever returns the masked form. It does not
+// rotate; the secret is unchanged. POST (not GET) keeps the secret out of URLs and
+// proxy/browser caches and marks it as an explicit, auditable retrieval.
+// Admin/manager only.
+func (h *Handler) RevealWebhookSecret(c *gin.Context) {
+	orgID, _ := h.getContext(c)
+	if orgID == uuid.Nil {
+		return
+	}
+
+	token, err := h.getOrCreateOrgToken(c.Request.Context(), orgID)
+	if err != nil {
+		h.logger.Error("get/create org webhook token failed", "error", err)
+		h.errorResponse(c, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load webhook secret", nil)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"data": WebhookSecretRevealResponse{Secret: token.Secret},
+	})
+}
+
+// RegenerateWebhookSecret handles POST /api/webhooks/regenerate-secret.
+//
+// It rotates the org's signing secret and returns the new secret in FULL — this
+// is the only time the full secret is exposed, so the caller must capture it
+// immediately (subsequent GETs return only the masked form). Rotating invalidates
+// the previous secret: inbound requests signed with the old secret stop verifying.
+// The token (and therefore the inbound URL) is left unchanged. Admin/manager only.
+func (h *Handler) RegenerateWebhookSecret(c *gin.Context) {
+	orgID, _ := h.getContext(c)
+	if orgID == uuid.Nil {
+		return
+	}
+
+	token, err := h.getOrCreateOrgToken(c.Request.Context(), orgID)
+	if err != nil {
+		h.logger.Error("get/create org webhook token failed", "error", err)
+		h.errorResponse(c, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load webhook token", nil)
+		return
+	}
+
+	newSecret := GenerateToken(64)
+	if err := h.repo.UpdateOrgSecret(c.Request.Context(), orgID, newSecret); err != nil {
+		h.logger.Error("rotate org webhook secret failed", "error", err)
+		h.errorResponse(c, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to rotate webhook secret", nil)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"data": WebhookSecretResponse{
+			Token:  token.Token,
+			Secret: newSecret, // full — shown exactly once
+			URL:    inboundWebhookURL(requestScheme(c), c.Request.Host, token.Token),
+		},
+	})
+}
+
+// getOrCreateOrgToken returns the org's webhook token row, creating one (with a
+// random token + secret) if none exists yet. Safe against a concurrent first
+// create: on a duplicate-insert it re-reads and returns the winning row.
+func (h *Handler) getOrCreateOrgToken(ctx context.Context, orgID uuid.UUID) (*WorkflowOrgToken, error) {
+	token, err := h.repo.GetOrgTokenByOrgID(ctx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	if token != nil {
+		return token, nil
+	}
+
+	token = &WorkflowOrgToken{
+		OrgID:  orgID,
+		Token:  GenerateToken(32),
+		Secret: GenerateToken(64),
+	}
+	if err := h.repo.CreateOrgToken(ctx, token); err != nil {
+		// A concurrent caller may have created the row (OrgID is the primary key)
+		// between our read and write — re-read and prefer the persisted winner.
+		existing, refErr := h.repo.GetOrgTokenByOrgID(ctx, orgID)
+		if refErr != nil {
+			return nil, refErr
+		}
+		if existing == nil {
+			return nil, err
+		}
+		return existing, nil
+	}
+	return token, nil
+}
+
 // --- Helpers ---
 
 func (h *Handler) getContext(c *gin.Context) (uuid.UUID, uuid.UUID) {
@@ -1182,6 +1316,42 @@ func computeHMAC(message []byte, secret string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(message)
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// inboundWebhookURL assembles the absolute URL external systems POST inbound
+// webhooks to. It mirrors the route registered at
+// POST /api/webhooks/inbound/:org_token.
+func inboundWebhookURL(scheme, host, token string) string {
+	return fmt.Sprintf("%s://%s/api/webhooks/inbound/%s", scheme, host, token)
+}
+
+// maskSecret returns a display-safe form of a signing secret, revealing only the
+// last 4 characters (e.g. "••••••••••••3f2a"). The bullet run is fixed-width so
+// the true secret length is not leaked. Used by GET /api/webhooks/token; the full
+// secret is only ever returned by the regenerate endpoint.
+func maskSecret(secret string) string {
+	const visible = 4
+	if len(secret) <= visible {
+		return strings.Repeat("•", len(secret))
+	}
+	return strings.Repeat("•", 12) + secret[len(secret)-visible:]
+}
+
+// requestScheme returns the best-effort external scheme (http/https) for a
+// request, honoring X-Forwarded-Proto set by an upstream proxy/load balancer and
+// otherwise falling back to the connection's TLS state.
+func requestScheme(c *gin.Context) string {
+	if proto := c.GetHeader("X-Forwarded-Proto"); proto != "" {
+		// May be a comma-separated list (proxy chain); the first is the client-facing one.
+		if i := strings.IndexByte(proto, ','); i >= 0 {
+			proto = proto[:i]
+		}
+		return strings.TrimSpace(proto)
+	}
+	if c.Request.TLS != nil {
+		return "https"
+	}
+	return "http"
 }
 
 // GenerateToken generates a random token string.

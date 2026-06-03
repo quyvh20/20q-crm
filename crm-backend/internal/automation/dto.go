@@ -149,6 +149,33 @@ type WebhookInboundResponse struct {
 	ContactID string `json:"contact_id"`
 }
 
+// WebhookTokenResponse is returned by GET /api/webhooks/token. It powers the
+// builder's inbound-webhook setup panel (P17). The secret is MASKED (last 4 chars
+// only) — the full secret is exposed solely by the regenerate endpoint. The route
+// is guarded by requireRole(admin, manager).
+type WebhookTokenResponse struct {
+	Token        string `json:"token"`         // org token embedded in the inbound URL path
+	SecretMasked string `json:"secret_masked"` // signing secret, masked for display
+	URL          string `json:"url"`           // absolute URL external systems POST to
+}
+
+// WebhookSecretResponse is returned by POST /api/webhooks/regenerate-secret. It
+// carries the FULL, freshly-rotated signing secret exactly once — the caller must
+// capture it immediately, since subsequent GETs return only the masked form.
+// Rotating invalidates the previous secret (old X-Signature values stop verifying).
+type WebhookSecretResponse struct {
+	Token  string `json:"token"`  // unchanged by rotation; inbound URL stays stable
+	Secret string `json:"secret"` // full HMAC-SHA256 secret — shown exactly once
+	URL    string `json:"url"`    // absolute URL external systems POST to
+}
+
+// WebhookSecretRevealResponse is returned by POST /api/webhooks/reveal-secret. It
+// carries the org's current full signing secret for on-demand reveal/copy in the
+// setup UI (the listing GET only returns the masked form). It does not rotate.
+type WebhookSecretRevealResponse struct {
+	Secret string `json:"secret"` // full HMAC-SHA256 secret (unchanged)
+}
+
 // --- Conversion helpers ---
 
 // ToWorkflowResponse converts a Workflow model to a response DTO.
