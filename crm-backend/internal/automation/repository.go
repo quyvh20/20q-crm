@@ -404,9 +404,31 @@ func (r *Repository) GetOrgToken(ctx context.Context, token string) (*WorkflowOr
 	return &t, nil
 }
 
+// GetOrgTokenByOrgID retrieves the inbound-webhook token record for an org, or
+// (nil, nil) if the org has none yet.
+func (r *Repository) GetOrgTokenByOrgID(ctx context.Context, orgID uuid.UUID) (*WorkflowOrgToken, error) {
+	var t WorkflowOrgToken
+	err := r.db.WithContext(ctx).Where("org_id = ?", orgID).First(&t).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &t, nil
+}
+
 // CreateOrgToken creates a new org token.
 func (r *Repository) CreateOrgToken(ctx context.Context, t *WorkflowOrgToken) error {
 	return r.db.WithContext(ctx).Create(t).Error
+}
+
+// UpdateOrgSecret rotates the signing secret for an org's webhook token, leaving
+// the token string (and therefore the inbound URL) unchanged.
+func (r *Repository) UpdateOrgSecret(ctx context.Context, orgID uuid.UUID, secret string) error {
+	return r.db.WithContext(ctx).Model(&WorkflowOrgToken{}).
+		Where("org_id = ?", orgID).
+		Update("secret", secret).Error
 }
 
 // BeginTx starts a transaction.

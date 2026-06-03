@@ -144,6 +144,63 @@ export async function getRunDetail(runId: string): Promise<RunDetailResponse> {
   return json.data as RunDetailResponse;
 }
 
+// --- Inbound webhook setup (P17) ---
+
+export interface WebhookTokenInfo {
+  /** Org token embedded in the inbound URL path. */
+  token: string;
+  /** HMAC-SHA256 signing secret, masked for display (last 4 chars only). */
+  secret_masked: string;
+  /** Absolute URL external systems POST inbound webhooks to. */
+  url: string;
+}
+
+export interface WebhookSecretInfo {
+  /** Org token (unchanged by rotation; the inbound URL stays stable). */
+  token: string;
+  /** The full, freshly-rotated signing secret — returned exactly once. */
+  secret: string;
+  /** Absolute URL external systems POST inbound webhooks to. */
+  url: string;
+}
+
+/**
+ * GET /api/webhooks/token — returns (creating on first call) the org's inbound
+ * webhook URL, token, and a MASKED signing secret. Admin/manager only. The full
+ * secret is never returned here — use regenerateWebhookSecret() to obtain it.
+ */
+export async function getWebhookToken(): Promise<WebhookTokenInfo> {
+  const res = await apiFetch('/api/webhooks/token');
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch webhook token');
+  return json.data as WebhookTokenInfo;
+}
+
+/**
+ * POST /api/webhooks/reveal-secret — returns the org's CURRENT signing secret in
+ * full, for on-demand reveal/copy in the setup UI. Does not rotate. Admin/manager
+ * only. Kept separate from the (masked) token GET so the secret leaves the server
+ * only on an explicit, auditable action.
+ */
+export async function revealWebhookSecret(): Promise<string> {
+  const res = await apiFetch('/api/webhooks/reveal-secret', { method: 'POST' });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error?.message || 'Failed to reveal webhook secret');
+  return (json.data as { secret: string }).secret;
+}
+
+/**
+ * POST /api/webhooks/regenerate-secret — rotates the org's signing secret and
+ * returns the new secret in FULL, exactly once. This invalidates the previous
+ * secret (inbound requests signed with it stop verifying). Admin/manager only.
+ */
+export async function regenerateWebhookSecret(): Promise<WebhookSecretInfo> {
+  const res = await apiFetch('/api/webhooks/regenerate-secret', { method: 'POST' });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error?.message || 'Failed to regenerate webhook secret');
+  return json.data as WebhookSecretInfo;
+}
+
 // --- Schema (for builder field pickers) ---
 
 export interface SchemaField {

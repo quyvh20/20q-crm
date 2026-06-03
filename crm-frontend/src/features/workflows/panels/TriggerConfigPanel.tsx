@@ -1,7 +1,8 @@
-import React, { useMemo, useCallback } from 'react';
+import React, { useMemo, useCallback, useState, useEffect, useRef } from 'react';
 import type { TriggerSpec } from '../types';
 import { useBuilderStore } from '../store';
-import type { WorkflowSchema } from '../api';
+import { getWebhookToken, revealWebhookSecret, regenerateWebhookSecret } from '../api';
+import type { WorkflowSchema, WebhookTokenInfo } from '../api';
 import type { FiresOn } from '../useSchema';
 import { StageDropdown } from './inputs';
 
@@ -270,6 +271,9 @@ export const TriggerConfigPanel: React.FC = () => {
         )}
       </div>
 
+      {/* Webhook setup instructions (P17) — only for the inbound webhook trigger */}
+      {object === 'webhook' && <WebhookSetup />}
+
       {/* Preview sentence */}
       {object && (
         <div className="px-3 py-2 rounded-lg bg-indigo-500/5 border border-indigo-500/10">
@@ -292,6 +296,362 @@ export const TriggerConfigPanel: React.FC = () => {
         </div>
       )}
     </div>
+  );
+};
+
+// ============================================================
+// Webhook Setup (P17)
+// Shown when the trigger object is "webhook". Fetches the org's inbound URL +
+// MASKED signing secret, and lets an admin rotate the secret. The full secret is
+// only ever held client-side immediately after a rotation (reveal-once), which is
+// also the only time the curl example can carry a real, runnable signature.
+// ============================================================
+
+// Canonical example body. The SAME string is both signed and sent in the curl
+// example, so the precomputed signature stays valid (signing a pretty-printed
+// variant would not match the bytes curl transmits).
+const WEBHOOK_EXAMPLE_BODY = '{"email":"jane@example.com","first_name":"Jane","last_name":"Doe"}';
+
+async function hmacSha256Hex(message: string, secret: string): Promise<string> {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(message));
+  return Array.from(new Uint8Array(sig))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+// Mirror of the backend maskSecret (12 bullets + last 4) so the masked display can
+// update locally right after a rotation without an extra round-trip.
+function maskWebhookSecret(secret: string): string {
+  if (secret.length <= 4) return '•'.repeat(secret.length);
+  return '•'.repeat(12) + secret.slice(-4);
+}
+
+// Module-level so it isn't re-created on every WebhookSetup render.
+const CopyButton: React.FC<{ active: boolean; onClick: () => void; label?: string }> = ({ active, onClick, label }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    aria-label={label}
+    title={label}
+    className="shrink-0 px-2 py-1 rounded-md bg-gray-700 text-[11px] text-gray-300 hover:text-white hover:bg-gray-600 transition-colors"
+  >
+    {active ? '✓ Copied' : 'Copy'}
+  </button>
+);
+
+// Rotating caret for the collapsible sub-sections (curl / payload fields).
+const DisclosureCaret: React.FC<{ open: boolean }> = ({ open }) => (
+  <svg
+    className={`w-3 h-3 shrink-0 transition-transform ${open ? 'rotate-90' : ''}`}
+    fill="none"
+    viewBox="0 0 24 24"
+    stroke="currentColor"
+    strokeWidth={2}
+    aria-hidden="true"
+  >
+    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+  </svg>
+);
+
+// Modal confirm for the destructive secret rotation. Module-level (not redefined
+// per render). Mirrors the app's dialog convention (see RunNowModal).
+const RegenerateConfirmDialog: React.FC<{
+  busy: boolean;
+  error: string | null;
+  onConfirm: () => void;
+  onCancel: () => void;
+}> = ({ busy, error, onConfirm, onCancel }) => (
+  <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div
+      className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+      onClick={busy ? undefined : onCancel}
+      aria-hidden="true"
+    />
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Regenerate signing secret"
+      className="relative bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200"
+    >
+      <div className="p-5 space-y-3">
+        <h4 className="text-sm font-semibold text-white">Regenerate signing secret?</h4>
+        <p className="text-[12px] text-gray-400 leading-relaxed">
+          Existing webhook integrations will break until updated with the new secret. Confirm?
+        </p>
+        {error && <p role="alert" className="text-[12px] text-red-400">⚠ {error}</p>}
+        <div className="flex justify-end gap-2 pt-1">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className="px-3 py-1.5 rounded-lg bg-gray-700 text-xs text-gray-200 hover:bg-gray-600 transition-colors disabled:opacity-60"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={busy}
+            className="px-3 py-1.5 rounded-lg bg-red-600 text-xs text-white font-medium hover:bg-red-500 transition-colors disabled:opacity-60"
+          >
+            {busy ? 'Rotating…' : 'Regenerate secret'}
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+);
+
+const WebhookSetup: React.FC = () => {
+  const [info, setInfo] = useState<WebhookTokenInfo | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+  // Full secret, held only while it's shown (reveal or just-rotated). Never cached
+  // across hides — `hideSecret` clears it. Auto-hides after 30s.
+  const [fullSecret, setFullSecret] = useState<string | null>(null);
+  const [revealed, setRevealed] = useState(false);
+  const [secretBusy, setSecretBusy] = useState(false);
+  const [revealError, setRevealError] = useState<string | null>(null);
+  const [sig, setSig] = useState<string | null>(null);
+  const [curlOpen, setCurlOpen] = useState(false);
+  const [fieldsOpen, setFieldsOpen] = useState(false);
+  const [showRegenDialog, setShowRegenDialog] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
+  const [regenError, setRegenError] = useState<string | null>(null);
+  const hideTimerRef = useRef<number | null>(null);
+
+  // Fetch (and lazily provision) the org's webhook token on mount. `loading`
+  // starts true, so the spinner shows without a synchronous setState here.
+  useEffect(() => {
+    let alive = true;
+    getWebhookToken()
+      .then((data) => { if (alive) { setInfo(data); setError(null); } })
+      .catch((e) => { if (alive) setError(e instanceof Error ? e.message : 'Failed to load webhook setup'); })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, []);
+
+  // While the secret is shown, compute a real signature so the curl example is
+  // copy-paste runnable. It clears with the secret on hide → curl reverts to a
+  // placeholder.
+  useEffect(() => {
+    if (!fullSecret || !crypto?.subtle) return;
+    let alive = true;
+    hmacSha256Hex(WEBHOOK_EXAMPLE_BODY, fullSecret)
+      .then((s) => { if (alive) setSig(s); })
+      .catch(() => { /* leave sig null → placeholder */ });
+    return () => { alive = false; };
+  }, [fullSecret]);
+
+  // Clear any pending auto-hide timer when the panel unmounts.
+  useEffect(() => () => { if (hideTimerRef.current) window.clearTimeout(hideTimerRef.current); }, []);
+
+  const copy = useCallback((key: string, text: string) => {
+    navigator.clipboard?.writeText(text);
+    setCopied(key);
+    window.setTimeout(() => setCopied((c) => (c === key ? null : c)), 1500);
+  }, []);
+
+  // Fetch the full secret from the server on demand. Deliberately NOT cached in
+  // state: each reveal/copy is a fresh, explicit (auditable) call, so the plaintext
+  // is held only while it's actually being shown.
+  const fetchSecret = useCallback(async (): Promise<string> => {
+    setSecretBusy(true);
+    try {
+      return await revealWebhookSecret();
+    } finally {
+      setSecretBusy(false);
+    }
+  }, []);
+
+  // Hide the secret and drop it (and its derived signature) from memory.
+  const hideSecret = useCallback(() => {
+    if (hideTimerRef.current) window.clearTimeout(hideTimerRef.current);
+    setRevealed(false);
+    setFullSecret(null);
+    setSig(null);
+  }, []);
+
+  // (Re)start the 30s window after which a revealed secret auto-hides.
+  const scheduleHide = useCallback(() => {
+    if (hideTimerRef.current) window.clearTimeout(hideTimerRef.current);
+    hideTimerRef.current = window.setTimeout(hideSecret, 30000);
+  }, [hideSecret]);
+
+  const onReveal = useCallback(() => {
+    setRevealError(null);
+    fetchSecret()
+      .then((s) => { setFullSecret(s); setRevealed(true); scheduleHide(); })
+      .catch((e) => setRevealError(e instanceof Error ? e.message : 'Failed to reveal secret'));
+  }, [fetchSecret, scheduleHide]);
+
+  // Copy the full secret WITHOUT showing it on screen. The value lives only in
+  // this local scope for the clipboard write — it is never stored in state.
+  const onCopySecret = useCallback(() => {
+    setRevealError(null);
+    fetchSecret()
+      .then((s) => copy('secret', s))
+      .catch((e) => setRevealError(e instanceof Error ? e.message : 'Failed to copy secret'));
+  }, [fetchSecret, copy]);
+
+  const doRegenerate = useCallback(() => {
+    setRegenerating(true);
+    setRegenError(null);
+    regenerateWebhookSecret()
+      .then((res) => {
+        setFullSecret(res.secret);
+        setInfo((prev) => (prev ? { ...prev, token: res.token, url: res.url, secret_masked: maskWebhookSecret(res.secret) } : prev));
+        setShowRegenDialog(false);
+        setRevealed(true); // show the new secret so it can be copied; auto-hides in 30s
+        scheduleHide();
+      })
+      .catch((e) => setRegenError(e instanceof Error ? e.message : 'Failed to regenerate secret'))
+      .finally(() => setRegenerating(false));
+  }, [scheduleHide]);
+
+  if (loading) {
+    return (
+      <div className="p-3 rounded-xl border border-gray-700/50 bg-gray-800/30">
+        <p className="text-xs text-gray-500">Loading webhook setup…</p>
+      </div>
+    );
+  }
+
+  if (error || !info) {
+    return (
+      <div className="p-3 rounded-xl border border-amber-500/30 bg-amber-500/10">
+        <p className="text-xs text-amber-400 font-medium">Couldn't load webhook setup</p>
+        <p className="text-[11px] text-amber-400/70 mt-0.5">
+          {error || 'No data returned.'} Webhook setup requires admin or manager access.
+        </p>
+      </div>
+    );
+  }
+
+  const curl = [
+    `curl -X POST '${info.url}' \\`,
+    `  -H 'Content-Type: application/json' \\`,
+    `  -H 'X-Signature: sha256=${sig ?? '<hmac-sha256-of-body>'}' \\`,
+    `  -d '${WEBHOOK_EXAMPLE_BODY}'`,
+  ].join('\n');
+
+  return (
+    <>
+    <div className="p-3 rounded-xl border border-gray-700/50 bg-gray-800/30 space-y-3">
+      <div className="flex items-center gap-2">
+        <span className="text-sm">🔗</span>
+        <p className="text-xs text-gray-300 font-medium">Webhook Setup</p>
+      </div>
+      <p className="text-[11px] text-gray-500 -mt-1">
+        POST to this URL to trigger the workflow. Sign the request body with your secret using HMAC-SHA256 and send it as the <code className="text-gray-400">X-Signature</code> header.
+      </p>
+
+      {/* Endpoint URL */}
+      <div className="space-y-1">
+        <label className="text-[10px] text-gray-500 font-medium uppercase tracking-wider">Endpoint URL</label>
+        <div className="flex items-center gap-2">
+          <code className="flex-1 min-w-0 truncate px-2 py-1.5 rounded-md bg-gray-900 border border-gray-700 text-[11px] text-indigo-300 font-mono" title={info.url}>{info.url}</code>
+          <CopyButton active={copied === 'url'} onClick={() => copy('url', info.url)} label="Copy webhook URL" />
+        </div>
+        <p className="text-[10px] text-gray-600">This URL is permanent — it stays the same when you rotate the secret.</p>
+      </div>
+
+      {/* Signing secret: masked by default, reveal (auto-hide 30s) / copy / rotate */}
+      <div className="space-y-1">
+        <label className="text-[10px] text-gray-500 font-medium uppercase tracking-wider">Signing Secret</label>
+        <div className="flex items-center gap-2">
+          <code className="flex-1 min-w-0 truncate px-2 py-1.5 rounded-md bg-gray-900 border border-gray-700 text-[11px] text-amber-300/90 font-mono">
+            {revealed && fullSecret ? fullSecret : info.secret_masked}
+          </code>
+          <button
+            type="button"
+            onClick={revealed ? hideSecret : onReveal}
+            disabled={secretBusy}
+            className="shrink-0 px-2 py-1 rounded-md bg-gray-700 text-[11px] text-gray-300 hover:text-white hover:bg-gray-600 transition-colors disabled:opacity-60"
+          >
+            {revealed ? 'Hide' : 'Reveal'}
+          </button>
+          <CopyButton active={copied === 'secret'} onClick={onCopySecret} label="Copy signing secret" />
+          <button
+            type="button"
+            onClick={() => { setRegenError(null); setShowRegenDialog(true); }}
+            className="shrink-0 px-2 py-1 rounded-md bg-gray-700 text-[11px] text-gray-300 hover:text-white hover:bg-gray-600 transition-colors"
+          >
+            ↻ Regenerate
+          </button>
+        </div>
+        {revealed && (
+          <p className="text-[10px] text-gray-600">Visible for 30 seconds — copy it now if you need it.</p>
+        )}
+        {revealError && (
+          <p className="text-[10px] text-red-400">⚠ {revealError}</p>
+        )}
+      </div>
+
+      {/* curl example (collapsible) — pre-filled with URL, sample body, signature */}
+      <div className="space-y-1">
+        <div className="flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => setCurlOpen((o) => !o)}
+            aria-expanded={curlOpen}
+            className="flex items-center gap-1 text-[10px] text-gray-500 font-medium uppercase tracking-wider hover:text-gray-300 transition-colors"
+          >
+            <DisclosureCaret open={curlOpen} />
+            Test with curl
+          </button>
+          {curlOpen && (
+            <CopyButton active={copied === 'curl'} onClick={() => copy('curl', curl)} label="Copy curl command" />
+          )}
+        </div>
+        {curlOpen && (
+          <>
+            <pre className="px-2 py-2 rounded-md bg-gray-900 border border-gray-700 text-[11px] text-gray-300 font-mono overflow-x-auto whitespace-pre">{curl}</pre>
+            {!sig && (
+              <p className="text-[10px] text-gray-600">Reveal your secret to fill in a runnable signature, or sign the request body yourself (HMAC-SHA256) into the <code>X-Signature</code> header.</p>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Payload fields (accordion) */}
+      <div className="space-y-1">
+        <button
+          type="button"
+          onClick={() => setFieldsOpen((o) => !o)}
+          aria-expanded={fieldsOpen}
+          className="flex items-center gap-1 text-[10px] text-gray-500 font-medium uppercase tracking-wider hover:text-gray-300 transition-colors"
+        >
+          <DisclosureCaret open={fieldsOpen} />
+          Payload Fields
+        </button>
+        {fieldsOpen && (
+          <p className="text-[11px] text-gray-500 leading-relaxed">
+            <code className="text-gray-300">email</code> is required and identifies the contact.{' '}
+            <code className="text-gray-300">first_name</code>, <code className="text-gray-300">last_name</code>, <code className="text-gray-300">phone</code>, <code className="text-gray-300">company</code> map to contact fields. Any other keys are saved as custom fields.
+          </p>
+        )}
+      </div>
+    </div>
+
+    {showRegenDialog && (
+      <RegenerateConfirmDialog
+        busy={regenerating}
+        error={regenError}
+        onConfirm={doRegenerate}
+        onCancel={() => { if (!regenerating) setShowRegenDialog(false); }}
+      />
+    )}
+    </>
   );
 };
 
