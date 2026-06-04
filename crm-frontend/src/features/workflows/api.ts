@@ -144,6 +144,25 @@ export async function getRunDetail(runId: string): Promise<RunDetailResponse> {
   return json.data as RunDetailResponse;
 }
 
+export interface RetryRunResult {
+  /** The re-queued run's id — the same run resumes; it is not cloned. */
+  id: string;
+  /** Run status after re-queueing, e.g. "pending". */
+  status: string;
+}
+
+/**
+ * POST /api/workflows/runs/:runId/retry — re-queue a FAILED run so it resumes from the
+ * step that failed (P21). Completed steps are not re-executed. Admin/manager only; the
+ * server rejects non-failed runs with 409.
+ */
+export async function retryRun(runId: string): Promise<RetryRunResult> {
+  const res = await apiFetch(`/api/workflows/runs/${runId}/retry`, { method: 'POST' });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error?.message || 'Failed to retry run');
+  return json.data as RetryRunResult;
+}
+
 // --- Inbound webhook setup (P17) ---
 
 export interface WebhookTokenInfo {

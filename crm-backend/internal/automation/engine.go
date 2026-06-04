@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -14,6 +15,11 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
+
+// ErrRunNotRetryable is returned by RetryRun when the target run is no longer in the
+// failed state by the time the atomic reset runs (e.g. it was already retried, or never
+// failed). Handlers map it to a 409 Conflict.
+var ErrRunNotRetryable = errors.New("automation: run is not in a retryable (failed) state")
 
 // Engine is the core automation engine that manages workers and dispatches actions.
 type Engine struct {
@@ -364,6 +370,42 @@ func (e *Engine) RunWorkflowNow(ctx context.Context, orgID uuid.UUID, wf *Workfl
 	}
 
 	return run.ID, nil
+}
+
+// RetryRun resumes a previously FAILED run from the step that failed (P21). It atomically
+// flips the run back to pending — resetting only the retry counters/timers, never the
+// CompletedActions set — and then re-queues it on the worker pool. Because processRun
+// rebuilds the completed-step set from the run's successful action logs and skips them
+// (the same idempotency path used for crash recovery and auto-retries), the steps that
+// already ran are NOT re-executed: execution resumes at the failure point and prior side
+// effects (emails sent, tasks created) are not repeated.
+//
+// The caller is expected to have already loaded the run, confirmed it belongs to the
+// caller's org, authorized the actor, and observed status == failed; the repository's
+// locked (SELECT ... FOR UPDATE) status-guarded reset closes the race between that read and
+// this write, returning ErrRunNotRetryable if the run left the failed state in between.
+func (e *Engine) RetryRun(ctx context.Context, runID uuid.UUID) error {
+	reset, err := e.repo.ResetRunForRetry(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("reset run for retry: %w", err)
+	}
+	if !reset {
+		return ErrRunNotRetryable
+	}
+
+	// Non-blocking dispatch with startup recovery as the fallback if the buffered jobs
+	// channel is momentarily full — identical to RunWorkflowNow/triggerEventInternal. A
+	// pending run with a null next_retry_at is re-queued by RequeueInFlight on the next
+	// engine start, so a dropped push is recovered rather than lost.
+	select {
+	case e.jobs <- WorkflowRunJob{RunID: runID}:
+	default:
+		e.logger.Warn("automation: jobs channel full, retried run will be picked up by recovery",
+			"run_id", runID.String(),
+		)
+	}
+
+	return nil
 }
 
 // worker is the main processing loop for each worker goroutine.

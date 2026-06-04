@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, act } from '@testing-library/react';
+import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { RunHistory } from './RunHistory';
-import { getWorkflow, getWorkflowRuns, getRunDetail } from './api';
+import { getWorkflow, getWorkflowRuns, getRunDetail, retryRun } from './api';
 import type { Workflow, WorkflowRun, ActionLog, RunDetailResponse } from './types';
 
 /**
@@ -21,11 +21,24 @@ vi.mock('./api', () => ({
   getWorkflow: vi.fn(),
   getWorkflowRuns: vi.fn(),
   getRunDetail: vi.fn(),
+  retryRun: vi.fn(),
 }));
 
 const mockGetWorkflow = vi.mocked(getWorkflow);
 const mockGetWorkflowRuns = vi.mocked(getWorkflowRuns);
 const mockGetRunDetail = vi.mocked(getRunDetail);
+const mockRetryRun = vi.mocked(retryRun);
+
+// RunHistory reads useAuth to gate the Retry button (P21): owner/admin/manager, or the
+// workflow's creator. Mutable so tests can drive the caller's role/id; beforeEach defaults
+// to a privileged caller so the button is enabled in the other tests.
+const mockAuth = vi.hoisted(() => ({
+  user: { id: 'user-1' } as { id: string } | null,
+  currentRole: 'admin' as string,
+}));
+vi.mock('../../lib/auth', () => ({
+  useAuth: () => mockAuth,
+}));
 
 function makeWorkflow(over: Partial<Workflow> = {}): Workflow {
   return {
@@ -90,6 +103,9 @@ function renderHistory(state?: { highlightRunId?: string }) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default to a privileged caller so the Retry button is enabled wherever it renders.
+  mockAuth.user = { id: 'user-1' };
+  mockAuth.currentRole = 'admin';
   // jsdom doesn't implement scrollIntoView — provide a no-op so the highlight effect
   // doesn't throw.
   Element.prototype.scrollIntoView = vi.fn();
@@ -167,6 +183,134 @@ describe('RunHistory — live polling status transitions (P19)', () => {
       const callsAtTerminal = mockGetWorkflowRuns.mock.calls.length;
       await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
       expect(mockGetWorkflowRuns.mock.calls.length).toBe(callsAtTerminal);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ── P21 retry: a failed run can be re-queued from the UI ──────────────────────
+describe('RunHistory — retry failed run (P21)', () => {
+  it('shows a Retry button on a failed run and re-queues + refreshes on click', async () => {
+    mockGetWorkflowRuns.mockResolvedValue({
+      runs: [
+        makeRun({ id: 'run-ok', status: 'completed' }),
+        makeRun({ id: 'run-bad', status: 'failed', last_error: 'boom' }),
+      ],
+      total: 2,
+    });
+    mockRetryRun.mockResolvedValue({ id: 'run-bad', status: 'pending' });
+
+    renderHistory();
+
+    // Exactly one Retry button — for the failed run (the completed run has none).
+    const retryBtn = await screen.findByRole('button', { name: /retry/i });
+    const callsBefore = mockGetWorkflowRuns.mock.calls.length;
+
+    fireEvent.click(retryBtn);
+
+    await waitFor(() => expect(mockRetryRun).toHaveBeenCalledWith('run-bad'));
+    // A refresh follows the retry so the row reflects its new (pending) status.
+    await waitFor(() =>
+      expect(mockGetWorkflowRuns.mock.calls.length).toBeGreaterThan(callsBefore),
+    );
+  });
+
+  it('does not open the run detail when Retry is clicked (stopPropagation)', async () => {
+    mockGetWorkflowRuns.mockResolvedValue({
+      runs: [makeRun({ id: 'run-bad', status: 'failed' })],
+      total: 1,
+    });
+    mockRetryRun.mockResolvedValue({ id: 'run-bad', status: 'pending' });
+
+    renderHistory();
+
+    const retryBtn = await screen.findByRole('button', { name: /retry/i });
+    fireEvent.click(retryBtn);
+
+    await waitFor(() => expect(mockRetryRun).toHaveBeenCalled());
+    // Clicking Retry must NOT toggle the row open, so its action logs are never fetched.
+    expect(mockGetRunDetail).not.toHaveBeenCalled();
+  });
+
+  it('surfaces an error banner when the retry request fails', async () => {
+    mockGetWorkflowRuns.mockResolvedValue({
+      runs: [makeRun({ id: 'run-bad', status: 'failed' })],
+      total: 1,
+    });
+    mockRetryRun.mockRejectedValue(new Error('only failed runs can be retried'));
+
+    renderHistory();
+
+    const retryBtn = await screen.findByRole('button', { name: /retry/i });
+    fireEvent.click(retryBtn);
+
+    expect(await screen.findByText(/only failed runs can be retried/i)).toBeInTheDocument();
+  });
+
+  it('renders no Retry button when there are no failed runs', async () => {
+    mockGetWorkflowRuns.mockResolvedValue({
+      runs: [makeRun({ id: 'run-1', status: 'completed' })],
+      total: 1,
+    });
+
+    renderHistory();
+
+    await waitFor(() => expect(mockGetWorkflowRuns).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByText('Welcome Email')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /retry/i })).not.toBeInTheDocument();
+  });
+
+  it('disables the Retry button when the caller lacks permission', async () => {
+    // Non-privileged caller who is not the workflow's creator → the server would 403, so
+    // the button is shown disabled rather than offered.
+    mockAuth.user = { id: 'stranger' };
+    mockAuth.currentRole = 'viewer';
+    mockGetWorkflow.mockResolvedValue(makeWorkflow({ created_by: 'someone-else' }));
+    mockGetWorkflowRuns.mockResolvedValue({
+      runs: [makeRun({ id: 'run-bad', status: 'failed' })],
+      total: 1,
+    });
+
+    renderHistory();
+
+    const retryBtn = await screen.findByRole('button', { name: /retry/i });
+    expect(retryBtn).toBeDisabled();
+
+    // A disabled button must not fire the request.
+    fireEvent.click(retryBtn);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(mockRetryRun).not.toHaveBeenCalled();
+  });
+
+  it('after retry the run flips to pending and the live poller drives it to completion', async () => {
+    vi.useFakeTimers();
+    try {
+      mockRetryRun.mockResolvedValue({ id: 'run-bad', status: 'pending' });
+      // mount → failed; post-retry refresh → pending; then the P19 poll → running → completed.
+      mockGetWorkflowRuns.mockReset();
+      mockGetWorkflowRuns
+        .mockResolvedValueOnce({ runs: [makeRun({ id: 'run-bad', status: 'failed' })], total: 1 })
+        .mockResolvedValueOnce({ runs: [makeRun({ id: 'run-bad', status: 'pending' })], total: 1 })
+        .mockResolvedValueOnce({ runs: [makeRun({ id: 'run-bad', status: 'running' })], total: 1 })
+        .mockResolvedValue({ runs: [makeRun({ id: 'run-bad', status: 'completed' })], total: 1 });
+
+      renderHistory();
+
+      // Mount resolves → failed run + Retry button.
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      fireEvent.click(screen.getByRole('button', { name: /retry/i }));
+
+      // retryRun resolves and the follow-up refresh flips the row to pending.
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(mockRetryRun).toHaveBeenCalledWith('run-bad');
+      expect(screen.getByText('pending')).toBeInTheDocument();
+
+      // A pending run reactivates the P19 poller, which tracks it to completion.
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+      expect(screen.getByText('running')).toBeInTheDocument();
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+      expect(screen.getByText('completed')).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }

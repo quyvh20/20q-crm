@@ -274,6 +274,58 @@ func (r *Repository) UpdateRunStandalone(ctx context.Context, run *WorkflowRun) 
 	})
 }
 
+// ResetRunForRetry atomically transitions a FAILED run back to PENDING for a manual
+// retry (P21), then reports whether it actually reset anything. It clears ONLY the retry
+// bookkeeping (retry_count, next_retry_at, last_error) and the terminal marker
+// (finished_at) — CompletedActions and CurrentActionIdx are deliberately left untouched so
+// processRun resumes at the step that failed instead of re-running completed work.
+//
+// The run row is taken with SELECT ... FOR UPDATE and its status is re-checked under that
+// lock before the write, so the reset cannot race a worker or crash recovery transitioning
+// the same run concurrently: a second retry, or a crash-recovery requeue that fired between
+// the handler's read and this call, blocks on the lock and then observes the committed
+// state. If the locked row is not (or no longer) failed — already retried, completed,
+// skipped, or in flight — this is a no-op returning false, which the caller maps to a 400.
+//
+// A manual retry deliberately BYPASSES the exponential backoff (30s/2m/10m) that paces
+// automatic retries: the user has chosen to retry now, so next_retry_at is cleared and the
+// run is eligible immediately (the retry sweeper only looks at runs with a non-null timer;
+// the worker channel / startup recovery pick this one up). Resetting retry_count to 0 also
+// restores a full automatic-retry budget for the step that resumes — so a run that keeps
+// failing can be retried by the user any number of times without getting backoff-throttled.
+// A map update (not Save) writes the zero values as 0/NULL rather than skipping them, and
+// never clobbers CompletedActions/CurrentActionIdx.
+func (r *Repository) ResetRunForRetry(ctx context.Context, runID uuid.UUID) (bool, error) {
+	var reset bool
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var run WorkflowRun
+		// Plain FOR UPDATE (not SKIP LOCKED): we must wait for any concurrent holder and
+		// then read the committed status, rather than skip a locked row.
+		if err := tx.Raw("SELECT * FROM automation_workflow_runs WHERE id = ? FOR UPDATE", runID).
+			Scan(&run).Error; err != nil {
+			return err
+		}
+		if run.ID == uuid.Nil || run.Status != StatusFailed {
+			return nil // not found or not failed → leave reset == false
+		}
+		res := tx.Model(&WorkflowRun{}).
+			Where("id = ?", runID).
+			Updates(map[string]any{
+				"status":        StatusPending,
+				"retry_count":   0,
+				"last_error":    "",
+				"next_retry_at": nil,
+				"finished_at":   nil,
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		reset = res.RowsAffected > 0
+		return nil
+	})
+	return reset, err
+}
+
 // ListRunsByWorkflow returns paginated runs for a workflow.
 func (r *Repository) ListRunsByWorkflow(ctx context.Context, workflowID uuid.UUID, page, size int) ([]WorkflowRun, int64, error) {
 	if page < 1 {

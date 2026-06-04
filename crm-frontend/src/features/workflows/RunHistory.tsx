@@ -1,13 +1,16 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { getWorkflowRuns, getRunDetail, getWorkflow } from './api';
+import { getWorkflowRuns, getRunDetail, getWorkflow, retryRun } from './api';
 import type { WorkflowRun, ActionLog, Workflow } from './types';
 import { STATUS_COLORS, ACTION_LABELS } from './types';
+import { useAuth } from '../../lib/auth';
+import { canRunWorkflowNow } from './RunNowModal';
 
 export const RunHistory: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
+  const { user, currentRole } = useAuth();
   // A run id handed over via navigation state — set by the "Run started" toast's
   // "View run" link and by the builder's Run Now. When present, auto-open that run's
   // detail and scroll/flash it once it appears in the loaded list.
@@ -22,6 +25,9 @@ export const RunHistory: React.FC = () => {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [actionLogs, setActionLogs] = useState<ActionLog[]>([]);
   const [loadingLogs, setLoadingLogs] = useState(false);
+  // The failed run currently being re-queued (P21) — disables its button while in flight.
+  const [retryingRunId, setRetryingRunId] = useState<string | null>(null);
+  const [retryError, setRetryError] = useState<string | null>(null);
 
   // Full fetch — shows the loading spinner (used on initial mount + page changes).
   const fetchRuns = useCallback(async () => {
@@ -57,6 +63,22 @@ export const RunHistory: React.FC = () => {
       console.error('Background refresh failed:', e);
     }
   }, [id, page]);
+
+  // Retry a failed run (P21): re-queue it server-side, then refresh so the row flips to
+  // pending and the live poller (below) tracks it to completion. The run resumes from the
+  // step that failed — completed steps are not re-executed.
+  const handleRetry = useCallback(async (runId: string) => {
+    setRetryingRunId(runId);
+    setRetryError(null);
+    try {
+      await retryRun(runId);
+      await silentRefresh();
+    } catch (e) {
+      setRetryError(e instanceof Error ? e.message : 'Failed to retry run');
+    } finally {
+      setRetryingRunId(null);
+    }
+  }, [silentRefresh]);
 
   // Auto-poll every 5 s while any run is pending or running.
   // Pauses when the tab is hidden; resumes (with an immediate refresh) when visible.
@@ -143,6 +165,13 @@ export const RunHistory: React.FC = () => {
 
   const totalPages = Math.ceil(total / 20);
 
+  // Retry permission mirrors the backend (authorizeRunNow): owner/admin/manager, or the
+  // workflow's creator. The same rule gates Run Now, so we reuse canRunWorkflowNow. The
+  // server still enforces it (403) — this only drives the disabled state in the UI.
+  const canRetry = canRunWorkflowNow(currentRole, user?.id, {
+    created_by: workflow?.created_by ?? null,
+  });
+
   return (
     <div className="max-w-5xl mx-auto py-8 px-4">
       {/* Header */}
@@ -162,6 +191,19 @@ export const RunHistory: React.FC = () => {
           </p>
         </div>
       </div>
+
+      {retryError && (
+        <div className="mb-4 px-4 py-2.5 rounded-lg bg-red-500/10 border border-red-500/30 text-sm text-red-300 flex items-center justify-between">
+          <span>{retryError}</span>
+          <button
+            onClick={() => setRetryError(null)}
+            className="text-red-400 hover:text-red-200 ml-4"
+            aria-label="Dismiss error"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {loading ? (
         <div className="flex justify-center py-16">
@@ -227,6 +269,26 @@ export const RunHistory: React.FC = () => {
                       </p>
                     )}
                   </div>
+
+                  {/* Retry (P21) — failed runs only. Resumes from the failed step,
+                      preserving completed work. stopPropagation so it doesn't toggle the row. */}
+                  {run.status === 'failed' && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleRetry(run.id);
+                      }}
+                      disabled={!canRetry || retryingRunId === run.id}
+                      className="px-2.5 py-1 rounded-lg text-xs font-medium bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30 hover:text-indigo-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      title={
+                        canRetry
+                          ? 'Re-queue this run — resumes from the step that failed, keeping completed steps'
+                          : "Only an admin, manager, or the workflow's creator can retry runs"
+                      }
+                    >
+                      {retryingRunId === run.id ? '↻ Retrying…' : '↻ Retry'}
+                    </button>
+                  )}
 
                   <span className="text-gray-600 text-sm">
                     {selectedRunId === run.id ? '▼' : '▶'}

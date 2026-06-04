@@ -77,6 +77,11 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerF
 		workflows.POST("/:id/run", h.RunNow)
 		workflows.GET("/:id/runs", h.ListRuns)
 		workflows.GET("/runs/:runId", h.GetRunDetail)
+		// Retry a failed run (P21): re-queues it to resume from the failed step. Like Run
+		// Now, it carries NO requireRole guard — authorization (owner/admin/manager, or the
+		// workflow's creator) is enforced inside h.RetryRun, which needs the workflow's
+		// CreatedBy.
+		workflows.POST("/runs/:runId/retry", h.RetryRun)
 	}
 
 	// Webhook setup (P17): per-org inbound token + signing-secret management.
@@ -498,7 +503,11 @@ func (h *Handler) RunNow(c *gin.Context) {
 
 // --- Run history ---
 
-// ListRuns handles GET /api/workflows/:id/runs
+// ListRuns handles GET /api/workflows/:id/runs.
+//
+// The workflow is resolved within the caller's org BEFORE its runs are listed: a workflow
+// that does not exist in the caller's org yields 404, so another org's run history (and the
+// PII its trigger context can carry) cannot be enumerated by guessing a workflow id.
 func (h *Handler) ListRuns(c *gin.Context) {
 	orgID, _ := h.getContext(c)
 	if orgID == uuid.Nil {
@@ -508,6 +517,19 @@ func (h *Handler) ListRuns(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		h.errorResponse(c, http.StatusBadRequest, "INVALID_ID", "invalid workflow ID", nil)
+		return
+	}
+
+	// Org scoping: the workflow must belong to the caller's org. A foreign-org (or unknown)
+	// workflow is reported as not found so its runs cannot be enumerated cross-org.
+	wf, err := h.repo.GetWorkflowByID(c.Request.Context(), orgID, id)
+	if err != nil {
+		h.logger.Error("list runs: failed to load workflow", "error", err, "workflow_id", id.String())
+		h.errorResponse(c, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load workflow", nil)
+		return
+	}
+	if wf == nil {
+		h.errorResponse(c, http.StatusNotFound, "NOT_FOUND", "workflow not found", nil)
 		return
 	}
 
@@ -535,8 +557,18 @@ func (h *Handler) ListRuns(c *gin.Context) {
 	})
 }
 
-// GetRunDetail handles GET /api/workflows/runs/:runId
+// GetRunDetail handles GET /api/workflows/runs/:runId.
+//
+// The run is scoped to the caller's org: a run that belongs to another org is reported as
+// not found so its existence is not leaked. This matters because the detail (the run's
+// trigger context and the action logs' resolved input/output) can contain PII. Mirrors the
+// org-scoping in RetryRun.
 func (h *Handler) GetRunDetail(c *gin.Context) {
+	orgID, _ := h.getContext(c)
+	if orgID == uuid.Nil {
+		return
+	}
+
 	runID, err := uuid.Parse(c.Param("runId"))
 	if err != nil {
 		h.errorResponse(c, http.StatusBadRequest, "INVALID_ID", "invalid run ID", nil)
@@ -544,7 +576,13 @@ func (h *Handler) GetRunDetail(c *gin.Context) {
 	}
 
 	run, err := h.repo.GetRunByID(c.Request.Context(), runID)
-	if err != nil || run == nil {
+	if err != nil {
+		h.logger.Error("get run detail: failed to load run", "error", err, "run_id", runID.String())
+		h.errorResponse(c, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load run", nil)
+		return
+	}
+	// Org scoping: a foreign-org run (or a non-existent one) must be indistinguishable.
+	if run == nil || run.OrgID != orgID {
 		h.errorResponse(c, http.StatusNotFound, "NOT_FOUND", "run not found", nil)
 		return
 	}
@@ -559,6 +597,107 @@ func (h *Handler) GetRunDetail(c *gin.Context) {
 		"data": RunDetailResponse{
 			Run:        ToRunResponse(run),
 			ActionLogs: logResponses,
+		},
+	})
+}
+
+// RetryRun handles POST /api/workflows/runs/:runId/retry — re-queues a FAILED run so it
+// resumes from the step that failed, preserving the work already completed (P21). It does
+// NOT restart the run from the beginning: the engine skips steps whose action logs are
+// already successful, so prior side effects are not repeated.
+//
+// Only a failed run may be retried — a completed/skipped run has nothing to resume, and a
+// pending/running run is already in flight; any other state is rejected 409 Conflict (the
+// request is well-formed, but the run's state conflicts with the operation). The run must
+// belong to the caller's org; a run from another org is reported as not found so its
+// existence is not leaked.
+//
+// Authorization mirrors Run Now (so the route carries NO requireRole guard): owner/admin/
+// manager may retry any run in the org, and any other caller may retry only a run whose
+// workflow they created. The decision needs the workflow's CreatedBy, so it is enforced
+// here after the workflow is loaded, before any state change. A successful retry is written
+// to the structured log as an audit event (actor + timestamp).
+func (h *Handler) RetryRun(c *gin.Context) {
+	orgID, userID := h.getContext(c)
+	if orgID == uuid.Nil {
+		return
+	}
+
+	runID, err := uuid.Parse(c.Param("runId"))
+	if err != nil {
+		h.errorResponse(c, http.StatusBadRequest, "INVALID_ID", "invalid run ID", nil)
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	run, err := h.repo.GetRunByID(ctx, runID)
+	if err != nil {
+		h.logger.Error("retry run: failed to load run", "error", err, "run_id", runID.String())
+		h.errorResponse(c, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load run", nil)
+		return
+	}
+	// Org scoping: a foreign-org run (or a non-existent one) must be indistinguishable.
+	if run == nil || run.OrgID != orgID {
+		h.errorResponse(c, http.StatusNotFound, "NOT_FOUND", "run not found", nil)
+		return
+	}
+
+	// Authorization (creator allowance): owner/admin/manager may retry any run; any other
+	// caller may retry only a run whose workflow they created. Load the workflow for its
+	// CreatedBy — a soft-deleted/absent workflow yields uuid.Nil, so only the privileged
+	// roles can retry an orphaned run.
+	var createdBy uuid.UUID
+	if wf, werr := h.repo.GetWorkflowByID(ctx, orgID, run.WorkflowID); werr == nil && wf != nil {
+		createdBy = wf.CreatedBy
+	}
+	roleVal, _ := c.Get("role")
+	role, _ := roleVal.(string)
+	if !authorizeRunNow(role, userID, createdBy) {
+		h.errorResponse(c, http.StatusForbidden, "FORBIDDEN",
+			"you do not have permission to retry this run", nil)
+		return
+	}
+
+	// Only failed runs are retryable. 409 Conflict (not 400): the request is well-formed,
+	// but the run's state conflicts with the operation. Surface the current status so the
+	// client can explain why the action is unavailable.
+	if run.Status != StatusFailed {
+		h.errorResponse(c, http.StatusConflict, "INVALID_STATE",
+			fmt.Sprintf("only failed runs can be retried (current status: %s)", run.Status), nil)
+		return
+	}
+
+	if err := h.engine.RetryRun(ctx, run.ID); err != nil {
+		if errors.Is(err, ErrRunNotRetryable) {
+			// Lost the race: the run left the failed state between our read and the locked
+			// reset — also a state conflict, so 409.
+			h.errorResponse(c, http.StatusConflict, "INVALID_STATE",
+				"run is no longer in a retryable state", nil)
+			return
+		}
+		h.logger.Error("retry run: failed to re-queue", "error", err, "run_id", run.ID.String())
+		h.errorResponse(c, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to retry run", nil)
+		return
+	}
+
+	// Audit event: who re-queued which run, and when. Emitted to the structured log (the
+	// app has no dedicated audit store); the explicit event tag keeps it filterable.
+	h.logger.Info("audit: workflow run retried",
+		"event", "workflow_run.retried",
+		"actor_user_id", userID.String(),
+		"org_id", orgID.String(),
+		"workflow_id", run.WorkflowID.String(),
+		"run_id", run.ID.String(),
+		"at", time.Now().UTC().Format(time.RFC3339),
+	)
+
+	// The run resumes under its existing id (it is re-queued, not cloned); report the new
+	// pending status. Reuses the {id,status} envelope shared with Run Now.
+	c.JSON(http.StatusOK, gin.H{
+		"data": RunNowResponse{
+			ID:     run.ID,
+			Status: StatusPending,
 		},
 	})
 }
