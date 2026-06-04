@@ -217,6 +217,29 @@ describe('WorkflowList — run-started toast and View run link', () => {
   });
 });
 
+// ── P23: Duplicate opens the builder on a "new" route carrying the source id ──
+describe('WorkflowList — Duplicate workflow', () => {
+  it('renders a Duplicate control on every row', async () => {
+    render(<WorkflowList />);
+    await screen.findByText('Welcome Email');
+
+    expect(screen.getAllByRole('button', { name: /Duplicate/i })).toHaveLength(2);
+  });
+
+  it('navigates to /workflows/new carrying the clicked workflow id in router state', async () => {
+    const user = userEvent.setup();
+    render(<WorkflowList />);
+    await screen.findByText('Deal Won Alert');
+
+    // Duplicate the SECOND row — the source id must ride along so the builder clones it.
+    await user.click(screen.getAllByRole('button', { name: /Duplicate/i })[1]);
+
+    expect(mockNavigate).toHaveBeenCalledWith('/workflows/new', {
+      state: { duplicateFromId: 'wf-deal' },
+    });
+  });
+});
+
 // ── Run Now visibility mirrors backend authorization (creator allowance) ──────
 describe('WorkflowList — Run Now visibility by permission', () => {
   it('shows Run Now on every row for a privileged role regardless of creator', async () => {

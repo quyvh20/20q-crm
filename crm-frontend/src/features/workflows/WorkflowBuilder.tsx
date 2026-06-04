@@ -10,7 +10,7 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from '@dnd-kit/core';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { useBuilderStore, generateActionId, getStepAtPath, isDescendant, type StepPath } from './store';
 import type { WorkflowStep } from './types';
 import { WorkflowDragContext, type DragContextValue } from './DragContext';
@@ -56,6 +56,7 @@ function resolvePathById(steps: WorkflowStep[], targetId: string, currentPath: S
 export const WorkflowBuilder: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const store = useBuilderStore();
   const { user, currentRole } = useAuth();
 
@@ -75,8 +76,13 @@ export const WorkflowBuilder: React.FC = () => {
     // Fetch schema once on builder mount (cached in store + deduped)
     store.fetchSchema();
 
+    // "Duplicate" (P23) navigates to /workflows/new carrying the source id in router
+    // state; clone it into a fresh draft instead of resetting to an empty builder.
+    const duplicateFromId = (location.state as { duplicateFromId?: string } | null)?.duplicateFromId;
     if (id && id !== 'new') {
       store.loadWorkflow(id);
+    } else if (duplicateFromId) {
+      store.duplicateFrom(duplicateFromId);
     } else {
       store.reset();
     }

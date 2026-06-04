@@ -262,6 +262,16 @@ export const WorkflowList: React.FC = () => {
                   >
                     📊 History
                   </button>
+                  {/* Duplicate (P23): open the builder on a fresh, unsaved "Copy of …"
+                      draft cloned from this workflow. The source id rides in router
+                      state; the builder clones it on mount (see duplicateFrom). */}
+                  <button
+                    onClick={() => navigate('/workflows/new', { state: { duplicateFromId: wf.id } })}
+                    className="px-3 py-1.5 rounded-lg text-xs bg-gray-700 text-gray-300 hover:text-white hover:bg-gray-600 transition-colors"
+                    title="Duplicate this workflow"
+                  >
+                    ⧉ Duplicate
+                  </button>
                   <button
                     onClick={() => handleToggle(wf)}
                     className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${

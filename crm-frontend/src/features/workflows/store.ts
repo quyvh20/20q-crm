@@ -48,6 +48,7 @@ interface BuilderState {
   validate: () => boolean;
   save: () => Promise<void>;
   loadWorkflow: (id: string) => Promise<void>;
+  duplicateFrom: (sourceId: string) => Promise<void>;
   fetchSchema: () => Promise<void>;
   invalidateSchema: () => void;
   fetchObjectFields: (slug: string, forceRefresh?: boolean) => Promise<void>;
@@ -849,6 +850,21 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       errors: {},
       selectedNodeId: null,
     });
+  },
+
+  duplicateFrom: async (sourceId) => {
+    // Load the source workflow's full spec, then detach it into a fresh, unsaved
+    // draft (P23). Nulling workflowId/createdBy makes the next save() create a NEW
+    // workflow instead of overwriting the original; the copy starts inactive so a
+    // clone never auto-fires, and is marked dirty so the builder shows unsaved state.
+    await get().loadWorkflow(sourceId);
+    set((s) => ({
+      workflowId: null,
+      createdBy: null,
+      name: `Copy of ${s.name}`,
+      isActive: false,
+      isDirty: true,
+    }));
   },
 
   fetchSchema: async () => {
