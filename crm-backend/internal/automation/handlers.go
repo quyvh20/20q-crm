@@ -149,10 +149,11 @@ func (h *Handler) ListWorkflows(c *gin.Context) {
 	}
 
 	activeOnly := c.Query("active") == "true"
+	q := c.Query("q")
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	size, _ := strconv.Atoi(c.DefaultQuery("size", "20"))
 
-	workflows, total, err := h.repo.ListWorkflows(c.Request.Context(), orgID, activeOnly, page, size)
+	workflows, total, err := h.repo.ListWorkflows(c.Request.Context(), orgID, activeOnly, q, page, size)
 	if err != nil {
 		h.errorResponse(c, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to list workflows", nil)
 		return

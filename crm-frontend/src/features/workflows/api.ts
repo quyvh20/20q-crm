@@ -14,9 +14,10 @@ async function apiFetch(path: string, options: RequestInit = {}): Promise<Respon
 
 // --- Workflow CRUD ---
 
-export async function getWorkflows(params?: { active?: boolean; page?: number; size?: number }): Promise<WorkflowListResponse> {
+export async function getWorkflows(params?: { active?: boolean; q?: string; page?: number; size?: number }): Promise<WorkflowListResponse> {
   const qs = new URLSearchParams();
   if (params?.active !== undefined) qs.set('active', String(params.active));
+  if (params?.q) qs.set('q', params.q);
   if (params?.page) qs.set('page', String(params.page));
   if (params?.size) qs.set('size', String(params.size));
   const res = await apiFetch(`/api/workflows?${qs.toString()}`);

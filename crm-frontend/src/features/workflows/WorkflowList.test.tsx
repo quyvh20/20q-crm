@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { WorkflowList } from './WorkflowList';
 import { getWorkflows } from './api';
 import type { Workflow, WorkflowListResponse } from './types';
@@ -89,6 +90,17 @@ vi.mock('./RunNowModal', async (importOriginal) => {
 
 const mockGetWorkflows = vi.mocked(getWorkflows);
 
+// WorkflowList reads search/filter/page from the URL via useSearchParams, so it must
+// render inside a router. MemoryRouter lets each test seed the initial query string
+// (initialEntries) to exercise deep-link / back-button restoration.
+function renderList(opts?: { route?: string }) {
+  return render(
+    <MemoryRouter initialEntries={[opts?.route ?? '/workflows']}>
+      <WorkflowList />
+    </MemoryRouter>,
+  );
+}
+
 function makeWorkflow(over: Partial<Workflow> = {}): Workflow {
   return {
     id: 'wf-1',
@@ -130,7 +142,7 @@ beforeEach(() => {
 // ── Req 8.1: a Run Now control is displayed for EACH workflow row ──────
 describe('WorkflowList — Run Now control per row', () => {
   it('renders one Run Now button for every workflow in the list (Req 8.1)', async () => {
-    render(<WorkflowList />);
+    renderList();
 
     // Wait for the workflows to load and the rows to render.
     await screen.findByText('Welcome Email');
@@ -147,7 +159,7 @@ describe('WorkflowList — Run Now control per row', () => {
 describe('WorkflowList — opening the Run Now modal', () => {
   it('opens the modal for the clicked workflow (Req 8.2)', async () => {
     const user = userEvent.setup();
-    render(<WorkflowList />);
+    renderList();
 
     await screen.findByText('Welcome Email');
 
@@ -166,7 +178,7 @@ describe('WorkflowList — opening the Run Now modal', () => {
 
   it('opens the modal for the SECOND workflow when its Run Now control is clicked (Req 8.2)', async () => {
     const user = userEvent.setup();
-    render(<WorkflowList />);
+    renderList();
 
     await screen.findByText('Deal Won Alert');
 
@@ -180,7 +192,7 @@ describe('WorkflowList — opening the Run Now modal', () => {
 
   it('closes the modal when the modal requests it, leaving no dialog open (Req 8.2)', async () => {
     const user = userEvent.setup();
-    render(<WorkflowList />);
+    renderList();
 
     await screen.findByText('Welcome Email');
 
@@ -197,7 +209,7 @@ describe('WorkflowList — opening the Run Now modal', () => {
 describe('WorkflowList — run-started toast and View run link', () => {
   it('shows a "Run started" toast whose "View run" link navigates to the run detail', async () => {
     const user = userEvent.setup();
-    render(<WorkflowList />);
+    renderList();
     await screen.findByText('Welcome Email');
 
     // Open the modal for the first workflow, then have it report a created run.
@@ -220,7 +232,7 @@ describe('WorkflowList — run-started toast and View run link', () => {
 // ── P23: Duplicate opens the builder on a "new" route carrying the source id ──
 describe('WorkflowList — Duplicate workflow', () => {
   it('renders a Duplicate control on every row', async () => {
-    render(<WorkflowList />);
+    renderList();
     await screen.findByText('Welcome Email');
 
     expect(screen.getAllByRole('button', { name: /Duplicate/i })).toHaveLength(2);
@@ -228,7 +240,7 @@ describe('WorkflowList — Duplicate workflow', () => {
 
   it('navigates to /workflows/new carrying the clicked workflow id in router state', async () => {
     const user = userEvent.setup();
-    render(<WorkflowList />);
+    renderList();
     await screen.findByText('Deal Won Alert');
 
     // Duplicate the SECOND row — the source id must ride along so the builder clones it.
@@ -253,7 +265,7 @@ describe('WorkflowList — Run Now visibility by permission', () => {
       ]),
     );
 
-    render(<WorkflowList />);
+    renderList();
     await screen.findByText('Alpha');
 
     expect(screen.getAllByRole('button', { name: /Run Now/i })).toHaveLength(2);
@@ -266,7 +278,7 @@ describe('WorkflowList — Run Now visibility by permission', () => {
       listResponse([makeWorkflow({ id: 'wf-foreign', name: 'Not Mine', created_by: 'author-x' })]),
     );
 
-    render(<WorkflowList />);
+    renderList();
     await screen.findByText('Not Mine');
 
     expect(screen.queryByRole('button', { name: /Run Now/i })).not.toBeInTheDocument();
@@ -284,7 +296,7 @@ describe('WorkflowList — Run Now visibility by permission', () => {
     );
 
     const user = userEvent.setup();
-    render(<WorkflowList />);
+    renderList();
     await screen.findByText('My Flow');
 
     // Exactly one control — on the workflow the viewer created — and clicking it opens
@@ -295,5 +307,115 @@ describe('WorkflowList — Run Now visibility by permission', () => {
     await user.click(runNowButtons[0]);
     const modal = await screen.findByTestId('run-now-modal');
     expect(modal).toHaveAttribute('data-workflow-id', 'wf-mine');
+  });
+});
+
+// ── P24: name/description search, combinable with the active filter, URL-backed ──
+describe('WorkflowList — search and filtering (P24)', () => {
+  const SEARCH_WORKFLOWS: Workflow[] = [
+    makeWorkflow({ id: 'wf-vip', name: 'VIP Onboarding', is_active: true }),
+    makeWorkflow({ id: 'wf-news', name: 'Newsletter Blast', is_active: false }),
+  ];
+
+  // Drive the mocked client like the real server: filter the fixtures by the ?q= term
+  // (name, case-insensitive) and the active flag, so the rendered rows genuinely
+  // reflect the params the component requested.
+  beforeEach(() => {
+    mockGetWorkflows.mockImplementation(async (params) => {
+      const term = params?.q?.toLowerCase();
+      const activeFilter = params?.active;
+      let list = SEARCH_WORKFLOWS;
+      if (term) list = list.filter((w) => w.name.toLowerCase().includes(term));
+      if (activeFilter !== undefined) list = list.filter((w) => w.is_active === activeFilter);
+      return listResponse(list);
+    });
+  });
+
+  it('filters the list to matching workflows when the user types a query', async () => {
+    const user = userEvent.setup();
+    renderList();
+
+    await screen.findByText('VIP Onboarding');
+    expect(screen.getByText('Newsletter Blast')).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText(/search workflows/i), 'vip');
+
+    // After the debounce, the server is queried with the term and the list narrows.
+    await waitFor(() =>
+      expect(mockGetWorkflows).toHaveBeenCalledWith(expect.objectContaining({ q: 'vip' })),
+    );
+    await waitFor(() => expect(screen.queryByText('Newsletter Blast')).not.toBeInTheDocument());
+    expect(screen.getByText('VIP Onboarding')).toBeInTheDocument();
+  });
+
+  it('clearing the search restores the full list', async () => {
+    const user = userEvent.setup();
+    // Start from a deep-linked, already-narrowed URL — this also proves the term is
+    // restored from the query string on load (back-button / shared link).
+    renderList({ route: '/workflows?q=vip' });
+
+    await screen.findByText('VIP Onboarding');
+    expect(screen.getByPlaceholderText(/search workflows/i)).toHaveValue('vip');
+    expect(screen.queryByText('Newsletter Blast')).not.toBeInTheDocument();
+
+    await user.click(screen.getByTitle('Clear search'));
+
+    await waitFor(() => expect(screen.getByText('Newsletter Blast')).toBeInTheDocument());
+    expect(screen.getByText('VIP Onboarding')).toBeInTheDocument();
+  });
+
+  it('applies the active filter and the search together', async () => {
+    const user = userEvent.setup();
+    renderList();
+    await screen.findByText('VIP Onboarding');
+
+    // Narrow to Active only…
+    await user.click(screen.getByRole('button', { name: /^Active$/ }));
+    await waitFor(() =>
+      expect(mockGetWorkflows).toHaveBeenCalledWith(expect.objectContaining({ active: true })),
+    );
+
+    // …then search; both constraints must be sent in the same request.
+    await user.type(screen.getByPlaceholderText(/search workflows/i), 'vip');
+    await waitFor(() =>
+      expect(mockGetWorkflows).toHaveBeenCalledWith(
+        expect.objectContaining({ active: true, q: 'vip' }),
+      ),
+    );
+
+    // The inactive workflow stays filtered out under the combined constraints.
+    expect(screen.queryByText('Newsletter Blast')).not.toBeInTheDocument();
+  });
+
+  it('restores search, active filter, AND page together from the URL (deep link / back button)', async () => {
+    renderList({ route: '/workflows?q=vip&active=true&page=2' });
+
+    await screen.findByText('VIP Onboarding');
+    expect(screen.getByPlaceholderText(/search workflows/i)).toHaveValue('vip');
+    // All three params are read back on load — exactly what the browser back button
+    // relies on when returning to a previously-narrowed list.
+    expect(mockGetWorkflows).toHaveBeenCalledWith(
+      expect.objectContaining({ q: 'vip', active: true, page: 2 }),
+    );
+  });
+
+  it('changing the active filter does not clobber the search term (params are independent)', async () => {
+    const user = userEvent.setup();
+    renderList();
+    await screen.findByText('VIP Onboarding');
+
+    await user.type(screen.getByPlaceholderText(/search workflows/i), 'vip');
+    await waitFor(() =>
+      expect(mockGetWorkflows).toHaveBeenCalledWith(expect.objectContaining({ q: 'vip' })),
+    );
+
+    // Toggling the filter keeps the search term — both travel together in the URL.
+    await user.click(screen.getByRole('button', { name: /^Inactive$/ }));
+    await waitFor(() =>
+      expect(mockGetWorkflows).toHaveBeenCalledWith(
+        expect.objectContaining({ q: 'vip', active: false }),
+      ),
+    );
+    expect(screen.getByPlaceholderText(/search workflows/i)).toHaveValue('vip');
   });
 });

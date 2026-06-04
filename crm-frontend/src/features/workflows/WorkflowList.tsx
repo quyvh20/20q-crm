@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { getWorkflows, deleteWorkflow, toggleWorkflow } from './api';
 import { RunNowModal, canRunWorkflowNow } from './RunNowModal';
 import type { Workflow } from './types';
@@ -15,13 +15,42 @@ interface ToastAction {
 export const WorkflowList: React.FC = () => {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
-  const [filterActive, setFilterActive] = useState<boolean | undefined>(undefined);
   const [toast, setToast] = useState<{ message: string; type: 'error' | 'success'; action?: ToastAction } | null>(null);
   const [runNowTarget, setRunNowTarget] = useState<Workflow | null>(null);
   const navigate = useNavigate();
   const { user, currentRole } = useAuth();
+
+  // Search term, active/inactive filter, and page all live in the URL query string,
+  // so they survive reload + back/forward and a narrowed list can be deep-linked.
+  // The URL is the single source of truth; the text box mirrors `q` into local state
+  // only so typing stays responsive and is debounced before it touches the URL.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const q = (searchParams.get('q') ?? '').trim();
+  const activeParam = searchParams.get('active');
+  const filterActive: boolean | undefined =
+    activeParam === null ? undefined : activeParam === 'true';
+  const page = Math.max(1, Number(searchParams.get('page') ?? '1') || 1);
+  const [searchInput, setSearchInput] = useState(q);
+
+  // Patch the query string while preserving the other params, so search, filter, and
+  // page never clobber one another. Empty values drop the key to keep URLs clean.
+  const updateParams = useCallback(
+    (patch: Record<string, string | null>, opts?: { replace?: boolean }) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          for (const [k, v] of Object.entries(patch)) {
+            if (v === null || v === '') next.delete(k);
+            else next.set(k, v);
+          }
+          return next;
+        },
+        { replace: opts?.replace },
+      );
+    },
+    [setSearchParams],
+  );
 
   const showToast = (
     message: string,
@@ -36,7 +65,7 @@ export const WorkflowList: React.FC = () => {
   const fetchWorkflows = useCallback(async () => {
     setLoading(true);
     try {
-      const resp = await getWorkflows({ active: filterActive, page, size: 20 });
+      const resp = await getWorkflows({ active: filterActive, q: q || undefined, page, size: 20 });
       setWorkflows(resp.workflows || []);
       setTotal(resp.total);
     } catch (e) {
@@ -44,11 +73,29 @@ export const WorkflowList: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [page, filterActive]);
+  }, [page, filterActive, q]);
 
   useEffect(() => {
     fetchWorkflows();
   }, [fetchWorkflows]);
+
+  // Debounce the text box, then commit the trimmed term to the URL (?q=). Reset to
+  // page 1 on a query change so results aren't hidden on a page the narrowed set no
+  // longer has. replace:true keeps each keystroke out of the history stack.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const next = searchInput.trim();
+      if (next !== q) updateParams({ q: next || null, page: null }, { replace: true });
+    }, 200);
+    return () => clearTimeout(t);
+  }, [searchInput, q, updateParams]);
+
+  // Sync the text box when the URL query changes from outside typing — back/forward,
+  // a cleared search, or a deep link. Leave an in-progress edit alone when its trimmed
+  // value already matches the committed term (avoids clobbering the cursor).
+  useEffect(() => {
+    setSearchInput((prev) => (prev.trim() === q ? prev : q));
+  }, [q]);
 
   // Optimistic toggle — flip UI immediately, revert on error
   const handleToggle = async (wf: Workflow) => {
@@ -156,6 +203,27 @@ export const WorkflowList: React.FC = () => {
         </button>
       </div>
 
+      {/* Search */}
+      <div className="relative mb-4">
+        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm pointer-events-none">🔍</span>
+        <input
+          type="text"
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          placeholder="Search workflows by name…"
+          className="w-full pl-9 pr-9 py-2.5 rounded-xl bg-gray-800/60 border border-gray-700 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition-colors"
+        />
+        {searchInput && (
+          <button
+            onClick={() => { setSearchInput(''); updateParams({ q: null, page: null }); }}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white text-sm"
+            title="Clear search"
+          >
+            ✕
+          </button>
+        )}
+      </div>
+
       {/* Filter */}
       <div className="flex gap-2 mb-6">
         {[
@@ -165,7 +233,7 @@ export const WorkflowList: React.FC = () => {
         ].map((opt) => (
           <button
             key={String(opt.value)}
-            onClick={() => { setFilterActive(opt.value); setPage(1); }}
+            onClick={() => updateParams({ active: opt.value === undefined ? null : String(opt.value), page: null })}
             className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
               filterActive === opt.value
                 ? 'bg-indigo-500 text-white'
@@ -185,8 +253,17 @@ export const WorkflowList: React.FC = () => {
         </div>
       ) : workflows.length === 0 ? (
         <div className="text-center py-16 text-gray-500">
-          <p className="text-lg mb-2">No workflows yet</p>
-          <p className="text-sm">Create your first automation to get started</p>
+          {q ? (
+            <>
+              <p className="text-lg mb-2">No workflows match '{q}'</p>
+              <p className="text-sm">Try a different search term</p>
+            </>
+          ) : (
+            <>
+              <p className="text-lg mb-2">No workflows yet</p>
+              <p className="text-sm">Create your first automation to get started</p>
+            </>
+          )}
         </div>
       ) : (
         <div className="space-y-3">
@@ -299,7 +376,7 @@ export const WorkflowList: React.FC = () => {
       {totalPages > 1 && (
         <div className="flex justify-center gap-2 mt-6">
           <button
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            onClick={() => updateParams({ page: page - 1 <= 1 ? null : String(page - 1) })}
             disabled={page <= 1}
             className="px-3 py-1.5 rounded-lg text-sm bg-gray-800 text-gray-400 hover:text-white disabled:opacity-30"
           >
@@ -309,7 +386,7 @@ export const WorkflowList: React.FC = () => {
             Page {page} of {totalPages}
           </span>
           <button
-            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            onClick={() => updateParams({ page: String(Math.min(totalPages, page + 1)) })}
             disabled={page >= totalPages}
             className="px-3 py-1.5 rounded-lg text-sm bg-gray-800 text-gray-400 hover:text-white disabled:opacity-30"
           >

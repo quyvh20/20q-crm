@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -123,11 +124,28 @@ type WorkflowWithLastRun struct {
 	LastRunAt     *string `gorm:"column:last_run_at"`
 }
 
-func (r *Repository) ListWorkflows(ctx context.Context, orgID uuid.UUID, activeOnly bool, page, size int) ([]WorkflowWithLastRun, int64, error) {
+func (r *Repository) ListWorkflows(ctx context.Context, orgID uuid.UUID, activeOnly bool, q string, page, size int) ([]WorkflowWithLastRun, int64, error) {
+	// Normalize the search term once; an empty term means "no text filter".
+	//
+	// NOTE (scale): the `%term%` ILIKE below is a leading-wildcard match, so Postgres
+	// cannot use a plain B-tree index and falls back to a sequential scan. That is fine
+	// for the expected per-org workflow counts (tens to low hundreds). If an org ever
+	// reaches ~10k+ workflows and this shows up in latency, add a trigram GIN index
+	// (CREATE EXTENSION pg_trgm; CREATE INDEX ... USING gin (name gin_trgm_ops, ...))
+	// or move name/description to a tsvector full-text column. Premature for v1.
+	q = strings.TrimSpace(q)
+	var like string
+	if q != "" {
+		like = "%" + q + "%"
+	}
+
 	// Count first (simple query)
 	countQuery := r.db.WithContext(ctx).Model(&Workflow{}).Where("org_id = ?", orgID)
 	if activeOnly {
 		countQuery = countQuery.Where("is_active = ?", true)
+	}
+	if like != "" {
+		countQuery = countQuery.Where("(name ILIKE ? OR description ILIKE ?)", like, like)
 	}
 	var total int64
 	if err := countQuery.Count(&total).Error; err != nil {
@@ -148,6 +166,16 @@ func (r *Repository) ListWorkflows(ctx context.Context, orgID uuid.UUID, activeO
 		activeFilter = "AND w.is_active = true"
 	}
 
+	// Build args in lockstep with the placeholders below; the optional text
+	// filter is interpolated as raw SQL but its values stay parameterized.
+	searchFilter := ""
+	args := []interface{}{orgID}
+	if like != "" {
+		searchFilter = "AND (w.name ILIKE ? OR w.description ILIKE ?)"
+		args = append(args, like, like)
+	}
+	args = append(args, offset, size)
+
 	query := `
 		SELECT w.*,
 			lr.status AS last_run_status,
@@ -160,12 +188,12 @@ func (r *Repository) ListWorkflows(ctx context.Context, orgID uuid.UUID, activeO
 			ORDER BY wr.created_at DESC
 			LIMIT 1
 		) lr ON true
-		WHERE w.org_id = ? AND w.deleted_at IS NULL ` + activeFilter + `
+		WHERE w.org_id = ? AND w.deleted_at IS NULL ` + activeFilter + ` ` + searchFilter + `
 		ORDER BY w.created_at DESC
 		OFFSET ? LIMIT ?`
 
 	var results []WorkflowWithLastRun
-	err := r.db.WithContext(ctx).Raw(query, orgID, offset, size).Scan(&results).Error
+	err := r.db.WithContext(ctx).Raw(query, args...).Scan(&results).Error
 	return results, total, err
 }
 
