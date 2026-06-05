@@ -867,7 +867,14 @@ func (h *Handler) WebhookInbound(c *gin.Context) {
 		triggerPayload["contact"].(map[string]any)[k] = v
 	}
 
-	h.engine.TriggerEvent(c.Request.Context(), token.OrgID, eventType, triggerPayload)
+	// Dispatch on context.Background(), NOT c.Request.Context(): TriggerEvent is
+	// fire-and-forget (engine.go runs triggerEventInternal in a goroutine), and gin
+	// cancels the request context the instant this handler returns its 200. Using the
+	// request context would cancel the goroutine's GetActiveWorkflowsByTrigger/CreateRun
+	// queries mid-flight, so the contact would be upserted but no workflow run would ever
+	// be created. The regular contact handler dispatches on context.Background() for the
+	// same reason.
+	h.engine.TriggerEvent(context.Background(), token.OrgID, eventType, triggerPayload)
 
 	c.JSON(http.StatusOK, WebhookInboundResponse{
 		Status:    "accepted",

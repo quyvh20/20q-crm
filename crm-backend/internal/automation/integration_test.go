@@ -1424,3 +1424,127 @@ func TestIntegration_RecursiveTreeExecution(t *testing.T) {
 	assert.False(t, executed2["1|yes|0"], "action_yes (path 1|yes|0) should NOT execute")
 	assert.True(t, executed2["1|no|0"], "action_no (path 1|no|0) should execute")
 }
+
+// ============================================================
+// Integration Test 11: Webhook Inbound async trigger survives request-context cancel
+// ============================================================
+
+// TestIntegration_WebhookInbound_AsyncTriggerSurvivesRequestCancel is the regression
+// test for the bug where WebhookInbound dispatched the automation trigger on
+// c.Request.Context(). TriggerEvent is fire-and-forget — engine.go runs
+// triggerEventInternal in a goroutine — and gin cancels the request context the instant
+// the handler returns its 200. So the goroutine's GetActiveWorkflowsByTrigger / CreateRun
+// queries ran on an already-cancelled context: the inbound webhook upserted the contact
+// but never created a workflow run, and contact_created/contact_updated workflows never
+// fired. The fix dispatches on context.Background().
+//
+// Unlike TestIntegration_WebhookInbound_E2E — which drives the handler via
+// router.ServeHTTP, where c.Request.Context() is a background context that is never
+// cancelled and therefore cannot reproduce the bug — this test stands up a REAL
+// httptest.NewServer and POSTs over the wire. net/http cancels the request context the
+// moment ServeHTTP returns, exactly as in production, so without the fix the trigger
+// goroutine sees a cancelled context and the run-creation poll below times out.
+func TestIntegration_WebhookInbound_AsyncTriggerSurvivesRequestCancel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	orgID := uuid.New()
+	executor := &countingExecutor{}
+	engine := makeEngine(db, map[string]ActionExecutor{"test_action": executor})
+	defer engine.cancel()
+
+	repo := NewRepository(db)
+
+	// Real signature verification — POST a genuinely signed body (a "signed inbound
+	// webhook"), not the skip-signature shortcut the rest of the package uses.
+	t.Setenv("WEBHOOK_SKIP_SIGNATURE", "false")
+	secret := GenerateToken(64)
+	token := &WorkflowOrgToken{
+		OrgID:     orgID,
+		Token:     fmt.Sprintf("test-token-%s", uuid.New().String()[:8]),
+		Secret:    secret,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.Create(token).Error)
+
+	// Active contact_created workflow.
+	trigger, _ := json.Marshal(map[string]any{"type": "contact_created"})
+	actions, _ := json.Marshal([]ActionSpec{
+		{ID: "a1", Type: "test_action", Params: map[string]any{"to": "{{contact.email}}"}},
+	})
+	wf := &Workflow{
+		ID: uuid.New(), OrgID: orgID, Name: "webhook-async-ctx-test",
+		IsActive: true, Trigger: datatypes.JSON(trigger),
+		Actions: datatypes.JSON(actions), Version: 1, CreatedBy: uuid.New(),
+	}
+	require.NoError(t, db.Create(wf).Error)
+	ver := &WorkflowVersion{
+		ID: uuid.New(), WorkflowID: wf.ID, Version: 1,
+		Trigger: wf.Trigger, Actions: wf.Actions, CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.Create(ver).Error)
+
+	handler := &Handler{
+		engine:      engine,
+		repo:        repo,
+		db:          db,
+		logger:      slog.Default(),
+		rateLimiter: newTokenBucket(),
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/webhooks/inbound/:org_token", handler.WebhookInbound)
+
+	// REAL HTTP server: net/http cancels the request context the moment the handler
+	// returns, reproducing the production lifecycle the bug depended on. Driving the
+	// handler through the wire (not router.ServeHTTP) is what makes this a regression test.
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	body := []byte(`{"email":"async-ctx@example.com","first_name":"Async"}`)
+	req, err := http.NewRequest("POST", srv.URL+"/api/webhooks/inbound/"+token.Token, bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Signature", "sha256="+computeHMAC(body, secret))
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "signed inbound webhook should be accepted")
+
+	var accepted map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&accepted))
+	assert.Equal(t, "accepted", accepted["status"])
+
+	// The contact is upserted regardless of the bug — proving the failure is specific to
+	// the async trigger, not the synchronous handler body.
+	var contact struct {
+		ID uuid.UUID `gorm:"column:id"`
+	}
+	require.NoError(t, db.Raw(
+		"SELECT id FROM contacts WHERE org_id = ? AND email = ?", orgID, "async-ctx@example.com",
+	).Scan(&contact).Error)
+	require.NotEqual(t, uuid.Nil, contact.ID, "inbound webhook must upsert the contact")
+
+	// THE REGRESSION ASSERTION: the fire-and-forget trigger goroutine must have run on a
+	// live context and created a workflow run. With the old c.Request.Context() this poll
+	// times out — the goroutine's DB queries ran on a context already cancelled by the 200.
+	var runs []WorkflowRun
+	require.Eventually(t, func() bool {
+		db.Where("workflow_id = ?", wf.ID).Find(&runs)
+		return len(runs) > 0
+	}, 5*time.Second, 50*time.Millisecond,
+		"inbound webhook must create a workflow run (trigger goroutine must not use the cancelled request context)")
+
+	// And the created run processes to completion.
+	engine.processRun(runs[0].ID)
+	finalRun, err := repo.GetRunByID(context.Background(), runs[0].ID)
+	require.NoError(t, err)
+	assert.Equal(t, StatusCompleted, finalRun.Status, "the triggered run must complete")
+	assert.GreaterOrEqual(t, executor.getCallCount(), int64(1), "the workflow's action must execute")
+}
