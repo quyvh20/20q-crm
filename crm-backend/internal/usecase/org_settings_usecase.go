@@ -6,11 +6,9 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
-	"strconv"
-	"strings"
-	"time"
 
 	"crm-backend/internal/domain"
+	"crm-backend/internal/fieldvalidate"
 
 	"github.com/google/uuid"
 )
@@ -224,34 +222,9 @@ func (uc *orgSettingsUseCase) ValidateCustomFields(ctx context.Context, orgID uu
 		return domain.NewAppError(400, "custom_fields must be a valid JSON object")
 	}
 
-	// Build a lookup of defined keys
-	defMap := make(map[string]domain.CustomFieldDef)
-	for _, d := range defs {
-		defMap[d.Key] = d
-	}
-
-	// Validate each provided field
-	for key, val := range data {
-		def, ok := defMap[key]
-		if !ok {
-			continue // allow unknown keys (for flexibility)
-		}
-		if err := validateFieldValue(def, val); err != nil {
-			return domain.NewAppError(400, fmt.Sprintf("custom_fields.%s: %s", key, err.Error()))
-		}
-	}
-
-	// Check required fields
-	for _, def := range defs {
-		if def.Required {
-			v, exists := data[def.Key]
-			if !exists || v == nil || v == "" {
-				return domain.NewAppError(400, fmt.Sprintf("custom_fields.%s is required", def.Key))
-			}
-		}
-	}
-
-	return nil
+	// Delegate type/required checking to the shared validator so system and
+	// custom objects behave identically.
+	return fieldvalidate.ValidateFields(defs, data, "custom_fields")
 }
 
 // ============================================================
@@ -265,60 +238,6 @@ func (uc *orgSettingsUseCase) bustSchemaCache(ctx context.Context, orgID uuid.UU
 		uc.cacheBuster.BustCache(ctx, orgID)
 	}
 }
-func validateFieldValue(def domain.CustomFieldDef, val interface{}) error {
-	if val == nil {
-		return nil
-	}
-
-	switch def.Type {
-	case "text", "url":
-		if _, ok := val.(string); !ok {
-			return fmt.Errorf("expected string, got %T", val)
-		}
-	case "number":
-		switch v := val.(type) {
-		case float64: // JSON numbers
-			_ = v
-		case string:
-			if _, err := strconv.ParseFloat(v, 64); err != nil {
-				return fmt.Errorf("expected number, got %q", v)
-			}
-		default:
-			return fmt.Errorf("expected number, got %T", val)
-		}
-	case "boolean":
-		if _, ok := val.(bool); !ok {
-			return fmt.Errorf("expected boolean, got %T", val)
-		}
-	case "date":
-		s, ok := val.(string)
-		if !ok {
-			return fmt.Errorf("expected date string, got %T", val)
-		}
-		if _, err := time.Parse("2006-01-02", s); err != nil {
-			if _, err := time.Parse(time.RFC3339, s); err != nil {
-				return fmt.Errorf("expected date in YYYY-MM-DD or RFC3339 format")
-			}
-		}
-	case "select":
-		s, ok := val.(string)
-		if !ok {
-			return fmt.Errorf("expected string for select, got %T", val)
-		}
-		valid := false
-		for _, opt := range def.Options {
-			if strings.EqualFold(opt, s) {
-				valid = true
-				break
-			}
-		}
-		if !valid {
-			return fmt.Errorf("value %q is not a valid option (valid: %v)", s, def.Options)
-		}
-	}
-	return nil
-}
-
 func (uc *orgSettingsUseCase) loadAllDefs(ctx context.Context, orgID uuid.UUID) ([]domain.CustomFieldDef, error) {
 	settings, err := uc.repo.GetByOrgID(ctx, orgID)
 	if err != nil {

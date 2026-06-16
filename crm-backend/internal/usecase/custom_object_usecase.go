@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"crm-backend/internal/domain"
+	"crm-backend/internal/fieldvalidate"
 
 	"github.com/google/uuid"
 )
@@ -197,6 +198,12 @@ func (uc *customObjectUseCase) CreateRecord(ctx context.Context, orgID uuid.UUID
 		return nil, &domain.AppError{Code: http.StatusBadRequest, Message: "invalid data JSON"}
 	}
 
+	// Validate against the object's field definitions (type, required, select
+	// options) using the same validator system objects use.
+	if err := uc.validateRecordData(def.Fields, dataMap); err != nil {
+		return nil, err
+	}
+
 	// Compute display_name from first text field
 	displayName := uc.computeDisplayName(def.Fields, dataMap)
 
@@ -240,6 +247,9 @@ func (uc *customObjectUseCase) UpdateRecord(ctx context.Context, orgID uuid.UUID
 		var dataMap map[string]interface{}
 		if err := json.Unmarshal(input.Data, &dataMap); err != nil {
 			return nil, &domain.AppError{Code: http.StatusBadRequest, Message: "invalid data JSON"}
+		}
+		if err := uc.validateRecordData(def.Fields, dataMap); err != nil {
+			return nil, err
 		}
 		rec.Data = input.Data
 		rec.DisplayName = uc.computeDisplayName(def.Fields, dataMap)
@@ -298,6 +308,21 @@ func (uc *customObjectUseCase) validateFieldDefs(fieldsJSON domain.JSON) error {
 		keys[f.Key] = true
 	}
 	return nil
+}
+
+// validateRecordData checks a record payload against its object's field
+// definitions using the shared validator (type, required, select options).
+// Unknown keys pass through. def.Fields is already validated on def write, so a
+// parse failure here is a server-side data issue, not the caller's — we skip
+// validation rather than reject a legitimate record.
+func (uc *customObjectUseCase) validateRecordData(fieldsJSON domain.JSON, data map[string]interface{}) error {
+	var fields []domain.CustomFieldDef
+	if len(fieldsJSON) > 0 {
+		if err := json.Unmarshal(fieldsJSON, &fields); err != nil {
+			return nil
+		}
+	}
+	return fieldvalidate.ValidateFields(fields, data, "data")
 }
 
 // computeDisplayName returns the value of the first text-type field, or "Untitled".
