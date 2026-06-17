@@ -1,16 +1,8 @@
 package http
 
 import (
-	"fmt"
 	"crm-backend/internal/domain"
-	"crm-backend/internal/repository"
 	"crm-backend/pkg/config"
-
-	"github.com/google/uuid"
-	"os"
-	"runtime"
-	"time"
-	"crm-backend/pkg/logger"
 
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
@@ -18,116 +10,6 @@ import (
 )
 
 func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, objectRegistryHandler *ObjectRegistryHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, voiceHandler *VoiceHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository) {
-	// Temporary endpoint to debug DB issues on deploy
-	router.GET("/api/test/db-fix", func(c *gin.Context) {
-		err1 := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(255) DEFAULT ''`).Error
-		err2 := db.Exec(`UPDATE users SET full_name = TRIM(first_name || ' ' || last_name) WHERE full_name = '' OR full_name IS NULL`).Error
-		
-		errMigrate := db.Exec(`
-			CREATE TABLE IF NOT EXISTS roles (
-				id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-				org_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
-				name VARCHAR(255) NOT NULL,
-				is_system BOOLEAN NOT NULL DEFAULT false,
-				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-			);
-			CREATE TABLE IF NOT EXISTS role_permissions (
-				role_id UUID REFERENCES roles(id) ON DELETE CASCADE,
-				permission_code VARCHAR(255) NOT NULL,
-				PRIMARY KEY (role_id, permission_code)
-			);
-			ALTER TABLE org_users ADD COLUMN IF NOT EXISTS role_id UUID REFERENCES roles(id) ON DELETE RESTRICT;
-			ALTER TABLE org_users ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
-
-			CREATE TABLE IF NOT EXISTS org_invitations (
-				id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-				email VARCHAR(255) NOT NULL,
-				org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-				role_id UUID NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
-				token_hash VARCHAR(255) NOT NULL,
-				expires_at TIMESTAMPTZ NOT NULL,
-				status VARCHAR(50) NOT NULL DEFAULT 'pending',
-				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-			);
-			CREATE INDEX IF NOT EXISTS idx_org_invitations_token ON org_invitations(token_hash);
-			
-			CREATE TABLE IF NOT EXISTS record_shares (
-				id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-				record_type VARCHAR(50) NOT NULL,
-				record_id UUID NOT NULL,
-				grantee_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-				permission_level VARCHAR(50) NOT NULL DEFAULT 'read',
-				created_by UUID REFERENCES users(id) ON DELETE SET NULL,
-				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-			);
-		`).Error
-
-		err3 := repository.SeedSystemRoles(db)
-
-		var count int64
-		err4 := db.Table("org_invitations").Count(&count).Error
-
-		inv := &domain.OrgInvitation{
-			ID: uuid.New(),
-			Email: "test@example.com",
-			OrgID: uuid.Nil,
-			RoleID: uuid.Nil,
-			TokenHash: "test",
-			ExpiresAt: time.Now(),
-		}
-		err5 := db.Create(inv).Error
-
-		c.JSON(200, gin.H{
-			"status": "done",
-			"err1": fmt.Sprintf("%v", err1),
-			"err2": fmt.Sprintf("%v", err2),
-			"errMigrate": fmt.Sprintf("%v", errMigrate),
-			"seed_err": fmt.Sprintf("%v", err3),
-			"inv_count_err": fmt.Sprintf("%v", err4),
-			"inv_create_err": fmt.Sprintf("%v", err5),
-		})
-	})
-
-	router.GET("/api/test/db-debug", func(c *gin.Context) {
-		dbUrl := os.Getenv("DATABASE_URL")
-		var count int64
-		_ = db.Table("automation_workflows").Count(&count)
-
-		var workflows []map[string]any
-		_ = db.Table("automation_workflows").Order("created_at desc").Limit(10).Find(&workflows)
-
-		var runs []map[string]any
-		_ = db.Table("automation_workflow_runs").Order("created_at desc").Limit(10).Find(&runs)
-
-		var logs []map[string]any
-		_ = db.Table("automation_workflow_action_logs").Order("created_at desc").Limit(10).Find(&logs)
-
-		var tasks []map[string]any
-		_ = db.Table("tasks").Order("created_at desc").Limit(10).Find(&tasks)
-
-		c.JSON(200, gin.H{
-			"db_url": dbUrl,
-			"active_workflows_count": count,
-			"workflows": workflows,
-			"runs": runs,
-			"logs": logs,
-			"tasks": tasks,
-		})
-	})
-
-
-	router.GET("/api/test/logs", func(c *gin.Context) {
-		c.JSON(200, gin.H{
-			"logs": logger.GetLogs(),
-		})
-	})
-
-	router.GET("/api/test/goroutines", func(c *gin.Context) {
-		buf := make([]byte, 1<<20)
-		n := runtime.Stack(buf, true)
-		c.Data(200, "text/plain; charset=utf-8", buf[:n])
-	})
-
 	api := router.Group("/api")
 
 	auth := api.Group("/auth")
