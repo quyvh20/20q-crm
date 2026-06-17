@@ -515,12 +515,14 @@ single change does more for tenant safety than any new table.
   `internal/usecase/object_registry_usecase.go`,
   `internal/delivery/http/object_handler.go`; seed in `scripts/`.
 - **Checklist:**
-  - [ ] Migration `000015`: `object_defs` + `object_fields` (+ deferred display-field FK) with RLS enabled, plus `.down`
-  - [ ] Idempotent seed: 3 system defs (`storage='table'`) + their `object_fields` mapped to real columns
-  - [ ] `object_registry_repository.go` — list defs, load schema
-  - [ ] `object_registry_usecase.go` — assemble descriptor (system columns + custom fields merged)
-  - [ ] `object_handler.go` + routes `GET /api/objects`, `GET /api/objects/:slug/schema`
-  - [ ] Tests: schema for a deal and a custom object; re-run seed is a no-op; `.down` drops cleanly
+  - [x] Migration `000015`: `object_defs` + `object_fields` (+ deferred display-field FK) with RLS enabled, plus `.down`
+  - [x] Idempotent seed: 3 system defs (`storage='table'`) + their `object_fields` mapped to real columns (`EnsureSystemObjects`, ensure-on-read; covers existing + future orgs; concurrency-safe via a per-org `pg_advisory_xact_lock` + re-check)
+  - [x] `object_registry_repository.go` — list defs, load schema
+  - [x] `object_registry_usecase.go` — assemble descriptor (system columns + custom fields merged; custom objects read live from `custom_object_defs`, no duplication)
+  - [x] `object_handler.go` + routes — mounted at `GET /api/registry/objects`, `GET /api/registry/objects/:slug/schema` (see note)
+  - [x] Tests: schema for a deal and a custom object (5 usecase unit tests, no Docker); `.down` drops cleanly + up/down/up round-trip, re-run seed is a no-op, concurrent first-reads seed once (3 repository integration tests, Docker-gated)
+  - > **Route note:** the plan's literal `GET /api/objects` is already occupied by the live custom-object handler (the sidebar's `listCustomObjects`). To stay strictly additive in a backend-only P2 (frontend convergence is P3), the registry mounts under `/api/registry/objects`; it is promoted to `/api/objects` in P7 when the old paths retire.
+  - > **Verification note:** build + vet + the 5 usecase unit tests are green. The 3 integration tests were executed against a real Postgres 16 (the up→down→up round-trip, seed idempotency, and the 8-goroutine concurrency path all pass). On hosts where testcontainers can't run (Docker Desktop on Windows), set `TEST_DATABASE_URL` to a Postgres DSN and the tests use it directly; otherwise they fall back to testcontainers and skip when Docker is unavailable.
 - **Definition of Done:** `GET /api/objects` returns 3 system + N custom defs; schema
   endpoint returns correct field lists for a deal and a custom object; idempotent seed;
   `.down` drops cleanly.

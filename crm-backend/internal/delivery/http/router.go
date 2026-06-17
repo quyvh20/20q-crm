@@ -17,7 +17,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, voiceHandler *VoiceHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository) {
+func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, objectRegistryHandler *ObjectRegistryHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, voiceHandler *VoiceHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository) {
 	// Temporary endpoint to debug DB issues on deploy
 	router.GET("/api/test/db-fix", func(c *gin.Context) {
 		err1 := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(255) DEFAULT ''`).Error
@@ -270,6 +270,15 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			objects.POST("/:slug/records", RequireRole("admin", "manager", "sales"), customObjectHandler.CreateRecord)
 			objects.PUT("/:slug/records/:id", RequireRole("admin", "manager", "sales"), customObjectHandler.UpdateRecord)
 			objects.DELETE("/:slug/records/:id", RequireRole("admin", "manager"), customObjectHandler.DeleteRecord)
+		}
+
+		// Object Registry (P2, read-only). Strictly additive to the custom-object
+		// routes above: one uniform view over system + custom objects. The unified
+		// surface is promoted to /api/objects in P7 once the old paths retire.
+		registry := protected.Group("/registry/objects")
+		{
+			registry.GET("", objectRegistryHandler.ListObjects)
+			registry.GET("/:slug/schema", objectRegistryHandler.GetSchema)
 		}
 
 		kb := protected.Group("/knowledge-base")

@@ -266,6 +266,11 @@ func main() {
 		// Inject customObjUC into kbBuilder so it can read custom objects for schema
 		kbBuilder.SetCustomObjectUC(customObjUC)
 
+		// Object Registry (P2, read-only): uniform view over system + custom objects.
+		objectRegistryRepo := repository.NewObjectRegistryRepository(db)
+		objectRegistryUC := usecase.NewObjectRegistryUseCase(objectRegistryRepo, customObjRepo, orgSettingsUC)
+		objectRegistryHandler := delivery.NewObjectRegistryHandler(objectRegistryUC)
+
 		contactRepo := repository.NewContactRepository(db)
 		contactUseCase := usecase.NewContactUseCase(contactRepo, embedWorker, embedSvc)
 		contactHandler := delivery.NewContactHandler(contactUseCase)
@@ -316,7 +321,7 @@ func main() {
 		voiceNoteUC := usecase.NewVoiceNoteUseCase(voiceNoteRepo, aiJobQueue, cfg, contactRepo)
 		voiceHandler := delivery.NewVoiceHandler(voiceNoteUC)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, cfg, db, redisClient, authRepo)
+		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, cfg, db, redisClient, authRepo)
 
 		// --- Workflow Automation Engine ---
 		memHandler := logger.NewMemoryHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
