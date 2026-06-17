@@ -332,6 +332,10 @@ func main() {
 		companyUseCase := usecase.NewCompanyUseCase(companyRepo)
 		companyHandler := delivery.NewCompanyHandler(companyUseCase)
 
+		// RecordService (P3): the single read/write chokepoint over every object.
+		// Dispatches typed objects to the contact/deal/company usecases and custom
+		// objects to the generic usecase; wired below after dealUseCase exists.
+
 		tagRepo := repository.NewTagRepository(db)
 		tagUseCase := usecase.NewTagUseCase(tagRepo)
 		tagHandler := delivery.NewTagHandler(tagUseCase)
@@ -349,6 +353,10 @@ func main() {
 		dealRepo := repository.NewDealRepository(db)
 		dealUseCase := usecase.NewDealUseCase(dealRepo, stageRepo, activityRepo)
 		dealHandler := delivery.NewDealHandler(dealUseCase)
+
+		// RecordService now that every per-object usecase exists.
+		recordService := usecase.NewRecordService(customObjUC, orgSettingsUC, contactUseCase, companyUseCase, dealUseCase)
+		recordHandler := delivery.NewRecordHandler(recordService)
 
 		taskRepo := repository.NewTaskRepository(db)
 		taskUseCase := usecase.NewTaskUseCase(taskRepo)
@@ -374,7 +382,7 @@ func main() {
 		voiceNoteUC := usecase.NewVoiceNoteUseCase(voiceNoteRepo, aiJobQueue, cfg, contactRepo)
 		voiceHandler := delivery.NewVoiceHandler(voiceNoteUC)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, cfg, db, redisClient, authRepo)
+		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, cfg, db, redisClient, authRepo)
 
 		// --- Workflow Automation Engine ---
 		memHandler := logger.NewMemoryHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -405,6 +413,13 @@ func main() {
 
 		// Wire custom object create/update → automation trigger
 		customObjHandler.SetEventEmitter(autoEngine.TriggerEvent)
+
+		// Wire the uniform RecordService write path → automation trigger, so
+		// custom-object workflows keep firing now that the UI writes via the
+		// uniform endpoint (parity with customObjHandler). SetEventEmitter is part
+		// of the RecordService interface, so a signature change fails the build
+		// rather than silently disabling automation.
+		recordService.SetEventEmitter(autoEngine.TriggerEvent)
 
 		// Wire deal stage change → automation trigger
 		dealHandler.SetEventEmitter(autoEngine.TriggerEvent)

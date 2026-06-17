@@ -47,6 +47,10 @@ func (uc *dealUseCase) Create(ctx context.Context, orgID uuid.UUID, input domain
 		OwnerUserID: input.OwnerUserID,
 	}
 
+	if input.CustomFields != nil {
+		d.CustomFields = input.CustomFields
+	}
+
 	if input.ExpectedCloseAt != nil {
 		t, err := time.Parse(time.RFC3339, *input.ExpectedCloseAt)
 		if err == nil {
@@ -97,6 +101,9 @@ func (uc *dealUseCase) Update(ctx context.Context, orgID, id uuid.UUID, input do
 		if err == nil {
 			deal.ExpectedCloseAt = &t
 		}
+	}
+	if input.CustomFields != nil {
+		deal.CustomFields = *input.CustomFields
 	}
 
 	if err := uc.dealRepo.Update(ctx, deal); err != nil {

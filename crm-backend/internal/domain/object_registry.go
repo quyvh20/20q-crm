@@ -103,6 +103,72 @@ type FieldDescriptor struct {
 }
 
 // ============================================================
+// Records — the uniform read/write surface (P3)
+// ============================================================
+
+// UniformRecord is the single shape every object's record is served as — system
+// (contact/deal/company) and custom alike (plan §5). Fields is keyed by the
+// object's field keys (the registry `key`); relation values are UUID strings.
+// The shape is identical regardless of whether the record is backed by a typed
+// table or a JSONB blob — that is the whole point of "all objects equal".
+type UniformRecord struct {
+	ID        uuid.UUID              `json:"id"`
+	Object    string                 `json:"object"` // slug
+	Display   string                 `json:"display"`
+	Fields    map[string]interface{} `json:"fields"`
+	CreatedAt time.Time              `json:"created_at"`
+	UpdatedAt time.Time              `json:"updated_at"`
+}
+
+// RecordListInput is the uniform, storage-agnostic list query. Cursor is opaque
+// to callers: for system objects it is the typed repo's keyset cursor; for
+// custom objects it encodes the next offset. Either way the frontend just echoes
+// next_cursor back to fetch the following page.
+type RecordListInput struct {
+	Limit  int
+	Q      string
+	Cursor string
+}
+
+// RecordList is one page of uniform records plus an opaque forward cursor. An
+// empty NextCursor means there are no more records.
+type RecordList struct {
+	Records    []UniformRecord `json:"records"`
+	NextCursor string          `json:"next_cursor,omitempty"`
+}
+
+// RecordWriteInput is the uniform create/update payload: a flat field map keyed
+// by field key. Splitting native columns from the JSONB blob, validation, and
+// display recompute are all the service's job, not the caller's.
+type RecordWriteInput struct {
+	Fields map[string]interface{} `json:"fields"`
+}
+
+// RecordEventEmitter fires an automation trigger after a write. It mirrors the
+// per-handler emitter callbacks (ContactEventEmitter, CustomObjectEventEmitter)
+// so the uniform write path keeps automation working without RecordService
+// depending on the automation package.
+type RecordEventEmitter func(ctx context.Context, orgID uuid.UUID, eventType string, payload map[string]any)
+
+// RecordService is the single read/write chokepoint over every object. It
+// dispatches on the object's storage kind — typed table vs JSONB — internally,
+// so HTTP handlers, AI, and automation only ever see "objects". Org-scoping,
+// validation, and (in later phases) FLS and audit all live here so they cannot
+// be forgotten in a per-object handler.
+type RecordService interface {
+	List(ctx context.Context, orgID uuid.UUID, slug string, in RecordListInput) (*RecordList, error)
+	Get(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID) (*UniformRecord, error)
+	Create(ctx context.Context, orgID, userID uuid.UUID, slug string, in RecordWriteInput) (*UniformRecord, error)
+	Update(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID, in RecordWriteInput) (*UniformRecord, error)
+	Delete(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID) error
+	// SetEventEmitter wires the automation trigger callback, called once at
+	// startup. It is part of the interface (rather than a private method reached
+	// via a type assertion) so that a signature drift fails the build instead of
+	// silently disabling automation for the uniform write path.
+	SetEventEmitter(fn RecordEventEmitter)
+}
+
+// ============================================================
 // Ports
 // ============================================================
 

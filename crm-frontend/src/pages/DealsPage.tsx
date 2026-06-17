@@ -15,8 +15,19 @@ import DealCard from '../components/deals/DealCard';
 import DealFormModal from '../components/deals/DealFormModal';
 import ForecastChart from '../components/deals/ForecastChart';
 import { useNavigate } from 'react-router-dom';
+import { ObjectListView } from '../features/objects';
+import { isUnifiedObjectReadEnabled } from '../lib/flags';
 
+// Behind objects.unified_read, Deals render through the shared schema-driven
+// renderer; default OFF keeps the kanban board (plan P3, R1 fallback).
 export default function DealsPage() {
+  if (isUnifiedObjectReadEnabled()) {
+    return <ObjectListView slug="deal" />;
+  }
+  return <DealsBoard />;
+}
+
+function DealsBoard() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 

@@ -308,6 +308,7 @@ type CreateDealInput struct {
 	Probability     int        `json:"probability"`
 	OwnerUserID     *uuid.UUID `json:"owner_user_id"`
 	ExpectedCloseAt *string    `json:"expected_close_at"`
+	CustomFields    JSON       `json:"custom_fields"`
 }
 
 type UpdateDealInput struct {
@@ -319,6 +320,7 @@ type UpdateDealInput struct {
 	Probability     *int       `json:"probability"`
 	OwnerUserID     *uuid.UUID `json:"owner_user_id"`
 	ExpectedCloseAt *string    `json:"expected_close_at"`
+	CustomFields    *JSON      `json:"custom_fields"`
 }
 
 type UpdateDealStageInput struct {

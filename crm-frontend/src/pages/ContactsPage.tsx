@@ -4,6 +4,8 @@ import ContactList from '../components/contacts/ContactList';
 import ContactForm from '../components/contacts/ContactForm';
 import ImportModal from '../components/contacts/ImportModal';
 import { getCompanies, getTags, type Contact, type ContactFilter } from '../lib/api';
+import { ObjectListView } from '../features/objects';
+import { isUnifiedObjectReadEnabled } from '../lib/flags';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -308,6 +310,11 @@ function ContactsPageInner() {
 }
 
 export default function ContactsPage() {
+  // Behind objects.unified_read, Contacts render through the shared schema-driven
+  // renderer; default OFF keeps the rich legacy page (plan P3, R1 fallback).
+  if (isUnifiedObjectReadEnabled()) {
+    return <ObjectListView slug="contact" />;
+  }
   return (
     <QueryClientProvider client={queryClient}>
       <ContactsPageInner />

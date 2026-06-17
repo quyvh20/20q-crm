@@ -1,0 +1,97 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import type { ObjectSchema, UniformRecord } from '../../../lib/api';
+
+// Mock the API layer so the renderer is exercised without a backend. The whole
+// point of P3 is that ONE component renders any object from its schema, so these
+// tests drive the same <ObjectListView> with a system object (deal) and a custom
+// object (project) and assert both render.
+vi.mock('../../../lib/api', () => ({
+  getObjectSchema: vi.fn(),
+  listObjectRecordsUnified: vi.fn(),
+  createObjectRecordUnified: vi.fn(),
+  updateObjectRecordUnified: vi.fn(),
+  deleteObjectRecordUnified: vi.fn(),
+}));
+
+import {
+  getObjectSchema,
+  listObjectRecordsUnified,
+} from '../../../lib/api';
+import ObjectListView from '../ObjectListView';
+
+const dealSchema: ObjectSchema = {
+  slug: 'deal', label: 'Deal', label_plural: 'Deals', icon: '💰', color: '#10B981',
+  is_system: true, display_field: 'title',
+  fields: [
+    { key: 'title', label: 'Title', type: 'text', is_system: true, required: true },
+    { key: 'value', label: 'Value', type: 'number', is_system: true, required: false },
+  ],
+};
+
+const projectSchema: ObjectSchema = {
+  slug: 'project', label: 'Project', label_plural: 'Projects', icon: '📁', color: '#6B7280',
+  is_system: false, display_field: 'name',
+  fields: [
+    { key: 'name', label: 'Name', type: 'text', is_system: false, required: true },
+    { key: 'status', label: 'Status', type: 'select', options: ['active', 'done'], is_system: false, required: false },
+  ],
+};
+
+function record(partial: Partial<UniformRecord>): UniformRecord {
+  return {
+    id: crypto.randomUUID(), object: 'x', display: '', fields: {},
+    created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+    ...partial,
+  };
+}
+
+beforeEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
+
+describe('ObjectListView renders any object from its schema', () => {
+  it('renders a system object (deal)', async () => {
+    vi.mocked(getObjectSchema).mockResolvedValue(dealSchema);
+    vi.mocked(listObjectRecordsUnified).mockResolvedValue({
+      records: [record({ object: 'deal', display: 'Acme renewal', fields: { title: 'Acme renewal', value: 1500 } })],
+      next_cursor: undefined,
+    });
+
+    render(<ObjectListView slug="deal" />);
+
+    expect(await screen.findByText('💰 Deals')).toBeInTheDocument();
+    // "Acme renewal" appears in both the Name cell and the Title field column.
+    expect((await screen.findAllByText('Acme renewal')).length).toBeGreaterThan(0);
+    // Column headers come from the schema fields.
+    expect(screen.getByText('Title')).toBeInTheDocument();
+    expect(screen.getByText('Value')).toBeInTheDocument();
+  });
+
+  it('renders a custom object (project) through the same component', async () => {
+    vi.mocked(getObjectSchema).mockResolvedValue(projectSchema);
+    vi.mocked(listObjectRecordsUnified).mockResolvedValue({
+      records: [record({ object: 'project', display: 'Apollo', fields: { name: 'Apollo', status: 'active' } })],
+      next_cursor: undefined,
+    });
+
+    render(<ObjectListView slug="project" />);
+
+    expect(await screen.findByText('📁 Projects')).toBeInTheDocument();
+    expect((await screen.findAllByText('Apollo')).length).toBeGreaterThan(0);
+    expect(screen.getByText('Status')).toBeInTheDocument();
+  });
+
+  it('opens the shared create form from the list', async () => {
+    vi.mocked(getObjectSchema).mockResolvedValue(dealSchema);
+    vi.mocked(listObjectRecordsUnified).mockResolvedValue({ records: [], next_cursor: undefined });
+
+    render(<ObjectListView slug="deal" />);
+
+    fireEvent.click(await screen.findByText('+ Add Deal'));
+    // ObjectForm header + a schema-driven field label appear.
+    await waitFor(() => expect(screen.getByText('New Deal')).toBeInTheDocument());
+    expect(screen.getByText('Create Deal')).toBeInTheDocument();
+  });
+});

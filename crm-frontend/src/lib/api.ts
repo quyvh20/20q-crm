@@ -862,6 +862,128 @@ export async function deleteObjectRecord(slug: string, id: string): Promise<void
 }
 
 // ============================================================
+// Object Registry (P2 schema) + uniform records (P3)
+//
+// One shape for every object — system (contact/deal/company) and custom alike —
+// served by the unified RecordService at /api/registry/objects. The frontend
+// renders any object from this single schema (features/objects).
+// ============================================================
+
+export type ObjectFieldType = FieldType | 'relation';
+
+export interface ObjectFieldDescriptor {
+  key: string;
+  label: string;
+  type: ObjectFieldType;
+  options?: string[];
+  target_slug?: string;
+  is_system: boolean;
+  required: boolean;
+  unique?: boolean;
+}
+
+export interface ObjectSchema {
+  slug: string;
+  label: string;
+  label_plural: string;
+  icon: string;
+  color: string;
+  is_system: boolean;
+  display_field: string;
+  fields: ObjectFieldDescriptor[];
+}
+
+export interface ObjectSummary {
+  slug: string;
+  label: string;
+  label_plural: string;
+  icon: string;
+  color: string;
+  is_system: boolean;
+  field_count: number;
+}
+
+export interface UniformRecord {
+  id: string;
+  object: string;
+  display: string;
+  fields: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecordPage {
+  records: UniformRecord[];
+  next_cursor?: string;
+}
+
+export async function listRegistryObjects(): Promise<ObjectSummary[]> {
+  const res = await apiFetch('/api/registry/objects');
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch objects');
+  return (json.data || []) as ObjectSummary[];
+}
+
+export async function getObjectSchema(slug: string): Promise<ObjectSchema> {
+  const res = await apiFetch(`/api/registry/objects/${slug}/schema`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch object schema');
+  return json.data as ObjectSchema;
+}
+
+export async function listObjectRecordsUnified(slug: string, params?: {
+  limit?: number;
+  q?: string;
+  cursor?: string;
+}): Promise<RecordPage> {
+  const search = new URLSearchParams();
+  if (params?.limit) search.set('limit', String(params.limit));
+  if (params?.q) search.set('q', params.q);
+  if (params?.cursor) search.set('cursor', params.cursor);
+  const qs = search.toString();
+  const res = await apiFetch(`/api/registry/objects/${slug}/records${qs ? '?' + qs : ''}`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch records');
+  const page = (json.data || {}) as Partial<RecordPage>;
+  return { records: page.records || [], next_cursor: page.next_cursor };
+}
+
+export async function getObjectRecordUnified(slug: string, id: string): Promise<UniformRecord> {
+  const res = await apiFetch(`/api/registry/objects/${slug}/records/${id}`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch record');
+  return json.data as UniformRecord;
+}
+
+export async function createObjectRecordUnified(slug: string, fields: Record<string, unknown>): Promise<UniformRecord> {
+  const res = await apiFetch(`/api/registry/objects/${slug}/records`, {
+    method: 'POST',
+    body: JSON.stringify({ fields }),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to create record');
+  return json.data as UniformRecord;
+}
+
+export async function updateObjectRecordUnified(slug: string, id: string, fields: Record<string, unknown>): Promise<UniformRecord> {
+  const res = await apiFetch(`/api/registry/objects/${slug}/records/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ fields }),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to update record');
+  return json.data as UniformRecord;
+}
+
+export async function deleteObjectRecordUnified(slug: string, id: string): Promise<void> {
+  const res = await apiFetch(`/api/registry/objects/${slug}/records/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(json.error || 'Failed to delete record');
+  }
+}
+
+// ============================================================
 // Knowledge Base
 // ============================================================
 

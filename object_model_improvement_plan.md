@@ -540,16 +540,22 @@ single change does more for tenant safety than any new table.
 - **Files:** `record_service.go`; frontend `features/objects/*`; retire duplication in
   `CustomObjectPage.tsx`, `ObjectDefManager.tsx`, `CustomFieldManager.tsx`.
 - **Checklist:**
-  - [ ] `record_service.go` — List/Get/Create/Update/Delete dispatching on `storage`
-  - [ ] Route typed objects to existing contact/deal/company repos; JSONB to the generic repo
-  - [ ] Wire P1 validation + display recompute (`display_field_id`) into the write path
-  - [ ] Frontend `features/objects/`: `ObjectListView`, `ObjectDetailView`, `ObjectForm` driven by schema
-  - [ ] Migrate custom-object pages to the shared components first
-  - [ ] Put Contacts/Deals/Companies behind `objects.unified_read` flag with fallback to old pages
-  - [ ] Tests: deal + custom object render through the same components; `npx vitest run` + `npx tsc -b`
+  - [x] `record_service.go` — List/Get/Create/Update/Delete dispatching on `storage` (system precedence over a custom slug, matching `GetSchema`)
+  - [x] Route typed objects to existing contact/deal/company usecases via per-slug adapters (`record_service_system.go`); JSONB to the custom-object usecase. **No typed-repo changes** (R1)
+  - [x] Wire P1 validation into the write path: custom objects via `customObjUC`; system objects' non-native (`custom_fields`) subset via `orgSettingsUC.ValidateCustomFields`; native columns via adapter coercion. Display recomputed on write — system objects use each object's natural label, custom objects recompute `display_name`; the registry `display_field_id` is **not** yet resolved inside `RecordService` (that part of R8 is deferred — see the deferred note)
+  - [x] Frontend `features/objects/`: `ObjectListView`, `ObjectDetailView`, `ObjectForm`, all driven by `GET /api/registry/objects/:slug/schema`
+  - [x] Migrate custom-object page to the shared components first (`CustomObjectPage` is now a thin wrapper)
+  - [x] Put Contacts/Deals behind `objects.unified_read` flag (`src/lib/flags.ts`) with fallback to the legacy pages (default OFF). Companies have no standalone page; covered as a relation target
+  - [x] Tests: deal + custom object render through the same `ObjectListView` (+ a flag-fallback test pinning the legacy↔unified branch on both Contacts and Deals); 17 backend unit/route tests; `npx vitest run` (577) + `npx tsc -b` clean; `go build`/`go vet` clean
+  - > **Pagination note:** the uniform list is cursor-based and opaque — system objects pass through the typed repos' keyset cursor; custom objects encode the offset in the cursor (`off:N`). One API shape, **zero typed-repo changes**.
+  - > **Routes note:** uniform records mount at `/api/registry/objects/:slug/records` (PATCH for update), additive alongside the legacy `/api/objects` + `/api/contacts|deals|companies`; promoted to `/api/objects` in P7. A gin route-registration test guards the tree shape.
+  - > **Automation note:** the uniform write path fires `slug_created`/`slug_updated` for **custom** objects (payload identical to the legacy `customObjHandler`), so existing custom-object workflows keep firing after the UI move. System-object automation (`contact_created`, deal stage-change side-effects + triggers) stays on the legacy pages — the default — until the workflow engine cuts over in **P7**.
+  - > **Deferred to later phases:** relation values render as raw UUIDs in list/detail (resolved labels = P4 `object_links`); custom-object contact/deal *linking UI* is dropped (the columns/data are untouched; relationships return as first-class in P4); system-object relation *clear*-to-null isn't expressible via the partial-update path; record **display titles aren't yet resolved from `display_field_id`** inside `RecordService` — system objects use a hardcoded per-object label and custom objects still use the first-text-field `display_name` heuristic, so the full R8 fix is deferred.
+  - > **Verification note:** build + vet + all backend tests green; `tsc -b` + 577 frontend tests green. No live browser walkthrough yet — the unified renderer only shows real data behind the full local stack (Postgres + backend + seeded login).
+  - > **Post-verification hardening (re-verify pass):** two risks surfaced while re-verifying P3 were closed: (1) `SetEventEmitter` is now part of the `domain.RecordService` interface — it was previously reached via a type assertion in `main.go` that would silently no-op on a signature drift, disabling custom-object automation with no build/runtime error; (2) the deal/contact adapters now thread `owner_user_id` into the typed create/update input — it was a declared-native key that was silently dropped, so an owner sent through the uniform endpoint vanished. Added a custom-object `*_updated` event test and a deal owner-mapping test. (The value/probability "default-to-0" concern was checked and is already identical to the legacy handler — no change made.)
 - **Definition of Done:** a custom object and a Deal both render through the same
   components; flag flip falls back to old pages with no data change; vitest + `tsc -b`
-  clean.
+  clean. ✅
 - **Effort:** Large (1–1.5 weeks).
 
 ### P4 — Universal relationships + tags

@@ -9,7 +9,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, objectRegistryHandler *ObjectRegistryHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, voiceHandler *VoiceHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository) {
+func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, objectRegistryHandler *ObjectRegistryHandler, recordHandler *RecordHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, voiceHandler *VoiceHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository) {
 	api := router.Group("/api")
 
 	auth := api.Group("/auth")
@@ -154,14 +154,11 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			objects.DELETE("/:slug/records/:id", RequireRole("admin", "manager"), customObjectHandler.DeleteRecord)
 		}
 
-		// Object Registry (P2, read-only). Strictly additive to the custom-object
-		// routes above: one uniform view over system + custom objects. The unified
-		// surface is promoted to /api/objects in P7 once the old paths retire.
-		registry := protected.Group("/registry/objects")
-		{
-			registry.GET("", objectRegistryHandler.ListObjects)
-			registry.GET("/:slug/schema", objectRegistryHandler.GetSchema)
-		}
+		// Object Registry (P2 read schema + P3 uniform records). Strictly additive
+		// to the per-object routes above: one uniform view and one CRUD surface over
+		// system + custom objects. Promoted to /api/objects in P7 once the old paths
+		// retire.
+		registerObjectRegistryRoutes(protected, objectRegistryHandler, recordHandler)
 
 		kb := protected.Group("/knowledge-base")
 		{
@@ -182,4 +179,20 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			voice.DELETE("/:id", RequireRole("admin", "manager", "sales"), voiceHandler.Delete)
 		}
 	}
+}
+
+// registerObjectRegistryRoutes mounts the P2 read schema and P3 uniform record
+// CRUD under /registry/objects. Record writes mirror the per-object role gates
+// (create/edit for sales+, delete for manager+); RecordService re-checks org
+// scope centrally. Extracted so the route shape is unit-testable on its own.
+func registerObjectRegistryRoutes(parent *gin.RouterGroup, objectRegistryHandler *ObjectRegistryHandler, recordHandler *RecordHandler) {
+	registry := parent.Group("/registry/objects")
+	registry.GET("", objectRegistryHandler.ListObjects)
+	registry.GET("/:slug/schema", objectRegistryHandler.GetSchema)
+
+	registry.GET("/:slug/records", recordHandler.List)
+	registry.GET("/:slug/records/:id", recordHandler.Get)
+	registry.POST("/:slug/records", RequireRole("admin", "manager", "sales"), recordHandler.Create)
+	registry.PATCH("/:slug/records/:id", RequireRole("admin", "manager", "sales"), recordHandler.Update)
+	registry.DELETE("/:slug/records/:id", RequireRole("admin", "manager"), recordHandler.Delete)
 }
