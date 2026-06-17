@@ -193,6 +193,59 @@ func main() {
 		db.Exec(`CREATE INDEX IF NOT EXISTS idx_voice_notes_contact ON voice_notes(contact_id)`)
 		db.Exec(`CREATE INDEX IF NOT EXISTS idx_voice_notes_deal ON voice_notes(deal_id)`)
 
+		// Object Registry (migration 000015) — applied here as an idempotent boot
+		// guard too, because golang-migrate is the source of truth only for fresh
+		// DBs; existing prod schema is maintained by these guards. Mirrors
+		// migrations/000015_object_registry.up.sql exactly.
+		db.Exec(`CREATE TABLE IF NOT EXISTS object_defs (
+			id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			org_id           UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			slug             VARCHAR(100) NOT NULL,
+			label            VARCHAR(255) NOT NULL,
+			label_plural     VARCHAR(255) NOT NULL,
+			icon             VARCHAR(50)  DEFAULT '📦',
+			color            VARCHAR(20)  DEFAULT '#6B7280',
+			is_system        BOOLEAN NOT NULL DEFAULT FALSE,
+			storage          VARCHAR(10) NOT NULL DEFAULT 'jsonb',
+			record_table     VARCHAR(63),
+			display_field_id UUID,
+			searchable       BOOLEAN NOT NULL DEFAULT FALSE,
+			created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			deleted_at       TIMESTAMPTZ
+		)`)
+		db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uix_object_defs_org_slug ON object_defs(org_id, slug) WHERE deleted_at IS NULL`)
+		db.Exec(`ALTER TABLE object_defs ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`CREATE TABLE IF NOT EXISTS object_fields (
+			id             UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			org_id         UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			object_def_id  UUID NOT NULL REFERENCES object_defs(id) ON DELETE CASCADE,
+			key            VARCHAR(100) NOT NULL,
+			label          VARCHAR(255) NOT NULL,
+			type           VARCHAR(30)  NOT NULL,
+			options        JSONB DEFAULT '[]',
+			target_slug    VARCHAR(100),
+			is_required    BOOLEAN NOT NULL DEFAULT FALSE,
+			is_unique      BOOLEAN NOT NULL DEFAULT FALSE,
+			is_system      BOOLEAN NOT NULL DEFAULT FALSE,
+			storage_kind   VARCHAR(10) NOT NULL DEFAULT 'jsonb',
+			maps_to_column VARCHAR(63),
+			position       INT NOT NULL DEFAULT 0,
+			created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			deleted_at     TIMESTAMPTZ
+		)`)
+		db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uix_object_fields_def_key ON object_fields(object_def_id, key) WHERE deleted_at IS NULL`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_object_fields_def ON object_fields(object_def_id) WHERE deleted_at IS NULL`)
+		db.Exec(`ALTER TABLE object_fields ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`DO $$
+		BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_object_defs_display_field') THEN
+				ALTER TABLE object_defs ADD CONSTRAINT fk_object_defs_display_field
+					FOREIGN KEY (display_field_id) REFERENCES object_fields(id) ON DELETE SET NULL;
+			END IF;
+		END $$`)
+
 		log.Info("Seeding system roles...")
 		if err := repository.SeedSystemRoles(db); err != nil {
 			log.Error("Failed to seed system roles", zap.Error(err))
