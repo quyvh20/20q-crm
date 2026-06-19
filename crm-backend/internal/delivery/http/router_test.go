@@ -21,13 +21,19 @@ func TestRegisterObjectRegistryRoutes(t *testing.T) {
 	registerObjectRegistryRoutes(e.Group("/api"), NewObjectRegistryHandler(nil), NewRecordHandler(nil))
 
 	want := map[string]bool{
-		"GET /api/registry/objects":                      false,
-		"GET /api/registry/objects/:slug/schema":         false,
-		"GET /api/registry/objects/:slug/records":        false,
-		"GET /api/registry/objects/:slug/records/:id":    false,
-		"POST /api/registry/objects/:slug/records":       false,
-		"PATCH /api/registry/objects/:slug/records/:id":  false,
-		"DELETE /api/registry/objects/:slug/records/:id": false,
+		"GET /api/registry/objects":                                  false,
+		"GET /api/registry/objects/:slug/schema":                     false,
+		"GET /api/registry/objects/:slug/records":                    false,
+		"GET /api/registry/objects/:slug/records/:id":                false,
+		"POST /api/registry/objects/:slug/records":                   false,
+		"PATCH /api/registry/objects/:slug/records/:id":              false,
+		"DELETE /api/registry/objects/:slug/records/:id":             false,
+		"GET /api/registry/objects/:slug/records/:id/links":          false,
+		"POST /api/registry/objects/:slug/records/:id/links":         false,
+		"GET /api/registry/objects/:slug/records/:id/tags":           false,
+		"POST /api/registry/objects/:slug/records/:id/tags":          false,
+		"DELETE /api/registry/objects/:slug/records/:id/tags/:tagId": false,
+		"DELETE /api/registry/links/:id":                             false,
 	}
 	for _, r := range e.Routes() {
 		key := r.Method + " " + r.Path

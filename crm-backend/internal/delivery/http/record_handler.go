@@ -114,3 +114,127 @@ func (h *RecordHandler) Delete(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"data": "deleted", "error": nil})
 }
+
+// ============================================================
+// Universal relationships + tags (P4)
+// ============================================================
+
+// ListLinks handles GET /api/registry/objects/:slug/records/:id/links
+func (h *RecordHandler) ListLinks(c *gin.Context) {
+	orgID := c.MustGet("org_id").(uuid.UUID)
+	slug := c.Param("slug")
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": "invalid record id"})
+		return
+	}
+	links, err := h.svc.ListLinks(c.Request.Context(), orgID, slug, id)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": links, "error": nil})
+}
+
+// AddLink handles POST /api/registry/objects/:slug/records/:id/links
+func (h *RecordHandler) AddLink(c *gin.Context) {
+	orgID := c.MustGet("org_id").(uuid.UUID)
+	userID := c.MustGet("user_id").(uuid.UUID)
+	slug := c.Param("slug")
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": "invalid record id"})
+		return
+	}
+	var input domain.LinkInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": err.Error()})
+		return
+	}
+	link, err := h.svc.AddLink(c.Request.Context(), orgID, userID, slug, id, input)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"data": link, "error": nil})
+}
+
+// RemoveLink handles DELETE /api/registry/links/:id
+func (h *RecordHandler) RemoveLink(c *gin.Context) {
+	orgID := c.MustGet("org_id").(uuid.UUID)
+	linkID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": "invalid link id"})
+		return
+	}
+	if err := h.svc.RemoveLink(c.Request.Context(), orgID, linkID); err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": "unlinked", "error": nil})
+}
+
+// ListTags handles GET /api/registry/objects/:slug/records/:id/tags
+func (h *RecordHandler) ListTags(c *gin.Context) {
+	orgID := c.MustGet("org_id").(uuid.UUID)
+	slug := c.Param("slug")
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": "invalid record id"})
+		return
+	}
+	tags, err := h.svc.ListTags(c.Request.Context(), orgID, slug, id)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": tags, "error": nil})
+}
+
+// addTagBody is the AddTag request payload.
+type addTagBody struct {
+	TagID uuid.UUID `json:"tag_id" binding:"required"`
+}
+
+// AddTag handles POST /api/registry/objects/:slug/records/:id/tags
+func (h *RecordHandler) AddTag(c *gin.Context) {
+	orgID := c.MustGet("org_id").(uuid.UUID)
+	userID := c.MustGet("user_id").(uuid.UUID)
+	slug := c.Param("slug")
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": "invalid record id"})
+		return
+	}
+	var body addTagBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": err.Error()})
+		return
+	}
+	if err := h.svc.AddTag(c.Request.Context(), orgID, userID, slug, id, body.TagID); err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": "tagged", "error": nil})
+}
+
+// RemoveTag handles DELETE /api/registry/objects/:slug/records/:id/tags/:tagId
+func (h *RecordHandler) RemoveTag(c *gin.Context) {
+	orgID := c.MustGet("org_id").(uuid.UUID)
+	slug := c.Param("slug")
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": "invalid record id"})
+		return
+	}
+	tagID, err := uuid.Parse(c.Param("tagId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": "invalid tag id"})
+		return
+	}
+	if err := h.svc.RemoveTag(c.Request.Context(), orgID, slug, id, tagID); err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": "untagged", "error": nil})
+}

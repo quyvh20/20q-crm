@@ -984,6 +984,76 @@ export async function deleteObjectRecordUnified(slug: string, id: string): Promi
 }
 
 // ============================================================
+// Universal relationships + tags (P4)
+// ============================================================
+// Every object — system or custom — relates to any other object and is taggable
+// through the same endpoints. RecordService hides the contact_tags vs object_links
+// split, so the client treats all objects identically.
+
+export interface RecordLink {
+  id: string;
+  relation_key: string;
+  to_slug: string;
+  to_id: string;
+  to_display: string;
+}
+
+export async function listRecordLinks(slug: string, id: string): Promise<RecordLink[]> {
+  const res = await apiFetch(`/api/registry/objects/${slug}/records/${id}/links`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch links');
+  return (json.data || []) as RecordLink[];
+}
+
+export async function addRecordLink(
+  slug: string,
+  id: string,
+  data: { relation_key: string; to_slug: string; to_id: string },
+): Promise<RecordLink> {
+  const res = await apiFetch(`/api/registry/objects/${slug}/records/${id}/links`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to add link');
+  return json.data as RecordLink;
+}
+
+export async function removeRecordLink(linkId: string): Promise<void> {
+  const res = await apiFetch(`/api/registry/links/${linkId}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(json.error || 'Failed to remove link');
+  }
+}
+
+export async function listRecordTags(slug: string, id: string): Promise<Tag[]> {
+  const res = await apiFetch(`/api/registry/objects/${slug}/records/${id}/tags`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch tags');
+  return (json.data || []) as Tag[];
+}
+
+export async function addRecordTag(slug: string, id: string, tagId: string): Promise<void> {
+  const res = await apiFetch(`/api/registry/objects/${slug}/records/${id}/tags`, {
+    method: 'POST',
+    body: JSON.stringify({ tag_id: tagId }),
+  });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(json.error || 'Failed to add tag');
+  }
+}
+
+export async function removeRecordTag(slug: string, id: string, tagId: string): Promise<void> {
+  const res = await apiFetch(`/api/registry/objects/${slug}/records/${id}/tags/${tagId}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(json.error || 'Failed to remove tag');
+  }
+}
+
+// ============================================================
 // Knowledge Base
 // ============================================================
 

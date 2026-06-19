@@ -105,7 +105,9 @@ func newTestService(custom *fakeCustomObjUC, settings *recordingSettingsUC, deal
 	if deal == nil {
 		deal = &fakeDealUC{}
 	}
-	return NewRecordService(custom, settings, &contactAdapterStubUC{}, &companyAdapterStubUC{}, deal)
+	// Link/tag tests use newLinkTestService; here links are absent (nil repos),
+	// which the service treats as "not configured" / skip-cascade.
+	return NewRecordService(custom, settings, &contactAdapterStubUC{}, &companyAdapterStubUC{}, deal, nil, nil)
 }
 
 // Minimal contact/company usecase stubs (not exercised by these tests).
@@ -172,6 +174,29 @@ func TestGet_CustomObject_ProjectsFromData(t *testing.T) {
 	}
 	if rec.Fields["status"] != "active" {
 		t.Errorf("status = %v", rec.Fields["status"])
+	}
+}
+
+func TestGet_CustomObject_ResolvesDisplayFromLiveDef(t *testing.T) {
+	// R8: the title is computed from the display field's CURRENT value at read time,
+	// not the stale display_name captured at write time. Here the def's first text
+	// field is "name", the record's data has name="Apollo II", but the stored
+	// display_name is an old value — Get must return the live one.
+	defID := uuid.New()
+	recID := uuid.New()
+	custom := &fakeCustomObjUC{
+		def: &domain.CustomObjectDef{ID: defID, Slug: "project",
+			Fields: domain.JSON(`[{"key":"name","label":"Name","type":"text"}]`)},
+		rec: &domain.CustomObjectRecord{ID: recID, ObjectDefID: defID, DisplayName: "Old Name", Data: domain.JSON(`{"name":"Apollo II"}`)},
+	}
+	svc := newTestService(custom, nil, nil)
+
+	rec, err := svc.Get(context.Background(), uuid.New(), "project", recID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if rec.Display != "Apollo II" {
+		t.Errorf("display = %q, want the live field value 'Apollo II' (R8)", rec.Display)
 	}
 }
 

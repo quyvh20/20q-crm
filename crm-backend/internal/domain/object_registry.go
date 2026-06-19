@@ -166,6 +166,26 @@ type RecordService interface {
 	// via a type assertion) so that a signature drift fails the build instead of
 	// silently disabling automation for the uniform write path.
 	SetEventEmitter(fn RecordEventEmitter)
+
+	// --- Universal relationships + tags (P4) ---
+
+	// AddLink relates one record to another (any object to any object). It is
+	// idempotent: re-adding an existing edge returns it rather than erroring.
+	// Tag edges are rejected here — use AddTag, which keeps contacts on their
+	// legacy store.
+	AddLink(ctx context.Context, orgID, userID uuid.UUID, slug string, id uuid.UUID, in LinkInput) (*LinkView, error)
+	// ListLinks returns a record's outgoing relationships (tags excluded), each
+	// resolved to the target's current display title.
+	ListLinks(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID) ([]LinkView, error)
+	// RemoveLink soft-deletes one relationship edge by id.
+	RemoveLink(ctx context.Context, orgID, linkID uuid.UUID) error
+
+	// ListTags returns a record's tags, uniformly for every object (contacts via
+	// contact_tags, everyone else via object_links).
+	ListTags(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID) ([]Tag, error)
+	// AddTag tags a record; idempotent. RemoveTag untags it.
+	AddTag(ctx context.Context, orgID, userID uuid.UUID, slug string, id, tagID uuid.UUID) error
+	RemoveTag(ctx context.Context, orgID uuid.UUID, slug string, id, tagID uuid.UUID) error
 }
 
 // ============================================================

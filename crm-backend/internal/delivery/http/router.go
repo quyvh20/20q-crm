@@ -195,4 +195,19 @@ func registerObjectRegistryRoutes(parent *gin.RouterGroup, objectRegistryHandler
 	registry.POST("/:slug/records", RequireRole("admin", "manager", "sales"), recordHandler.Create)
 	registry.PATCH("/:slug/records/:id", RequireRole("admin", "manager", "sales"), recordHandler.Update)
 	registry.DELETE("/:slug/records/:id", RequireRole("admin", "manager"), recordHandler.Delete)
+
+	// Universal relationships + tags (P4). Relating/tagging a record is an edit-
+	// level operation (sales+), distinct from deleting the record (manager+).
+	// RecordService re-checks org scope centrally and enforces the contact_tags
+	// vs object_links split so the API is identical for every object.
+	registry.GET("/:slug/records/:id/links", recordHandler.ListLinks)
+	registry.POST("/:slug/records/:id/links", RequireRole("admin", "manager", "sales"), recordHandler.AddLink)
+	registry.GET("/:slug/records/:id/tags", recordHandler.ListTags)
+	registry.POST("/:slug/records/:id/tags", RequireRole("admin", "manager", "sales"), recordHandler.AddTag)
+	registry.DELETE("/:slug/records/:id/tags/:tagId", RequireRole("admin", "manager", "sales"), recordHandler.RemoveTag)
+
+	// Link removal is addressed by edge id, so it lives alongside the object
+	// registry rather than under a specific record (the plan's /api/links/:id,
+	// kept under /registry until the P7 promotion).
+	parent.DELETE("/registry/links/:id", RequireRole("admin", "manager", "sales"), recordHandler.RemoveLink)
 }

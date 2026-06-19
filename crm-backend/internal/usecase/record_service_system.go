@@ -610,6 +610,19 @@ func derefStr(s *string) string {
 	return *s
 }
 
+// displayString renders a JSON-decoded field value as a record title. Strings
+// pass through; numbers/bools are stringified; nil becomes "". Used by the R8
+// read-time display resolution.
+func displayString(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fmt.Sprintf("%v", v)
+}
+
 func uuidStr(id *uuid.UUID) string {
 	if id == nil {
 		return ""

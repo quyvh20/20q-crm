@@ -246,6 +246,27 @@ func main() {
 			END IF;
 		END $$`)
 
+		// Universal relationships (migration 000016) — boot guard, since
+		// golang-migrate is authoritative only for fresh DBs and existing prod
+		// schema is maintained here. Mirrors
+		// migrations/000016_object_links.up.sql exactly.
+		db.Exec(`CREATE TABLE IF NOT EXISTS object_links (
+			id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			org_id       UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			from_slug    VARCHAR(100) NOT NULL,
+			from_id      UUID NOT NULL,
+			to_slug      VARCHAR(100) NOT NULL,
+			to_id        UUID NOT NULL,
+			relation_key VARCHAR(100) NOT NULL,
+			created_by   UUID REFERENCES users(id) ON DELETE SET NULL,
+			created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			deleted_at   TIMESTAMPTZ
+		)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_object_links_from ON object_links(org_id, from_slug, from_id) WHERE deleted_at IS NULL`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_object_links_to ON object_links(org_id, to_slug, to_id) WHERE deleted_at IS NULL`)
+		db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uix_object_links_unique ON object_links(org_id, from_slug, from_id, relation_key, to_slug, to_id) WHERE deleted_at IS NULL`)
+		db.Exec(`ALTER TABLE object_links ENABLE ROW LEVEL SECURITY`)
+
 		log.Info("Seeding system roles...")
 		if err := repository.SeedSystemRoles(db); err != nil {
 			log.Error("Failed to seed system roles", zap.Error(err))
@@ -354,8 +375,10 @@ func main() {
 		dealUseCase := usecase.NewDealUseCase(dealRepo, stageRepo, activityRepo)
 		dealHandler := delivery.NewDealHandler(dealUseCase)
 
-		// RecordService now that every per-object usecase exists.
-		recordService := usecase.NewRecordService(customObjUC, orgSettingsUC, contactUseCase, companyUseCase, dealUseCase)
+		// RecordService now that every per-object usecase exists. linkRepo + tagRepo
+		// back the universal relationship/tag surface (P4).
+		linkRepo := repository.NewLinkRepository(db)
+		recordService := usecase.NewRecordService(customObjUC, orgSettingsUC, contactUseCase, companyUseCase, dealUseCase, linkRepo, tagRepo)
 		recordHandler := delivery.NewRecordHandler(recordService)
 
 		taskRepo := repository.NewTaskRepository(db)

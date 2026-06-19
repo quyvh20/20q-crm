@@ -1,5 +1,7 @@
-import { type ObjectSchema, type UniformRecord } from '../../lib/api';
+import { useState, useEffect } from 'react';
+import { type ObjectSchema, type UniformRecord, getObjectRecordUnified } from '../../lib/api';
 import { formatFieldValue } from './fieldHelpers';
+import RecordRelations from './RecordRelations';
 
 interface ObjectDetailViewProps {
   schema: ObjectSchema;
@@ -10,9 +12,43 @@ interface ObjectDetailViewProps {
 }
 
 // ObjectDetailView is the read-only record panel for every object, rendered from
-// the same schema as the list and form. Relation values show their raw id for
-// now (resolved labels arrive with universal relationships in P4).
+// the same schema as the list and form. Below the fields it shows the record's
+// universal relationships + tags (P4), identical for system and custom objects.
 export default function ObjectDetailView({ schema, record, onEdit, onDelete, onClose }: ObjectDetailViewProps) {
+  // Resolve native relation FIELDS (e.g. a deal's contact/company) to the target's
+  // display title, so they no longer render as raw UUIDs (closes a P3 deferral).
+  // Bounded to this single record's relation fields — the list view stays raw to
+  // avoid the per-row N+1 the plan warns about (§11).
+  const [relationLabels, setRelationLabels] = useState<Record<string, string>>({});
+  useEffect(() => {
+    let cancelled = false;
+    const relations = schema.fields.filter(
+      (f) => f.type === 'relation' && f.target_slug && record.fields[f.key],
+    );
+    if (relations.length === 0) {
+      setRelationLabels({});
+      return;
+    }
+    Promise.all(
+      relations.map(async (f) => {
+        try {
+          const target = await getObjectRecordUnified(f.target_slug!, String(record.fields[f.key]));
+          return [f.key, target.display] as const;
+        } catch {
+          return [f.key, ''] as const;
+        }
+      }),
+    ).then((pairs) => {
+      if (cancelled) return;
+      const map: Record<string, string> = {};
+      for (const [k, v] of pairs) if (v) map[k] = v;
+      setRelationLabels(map);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [schema, record]);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <div style={{ padding: '20px 24px', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -24,9 +60,11 @@ export default function ObjectDetailView({ schema, record, onEdit, onDelete, onC
         {schema.fields.map((field) => (
           <div key={field.key} style={{ marginBottom: 16 }}>
             <div style={{ fontSize: 12, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', marginBottom: 2 }}>{field.label}</div>
-            <div style={{ fontSize: 14, color: '#0f172a' }}>{formatFieldValue(field, record.fields[field.key])}</div>
+            <div style={{ fontSize: 14, color: '#0f172a' }}>{formatFieldValue(field, record.fields[field.key], relationLabels[field.key])}</div>
           </div>
         ))}
+
+        <RecordRelations slug={schema.slug} recordId={record.id} />
       </div>
 
       <div style={{ padding: '16px 24px', borderTop: '1px solid #e2e8f0', display: 'flex', gap: 8 }}>

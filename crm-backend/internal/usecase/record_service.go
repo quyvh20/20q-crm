@@ -33,18 +33,23 @@ type recordService struct {
 	customObjUC    domain.CustomObjectUseCase
 	orgSettingsUC  domain.OrgSettingsUseCase
 	systemAdapters map[string]systemObjectAdapter
+	linkRepo       domain.LinkRepository
+	tagRepo        domain.TagRepository
 	emitEvent      domain.RecordEventEmitter
 }
 
 // NewRecordService wires the unified service over the existing per-object
 // usecases. orgSettingsUC supplies the custom-field definitions used to validate
-// admin-defined fields on system objects.
+// admin-defined fields on system objects. linkRepo + tagRepo back the universal
+// relationship and tag surface (P4).
 func NewRecordService(
 	customObjUC domain.CustomObjectUseCase,
 	orgSettingsUC domain.OrgSettingsUseCase,
 	contactUC domain.ContactUseCase,
 	companyUC domain.CompanyUseCase,
 	dealUC domain.DealUseCase,
+	linkRepo domain.LinkRepository,
+	tagRepo domain.TagRepository,
 ) domain.RecordService {
 	return &recordService{
 		customObjUC:   customObjUC,
@@ -54,6 +59,8 @@ func NewRecordService(
 			"company": &companyAdapter{uc: companyUC},
 			"deal":    &dealAdapter{uc: dealUC},
 		},
+		linkRepo: linkRepo,
+		tagRepo:  tagRepo,
 	}
 }
 
@@ -101,7 +108,9 @@ func (s *recordService) Get(ctx context.Context, orgID uuid.UUID, slug string, i
 	if rec.ObjectDefID != def.ID {
 		return nil, domain.NewAppError(http.StatusNotFound, "record not found")
 	}
-	return customToUniform(slug, rec), nil
+	uniform := customToUniform(slug, rec)
+	applyCustomDisplay(def, uniform) // R8: resolve title from the live field defs
+	return uniform, nil
 }
 
 // Create validates and creates a record, returning the uniform shape.
@@ -148,10 +157,16 @@ func (s *recordService) Update(ctx context.Context, orgID uuid.UUID, slug string
 	return uniform, nil
 }
 
-// Delete soft-deletes a record.
+// Delete soft-deletes a record, then cascade-soft-deletes every relationship/tag
+// edge touching it (R3 — object_links has no DB foreign key on its polymorphic
+// endpoints, so integrity is enforced here). The cascade runs after a successful
+// delete and is idempotent, so a retry after a mid-flight failure converges.
 func (s *recordService) Delete(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID) error {
 	if a, ok := s.systemAdapters[slug]; ok {
-		return a.delete(ctx, orgID, id)
+		if err := a.delete(ctx, orgID, id); err != nil {
+			return err
+		}
+		return s.cascadeLinks(ctx, orgID, slug, id)
 	}
 
 	// Confirm the record belongs to this custom object before deleting, so a
@@ -167,7 +182,19 @@ func (s *recordService) Delete(ctx context.Context, orgID uuid.UUID, slug string
 	if rec.ObjectDefID != def.ID {
 		return domain.NewAppError(http.StatusNotFound, "record not found")
 	}
-	return s.customObjUC.DeleteRecord(ctx, orgID, id)
+	if err := s.customObjUC.DeleteRecord(ctx, orgID, id); err != nil {
+		return err
+	}
+	return s.cascadeLinks(ctx, orgID, slug, id)
+}
+
+// cascadeLinks soft-deletes the deleted record's edges. A nil linkRepo (some unit
+// tests) simply skips the cascade.
+func (s *recordService) cascadeLinks(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID) error {
+	if s.linkRepo == nil {
+		return nil
+	}
+	return s.linkRepo.CascadeSoftDelete(ctx, orgID, slug, id)
 }
 
 // ============================================================
@@ -185,9 +212,20 @@ func (s *recordService) listCustom(ctx context.Context, orgID uuid.UUID, slug st
 		return nil, err
 	}
 
+	// R8: resolve each record's title from the live field defs (read once for the
+	// whole page, not per record), so a renamed/reordered display field can't leave
+	// a stale title behind. Falls back to the stored display_name when the def or
+	// field value is unavailable.
+	var def *domain.CustomObjectDef
+	if d, derr := s.customObjUC.GetDefBySlug(ctx, orgID, slug); derr == nil {
+		def = d
+	}
+
 	out := make([]domain.UniformRecord, 0, len(recs))
 	for i := range recs {
-		out = append(out, *customToUniform(slug, &recs[i]))
+		u := customToUniform(slug, &recs[i])
+		applyCustomDisplay(def, u)
+		out = append(out, *u)
 	}
 
 	next := ""
@@ -210,6 +248,28 @@ func customToUniform(slug string, rec *domain.CustomObjectRecord) *domain.Unifor
 		Fields:    fields,
 		CreatedAt: rec.CreatedAt,
 		UpdatedAt: rec.UpdatedAt,
+	}
+}
+
+// applyCustomDisplay overrides a custom record's title with the current value of
+// its definition's display field, computed at read time (R8). This replaces the
+// fragile "display_name captured at write time" behaviour: if an admin renames or
+// reorders fields, the title now follows the live schema instead of rotting. When
+// the def is missing or the display field is empty, the stored display_name (set
+// in customToUniform) stands. Reuses the same display-field heuristic the registry
+// schema uses (customDisplayField), so list/detail/schema all agree.
+func applyCustomDisplay(def *domain.CustomObjectDef, rec *domain.UniformRecord) {
+	if def == nil {
+		return
+	}
+	key := customDisplayField(parseFieldDefs(def.Fields))
+	if key == "" {
+		return
+	}
+	if v, ok := rec.Fields[key]; ok {
+		if s := displayString(v); s != "" {
+			rec.Display = s
+		}
 	}
 }
 
