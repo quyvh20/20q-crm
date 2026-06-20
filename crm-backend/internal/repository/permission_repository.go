@@ -275,3 +275,68 @@ func (r *permissionRepository) ListAudit(ctx context.Context, orgID uuid.UUID, s
 	}
 	return out, nil
 }
+
+// ============================================================
+// Field-Level Security (P5b)
+// ============================================================
+
+// LoadOrgFieldAccess returns roleName → objectSlug → fieldKey → level in one
+// query, joining field_permissions to roles so the FLS check (which only knows
+// the caller's role name) can look up directly. An org with no restrictions
+// returns an empty map, so the FLS half of the cache stays empty and free.
+func (r *permissionRepository) LoadOrgFieldAccess(ctx context.Context, orgID uuid.UUID) (map[string]map[string]map[string]string, error) {
+	type row struct {
+		RoleName   string
+		ObjectSlug string
+		FieldKey   string
+		Level      string
+	}
+	var rows []row
+	if err := r.db.WithContext(ctx).
+		Table("field_permissions AS fp").
+		Select("r.name AS role_name, fp.object_slug, fp.field_key, fp.level").
+		Joins("JOIN roles r ON r.id = fp.role_id").
+		Where("fp.org_id = ?", orgID).
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	out := make(map[string]map[string]map[string]string)
+	for _, row := range rows {
+		if out[row.RoleName] == nil {
+			out[row.RoleName] = make(map[string]map[string]string)
+		}
+		if out[row.RoleName][row.ObjectSlug] == nil {
+			out[row.RoleName][row.ObjectSlug] = make(map[string]string)
+		}
+		out[row.RoleName][row.ObjectSlug][row.FieldKey] = row.Level
+	}
+	return out, nil
+}
+
+func (r *permissionRepository) ListFieldPermissions(ctx context.Context, orgID uuid.UUID, slug string) ([]domain.FieldPermission, error) {
+	var perms []domain.FieldPermission
+	err := r.db.WithContext(ctx).
+		Where("org_id = ? AND object_slug = ?", orgID, slug).
+		Find(&perms).Error
+	return perms, err
+}
+
+// UpsertFieldPermission inserts or updates one (role, field) restriction.
+func (r *permissionRepository) UpsertFieldPermission(ctx context.Context, p domain.FieldPermission) error {
+	now := time.Now()
+	p.CreatedAt = now
+	p.UpdatedAt = now
+	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "org_id"}, {Name: "role_id"}, {Name: "object_slug"}, {Name: "field_key"}},
+		DoUpdates: clause.AssignmentColumns([]string{"level", "updated_at"}),
+	}).Create(&p).Error
+}
+
+// DeleteFieldPermission removes one restriction, returning the field to its
+// default (fully accessible). No-op if the row doesn't exist.
+func (r *permissionRepository) DeleteFieldPermission(ctx context.Context, orgID, roleID uuid.UUID, slug, fieldKey string) error {
+	return r.db.WithContext(ctx).
+		Where("org_id = ? AND role_id = ? AND object_slug = ? AND field_key = ?", orgID, roleID, slug, fieldKey).
+		Delete(&domain.FieldPermission{}).Error
+}

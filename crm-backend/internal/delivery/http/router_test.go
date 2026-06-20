@@ -35,6 +35,8 @@ func TestRegisterObjectRegistryRoutes(t *testing.T) {
 		"DELETE /api/registry/objects/:slug/records/:id/tags/:tagId": false,
 		"DELETE /api/registry/links/:id":                             false,
 		"GET /api/registry/objects/:slug/records/:id/audit":          false,
+		"GET /api/registry/objects/:slug/field-permissions":          false,
+		"PUT /api/registry/objects/:slug/field-permissions":          false,
 		"GET /api/registry/permissions":                              false,
 		"PUT /api/registry/permissions":                              false,
 	}

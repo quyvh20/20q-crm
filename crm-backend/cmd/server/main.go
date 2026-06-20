@@ -300,6 +300,28 @@ func main() {
 		db.Exec(`CREATE INDEX IF NOT EXISTS idx_object_audit_record ON object_audit(org_id, object_slug, record_id, created_at DESC)`)
 		db.Exec(`ALTER TABLE object_audit ENABLE ROW LEVEL SECURITY`)
 
+		// Field-Level Security (migration 000017b, P5b) — boot guard, since
+		// golang-migrate is authoritative only for fresh DBs and existing prod schema
+		// is maintained here. Mirrors migrations/000017b_field_permissions.up.sql
+		// exactly. Keyed by (org_id, role_id, object_slug, field_key) for the same
+		// reason object_permissions is slug-keyed: a custom object's fields aren't in
+		// object_fields until P7, and (slug, key) is the cross-stack field identifier.
+		// Opt-in: a field with no row here is fully accessible, so FLS costs nothing
+		// until an admin restricts a field.
+		db.Exec(`CREATE TABLE IF NOT EXISTS field_permissions (
+			org_id      UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			role_id     UUID NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+			object_slug VARCHAR(100) NOT NULL,
+			field_key   VARCHAR(100) NOT NULL,
+			level       VARCHAR(10) NOT NULL DEFAULT 'edit',
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (org_id, role_id, object_slug, field_key),
+			CONSTRAINT chk_field_permissions_level CHECK (level IN ('hidden', 'read', 'edit'))
+		)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_field_permissions_org ON field_permissions(org_id)`)
+		db.Exec(`ALTER TABLE field_permissions ENABLE ROW LEVEL SECURITY`)
+
 		log.Info("Seeding system roles...")
 		if err := repository.SeedSystemRoles(db); err != nil {
 			log.Error("Failed to seed system roles", zap.Error(err))

@@ -28,6 +28,7 @@ func setupPermissions(t *testing.T) (orgID uuid.UUID, roleIDs map[string]uuid.UU
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS custom_object_defs (id uuid PRIMARY KEY DEFAULT uuid_generate_v4(), org_id uuid NOT NULL, slug varchar NOT NULL, deleted_at timestamptz)`).Error)
 
 	runMigrationFile(t, db, "000017_object_security.up.sql")
+	runMigrationFile(t, db, "000017b_field_permissions.up.sql")
 
 	orgID = uuid.New()
 	require.NoError(t, db.Exec(`INSERT INTO organizations (id) VALUES (?)`, orgID).Error)
@@ -165,6 +166,72 @@ func TestWriteAndListAudit(t *testing.T) {
 	other, err := repo.ListAudit(ctx, orgID, "deal", uuid.New(), 100)
 	require.NoError(t, err)
 	require.Len(t, other, 0)
+}
+
+func TestMigration000017b_UpDownRoundTrip(t *testing.T) {
+	db, cleanup := startPostgres(t)
+	defer cleanup()
+
+	require.NoError(t, db.Exec(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS organizations (id uuid PRIMARY KEY DEFAULT uuid_generate_v4())`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS roles (id uuid PRIMARY KEY DEFAULT uuid_generate_v4(), org_id uuid, name varchar, is_system boolean)`).Error)
+
+	runMigrationFile(t, db, "000017b_field_permissions.up.sql")
+	require.True(t, tableExists(t, db, "field_permissions"))
+
+	runMigrationFile(t, db, "000017b_field_permissions.down.sql")
+	require.False(t, tableExists(t, db, "field_permissions"))
+
+	// Re-up is self-consistent.
+	runMigrationFile(t, db, "000017b_field_permissions.up.sql")
+	require.True(t, tableExists(t, db, "field_permissions"))
+}
+
+func TestFieldPermissions_UpsertLoadDelete(t *testing.T) {
+	orgID, roleIDs, repo := setupPermissions(t)
+	ctx := context.Background()
+	viewer := roleIDs[domain.RoleViewer]
+
+	// No restrictions yet → empty FLS map (the opt-in fast path).
+	access, err := repo.LoadOrgFieldAccess(ctx, orgID)
+	require.NoError(t, err)
+	require.Empty(t, access, "no rows => empty field-access map")
+
+	// Restrict deal.value to hidden for viewers.
+	require.NoError(t, repo.UpsertFieldPermission(ctx, domain.FieldPermission{
+		OrgID: orgID, RoleID: viewer, ObjectSlug: "deal", FieldKey: "value", Level: "hidden",
+	}))
+	access, err = repo.LoadOrgFieldAccess(ctx, orgID)
+	require.NoError(t, err)
+	require.Equal(t, "hidden", access[domain.RoleViewer]["deal"]["value"], "load joins role name → slug → key → level")
+
+	// Upsert the same cell to a weaker level: update, not duplicate.
+	require.NoError(t, repo.UpsertFieldPermission(ctx, domain.FieldPermission{
+		OrgID: orgID, RoleID: viewer, ObjectSlug: "deal", FieldKey: "value", Level: "read",
+	}))
+	rows, err := repo.ListFieldPermissions(ctx, orgID, "deal")
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "upsert must not create a duplicate cell")
+	require.Equal(t, "read", rows[0].Level)
+
+	// Delete returns the field to its default (no row).
+	require.NoError(t, repo.DeleteFieldPermission(ctx, orgID, viewer, "deal", "value"))
+	access, err = repo.LoadOrgFieldAccess(ctx, orgID)
+	require.NoError(t, err)
+	require.Empty(t, access, "delete clears the restriction")
+}
+
+func TestFieldPermissions_LevelCheckConstraint(t *testing.T) {
+	orgID, roleIDs, repo := setupPermissions(t)
+	db := repo.(*permissionRepository).db
+
+	// The DB CHECK constraint is the last line of defence behind the usecase's
+	// level validation: an out-of-domain level must be rejected.
+	err := db.Exec(
+		`INSERT INTO field_permissions (org_id, role_id, object_slug, field_key, level) VALUES (?, ?, 'deal', 'value', 'secret')`,
+		orgID, roleIDs[domain.RoleViewer],
+	).Error
+	require.Error(t, err, "an invalid level must violate chk_field_permissions_level")
 }
 
 func TestUpsertPermission_InsertThenUpdate(t *testing.T) {

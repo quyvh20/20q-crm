@@ -19,10 +19,13 @@ type authzCall struct {
 }
 
 // fakeAuthorizer records every Authorize/Audit call and can deny by "slug:action".
+// masks lets a test inject Field-Level Security restrictions per slug (P5b).
 type fakeAuthorizer struct {
-	deny   map[string]bool
-	calls  []authzCall
-	audits []domain.AuditEntry
+	deny      map[string]bool
+	masks     map[string]domain.FieldMask
+	calls     []authzCall
+	audits    []domain.AuditEntry
+	maskCalls int
 }
 
 func (f *fakeAuthorizer) Authorize(_ context.Context, _ uuid.UUID, slug string, action domain.RecordAction) error {
@@ -37,6 +40,14 @@ func (f *fakeAuthorizer) Audit(_ context.Context, e domain.AuditEntry) {
 	f.audits = append(f.audits, e)
 }
 
+func (f *fakeAuthorizer) FieldMask(_ context.Context, _ uuid.UUID, slug string) domain.FieldMask {
+	f.maskCalls++
+	if f.masks != nil {
+		return f.masks[slug]
+	}
+	return domain.FieldMask{}
+}
+
 func (f *fakeAuthorizer) last() authzCall { return f.calls[len(f.calls)-1] }
 
 // secCustomUC is a custom-object fake that can return DISTINCT prior vs updated
@@ -44,11 +55,13 @@ func (f *fakeAuthorizer) last() authzCall { return f.calls[len(f.calls)-1] }
 // fakeCustomObjUC returns one record for both, which would diff to empty.)
 type secCustomUC struct {
 	domain.CustomObjectUseCase
-	def     *domain.CustomObjectDef
-	prior   *domain.CustomObjectRecord
-	updated *domain.CustomObjectRecord
-	created *domain.CustomObjectRecord
-	deleted bool
+	def          *domain.CustomObjectDef
+	prior        *domain.CustomObjectRecord
+	updated      *domain.CustomObjectRecord
+	created      *domain.CustomObjectRecord
+	deleted      bool
+	createCalled bool
+	updateCalled bool
 }
 
 func (f *secCustomUC) GetDefBySlug(context.Context, uuid.UUID, string) (*domain.CustomObjectDef, error) {
@@ -57,10 +70,18 @@ func (f *secCustomUC) GetDefBySlug(context.Context, uuid.UUID, string) (*domain.
 func (f *secCustomUC) GetRecord(context.Context, uuid.UUID, uuid.UUID) (*domain.CustomObjectRecord, error) {
 	return f.prior, nil
 }
+func (f *secCustomUC) ListRecords(context.Context, uuid.UUID, string, domain.RecordFilter) ([]domain.CustomObjectRecord, int64, error) {
+	if f.prior == nil {
+		return nil, 0, nil
+	}
+	return []domain.CustomObjectRecord{*f.prior}, 1, nil
+}
 func (f *secCustomUC) CreateRecord(context.Context, uuid.UUID, uuid.UUID, string, domain.CreateRecordInput) (*domain.CustomObjectRecord, error) {
+	f.createCalled = true
 	return f.created, nil
 }
 func (f *secCustomUC) UpdateRecord(context.Context, uuid.UUID, string, uuid.UUID, domain.UpdateRecordInput) (*domain.CustomObjectRecord, error) {
+	f.updateCalled = true
 	return f.updated, nil
 }
 func (f *secCustomUC) DeleteRecord(context.Context, uuid.UUID, uuid.UUID) error {
@@ -233,6 +254,144 @@ func TestRecordService_AuditsDelete(t *testing.T) {
 	e := lastAudit(t, authz)
 	if e.Action != domain.ActionDelete || e.RecordID != recID {
 		t.Fatalf("delete audit wrong: %+v", e)
+	}
+}
+
+// ============================================================
+// Field-Level Security enforcement at the RecordService boundary (P5b)
+// ============================================================
+
+func newFLSCustom(data string) *secCustomUC {
+	defID, recID := uuid.New(), uuid.New()
+	return &secCustomUC{
+		def:     &domain.CustomObjectDef{ID: defID},
+		prior:   &domain.CustomObjectRecord{ID: recID, ObjectDefID: defID, Data: domain.JSON(data)},
+		updated: &domain.CustomObjectRecord{ID: recID, ObjectDefID: defID, Data: domain.JSON(data)},
+		created: &domain.CustomObjectRecord{ID: recID, ObjectDefID: defID, Data: domain.JSON(data)},
+	}
+}
+
+func hiddenMask(slug, key string) *fakeAuthorizer {
+	return &fakeAuthorizer{masks: map[string]domain.FieldMask{
+		slug: {Hidden: map[string]bool{key: true}},
+	}}
+}
+
+// A hidden field is stripped from a single-record read response — server-side, not
+// just the UI (plan §7.4).
+func TestRecordService_FLS_StripsHiddenFieldOnGet(t *testing.T) {
+	custom := newFLSCustom(`{"name":"P","value":999}`)
+	svc := newSecService(custom, nil, hiddenMask("project", "value"))
+	ctx := domain.WithCaller(context.Background(), domain.RoleViewer, uuid.New())
+
+	rec, err := svc.Get(ctx, uuid.New(), "project", custom.prior.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if _, ok := rec.Fields["value"]; ok {
+		t.Fatal("hidden field 'value' must be stripped from the Get response")
+	}
+	if rec.Fields["name"] != "P" {
+		t.Fatalf("visible field 'name' should survive, got %+v", rec.Fields)
+	}
+}
+
+// The strip also applies to every record in a list page.
+func TestRecordService_FLS_StripsHiddenFieldOnList(t *testing.T) {
+	custom := newFLSCustom(`{"name":"P","value":999}`)
+	svc := newSecService(custom, nil, hiddenMask("project", "value"))
+	ctx := domain.WithCaller(context.Background(), domain.RoleViewer, uuid.New())
+
+	list, err := svc.List(ctx, uuid.New(), "project", domain.RecordListInput{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list.Records) != 1 {
+		t.Fatalf("expected one record, got %d", len(list.Records))
+	}
+	if _, ok := list.Records[0].Fields["value"]; ok {
+		t.Fatal("hidden field 'value' must be stripped from every list record")
+	}
+}
+
+// A write that touches a hidden field is rejected (403) and never reaches storage
+// or the audit trail (plan P5b "reject writes to them").
+func TestRecordService_FLS_RejectsWriteToHiddenField_OnUpdate(t *testing.T) {
+	custom := newFLSCustom(`{"value":1}`)
+	authz := hiddenMask("project", "value")
+	svc := newSecService(custom, nil, authz)
+	ctx := domain.WithCaller(context.Background(), domain.RoleViewer, uuid.New())
+
+	_, err := svc.Update(ctx, uuid.New(), "project", custom.prior.ID, domain.RecordWriteInput{
+		Fields: map[string]interface{}{"value": 2},
+	})
+	assertForbidden(t, err, "writing a hidden field")
+	if custom.updateCalled {
+		t.Fatal("a rejected write must not reach the usecase")
+	}
+	if len(authz.audits) != 0 {
+		t.Fatalf("a rejected write must not be audited, got %d", len(authz.audits))
+	}
+}
+
+// Read-only is the weaker restriction: visible on read, rejected on write.
+func TestRecordService_FLS_RejectsWriteToReadOnlyField_OnCreate(t *testing.T) {
+	custom := newFLSCustom(`{}`)
+	authz := &fakeAuthorizer{masks: map[string]domain.FieldMask{
+		"project": {ReadOnly: map[string]bool{"locked": true}},
+	}}
+	svc := newSecService(custom, nil, authz)
+	ctx := domain.WithCaller(context.Background(), domain.RoleSales, uuid.New())
+
+	_, err := svc.Create(ctx, uuid.New(), uuid.New(), "project", domain.RecordWriteInput{
+		Fields: map[string]interface{}{"locked": "x"},
+	})
+	assertForbidden(t, err, "writing a read-only field")
+	if custom.createCalled {
+		t.Fatal("a rejected create must not reach the usecase")
+	}
+}
+
+// Writing an allowed field succeeds, but a co-resident hidden field is still
+// stripped from the write echo — so a creator can't read a field hidden from them.
+func TestRecordService_FLS_StripsHiddenFieldFromWriteResponse(t *testing.T) {
+	custom := newFLSCustom(`{"name":"P","value":42}`)
+	svc := newSecService(custom, nil, hiddenMask("project", "value"))
+	ctx := domain.WithCaller(context.Background(), domain.RoleManager, uuid.New())
+
+	rec, err := svc.Create(ctx, uuid.New(), uuid.New(), "project", domain.RecordWriteInput{
+		Fields: map[string]interface{}{"name": "P"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if !custom.createCalled {
+		t.Fatal("an allowed create should reach the usecase")
+	}
+	if _, ok := rec.Fields["value"]; ok {
+		t.Fatal("hidden field must be stripped from the create response")
+	}
+	if rec.Fields["name"] != "P" {
+		t.Fatalf("visible field should remain, got %+v", rec.Fields)
+	}
+}
+
+// With no mask configured FLS is a complete no-op: every field survives and the
+// record is untouched (zero overhead when unused).
+func TestRecordService_FLS_EmptyMask_LeavesRecordIntact(t *testing.T) {
+	custom := newFLSCustom(`{"name":"P","value":1}`)
+	svc := newSecService(custom, nil, &fakeAuthorizer{}) // no masks
+	ctx := domain.WithCaller(context.Background(), domain.RoleViewer, uuid.New())
+
+	rec, err := svc.Get(ctx, uuid.New(), "project", custom.prior.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if _, ok := rec.Fields["value"]; !ok {
+		t.Fatal("an unrestricted object must keep all fields")
+	}
+	if rec.Fields["name"] != "P" {
+		t.Fatalf("unexpected fields: %+v", rec.Fields)
 	}
 }
 

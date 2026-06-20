@@ -101,6 +101,11 @@ type RecordAuthorizer interface {
 	// Audit records one write. Best-effort: a failure is logged, never surfaced
 	// to the caller, so an audit hiccup can't roll back a successful write.
 	Audit(ctx context.Context, e AuditEntry)
+	// FieldMask returns the context caller's Field-Level Security restrictions for
+	// an object (P5b). The empty mask means "no restriction" — returned for a
+	// trusted in-process call, the owner role, or any object/role with no
+	// field_permissions rows — so FLS stays free until a field is restricted.
+	FieldMask(ctx context.Context, orgID uuid.UUID, slug string) FieldMask
 }
 
 // ============================================================
@@ -188,6 +193,21 @@ type PermissionRepository interface {
 	WriteAudit(ctx context.Context, a *ObjectAudit) error
 	// ListAudit returns a record's audit rows newest-first, with actor names.
 	ListAudit(ctx context.Context, orgID uuid.UUID, slug string, recordID uuid.UUID, limit int) ([]AuditView, error)
+
+	// --- Field-Level Security (P5b) ---
+
+	// LoadOrgFieldAccess returns roleName → objectSlug → fieldKey → level for an
+	// org, joining field_permissions to roles. Populates the FLS half of the cache
+	// in one query; an org with no restrictions returns an empty map (zero overhead).
+	LoadOrgFieldAccess(ctx context.Context, orgID uuid.UUID) (map[string]map[string]map[string]string, error)
+	// ListFieldPermissions returns the raw restriction rows for one object (the
+	// admin field-security grid). Only genuine restrictions exist as rows.
+	ListFieldPermissions(ctx context.Context, orgID uuid.UUID, slug string) ([]FieldPermission, error)
+	// UpsertFieldPermission writes one (role, field) restriction (insert or update).
+	UpsertFieldPermission(ctx context.Context, p FieldPermission) error
+	// DeleteFieldPermission removes one (role, field) restriction, returning the
+	// field to its default (fully accessible) — used when a level is set to 'edit'.
+	DeleteFieldPermission(ctx context.Context, orgID, roleID uuid.UUID, slug, fieldKey string) error
 }
 
 // PermissionUseCase is the admin-facing surface for the role × object grid and
@@ -200,7 +220,13 @@ type PermissionUseCase interface {
 	GetGrid(ctx context.Context, orgID uuid.UUID) (*PermissionGrid, error)
 	SetPermission(ctx context.Context, orgID uuid.UUID, in SetPermissionInput) error
 	ListRecordAudit(ctx context.Context, orgID uuid.UUID, slug string, recordID uuid.UUID) ([]AuditView, error)
-	// Invalidate drops the cached OLS map for an org (called when permissions or
-	// the object set change, so live edits apply without a restart).
+	// GetFieldGrid returns the field × role level matrix for one object — the admin
+	// Field-Level Security UI (P5b).
+	GetFieldGrid(ctx context.Context, orgID uuid.UUID, slug string) (*FieldPermissionGrid, error)
+	// SetFieldPermission sets one (role, field) level; level 'edit' clears the
+	// restriction. Busts the cache so the change applies on the next request.
+	SetFieldPermission(ctx context.Context, orgID uuid.UUID, in SetFieldPermissionInput) error
+	// Invalidate drops the cached OLS + FLS maps for an org (called when permissions
+	// or the object set change, so live edits apply without a restart).
 	Invalidate(orgID uuid.UUID)
 }

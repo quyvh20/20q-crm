@@ -91,15 +91,28 @@ func (s *recordService) List(ctx context.Context, orgID uuid.UUID, slug string, 
 		limit = defaultRecordLimit
 	}
 
+	var out *domain.RecordList
 	if a, ok := s.systemAdapters[slug]; ok {
 		recs, next, err := a.list(ctx, orgID, limit, in.Q, in.Cursor)
 		if err != nil {
 			return nil, err
 		}
-		return &domain.RecordList{Records: recs, NextCursor: next}, nil
+		out = &domain.RecordList{Records: recs, NextCursor: next}
+	} else {
+		var err error
+		out, err = s.listCustom(ctx, orgID, slug, limit, in.Q, in.Cursor)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	return s.listCustom(ctx, orgID, slug, limit, in.Q, in.Cursor)
+	// FLS: strip hidden fields once for the whole page (read-only fields stay).
+	if mask := s.fieldMask(ctx, orgID, slug); !mask.Empty() {
+		for i := range out.Records {
+			applyFieldMask(mask, &out.Records[i])
+		}
+	}
+	return out, nil
 }
 
 // Get returns a single uniform record. It is the OLS-enforced public entry; all
@@ -109,7 +122,12 @@ func (s *recordService) Get(ctx context.Context, orgID uuid.UUID, slug string, i
 	if err := s.authorize(ctx, orgID, slug, domain.ActionRead); err != nil {
 		return nil, err
 	}
-	return s.getInternal(ctx, orgID, slug, id)
+	rec, err := s.getInternal(ctx, orgID, slug, id)
+	if err != nil {
+		return nil, err
+	}
+	applyFieldMask(s.fieldMask(ctx, orgID, slug), rec) // FLS: strip hidden fields
+	return rec, nil
 }
 
 // getInternal resolves a record without an OLS check (trusted internal read).
@@ -139,6 +157,13 @@ func (s *recordService) Create(ctx context.Context, orgID, userID uuid.UUID, slu
 	if err := s.authorize(ctx, orgID, slug, domain.ActionCreate); err != nil {
 		return nil, err
 	}
+	// FLS write-guard before any persistence. The mask is reused below to strip the
+	// response, so a viewer who can create a record still can't see a field hidden
+	// from them in the create echo.
+	mask := s.fieldMask(ctx, orgID, slug)
+	if err := guardFieldWrites(mask, in.Fields); err != nil {
+		return nil, err
+	}
 
 	if a, ok := s.systemAdapters[slug]; ok {
 		if err := s.validateSystemCustomFields(ctx, orgID, slug, in.Fields, a); err != nil {
@@ -149,6 +174,7 @@ func (s *recordService) Create(ctx context.Context, orgID, userID uuid.UUID, slu
 			return nil, err
 		}
 		s.auditCreate(ctx, orgID, slug, rec, in.Fields)
+		applyFieldMask(mask, rec)
 		return rec, nil
 	}
 
@@ -162,7 +188,8 @@ func (s *recordService) Create(ctx context.Context, orgID, userID uuid.UUID, slu
 	}
 	uniform := customToUniform(slug, rec)
 	s.auditCreate(ctx, orgID, slug, uniform, in.Fields)
-	s.fireEvent(orgID, slug+"_created", uniform)
+	s.fireEvent(orgID, slug+"_created", uniform) // automation sees the full record
+	applyFieldMask(mask, uniform)                // strip only the response
 	return uniform, nil
 }
 
@@ -171,6 +198,12 @@ func (s *recordService) Create(ctx context.Context, orgID, userID uuid.UUID, slu
 // before/after diff for exactly the keys the caller changed.
 func (s *recordService) Update(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID, in domain.RecordWriteInput) (*domain.UniformRecord, error) {
 	if err := s.authorize(ctx, orgID, slug, domain.ActionEdit); err != nil {
+		return nil, err
+	}
+	// FLS write-guard before the prior read and any persistence; reused to strip
+	// the response below.
+	mask := s.fieldMask(ctx, orgID, slug)
+	if err := guardFieldWrites(mask, in.Fields); err != nil {
 		return nil, err
 	}
 	// Best-effort prior snapshot for the diff; a load error here is ignored and
@@ -186,6 +219,7 @@ func (s *recordService) Update(ctx context.Context, orgID uuid.UUID, slug string
 			return nil, err
 		}
 		s.auditUpdate(ctx, orgID, slug, rec, prior, in.Fields)
+		applyFieldMask(mask, rec)
 		return rec, nil
 	}
 
@@ -199,7 +233,8 @@ func (s *recordService) Update(ctx context.Context, orgID uuid.UUID, slug string
 	}
 	uniform := customToUniform(slug, rec)
 	s.auditUpdate(ctx, orgID, slug, uniform, prior, in.Fields)
-	s.fireEvent(orgID, slug+"_updated", uniform)
+	s.fireEvent(orgID, slug+"_updated", uniform) // automation sees the full record
+	applyFieldMask(mask, uniform)                // strip only the response
 	return uniform, nil
 }
 
@@ -334,6 +369,61 @@ func (s *recordService) auditDelete(ctx context.Context, orgID uuid.UUID, slug s
 		Action:     domain.ActionDelete,
 		Changes:    map[string]interface{}{},
 	})
+}
+
+// ============================================================
+// Field-Level Security (P5b)
+// ============================================================
+//
+// FLS is opt-in and enforced here, in the same chokepoint as OLS: hidden fields
+// are stripped from every read response (strip before serialize), and writes to a
+// hidden/read-only field are rejected outright. Automation/audit still see the
+// full record — masking applies only to the JSON returned to the human caller —
+// because the trigger payload and the audit diff are trusted internal consumers,
+// not the API surface FLS is protecting.
+
+// fieldMask returns the caller's FLS restrictions for an object, or the empty mask
+// when FLS is disabled (no authorizer wired, as in unit tests that pass nil).
+func (s *recordService) fieldMask(ctx context.Context, orgID uuid.UUID, slug string) domain.FieldMask {
+	if s.authz == nil {
+		return domain.FieldMask{}
+	}
+	return s.authz.FieldMask(ctx, orgID, slug)
+}
+
+// applyFieldMask strips hidden fields from a record's Fields before it is
+// serialized (plan §7.4). Read-only fields stay visible; only hidden ones are
+// removed. A no-op for the empty mask, so unrestricted objects pay nothing.
+//
+// Scope boundary: the derived Display title is intentionally NOT masked. It is the
+// object's public label (a composite for system objects, the display-field value
+// for custom ones), so hiding the field that *produces* the title is a degenerate
+// config that would leave records labelless. FLS targets sensitive payload fields
+// (salary, SSN), which are never an object's title; protecting the title itself is
+// out of scope by design rather than by oversight.
+func applyFieldMask(mask domain.FieldMask, rec *domain.UniformRecord) {
+	if rec == nil || len(mask.Hidden) == 0 {
+		return
+	}
+	for key := range mask.Hidden {
+		delete(rec.Fields, key)
+	}
+}
+
+// guardFieldWrites rejects a write touching any field the caller may not edit
+// (hidden or read-only), failing the whole write with a 403 rather than silently
+// dropping the field — so the caller learns the field is protected (plan P5b
+// "reject writes to them").
+func guardFieldWrites(mask domain.FieldMask, fields map[string]interface{}) error {
+	if mask.Empty() {
+		return nil
+	}
+	for key := range fields {
+		if !mask.CanWrite(key) {
+			return domain.NewAppError(http.StatusForbidden, "you do not have permission to edit the '"+key+"' field")
+		}
+	}
+	return nil
 }
 
 // ============================================================

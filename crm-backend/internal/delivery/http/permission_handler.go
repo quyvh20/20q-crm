@@ -48,6 +48,37 @@ func (h *PermissionHandler) SetPermission(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": "saved", "error": nil})
 }
 
+// GetFieldGrid handles GET /api/registry/objects/:slug/field-permissions — the
+// field × role level matrix for one object (Field-Level Security, P5b).
+func (h *PermissionHandler) GetFieldGrid(c *gin.Context) {
+	orgID := c.MustGet("org_id").(uuid.UUID)
+	slug := c.Param("slug")
+	grid, err := h.uc.GetFieldGrid(c.Request.Context(), orgID, slug)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": grid, "error": nil})
+}
+
+// SetFieldPermission handles PUT /api/registry/objects/:slug/field-permissions —
+// set one (role, field) level. The path slug is authoritative over any object_slug
+// in the body.
+func (h *PermissionHandler) SetFieldPermission(c *gin.Context) {
+	orgID := c.MustGet("org_id").(uuid.UUID)
+	var input domain.SetFieldPermissionInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": err.Error()})
+		return
+	}
+	input.ObjectSlug = c.Param("slug")
+	if err := h.uc.SetFieldPermission(c.Request.Context(), orgID, input); err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": "saved", "error": nil})
+}
+
 // ListAudit handles GET /api/registry/objects/:slug/records/:id/audit — the
 // per-record change history.
 func (h *PermissionHandler) ListAudit(c *gin.Context) {

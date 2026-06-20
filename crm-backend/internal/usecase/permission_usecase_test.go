@@ -21,6 +21,13 @@ type fakePermRepo struct {
 	audits      []*domain.ObjectAudit
 	roles       []domain.Role
 	perms       []domain.ObjectPermission
+
+	// FLS (P5b)
+	fieldAccess    map[string]map[string]map[string]string // role → slug → key → level
+	loadFieldCalls int
+	fieldPerms     []domain.FieldPermission
+	fieldUpserts   []domain.FieldPermission
+	fieldDeletes   []string // "slug:key"
 }
 
 func (f *fakePermRepo) EnsureDefaults(context.Context, uuid.UUID) error { f.ensureCalls++; return nil }
@@ -48,16 +55,35 @@ func (f *fakePermRepo) WriteAudit(_ context.Context, a *domain.ObjectAudit) erro
 func (f *fakePermRepo) ListAudit(context.Context, uuid.UUID, string, uuid.UUID, int) ([]domain.AuditView, error) {
 	return nil, nil
 }
+func (f *fakePermRepo) LoadOrgFieldAccess(context.Context, uuid.UUID) (map[string]map[string]map[string]string, error) {
+	f.loadFieldCalls++
+	if f.fieldAccess == nil {
+		return map[string]map[string]map[string]string{}, nil
+	}
+	return f.fieldAccess, nil
+}
+func (f *fakePermRepo) ListFieldPermissions(context.Context, uuid.UUID, string) ([]domain.FieldPermission, error) {
+	return f.fieldPerms, nil
+}
+func (f *fakePermRepo) UpsertFieldPermission(_ context.Context, p domain.FieldPermission) error {
+	f.fieldUpserts = append(f.fieldUpserts, p)
+	return nil
+}
+func (f *fakePermRepo) DeleteFieldPermission(_ context.Context, _, _ uuid.UUID, slug, fieldKey string) error {
+	f.fieldDeletes = append(f.fieldDeletes, slug+":"+fieldKey)
+	return nil
+}
 
 type fakeRegistryUC struct {
 	objects []domain.ObjectSummary
+	schema  *domain.ObjectDescriptor
 }
 
 func (f *fakeRegistryUC) ListObjects(context.Context, uuid.UUID) ([]domain.ObjectSummary, error) {
 	return f.objects, nil
 }
 func (f *fakeRegistryUC) GetSchema(context.Context, uuid.UUID, string) (*domain.ObjectDescriptor, error) {
-	return nil, nil
+	return f.schema, nil
 }
 
 func callerCtx(role string) context.Context {
@@ -259,6 +285,186 @@ func TestGetGrid_AssemblesObjectsRolesMatrix(t *testing.T) {
 	}
 	if grid.Matrix[0].ObjectSlug != "deal" || !grid.Matrix[0].Delete {
 		t.Fatalf("matrix cell wrong: %+v", grid.Matrix[0])
+	}
+}
+
+// ============================================================
+// Field-Level Security (P5b)
+// ============================================================
+
+func TestFieldMask_NoCaller_ReturnsEmpty(t *testing.T) {
+	repo := &fakePermRepo{fieldAccess: map[string]map[string]map[string]string{
+		domain.RoleViewer: {"deal": {"value": "hidden"}},
+	}}
+	uc := NewPermissionUseCase(repo, &fakeRegistryUC{})
+	// No caller => trusted in-process call: never masked, so automation/AI see all.
+	if m := uc.FieldMask(context.Background(), uuid.New(), "deal"); !m.Empty() {
+		t.Fatalf("trusted call should get an empty mask, got %+v", m)
+	}
+}
+
+func TestFieldMask_Owner_Bypasses(t *testing.T) {
+	repo := &fakePermRepo{fieldAccess: map[string]map[string]map[string]string{
+		domain.RoleOwner: {"deal": {"value": "hidden"}},
+	}}
+	uc := NewPermissionUseCase(repo, &fakeRegistryUC{})
+	if m := uc.FieldMask(callerCtx(domain.RoleOwner), uuid.New(), "deal"); !m.Empty() {
+		t.Fatalf("owner should bypass FLS, got %+v", m)
+	}
+}
+
+func TestFieldMask_HiddenAndReadLevels(t *testing.T) {
+	repo := &fakePermRepo{fieldAccess: map[string]map[string]map[string]string{
+		domain.RoleViewer: {"deal": {"value": "hidden", "stage": "read", "title": "edit"}},
+	}}
+	uc := NewPermissionUseCase(repo, &fakeRegistryUC{})
+
+	m := uc.FieldMask(callerCtx(domain.RoleViewer), uuid.New(), "deal")
+	if !m.IsHidden("value") {
+		t.Fatal("value should be hidden")
+	}
+	if m.CanWrite("value") {
+		t.Fatal("a hidden field must not be writable")
+	}
+	if m.IsHidden("stage") {
+		t.Fatal("a read-only field is visible, not hidden")
+	}
+	if m.CanWrite("stage") {
+		t.Fatal("a read-only field must not be writable")
+	}
+	// A stored 'edit' level (shouldn't normally exist) and an unmentioned field are
+	// both fully accessible.
+	if !m.CanWrite("title") || m.IsHidden("title") {
+		t.Fatal("edit-level field should be fully accessible")
+	}
+	if !m.CanWrite("other") {
+		t.Fatal("an unrestricted field must be writable")
+	}
+}
+
+func TestFieldMask_NoRows_ReturnsEmpty_AndSharesOLSCache(t *testing.T) {
+	org := uuid.New()
+	// OLS rows exist but no FLS rows — the common case.
+	repo := &fakePermRepo{access: map[string]map[string]domain.ObjectAccess{
+		domain.RoleSales: {"deal": {Read: true}},
+	}}
+	uc := NewPermissionUseCase(repo, &fakeRegistryUC{})
+
+	if m := uc.FieldMask(callerCtx(domain.RoleSales), org, "deal"); !m.Empty() {
+		t.Fatalf("no FLS rows => empty mask, got %+v", m)
+	}
+	// FieldMask shares the OLS cache entry: it loads field access exactly once and
+	// reuses the warm entry across calls (zero overhead when unused).
+	_ = uc.FieldMask(callerCtx(domain.RoleSales), org, "deal")
+	_ = uc.Authorize(callerCtx(domain.RoleSales), org, "deal", domain.ActionRead)
+	if repo.loadFieldCalls != 1 {
+		t.Fatalf("expected field access loaded once and cached, loadFieldCalls=%d", repo.loadFieldCalls)
+	}
+	if repo.loadCalls != 1 {
+		t.Fatalf("expected OLS access loaded once and shared, loadCalls=%d", repo.loadCalls)
+	}
+}
+
+func TestSetFieldPermission_Restrict_Upserts_AndBustsCache(t *testing.T) {
+	org := uuid.New()
+	repo := &fakePermRepo{}
+	uc := NewPermissionUseCase(repo, &fakeRegistryUC{})
+	roleID := uuid.New()
+
+	// Warm the cache.
+	_ = uc.FieldMask(callerCtx(domain.RoleViewer), org, "deal")
+	if repo.loadFieldCalls != 1 {
+		t.Fatalf("expected warm load, loadFieldCalls=%d", repo.loadFieldCalls)
+	}
+
+	if err := uc.SetFieldPermission(context.Background(), org, domain.SetFieldPermissionInput{
+		RoleID: roleID, ObjectSlug: "deal", FieldKey: "value", Level: "hidden",
+	}); err != nil {
+		t.Fatalf("SetFieldPermission: %v", err)
+	}
+	if len(repo.fieldUpserts) != 1 || repo.fieldUpserts[0].Level != "hidden" || repo.fieldUpserts[0].FieldKey != "value" {
+		t.Fatalf("expected one hidden upsert, got %+v", repo.fieldUpserts)
+	}
+	// Cache busted → next mask reloads.
+	_ = uc.FieldMask(callerCtx(domain.RoleViewer), org, "deal")
+	if repo.loadFieldCalls != 2 {
+		t.Fatalf("expected reload after SetFieldPermission, loadFieldCalls=%d", repo.loadFieldCalls)
+	}
+}
+
+func TestSetFieldPermission_EditLevel_DeletesRow(t *testing.T) {
+	repo := &fakePermRepo{}
+	uc := NewPermissionUseCase(repo, &fakeRegistryUC{})
+
+	// 'edit' is the default → stored as the absence of a row, so it deletes.
+	if err := uc.SetFieldPermission(context.Background(), uuid.New(), domain.SetFieldPermissionInput{
+		RoleID: uuid.New(), ObjectSlug: "deal", FieldKey: "value", Level: "edit",
+	}); err != nil {
+		t.Fatalf("SetFieldPermission(edit): %v", err)
+	}
+	if len(repo.fieldUpserts) != 0 {
+		t.Fatalf("edit level must not upsert a row, got %+v", repo.fieldUpserts)
+	}
+	if len(repo.fieldDeletes) != 1 || repo.fieldDeletes[0] != "deal:value" {
+		t.Fatalf("expected a delete of deal:value, got %+v", repo.fieldDeletes)
+	}
+}
+
+func TestSetFieldPermission_RejectsBadInput(t *testing.T) {
+	uc := NewPermissionUseCase(&fakePermRepo{}, &fakeRegistryUC{})
+
+	// Missing field_key.
+	err := uc.SetFieldPermission(context.Background(), uuid.New(), domain.SetFieldPermissionInput{
+		RoleID: uuid.New(), ObjectSlug: "deal", Level: "hidden",
+	})
+	assertStatus(t, err, 400, "missing field_key")
+
+	// Unknown level.
+	err = uc.SetFieldPermission(context.Background(), uuid.New(), domain.SetFieldPermissionInput{
+		RoleID: uuid.New(), ObjectSlug: "deal", FieldKey: "value", Level: "secret",
+	})
+	assertStatus(t, err, 400, "invalid level")
+}
+
+func TestGetFieldGrid_AssemblesFieldsRolesMatrix(t *testing.T) {
+	org := uuid.New()
+	roleID := uuid.New()
+	repo := &fakePermRepo{
+		roles: []domain.Role{
+			{ID: uuid.New(), Name: domain.RoleOwner, IsSystem: true},
+			{ID: roleID, Name: domain.RoleViewer, IsSystem: true},
+		},
+		fieldPerms: []domain.FieldPermission{
+			{RoleID: roleID, ObjectSlug: "deal", FieldKey: "value", Level: "hidden"},
+		},
+	}
+	reg := &fakeRegistryUC{schema: &domain.ObjectDescriptor{
+		Slug: "deal", Label: "Deal",
+		Fields: []domain.FieldDescriptor{
+			{Key: "title", Label: "Title", Type: "text", IsSystem: true},
+			{Key: "value", Label: "Amount", Type: "number", IsSystem: true},
+		},
+	}}
+	uc := NewPermissionUseCase(repo, reg)
+
+	grid, err := uc.GetFieldGrid(context.Background(), org, "deal")
+	if err != nil {
+		t.Fatalf("GetFieldGrid: %v", err)
+	}
+	if grid.Slug != "deal" || len(grid.Fields) != 2 || len(grid.Roles) != 2 || len(grid.Matrix) != 1 {
+		t.Fatalf("grid shape wrong: %+v", grid)
+	}
+	if grid.Matrix[0].FieldKey != "value" || grid.Matrix[0].Level != "hidden" || grid.Matrix[0].RoleID != roleID {
+		t.Fatalf("matrix cell wrong: %+v", grid.Matrix[0])
+	}
+	var sawOwner bool
+	for _, r := range grid.Roles {
+		if r.Name == domain.RoleOwner && r.IsOwner {
+			sawOwner = true
+		}
+	}
+	if !sawOwner {
+		t.Fatal("expected owner role flagged IsOwner so the UI can lock its column")
 	}
 }
 

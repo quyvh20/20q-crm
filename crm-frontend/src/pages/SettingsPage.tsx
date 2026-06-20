@@ -6,6 +6,7 @@ import ObjectDefManager from '../components/settings/ObjectDefManager';
 import KnowledgeBase from '../components/settings/KnowledgeBase';
 import PipelineStagesManager from '../components/settings/PipelineStagesManager';
 import PermissionsManager from '../components/settings/PermissionsManager';
+import FieldSecurityManager from '../components/settings/FieldSecurityManager';
 
 const BASE_TABS = [
   { id: 'pipeline', label: 'Pipeline', icon: '🎯' },
@@ -77,7 +78,12 @@ export default function SettingsPage() {
 
         {activeTab === 'objects' && <ObjectDefManager />}
 
-        {activeTab === 'permissions' && <PermissionsManager />}
+        {activeTab === 'permissions' && (
+          <div className="space-y-10">
+            <PermissionsManager />
+            <FieldSecurityManager />
+          </div>
+        )}
 
         {activeTab === 'knowledge' && <KnowledgeBase />}
 

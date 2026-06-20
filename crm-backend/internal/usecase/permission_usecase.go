@@ -34,8 +34,12 @@ type permissionUseCase struct {
 }
 
 type orgAccessEntry struct {
+	// access is the OLS map: role → object → access bits.
 	access map[string]map[string]domain.ObjectAccess
-	expiry time.Time
+	// fieldAccess is the FLS map: role → object → fieldKey → level. Empty when no
+	// field is restricted (the common case), so FLS costs nothing until used.
+	fieldAccess map[string]map[string]map[string]string
+	expiry      time.Time
 }
 
 // Compile-time proof the one type satisfies both ports.
@@ -112,26 +116,73 @@ func (uc *permissionUseCase) Audit(ctx context.Context, e domain.AuditEntry) {
 	}
 }
 
+// FieldMask returns the caller's Field-Level Security restrictions for an object
+// (P5b). It mirrors Authorize's bypasses: a context with no caller is a trusted
+// in-process call, and the owner role bypasses FLS — both get the empty mask. So
+// does any role/object with no field_permissions rows, so FLS is free until a
+// field is actually restricted. Only 'hidden'/'read' levels produce mask entries;
+// 'edit' (the default) never has a stored row.
+func (uc *permissionUseCase) FieldMask(ctx context.Context, orgID uuid.UUID, slug string) domain.FieldMask {
+	caller, ok := domain.CallerFromContext(ctx)
+	if !ok {
+		return domain.FieldMask{} // trusted in-process call
+	}
+	if caller.Role == domain.RoleOwner {
+		return domain.FieldMask{} // god-mode, matching OLS
+	}
+
+	entry := uc.loadEntry(ctx, orgID)
+	byObject := entry.fieldAccess[caller.Role]
+	if byObject == nil {
+		return domain.FieldMask{}
+	}
+	levels := byObject[slug]
+	if len(levels) == 0 {
+		return domain.FieldMask{}
+	}
+
+	var mask domain.FieldMask
+	for key, level := range levels {
+		switch domain.FieldLevel(level) {
+		case domain.FieldLevelHidden:
+			if mask.Hidden == nil {
+				mask.Hidden = make(map[string]bool)
+			}
+			mask.Hidden[key] = true
+		case domain.FieldLevelRead:
+			if mask.ReadOnly == nil {
+				mask.ReadOnly = make(map[string]bool)
+			}
+			mask.ReadOnly[key] = true
+		}
+	}
+	return mask
+}
+
 // accessFor returns the cached access for one role+object. A missing role or
 // missing object entry is the zero ObjectAccess — i.e. default-deny.
 func (uc *permissionUseCase) accessFor(ctx context.Context, orgID uuid.UUID, role, slug string) domain.ObjectAccess {
-	m := uc.loadCached(ctx, orgID)
-	if byObject, ok := m[role]; ok {
+	entry := uc.loadEntry(ctx, orgID)
+	if byObject, ok := entry.access[role]; ok {
 		return byObject[slug]
 	}
 	return domain.ObjectAccess{}
 }
 
-// loadCached returns the org's access map, refreshing on a cold/expired entry.
-// On the cold path it first ensures the default seed so a never-configured org
-// (or a freshly added object) isn't accidentally locked out. On a load error it
-// serves the stale entry if present, else an empty map (fail closed).
-func (uc *permissionUseCase) loadCached(ctx context.Context, orgID uuid.UUID) map[string]map[string]domain.ObjectAccess {
+// loadEntry returns the org's cached OLS + FLS maps, refreshing on a cold/expired
+// entry. On the cold path it first ensures the default seed so a never-configured
+// org (or a freshly added object) isn't accidentally locked out. The two maps are
+// loaded and cached together so the OLS and FLS views can never diverge: on any
+// load error it serves the prior entry if present, else an empty entry whose empty
+// OLS map default-denies. (Crucially, a field-access load failure must not leave a
+// permissive OLS map with FLS silently emptied — that would leak sensitive fields,
+// so a partial failure falls back to the coherent prior/empty entry.)
+func (uc *permissionUseCase) loadEntry(ctx context.Context, orgID uuid.UUID) *orgAccessEntry {
 	uc.mu.RLock()
 	e := uc.cache[orgID]
 	uc.mu.RUnlock()
 	if e != nil && time.Now().Before(e.expiry) {
-		return e.access
+		return e
 	}
 
 	if err := uc.repo.EnsureDefaults(ctx, orgID); err != nil {
@@ -141,16 +192,29 @@ func (uc *permissionUseCase) loadCached(ctx context.Context, orgID uuid.UUID) ma
 	access, err := uc.repo.LoadOrgAccess(ctx, orgID)
 	if err != nil {
 		log.Printf("object_permissions: load access for org %s: %v", orgID, err)
-		if e != nil {
-			return e.access // serve stale rather than lock everyone out on a transient error
-		}
-		return map[string]map[string]domain.ObjectAccess{}
+		return uc.staleOrEmpty(e)
+	}
+	fieldAccess, err := uc.repo.LoadOrgFieldAccess(ctx, orgID)
+	if err != nil {
+		log.Printf("field_permissions: load access for org %s: %v", orgID, err)
+		return uc.staleOrEmpty(e)
 	}
 
+	entry := &orgAccessEntry{access: access, fieldAccess: fieldAccess, expiry: time.Now().Add(uc.ttl)}
 	uc.mu.Lock()
-	uc.cache[orgID] = &orgAccessEntry{access: access, expiry: time.Now().Add(uc.ttl)}
+	uc.cache[orgID] = entry
 	uc.mu.Unlock()
-	return access
+	return entry
+}
+
+// staleOrEmpty serves the prior entry on a transient load error rather than
+// flip-flopping the org's security state; with no prior entry it returns an empty
+// entry whose empty OLS map default-denies (so reads are blocked, not leaked).
+func (uc *permissionUseCase) staleOrEmpty(e *orgAccessEntry) *orgAccessEntry {
+	if e != nil {
+		return e
+	}
+	return &orgAccessEntry{access: map[string]map[string]domain.ObjectAccess{}}
 }
 
 // ============================================================
@@ -229,6 +293,89 @@ func (uc *permissionUseCase) SetPermission(ctx context.Context, orgID uuid.UUID,
 		CanEdit:    in.CanEdit,
 		CanDelete:  in.CanDelete,
 	})
+	if err != nil {
+		return err
+	}
+	uc.Invalidate(orgID)
+	return nil
+}
+
+// GetFieldGrid returns the field × role level matrix for one object — the admin
+// Field-Level Security UI. Fields come from the registry schema (so system and
+// custom objects expose the same field list the records are keyed by); the matrix
+// holds only the non-default (read/hidden) cells, everything else being edit.
+func (uc *permissionUseCase) GetFieldGrid(ctx context.Context, orgID uuid.UUID, slug string) (*domain.FieldPermissionGrid, error) {
+	schema, err := uc.registryUC.GetSchema(ctx, orgID, slug)
+	if err != nil {
+		return nil, err
+	}
+	roles, err := uc.repo.ListRoles(ctx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	perms, err := uc.repo.ListFieldPermissions(ctx, orgID, slug)
+	if err != nil {
+		return nil, err
+	}
+
+	grid := &domain.FieldPermissionGrid{
+		Slug:   schema.Slug,
+		Label:  schema.Label,
+		Fields: make([]domain.FieldPermFieldInfo, 0, len(schema.Fields)),
+		Roles:  make([]domain.PermRoleInfo, 0, len(roles)),
+		Matrix: make([]domain.FieldPermissionMatrix, 0, len(perms)),
+	}
+	for _, f := range schema.Fields {
+		grid.Fields = append(grid.Fields, domain.FieldPermFieldInfo{
+			Key:      f.Key,
+			Label:    f.Label,
+			Type:     f.Type,
+			IsSystem: f.IsSystem,
+		})
+	}
+	for _, role := range roles {
+		grid.Roles = append(grid.Roles, domain.PermRoleInfo{
+			ID:       role.ID,
+			Name:     role.Name,
+			IsSystem: role.IsSystem,
+			IsOwner:  role.Name == domain.RoleOwner,
+		})
+	}
+	for _, p := range perms {
+		grid.Matrix = append(grid.Matrix, domain.FieldPermissionMatrix{
+			RoleID:   p.RoleID,
+			FieldKey: p.FieldKey,
+			Level:    p.Level,
+		})
+	}
+	return grid, nil
+}
+
+// SetFieldPermission sets one (role, field) level and busts the cache so the
+// change applies on the next request. Level 'edit' is the default and is stored
+// as the *absence* of a row — so it deletes any existing restriction, keeping the
+// table to genuine restrictions only.
+func (uc *permissionUseCase) SetFieldPermission(ctx context.Context, orgID uuid.UUID, in domain.SetFieldPermissionInput) error {
+	if in.RoleID == uuid.Nil || in.ObjectSlug == "" || in.FieldKey == "" {
+		return domain.NewAppError(http.StatusBadRequest, "role_id, object_slug and field_key are required")
+	}
+	level := domain.FieldLevel(in.Level)
+	if !level.Valid() {
+		return domain.NewAppError(http.StatusBadRequest, "level must be one of: hidden, read, edit")
+	}
+
+	var err error
+	if level == domain.FieldLevelEdit {
+		err = uc.repo.DeleteFieldPermission(ctx, orgID, in.RoleID, in.ObjectSlug, in.FieldKey)
+	} else {
+		err = uc.repo.UpsertFieldPermission(ctx, domain.FieldPermission{
+			OrgID:      orgID,
+			RoleID:     in.RoleID,
+			ObjectSlug: in.ObjectSlug,
+			FieldKey:   in.FieldKey,
+			Level:      in.Level,
+		})
+	}
 	if err != nil {
 		return err
 	}

@@ -216,6 +216,12 @@ func registerObjectRegistryRoutes(parent *gin.RouterGroup, objectRegistryHandler
 	// kept under /registry until the P7 promotion).
 	parent.DELETE("/registry/links/:id", RequireRole(domain.RoleAdmin, domain.RoleManager, domain.RoleSales), recordHandler.RemoveLink)
 
+	// Field-Level Security (P5b) — admin-only per-object field × role level grid
+	// that RecordService enforces (strip hidden on read, reject on write). Mounted
+	// per-object since the grid is the object's own field list × roles.
+	registry.GET("/:slug/field-permissions", RequireRole(domain.RoleAdmin), permissionHandler.GetFieldGrid)
+	registry.PUT("/:slug/field-permissions", RequireRole(domain.RoleAdmin), permissionHandler.SetFieldPermission)
+
 	// Object-Level Security grid (P5a) — admin-only configuration of the role ×
 	// object access matrix that RecordService enforces.
 	perms := parent.Group("/registry/permissions", RequireRole(domain.RoleAdmin))

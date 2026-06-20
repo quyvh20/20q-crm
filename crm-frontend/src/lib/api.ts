@@ -1119,6 +1119,66 @@ export async function setObjectPermission(input: {
   }
 }
 
+// ============================================================
+// Field-Level Security (P5b) — per-object field × role visibility/edit grid.
+// Admin-only; opt-in. A field with no cell is fully accessible (level 'edit').
+// RecordService strips 'hidden' fields from responses and rejects writes to
+// 'hidden'/'read' fields server-side.
+// ============================================================
+
+export type FieldLevel = 'edit' | 'read' | 'hidden';
+
+export interface FieldPermFieldInfo {
+  key: string;
+  label: string;
+  type: string;
+  is_system: boolean;
+}
+
+export interface FieldPermissionCell {
+  role_id: string;
+  field_key: string;
+  level: FieldLevel;
+}
+
+export interface FieldPermissionGrid {
+  slug: string;
+  label: string;
+  fields: FieldPermFieldInfo[];
+  roles: PermRoleInfo[];
+  matrix: FieldPermissionCell[];
+}
+
+export async function getFieldPermissionGrid(slug: string): Promise<FieldPermissionGrid> {
+  const res = await apiFetch(`/api/registry/objects/${slug}/field-permissions`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to load field permissions');
+  const data = (json.data || {}) as Partial<FieldPermissionGrid>;
+  return {
+    slug: data.slug || slug,
+    label: data.label || slug,
+    fields: data.fields || [],
+    roles: data.roles || [],
+    matrix: data.matrix || [],
+  };
+}
+
+export async function setFieldPermission(input: {
+  object_slug: string;
+  role_id: string;
+  field_key: string;
+  level: FieldLevel;
+}): Promise<void> {
+  const res = await apiFetch(`/api/registry/objects/${input.object_slug}/field-permissions`, {
+    method: 'PUT',
+    body: JSON.stringify({ role_id: input.role_id, field_key: input.field_key, level: input.level }),
+  });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(json.error || 'Failed to save field permission');
+  }
+}
+
 export interface AuditEntry {
   id: string;
   action: 'create' | 'update' | 'edit' | 'delete';
