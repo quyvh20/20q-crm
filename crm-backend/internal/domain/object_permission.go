@@ -1,0 +1,206 @@
+package domain
+
+import (
+	"context"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// ============================================================
+// Object-Level Security + audit (plan §7, P5a)
+// ============================================================
+
+// RecordAction is one of the four CRUD verbs OLS gates per object.
+type RecordAction string
+
+const (
+	ActionRead   RecordAction = "read"
+	ActionCreate RecordAction = "create"
+	ActionEdit   RecordAction = "edit"
+	ActionDelete RecordAction = "delete"
+)
+
+// ObjectPermission is one (role × object) access row. It is keyed by object_slug
+// rather than an object_defs FK so it covers custom objects too (which aren't in
+// object_defs until P7) — see migration 000017 for the full rationale. Absence of
+// a row means no access (default-deny); a row with all-false bits is an explicit
+// lock-down that survives the idempotent default seed.
+type ObjectPermission struct {
+	OrgID      uuid.UUID `gorm:"type:uuid;primaryKey" json:"org_id"`
+	RoleID     uuid.UUID `gorm:"type:uuid;primaryKey" json:"role_id"`
+	ObjectSlug string    `gorm:"size:100;primaryKey" json:"object_slug"`
+	CanRead    bool      `gorm:"not null;default:false" json:"can_read"`
+	CanCreate  bool      `gorm:"not null;default:false" json:"can_create"`
+	CanEdit    bool      `gorm:"not null;default:false" json:"can_edit"`
+	CanDelete  bool      `gorm:"not null;default:false" json:"can_delete"`
+	CreatedAt  time.Time `gorm:"not null;default:now()" json:"created_at"`
+	UpdatedAt  time.Time `gorm:"not null;default:now()" json:"updated_at"`
+}
+
+func (ObjectPermission) TableName() string { return "object_permissions" }
+
+// ObjectAccess is the per-(role, object) access bits, decoupled from the storage
+// row so the OLS cache and the grid DTO can share one shape.
+type ObjectAccess struct {
+	Read   bool `json:"read"`
+	Create bool `json:"create"`
+	Edit   bool `json:"edit"`
+	Delete bool `json:"delete"`
+}
+
+// Allows reports whether this access grants the given action.
+func (a ObjectAccess) Allows(action RecordAction) bool {
+	switch action {
+	case ActionRead:
+		return a.Read
+	case ActionCreate:
+		return a.Create
+	case ActionEdit:
+		return a.Edit
+	case ActionDelete:
+		return a.Delete
+	}
+	return false
+}
+
+// ObjectAudit is one append-only record of a write routed through RecordService.
+type ObjectAudit struct {
+	ID         uuid.UUID  `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
+	OrgID      uuid.UUID  `gorm:"type:uuid;not null" json:"org_id"`
+	ObjectSlug string     `gorm:"size:100;not null" json:"object_slug"`
+	RecordID   uuid.UUID  `gorm:"type:uuid;not null" json:"record_id"`
+	ActorID    *uuid.UUID `gorm:"type:uuid" json:"actor_id,omitempty"`
+	Action     string     `gorm:"size:20;not null" json:"action"`
+	Changes    JSON       `gorm:"type:jsonb;default:'{}'" json:"changes"`
+	CreatedAt  time.Time  `gorm:"not null;default:now()" json:"created_at"`
+}
+
+func (ObjectAudit) TableName() string { return "object_audit" }
+
+// AuditEntry is the input RecordService hands to the authorizer to record one
+// write. Changes is a field-level diff: { key: {"old": …, "new": …} }.
+type AuditEntry struct {
+	OrgID      uuid.UUID
+	ActorID    uuid.UUID // uuid.Nil when unknown (trusted/internal call)
+	ObjectSlug string
+	RecordID   uuid.UUID
+	Action     RecordAction
+	Changes    map[string]interface{}
+}
+
+// RecordAuthorizer is the narrow security port RecordService depends on. Keeping
+// it small (rather than depending on the whole PermissionUseCase) means the
+// record-service unit tests can wire a tiny fake, and OLS/audit stay the only two
+// concerns RecordService knows about.
+type RecordAuthorizer interface {
+	// Authorize returns nil when the context's caller may perform action on slug,
+	// or a 403 AppError otherwise. A context with no caller is a trusted
+	// in-process call and is always allowed; the "owner" role bypasses OLS.
+	Authorize(ctx context.Context, orgID uuid.UUID, slug string, action RecordAction) error
+	// Audit records one write. Best-effort: a failure is logged, never surfaced
+	// to the caller, so an audit hiccup can't roll back a successful write.
+	Audit(ctx context.Context, e AuditEntry)
+}
+
+// ============================================================
+// Grid DTOs (the admin role × object matrix)
+// ============================================================
+
+// PermissionGrid is everything the admin grid needs in one payload: the objects
+// (rows), the roles (columns), and the current access matrix. The frontend joins
+// them by (role_id, object_slug).
+type PermissionGrid struct {
+	Objects []PermObjectInfo       `json:"objects"`
+	Roles   []PermRoleInfo         `json:"roles"`
+	Matrix  []PermissionMatrixCell `json:"matrix"`
+}
+
+type PermObjectInfo struct {
+	Slug     string `json:"slug"`
+	Label    string `json:"label"`
+	Icon     string `json:"icon"`
+	IsSystem bool   `json:"is_system"`
+}
+
+type PermRoleInfo struct {
+	ID       uuid.UUID `json:"id"`
+	Name     string    `json:"name"`
+	IsSystem bool      `json:"is_system"`
+	// IsOwner roles bypass OLS entirely; the grid shows their row as locked-on.
+	IsOwner bool `json:"is_owner"`
+}
+
+type PermissionMatrixCell struct {
+	RoleID     uuid.UUID `json:"role_id"`
+	ObjectSlug string    `json:"object_slug"`
+	ObjectAccess
+}
+
+// SetPermissionInput upserts one (role, object) cell.
+type SetPermissionInput struct {
+	RoleID     uuid.UUID `json:"role_id" binding:"required"`
+	ObjectSlug string    `json:"object_slug" binding:"required"`
+	CanRead    bool      `json:"can_read"`
+	CanCreate  bool      `json:"can_create"`
+	CanEdit    bool      `json:"can_edit"`
+	CanDelete  bool      `json:"can_delete"`
+}
+
+// AuditView is one audit row rendered for the per-record history endpoint, with
+// the actor's display name resolved.
+type AuditView struct {
+	ID         uuid.UUID              `json:"id"`
+	Action     string                 `json:"action"`
+	ActorID    *uuid.UUID             `json:"actor_id,omitempty"`
+	ActorName  string                 `json:"actor_name"`
+	Changes    map[string]interface{} `json:"changes"`
+	CreatedAt  time.Time              `json:"created_at"`
+	ObjectSlug string                 `json:"object_slug"`
+	RecordID   uuid.UUID              `json:"record_id"`
+}
+
+// ============================================================
+// Ports
+// ============================================================
+
+// PermissionRepository persists OLS rows and the audit trail, and seeds the
+// non-breaking defaults. It "knows" which objects exist (system constants +
+// custom_object_defs) so the seed can cover every current object without the hot
+// OLS path calling back into the registry usecase.
+type PermissionRepository interface {
+	// EnsureDefaults idempotently seeds the default access matrix (mirroring the
+	// legacy RequireRole gates) for the system roles, for every current object
+	// that has ZERO permission rows. Advisory-locked per org; safe to call on the
+	// cache-miss load path.
+	EnsureDefaults(ctx context.Context, orgID uuid.UUID) error
+	// LoadOrgAccess returns roleName → objectSlug → access for an org, joining
+	// object_permissions to roles. Populates the OLS cache in one query.
+	LoadOrgAccess(ctx context.Context, orgID uuid.UUID) (map[string]map[string]ObjectAccess, error)
+	// ListRoles returns the org's roles (system + org-scoped custom).
+	ListRoles(ctx context.Context, orgID uuid.UUID) ([]Role, error)
+	// ListPermissions returns the raw rows for the grid.
+	ListPermissions(ctx context.Context, orgID uuid.UUID) ([]ObjectPermission, error)
+	// UpsertPermission writes one (role, object) cell (insert or update). Rows are
+	// never deleted, so an all-false cell is a durable explicit denial.
+	UpsertPermission(ctx context.Context, p ObjectPermission) error
+	// WriteAudit appends one audit row.
+	WriteAudit(ctx context.Context, a *ObjectAudit) error
+	// ListAudit returns a record's audit rows newest-first, with actor names.
+	ListAudit(ctx context.Context, orgID uuid.UUID, slug string, recordID uuid.UUID, limit int) ([]AuditView, error)
+}
+
+// PermissionUseCase is the admin-facing surface for the role × object grid and
+// the per-record audit view. It embeds RecordAuthorizer (the narrower port
+// RecordService enforces through) because one concrete type implements both — so
+// the constructor can return this single interface and the same value can be
+// handed to RecordService as a RecordAuthorizer.
+type PermissionUseCase interface {
+	RecordAuthorizer
+	GetGrid(ctx context.Context, orgID uuid.UUID) (*PermissionGrid, error)
+	SetPermission(ctx context.Context, orgID uuid.UUID, in SetPermissionInput) error
+	ListRecordAudit(ctx context.Context, orgID uuid.UUID, slug string, recordID uuid.UUID) ([]AuditView, error)
+	// Invalidate drops the cached OLS map for an org (called when permissions or
+	// the object set change, so live edits apply without a restart).
+	Invalidate(orgID uuid.UUID)
+}

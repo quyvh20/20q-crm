@@ -267,6 +267,39 @@ func main() {
 		db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uix_object_links_unique ON object_links(org_id, from_slug, from_id, relation_key, to_slug, to_id) WHERE deleted_at IS NULL`)
 		db.Exec(`ALTER TABLE object_links ENABLE ROW LEVEL SECURITY`)
 
+		// Object-Level Security + audit (migration 000017, P5a) — boot guard, since
+		// golang-migrate is authoritative only for fresh DBs and existing prod schema
+		// is maintained here. Mirrors migrations/000017_object_security.up.sql exactly.
+		// object_permissions is keyed by (org_id, role_id, object_slug): custom objects
+		// aren't in object_defs until P7, and slug is the cross-stack identifier already
+		// used by object_links/object_audit.
+		db.Exec(`CREATE TABLE IF NOT EXISTS object_permissions (
+			org_id      UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			role_id     UUID NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+			object_slug VARCHAR(100) NOT NULL,
+			can_read    BOOLEAN NOT NULL DEFAULT FALSE,
+			can_create  BOOLEAN NOT NULL DEFAULT FALSE,
+			can_edit    BOOLEAN NOT NULL DEFAULT FALSE,
+			can_delete  BOOLEAN NOT NULL DEFAULT FALSE,
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (org_id, role_id, object_slug)
+		)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_object_permissions_org ON object_permissions(org_id)`)
+		db.Exec(`ALTER TABLE object_permissions ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`CREATE TABLE IF NOT EXISTS object_audit (
+			id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			org_id      UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			object_slug VARCHAR(100) NOT NULL,
+			record_id   UUID NOT NULL,
+			actor_id    UUID REFERENCES users(id) ON DELETE SET NULL,
+			action      VARCHAR(20) NOT NULL,
+			changes     JSONB NOT NULL DEFAULT '{}',
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_object_audit_record ON object_audit(org_id, object_slug, record_id, created_at DESC)`)
+		db.Exec(`ALTER TABLE object_audit ENABLE ROW LEVEL SECURITY`)
+
 		log.Info("Seeding system roles...")
 		if err := repository.SeedSystemRoles(db); err != nil {
 			log.Error("Failed to seed system roles", zap.Error(err))
@@ -375,10 +408,18 @@ func main() {
 		dealUseCase := usecase.NewDealUseCase(dealRepo, stageRepo, activityRepo)
 		dealHandler := delivery.NewDealHandler(dealUseCase)
 
+		// Object-Level Security + audit (P5a): one type is both the authorizer
+		// RecordService enforces through and the admin grid usecase. It needs the
+		// registry usecase to list objects for the grid.
+		permissionRepo := repository.NewPermissionRepository(db)
+		permissionUC := usecase.NewPermissionUseCase(permissionRepo, objectRegistryUC)
+		permissionHandler := delivery.NewPermissionHandler(permissionUC)
+
 		// RecordService now that every per-object usecase exists. linkRepo + tagRepo
-		// back the universal relationship/tag surface (P4).
+		// back the universal relationship/tag surface (P4); permissionUC enforces
+		// OLS + writes the audit trail (P5a) — the security chokepoint.
 		linkRepo := repository.NewLinkRepository(db)
-		recordService := usecase.NewRecordService(customObjUC, orgSettingsUC, contactUseCase, companyUseCase, dealUseCase, linkRepo, tagRepo)
+		recordService := usecase.NewRecordService(customObjUC, orgSettingsUC, contactUseCase, companyUseCase, dealUseCase, linkRepo, tagRepo, permissionUC)
 		recordHandler := delivery.NewRecordHandler(recordService)
 
 		taskRepo := repository.NewTaskRepository(db)
@@ -405,7 +446,7 @@ func main() {
 		voiceNoteUC := usecase.NewVoiceNoteUseCase(voiceNoteRepo, aiJobQueue, cfg, contactRepo)
 		voiceHandler := delivery.NewVoiceHandler(voiceNoteUC)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, cfg, db, redisClient, authRepo)
+		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, cfg, db, redisClient, authRepo)
 
 		// --- Workflow Automation Engine ---
 		memHandler := logger.NewMemoryHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -429,7 +470,13 @@ func main() {
 		pipelineHandler.SetSchemaInvalidator(invalidator)
 		tagHandler.SetSchemaInvalidator(invalidator)
 		settingsHandler.SetSchemaInvalidator(invalidator)
-		customObjHandler.SetSchemaInvalidator(invalidator)
+		// Creating/editing/deleting a custom object also busts the OLS cache, so a
+		// brand-new object's default permissions (seeded on the next load) take
+		// effect immediately instead of after the cache TTL (P5a).
+		customObjHandler.SetSchemaInvalidator(func(orgID uuid.UUID) {
+			invalidator(orgID)
+			permissionUC.Invalidate(orgID)
+		})
 
 		// Wire contact creation → automation trigger
 		contactHandler.SetEventEmitter(autoEngine.TriggerEvent)

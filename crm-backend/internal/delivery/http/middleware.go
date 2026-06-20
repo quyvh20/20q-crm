@@ -86,6 +86,11 @@ func AuthMiddleware(jwtSecret string, authRepo domain.AuthRepository, redisClien
 
 		c.Set("role", roleName)
 		scopedCtx := repository.WithDataScope(c.Request.Context(), roleName, claims.UserID)
+		// Carry the caller identity so RecordService can enforce Object-Level
+		// Security and stamp the audit actor without threading role/user through
+		// every method (plan P5a). Set for every protected route; a request that
+		// reaches RecordService without it is a trusted in-process call.
+		scopedCtx = domain.WithCaller(scopedCtx, roleName, claims.UserID)
 		c.Request = c.Request.WithContext(scopedCtx)
 
 		c.Next()
@@ -106,7 +111,7 @@ func RequireRole(roles ...string) gin.HandlerFunc {
 			return
 		}
 
-		if roleStr == "owner" {
+		if roleStr == domain.RoleOwner {
 			c.Next()
 			return
 		}

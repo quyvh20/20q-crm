@@ -594,15 +594,22 @@ single change does more for tenant safety than any new table.
 - **Files:** migration `000017`; `record_service.go` enforcement; `internal/auth/*`;
   frontend permissions grid.
 - **Checklist:**
-  - [ ] Migration `000017`: `object_permissions` + `object_audit` with RLS, plus `.down`
-  - [ ] `record_service.go` — default-deny OLS check on every entry
-  - [ ] Write an `object_audit` row (field-level diff) on every create/update/delete
-  - [ ] Permission-set cache per org; invalidate via `bustSchemaCache`
-  - [ ] Admin role×object toggle grid (frontend)
-  - [ ] Tests: role without `deal:read` blocked; audit row per write; live permission change applies without restart
+  - [x] Migration `000017`: `object_permissions` + `object_audit` with RLS, plus `.down` (+ idempotent boot guard in `main.go`, since golang-migrate is dead on prod)
+  - [x] `record_service.go` — default-deny OLS check on every public entry (List/Get/Create/Update/Delete + link/tag ops), delegated to a narrow `domain.RecordAuthorizer`. Owner bypasses; a context with no caller is a trusted in-process call. Internal reads use a new `getInternal` so the check isn't re-triggered on records the caller is already operating on
+  - [x] Write an `object_audit` row (field-level diff) on every create/update/delete — update pre-reads the prior record (no OLS) and diffs only the submitted keys; best-effort (a failed audit logs, never rolls back the write)
+  - [x] Permission-set cache per org (60s TTL + explicit `Invalidate`); busted on a permission edit **and** when the object set changes (custom-object create/edit/delete invalidator). O(1) after warm (R5)
+  - [x] Admin role×object toggle grid (`PermissionsManager.tsx`, Settings → Permissions, admin-only); owner row locked-on; per-role view of read/create/edit/delete per object
+  - [x] Per-record audit-trail endpoint (`GET …/records/:id/audit`, manager+) + `getRecordAudit` client
+  - [x] Tests: 8 OLS-engine unit tests (owner bypass, trusted-call bypass, per-action bits, default-deny, cache+invalidate, set/audit/grid) + 6 RecordService OLS/audit integration-of-units tests + 4 Docker-gated repo tests (up/down/up, legacy-matrix seed idempotency, custom-object coverage + lock-down survives re-seed, upsert) + 3 frontend grid tests; route-shape test extended. `go build`/`go vet` clean; `npx vitest run` (585) + `tsc -b` clean
+  - > **Keying note (deliberate deviation from the literal DDL):** `object_permissions` is keyed by `(org_id, role_id, object_slug)`, not `(role_id, object_def_id)`. Custom objects aren't in `object_defs` until P7, so an `object_def_id` FK could only protect system objects — breaking "all objects equal". `slug` is already the cross-stack identifier used by `object_links` and the plan's own `object_audit`. Full rationale in `migrations/000017_object_security.up.sql`.
+  - > **Caller identity:** the OLS check needs the caller's role (the runtime carries the role *name*, not a `role_id`) and the audit needs the actor. Both ride the request context via a new `domain.WithCaller`/`CallerFromContext`, set once in `AuthMiddleware` next to the existing `WithDataScope` — so no method signature churn across the freshly-built P3/P4 interface.
+  - > **Default-deny without a lockout:** `EnsureDefaults` (advisory-locked, ensure-on-read, mirrors `EnsureSystemObjects`) seeds the legacy `RequireRole` matrix for the five system roles across every *current* object (system + custom) that has zero rows — so flipping OLS on changes nothing for existing roles. An object is seeded once; thereafter an admin's all-false row is an explicit lock-down that survives re-seeds (rows are upserted, never deleted). A new custom object busts the cache on creation, so its defaults appear immediately.
+  - > **Cache (vs the plan's `bustSchemaCache`):** OLS uses a dedicated per-org permission cache rather than the AI knowledge-schema cache, since they invalidate on different events. The custom-object schema invalidator now *also* busts the permission cache, so the two stay coherent.
+  - > **Enforcement reach (honest scope):** OLS lives in `RecordService`, so it bites the uniform `/api/registry/objects/:slug/records` path — which is the live path for custom objects and the flag-gated path for system objects. The legacy per-object routes (`/api/contacts|deals|companies`, `/api/objects/:slug/records`) keep their coarse `RequireRole` gates until the P7 cutover. This is the documented phased design (R1), not a gap introduced here.
+  - > **Verification note:** build + vet + all backend unit tests green; the 4 new repo integration tests ran for real against **Docker Postgres 16** (up→down→up, seed idempotency = 5 roles × 3 system objects, custom-object coverage + lock-down survival, upsert-not-duplicate). 585 frontend tests + `tsc -b` green. No live browser walkthrough yet — same as P3/P4, the grid only shows real data behind the full local stack.
 - **Definition of Done:** a role without `deal:read` gets 403/empty on deals; every write
   produces an audit row with a field-level diff; permission changes take effect without
-  restart.
+  restart. ✅
 - **Effort:** Medium–Large (4–5 days). **Security value: high.**
 
 ### P5b — Field-Level Security *(opt-in, simplified)*

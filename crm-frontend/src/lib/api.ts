@@ -1054,6 +1054,90 @@ export async function removeRecordTag(slug: string, id: string, tagId: string): 
 }
 
 // ============================================================
+// Object-Level Security + audit (P5a)
+// ============================================================
+// The role × object access matrix RecordService enforces, plus the per-record
+// audit trail. Admin-only; mounted under the registry prefix.
+
+export interface PermObjectInfo {
+  slug: string;
+  label: string;
+  icon: string;
+  is_system: boolean;
+}
+
+export interface PermRoleInfo {
+  id: string;
+  name: string;
+  is_system: boolean;
+  is_owner: boolean;
+}
+
+// PermissionCell flattens the access bits (read/create/edit/delete) alongside the
+// (role_id, object_slug) it applies to — the backend embeds ObjectAccess, so the
+// four bits sit at the top level of each cell.
+export interface PermissionCell {
+  role_id: string;
+  object_slug: string;
+  read: boolean;
+  create: boolean;
+  edit: boolean;
+  delete: boolean;
+}
+
+export interface PermissionGrid {
+  objects: PermObjectInfo[];
+  roles: PermRoleInfo[];
+  matrix: PermissionCell[];
+}
+
+export type PermissionAction = 'read' | 'create' | 'edit' | 'delete';
+
+export async function getPermissionGrid(): Promise<PermissionGrid> {
+  const res = await apiFetch('/api/registry/permissions');
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to load permissions');
+  const data = (json.data || {}) as Partial<PermissionGrid>;
+  return { objects: data.objects || [], roles: data.roles || [], matrix: data.matrix || [] };
+}
+
+export async function setObjectPermission(input: {
+  role_id: string;
+  object_slug: string;
+  can_read: boolean;
+  can_create: boolean;
+  can_edit: boolean;
+  can_delete: boolean;
+}): Promise<void> {
+  const res = await apiFetch('/api/registry/permissions', {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(json.error || 'Failed to save permission');
+  }
+}
+
+export interface AuditEntry {
+  id: string;
+  action: 'create' | 'update' | 'edit' | 'delete';
+  actor_id?: string;
+  actor_name: string;
+  changes: Record<string, { old?: unknown; new?: unknown }>;
+  created_at: string;
+  object_slug: string;
+  record_id: string;
+}
+
+export async function getRecordAudit(slug: string, id: string): Promise<AuditEntry[]> {
+  const res = await apiFetch(`/api/registry/objects/${slug}/records/${id}/audit`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to load audit trail');
+  return (json.data || []) as AuditEntry[];
+}
+
+// ============================================================
 // Knowledge Base
 // ============================================================
 

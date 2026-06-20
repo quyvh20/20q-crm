@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -36,6 +37,11 @@ type recordService struct {
 	linkRepo       domain.LinkRepository
 	tagRepo        domain.TagRepository
 	emitEvent      domain.RecordEventEmitter
+	// authz enforces Object-Level Security and records the audit trail (P5a). It
+	// is the security chokepoint the plan promises: every public entry authorizes
+	// here so OLS can't be forgotten in a handler. nil disables OLS/audit, which
+	// only happens in unit tests that aren't exercising security.
+	authz domain.RecordAuthorizer
 }
 
 // NewRecordService wires the unified service over the existing per-object
@@ -50,6 +56,7 @@ func NewRecordService(
 	dealUC domain.DealUseCase,
 	linkRepo domain.LinkRepository,
 	tagRepo domain.TagRepository,
+	authz domain.RecordAuthorizer,
 ) domain.RecordService {
 	return &recordService{
 		customObjUC:   customObjUC,
@@ -61,6 +68,7 @@ func NewRecordService(
 		},
 		linkRepo: linkRepo,
 		tagRepo:  tagRepo,
+		authz:    authz,
 	}
 }
 
@@ -75,6 +83,9 @@ const defaultRecordLimit = 25
 
 // List returns one uniform page of records for an object, system or custom.
 func (s *recordService) List(ctx context.Context, orgID uuid.UUID, slug string, in domain.RecordListInput) (*domain.RecordList, error) {
+	if err := s.authorize(ctx, orgID, slug, domain.ActionRead); err != nil {
+		return nil, err
+	}
 	limit := in.Limit
 	if limit <= 0 || limit > 100 {
 		limit = defaultRecordLimit
@@ -91,8 +102,18 @@ func (s *recordService) List(ctx context.Context, orgID uuid.UUID, slug string, 
 	return s.listCustom(ctx, orgID, slug, limit, in.Q, in.Cursor)
 }
 
-// Get returns a single uniform record.
+// Get returns a single uniform record. It is the OLS-enforced public entry; all
+// internal callers (link/tag/audit helpers) use getInternal so they never
+// re-trigger an OLS check on a record the caller is already operating on.
 func (s *recordService) Get(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID) (*domain.UniformRecord, error) {
+	if err := s.authorize(ctx, orgID, slug, domain.ActionRead); err != nil {
+		return nil, err
+	}
+	return s.getInternal(ctx, orgID, slug, id)
+}
+
+// getInternal resolves a record without an OLS check (trusted internal read).
+func (s *recordService) getInternal(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID) (*domain.UniformRecord, error) {
 	if a, ok := s.systemAdapters[slug]; ok {
 		return a.get(ctx, orgID, id)
 	}
@@ -115,11 +136,20 @@ func (s *recordService) Get(ctx context.Context, orgID uuid.UUID, slug string, i
 
 // Create validates and creates a record, returning the uniform shape.
 func (s *recordService) Create(ctx context.Context, orgID, userID uuid.UUID, slug string, in domain.RecordWriteInput) (*domain.UniformRecord, error) {
+	if err := s.authorize(ctx, orgID, slug, domain.ActionCreate); err != nil {
+		return nil, err
+	}
+
 	if a, ok := s.systemAdapters[slug]; ok {
 		if err := s.validateSystemCustomFields(ctx, orgID, slug, in.Fields, a); err != nil {
 			return nil, err
 		}
-		return a.create(ctx, orgID, in.Fields)
+		rec, err := a.create(ctx, orgID, in.Fields)
+		if err != nil {
+			return nil, err
+		}
+		s.auditCreate(ctx, orgID, slug, rec, in.Fields)
+		return rec, nil
 	}
 
 	data, err := marshalFields(in.Fields)
@@ -131,17 +161,32 @@ func (s *recordService) Create(ctx context.Context, orgID, userID uuid.UUID, slu
 		return nil, err
 	}
 	uniform := customToUniform(slug, rec)
+	s.auditCreate(ctx, orgID, slug, uniform, in.Fields)
 	s.fireEvent(orgID, slug+"_created", uniform)
 	return uniform, nil
 }
 
-// Update validates and applies a partial update, returning the uniform shape.
+// Update validates and applies a partial update, returning the uniform shape. It
+// reads the prior record first (no OLS) so the audit can capture a field-level
+// before/after diff for exactly the keys the caller changed.
 func (s *recordService) Update(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID, in domain.RecordWriteInput) (*domain.UniformRecord, error) {
+	if err := s.authorize(ctx, orgID, slug, domain.ActionEdit); err != nil {
+		return nil, err
+	}
+	// Best-effort prior snapshot for the diff; a load error here is ignored and
+	// surfaced authoritatively by the write itself below.
+	prior, _ := s.getInternal(ctx, orgID, slug, id)
+
 	if a, ok := s.systemAdapters[slug]; ok {
 		if err := s.validateSystemCustomFields(ctx, orgID, slug, in.Fields, a); err != nil {
 			return nil, err
 		}
-		return a.update(ctx, orgID, id, in.Fields)
+		rec, err := a.update(ctx, orgID, id, in.Fields)
+		if err != nil {
+			return nil, err
+		}
+		s.auditUpdate(ctx, orgID, slug, rec, prior, in.Fields)
+		return rec, nil
 	}
 
 	data, err := marshalFields(in.Fields)
@@ -153,6 +198,7 @@ func (s *recordService) Update(ctx context.Context, orgID uuid.UUID, slug string
 		return nil, err
 	}
 	uniform := customToUniform(slug, rec)
+	s.auditUpdate(ctx, orgID, slug, uniform, prior, in.Fields)
 	s.fireEvent(orgID, slug+"_updated", uniform)
 	return uniform, nil
 }
@@ -162,10 +208,15 @@ func (s *recordService) Update(ctx context.Context, orgID uuid.UUID, slug string
 // endpoints, so integrity is enforced here). The cascade runs after a successful
 // delete and is idempotent, so a retry after a mid-flight failure converges.
 func (s *recordService) Delete(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID) error {
+	if err := s.authorize(ctx, orgID, slug, domain.ActionDelete); err != nil {
+		return err
+	}
+
 	if a, ok := s.systemAdapters[slug]; ok {
 		if err := a.delete(ctx, orgID, id); err != nil {
 			return err
 		}
+		s.auditDelete(ctx, orgID, slug, id)
 		return s.cascadeLinks(ctx, orgID, slug, id)
 	}
 
@@ -185,6 +236,7 @@ func (s *recordService) Delete(ctx context.Context, orgID uuid.UUID, slug string
 	if err := s.customObjUC.DeleteRecord(ctx, orgID, id); err != nil {
 		return err
 	}
+	s.auditDelete(ctx, orgID, slug, id)
 	return s.cascadeLinks(ctx, orgID, slug, id)
 }
 
@@ -195,6 +247,93 @@ func (s *recordService) cascadeLinks(ctx context.Context, orgID uuid.UUID, slug 
 		return nil
 	}
 	return s.linkRepo.CascadeSoftDelete(ctx, orgID, slug, id)
+}
+
+// ============================================================
+// Object-Level Security + audit (P5a)
+// ============================================================
+
+// authorize delegates the OLS decision to the injected authorizer. A nil
+// authorizer (unit tests not exercising security) means "allow". The authorizer
+// itself reads the caller from the context, bypasses for owner/trusted calls, and
+// default-denies otherwise.
+func (s *recordService) authorize(ctx context.Context, orgID uuid.UUID, slug string, action domain.RecordAction) error {
+	if s.authz == nil {
+		return nil
+	}
+	return s.authz.Authorize(ctx, orgID, slug, action)
+}
+
+// actor returns the user id behind the request, or uuid.Nil for a trusted
+// in-process call. Used to stamp the audit row.
+func (s *recordService) actor(ctx context.Context) uuid.UUID {
+	if c, ok := domain.CallerFromContext(ctx); ok {
+		return c.UserID
+	}
+	return uuid.Nil
+}
+
+func (s *recordService) auditCreate(ctx context.Context, orgID uuid.UUID, slug string, rec *domain.UniformRecord, input map[string]interface{}) {
+	if s.authz == nil || rec == nil {
+		return
+	}
+	changes := map[string]interface{}{}
+	for k := range input {
+		changes[k] = map[string]interface{}{"new": rec.Fields[k]}
+	}
+	s.authz.Audit(ctx, domain.AuditEntry{
+		OrgID:      orgID,
+		ActorID:    s.actor(ctx),
+		ObjectSlug: slug,
+		RecordID:   rec.ID,
+		Action:     domain.ActionCreate,
+		Changes:    changes,
+	})
+}
+
+// auditUpdate records a field-level before/after diff for exactly the keys the
+// caller submitted, dropping keys whose value didn't actually change.
+func (s *recordService) auditUpdate(ctx context.Context, orgID uuid.UUID, slug string, rec, prior *domain.UniformRecord, input map[string]interface{}) {
+	if s.authz == nil || rec == nil {
+		return
+	}
+	changes := map[string]interface{}{}
+	for k := range input {
+		var oldVal, newVal interface{}
+		if prior != nil {
+			oldVal = prior.Fields[k]
+		}
+		newVal = rec.Fields[k]
+		if reflect.DeepEqual(oldVal, newVal) {
+			continue // no-op write to this field — don't log noise
+		}
+		changes[k] = map[string]interface{}{"old": oldVal, "new": newVal}
+	}
+	if len(changes) == 0 {
+		return // nothing actually changed
+	}
+	s.authz.Audit(ctx, domain.AuditEntry{
+		OrgID:      orgID,
+		ActorID:    s.actor(ctx),
+		ObjectSlug: slug,
+		RecordID:   rec.ID,
+		Action:     domain.ActionEdit,
+		Changes:    changes,
+	})
+}
+
+func (s *recordService) auditDelete(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID) {
+	if s.authz == nil {
+		return
+	}
+	s.authz.Audit(ctx, domain.AuditEntry{
+		OrgID:      orgID,
+		ActorID:    s.actor(ctx),
+		ObjectSlug: slug,
+		RecordID:   id,
+		Action:     domain.ActionDelete,
+		Changes:    map[string]interface{}{},
+	})
 }
 
 // ============================================================

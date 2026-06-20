@@ -106,8 +106,10 @@ func newTestService(custom *fakeCustomObjUC, settings *recordingSettingsUC, deal
 		deal = &fakeDealUC{}
 	}
 	// Link/tag tests use newLinkTestService; here links are absent (nil repos),
-	// which the service treats as "not configured" / skip-cascade.
-	return NewRecordService(custom, settings, &contactAdapterStubUC{}, &companyAdapterStubUC{}, deal, nil, nil)
+	// which the service treats as "not configured" / skip-cascade. authz nil too:
+	// these dispatch/validation tests don't exercise OLS (the dedicated OLS/audit
+	// tests in record_service_security_test.go wire a fake authorizer).
+	return NewRecordService(custom, settings, &contactAdapterStubUC{}, &companyAdapterStubUC{}, deal, nil, nil, nil)
 }
 
 // Minimal contact/company usecase stubs (not exercised by these tests).

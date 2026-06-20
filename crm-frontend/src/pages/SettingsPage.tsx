@@ -5,6 +5,7 @@ import CustomFieldManager from '../components/settings/CustomFieldManager';
 import ObjectDefManager from '../components/settings/ObjectDefManager';
 import KnowledgeBase from '../components/settings/KnowledgeBase';
 import PipelineStagesManager from '../components/settings/PipelineStagesManager';
+import PermissionsManager from '../components/settings/PermissionsManager';
 
 const BASE_TABS = [
   { id: 'pipeline', label: 'Pipeline', icon: '🎯' },
@@ -16,6 +17,7 @@ const BASE_TABS = [
 
 const ADMIN_TABS = [
   ...BASE_TABS,
+  { id: 'permissions', label: 'Permissions', icon: '🔐' },
   { id: 'ai-logs', label: 'AI Logs', icon: '💬' },
 ] as const;
 
@@ -74,6 +76,8 @@ export default function SettingsPage() {
         {activeTab === 'fields' && <CustomFieldManager />}
 
         {activeTab === 'objects' && <ObjectDefManager />}
+
+        {activeTab === 'permissions' && <PermissionsManager />}
 
         {activeTab === 'knowledge' && <KnowledgeBase />}
 

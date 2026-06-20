@@ -37,6 +37,10 @@ func (s *recordService) AddLink(ctx context.Context, orgID, userID uuid.UUID, sl
 	if err := s.requireLinks(); err != nil {
 		return nil, err
 	}
+	// Relating a record is an edit of that record.
+	if err := s.authorize(ctx, orgID, slug, domain.ActionEdit); err != nil {
+		return nil, err
+	}
 
 	relationKey := strings.TrimSpace(in.RelationKey)
 	if !slugRegex.MatchString(relationKey) {
@@ -49,12 +53,13 @@ func (s *recordService) AddLink(ctx context.Context, orgID, userID uuid.UUID, sl
 		return nil, domain.NewAppError(http.StatusBadRequest, "a record cannot be linked to itself")
 	}
 
-	// Both endpoints must exist within the org. Get enforces org scope, resolves
-	// storage, and 404s an unknown slug or id.
-	if _, err := s.Get(ctx, orgID, slug, id); err != nil {
+	// Both endpoints must exist within the org. getInternal enforces org scope,
+	// resolves storage, and 404s an unknown slug or id. (OLS on the source was
+	// checked above; the target only needs to exist, not be separately readable.)
+	if _, err := s.getInternal(ctx, orgID, slug, id); err != nil {
 		return nil, err
 	}
-	target, err := s.Get(ctx, orgID, in.ToSlug, in.ToID)
+	target, err := s.getInternal(ctx, orgID, in.ToSlug, in.ToID)
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +85,10 @@ func (s *recordService) ListLinks(ctx context.Context, orgID uuid.UUID, slug str
 	if err := s.requireLinks(); err != nil {
 		return nil, err
 	}
-	if _, err := s.Get(ctx, orgID, slug, id); err != nil {
+	if err := s.authorize(ctx, orgID, slug, domain.ActionRead); err != nil {
+		return nil, err
+	}
+	if _, err := s.getInternal(ctx, orgID, slug, id); err != nil {
 		return nil, err
 	}
 
@@ -118,6 +126,10 @@ func (s *recordService) RemoveLink(ctx context.Context, orgID, linkID uuid.UUID)
 	if link == nil {
 		return domain.NewAppError(http.StatusNotFound, "link not found")
 	}
+	// Removing a relationship is an edit of the source record.
+	if err := s.authorize(ctx, orgID, link.FromSlug, domain.ActionEdit); err != nil {
+		return err
+	}
 	ok, err := s.linkRepo.SoftDelete(ctx, orgID, linkID)
 	if err != nil {
 		return err
@@ -138,7 +150,10 @@ func (s *recordService) ListTags(ctx context.Context, orgID uuid.UUID, slug stri
 	if err := s.requireTags(); err != nil {
 		return nil, err
 	}
-	if _, err := s.Get(ctx, orgID, slug, id); err != nil {
+	if err := s.authorize(ctx, orgID, slug, domain.ActionRead); err != nil {
+		return nil, err
+	}
+	if _, err := s.getInternal(ctx, orgID, slug, id); err != nil {
 		return nil, err
 	}
 
@@ -155,7 +170,11 @@ func (s *recordService) AddTag(ctx context.Context, orgID, userID uuid.UUID, slu
 	if err := s.requireTags(); err != nil {
 		return err
 	}
-	if _, err := s.Get(ctx, orgID, slug, id); err != nil {
+	// Tagging a record is an edit of that record.
+	if err := s.authorize(ctx, orgID, slug, domain.ActionEdit); err != nil {
+		return err
+	}
+	if _, err := s.getInternal(ctx, orgID, slug, id); err != nil {
 		return err
 	}
 	if err := s.requireTagInOrg(ctx, orgID, tagID); err != nil {
@@ -174,7 +193,10 @@ func (s *recordService) RemoveTag(ctx context.Context, orgID uuid.UUID, slug str
 	if err := s.requireTags(); err != nil {
 		return err
 	}
-	if _, err := s.Get(ctx, orgID, slug, id); err != nil {
+	if err := s.authorize(ctx, orgID, slug, domain.ActionEdit); err != nil {
+		return err
+	}
+	if _, err := s.getInternal(ctx, orgID, slug, id); err != nil {
 		return err
 	}
 
@@ -274,7 +296,7 @@ func (s *recordService) resolveTags(ctx context.Context, orgID uuid.UUID, ids []
 // can't be loaded (e.g. concurrently deleted) — link listing degrades gracefully
 // rather than failing wholesale.
 func (s *recordService) resolveDisplay(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID) string {
-	rec, err := s.Get(ctx, orgID, slug, id)
+	rec, err := s.getInternal(ctx, orgID, slug, id)
 	if err != nil || rec == nil {
 		return ""
 	}

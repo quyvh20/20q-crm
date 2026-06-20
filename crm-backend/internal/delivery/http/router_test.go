@@ -18,7 +18,7 @@ func TestRegisterObjectRegistryRoutes(t *testing.T) {
 	}()
 
 	e := gin.New()
-	registerObjectRegistryRoutes(e.Group("/api"), NewObjectRegistryHandler(nil), NewRecordHandler(nil))
+	registerObjectRegistryRoutes(e.Group("/api"), NewObjectRegistryHandler(nil), NewRecordHandler(nil), NewPermissionHandler(nil))
 
 	want := map[string]bool{
 		"GET /api/registry/objects":                                  false,
@@ -34,6 +34,9 @@ func TestRegisterObjectRegistryRoutes(t *testing.T) {
 		"POST /api/registry/objects/:slug/records/:id/tags":          false,
 		"DELETE /api/registry/objects/:slug/records/:id/tags/:tagId": false,
 		"DELETE /api/registry/links/:id":                             false,
+		"GET /api/registry/objects/:slug/records/:id/audit":          false,
+		"GET /api/registry/permissions":                              false,
+		"PUT /api/registry/permissions":                              false,
 	}
 	for _, r := range e.Routes() {
 		key := r.Method + " " + r.Path

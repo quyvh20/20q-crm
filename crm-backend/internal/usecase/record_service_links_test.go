@@ -119,7 +119,9 @@ func newLinkTestService(custom *fakeCustomObjUC, deal *fakeDealUC, contact *fake
 	if tag == nil {
 		tag = &fakeTagRepo{}
 	}
-	return NewRecordService(custom, &recordingSettingsUC{}, contact, company, deal, link, tag)
+	// authz nil: these link/tag tests aren't exercising OLS, so the service
+	// allows every action (see recordService.authorize).
+	return NewRecordService(custom, &recordingSettingsUC{}, contact, company, deal, link, tag, nil)
 }
 
 // customFakeFor builds a custom-object fake whose def/record ids match, so the
