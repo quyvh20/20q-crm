@@ -100,6 +100,9 @@ func (b *KnowledgeBuilder) BuildSystemPrompt(ctx context.Context, orgID uuid.UUI
 			for _, def := range defs {
 				schemaBuilder += fmt.Sprintf("\n## %s (custom object, slug: \"%s\", icon: %s)\n", def.Label, def.Slug, def.Icon)
 				schemaBuilder += fmt.Sprintf("Use search_objects with object_slug=\"%s\" to query. Use create_object_record with object_slug=\"%s\" to create.\n", def.Slug, def.Slug)
+				if def.Searchable {
+					schemaBuilder += "Semantic + fulltext search enabled (P6): these records are indexed for global search across the org.\n"
+				}
 
 				// Parse fields from JSONB
 				var fields []struct {

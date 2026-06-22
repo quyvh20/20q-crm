@@ -728,6 +728,7 @@ export interface CustomObjectDef {
   label_plural: string;
   icon: string;
   fields: CustomFieldDef[];
+  searchable?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -771,6 +772,7 @@ export async function createObjectDef(data: {
   label_plural: string;
   icon?: string;
   fields?: CustomFieldDef[];
+  searchable?: boolean;
 }): Promise<CustomObjectDef> {
   const res = await apiFetch('/api/objects', {
     method: 'POST',
@@ -786,6 +788,7 @@ export async function updateObjectDef(slug: string, data: {
   label_plural?: string;
   icon?: string;
   fields?: CustomFieldDef[];
+  searchable?: boolean;
 }): Promise<CustomObjectDef> {
   const res = await apiFetch(`/api/objects/${slug}`, {
     method: 'PUT',
@@ -889,6 +892,7 @@ export interface ObjectSchema {
   icon: string;
   color: string;
   is_system: boolean;
+  searchable: boolean;
   display_field: string;
   fields: ObjectFieldDescriptor[];
 }
@@ -901,6 +905,7 @@ export interface ObjectSummary {
   color: string;
   is_system: boolean;
   field_count: number;
+  searchable: boolean;
 }
 
 export interface UniformRecord {
@@ -1711,6 +1716,42 @@ export async function analyzeVoiceNote(id: string): Promise<void> {
     const json = await res.json().catch(() => ({}));
     throw new Error(json.error || 'Failed to start analysis');
   }
+}
+
+// ============================================================
+// Global search (P6)
+//
+// One cross-object query that spans every searchable object (custom objects via
+// the generic index, contacts via their native index), returning OLS/FLS-safe
+// records grouped by object. Backed by GET /api/registry/search.
+// ============================================================
+
+export interface SearchHit {
+  record: UniformRecord;
+  score?: number;
+}
+
+export interface SearchGroup {
+  object: string;
+  label: string;
+  label_plural: string;
+  icon: string;
+  hits: SearchHit[];
+}
+
+export interface SearchResult {
+  query: string;
+  groups: SearchGroup[];
+}
+
+export async function globalSearch(query: string, limit = 10): Promise<SearchResult> {
+  const search = new URLSearchParams({ q: query });
+  if (limit) search.set('limit', String(limit));
+  const res = await apiFetch(`/api/registry/search?${search.toString()}`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Search failed');
+  const data = (json.data || {}) as Partial<SearchResult>;
+  return { query: data.query || query, groups: data.groups || [] };
 }
 
 

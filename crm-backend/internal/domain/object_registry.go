@@ -74,6 +74,10 @@ type ObjectSummary struct {
 	Color       string `json:"color"`
 	IsSystem    bool   `json:"is_system"`
 	FieldCount  int    `json:"field_count"`
+	// Searchable surfaces whether the object is opted into generic semantic +
+	// fulltext search (P6), so the UI can badge it and the search screen can
+	// enumerate which objects participate.
+	Searchable bool `json:"searchable"`
 }
 
 // ObjectDescriptor is the full schema for one object. The frontend (P3) renders
@@ -85,6 +89,7 @@ type ObjectDescriptor struct {
 	Icon         string            `json:"icon"`
 	Color        string            `json:"color"`
 	IsSystem     bool              `json:"is_system"`
+	Searchable   bool              `json:"searchable"`
 	DisplayField string            `json:"display_field"`
 	Fields       []FieldDescriptor `json:"fields"`
 }
@@ -166,6 +171,12 @@ type RecordService interface {
 	// via a type assertion) so that a signature drift fails the build instead of
 	// silently disabling automation for the uniform write path.
 	SetEventEmitter(fn RecordEventEmitter)
+
+	// SetSearchIndexer wires the generic search indexer (P6), called once at
+	// startup. On the interface for the same reason as SetEventEmitter: a drift
+	// should fail the build, not silently stop indexing searchable records. Until
+	// set, writes to searchable objects simply skip indexing.
+	SetSearchIndexer(idx RecordIndexer)
 
 	// --- Universal relationships + tags (P4) ---
 

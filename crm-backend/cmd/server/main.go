@@ -322,6 +322,28 @@ func main() {
 		db.Exec(`CREATE INDEX IF NOT EXISTS idx_field_permissions_org ON field_permissions(org_id)`)
 		db.Exec(`ALTER TABLE field_permissions ENABLE ROW LEVEL SECURITY`)
 
+		// Generic search index (migration 000018, P6) — boot guard, since
+		// golang-migrate is authoritative only for fresh DBs and existing prod schema
+		// is maintained here. Mirrors migrations/000018_record_embeddings.up.sql
+		// exactly. record_embeddings is the one additive index that makes any object
+		// (custom objects first) semantically + fulltext searchable, keyed by
+		// (org_id, object_slug, record_id) like the rest of the cross-stack surface.
+		// Contacts keep their native embedding/fulltext path untouched (R1). The
+		// custom_object_defs.searchable flag is the per-object opt-in for the objects
+		// P6 targets, since a custom object's def isn't in object_defs until P7.
+		db.Exec(`CREATE TABLE IF NOT EXISTS record_embeddings (
+			org_id      UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			object_slug VARCHAR(100) NOT NULL,
+			record_id   UUID NOT NULL,
+			embedding   vector(768),
+			content     TEXT,
+			updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (org_id, object_slug, record_id)
+		)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_record_embeddings_fts ON record_embeddings USING GIN (to_tsvector('simple', coalesce(content, '')))`)
+		db.Exec(`ALTER TABLE record_embeddings ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`ALTER TABLE custom_object_defs ADD COLUMN IF NOT EXISTS searchable BOOLEAN NOT NULL DEFAULT FALSE`)
+
 		log.Info("Seeding system roles...")
 		if err := repository.SeedSystemRoles(db); err != nil {
 			log.Error("Failed to seed system roles", zap.Error(err))
@@ -375,7 +397,8 @@ func main() {
 			budget, log, cfg.CFAIGatewayToken,
 		)
 		embedSvc := ai.NewEmbeddingService(cfg.CFAccountID, cfg.CFAIGatewayID, cfg.CFAIToken, cfg.CFAIGatewayToken)
-		embedWorker := worker.NewEmbeddingWorker(embedSvc, db, log, 200)
+		recordEmbeddingRepo := repository.NewRecordEmbeddingRepository(db)
+		embedWorker := worker.NewEmbeddingWorker(embedSvc, recordEmbeddingRepo, db, log, 200)
 		go embedWorker.Start(context.Background(), 5)
 
 		orgSettingsRepo := repository.NewOrgSettingsRepository(db)
@@ -444,6 +467,12 @@ func main() {
 		recordService := usecase.NewRecordService(customObjUC, orgSettingsUC, contactUseCase, companyUseCase, dealUseCase, linkRepo, tagRepo, permissionUC)
 		recordHandler := delivery.NewRecordHandler(recordService)
 
+		// Global search (P6): spans searchable custom objects (record_embeddings)
+		// plus contacts (native index), resolving every hit through RecordService so
+		// OLS/FLS apply to search results too.
+		searchUC := usecase.NewSearchUseCase(recordEmbeddingRepo, embedSvc, recordService, objectRegistryUC, contactUseCase)
+		searchHandler := delivery.NewSearchHandler(searchUC)
+
 		taskRepo := repository.NewTaskRepository(db)
 		taskUseCase := usecase.NewTaskUseCase(taskRepo)
 		taskHandler := delivery.NewTaskHandler(taskUseCase)
@@ -468,7 +497,7 @@ func main() {
 		voiceNoteUC := usecase.NewVoiceNoteUseCase(voiceNoteRepo, aiJobQueue, cfg, contactRepo)
 		voiceHandler := delivery.NewVoiceHandler(voiceNoteUC)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, cfg, db, redisClient, authRepo)
+		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, cfg, db, redisClient, authRepo)
 
 		// --- Workflow Automation Engine ---
 		memHandler := logger.NewMemoryHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -512,6 +541,13 @@ func main() {
 		// of the RecordService interface, so a signature change fails the build
 		// rather than silently disabling automation.
 		recordService.SetEventEmitter(autoEngine.TriggerEvent)
+
+		// Wire the uniform write path → generic search index (P6), so creating or
+		// updating a searchable custom object's record (re)indexes it for global
+		// search, and deleting it removes the index row. The worker is the indexer;
+		// SetSearchIndexer is on the RecordService interface, so a signature drift
+		// fails the build rather than silently stopping indexing.
+		recordService.SetSearchIndexer(embedWorker)
 
 		// Wire deal stage change → automation trigger
 		dealHandler.SetEventEmitter(autoEngine.TriggerEvent)

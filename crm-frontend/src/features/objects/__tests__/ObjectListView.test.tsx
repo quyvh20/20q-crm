@@ -22,7 +22,7 @@ import ObjectListView from '../ObjectListView';
 
 const dealSchema: ObjectSchema = {
   slug: 'deal', label: 'Deal', label_plural: 'Deals', icon: '💰', color: '#10B981',
-  is_system: true, display_field: 'title',
+  is_system: true, searchable: false, display_field: 'title',
   fields: [
     { key: 'title', label: 'Title', type: 'text', is_system: true, required: true },
     { key: 'value', label: 'Value', type: 'number', is_system: true, required: false },
@@ -31,7 +31,7 @@ const dealSchema: ObjectSchema = {
 
 const projectSchema: ObjectSchema = {
   slug: 'project', label: 'Project', label_plural: 'Projects', icon: '📁', color: '#6B7280',
-  is_system: false, display_field: 'name',
+  is_system: false, searchable: false, display_field: 'name',
   fields: [
     { key: 'name', label: 'Name', type: 'text', is_system: false, required: true },
     { key: 'status', label: 'Status', type: 'select', options: ['active', 'done'], is_system: false, required: false },

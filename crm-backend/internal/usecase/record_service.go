@@ -37,6 +37,9 @@ type recordService struct {
 	linkRepo       domain.LinkRepository
 	tagRepo        domain.TagRepository
 	emitEvent      domain.RecordEventEmitter
+	// indexer keeps searchable objects in sync with the generic record_embeddings
+	// index (P6). nil disables indexing (unit tests, or before startup wiring).
+	indexer        domain.RecordIndexer
 	// authz enforces Object-Level Security and records the audit trail (P5a). It
 	// is the security chokepoint the plan promises: every public entry authorizes
 	// here so OLS can't be forgotten in a handler. nil disables OLS/audit, which
@@ -189,6 +192,7 @@ func (s *recordService) Create(ctx context.Context, orgID, userID uuid.UUID, slu
 	uniform := customToUniform(slug, rec)
 	s.auditCreate(ctx, orgID, slug, uniform, in.Fields)
 	s.fireEvent(orgID, slug+"_created", uniform) // automation sees the full record
+	s.indexRecord(ctx, orgID, slug, uniform)     // search index sees the full record
 	applyFieldMask(mask, uniform)                // strip only the response
 	return uniform, nil
 }
@@ -234,6 +238,7 @@ func (s *recordService) Update(ctx context.Context, orgID uuid.UUID, slug string
 	uniform := customToUniform(slug, rec)
 	s.auditUpdate(ctx, orgID, slug, uniform, prior, in.Fields)
 	s.fireEvent(orgID, slug+"_updated", uniform) // automation sees the full record
+	s.indexRecord(ctx, orgID, slug, uniform)     // search index sees the full record
 	applyFieldMask(mask, uniform)                // strip only the response
 	return uniform, nil
 }
@@ -272,6 +277,7 @@ func (s *recordService) Delete(ctx context.Context, orgID uuid.UUID, slug string
 		return err
 	}
 	s.auditDelete(ctx, orgID, slug, id)
+	s.unindexRecord(ctx, orgID, slug, id) // drop the record from the search index
 	return s.cascadeLinks(ctx, orgID, slug, id)
 }
 

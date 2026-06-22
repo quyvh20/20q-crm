@@ -78,6 +78,7 @@ func (uc *objectRegistryUseCase) ListObjects(ctx context.Context, orgID uuid.UUI
 			Color:       d.Color,
 			IsSystem:    d.IsSystem,
 			FieldCount:  fieldCount,
+			Searchable:  d.Searchable,
 		})
 	}
 
@@ -95,6 +96,7 @@ func (uc *objectRegistryUseCase) ListObjects(ctx context.Context, orgID uuid.UUI
 			Color:       "#6B7280",
 			IsSystem:    false,
 			FieldCount:  len(parseFieldDefs(co.Fields)),
+			Searchable:  co.Searchable,
 		})
 	}
 
@@ -138,6 +140,7 @@ func (uc *objectRegistryUseCase) systemSchema(ctx context.Context, orgID uuid.UU
 		Icon:        def.Icon,
 		Color:       def.Color,
 		IsSystem:    true,
+		Searchable:  def.Searchable,
 		Fields:      make([]domain.FieldDescriptor, 0, len(fields)),
 	}
 
@@ -184,6 +187,7 @@ func customSchema(co *domain.CustomObjectDef) *domain.ObjectDescriptor {
 		Icon:        co.Icon,
 		Color:       "#6B7280",
 		IsSystem:    false,
+		Searchable:  co.Searchable,
 		Fields:      make([]domain.FieldDescriptor, 0, len(defs)),
 	}
 	for _, cd := range defs {

@@ -22,7 +22,7 @@ import ObjectDetailView from '../ObjectDetailView';
 
 const dealSchema: ObjectSchema = {
   slug: 'deal', label: 'Deal', label_plural: 'Deals', icon: '💰', color: '#10B981',
-  is_system: true, display_field: 'title',
+  is_system: true, searchable: false, display_field: 'title',
   fields: [
     { key: 'title', label: 'Title', type: 'text', is_system: true, required: true },
     { key: 'company', label: 'Company', type: 'relation', target_slug: 'company', is_system: true, required: false },

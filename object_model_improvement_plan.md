@@ -329,6 +329,51 @@ CREATE INDEX idx_record_embeddings_fts
 ALTER TABLE record_embeddings ENABLE ROW LEVEL SECURITY;
 ```
 
+### 4.6 Detail layouts — migration `000019` (P8)
+
+> Plus an idempotent boot guard in `main.go` (golang-migrate is dead on prod). Presentation
+> only — these tables never gate access; FLS (`field_permissions`) stays the security boundary.
+
+```sql
+CREATE TABLE object_layouts (
+    id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    org_id       UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    object_slug  VARCHAR(100) NOT NULL,       -- any object except 'deal' (excluded in UI)
+    name         VARCHAR(255) NOT NULL,       -- admin-facing, e.g. 'Rep view'
+    layout       JSONB NOT NULL DEFAULT '[]', -- [{ id, label, columns, fields:[{key,width}] }]
+    is_default   BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at   TIMESTAMPTZ
+);
+-- at most one default layout per object
+CREATE UNIQUE INDEX uix_object_layouts_default
+    ON object_layouts(org_id, object_slug)
+    WHERE is_default AND deleted_at IS NULL;
+ALTER TABLE object_layouts ENABLE ROW LEVEL SECURITY;
+
+CREATE TABLE object_layout_roles (
+    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    org_id      UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    layout_id   UUID NOT NULL REFERENCES object_layouts(id) ON DELETE CASCADE,
+    object_slug VARCHAR(100) NOT NULL,        -- denormalized so the per-role guard is one index
+    role_id     UUID NOT NULL REFERENCES roles(id) ON DELETE CASCADE
+);
+-- a role resolves to exactly ONE layout per object (no ambiguity, no merge logic)
+CREATE UNIQUE INDEX uix_object_layout_roles_one_per_role
+    ON object_layout_roles(org_id, object_slug, role_id);
+ALTER TABLE object_layout_roles ENABLE ROW LEVEL SECURITY;
+```
+
+> **`object_slug` denormalized onto the assignment row (D6):** the "one layout per role per
+> object" rule is a single unique index this way. The alternative — deriving the object from
+> `layout_id` — would need a cross-table constraint (trigger), which isn't worth it.
+>
+> **`layout` JSONB shape:** an ordered array of sections, each
+> `{ id, label, columns: 1|2, fields: [{ key, width }] }`. `key` references `object_fields.key`;
+> unknown/stale keys are ignored at render time, and any field present in the record but absent
+> from the layout falls into a trailing "Other" section so nothing silently disappears.
+
 ---
 
 ## 5. How a request flows (worked examples)
@@ -361,6 +406,23 @@ ALTER TABLE record_embeddings ENABLE ROW LEVEL SECURITY;
 The caller wrote to a "project" exactly the way it would write to a "deal." That is *all
 objects equal*.
 
+### 5.3 Resolve a detail layout (P8): `GET /api/objects/contract/schema` as a *sales* user
+
+1. Schema assembly loads the descriptor + fields (as in §5.1) and the caller's role from
+   context (`CallerFromContext`, set in `AuthMiddleware` since P5a).
+2. **Resolve the effective layout:** look up `object_layout_roles(slug='contract', role='sales')`.
+   - Hit → use that layout. Miss → use the object's `is_default` layout. Still none →
+     synthesize a one-section layout from `object_fields` order (today's behaviour).
+3. **Intersect with FLS:** drop any field the role's mask marks `hidden`; mark `read`-only
+   fields non-editable. A field in the layout but hidden by FLS is simply not emitted —
+   layout never widens access.
+4. The `/schema` response carries `layout: [{ label, columns, fields }]` alongside
+   `fields`/`permissions`. `ObjectDetailView` renders the sections; with no layout it renders
+   the flat field list exactly as before.
+
+A *manager* hitting the same endpoint gets the default layout from the same code path — only
+the role lookup in step 2 differs. *Same engine, one descriptor, role-aware presentation.*
+
 ---
 
 ## 6. API surface
@@ -371,7 +433,7 @@ Uniform, object-agnostic routes (existing per-object routes stay until P7 retire
 |---|---|
 | `GET /api/objects` | List all object defs (system + custom) with icons, counts, permissions |
 | `POST /api/objects` | Create a custom object def |
-| `GET /api/objects/:slug/schema` | Full descriptor: fields, types, relations, display field, the caller's effective permissions |
+| `GET /api/objects/:slug/schema` | Full descriptor: fields, types, relations, display field, the caller's effective permissions + effective detail layout (P8) |
 | `PATCH /api/objects/:slug` | Edit label/icon/fields (system objects: label/fields only, slug locked) |
 | `DELETE /api/objects/:slug` | Soft-delete a custom object (403 for system) |
 | `GET /api/objects/:slug/records` | List records (filter, sort, paginate) |
@@ -381,6 +443,11 @@ Uniform, object-agnostic routes (existing per-object routes stay until P7 retire
 | `DELETE /api/objects/:slug/records/:id` | Soft-delete record |
 | `POST /api/objects/:slug/records/:id/links` | Relate to another record |
 | `DELETE /api/links/:id` | Remove a relationship |
+| `GET /api/objects/:slug/layouts` | (P8) List all detail layouts + role assignments (admin) |
+| `POST /api/objects/:slug/layouts` | (P8) Create a detail layout |
+| `PATCH /api/objects/:slug/layouts/:id` | (P8) Edit a layout's sections / `is_default` |
+| `DELETE /api/objects/:slug/layouts/:id` | (P8) Delete a layout |
+| `PUT /api/objects/:slug/layouts/:id/roles` | (P8) Assign the layout to a set of roles |
 
 **Sample `GET /api/objects/deal/schema` response:**
 
@@ -648,13 +715,20 @@ single change does more for tenant safety than any new table.
 - **Files:** migration `000018`; `embedding_worker.go`; `knowledge_builder.go`; global
   search endpoint.
 - **Checklist:**
-  - [ ] Migration `000018`: `record_embeddings` + GIN fulltext with RLS, plus `.down`
-  - [ ] Extend `embedding_worker.go` to enqueue any object flagged `searchable`
-  - [ ] Feed the registry into `knowledge_builder.go` so AI context includes custom objects
-  - [ ] Global search endpoint across objects
-  - [ ] Tests: marking a custom object `searchable` populates embeddings; semantic + fulltext hit custom records
+  - [x] Migration `000018`: `record_embeddings` (keyed `(org_id, object_slug, record_id)`, `vector(768)` + `content`) with a GIN fulltext index on `content` and RLS, plus `.down` (+ idempotent boot guard in `main.go`, since golang-migrate is dead on prod). Also adds `custom_object_defs.searchable` — the per-object opt-in for the objects P6 actually targets (see keying note)
+  - [x] Extend `embedding_worker.go`: a generic record path (`EnqueueRecord`/`processRecord`) that implements `domain.RecordIndexer`, embeds content best-effort and upserts into `record_embeddings`; the contact path (native `contacts.embedding` column) is untouched. Wired into the uniform write path via `RecordService.SetSearchIndexer` (interface method, like `SetEventEmitter`): create/update of a **searchable custom object** (re)indexes it, delete removes the row
+  - [x] Feed the registry into `knowledge_builder.go`: custom objects were already listed; now each searchable one is annotated so the AI knows its records are globally searchable
+  - [x] Global search endpoint across objects — `GET /api/registry/search` → `SearchUseCase`: embeds the query once, hybrid (semantic + fulltext) over `record_embeddings` for searchable custom objects, plus contacts via their native index; **every hit is resolved through `RecordService.Get`, so OLS/FLS apply to search results too**; grouped by object (the reversible §16 choice)
+  - [x] Tests: 5 worker unit tests (content-only fallback, empty-content delete, remove-delegation, enqueue→process) + 5 search-usecase unit tests (cross-object grouping, semantic+fulltext merge/dedup, OLS skip, searchable-slug filter, no-embedder fulltext-only, empty query) + 5 RecordService indexing-hook tests (searchable create/update enqueue, non-searchable skip, delete remove, content builder) + 6 Docker-gated repo integration tests (migration up/down/up, semantic ranking+threshold, fulltext, slug filter, content-only-preserves-vector, delete) + 2 frontend `GlobalSearch` tests; router-shape test extended for `/registry/search`. `go build`/`go vet` clean; `npx vitest run` (590) + `npx tsc -b` clean
+  - > **Keying note (deliberate deviation, mirrors P5a/P5b):** the opt-in flag lives on `custom_object_defs.searchable`, not `object_defs.searchable`. `object_defs` already has `searchable` (000015) but holds only the three SYSTEM objects until P7; the objects P6 targets (custom objects) still live in `custom_object_defs`, so the flag must live there to be settable today. It converges onto `object_defs` at the P7 backfill. `record_embeddings` itself is slug-keyed, exactly like `object_links`/`object_permissions`/`field_permissions`.
+  - > **Enforcement/scope reach (honest scope, same posture as P5a/P5b):** P6 indexes **custom objects** into `record_embeddings` via the uniform write path; **contacts** stay searchable on their native `contacts.embedding` column (R1 — typed storage untouched before P7) and are folded into global search as their own group. Deals/companies have no embedding yet and join `record_embeddings` at the P7 cutover. Contacts are always searchable (native index) regardless of the generic `searchable` flag, which governs only the generic index.
+  - > **Resilience:** indexing is async + best-effort (drop-if-full queue, like contacts). If the embed service is down, the worker still stores `content` so **fulltext keeps working**; a later successful write fills the vector. A content-only re-upsert preserves any existing vector, so a transient outage never wipes semantic searchability (covered by an integration test).
+  - > **Security:** global search never widens access — it resolves every candidate hit through the `RecordService.Get` chokepoint, so OLS drops records (and whole objects) the caller can't read and FLS strips hidden fields, with zero new enforcement code. A stale index row pointing at a deleted record is dropped at resolution time, so cascade gaps can't leak.
+  - > **Frontend:** a `searchable` toggle on the custom-object editor (`ObjectDefManager`), and a cross-object `GlobalSearch` palette (Ctrl/⌘-K) that replaces the contact-only `SearchBar` behind the `objects.search` flag (default off), rendering grouped, OLS-safe results with a semantic-similarity badge.
+  - > **Deferred:** the AI `search_objects` tool still uses display-name `ILIKE`, not the new semantic index — a natural follow-on (the knowledge builder already tells the model which objects are searchable). An ANN (`ivfflat`/`hnsw`) index on `record_embeddings.embedding` is deliberately deferred until row counts justify the build cost (§11). Toggling an object's `searchable` off stops new indexing and excludes it from search immediately (slug filter), but doesn't eagerly purge its existing rows — they're inert and filtered out.
+  - > **Verification note:** build + vet + all backend unit tests green; 590 frontend tests + `tsc -b` green. The 6 repo integration tests need pgvector — the shared testcontainers harness was switched from `postgres:16-alpine` to `pgvector/pgvector:pg16` so they run for real under Docker/CI; they self-skip here (no Docker/local Postgres on this Windows host, port 5432 closed), matching the P3–P5 posture. No live browser walkthrough: global search only returns data behind the full local stack (Postgres + backend + a seeded searchable object), so it's proven at the unit layer (mocked-API `GlobalSearch` tests) instead.
 - **Definition of Done:** marking a custom object `searchable` populates embeddings;
-  semantic + fulltext search returns custom records; AI context lists custom objects.
+  semantic + fulltext search returns custom records; AI context lists custom objects. ✅
 - **Effort:** Medium–Large (1 week).
 
 ### P7 — Retire the old paths (cleanup)
@@ -676,6 +750,58 @@ single change does more for tenant safety than any new table.
 - **Definition of Done:** `org_settings.custom_field_defs` no longer written; old
   per-object custom-field UI removed; backfill verified; flags removed.
 - **Effort:** Medium (3–4 days).
+
+### P8 — Per-role detail layouts *(additive; depends only on P3 + P5b — can land before P6/P7)*
+
+- **What's broken:** Every object's detail page renders a flat field list in field order
+  (the original §15 "one layout, driven by field order"). Fine for a 6-field custom object,
+  mediocre for record-heavy objects, and identical for every role.
+- **What we want:** An admin can (a) arrange an object's detail page into **sections**, and
+  (b) define **more than one layout per object** and **assign each layout to a set of roles**,
+  so different roles see a detail page arranged for their job. **Deals are excluded** (they
+  stay on their bespoke legacy page). **Layout is presentation only — FLS remains the security
+  boundary.**
+- **Fix:** Migration `000019` (`object_layouts` + `object_layout_roles`) + idempotent boot
+  guard in `main.go` (golang-migrate is dead on prod). Resolve the *effective* layout per
+  caller-role and **fold it into `GET …/objects/:slug/schema`**; admin CRUD under
+  `…/objects/:slug/layouts`. `ObjectDetailView` renders sections from the effective layout,
+  falling back to field order when none. Behind an `objects.layouts` flag, default off.
+- **Files:** migration `000019_object_layouts.{up,down}.sql` + boot guard;
+  `object_registry_repository.go` / `object_registry_usecase.go` (layout load + effective-layout
+  resolution + FLS intersection); `object_handler.go` (CRUD + role-assignment routes); frontend
+  `ObjectDetailView` (section renderer) + a layout builder in `ObjectDefManager`.
+- **Checklist:**
+  - [ ] Migration `000019`: `object_layouts` (`layout` JSONB, `is_default`) + `object_layout_roles`
+        with a **unique `(org_id, object_slug, role_id)`** (one effective layout per role), RLS,
+        `.down`, and a boot guard
+  - [ ] Effective-layout resolver: `(role-assigned)` → `(is_default layout)` →
+        `(synthesized field-order)`; then **intersect with the role's FLS mask** (drop hidden
+        fields; never treat "absent from layout" as a security gate)
+  - [ ] Fold the effective layout into `GET …/schema` (single fetch for the renderer); cache
+        layouts per-org, resolve per-role at request time (mirrors the OLS/FLS cache pattern)
+  - [ ] Admin layout CRUD + `PUT …/layouts/:id/roles`; validate field keys against
+        `object_fields`, ignore stale keys on render; enforce **≤1 `is_default` per object**
+  - [ ] `ObjectDetailView` renders sections (fallback to field order); layout builder in
+        `ObjectDefManager` (drag fields into sections + an "applies to: [roles]" control);
+        **Deals excluded** from the picker
+  - [ ] Tests: resolver precedence (assigned > default > synth), FLS intersection (a hidden
+        field never renders regardless of layout), one-layout-per-role uniqueness, no-layout
+        fallback, admin CRUD; `go build`/`go vet` + `npx vitest run` + `npx tsc -b` clean
+  - > **Decisions baked in (D6):** *default source* = explicit `is_default` flag **with
+    field-order synthesis as the guaranteed ultimate fallback** (no object ever renders a
+    broken/empty page); *endpoint* = fold the effective layout into `/schema` for a single
+    renderer fetch, keep the admin `…/layouts` CRUD separate for the builder.
+  - > **Boundary note:** layout decides *arrangement/emphasis*; **FLS (P5b) decides
+    visibility/access**. A field left off a layout but still readable via FLS can still come
+    back through the raw API — that's expected. Do not use layout as an authorization check.
+  - > **Scope note:** lands for **custom objects** first; **Contacts** get it only when
+    `objects.unified_read` is on (otherwise they're on the legacy page, like Deals). List-view
+    column configuration is a natural follow-on and is **out of scope** here (detail page only).
+- **Definition of Done:** an admin creates two layouts for a custom object, assigns one to
+  `sales` and leaves the rest on the default; a sales user's detail page renders the rep
+  layout while a manager sees the default; an FLS-hidden field appears in neither; with the
+  flag off, the detail page is byte-for-byte today's field-order page.
+- **Effort:** Medium–Large (~1 week).
 
 ---
 
@@ -755,6 +881,7 @@ single change does more for tenant safety than any new table.
 | P5b | FLS (opt-in) | 3 days | ~5 weeks |
 | P6 | Search & AI for all objects | 1 week | ~6 weeks |
 | P7 | Retire old paths | 3–4 days | ~6.5 weeks |
+| P8 | Per-role detail layouts (additive) | ~1 week | parallel — needs only P3 + P5b |
 
 **Dependency graph:**
 
@@ -763,6 +890,8 @@ P1 ─▶ P2 ─▶ P3 ║─▶ P4 ─▶ P5a ─▶ P5b ─▶ P6 ─▶ P7
 safety registry one║ relate  OLS    FLS    search cleanup
        (read) engine║       +audit (opt-in)
               MVP ──╜ "Objects Are Equal" (one engine / API / UI)
+
+P5b ┄▶ P8  (per-role detail layouts — additive; parallel to P6/P7)
 ```
 
 - **Earliest value:** P1 alone closes a real security gap in a day.
@@ -782,7 +911,10 @@ To stay *simpler* than Salesforce, we are **not** building:
 - A fully generic EAV store for Contacts/Deals (keep the typed tables — see §1).
 - Salesforce's profiles + permission sets + sharing rules + OWD matrix. We ship **two**
   layers (role→object, role→field) plus per-record `record_shares`. That's it.
-- Record types / page layouts per record type. One layout per object, driven by field order.
+- Record types (multiple field schemas per object). *Per-role detail **layouts** are now in
+  scope (see [P8](#9-delivery-plan-phased)), but they only rearrange the object's one shared
+  schema for presentation — FLS stays the security boundary; we never fork an object's fields
+  or validation by record type.*
 - A formula/rollup field language. Revisit after the core lands.
 - Apex-style user code. Automation stays in the existing workflow builder.
 

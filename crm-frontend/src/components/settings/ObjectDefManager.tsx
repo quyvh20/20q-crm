@@ -19,6 +19,7 @@ export default function ObjectDefManager() {
   const [labelPlural, setLabelPlural] = useState('');
   const [icon, setIcon] = useState('📦');
   const [fields, setFields] = useState<CustomFieldDef[]>([]);
+  const [searchable, setSearchable] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
   // Field builder state
@@ -41,7 +42,7 @@ export default function ObjectDefManager() {
 
   const resetForm = () => {
     setLabel(''); setSlug(''); setLabelPlural(''); setIcon('📦');
-    setFields([]); setEditSlug(null); setShowForm(false); setError('');
+    setFields([]); setSearchable(false); setEditSlug(null); setShowForm(false); setError('');
     resetFieldBuilder();
   };
 
@@ -80,9 +81,9 @@ export default function ObjectDefManager() {
     setError('');
     try {
       if (editSlug) {
-        await updateObjectDef(editSlug, { label, label_plural: labelPlural, icon, fields });
+        await updateObjectDef(editSlug, { label, label_plural: labelPlural, icon, fields, searchable });
       } else {
-        await createObjectDef({ slug, label, label_plural: labelPlural, icon, fields });
+        await createObjectDef({ slug, label, label_plural: labelPlural, icon, fields, searchable });
       }
       resetForm();
       fetchDefs();
@@ -98,6 +99,7 @@ export default function ObjectDefManager() {
     setLabelPlural(def.label_plural);
     setIcon(def.icon);
     setFields(def.fields || []);
+    setSearchable(def.searchable ?? false);
     setShowForm(true);
   };
 
@@ -197,6 +199,17 @@ export default function ObjectDefManager() {
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* Searchable toggle (P6) */}
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 500, color: '#374151', cursor: 'pointer' }}>
+              <input type="checkbox" checked={searchable} onChange={e => setSearchable(e.target.checked)} />
+              🔍 Searchable
+            </label>
+            <p style={{ fontSize: 12, color: '#94a3b8', margin: '4px 0 0 24px' }}>
+              Index this object's records for semantic + full-text global search and AI. Off by default.
+            </p>
           </div>
 
           {/* Fields list */}

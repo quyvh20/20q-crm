@@ -97,6 +97,7 @@ func (uc *customObjectUseCase) CreateDef(ctx context.Context, orgID uuid.UUID, i
 		LabelPlural: labelPlural,
 		Icon:        icon,
 		Fields:      fields,
+		Searchable:  input.Searchable,
 	}
 
 	if err := uc.repo.CreateDef(ctx, def); err != nil {
@@ -133,6 +134,9 @@ func (uc *customObjectUseCase) UpdateDef(ctx context.Context, orgID uuid.UUID, s
 			return nil, err
 		}
 		def.Fields = input.Fields
+	}
+	if input.Searchable != nil {
+		def.Searchable = *input.Searchable
 	}
 
 	if err := uc.repo.UpdateDef(ctx, def); err != nil {

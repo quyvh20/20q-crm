@@ -494,6 +494,7 @@ type CreateObjectDefInput struct {
 	LabelPlural string `json:"label_plural" binding:"required,min=1"`
 	Icon        string `json:"icon"`
 	Fields      JSON   `json:"fields"`
+	Searchable  bool   `json:"searchable"`
 }
 
 type UpdateObjectDefInput struct {
@@ -501,6 +502,9 @@ type UpdateObjectDefInput struct {
 	LabelPlural *string `json:"label_plural"`
 	Icon        *string `json:"icon"`
 	Fields      JSON    `json:"fields"`
+	// Searchable is a pointer so "not supplied" (nil) leaves the flag unchanged,
+	// distinct from an explicit false that turns search off.
+	Searchable *bool `json:"searchable"`
 }
 
 type CreateRecordInput struct {

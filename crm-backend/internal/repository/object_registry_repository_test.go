@@ -38,8 +38,13 @@ func startPostgres(t *testing.T) (*gorm.DB, func()) {
 	}
 
 	ctx := context.Background()
+	// pgvector/pgvector:pg16 is plain Postgres 16 plus the `vector` extension, so
+	// it serves every repository integration test (the registry/links/permissions
+	// suites use no vector features) while also letting the record_embeddings (P6)
+	// tests create `CREATE EXTENSION vector`. Stock postgres:16-alpine has no
+	// pgvector, which would force the P6 tests to skip even under Docker.
 	pg, err := tcpostgres.Run(ctx,
-		"postgres:16-alpine",
+		"pgvector/pgvector:pg16",
 		tcpostgres.WithDatabase("testdb"),
 		tcpostgres.WithUsername("testuser"),
 		tcpostgres.WithPassword("testpass"),
@@ -72,6 +77,16 @@ func tableExists(t *testing.T, db *gorm.DB, table string) bool {
 	require.NoError(t, db.Raw(
 		"SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = ?",
 		table,
+	).Scan(&n).Error)
+	return n > 0
+}
+
+func columnExists(t *testing.T, db *gorm.DB, table, column string) bool {
+	t.Helper()
+	var n int64
+	require.NoError(t, db.Raw(
+		"SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = ? AND column_name = ?",
+		table, column,
 	).Scan(&n).Error)
 	return n > 0
 }

@@ -279,9 +279,13 @@ type CustomObjectDef struct {
 	LabelPlural string         `gorm:"size:255;not null" json:"label_plural"`
 	Icon        string         `gorm:"size:50;default:'📦'" json:"icon"`
 	Fields      JSON           `gorm:"type:jsonb;default:'[]'" json:"fields"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
-	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
+	// Searchable opts this custom object into the generic semantic + fulltext
+	// search index (record_embeddings, P6). Off by default; lives here (not on
+	// object_defs) because a custom object's def isn't in the registry until P7.
+	Searchable bool           `gorm:"not null;default:false" json:"searchable"`
+	CreatedAt  time.Time      `json:"created_at"`
+	UpdatedAt  time.Time      `json:"updated_at"`
+	DeletedAt  gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 type CustomObjectRecord struct {

@@ -49,7 +49,9 @@ func main() {
 	gatewayTok := cfg.CFAIGatewayToken
 
 	embedSvc := ai.NewEmbeddingService(accountID, gatewayID, token, gatewayTok)
-	embedWorker := worker.NewEmbeddingWorker(embedSvc, db, log, 10)
+	// This probe only exercises contact embedding, so the generic record index
+	// (record_embeddings) repo is unused here — pass nil.
+	embedWorker := worker.NewEmbeddingWorker(embedSvc, nil, db, log, 10)
 	go embedWorker.Start(context.Background(), 1)
 
 	contactRepo := repository.NewContactRepository(db)

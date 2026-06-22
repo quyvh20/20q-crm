@@ -18,10 +18,11 @@ func TestRegisterObjectRegistryRoutes(t *testing.T) {
 	}()
 
 	e := gin.New()
-	registerObjectRegistryRoutes(e.Group("/api"), NewObjectRegistryHandler(nil), NewRecordHandler(nil), NewPermissionHandler(nil))
+	registerObjectRegistryRoutes(e.Group("/api"), NewObjectRegistryHandler(nil), NewRecordHandler(nil), NewPermissionHandler(nil), NewSearchHandler(nil))
 
 	want := map[string]bool{
 		"GET /api/registry/objects":                                  false,
+		"GET /api/registry/search":                                   false,
 		"GET /api/registry/objects/:slug/schema":                     false,
 		"GET /api/registry/objects/:slug/records":                    false,
 		"GET /api/registry/objects/:slug/records/:id":                false,

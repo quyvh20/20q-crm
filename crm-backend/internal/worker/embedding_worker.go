@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"crm-backend/internal/ai"
 	"crm-backend/internal/domain"
@@ -26,22 +27,42 @@ type EmbedJob struct {
 	CustomFields json.RawMessage
 }
 
-// EmbeddingWorker manages a pool of goroutines that embed contacts.
+// recordEmbedJob is queued whenever a searchable record (any object — custom
+// objects first, P6) is created or updated. It carries the pre-built content text
+// so the worker only has to embed + persist into the generic record_embeddings
+// index.
+type recordEmbedJob struct {
+	OrgID    uuid.UUID
+	Slug     string
+	RecordID uuid.UUID
+	Content  string
+}
+
+// EmbeddingWorker manages a pool of goroutines that embed records. It serves two
+// indexes that never overlap: contacts on their native contacts.embedding column
+// (the existing fast path, untouched) and every other searchable object on the
+// generic record_embeddings table (P6) via embedRepo.
 type EmbeddingWorker struct {
-	queue   chan EmbedJob
-	embedSvc *ai.EmbeddingService
-	db      *gorm.DB
-	logger  *zap.Logger
+	queue       chan EmbedJob
+	recordQueue chan recordEmbedJob
+	embedSvc    *ai.EmbeddingService
+	embedRepo   domain.RecordEmbeddingRepository
+	db          *gorm.DB
+	logger      *zap.Logger
 }
 
 // NewEmbeddingWorker creates a worker pool.
-// Call Start() to launch goroutines; Enqueue() to send jobs.
-func NewEmbeddingWorker(embedSvc *ai.EmbeddingService, db *gorm.DB, logger *zap.Logger, bufSize int) *EmbeddingWorker {
+// Call Start() to launch goroutines; Enqueue()/EnqueueRecord() to send jobs.
+// embedRepo backs the generic record_embeddings index (P6); a nil repo disables
+// the generic path while leaving contact embedding intact.
+func NewEmbeddingWorker(embedSvc *ai.EmbeddingService, embedRepo domain.RecordEmbeddingRepository, db *gorm.DB, logger *zap.Logger, bufSize int) *EmbeddingWorker {
 	return &EmbeddingWorker{
-		queue:    make(chan EmbedJob, bufSize),
-		embedSvc: embedSvc,
-		db:       db,
-		logger:   logger,
+		queue:       make(chan EmbedJob, bufSize),
+		recordQueue: make(chan recordEmbedJob, bufSize),
+		embedSvc:    embedSvc,
+		embedRepo:   embedRepo,
+		db:          db,
+		logger:      logger,
 	}
 }
 
@@ -97,6 +118,8 @@ func (w *EmbeddingWorker) run(ctx context.Context) {
 			return
 		case job := <-w.queue:
 			w.process(ctx, job)
+		case rjob := <-w.recordQueue:
+			w.processRecord(ctx, rjob)
 		}
 	}
 }
@@ -129,4 +152,74 @@ func (w *EmbeddingWorker) process(ctx context.Context, job EmbedJob) {
 	}
 
 	w.logger.Debug("embedded contact", zap.String("contact_id", job.ContactID.String()))
+}
+
+// ============================================================
+// Generic record index (P6) — implements domain.RecordIndexer
+// ============================================================
+
+// EnqueueRecord schedules (re)indexing of a searchable record's content into the
+// generic record_embeddings index. Non-blocking: drops the job if the queue is
+// full (the same back-pressure policy as contact embedding) so a write is never
+// blocked by indexing.
+func (w *EmbeddingWorker) EnqueueRecord(orgID uuid.UUID, slug string, recordID uuid.UUID, content string) {
+	select {
+	case w.recordQueue <- recordEmbedJob{OrgID: orgID, Slug: slug, RecordID: recordID, Content: content}:
+	default:
+		w.logger.Warn("record embedding queue full, dropping job",
+			zap.String("object", slug), zap.String("record_id", recordID.String()))
+	}
+}
+
+// RemoveRecord deletes a record's row from the generic index (on record delete).
+// Synchronous and idempotent — removing a missing row is a no-op.
+func (w *EmbeddingWorker) RemoveRecord(ctx context.Context, orgID uuid.UUID, slug string, recordID uuid.UUID) error {
+	if w.embedRepo == nil {
+		return nil
+	}
+	return w.embedRepo.Delete(ctx, orgID, slug, recordID)
+}
+
+// processRecord embeds a record's content and upserts it into record_embeddings.
+// Embedding is best-effort: if it fails (or the embed service is unconfigured),
+// the content is still stored so fulltext search keeps working — only semantic
+// search waits for a later successful embed. Empty content removes any stale row.
+func (w *EmbeddingWorker) processRecord(ctx context.Context, job recordEmbedJob) {
+	if w.embedRepo == nil {
+		return
+	}
+
+	content := strings.TrimSpace(job.Content)
+	if content == "" {
+		if err := w.embedRepo.Delete(ctx, job.OrgID, job.Slug, job.RecordID); err != nil {
+			w.logger.Error("failed to remove empty record embedding",
+				zap.String("object", job.Slug), zap.String("record_id", job.RecordID.String()), zap.Error(err))
+		}
+		return
+	}
+
+	entry := domain.RecordEmbedding{
+		OrgID:      job.OrgID,
+		ObjectSlug: job.Slug,
+		RecordID:   job.RecordID,
+		Content:    content,
+	}
+
+	if w.embedSvc != nil {
+		vec, err := w.embedSvc.EmbedText(ctx, content)
+		if err != nil {
+			w.logger.Warn("failed to embed record; storing content-only for fulltext",
+				zap.String("object", job.Slug), zap.String("record_id", job.RecordID.String()), zap.Error(err))
+		} else {
+			entry.Embedding = vec
+		}
+	}
+
+	if err := w.embedRepo.Upsert(ctx, entry); err != nil {
+		w.logger.Error("failed to upsert record embedding",
+			zap.String("object", job.Slug), zap.String("record_id", job.RecordID.String()), zap.Error(err))
+		return
+	}
+	w.logger.Debug("indexed record",
+		zap.String("object", job.Slug), zap.String("record_id", job.RecordID.String()), zap.Bool("vector", len(entry.Embedding) > 0))
 }

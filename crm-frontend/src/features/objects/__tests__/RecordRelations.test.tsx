@@ -31,7 +31,7 @@ beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
   vi.mocked(listRegistryObjects).mockResolvedValue([
-    { slug: 'company', label: 'Company', label_plural: 'Companies', icon: '🏢', color: '#8B5CF6', is_system: true, field_count: 3 },
+    { slug: 'company', label: 'Company', label_plural: 'Companies', icon: '🏢', color: '#8B5CF6', is_system: true, field_count: 3, searchable: false },
   ]);
 });
 

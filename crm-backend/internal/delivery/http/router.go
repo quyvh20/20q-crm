@@ -9,7 +9,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, objectRegistryHandler *ObjectRegistryHandler, recordHandler *RecordHandler, permissionHandler *PermissionHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, voiceHandler *VoiceHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository) {
+func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, objectRegistryHandler *ObjectRegistryHandler, recordHandler *RecordHandler, permissionHandler *PermissionHandler, searchHandler *SearchHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, voiceHandler *VoiceHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository) {
 	api := router.Group("/api")
 
 	auth := api.Group("/auth")
@@ -158,7 +158,7 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 		// to the per-object routes above: one uniform view and one CRUD surface over
 		// system + custom objects. Promoted to /api/objects in P7 once the old paths
 		// retire.
-		registerObjectRegistryRoutes(protected, objectRegistryHandler, recordHandler, permissionHandler)
+		registerObjectRegistryRoutes(protected, objectRegistryHandler, recordHandler, permissionHandler, searchHandler)
 
 		kb := protected.Group("/knowledge-base")
 		{
@@ -185,10 +185,16 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 // CRUD under /registry/objects. Record writes mirror the per-object role gates
 // (create/edit for sales+, delete for manager+); RecordService re-checks org
 // scope centrally. Extracted so the route shape is unit-testable on its own.
-func registerObjectRegistryRoutes(parent *gin.RouterGroup, objectRegistryHandler *ObjectRegistryHandler, recordHandler *RecordHandler, permissionHandler *PermissionHandler) {
+func registerObjectRegistryRoutes(parent *gin.RouterGroup, objectRegistryHandler *ObjectRegistryHandler, recordHandler *RecordHandler, permissionHandler *PermissionHandler, searchHandler *SearchHandler) {
 	registry := parent.Group("/registry/objects")
 	registry.GET("", objectRegistryHandler.ListObjects)
 	registry.GET("/:slug/schema", objectRegistryHandler.GetSchema)
+
+	// Global, cross-object search (P6). No coarse role gate — OLS filters results
+	// per object inside SearchUseCase, so a viewer only sees what they can read.
+	// Mounted at /registry/search (object-agnostic, so it sits beside the registry
+	// group rather than under /:slug); promoted to /api/search at the P7 cutover.
+	parent.GET("/registry/search", searchHandler.Search)
 
 	registry.GET("/:slug/records", recordHandler.List)
 	registry.GET("/:slug/records/:id", recordHandler.Get)
