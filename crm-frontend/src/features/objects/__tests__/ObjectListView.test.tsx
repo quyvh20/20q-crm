@@ -12,6 +12,7 @@ vi.mock('../../../lib/api', () => ({
   createObjectRecordUnified: vi.fn(),
   updateObjectRecordUnified: vi.fn(),
   deleteObjectRecordUnified: vi.fn(),
+  getTags: vi.fn().mockResolvedValue([]),
 }));
 
 import {

@@ -940,11 +940,24 @@ export async function listObjectRecordsUnified(slug: string, params?: {
   limit?: number;
   q?: string;
   cursor?: string;
+  /** Relation/field filters, e.g. { company: id } or { stage: id }. */
+  filters?: Record<string, string>;
+  /** Filter by tag ids (any-match), uniform across every object. */
+  tagIds?: string[];
+  /** Switch to semantic/vector search (contacts). */
+  semantic?: boolean;
 }): Promise<RecordPage> {
   const search = new URLSearchParams();
   if (params?.limit) search.set('limit', String(params.limit));
   if (params?.q) search.set('q', params.q);
   if (params?.cursor) search.set('cursor', params.cursor);
+  if (params?.semantic) search.set('semantic', 'true');
+  if (params?.tagIds?.length) search.set('tag_ids', params.tagIds.join(','));
+  if (params?.filters) {
+    for (const [k, v] of Object.entries(params.filters)) {
+      if (v) search.set(k, v);
+    }
+  }
   const qs = search.toString();
   const res = await apiFetch(`/api/registry/objects/${slug}/records${qs ? '?' + qs : ''}`);
   const json = await res.json();

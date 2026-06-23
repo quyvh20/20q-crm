@@ -62,6 +62,8 @@ func TestBackfillObjectLinksFromRecordFKs(t *testing.T) {
 
 	require.NoError(t, db.Exec(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE organizations (id uuid PRIMARY KEY DEFAULT uuid_generate_v4())`).Error)
+	// object_links.created_by FKs users(id), so the table must exist for 000016.
+	require.NoError(t, db.Exec(`CREATE TABLE users (id uuid PRIMARY KEY DEFAULT uuid_generate_v4())`).Error)
 	runMigrationFile(t, db, "000016_object_links.up.sql")
 
 	// Minimal custom-object tables with the legacy FK columns.

@@ -1,10 +1,13 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   getObjectSchema,
   listObjectRecordsUnified,
   deleteObjectRecordUnified,
+  getTags,
   type ObjectSchema,
+  type ObjectFieldDescriptor,
   type UniformRecord,
+  type Tag,
 } from '../../lib/api';
 import { formatFieldValue } from './fieldHelpers';
 import ObjectForm from './ObjectForm';
@@ -23,12 +26,20 @@ type Panel =
   | { mode: 'confirmDelete'; record: UniformRecord }
   | null;
 
+interface RelationOption {
+  id: string;
+  label: string;
+}
+
 const LIMIT = 25;
 const MAX_COLUMNS = 4;
 
 // ObjectListView renders any object — system or custom — from its registry
-// schema: one table, one search box, one create/edit/detail slide-over. It is the
-// component every object page now points at (P3 "one renderer").
+// schema: one table, one schema-driven filter bar, one search box, one
+// create/edit/detail slide-over. It is the component every object page now points
+// at (P3 "one renderer"); the filter bar brings it to parity with the legacy
+// per-object pages (P7) — relation filters, tag filter, and semantic search all
+// driven by the schema, with zero per-object code.
 export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps) {
   const [schema, setSchema] = useState<ObjectSchema | null>(null);
   const [records, setRecords] = useState<UniformRecord[]>([]);
@@ -40,12 +51,32 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
   const [panel, setPanel] = useState<Panel>(null);
   const [actionError, setActionError] = useState('');
 
+  // Filters (parity with the legacy pages): relation field key → selected id,
+  // tag ids (any-match), and a semantic toggle.
+  const [filters, setFilters] = useState<Record<string, string>>({});
+  const [tagIds, setTagIds] = useState<string[]>([]);
+  const [semantic, setSemantic] = useState(false);
+  const [relationOptions, setRelationOptions] = useState<Record<string, RelationOption[]>>({});
+  const [tags, setTags] = useState<Tag[]>([]);
+
+  // Relation fields the schema says we can filter on (a resolvable target object).
+  const relationFields = useMemo(
+    () => (schema?.fields ?? []).filter((f) => f.type === 'relation' && f.target_slug),
+    [schema],
+  );
+  // Semantic search is wired for contacts (native vector index).
+  const supportsSemantic = slug === 'contact';
+
   // Reset transient state when switching objects.
   useEffect(() => {
     setSchema(null);
     setSearch('');
     setDebouncedSearch('');
     setPanel(null);
+    setFilters({});
+    setTagIds([]);
+    setSemantic(false);
+    setRelationOptions({});
   }, [slug]);
 
   useEffect(() => {
@@ -62,16 +93,64 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
     };
   }, [slug, onNotFound]);
 
+  // Load tags for the tag filter (every object is taggable).
+  useEffect(() => {
+    let cancelled = false;
+    getTags()
+      .then((t) => {
+        if (!cancelled) setTags(t);
+      })
+      .catch(() => {
+        if (!cancelled) setTags([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Load options for each filterable relation field from its target object.
+  useEffect(() => {
+    let cancelled = false;
+    relationFields.forEach((f) => {
+      listObjectRecordsUnified(f.target_slug as string, { limit: 200 })
+        .then((page) => {
+          if (cancelled) return;
+          setRelationOptions((prev) => ({
+            ...prev,
+            [f.key]: page.records.map((r) => ({ id: r.id, label: r.display || r.id })),
+          }));
+        })
+        .catch(() => {
+          /* a relation we can't enumerate is simply not filterable */
+        });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [relationFields]);
+
   // Debounce the search box.
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), 300);
     return () => clearTimeout(t);
   }, [search]);
 
+  const listParams = useCallback(
+    (cursor?: string) => ({
+      limit: LIMIT,
+      q: debouncedSearch,
+      cursor,
+      filters,
+      tagIds,
+      semantic: semantic && supportsSemantic,
+    }),
+    [debouncedSearch, filters, tagIds, semantic, supportsSemantic],
+  );
+
   const fetchFirstPage = useCallback(async () => {
     setLoading(true);
     try {
-      const page = await listObjectRecordsUnified(slug, { limit: LIMIT, q: debouncedSearch });
+      const page = await listObjectRecordsUnified(slug, listParams());
       setRecords(page.records);
       setNextCursor(page.next_cursor);
     } catch {
@@ -80,7 +159,7 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
     } finally {
       setLoading(false);
     }
-  }, [slug, debouncedSearch]);
+  }, [slug, listParams]);
 
   useEffect(() => {
     fetchFirstPage();
@@ -90,7 +169,7 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
     if (!nextCursor) return;
     setLoadingMore(true);
     try {
-      const page = await listObjectRecordsUnified(slug, { limit: LIMIT, q: debouncedSearch, cursor: nextCursor });
+      const page = await listObjectRecordsUnified(slug, listParams(nextCursor));
       setRecords((prev) => [...prev, ...page.records]);
       setNextCursor(page.next_cursor);
     } catch {
@@ -121,6 +200,29 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
     }
   };
 
+  const setFilter = (key: string, value: string) => {
+    setFilters((prev) => {
+      const next = { ...prev };
+      if (value) next[key] = value;
+      else delete next[key];
+      return next;
+    });
+  };
+
+  const toggleTag = (id: string) => {
+    setTagIds((prev) => (prev.includes(id) ? prev.filter((t) => t !== id) : [...prev, id]));
+  };
+
+  const clearFilters = () => {
+    setFilters({});
+    setTagIds([]);
+    setSemantic(false);
+    setSearch('');
+  };
+
+  const hasActiveFilters =
+    Object.keys(filters).length > 0 || tagIds.length > 0 || semantic || !!search;
+
   if (!schema) {
     return <div style={{ padding: 40, color: '#94a3b8', textAlign: 'center' }}>Loading...</div>;
   }
@@ -143,15 +245,77 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
         </button>
       </div>
 
-      {/* Search */}
-      <div style={{ marginBottom: 16 }}>
+      {/* Search + filters */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 16 }}>
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder={`Search ${schema.label_plural.toLowerCase()}...`}
-          style={{ width: 300, padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 14 }}
+          placeholder={semantic && supportsSemantic ? `Describe the ${schema.label.toLowerCase()} you want…` : `Search ${schema.label_plural.toLowerCase()}...`}
+          style={{ width: 280, padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 14 }}
         />
+
+        {supportsSemantic && (
+          <button
+            onClick={() => setSemantic((v) => !v)}
+            title="Toggle AI semantic search"
+            style={{
+              padding: '8px 12px', borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: 'pointer',
+              border: semantic ? '1px solid #6366f1' : '1px solid #d1d5db',
+              background: semantic ? '#eef2ff' : '#fff',
+              color: semantic ? '#4f46e5' : '#64748b',
+            }}
+          >
+            ✦ AI Search{semantic ? ' ON' : ''}
+          </button>
+        )}
+
+        {/* One dropdown per filterable relation field (company, contact, …). */}
+        {relationFields.map((f: ObjectFieldDescriptor) => (
+          <select
+            key={f.key}
+            value={filters[f.key] ?? ''}
+            onChange={(e) => setFilter(f.key, e.target.value)}
+            style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 14, background: '#fff', maxWidth: 200 }}
+          >
+            <option value="">All {f.label}</option>
+            {(relationOptions[f.key] ?? []).map((o) => (
+              <option key={o.id} value={o.id}>{o.label}</option>
+            ))}
+          </select>
+        ))}
+
+        {hasActiveFilters && (
+          <button
+            onClick={clearFilters}
+            style={{ padding: '8px 12px', borderRadius: 6, fontSize: 13, border: '1px solid #d1d5db', background: '#fff', color: '#64748b', cursor: 'pointer' }}
+          >
+            Clear filters
+          </button>
+        )}
       </div>
+
+      {/* Tag filter chips */}
+      {tags.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 16 }}>
+          {tags.map((t) => {
+            const active = tagIds.includes(t.id);
+            return (
+              <button
+                key={t.id}
+                onClick={() => toggleTag(t.id)}
+                style={{
+                  padding: '4px 10px', borderRadius: 999, fontSize: 12, fontWeight: 500, cursor: 'pointer',
+                  border: active ? `1px solid ${t.color}` : '1px solid #e2e8f0',
+                  background: active ? `${t.color}20` : '#fff',
+                  color: active ? t.color : '#64748b',
+                }}
+              >
+                {t.name}{active ? ' ✓' : ''}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* Records table */}
       <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden', background: '#fff' }}>
@@ -171,7 +335,9 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
             ) : records.length === 0 ? (
               <tr><td colSpan={columns.length + 2} style={{ padding: 40, textAlign: 'center', color: '#94a3b8' }}>
                 <div style={{ fontSize: 32, marginBottom: 8 }}>{schema.icon}</div>
-                No {schema.label_plural.toLowerCase()} yet. Click "+ Add {schema.label}" to create one.
+                {hasActiveFilters
+                  ? `No ${schema.label_plural.toLowerCase()} match your filters.`
+                  : `No ${schema.label_plural.toLowerCase()} yet. Click "+ Add ${schema.label}" to create one.`}
               </td></tr>
             ) : (
               records.map((rec) => (

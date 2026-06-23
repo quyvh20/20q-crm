@@ -129,10 +129,19 @@ type UniformRecord struct {
 // to callers: for system objects it is the typed repo's keyset cursor; for
 // custom objects it encodes the next offset. Either way the frontend just echoes
 // next_cursor back to fetch the following page.
+//
+// Filters/TagIDs/Semantic bring the generic list to parity with the legacy
+// per-object pages (P7): Filters maps a relation field key (e.g. "company",
+// "stage", "owner_user_id") to a UUID string; TagIDs filters by tag; Semantic
+// switches contacts to vector search. System objects translate these into their
+// typed filter structs; custom objects honour what they can and ignore the rest.
 type RecordListInput struct {
-	Limit  int
-	Q      string
-	Cursor string
+	Limit    int
+	Q        string
+	Cursor   string
+	Filters  map[string]string
+	TagIDs   []uuid.UUID
+	Semantic bool
 }
 
 // RecordList is one page of uniform records plus an opaque forward cursor. An

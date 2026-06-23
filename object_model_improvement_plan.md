@@ -741,15 +741,37 @@ single change does more for tenant safety than any new table.
   the duplicate managers.
 - **Files:** data-migration script; deletions across backend + frontend.
 - **Checklist:**
-  - [ ] Backfill `object_fields` from `org_settings.custom_field_defs`; stop writing the blob
-  - [ ] Backfill `object_links` from hardcoded `contact_id`/`deal_id`; drop those columns
-  - [ ] Cut the workflow engine over to the tag adapter; `contact_tags` becomes optional
+  - [x] Backfill `object_fields` from `org_settings.custom_field_defs`; stop writing the blob
+  - [x] Backfill `object_links` from hardcoded `contact_id`/`deal_id`; drop those columns
+  - [x] Cut the workflow engine over to the tag adapter; `contact_tags` becomes optional
   - [ ] Delete duplicate managers (`ObjectDefManager` vs `CustomFieldManager`) and old per-object pages
   - [ ] Remove feature flags
-  - [ ] Verify backfill row counts; full build / vet / test green
+  - [ ] Verify backfill row counts; full build / vet / test green *(backend done; frontend pending)*
+  - > **Status — backend half landed (commit `feat(objects): P7 backend convergence`):**
+  >   `OrgSettingsUseCase` now CRUDs system-object custom fields through `object_fields`
+  >   (is_system=false), not the `org_settings.custom_field_defs` blob — same interface,
+  >   unified storage, lost-update race gone (R6). The registry reads every field from
+  >   `object_fields` (no blob merge / double-count) and the workflow builder's custom-field
+  >   picker reads `object_fields` too. `custom_object_records.contact_id/deal_id` were
+  >   backfilled into `object_links` `'contact'`/`'deal'` edges and **dropped**; the FK
+  >   fields/preloads/inputs are removed. The workflow engine reads tags through the unified
+  >   view (`contact_tags` ∪ `object_links` tag edges), so `contact_tags` is no longer its
+  >   sole source. Both backfills run as idempotent **boot guards** (golang-migrate is dead
+  >   on prod) mirrored by migrations `000019`/`000020`. `go build`/`vet` + full short suite
+  >   green; Docker-gated integration tests added for both backfills (idempotency,
+  >   native-collision skip, soft-delete skip, column drop) — they self-skip without Docker.
+  > **Status — frontend half remaining (the "build parity first" path):** flipping
+  >   `objects.unified_read` / deleting the legacy Contacts/Deals pages must wait until the
+  >   generic renderer reaches their feature parity (import, AI semantic search, company +
+  >   tag filters, Deals kanban). That parity needs **uniform-endpoint additions** too
+  >   (relation/tag filters, semantic mode, stage grouping + stage-change) before the flag
+  >   can be removed without regression. Manager unification likewise wants custom-object
+  >   field defs (`custom_object_defs.fields`) converged onto `object_fields` so one editor
+  >   serves both. Scoped as the next focused increment.
 - **Definition of Done:** `org_settings.custom_field_defs` no longer written; old
   per-object custom-field UI removed; backfill verified; flags removed.
-- **Effort:** Medium (3–4 days).
+- **Effort:** Medium (3–4 days). *(Backend half done; frontend parity+cutover is the larger
+  remaining slice — see status note.)*
 
 ### P8 — Per-role detail layouts *(additive; depends only on P3 + P5b — can land before P6/P7)*
 

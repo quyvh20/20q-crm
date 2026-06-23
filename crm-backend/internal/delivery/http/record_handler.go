@@ -3,6 +3,7 @@ package http
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"crm-backend/internal/domain"
 
@@ -23,16 +24,46 @@ func NewRecordHandler(svc domain.RecordService) *RecordHandler {
 	return &RecordHandler{svc: svc}
 }
 
+// reservedListParams are query keys with dedicated meaning; everything else is
+// treated as a relation/field filter (e.g. company, stage, contact, owner_user_id).
+var reservedListParams = map[string]bool{
+	"limit": true, "q": true, "cursor": true, "tag_ids": true, "semantic": true,
+}
+
 // List handles GET /api/registry/objects/:slug/records
 func (h *RecordHandler) List(c *gin.Context) {
 	orgID := c.MustGet("org_id").(uuid.UUID)
 	slug := c.Param("slug")
 
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "25"))
+
+	// Any non-reserved single-value query param is a field filter, so the same
+	// endpoint serves a contact's company filter, a deal's stage filter, and any
+	// custom object's relation filters without per-object handler code.
+	filters := map[string]string{}
+	for key, vals := range c.Request.URL.Query() {
+		if reservedListParams[key] || len(vals) == 0 || vals[0] == "" {
+			continue
+		}
+		filters[key] = vals[0]
+	}
+
+	var tagIDs []uuid.UUID
+	for _, raw := range c.QueryArray("tag_ids") {
+		for _, part := range strings.Split(raw, ",") {
+			if id, err := uuid.Parse(strings.TrimSpace(part)); err == nil {
+				tagIDs = append(tagIDs, id)
+			}
+		}
+	}
+
 	page, err := h.svc.List(c.Request.Context(), orgID, slug, domain.RecordListInput{
-		Limit:  limit,
-		Q:      c.Query("q"),
-		Cursor: c.Query("cursor"),
+		Limit:    limit,
+		Q:        c.Query("q"),
+		Cursor:   c.Query("cursor"),
+		Filters:  filters,
+		TagIDs:   tagIDs,
+		Semantic: c.Query("semantic") == "true",
 	})
 	if err != nil {
 		handleAppError(c, err)

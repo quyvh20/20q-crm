@@ -94,9 +94,10 @@ func (s *recordService) List(ctx context.Context, orgID uuid.UUID, slug string, 
 		limit = defaultRecordLimit
 	}
 
+	in.Limit = limit
 	var out *domain.RecordList
 	if a, ok := s.systemAdapters[slug]; ok {
-		recs, next, err := a.list(ctx, orgID, limit, in.Q, in.Cursor)
+		recs, next, err := a.list(ctx, orgID, in)
 		if err != nil {
 			return nil, err
 		}

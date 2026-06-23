@@ -18,7 +18,7 @@ import (
 // field map and how to build that struct's create/update input from one — so the
 // rest of the engine never special-cases contact vs deal vs company.
 type systemObjectAdapter interface {
-	list(ctx context.Context, orgID uuid.UUID, limit int, q, cursor string) ([]domain.UniformRecord, string, error)
+	list(ctx context.Context, orgID uuid.UUID, in domain.RecordListInput) ([]domain.UniformRecord, string, error)
 	get(ctx context.Context, orgID, id uuid.UUID) (*domain.UniformRecord, error)
 	create(ctx context.Context, orgID uuid.UUID, fields map[string]interface{}) (*domain.UniformRecord, error)
 	update(ctx context.Context, orgID, id uuid.UUID, fields map[string]interface{}) (*domain.UniformRecord, error)
@@ -53,8 +53,16 @@ type contactAdapter struct{ uc domain.ContactUseCase }
 
 func (a *contactAdapter) nativeKeys() map[string]bool { return contactNativeKeys }
 
-func (a *contactAdapter) list(ctx context.Context, orgID uuid.UUID, limit int, q, cursor string) ([]domain.UniformRecord, string, error) {
-	contacts, next, err := a.uc.List(ctx, orgID, domain.ContactFilter{Q: q, Limit: limit, Cursor: cursor})
+func (a *contactAdapter) list(ctx context.Context, orgID uuid.UUID, in domain.RecordListInput) ([]domain.UniformRecord, string, error) {
+	contacts, next, err := a.uc.List(ctx, orgID, domain.ContactFilter{
+		Q:           in.Q,
+		Limit:       in.Limit,
+		Cursor:      in.Cursor,
+		Semantic:    in.Semantic,
+		CompanyID:   filterUUID(in.Filters, "company"),
+		OwnerUserID: filterUUID(in.Filters, "owner_user_id"),
+		TagIDs:      in.TagIDs,
+	})
 	if err != nil {
 		return nil, "", err
 	}
@@ -177,8 +185,8 @@ type companyAdapter struct{ uc domain.CompanyUseCase }
 
 func (a *companyAdapter) nativeKeys() map[string]bool { return companyNativeKeys }
 
-func (a *companyAdapter) list(ctx context.Context, orgID uuid.UUID, limit int, q, cursor string) ([]domain.UniformRecord, string, error) {
-	companies, next, err := a.uc.List(ctx, orgID, domain.CompanyFilter{Q: q, Limit: limit, Cursor: cursor})
+func (a *companyAdapter) list(ctx context.Context, orgID uuid.UUID, in domain.RecordListInput) ([]domain.UniformRecord, string, error) {
+	companies, next, err := a.uc.List(ctx, orgID, domain.CompanyFilter{Q: in.Q, Limit: in.Limit, Cursor: in.Cursor})
 	if err != nil {
 		return nil, "", err
 	}
@@ -264,8 +272,15 @@ type dealAdapter struct{ uc domain.DealUseCase }
 
 func (a *dealAdapter) nativeKeys() map[string]bool { return dealNativeKeys }
 
-func (a *dealAdapter) list(ctx context.Context, orgID uuid.UUID, limit int, q, cursor string) ([]domain.UniformRecord, string, error) {
-	deals, next, err := a.uc.List(ctx, orgID, domain.DealFilter{Q: q, Limit: limit, Cursor: cursor})
+func (a *dealAdapter) list(ctx context.Context, orgID uuid.UUID, in domain.RecordListInput) ([]domain.UniformRecord, string, error) {
+	deals, next, err := a.uc.List(ctx, orgID, domain.DealFilter{
+		Q:           in.Q,
+		Limit:       in.Limit,
+		Cursor:      in.Cursor,
+		StageID:     filterUUID(in.Filters, "stage"),
+		ContactID:   filterUUID(in.Filters, "contact"),
+		OwnerUserID: filterUUID(in.Filters, "owner_user_id"),
+	})
 	if err != nil {
 		return nil, "", err
 	}
@@ -608,6 +623,24 @@ func derefStr(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// filterUUID parses a relation/owner filter value from the uniform list query into
+// a *uuid.UUID, returning nil when the key is absent, blank, or not a valid UUID
+// (an unparseable filter is ignored rather than erroring the whole list).
+func filterUUID(filters map[string]string, key string) *uuid.UUID {
+	if filters == nil {
+		return nil
+	}
+	v := strings.TrimSpace(filters[key])
+	if v == "" {
+		return nil
+	}
+	id, err := uuid.Parse(v)
+	if err != nil {
+		return nil
+	}
+	return &id
 }
 
 // displayString renders a JSON-decoded field value as a record title. Strings
