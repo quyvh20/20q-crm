@@ -212,6 +212,28 @@ type ObjectRegistryRepository interface {
 	ListFields(ctx context.Context, objectDefID uuid.UUID) ([]ObjectField, error)
 	// FieldCounts returns object_def_id → number of (non-deleted) fields for the org.
 	FieldCounts(ctx context.Context, orgID uuid.UUID) (map[uuid.UUID]int, error)
+
+	// --- Custom-field CRUD on system objects (P7) ---
+	//
+	// After the P7 cutover, admin-defined ("custom") fields on system objects live
+	// in object_fields (is_system=false) instead of the org_settings.custom_field_defs
+	// blob. These methods back OrgSettingsUseCase so its public API is unchanged while
+	// the storage is unified — which also removes the lost-update race on the blob
+	// (symptom #3 / R6).
+
+	// ListCustomFields returns a system object's admin-defined fields (is_system=false),
+	// ordered by position. Native fields are excluded.
+	ListCustomFields(ctx context.Context, objectDefID uuid.UUID) ([]ObjectField, error)
+	// GetFieldByDefKey returns any field (native or custom) on a def by key, or nil —
+	// used to reject a custom field that would collide with an existing key.
+	GetFieldByDefKey(ctx context.Context, objectDefID uuid.UUID, key string) (*ObjectField, error)
+	// FindCustomFieldByKey returns the first admin-defined field with the given key
+	// across the org's system objects, plus the owning object's slug. nil when none —
+	// matches the legacy "update/delete a field def by key alone" handler contract.
+	FindCustomFieldByKey(ctx context.Context, orgID uuid.UUID, key string) (*ObjectField, string, error)
+	CreateField(ctx context.Context, f *ObjectField) error
+	SaveField(ctx context.Context, f *ObjectField) error
+	SoftDeleteFieldByID(ctx context.Context, orgID, id uuid.UUID) error
 }
 
 type ObjectRegistryUseCase interface {

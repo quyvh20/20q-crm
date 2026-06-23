@@ -12,30 +12,24 @@ import (
 
 // objectRegistryUseCase assembles one uniform descriptor for every object.
 //
-// In P2 the registry merges two live sources at read time, with no data
-// duplication:
+// As of the P7 cutover, object_fields is the single field-def store, so the
+// registry reads everything from one place — no blob merge:
 //
-//   - System objects (contact/deal/company): native fields from object_fields
-//     plus their admin-defined custom fields from org_settings.custom_field_defs.
+//   - System objects (contact/deal/company): all fields (native + admin-defined
+//     custom) from object_fields.
 //   - Custom objects: read straight from custom_object_defs.
-//
-// This keeps the existing custom-object write path untouched (no dual-write,
-// avoiding the lost-update risk R6) until the P7 backfill.
 type objectRegistryUseCase struct {
-	repo          domain.ObjectRegistryRepository
-	customRepo    domain.CustomObjectRepository
-	orgSettingsUC domain.OrgSettingsUseCase
+	repo       domain.ObjectRegistryRepository
+	customRepo domain.CustomObjectRepository
 }
 
 func NewObjectRegistryUseCase(
 	repo domain.ObjectRegistryRepository,
 	customRepo domain.CustomObjectRepository,
-	orgSettingsUC domain.OrgSettingsUseCase,
 ) domain.ObjectRegistryUseCase {
 	return &objectRegistryUseCase{
-		repo:          repo,
-		customRepo:    customRepo,
-		orgSettingsUC: orgSettingsUC,
+		repo:       repo,
+		customRepo: customRepo,
 	}
 }
 
@@ -54,22 +48,11 @@ func (uc *objectRegistryUseCase) ListObjects(ctx context.Context, orgID uuid.UUI
 		return nil, err
 	}
 
-	// One read of all admin-defined custom fields, counted per entity_type, so
-	// system objects can surface their custom fields without an N+1 of reads.
-	customFieldCounts := map[string]int{}
-	if allCustom, err := uc.orgSettingsUC.GetFieldDefs(ctx, orgID, ""); err == nil {
-		for _, cd := range allCustom {
-			customFieldCounts[cd.EntityType]++
-		}
-	}
-
 	summaries := make([]domain.ObjectSummary, 0, len(defs))
 	for _, d := range defs {
+		// object_fields now holds every field (native + custom), so the count is
+		// complete with no separate blob read.
 		fieldCount := counts[d.ID]
-		// System objects also surface their admin-defined custom fields.
-		if d.IsSystem {
-			fieldCount += customFieldCounts[d.Slug]
-		}
 		summaries = append(summaries, domain.ObjectSummary{
 			Slug:        d.Slug,
 			Label:       d.Label,
@@ -125,8 +108,8 @@ func (uc *objectRegistryUseCase) GetSchema(ctx context.Context, orgID uuid.UUID,
 	return nil, &domain.AppError{Code: http.StatusNotFound, Message: "object not found"}
 }
 
-// systemSchema assembles a system object's descriptor: native fields from the
-// registry, then admin-defined custom fields from org_settings.
+// systemSchema assembles a system object's descriptor from object_fields, which
+// (post-P7) holds both native and admin-defined custom fields in one ordered list.
 func (uc *objectRegistryUseCase) systemSchema(ctx context.Context, orgID uuid.UUID, def *domain.ObjectDef) (*domain.ObjectDescriptor, error) {
 	fields, err := uc.repo.ListFields(ctx, def.ID)
 	if err != nil {
@@ -161,13 +144,6 @@ func (uc *objectRegistryUseCase) systemSchema(ctx context.Context, orgID uuid.UU
 		// Resolve the display field's key from its id.
 		if def.DisplayFieldID != nil && f.ID == *def.DisplayFieldID {
 			descriptor.DisplayField = f.Key
-		}
-	}
-
-	// Append admin-defined custom fields for this system object.
-	if customDefs, err := uc.orgSettingsUC.GetFieldDefs(ctx, orgID, def.Slug); err == nil {
-		for _, cd := range customDefs {
-			descriptor.Fields = append(descriptor.Fields, fieldDescriptorFromDef(cd))
 		}
 	}
 

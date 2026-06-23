@@ -265,6 +265,81 @@ func (r *objectRegistryRepository) ListFields(ctx context.Context, objectDefID u
 	return fields, err
 }
 
+// ============================================================
+// Custom-field CRUD on system objects (P7)
+// ============================================================
+//
+// Admin-defined fields on system objects are object_fields rows with
+// is_system=false. They back OrgSettingsUseCase after the P7 cutover, so the
+// org-settings custom-field API keeps its shape while the storage is unified.
+
+func (r *objectRegistryRepository) ListCustomFields(ctx context.Context, objectDefID uuid.UUID) ([]domain.ObjectField, error) {
+	var fields []domain.ObjectField
+	err := r.db.WithContext(ctx).
+		Where("object_def_id = ? AND is_system = ?", objectDefID, false).
+		Order("position ASC, created_at ASC").
+		Find(&fields).Error
+	return fields, err
+}
+
+func (r *objectRegistryRepository) GetFieldByDefKey(ctx context.Context, objectDefID uuid.UUID, key string) (*domain.ObjectField, error) {
+	var field domain.ObjectField
+	err := r.db.WithContext(ctx).
+		Where("object_def_id = ? AND key = ?", objectDefID, key).
+		First(&field).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &field, nil
+}
+
+func (r *objectRegistryRepository) FindCustomFieldByKey(ctx context.Context, orgID uuid.UUID, key string) (*domain.ObjectField, string, error) {
+	type row struct {
+		domain.ObjectField
+		Slug string `gorm:"column:slug"`
+	}
+	var res row
+	err := r.db.WithContext(ctx).
+		Table("object_fields AS f").
+		Select("f.*, d.slug AS slug").
+		Joins("JOIN object_defs d ON d.id = f.object_def_id AND d.is_system = true AND d.deleted_at IS NULL").
+		Where("f.org_id = ? AND f.key = ? AND f.is_system = ? AND f.deleted_at IS NULL", orgID, key, false).
+		Order("f.created_at ASC").
+		First(&res).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, "", nil
+		}
+		return nil, "", err
+	}
+	field := res.ObjectField
+	return &field, res.Slug, nil
+}
+
+func (r *objectRegistryRepository) CreateField(ctx context.Context, f *domain.ObjectField) error {
+	return r.db.WithContext(ctx).Create(f).Error
+}
+
+func (r *objectRegistryRepository) SaveField(ctx context.Context, f *domain.ObjectField) error {
+	return r.db.WithContext(ctx).Save(f).Error
+}
+
+func (r *objectRegistryRepository) SoftDeleteFieldByID(ctx context.Context, orgID, id uuid.UUID) error {
+	result := r.db.WithContext(ctx).
+		Where("org_id = ? AND id = ?", orgID, id).
+		Delete(&domain.ObjectField{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
 func (r *objectRegistryRepository) FieldCounts(ctx context.Context, orgID uuid.UUID) (map[uuid.UUID]int, error) {
 	type row struct {
 		ObjectDefID uuid.UUID
@@ -285,4 +360,83 @@ func (r *objectRegistryRepository) FieldCounts(ctx context.Context, orgID uuid.U
 		counts[r.ObjectDefID] = r.N
 	}
 	return counts, nil
+}
+
+// ============================================================
+// P7 backfill: org_settings.custom_field_defs blob → object_fields
+// ============================================================
+
+// backfillObjectFieldsSQL copies every system object's admin-defined custom field
+// defs out of the legacy org_settings.custom_field_defs JSONB blob and into
+// object_fields (is_system=false, storage_kind='jsonb'). It is idempotent: the
+// NOT EXISTS guard skips a field already present on the def (whether previously
+// backfilled or a native column with the same key), so re-running inserts nothing.
+const backfillObjectFieldsSQL = `
+INSERT INTO object_fields
+    (id, org_id, object_def_id, key, label, type, options, target_slug,
+     is_required, is_unique, is_system, storage_kind, maps_to_column, position,
+     created_at, updated_at)
+SELECT uuid_generate_v4(), s.org_id, d.id,
+       e.key,
+       COALESCE(NULLIF(e.label, ''), e.key),
+       COALESCE(NULLIF(e.type, ''), 'text'),
+       e.options,
+       NULL,
+       e.required,
+       false, false, 'jsonb', NULL,
+       e.position,
+       NOW(), NOW()
+FROM org_settings s
+CROSS JOIN LATERAL jsonb_array_elements(
+       CASE WHEN jsonb_typeof(s.custom_field_defs) = 'array'
+            THEN s.custom_field_defs ELSE '[]'::jsonb END) AS elem
+CROSS JOIN LATERAL (
+       SELECT elem->>'key'         AS key,
+              elem->>'label'       AS label,
+              elem->>'type'        AS type,
+              elem->>'entity_type' AS entity_type,
+              CASE WHEN jsonb_typeof(elem->'options') = 'array'
+                   THEN elem->'options' ELSE '[]'::jsonb END   AS options,
+              COALESCE((elem->>'required')::boolean, false)    AS required,
+              COALESCE(NULLIF(elem->>'position', '')::int, 0)  AS position
+) AS e
+JOIN object_defs d
+       ON d.org_id = s.org_id
+      AND d.slug = e.entity_type
+      AND d.is_system = true
+      AND d.deleted_at IS NULL
+WHERE e.key IS NOT NULL AND e.key <> ''
+  AND e.entity_type IS NOT NULL
+  AND NOT EXISTS (
+        SELECT 1 FROM object_fields f
+        WHERE f.object_def_id = d.id
+          AND f.key = e.key
+          AND f.deleted_at IS NULL);`
+
+// BackfillObjectFieldsFromBlob is the P7 convergence step that makes object_fields
+// the single field-def store. It copies admin-defined custom fields from the legacy
+// org_settings.custom_field_defs blob into object_fields and returns the number of
+// rows inserted. Idempotent and safe to run on every boot (golang-migrate is dead on
+// prod, so this runs as a boot guard).
+//
+// System defs are seeded lazily on read; the boot guard runs before any request, so
+// for each org that actually has blob fields we force EnsureSystemObjects first to
+// guarantee the JOIN target exists. Orgs without custom fields are skipped entirely.
+func BackfillObjectFieldsFromBlob(db *gorm.DB) (int64, error) {
+	repo := &objectRegistryRepository{db: db}
+
+	var orgIDs []uuid.UUID
+	if err := db.Raw(`SELECT org_id FROM org_settings
+		WHERE jsonb_typeof(custom_field_defs) = 'array'
+		  AND jsonb_array_length(custom_field_defs) > 0`).Scan(&orgIDs).Error; err != nil {
+		return 0, err
+	}
+	for _, id := range orgIDs {
+		if err := repo.EnsureSystemObjects(context.Background(), id); err != nil {
+			return 0, err
+		}
+	}
+
+	res := db.Exec(backfillObjectFieldsSQL)
+	return res.RowsAffected, res.Error
 }

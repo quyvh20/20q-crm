@@ -1027,6 +1027,51 @@ func (h *Handler) getContext(c *gin.Context) (uuid.UUID, uuid.UUID) {
 
 // --- Workflow Schema (for builder field pickers) ---
 
+// schemaCustomField is one admin-defined field on a system object, used to build
+// the workflow builder's custom-field pickers.
+type schemaCustomField struct {
+	Slug    string
+	Key     string
+	Label   string
+	Type    string
+	Options []string
+}
+
+// systemCustomFieldDefs returns the admin-defined (is_system=false) fields of the
+// org's system objects from object_fields. After the P7 cutover this is the source
+// of truth for the workflow schema's custom-field picker — the legacy
+// org_settings.custom_field_defs blob is no longer written. Reads directly via the
+// shared *gorm.DB (the automation package must not depend on internal/usecase),
+// mirroring how the rest of GetWorkflowSchema loads stages/tags/users.
+func (h *Handler) systemCustomFieldDefs(ctx context.Context, orgID uuid.UUID) []schemaCustomField {
+	type row struct {
+		Slug    string          `gorm:"column:slug"`
+		Key     string          `gorm:"column:key"`
+		Label   string          `gorm:"column:label"`
+		Type    string          `gorm:"column:type"`
+		Options json.RawMessage `gorm:"column:options"`
+	}
+	var rows []row
+	if err := h.db.WithContext(ctx).
+		Table("object_fields AS f").
+		Select("d.slug AS slug, f.key AS key, f.label AS label, f.type AS type, f.options AS options").
+		Joins("JOIN object_defs d ON d.id = f.object_def_id AND d.is_system = true AND d.deleted_at IS NULL").
+		Where("f.org_id = ? AND f.is_system = ? AND f.deleted_at IS NULL", orgID, false).
+		Order("d.slug ASC, f.position ASC").
+		Scan(&rows).Error; err != nil {
+		return nil
+	}
+	out := make([]schemaCustomField, 0, len(rows))
+	for _, r := range rows {
+		var opts []string
+		if len(r.Options) > 0 {
+			_ = json.Unmarshal(r.Options, &opts)
+		}
+		out = append(out, schemaCustomField{Slug: r.Slug, Key: r.Key, Label: r.Label, Type: r.Type, Options: opts})
+	}
+	return out
+}
+
 // GetWorkflowSchema handles GET /api/workflows/schema.
 // Returns all available fields, stages, tags, users, and custom objects
 // so the frontend builder can render smart pickers instead of raw text inputs.
@@ -1088,35 +1133,20 @@ func (h *Handler) GetWorkflowSchema(c *gin.Context) {
 		},
 	}
 
-	// 2. Custom field definitions from org_settings
-	type orgSettingsRow struct {
-		CustomFieldDefs json.RawMessage `gorm:"column:custom_field_defs"`
-	}
-	var settings orgSettingsRow
-	if err := h.db.WithContext(ctx).Table("org_settings").Where("org_id = ?", orgID).First(&settings).Error; err == nil && len(settings.CustomFieldDefs) > 2 {
-		var defs []struct {
-			Key        string   `json:"key"`
-			Label      string   `json:"label"`
-			Type       string   `json:"type"`
-			EntityType string   `json:"entity_type"`
-			Options    []string `json:"options"`
+	// 2. Custom field definitions (object_fields; P7 — was the org_settings blob)
+	for _, d := range h.systemCustomFieldDefs(ctx, orgID) {
+		field := SchemaField{
+			Path:  d.Slug + ".custom_fields." + d.Key,
+			Label: d.Label,
+			Type:  d.Type,
 		}
-		if json.Unmarshal(settings.CustomFieldDefs, &defs) == nil {
-			for _, d := range defs {
-				field := SchemaField{
-					Path:  d.EntityType + ".custom_fields." + d.Key,
-					Label: d.Label,
-					Type:  d.Type,
-				}
-				if d.Type == "select" {
-					field.Options = d.Options
-				}
-				// Append to the matching entity
-				for i := range entities {
-					if entities[i].Key == d.EntityType {
-						entities[i].Fields = append(entities[i].Fields, field)
-					}
-				}
+		if d.Type == "select" {
+			field.Options = d.Options
+		}
+		// Append to the matching entity
+		for i := range entities {
+			if entities[i].Key == d.Slug {
+				entities[i].Fields = append(entities[i].Fields, field)
 			}
 		}
 	}
@@ -1380,35 +1410,20 @@ func (h *Handler) GetSchemaObjectFields(c *gin.Context) {
 			})
 		}
 
-		// Append custom field definitions for this entity
-		type orgSettingsRow struct {
-			CustomFieldDefs json.RawMessage `gorm:"column:custom_field_defs"`
-		}
-		var settings orgSettingsRow
-		if err := h.db.WithContext(ctx).Table("org_settings").Where("org_id = ?", orgID).First(&settings).Error; err == nil && len(settings.CustomFieldDefs) > 2 {
-			var defs []struct {
-				Key        string   `json:"key"`
-				Label      string   `json:"label"`
-				Type       string   `json:"type"`
-				EntityType string   `json:"entity_type"`
-				Options    []string `json:"options"`
+		// Append custom field definitions for this entity (object_fields; P7)
+		for _, d := range h.systemCustomFieldDefs(ctx, orgID) {
+			if d.Slug != slug {
+				continue
 			}
-			if json.Unmarshal(settings.CustomFieldDefs, &defs) == nil {
-				for _, d := range defs {
-					if d.EntityType != slug {
-						continue
-					}
-					item := FieldListItem{
-						Name:  d.EntityType + ".custom_fields." + d.Key,
-						Label: d.Label,
-						Type:  normalizeFieldType(d.Type, ""),
-					}
-					if d.Type == "select" {
-						item.PicklistValues = d.Options
-					}
-					fields = append(fields, item)
-				}
+			item := FieldListItem{
+				Name:  d.Slug + ".custom_fields." + d.Key,
+				Label: d.Label,
+				Type:  normalizeFieldType(d.Type, ""),
 			}
+			if d.Type == "select" {
+				item.PicklistValues = d.Options
+			}
+			fields = append(fields, item)
 		}
 	} else {
 		// Custom object — look up from custom_object_defs

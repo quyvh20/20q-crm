@@ -217,8 +217,6 @@ func (uc *customObjectUseCase) CreateRecord(ctx context.Context, orgID uuid.UUID
 		ObjectDefID: def.ID,
 		DisplayName: displayName,
 		Data:        input.Data,
-		ContactID:   input.ContactID,
-		DealID:      input.DealID,
 		CreatedBy:   &userID,
 	}
 
@@ -226,7 +224,6 @@ func (uc *customObjectUseCase) CreateRecord(ctx context.Context, orgID uuid.UUID
 		return nil, err
 	}
 
-	// Re-fetch with preloads
 	return uc.repo.GetRecord(ctx, orgID, rec.ID)
 }
 
@@ -260,12 +257,6 @@ func (uc *customObjectUseCase) UpdateRecord(ctx context.Context, orgID uuid.UUID
 	}
 	if input.DisplayName != nil {
 		rec.DisplayName = *input.DisplayName
-	}
-	if input.ContactID != nil {
-		rec.ContactID = input.ContactID
-	}
-	if input.DealID != nil {
-		rec.DealID = input.DealID
 	}
 
 	if err := uc.repo.UpdateRecord(ctx, rec); err != nil {

@@ -91,9 +91,7 @@ func (r *customObjectRepository) ListRecords(ctx context.Context, orgID uuid.UUI
 	}
 
 	query := r.db.WithContext(ctx).
-		Where("custom_object_records.org_id = ? AND custom_object_records.object_def_id = ?", orgID, defID).
-		Preload("Contact").
-		Preload("Deal")
+		Where("custom_object_records.org_id = ? AND custom_object_records.object_def_id = ?", orgID, defID)
 
 	// Search by display_name
 	if f.Q != "" {
@@ -123,8 +121,6 @@ func (r *customObjectRepository) GetRecord(ctx context.Context, orgID uuid.UUID,
 	var rec domain.CustomObjectRecord
 	err := r.db.WithContext(ctx).
 		Where("org_id = ? AND id = ?", orgID, id).
-		Preload("Contact").
-		Preload("Deal").
 		First(&rec).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

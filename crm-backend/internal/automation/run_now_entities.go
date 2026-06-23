@@ -67,16 +67,8 @@ func (h *Handler) loadContactForRun(ctx context.Context, orgID, contactID uuid.U
 	}
 
 	// Tags as an array of tag-id strings (matching contactToMap's m["tags"]).
-	var tagIDs []uuid.UUID
-	if err := h.db.WithContext(ctx).
-		Table("contact_tags").
-		Joins("JOIN tags ON tags.id = contact_tags.tag_id AND tags.deleted_at IS NULL").
-		Where("contact_tags.contact_id = ?", contactID).
-		Pluck("contact_tags.tag_id", &tagIDs).Error; err == nil && len(tagIDs) > 0 {
-		ids := make([]string, len(tagIDs))
-		for i, t := range tagIDs {
-			ids[i] = t.String()
-		}
+	// Read through the unified tag view (P7) rather than contact_tags alone.
+	if ids := h.contactTagIDs(ctx, orgID, contactID); len(ids) > 0 {
 		m["tags"] = ids
 	}
 
@@ -94,6 +86,45 @@ func (h *Handler) loadContactForRun(ctx context.Context, orgID, contactID uuid.U
 	}
 
 	return m, nil
+}
+
+// contactTagIDs returns a contact's tag ids from the unified tag view: the legacy
+// contact_tags store plus any object_links 'tags' edges. Reading both is the P7 tag
+// "adapter" cutover — the workflow engine no longer depends on contact_tags being
+// the sole source, so once contact tags converge onto object_links the engine keeps
+// working unchanged (plan D4 / R2). Contacts still *store* tags in contact_tags by
+// design; this only unifies the read. Order: contact_tags first, then edges, deduped.
+func (h *Handler) contactTagIDs(ctx context.Context, orgID, contactID uuid.UUID) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	add := func(ids []uuid.UUID) {
+		for _, id := range ids {
+			s := id.String()
+			if !seen[s] {
+				seen[s] = true
+				out = append(out, s)
+			}
+		}
+	}
+
+	var legacy []uuid.UUID
+	if err := h.db.WithContext(ctx).
+		Table("contact_tags").
+		Joins("JOIN tags ON tags.id = contact_tags.tag_id AND tags.deleted_at IS NULL").
+		Where("contact_tags.contact_id = ?", contactID).
+		Pluck("contact_tags.tag_id", &legacy).Error; err == nil {
+		add(legacy)
+	}
+
+	var edges []uuid.UUID
+	if err := h.db.WithContext(ctx).
+		Table("object_links").
+		Where("org_id = ? AND from_slug = 'contact' AND from_id = ? AND relation_key = 'tags' AND to_slug = 'tag' AND deleted_at IS NULL", orgID, contactID).
+		Pluck("to_id", &edges).Error; err == nil {
+		add(edges)
+	}
+
+	return out
 }
 
 // loadDealForRun loads a deal scoped to org and returns its event-map form (the

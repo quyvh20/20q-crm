@@ -348,6 +348,27 @@ func main() {
 		if err := repository.SeedSystemRoles(db); err != nil {
 			log.Error("Failed to seed system roles", zap.Error(err))
 		}
+
+		// P7 convergence — make object_fields the single field-def store: copy each
+		// org's admin-defined custom fields out of the legacy
+		// org_settings.custom_field_defs blob into object_fields. Idempotent and
+		// boot-guarded (golang-migrate is dead on prod). After this the blob is no
+		// longer read or written; object_fields is authoritative.
+		if n, err := repository.BackfillObjectFieldsFromBlob(db); err != nil {
+			log.Error("Failed to backfill object_fields from custom_field_defs blob", zap.Error(err))
+		} else if n > 0 {
+			log.Info("Backfilled custom field defs into object_fields", zap.Int64("rows", n))
+		}
+
+		// P7 convergence — make object_links the single relationship store: copy the
+		// hardcoded custom_object_records.contact_id/deal_id FKs into 'contact'/'deal'
+		// edges, then drop those columns. Idempotent and boot-guarded; the column
+		// guard makes a re-run a no-op after the columns are gone.
+		if n, err := repository.BackfillObjectLinksFromRecordFKs(db); err != nil {
+			log.Error("Failed to backfill object_links from custom-record FKs", zap.Error(err))
+		} else if n > 0 {
+			log.Info("Backfilled custom-record relations into object_links", zap.Int64("edges", n))
+		}
 	}
 
 	var redisClient *redis.Client
@@ -401,8 +422,11 @@ func main() {
 		embedWorker := worker.NewEmbeddingWorker(embedSvc, recordEmbeddingRepo, db, log, 200)
 		go embedWorker.Start(context.Background(), 5)
 
-		orgSettingsRepo := repository.NewOrgSettingsRepository(db)
-		orgSettingsUC := usecase.NewOrgSettingsUseCase(orgSettingsRepo) // cache buster injected below
+		// Object Registry repo (P2) — created early because OrgSettingsUseCase now
+		// backs its custom-field defs onto object_fields (P7), so it depends on this.
+		objectRegistryRepo := repository.NewObjectRegistryRepository(db)
+
+		orgSettingsUC := usecase.NewOrgSettingsUseCase(objectRegistryRepo)
 		settingsHandler := delivery.NewSettingsHandler(orgSettingsUC)
 
 		customObjRepo := repository.NewCustomObjectRepository(db)
@@ -418,9 +442,9 @@ func main() {
 		// Inject customObjUC into kbBuilder so it can read custom objects for schema
 		kbBuilder.SetCustomObjectUC(customObjUC)
 
-		// Object Registry (P2, read-only): uniform view over system + custom objects.
-		objectRegistryRepo := repository.NewObjectRegistryRepository(db)
-		objectRegistryUC := usecase.NewObjectRegistryUseCase(objectRegistryRepo, customObjRepo, orgSettingsUC)
+		// Object Registry (P2/P7): uniform view over system + custom objects, reading
+		// every field from object_fields (no blob merge after the P7 cutover).
+		objectRegistryUC := usecase.NewObjectRegistryUseCase(objectRegistryRepo, customObjRepo)
 		objectRegistryHandler := delivery.NewObjectRegistryHandler(objectRegistryUC)
 
 		contactRepo := repository.NewContactRepository(db)

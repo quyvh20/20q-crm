@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"crm-backend/internal/domain"
 
@@ -121,4 +122,80 @@ func (r *objectLinkRepository) ListContactTagIDs(ctx context.Context, contactID 
 		Where("contact_id = ?", contactID).
 		Pluck("tag_id", &ids).Error
 	return ids, err
+}
+
+// ============================================================
+// P7 backfill: custom_object_records.{contact_id,deal_id} → object_links
+// ============================================================
+//
+// Custom records used to relate to a contact/deal via two hardcoded FK columns.
+// P7 makes object_links the single relationship store, so we copy those FKs into
+// 'contact'/'deal' edges and then drop the columns. The edge relation_key matches
+// the target slug, mirroring how the registry models a relation field.
+
+// backfillRecordLinkSQL builds the idempotent INSERT for one FK column. %[1]s is the
+// column name and the relation_key/to_slug (both equal the slug, e.g. "contact").
+const backfillRecordLinkSQLTemplate = `
+INSERT INTO object_links (id, org_id, from_slug, from_id, to_slug, to_id, relation_key, created_at)
+SELECT uuid_generate_v4(), r.org_id, d.slug, r.id, '%[1]s', r.%[1]s_id, '%[1]s', NOW()
+FROM custom_object_records r
+JOIN custom_object_defs d ON d.id = r.object_def_id
+WHERE r.%[1]s_id IS NOT NULL AND r.deleted_at IS NULL
+  AND NOT EXISTS (
+        SELECT 1 FROM object_links l
+        WHERE l.org_id = r.org_id AND l.from_slug = d.slug AND l.from_id = r.id
+          AND l.relation_key = '%[1]s' AND l.to_slug = '%[1]s' AND l.to_id = r.%[1]s_id
+          AND l.deleted_at IS NULL);`
+
+// BackfillObjectLinksFromRecordFKs is the P7 convergence step that makes object_links
+// the single relationship store: it copies custom_object_records.contact_id/deal_id
+// into 'contact'/'deal' edges, then drops the two legacy columns. Returns the number
+// of edges inserted.
+//
+// Idempotent and safe to run on every boot (golang-migrate is dead on prod, so this
+// runs as a boot guard). The column-existence guard makes a re-run after the columns
+// are already gone a no-op, so the backfill SELECT never references a dropped column.
+func BackfillObjectLinksFromRecordFKs(db *gorm.DB) (int64, error) {
+	hasContact := hasColumn(db, "custom_object_records", "contact_id")
+	hasDeal := hasColumn(db, "custom_object_records", "deal_id")
+	if !hasContact && !hasDeal {
+		return 0, nil // already converged
+	}
+
+	var total int64
+	for _, c := range []struct {
+		slug    string
+		present bool
+	}{{"contact", hasContact}, {"deal", hasDeal}} {
+		if !c.present {
+			continue
+		}
+		res := db.Exec(fmt.Sprintf(backfillRecordLinkSQLTemplate, c.slug))
+		if res.Error != nil {
+			return total, res.Error
+		}
+		total += res.RowsAffected
+	}
+
+	// Edges are now authoritative — drop the hardcoded columns.
+	if err := db.Exec(`ALTER TABLE custom_object_records DROP COLUMN IF EXISTS contact_id`).Error; err != nil {
+		return total, err
+	}
+	if err := db.Exec(`ALTER TABLE custom_object_records DROP COLUMN IF EXISTS deal_id`).Error; err != nil {
+		return total, err
+	}
+	return total, nil
+}
+
+// hasColumn reports whether a column is still present, so a backfill that reads it
+// can be skipped once the column has been dropped (idempotent re-runs).
+func hasColumn(db *gorm.DB, table, column string) bool {
+	var n int64
+	if err := db.Raw(
+		`SELECT count(*) FROM information_schema.columns WHERE table_name = ? AND column_name = ?`,
+		table, column,
+	).Scan(&n).Error; err != nil {
+		return false
+	}
+	return n > 0
 }

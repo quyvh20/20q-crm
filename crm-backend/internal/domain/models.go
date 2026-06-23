@@ -288,20 +288,20 @@ type CustomObjectDef struct {
 	DeletedAt  gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
+// CustomObjectRecord is a JSONB-backed record. Its relationships to other records
+// (contact, deal, company, custom↔custom) live in object_links as of P7 — the
+// hardcoded contact_id/deal_id columns and their preloads were dropped once
+// object_links became the single relationship store (plan §3.3 / P4 → P7).
 type CustomObjectRecord struct {
 	ID          uuid.UUID      `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
 	OrgID       uuid.UUID      `gorm:"type:uuid;not null" json:"org_id"`
 	ObjectDefID uuid.UUID      `gorm:"type:uuid;not null" json:"object_def_id"`
 	DisplayName string         `gorm:"size:500" json:"display_name"`
 	Data        JSON           `gorm:"type:jsonb;default:'{}'" json:"data"`
-	ContactID   *uuid.UUID     `gorm:"type:uuid" json:"contact_id,omitempty"`
-	DealID      *uuid.UUID     `gorm:"type:uuid" json:"deal_id,omitempty"`
 	CreatedBy   *uuid.UUID     `gorm:"type:uuid" json:"created_by,omitempty"`
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
 	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
-	Contact     *Contact       `gorm:"foreignKey:ContactID" json:"contact,omitempty"`
-	Deal        *Deal          `gorm:"foreignKey:DealID" json:"deal,omitempty"`
 }
 
 type SystemTemplate struct {

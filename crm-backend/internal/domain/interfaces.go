@@ -507,17 +507,16 @@ type UpdateObjectDefInput struct {
 	Searchable *bool `json:"searchable"`
 }
 
+// CreateRecordInput / UpdateRecordInput no longer carry contact_id/deal_id: custom
+// record relationships are managed through object_links (the …/links API) as of P7,
+// not hardcoded FK columns.
 type CreateRecordInput struct {
-	Data      JSON       `json:"data" binding:"required"`
-	ContactID *uuid.UUID `json:"contact_id"`
-	DealID    *uuid.UUID `json:"deal_id"`
+	Data JSON `json:"data" binding:"required"`
 }
 
 type UpdateRecordInput struct {
-	Data        JSON       `json:"data"`
-	DisplayName *string    `json:"display_name"`
-	ContactID   *uuid.UUID `json:"contact_id"`
-	DealID      *uuid.UUID `json:"deal_id"`
+	Data        JSON    `json:"data"`
+	DisplayName *string `json:"display_name"`
 }
 
 type RecordFilter struct {
