@@ -760,14 +760,17 @@ single change does more for tenant safety than any new table.
   >   on prod) mirrored by migrations `000019`/`000020`. `go build`/`vet` + full short suite
   >   green; Docker-gated integration tests added for both backfills (idempotency,
   >   native-collision skip, soft-delete skip, column drop) — they self-skip without Docker.
-  > **Status — frontend half remaining (the "build parity first" path):** flipping
-  >   `objects.unified_read` / deleting the legacy Contacts/Deals pages must wait until the
-  >   generic renderer reaches their feature parity (import, AI semantic search, company +
-  >   tag filters, Deals kanban). That parity needs **uniform-endpoint additions** too
-  >   (relation/tag filters, semantic mode, stage grouping + stage-change) before the flag
-  >   can be removed without regression. Manager unification likewise wants custom-object
-  >   field defs (`custom_object_defs.fields`) converged onto `object_fields` so one editor
-  >   serves both. Scoped as the next focused increment.
+  > **Status — frontend parity in progress (the "build parity first" path):**
+  >   **Part 1 landed** (commit `P7 frontend parity (1)`): the uniform list endpoint now
+  >   takes relation/tag filters + a semantic flag, and `ObjectListView` renders a
+  >   schema-driven filter bar (relation dropdowns, tag chips, contact AI-search toggle) —
+  >   verified live (a company filter on the running stack returns only that company's
+  >   contacts). Still kept behind `objects.unified_read` (no flip yet).
+  >   **Remaining before the flip:** a generic Deals **kanban** (stage grouping +
+  >   drag-to-change-stage) and CSV **import** for contacts; then remove
+  >   `objects.unified_read` / `objects.search`, delete the legacy pages, and unify the two
+  >   field-def managers (which also wants `custom_object_defs.fields` converged onto
+  >   `object_fields` so one editor serves every object).
 - **Definition of Done:** `org_settings.custom_field_defs` no longer written; old
   per-object custom-field UI removed; backfill verified; flags removed.
 - **Effort:** Medium (3–4 days). *(Backend half done; frontend parity+cutover is the larger
