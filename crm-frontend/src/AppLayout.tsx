@@ -1,12 +1,10 @@
 import React, { useEffect, useState } from "react";
 import { useAuth } from "./lib/auth";
-import SearchBar from "./components/common/SearchBar";
 import GlobalSearch from "./components/common/GlobalSearch";
 import AIUsageWidget from "./components/settings/AIUsageWidget";
 import WelcomeModal from "./components/onboarding/WelcomeModal";
 import WorkspaceSwitcher from "./components/common/WorkspaceSwitcher";
 import { getObjectDefs, getFieldDefs, type CustomObjectDef } from "./lib/api";
-import { isObjectSearchEnabled } from "./lib/flags";
 
 interface AppLayoutProps {
   children?: React.ReactNode;
@@ -95,7 +93,8 @@ export default function AppLayout({ children }: AppLayoutProps) {
           <div className="flex flex-1 items-center gap-4">
             {/* P6: the global cross-object palette replaces the contact-only bar
                 when objects.search is enabled; otherwise the legacy bar stays. */}
-            {isObjectSearchEnabled() ? <GlobalSearch /> : <SearchBar />}
+            {/* Cross-object command-palette search (P7 — replaced the contact-only SearchBar). */}
+            <GlobalSearch />
             <div className="flex-1" />
             {activeWorkspace && (
               <span className="text-sm text-muted-foreground hidden sm:block">

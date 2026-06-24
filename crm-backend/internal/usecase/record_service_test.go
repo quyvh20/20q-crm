@@ -18,13 +18,17 @@ import (
 
 type fakeDealUC struct {
 	domain.DealUseCase
-	created      domain.CreateDealInput
-	createCalled bool
-	updated      domain.UpdateDealInput
-	ret          *domain.Deal
-	listRet      []domain.Deal
-	listNext     string
-	listGot      domain.DealFilter
+	created           domain.CreateDealInput
+	createCalled      bool
+	updated           domain.UpdateDealInput
+	updateCalled      bool
+	ret               *domain.Deal
+	getRet            *domain.Deal // prior-state read (defaults to ret)
+	changeStageCalled bool
+	changeStageInput  domain.UpdateDealStageInput
+	listRet           []domain.Deal
+	listNext          string
+	listGot           domain.DealFilter
 }
 
 func (f *fakeDealUC) Create(_ context.Context, _ uuid.UUID, in domain.CreateDealInput) (*domain.Deal, error) {
@@ -34,9 +38,18 @@ func (f *fakeDealUC) Create(_ context.Context, _ uuid.UUID, in domain.CreateDeal
 }
 func (f *fakeDealUC) Update(_ context.Context, _, _ uuid.UUID, in domain.UpdateDealInput) (*domain.Deal, error) {
 	f.updated = in
+	f.updateCalled = true
+	return f.ret, nil
+}
+func (f *fakeDealUC) ChangeStage(_ context.Context, _, _ uuid.UUID, in domain.UpdateDealStageInput) (*domain.Deal, error) {
+	f.changeStageCalled = true
+	f.changeStageInput = in
 	return f.ret, nil
 }
 func (f *fakeDealUC) GetByID(_ context.Context, _, _ uuid.UUID) (*domain.Deal, error) {
+	if f.getRet != nil {
+		return f.getRet, nil
+	}
 	return f.ret, nil
 }
 func (f *fakeDealUC) List(_ context.Context, _ uuid.UUID, ff domain.DealFilter) ([]domain.Deal, string, error) {
@@ -452,6 +465,59 @@ func TestCreate_SystemObject_DoesNotFireUniformEvent(t *testing.T) {
 		t.Error("system-object create should not fire a uniform automation event")
 	case <-time.After(100 * time.Millisecond):
 		// expected: no event
+	}
+}
+
+func TestUpdate_DealStageChange_RoutesThroughChangeStageAndFiresEvent(t *testing.T) {
+	oldStage := uuid.New()
+	newStage := uuid.New()
+	dealID := uuid.New()
+	deal := &fakeDealUC{
+		getRet: &domain.Deal{ID: dealID, Title: "Acme", StageID: &oldStage},
+		ret:    &domain.Deal{ID: dealID, Title: "Acme", StageID: &newStage, IsWon: true},
+	}
+	svc := newTestService(nil, nil, deal)
+
+	gotType := ""
+	var gotPayload map[string]any
+	done := make(chan struct{})
+	svc.SetEventEmitter(func(_ context.Context, _ uuid.UUID, eventType string, payload map[string]any) {
+		gotType = eventType
+		gotPayload = payload
+		close(done)
+	})
+
+	if _, err := svc.Update(context.Background(), uuid.New(), "deal", dealID, domain.RecordWriteInput{
+		Fields: map[string]interface{}{"stage": newStage.String()},
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	if !deal.changeStageCalled {
+		t.Fatal("a stage change must route through ChangeStage (won/lost side-effects)")
+	}
+	if deal.changeStageInput.StageID != newStage {
+		t.Errorf("ChangeStage stage = %v, want %v", deal.changeStageInput.StageID, newStage)
+	}
+	if deal.updateCalled {
+		t.Error("a stage-only update must not also call the plain Update path")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("deal_stage_changed event was not fired")
+	}
+	if gotType != "deal_stage_changed" {
+		t.Errorf("event type = %q, want deal_stage_changed", gotType)
+	}
+	if gotPayload["new_stage_id"] != newStage.String() || gotPayload["old_stage_id"] != oldStage.String() {
+		t.Errorf("stage ids wrong: old=%v new=%v", gotPayload["old_stage_id"], gotPayload["new_stage_id"])
+	}
+	// The deal map uses the automation shape (stage_id, is_won), not uniform keys.
+	dm, ok := gotPayload["deal"].(map[string]any)
+	if !ok || dm["stage_id"] != newStage.String() || dm["is_won"] != true {
+		t.Errorf("deal automation map wrong: %+v", gotPayload["deal"])
 	}
 }
 

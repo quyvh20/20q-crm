@@ -80,6 +80,11 @@ func NewRecordService(
 // Until set, writes simply skip event emission.
 func (s *recordService) SetEventEmitter(fn domain.RecordEventEmitter) {
 	s.emitEvent = fn
+	// The deal adapter fires deal_stage_changed from the uniform write path (P7),
+	// so it needs the same emitter.
+	if da, ok := s.systemAdapters["deal"].(*dealAdapter); ok {
+		da.emit = fn
+	}
 }
 
 const defaultRecordLimit = 25

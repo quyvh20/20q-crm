@@ -268,7 +268,12 @@ func companyToUniform(c *domain.Company) *domain.UniformRecord {
 // Deal
 // ============================================================
 
-type dealAdapter struct{ uc domain.DealUseCase }
+type dealAdapter struct {
+	uc domain.DealUseCase
+	// emit fires deal automation triggers from the uniform write path (P7). Wired
+	// by RecordService.SetEventEmitter; nil before startup wiring (and in unit tests).
+	emit domain.RecordEventEmitter
+}
 
 func (a *dealAdapter) nativeKeys() map[string]bool { return dealNativeKeys }
 
@@ -351,9 +356,26 @@ func (a *dealAdapter) create(ctx context.Context, orgID uuid.UUID, fields map[st
 }
 
 func (a *dealAdapter) update(ctx context.Context, orgID, id uuid.UUID, fields map[string]interface{}) (*domain.UniformRecord, error) {
+	// A stage change is applied through ChangeStage (won/lost close logic +
+	// auto-activity) and fires deal_stage_changed — the same side-effects the
+	// kanban always had. Routing every uniform stage change this way unifies the
+	// legacy split where the kanban triggered side-effects but the edit form didn't.
+	var stageID *uuid.UUID
+	stagePresent := false
+	if _, ok := fields["stage"]; ok {
+		sid, err := uuidField(fields, "stage")
+		if err != nil {
+			return nil, err
+		}
+		stageID = sid
+		stagePresent = stageID != nil
+	}
+
 	var input domain.UpdateDealInput
+	nonStage := false
 	if v := strPtr(fields, "title"); v != nil {
 		input.Title = v
+		nonStage = true
 	}
 	if _, ok := fields["contact"]; ok {
 		cid, err := uuidField(fields, "contact")
@@ -362,6 +384,7 @@ func (a *dealAdapter) update(ctx context.Context, orgID, id uuid.UUID, fields ma
 		}
 		if cid != nil {
 			input.ContactID = cid
+			nonStage = true
 		}
 	}
 	if _, ok := fields["company"]; ok {
@@ -371,26 +394,20 @@ func (a *dealAdapter) update(ctx context.Context, orgID, id uuid.UUID, fields ma
 		}
 		if cid != nil {
 			input.CompanyID = cid
-		}
-	}
-	if _, ok := fields["stage"]; ok {
-		sid, err := uuidField(fields, "stage")
-		if err != nil {
-			return nil, err
-		}
-		if sid != nil {
-			input.StageID = sid
+			nonStage = true
 		}
 	}
 	if f, ok, err := floatField(fields, "value"); err != nil {
 		return nil, err
 	} else if ok {
 		input.Value = &f
+		nonStage = true
 	}
 	if n, ok, err := intField(fields, "probability"); err != nil {
 		return nil, err
 	} else if ok {
 		input.Probability = &n
+		nonStage = true
 	}
 	if _, ok := fields["expected_close_at"]; ok {
 		closeAt, err := dateField(fields, "expected_close_at")
@@ -398,6 +415,7 @@ func (a *dealAdapter) update(ctx context.Context, orgID, id uuid.UUID, fields ma
 			return nil, err
 		}
 		input.ExpectedCloseAt = closeAt
+		nonStage = true
 	}
 	if _, ok := fields["owner_user_id"]; ok {
 		oid, err := uuidField(fields, "owner_user_id")
@@ -406,16 +424,104 @@ func (a *dealAdapter) update(ctx context.Context, orgID, id uuid.UUID, fields ma
 		}
 		if oid != nil { // partial-update: owner can be reassigned but not cleared here
 			input.OwnerUserID = oid
+			nonStage = true
 		}
 	}
 	if cf, ok := customFieldsJSONIfAny(fields, dealNativeKeys); ok {
 		input.CustomFields = &cf
+		nonStage = true
 	}
-	d, err := a.uc.Update(ctx, orgID, id, input)
-	if err != nil {
-		return nil, err
+
+	// Capture the prior stage before any write, for the stage-changed event.
+	var oldStageID *uuid.UUID
+	if stagePresent {
+		if old, err := a.uc.GetByID(ctx, orgID, id); err == nil && old != nil {
+			oldStageID = old.StageID
+		}
+	}
+
+	var d *domain.Deal
+	var err error
+	if nonStage {
+		d, err = a.uc.Update(ctx, orgID, id, input)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if stagePresent {
+		d, err = a.uc.ChangeStage(ctx, orgID, id, domain.UpdateDealStageInput{StageID: *stageID})
+		if err != nil {
+			return nil, err
+		}
+		a.fireStageChanged(orgID, oldStageID, d)
+	}
+	if d == nil { // empty payload — return current state unchanged
+		d, err = a.uc.GetByID(ctx, orgID, id)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return dealToUniform(d), nil
+}
+
+// fireStageChanged emits the deal_stage_changed automation trigger (P7 workflow
+// cutover) when a deal's stage actually moved, in the same payload shape the legacy
+// deal handler produced (deal map keyed by stage_id/contact_id/…). Fire-and-forget
+// with context.Background() so a cancelled request can't kill the async run.
+func (a *dealAdapter) fireStageChanged(orgID uuid.UUID, oldStageID *uuid.UUID, d *domain.Deal) {
+	if a.emit == nil || d == nil {
+		return
+	}
+	newStageID := d.StageID
+	changed := (oldStageID == nil) != (newStageID == nil) ||
+		(oldStageID != nil && newStageID != nil && *oldStageID != *newStageID)
+	if !changed {
+		return
+	}
+	payload := map[string]any{
+		"entity_id":    d.ID.String(),
+		"deal":         dealAutomationMap(d),
+		"old_stage_id": uuidStr(oldStageID),
+		"new_stage_id": uuidStr(newStageID),
+		"trigger": map[string]any{
+			"type":   "deal_stage_changed",
+			"source": "crm_ui",
+		},
+	}
+	go a.emit(context.Background(), orgID, "deal_stage_changed", payload)
+}
+
+// dealAutomationMap mirrors the delivery layer's dealToMap so the uniform write
+// path produces the exact deal shape the workflow engine's conditions/templates
+// expect (stage_id/contact_id/company_id, is_won/is_lost, …).
+func dealAutomationMap(d *domain.Deal) map[string]any {
+	m := map[string]any{
+		"id":          d.ID.String(),
+		"title":       d.Title,
+		"value":       d.Value,
+		"probability": d.Probability,
+		"is_won":      d.IsWon,
+		"is_lost":     d.IsLost,
+	}
+	if d.ContactID != nil {
+		m["contact_id"] = d.ContactID.String()
+	}
+	if d.CompanyID != nil {
+		m["company_id"] = d.CompanyID.String()
+	}
+	if d.StageID != nil {
+		m["stage_id"] = d.StageID.String()
+	}
+	if d.OwnerUserID != nil {
+		m["owner_user_id"] = d.OwnerUserID.String()
+	}
+	if d.ExpectedCloseAt != nil {
+		m["expected_close_at"] = d.ExpectedCloseAt.Format(time.RFC3339)
+	}
+	if d.ClosedAt != nil {
+		m["closed_at"] = d.ClosedAt.Format(time.RFC3339)
+	}
+	return m
 }
 
 func (a *dealAdapter) delete(ctx context.Context, orgID, id uuid.UUID) error {

@@ -12,6 +12,8 @@ import {
 import { formatFieldValue } from './fieldHelpers';
 import ObjectForm from './ObjectForm';
 import ObjectDetailView from './ObjectDetailView';
+import ObjectKanban from './ObjectKanban';
+import ImportModal from '../../components/contacts/ImportModal';
 
 interface ObjectListViewProps {
   slug: string;
@@ -50,6 +52,10 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [panel, setPanel] = useState<Panel>(null);
   const [actionError, setActionError] = useState('');
+  const [showImport, setShowImport] = useState(false);
+
+  // CSV import is a contact-specific affordance (the bulk importer is contact-aware).
+  const supportsImport = slug === 'contact';
 
   // Filters (parity with the legacy pages): relation field key → selected id,
   // tag ids (any-match), and a semantic toggle.
@@ -66,6 +72,12 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
   );
   // Semantic search is wired for contacts (native vector index).
   const supportsSemantic = slug === 'contact';
+  // A relation field named "stage" makes the object board-able (deals today).
+  const stageField = useMemo(
+    () => (schema?.fields ?? []).find((f) => f.key === 'stage' && f.type === 'relation'),
+    [schema],
+  );
+  const [view, setView] = useState<'table' | 'board'>('table');
 
   // Reset transient state when switching objects.
   useEffect(() => {
@@ -77,6 +89,7 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
     setTagIds([]);
     setSemantic(false);
     setRelationOptions({});
+    setView('table');
   }, [slug]);
 
   useEffect(() => {
@@ -237,14 +250,59 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
           <h1 style={{ fontSize: 24, fontWeight: 700, margin: 0 }}>{schema.icon} {schema.label_plural}</h1>
           <p style={{ color: '#64748b', marginTop: 4, fontSize: 14 }}>Manage your {schema.label_plural.toLowerCase()}</p>
         </div>
-        <button
-          onClick={() => setPanel({ mode: 'create' })}
-          style={{ padding: '10px 20px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 14 }}
-        >
-          + Add {schema.label}
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {stageField && (
+            <div style={{ display: 'inline-flex', border: '1px solid #d1d5db', borderRadius: 8, overflow: 'hidden' }}>
+              {(['table', 'board'] as const).map((v) => (
+                <button
+                  key={v}
+                  onClick={() => setView(v)}
+                  style={{
+                    padding: '8px 14px', fontSize: 13, fontWeight: 600, border: 'none', cursor: 'pointer',
+                    background: view === v ? '#3b82f6' : '#fff',
+                    color: view === v ? '#fff' : '#64748b',
+                  }}
+                >
+                  {v === 'table' ? 'Table' : 'Board'}
+                </button>
+              ))}
+            </div>
+          )}
+          {supportsImport && (
+            <button
+              onClick={() => setShowImport(true)}
+              style={{ padding: '10px 16px', background: '#fff', color: '#334155', border: '1px solid #d1d5db', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 14 }}
+            >
+              Import
+            </button>
+          )}
+          <button
+            onClick={() => setPanel({ mode: 'create' })}
+            style={{ padding: '10px 20px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 14 }}
+          >
+            + Add {schema.label}
+          </button>
+        </div>
       </div>
 
+      {showImport && (
+        <ImportModal
+          onClose={() => setShowImport(false)}
+          onSuccess={() => {
+            setShowImport(false);
+            fetchFirstPage();
+          }}
+        />
+      )}
+
+      {view === 'board' && stageField ? (
+        <ObjectKanban
+          schema={schema}
+          stageKey={stageField.key}
+          onCardClick={(rec) => setPanel({ mode: 'view', record: rec })}
+        />
+      ) : (
+      <>
       {/* Search + filters */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 16 }}>
         <input
@@ -378,6 +436,8 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
       <div style={{ marginTop: 8, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>
         Showing {records.length} {schema.label_plural.toLowerCase()}
       </div>
+      </>
+      )}
 
       {/* Slide-over */}
       {panel && (

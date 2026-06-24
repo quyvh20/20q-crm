@@ -3,6 +3,7 @@ import {
   createObjectRecordUnified,
   updateObjectRecordUnified,
   listObjectRecordsUnified,
+  getStages,
   type ObjectSchema,
   type UniformRecord,
 } from '../../lib/api';
@@ -26,11 +27,14 @@ export default function ObjectForm({ schema, record, onSaved, onCancel }: Object
   const [error, setError] = useState('');
 
   // Load pick-from options for each resolvable relation field (one fetch each).
+  // A "stage" relation has no registry target (pipeline_stages isn't a registered
+  // object), so it is resolved specially from the pipeline stages.
   useEffect(() => {
     let cancelled = false;
     const relationFields = schema.fields.filter((f) => f.type === 'relation' && f.target_slug);
-    Promise.all(
-      relationFields.map(async (f) => {
+    const hasStage = schema.fields.some((f) => f.key === 'stage' && f.type === 'relation' && !f.target_slug);
+    Promise.all([
+      ...relationFields.map(async (f) => {
         try {
           const page = await listObjectRecordsUnified(f.target_slug!, { limit: 100 });
           return [f.key, page.records.map((r) => ({ id: r.id, label: r.display || r.id }))] as const;
@@ -38,7 +42,14 @@ export default function ObjectForm({ schema, record, onSaved, onCancel }: Object
           return [f.key, [] as RelationOption[]] as const;
         }
       }),
-    ).then((entries) => {
+      ...(hasStage
+        ? [
+            getStages()
+              .then((stages) => ['stage', stages.map((s) => ({ id: s.id, label: s.name }))] as const)
+              .catch(() => ['stage', [] as RelationOption[]] as const),
+          ]
+        : []),
+    ]).then((entries) => {
       if (cancelled) return;
       const map: Record<string, RelationOption[]> = {};
       for (const [key, opts] of entries) map[key] = opts;
