@@ -4,6 +4,7 @@ import {
   listObjectRecordsUnified,
   deleteObjectRecordUnified,
   getTags,
+  getStages,
   type ObjectSchema,
   type ObjectFieldDescriptor,
   type UniformRecord,
@@ -141,6 +142,37 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
       cancelled = true;
     };
   }, [relationFields]);
+
+  // A "stage" relation has no registry target (pipeline_stages isn't a registered
+  // object), so its labels come from the pipeline stages. Loaded into the same
+  // option map so relation cells resolve to the stage name, not its id.
+  useEffect(() => {
+    if (!stageField) return;
+    let cancelled = false;
+    getStages()
+      .then((s) => {
+        if (!cancelled) {
+          setRelationOptions((prev) => ({ ...prev, [stageField.key]: s.map((st) => ({ id: st.id, label: st.name })) }));
+        }
+      })
+      .catch(() => {
+        /* stage labels just fall back to the id */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [stageField]);
+
+  // Resolve a relation field's id value to the target's display label, using the
+  // already-loaded option maps. Falls back to the raw value when unknown.
+  const relationLabel = useCallback(
+    (field: ObjectFieldDescriptor, value: unknown): string | undefined => {
+      if (field.type !== 'relation' || value == null || value === '') return undefined;
+      const opt = (relationOptions[field.key] ?? []).find((o) => o.id === value);
+      return opt?.label;
+    },
+    [relationOptions],
+  );
 
   // Debounce the search box.
   useEffect(() => {
@@ -407,7 +439,7 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
                   <td style={{ padding: '10px 12px', fontWeight: 500 }}>{rec.display || 'Untitled'}</td>
                   {columns.map((f) => (
                     <td key={f.key} style={{ padding: '10px 12px', fontSize: 13 }}>
-                      {formatFieldValue(f, rec.fields[f.key])}
+                      {formatFieldValue(f, rec.fields[f.key], relationLabel(f, rec.fields[f.key]))}
                     </td>
                   ))}
                   <td style={{ padding: '10px 12px', fontSize: 13, color: '#64748b' }}>

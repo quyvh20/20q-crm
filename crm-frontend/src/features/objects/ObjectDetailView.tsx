@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { type ObjectSchema, type UniformRecord, getObjectRecordUnified } from '../../lib/api';
+import { type ObjectSchema, type UniformRecord, getObjectRecordUnified, getStages } from '../../lib/api';
 import { formatFieldValue } from './fieldHelpers';
 import RecordRelations from './RecordRelations';
 
@@ -25,12 +25,16 @@ export default function ObjectDetailView({ schema, record, onEdit, onDelete, onC
     const relations = schema.fields.filter(
       (f) => f.type === 'relation' && f.target_slug && record.fields[f.key],
     );
-    if (relations.length === 0) {
+    // A "stage" relation has no registry target, so it resolves from the pipeline stages.
+    const stageField = schema.fields.find(
+      (f) => f.key === 'stage' && f.type === 'relation' && !f.target_slug && record.fields[f.key],
+    );
+    if (relations.length === 0 && !stageField) {
       setRelationLabels({});
       return;
     }
-    Promise.all(
-      relations.map(async (f) => {
+    Promise.all([
+      ...relations.map(async (f) => {
         try {
           const target = await getObjectRecordUnified(f.target_slug!, String(record.fields[f.key]));
           return [f.key, target.display] as const;
@@ -38,7 +42,17 @@ export default function ObjectDetailView({ schema, record, onEdit, onDelete, onC
           return [f.key, ''] as const;
         }
       }),
-    ).then((pairs) => {
+      ...(stageField
+        ? [
+            getStages()
+              .then((stages) => {
+                const match = stages.find((s) => s.id === String(record.fields[stageField.key]));
+                return [stageField.key, match?.name ?? ''] as const;
+              })
+              .catch(() => [stageField.key, ''] as const),
+          ]
+        : []),
+    ]).then((pairs) => {
       if (cancelled) return;
       const map: Record<string, string> = {};
       for (const [k, v] of pairs) if (v) map[k] = v;
