@@ -744,9 +744,9 @@ single change does more for tenant safety than any new table.
   - [x] Backfill `object_fields` from `org_settings.custom_field_defs`; stop writing the blob
   - [x] Backfill `object_links` from hardcoded `contact_id`/`deal_id`; drop those columns
   - [x] Cut the workflow engine over to the tag adapter; `contact_tags` becomes optional
-  - [ ] Delete duplicate managers (`ObjectDefManager` vs `CustomFieldManager`) and old per-object pages
-  - [ ] Remove feature flags
-  - [ ] Verify backfill row counts; full build / vet / test green *(backend done; frontend pending)*
+  - [x] Delete old per-object pages (ContactsPage/DealsPage are thin wrappers over the shared renderer); ⏳ unify the two field-def *managers* still pending — see note
+  - [x] Remove feature flags (`objects.unified_read`, `objects.search`, the flag module, the flag-fallback test, and the contact-only `SearchBar` are gone)
+  - [x] Verify backfill row counts; full build / vet / test green *(verified live on the Docker stack too)*
   - > **Status — backend half landed (commit `feat(objects): P7 backend convergence`):**
   >   `OrgSettingsUseCase` now CRUDs system-object custom fields through `object_fields`
   >   (is_system=false), not the `org_settings.custom_field_defs` blob — same interface,
@@ -760,17 +760,29 @@ single change does more for tenant safety than any new table.
   >   on prod) mirrored by migrations `000019`/`000020`. `go build`/`vet` + full short suite
   >   green; Docker-gated integration tests added for both backfills (idempotency,
   >   native-collision skip, soft-delete skip, column drop) — they self-skip without Docker.
-  > **Status — frontend parity in progress (the "build parity first" path):**
-  >   **Part 1 landed** (commit `P7 frontend parity (1)`): the uniform list endpoint now
-  >   takes relation/tag filters + a semantic flag, and `ObjectListView` renders a
-  >   schema-driven filter bar (relation dropdowns, tag chips, contact AI-search toggle) —
-  >   verified live (a company filter on the running stack returns only that company's
-  >   contacts). Still kept behind `objects.unified_read` (no flip yet).
-  >   **Remaining before the flip:** a generic Deals **kanban** (stage grouping +
-  >   drag-to-change-stage) and CSV **import** for contacts; then remove
-  >   `objects.unified_read` / `objects.search`, delete the legacy pages, and unify the two
-  >   field-def managers (which also wants `custom_object_defs.fields` converged onto
-  >   `object_fields` so one editor serves every object).
+  > **Status — frontend parity + cutover DONE (commits `P7 frontend parity (1)` + `(2)`):**
+  >   The uniform list endpoint takes relation/tag filters + a semantic flag, and the
+  >   shared `ObjectListView` now has a schema-driven filter bar (relation dropdowns, tag
+  >   chips, contact AI-search toggle), CSV import for contacts (reused `ImportModal`), and
+  >   a **Table/Board toggle** — `ObjectKanban` renders any stage-bearing object as a board
+  >   (columns from pipeline stages, drag → uniform stage update). A uniform deal stage
+  >   change routes through `ChangeStage` (won/lost + auto-activity) and fires
+  >   `deal_stage_changed` in the workflow engine's payload shape. The flags
+  >   (`objects.unified_read`, `objects.search`), the flag module, the flag-fallback test,
+  >   and the contact-only `SearchBar` are deleted; Contacts/Deals are thin wrappers over
+  >   the shared renderer; the shell always uses the cross-object `GlobalSearch`.
+  >   **Verified live on the Docker stack:** unified Contacts + working company filter
+  >   (Acme → Bob/Alice), Deals board grouped by stage, and a uniform move to "Closed Won"
+  >   setting `is_won` + `closed_at` (proving the `ChangeStage` side-effects run).
+  > **Remaining — manager unification:** merging `CustomFieldManager` (system-object custom
+  >   fields, now in `object_fields`) and `ObjectDefManager` (custom objects, still in
+  >   `custom_object_defs.fields`) into one field editor needs the remaining backend
+  >   convergence — migrating `custom_object_defs`(+`.fields`) onto `object_defs`/
+  >   `object_fields` so one store backs one editor. This was implicit in the P5a/P5b/P6
+  >   "custom objects converge at P7" notes but not in the original P7 checklist; it is the
+  >   one piece left and is scoped as the next focused increment. Minor follow-ups:
+  >   tags-on-create in the shared form (tags currently added via the detail panel after
+  >   create), and a stage filter in the table view (the board already handles stage).
 - **Definition of Done:** `org_settings.custom_field_defs` no longer written; old
   per-object custom-field UI removed; backfill verified; flags removed.
 - **Effort:** Medium (3–4 days). *(Backend half done; frontend parity+cutover is the larger
