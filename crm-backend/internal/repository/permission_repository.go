@@ -25,7 +25,7 @@ func NewPermissionRepository(db *gorm.DB) domain.PermissionRepository {
 }
 
 // permSystemObjectSlugs are the always-present system objects. (Custom slugs are
-// read from custom_object_defs at seed time.)
+// read from object_defs at seed time, post-P7 convergence.)
 var permSystemObjectSlugs = []string{"contact", "company", "deal"}
 
 // defaultRoleAccess is the non-breaking default matrix seeded for the system
@@ -110,9 +110,10 @@ func (r *permissionRepository) EnsureDefaults(ctx context.Context, orgID uuid.UU
 // the fast path and inside the seeding transaction.
 func (r *permissionRepository) unseededSlugs(ctx context.Context, db *gorm.DB, orgID uuid.UUID) ([]string, error) {
 	current := append([]string{}, permSystemObjectSlugs...)
+	// Custom objects live in object_defs (is_system=false) after the P7 convergence.
 	var customSlugs []string
-	if err := db.WithContext(ctx).Model(&domain.CustomObjectDef{}).
-		Where("org_id = ?", orgID).
+	if err := db.WithContext(ctx).Model(&domain.ObjectDef{}).
+		Where("org_id = ? AND is_system = ?", orgID, false).
 		Pluck("slug", &customSlugs).Error; err != nil {
 		return nil, err
 	}

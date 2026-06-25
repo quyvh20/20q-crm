@@ -369,6 +369,16 @@ func main() {
 		} else if n > 0 {
 			log.Info("Backfilled custom-record relations into object_links", zap.Int64("edges", n))
 		}
+
+		// P7 convergence — make object_defs/object_fields the single store for EVERY
+		// object: move custom object defs + fields into the registry (reusing ids) and
+		// repoint the records FK. Idempotent and boot-guarded. After this, one field
+		// editor serves system and custom objects alike.
+		if n, err := repository.ConvergeCustomObjectsToRegistry(db); err != nil {
+			log.Error("Failed to converge custom objects into the registry", zap.Error(err))
+		} else if n > 0 {
+			log.Info("Converged custom objects into object_defs/object_fields", zap.Int64("defs", n))
+		}
 	}
 
 	var redisClient *redis.Client
@@ -444,7 +454,7 @@ func main() {
 
 		// Object Registry (P2/P7): uniform view over system + custom objects, reading
 		// every field from object_fields (no blob merge after the P7 cutover).
-		objectRegistryUC := usecase.NewObjectRegistryUseCase(objectRegistryRepo, customObjRepo)
+		objectRegistryUC := usecase.NewObjectRegistryUseCase(objectRegistryRepo)
 		objectRegistryHandler := delivery.NewObjectRegistryHandler(objectRegistryUC)
 
 		contactRepo := repository.NewContactRepository(db)

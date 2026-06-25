@@ -112,3 +112,72 @@ func TestBackfillObjectLinksFromRecordFKs(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(0), n2, "re-run after drop must be a no-op")
 }
+
+// TestConvergeCustomObjectsToRegistry proves the final P7 convergence: a custom
+// object's def + fields move into object_defs/object_fields (reusing the id), the
+// records FK is repointed to object_defs, the record still resolves, and a re-run is
+// a no-op.
+func TestConvergeCustomObjectsToRegistry(t *testing.T) {
+	db, cleanup := startPostgres(t)
+	defer cleanup()
+
+	orgID := applyRegistrySchema(t, db) // uuid-ossp + organizations + 000015 + one org
+
+	// Minimal legacy custom-object tables with the records→defs FK the convergence
+	// repoints. (The real 000005 also FKs contacts/deals/users, irrelevant here.)
+	require.NoError(t, db.Exec(`CREATE TABLE custom_object_defs (
+		id uuid PRIMARY KEY DEFAULT uuid_generate_v4(), org_id uuid, slug varchar(100),
+		label varchar(255), label_plural varchar(255), icon varchar(50),
+		fields jsonb DEFAULT '[]', searchable boolean NOT NULL DEFAULT false,
+		created_at timestamptz DEFAULT now(), updated_at timestamptz DEFAULT now(), deleted_at timestamptz)`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE custom_object_records (
+		id uuid PRIMARY KEY DEFAULT uuid_generate_v4(), org_id uuid,
+		object_def_id uuid NOT NULL REFERENCES custom_object_defs(id) ON DELETE CASCADE,
+		display_name varchar(500) DEFAULT '', data jsonb DEFAULT '{}', deleted_at timestamptz)`).Error)
+
+	defID := uuid.New()
+	fields := `[{"key":"name","label":"Name","type":"text","required":true,"position":0},
+	            {"key":"budget","label":"Budget","type":"number","position":1}]`
+	require.NoError(t, db.Exec(`INSERT INTO custom_object_defs (id, org_id, slug, label, label_plural, icon, fields, searchable)
+		VALUES (?, ?, 'project', 'Project', 'Projects', '📁', ?::jsonb, true)`, defID, orgID, fields).Error)
+	recID := uuid.New()
+	require.NoError(t, db.Exec(`INSERT INTO custom_object_records (id, org_id, object_def_id, display_name)
+		VALUES (?, ?, ?, 'Apollo')`, recID, orgID, defID).Error)
+
+	n, err := ConvergeCustomObjectsToRegistry(db)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), n, "one custom def converged")
+
+	// Def landed in object_defs with the SAME id, non-system, jsonb, searchable carried.
+	var od struct {
+		IsSystem   bool
+		Storage    string
+		Searchable bool
+		Slug       string
+	}
+	require.NoError(t, db.Raw(`SELECT is_system, storage, searchable, slug FROM object_defs WHERE id = ?`, defID).Scan(&od).Error)
+	require.False(t, od.IsSystem)
+	require.Equal(t, "jsonb", od.Storage)
+	require.True(t, od.Searchable)
+	require.Equal(t, "project", od.Slug)
+
+	// Fields expanded into object_fields (is_system=false).
+	var fcount int64
+	require.NoError(t, db.Raw(`SELECT count(*) FROM object_fields WHERE object_def_id = ? AND is_system = false`, defID).Scan(&fcount).Error)
+	require.Equal(t, int64(2), fcount)
+
+	// The records FK now references object_defs, and the record still resolves.
+	var confrel string
+	require.NoError(t, db.Raw(`SELECT confrelid::regclass::text FROM pg_constraint
+		WHERE conrelid = 'custom_object_records'::regclass AND contype = 'f'`).Scan(&confrel).Error)
+	require.Equal(t, "object_defs", confrel, "records FK should point at object_defs")
+	var rcount int64
+	require.NoError(t, db.Raw(`SELECT count(*) FROM custom_object_records r
+		JOIN object_defs o ON o.id = r.object_def_id WHERE r.id = ?`, recID).Scan(&rcount).Error)
+	require.Equal(t, int64(1), rcount, "record must still resolve through object_defs")
+
+	// Idempotent.
+	n2, err := ConvergeCustomObjectsToRegistry(db)
+	require.NoError(t, err)
+	require.Equal(t, int64(0), n2, "re-run must be a no-op")
+}

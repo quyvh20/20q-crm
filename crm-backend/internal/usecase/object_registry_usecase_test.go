@@ -109,43 +109,17 @@ func (f *fakeRegistryRepo) SoftDeleteFieldByID(_ context.Context, _ uuid.UUID, i
 	return nil
 }
 
-type fakeCustomRepo struct {
-	defs []domain.CustomObjectDef
-}
-
-func (f *fakeCustomRepo) ListDefs(_ context.Context, _ uuid.UUID) ([]domain.CustomObjectDef, error) {
-	return f.defs, nil
-}
-func (f *fakeCustomRepo) GetDefBySlug(_ context.Context, _ uuid.UUID, slug string) (*domain.CustomObjectDef, error) {
-	for i := range f.defs {
-		if f.defs[i].Slug == slug {
-			return &f.defs[i], nil
-		}
-	}
-	return nil, nil
-}
-func (f *fakeCustomRepo) GetDefByID(_ context.Context, _ uuid.UUID, _ uuid.UUID) (*domain.CustomObjectDef, error) {
-	return nil, nil
-}
-func (f *fakeCustomRepo) CreateDef(_ context.Context, _ *domain.CustomObjectDef) error { return nil }
-func (f *fakeCustomRepo) UpdateDef(_ context.Context, _ *domain.CustomObjectDef) error { return nil }
-func (f *fakeCustomRepo) SoftDeleteDef(_ context.Context, _ uuid.UUID, _ uuid.UUID) error {
-	return nil
-}
-func (f *fakeCustomRepo) ListRecords(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ domain.RecordFilter) ([]domain.CustomObjectRecord, int64, error) {
-	return nil, 0, nil
-}
-func (f *fakeCustomRepo) GetRecord(_ context.Context, _ uuid.UUID, _ uuid.UUID) (*domain.CustomObjectRecord, error) {
-	return nil, nil
-}
-func (f *fakeCustomRepo) CreateRecord(_ context.Context, _ *domain.CustomObjectRecord) error {
-	return nil
-}
-func (f *fakeCustomRepo) UpdateRecord(_ context.Context, _ *domain.CustomObjectRecord) error {
-	return nil
-}
-func (f *fakeCustomRepo) SoftDeleteRecord(_ context.Context, _ uuid.UUID, _ uuid.UUID) error {
-	return nil
+// addCustomObject registers a custom object (is_system=false) in the fake registry —
+// the post-P7 storage, where custom objects live in object_defs/object_fields just
+// like system objects. Returns its def id so fields can be attached.
+func addCustomObject(repo *fakeRegistryRepo, slug, label string) uuid.UUID {
+	id := uuid.New()
+	repo.defs = append(repo.defs, domain.ObjectDef{
+		ID: id, Slug: slug, Label: label, LabelPlural: label + "s",
+		Icon: "📁", Color: "#6B7280", IsSystem: false, Storage: "jsonb",
+	})
+	repo.fields[id] = nil
+	return id
 }
 
 // addCustomField appends an admin-defined (is_system=false) field to a def's field
@@ -203,19 +177,12 @@ func newDealRepo() (*fakeRegistryRepo, uuid.UUID) {
 	return repo, dealID
 }
 
-func projectCustomDef() domain.CustomObjectDef {
-	fields, _ := json.Marshal([]domain.CustomFieldDef{
-		{Key: "name", Label: "Name", Type: "text"},
-		{Key: "budget", Label: "Budget", Type: "number"},
-	})
-	return domain.CustomObjectDef{
-		ID:          uuid.New(),
-		Slug:        "project",
-		Label:       "Project",
-		LabelPlural: "Projects",
-		Icon:        "📁",
-		Fields:      domain.JSON(fields),
-	}
+// newProject registers a custom "project" object with name + budget fields.
+func newProject(repo *fakeRegistryRepo) uuid.UUID {
+	pid := addCustomObject(repo, "project", "Project")
+	addCustomField(repo, pid, "name", "Name", "text", nil)
+	addCustomField(repo, pid, "budget", "Budget", "number", nil)
+	return pid
 }
 
 // ============================================================
@@ -225,8 +192,8 @@ func projectCustomDef() domain.CustomObjectDef {
 func TestListObjects_MergesSystemAndCustom(t *testing.T) {
 	repo, dealID := newDealRepo()
 	addCustomField(repo, dealID, "renewal_risk", "Renewal Risk", "select", []string{"low", "med", "high"})
-	customRepo := &fakeCustomRepo{defs: []domain.CustomObjectDef{projectCustomDef()}}
-	uc := NewObjectRegistryUseCase(repo, customRepo)
+	newProject(repo)
+	uc := NewObjectRegistryUseCase(repo)
 
 	got, err := uc.ListObjects(context.Background(), uuid.New())
 	if err != nil {
@@ -261,7 +228,7 @@ func TestListObjects_MergesSystemAndCustom(t *testing.T) {
 func TestGetSchema_SystemDealMergesCustomFields(t *testing.T) {
 	repo, dealID := newDealRepo()
 	addCustomField(repo, dealID, "renewal_risk", "Renewal Risk", "select", []string{"low", "med", "high"})
-	uc := NewObjectRegistryUseCase(repo, &fakeCustomRepo{})
+	uc := NewObjectRegistryUseCase(repo)
 
 	got, err := uc.GetSchema(context.Background(), uuid.New(), "deal")
 	if err != nil {
@@ -293,8 +260,8 @@ func TestGetSchema_SystemDealMergesCustomFields(t *testing.T) {
 
 func TestGetSchema_CustomObject(t *testing.T) {
 	repo, _ := newDealRepo()
-	customRepo := &fakeCustomRepo{defs: []domain.CustomObjectDef{projectCustomDef()}}
-	uc := NewObjectRegistryUseCase(repo, customRepo)
+	newProject(repo)
+	uc := NewObjectRegistryUseCase(repo)
 
 	got, err := uc.GetSchema(context.Background(), uuid.New(), "project")
 	if err != nil {
@@ -318,7 +285,7 @@ func TestGetSchema_CustomObject(t *testing.T) {
 
 func TestGetSchema_NotFound(t *testing.T) {
 	repo, _ := newDealRepo()
-	uc := NewObjectRegistryUseCase(repo, &fakeCustomRepo{})
+	uc := NewObjectRegistryUseCase(repo)
 
 	_, err := uc.GetSchema(context.Background(), uuid.New(), "nope")
 	appErr, ok := err.(*domain.AppError)
@@ -327,22 +294,5 @@ func TestGetSchema_NotFound(t *testing.T) {
 	}
 	if appErr.Code != 404 {
 		t.Errorf("expected 404, got %d", appErr.Code)
-	}
-}
-
-func TestGetSchema_SystemTakesPrecedenceOverCustomSlug(t *testing.T) {
-	// A custom object that reuses a system slug must not shadow the system one.
-	repo, _ := newDealRepo()
-	shadow := projectCustomDef()
-	shadow.Slug = "deal"
-	customRepo := &fakeCustomRepo{defs: []domain.CustomObjectDef{shadow}}
-	uc := NewObjectRegistryUseCase(repo, customRepo)
-
-	got, err := uc.GetSchema(context.Background(), uuid.New(), "deal")
-	if err != nil {
-		t.Fatalf("GetSchema error: %v", err)
-	}
-	if !got.IsSystem {
-		t.Error("expected the system deal to win over a custom object reusing the slug")
 	}
 }

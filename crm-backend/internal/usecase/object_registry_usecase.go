@@ -12,25 +12,15 @@ import (
 
 // objectRegistryUseCase assembles one uniform descriptor for every object.
 //
-// As of the P7 cutover, object_fields is the single field-def store, so the
-// registry reads everything from one place — no blob merge:
-//
-//   - System objects (contact/deal/company): all fields (native + admin-defined
-//     custom) from object_fields.
-//   - Custom objects: read straight from custom_object_defs.
+// As of the P7 convergence, object_defs/object_fields is the single store for EVERY
+// object — system (contact/deal/company) and custom alike — so the registry reads
+// everything from one place. There is no separate custom_object_defs merge anymore.
 type objectRegistryUseCase struct {
-	repo       domain.ObjectRegistryRepository
-	customRepo domain.CustomObjectRepository
+	repo domain.ObjectRegistryRepository
 }
 
-func NewObjectRegistryUseCase(
-	repo domain.ObjectRegistryRepository,
-	customRepo domain.CustomObjectRepository,
-) domain.ObjectRegistryUseCase {
-	return &objectRegistryUseCase{
-		repo:       repo,
-		customRepo: customRepo,
-	}
+func NewObjectRegistryUseCase(repo domain.ObjectRegistryRepository) domain.ObjectRegistryUseCase {
+	return &objectRegistryUseCase{repo: repo}
 }
 
 // ListObjects returns every object (system first, then custom) as summaries.
@@ -50,9 +40,6 @@ func (uc *objectRegistryUseCase) ListObjects(ctx context.Context, orgID uuid.UUI
 
 	summaries := make([]domain.ObjectSummary, 0, len(defs))
 	for _, d := range defs {
-		// object_fields now holds every field (native + custom), so the count is
-		// complete with no separate blob read.
-		fieldCount := counts[d.ID]
 		summaries = append(summaries, domain.ObjectSummary{
 			Slug:        d.Slug,
 			Label:       d.Label,
@@ -60,57 +47,33 @@ func (uc *objectRegistryUseCase) ListObjects(ctx context.Context, orgID uuid.UUI
 			Icon:        d.Icon,
 			Color:       d.Color,
 			IsSystem:    d.IsSystem,
-			FieldCount:  fieldCount,
+			FieldCount:  counts[d.ID],
 			Searchable:  d.Searchable,
 		})
 	}
-
-	// Append custom objects, which still live in custom_object_defs.
-	customObjs, err := uc.customRepo.ListDefs(ctx, orgID)
-	if err != nil {
-		return nil, err
-	}
-	for _, co := range customObjs {
-		summaries = append(summaries, domain.ObjectSummary{
-			Slug:        co.Slug,
-			Label:       co.Label,
-			LabelPlural: co.LabelPlural,
-			Icon:        co.Icon,
-			Color:       "#6B7280",
-			IsSystem:    false,
-			FieldCount:  len(parseFieldDefs(co.Fields)),
-			Searchable:  co.Searchable,
-		})
-	}
-
 	return summaries, nil
 }
 
-// GetSchema returns the full descriptor for one object by slug. A system slug
-// takes precedence over a custom object that happens to reuse it.
+// GetSchema returns the full descriptor for one object by slug. ListDefs orders
+// system objects first, but slug is unique per org so the lookup is unambiguous.
 func (uc *objectRegistryUseCase) GetSchema(ctx context.Context, orgID uuid.UUID, slug string) (*domain.ObjectDescriptor, error) {
 	if err := uc.repo.EnsureSystemObjects(ctx, orgID); err != nil {
 		return nil, err
 	}
 
-	if def, err := uc.repo.GetDefBySlug(ctx, orgID, slug); err != nil {
+	def, err := uc.repo.GetDefBySlug(ctx, orgID, slug)
+	if err != nil {
 		return nil, err
-	} else if def != nil {
-		return uc.systemSchema(ctx, orgID, def)
 	}
-
-	if co, err := uc.customRepo.GetDefBySlug(ctx, orgID, slug); err != nil {
-		return nil, err
-	} else if co != nil {
-		return customSchema(co), nil
+	if def == nil {
+		return nil, &domain.AppError{Code: http.StatusNotFound, Message: "object not found"}
 	}
-
-	return nil, &domain.AppError{Code: http.StatusNotFound, Message: "object not found"}
+	return uc.buildSchema(ctx, def)
 }
 
-// systemSchema assembles a system object's descriptor from object_fields, which
-// (post-P7) holds both native and admin-defined custom fields in one ordered list.
-func (uc *objectRegistryUseCase) systemSchema(ctx context.Context, orgID uuid.UUID, def *domain.ObjectDef) (*domain.ObjectDescriptor, error) {
+// buildSchema assembles any object's descriptor from object_fields — system and
+// custom alike, since both now live in the registry tables (P7 convergence).
+func (uc *objectRegistryUseCase) buildSchema(ctx context.Context, def *domain.ObjectDef) (*domain.ObjectDescriptor, error) {
 	fields, err := uc.repo.ListFields(ctx, def.ID)
 	if err != nil {
 		return nil, err
@@ -122,7 +85,7 @@ func (uc *objectRegistryUseCase) systemSchema(ctx context.Context, orgID uuid.UU
 		LabelPlural: def.LabelPlural,
 		Icon:        def.Icon,
 		Color:       def.Color,
-		IsSystem:    true,
+		IsSystem:    def.IsSystem,
 		Searchable:  def.Searchable,
 		Fields:      make([]domain.FieldDescriptor, 0, len(fields)),
 	}
@@ -141,55 +104,40 @@ func (uc *objectRegistryUseCase) systemSchema(ctx context.Context, orgID uuid.UU
 			fd.TargetSlug = *f.TargetSlug
 		}
 		descriptor.Fields = append(descriptor.Fields, fd)
-		// Resolve the display field's key from its id.
+		// Resolve the display field's key from its id (system objects set this).
 		if def.DisplayFieldID != nil && f.ID == *def.DisplayFieldID {
 			descriptor.DisplayField = f.Key
 		}
 	}
 
-	if descriptor.DisplayField == "" && len(descriptor.Fields) > 0 {
-		descriptor.DisplayField = descriptor.Fields[0].Key
+	// Fallback display field (custom objects have no display_field_id): first text
+	// field, else first field — matching the record-level display heuristic.
+	if descriptor.DisplayField == "" {
+		descriptor.DisplayField = fallbackDisplayField(descriptor.Fields)
 	}
 	return descriptor, nil
 }
 
-// customSchema assembles a custom object's descriptor from custom_object_defs.
-func customSchema(co *domain.CustomObjectDef) *domain.ObjectDescriptor {
-	defs := parseFieldDefs(co.Fields)
-	descriptor := &domain.ObjectDescriptor{
-		Slug:        co.Slug,
-		Label:       co.Label,
-		LabelPlural: co.LabelPlural,
-		Icon:        co.Icon,
-		Color:       "#6B7280",
-		IsSystem:    false,
-		Searchable:  co.Searchable,
-		Fields:      make([]domain.FieldDescriptor, 0, len(defs)),
+// fallbackDisplayField mirrors customDisplayField for FieldDescriptors: first text
+// field, else first field, else empty.
+func fallbackDisplayField(fields []domain.FieldDescriptor) string {
+	for _, f := range fields {
+		if f.Type == "text" {
+			return f.Key
+		}
 	}
-	for _, cd := range defs {
-		descriptor.Fields = append(descriptor.Fields, fieldDescriptorFromDef(cd))
+	if len(fields) > 0 {
+		return fields[0].Key
 	}
-	descriptor.DisplayField = customDisplayField(defs)
-	return descriptor
+	return ""
 }
 
 // ============================================================
 // Helpers
 // ============================================================
 
-func fieldDescriptorFromDef(cd domain.CustomFieldDef) domain.FieldDescriptor {
-	return domain.FieldDescriptor{
-		Key:      cd.Key,
-		Label:    cd.Label,
-		Type:     cd.Type,
-		Options:  cd.Options,
-		IsSystem: false,
-		Required: cd.Required,
-	}
-}
-
 // customDisplayField mirrors the record-level display heuristic: first text
-// field, else first field, else empty.
+// field, else first field, else empty. Used by RecordService.applyCustomDisplay.
 func customDisplayField(defs []domain.CustomFieldDef) string {
 	for _, d := range defs {
 		if d.Type == "text" {
@@ -202,6 +150,8 @@ func customDisplayField(defs []domain.CustomFieldDef) string {
 	return ""
 }
 
+// parseFieldDefs decodes a custom-object fields blob. Used by RecordService's
+// read-time display resolution (applyCustomDisplay).
 func parseFieldDefs(raw domain.JSON) []domain.CustomFieldDef {
 	if len(raw) == 0 {
 		return nil

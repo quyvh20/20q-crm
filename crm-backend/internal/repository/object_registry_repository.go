@@ -413,6 +413,105 @@ WHERE e.key IS NOT NULL AND e.key <> ''
           AND f.key = e.key
           AND f.deleted_at IS NULL);`
 
+// ============================================================
+// P7 convergence: custom_object_defs → object_defs/object_fields
+// ============================================================
+//
+// Custom objects' defs + fields move into the registry tables so object_defs/
+// object_fields is the single store for EVERY object (system and custom). Ids are
+// reused, so custom_object_records.object_def_id still resolves; the records FK is
+// repointed to object_defs. custom_object_defs is kept (unused) for rollback safety,
+// like the org_settings blob column. Records themselves stay in custom_object_records.
+
+// convergeDefsSQL copies each custom object def into object_defs, reusing its id so
+// existing records still resolve. Skips a def whose slug collides with a system
+// object (none today) and any already converged. Idempotent.
+const convergeDefsSQL = `
+INSERT INTO object_defs
+    (id, org_id, slug, label, label_plural, icon, color, is_system, storage,
+     record_table, searchable, created_at, updated_at, deleted_at)
+SELECT d.id, d.org_id, d.slug, d.label, d.label_plural,
+       COALESCE(NULLIF(d.icon, ''), '📦'), '#6B7280', false, 'jsonb', NULL,
+       COALESCE(d.searchable, false), d.created_at, d.updated_at, d.deleted_at
+FROM custom_object_defs d
+WHERE NOT EXISTS (SELECT 1 FROM object_defs o WHERE o.id = d.id)
+  AND NOT EXISTS (
+        SELECT 1 FROM object_defs o2
+        WHERE o2.org_id = d.org_id AND o2.slug = d.slug AND o2.deleted_at IS NULL);`
+
+// convergeFieldsSQL expands each converged def's fields blob into object_fields
+// rows (is_system=false, jsonb). Idempotent via the NOT EXISTS guard.
+const convergeFieldsSQL = `
+INSERT INTO object_fields
+    (id, org_id, object_def_id, key, label, type, options, target_slug,
+     is_required, is_unique, is_system, storage_kind, maps_to_column, position,
+     created_at, updated_at)
+SELECT uuid_generate_v4(), d.org_id, d.id,
+       e.key, COALESCE(NULLIF(e.label, ''), e.key), COALESCE(NULLIF(e.type, ''), 'text'),
+       e.options, NULL, e.required, false, false, 'jsonb', NULL, e.position, NOW(), NOW()
+FROM custom_object_defs d
+JOIN object_defs o ON o.id = d.id
+CROSS JOIN LATERAL jsonb_array_elements(
+       CASE WHEN jsonb_typeof(d.fields) = 'array' THEN d.fields ELSE '[]'::jsonb END) AS elem
+CROSS JOIN LATERAL (
+       SELECT elem->>'key'   AS key,
+              elem->>'label' AS label,
+              elem->>'type'  AS type,
+              CASE WHEN jsonb_typeof(elem->'options') = 'array'
+                   THEN elem->'options' ELSE '[]'::jsonb END   AS options,
+              COALESCE((elem->>'required')::boolean, false)    AS required,
+              COALESCE(NULLIF(elem->>'position', '')::int, 0)  AS position
+) AS e
+JOIN object_defs o2 ON o2.id = d.id  -- only converged defs (redundant safety)
+WHERE e.key IS NOT NULL AND e.key <> ''
+  AND NOT EXISTS (
+        SELECT 1 FROM object_fields f
+        WHERE f.object_def_id = d.id AND f.key = e.key AND f.deleted_at IS NULL);`
+
+// repointRecordsFKSQL drops the records→custom_object_defs FK (whatever its name)
+// and points it at object_defs. Idempotent: a no-op once already pointing there.
+const repointRecordsFKSQL = `
+DO $$
+DECLARE c text;
+BEGIN
+  SELECT conname INTO c FROM pg_constraint
+   WHERE conrelid = 'custom_object_records'::regclass AND contype = 'f'
+     AND confrelid = 'custom_object_defs'::regclass
+   LIMIT 1;
+  IF c IS NOT NULL THEN
+    EXECUTE 'ALTER TABLE custom_object_records DROP CONSTRAINT ' || quote_ident(c);
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'custom_object_records'::regclass AND contype = 'f'
+       AND confrelid = 'object_defs'::regclass
+  ) THEN
+    ALTER TABLE custom_object_records
+      ADD CONSTRAINT custom_object_records_object_def_id_fkey
+      FOREIGN KEY (object_def_id) REFERENCES object_defs(id) ON DELETE CASCADE;
+  END IF;
+END $$;`
+
+// ConvergeCustomObjectsToRegistry is the final P7 convergence: custom object defs +
+// fields move into object_defs/object_fields and the records FK is repointed there.
+// Returns the number of defs converged. Idempotent and boot-guarded (golang-migrate
+// is dead on prod). After this, object_defs/object_fields is the single store for
+// every object, so one field editor can serve them all.
+func ConvergeCustomObjectsToRegistry(db *gorm.DB) (int64, error) {
+	res := db.Exec(convergeDefsSQL)
+	if res.Error != nil {
+		return 0, res.Error
+	}
+	converged := res.RowsAffected
+	if err := db.Exec(convergeFieldsSQL).Error; err != nil {
+		return converged, err
+	}
+	if err := db.Exec(repointRecordsFKSQL).Error; err != nil {
+		return converged, err
+	}
+	return converged, nil
+}
+
 // BackfillObjectFieldsFromBlob is the P7 convergence step that makes object_fields
 // the single field-def store. It copies admin-defined custom fields from the legacy
 // org_settings.custom_field_defs blob into object_fields and returns the number of

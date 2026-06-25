@@ -1072,6 +1072,63 @@ func (h *Handler) systemCustomFieldDefs(ctx context.Context, orgID uuid.UUID) []
 	return out
 }
 
+// customObjSchema is one custom object plus its fields, for the workflow builder.
+type customObjSchema struct {
+	Slug   string
+	Label  string
+	Icon   string
+	Fields []schemaCustomField
+}
+
+// customObjectSchemas returns the org's custom objects and their fields from the
+// registry (object_defs is_system=false + object_fields). After the P7 convergence
+// custom objects live here, not in custom_object_defs.
+func (h *Handler) customObjectSchemas(ctx context.Context, orgID uuid.UUID) []customObjSchema {
+	type defRow struct {
+		ID    uuid.UUID `gorm:"column:id"`
+		Slug  string    `gorm:"column:slug"`
+		Label string    `gorm:"column:label"`
+		Icon  string    `gorm:"column:icon"`
+	}
+	var defs []defRow
+	if err := h.db.WithContext(ctx).
+		Table("object_defs").
+		Select("id, slug, label, icon").
+		Where("org_id = ? AND is_system = ? AND deleted_at IS NULL", orgID, false).
+		Order("created_at ASC").
+		Scan(&defs).Error; err != nil {
+		return nil
+	}
+	out := make([]customObjSchema, 0, len(defs))
+	for _, d := range defs {
+		type fRow struct {
+			Key     string          `gorm:"column:key"`
+			Label   string          `gorm:"column:label"`
+			Type    string          `gorm:"column:type"`
+			Options json.RawMessage `gorm:"column:options"`
+		}
+		var frows []fRow
+		if err := h.db.WithContext(ctx).
+			Table("object_fields").
+			Select("key, label, type, options").
+			Where("object_def_id = ? AND is_system = ? AND deleted_at IS NULL", d.ID, false).
+			Order("position ASC").
+			Scan(&frows).Error; err != nil {
+			continue
+		}
+		cs := customObjSchema{Slug: d.Slug, Label: d.Label, Icon: d.Icon}
+		for _, fr := range frows {
+			var opts []string
+			if len(fr.Options) > 0 {
+				_ = json.Unmarshal(fr.Options, &opts)
+			}
+			cs.Fields = append(cs.Fields, schemaCustomField{Slug: d.Slug, Key: fr.Key, Label: fr.Label, Type: fr.Type, Options: opts})
+		}
+		out = append(out, cs)
+	}
+	return out
+}
+
 // GetWorkflowSchema handles GET /api/workflows/schema.
 // Returns all available fields, stages, tags, users, and custom objects
 // so the frontend builder can render smart pickers instead of raw text inputs.
@@ -1151,43 +1208,18 @@ func (h *Handler) GetWorkflowSchema(c *gin.Context) {
 		}
 	}
 
-	// 3. Custom object definitions
+	// 3. Custom object definitions (registry; P7 — was custom_object_defs)
 	var customObjects []SchemaEntity
-	type customObjRow struct {
-		Slug   string          `gorm:"column:slug"`
-		Label  string          `gorm:"column:label"`
-		Icon   string          `gorm:"column:icon"`
-		Fields json.RawMessage `gorm:"column:fields"`
-	}
-	var objRows []customObjRow
-	if err := h.db.WithContext(ctx).Table("custom_object_defs").Where("org_id = ? AND deleted_at IS NULL", orgID).Find(&objRows).Error; err == nil {
-		for _, obj := range objRows {
-			entity := SchemaEntity{
-				Key:   obj.Slug,
-				Label: obj.Label,
-				Icon:  obj.Icon,
+	for _, obj := range h.customObjectSchemas(ctx, orgID) {
+		entity := SchemaEntity{Key: obj.Slug, Label: obj.Label, Icon: obj.Icon}
+		for _, f := range obj.Fields {
+			sf := SchemaField{Path: obj.Slug + "." + f.Key, Label: f.Label, Type: f.Type}
+			if f.Type == "select" {
+				sf.Options = f.Options
 			}
-			var fieldDefs []struct {
-				Key     string   `json:"key"`
-				Label   string   `json:"label"`
-				Type    string   `json:"type"`
-				Options []string `json:"options"`
-			}
-			if json.Unmarshal(obj.Fields, &fieldDefs) == nil {
-				for _, f := range fieldDefs {
-					sf := SchemaField{
-						Path:  obj.Slug + "." + f.Key,
-						Label: f.Label,
-						Type:  f.Type,
-					}
-					if f.Type == "select" {
-						sf.Options = f.Options
-					}
-					entity.Fields = append(entity.Fields, sf)
-				}
-			}
-			customObjects = append(customObjects, entity)
+			entity.Fields = append(entity.Fields, sf)
 		}
+		customObjects = append(customObjects, entity)
 	}
 
 	// 4. Pipeline stages
@@ -1323,24 +1355,13 @@ func (h *Handler) GetSchemaObjects(c *gin.Context) {
 		ObjectListItem{Name: "deal", Label: "Deal", Icon: "💰"},
 	)
 
-	// Custom objects from DB
-	type customObjRow struct {
-		Slug  string `gorm:"column:slug"`
-		Label string `gorm:"column:label"`
-		Icon  string `gorm:"column:icon"`
-	}
-	var objRows []customObjRow
-	if err := h.db.WithContext(ctx).Table("custom_object_defs").
-		Where("org_id = ? AND deleted_at IS NULL", orgID).
-		Select("slug, label, icon").
-		Find(&objRows).Error; err == nil {
-		for _, obj := range objRows {
-			icon := obj.Icon
-			if icon == "" {
-				icon = "📦"
-			}
-			objects = append(objects, ObjectListItem{Name: obj.Slug, Label: obj.Label, Icon: icon})
+	// Custom objects from the registry (object_defs; P7)
+	for _, obj := range h.customObjectSchemas(ctx, orgID) {
+		icon := obj.Icon
+		if icon == "" {
+			icon = "📦"
 		}
+		objects = append(objects, ObjectListItem{Name: obj.Slug, Label: obj.Label, Icon: icon})
 	}
 
 	// Webhook (always available)
@@ -1426,28 +1447,14 @@ func (h *Handler) GetSchemaObjectFields(c *gin.Context) {
 			fields = append(fields, item)
 		}
 	} else {
-		// Custom object — look up from custom_object_defs
-		type customObjRow struct {
-			Slug   string          `gorm:"column:slug"`
-			Fields json.RawMessage `gorm:"column:fields"`
-		}
-		var objRow customObjRow
-		err := h.db.WithContext(ctx).Table("custom_object_defs").
-			Where("org_id = ? AND slug = ? AND deleted_at IS NULL", orgID, slug).
-			First(&objRow).Error
-		if err != nil {
-			h.errorResponse(c, http.StatusNotFound, "NOT_FOUND", "Object not found: "+slug, nil)
-			return
-		}
-
-		var fieldDefs []struct {
-			Key     string   `json:"key"`
-			Label   string   `json:"label"`
-			Type    string   `json:"type"`
-			Options []string `json:"options"`
-		}
-		if json.Unmarshal(objRow.Fields, &fieldDefs) == nil {
-			for _, f := range fieldDefs {
+		// Custom object — look up from the registry (object_defs/object_fields; P7)
+		found := false
+		for _, obj := range h.customObjectSchemas(ctx, orgID) {
+			if obj.Slug != slug {
+				continue
+			}
+			found = true
+			for _, f := range obj.Fields {
 				item := FieldListItem{
 					Name:  slug + "." + f.Key,
 					Label: f.Label,
@@ -1458,6 +1465,10 @@ func (h *Handler) GetSchemaObjectFields(c *gin.Context) {
 				}
 				fields = append(fields, item)
 			}
+		}
+		if !found {
+			h.errorResponse(c, http.StatusNotFound, "NOT_FOUND", "Object not found: "+slug, nil)
+			return
 		}
 	}
 
