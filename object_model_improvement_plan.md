@@ -744,9 +744,10 @@ single change does more for tenant safety than any new table.
   - [x] Backfill `object_fields` from `org_settings.custom_field_defs`; stop writing the blob
   - [x] Backfill `object_links` from hardcoded `contact_id`/`deal_id`; drop those columns
   - [x] Cut the workflow engine over to the tag adapter; `contact_tags` becomes optional
-  - [x] Delete old per-object pages (ContactsPage/DealsPage are thin wrappers over the shared renderer); ⏳ unify the two field-def *managers* still pending — see note
+  - [x] Delete old per-object pages (ContactsPage/DealsPage are thin wrappers over the shared renderer) and unify the two field-def managers into one `ObjectsManager`
   - [x] Remove feature flags (`objects.unified_read`, `objects.search`, the flag module, the flag-fallback test, and the contact-only `SearchBar` are gone)
   - [x] Verify backfill row counts; full build / vet / test green *(verified live on the Docker stack too)*
+  - [x] **Custom objects converged onto the registry** (`object_defs`/`object_fields` is now the single store for EVERY object): migration `000021` + boot guard reuses ids, expands the fields blob, repoints the records FK; `customObjectRepository` def methods reimplemented behind the same port; registry/automation/OLS-seed read `object_defs`
   - > **Status — backend half landed (commit `feat(objects): P7 backend convergence`):**
   >   `OrgSettingsUseCase` now CRUDs system-object custom fields through `object_fields`
   >   (is_system=false), not the `org_settings.custom_field_defs` blob — same interface,
@@ -774,19 +775,27 @@ single change does more for tenant safety than any new table.
   >   **Verified live on the Docker stack:** unified Contacts + working company filter
   >   (Acme → Bob/Alice), Deals board grouped by stage, and a uniform move to "Closed Won"
   >   setting `is_won` + `closed_at` (proving the `ChangeStage` side-effects run).
-  > **Remaining — manager unification:** merging `CustomFieldManager` (system-object custom
-  >   fields, now in `object_fields`) and `ObjectDefManager` (custom objects, still in
-  >   `custom_object_defs.fields`) into one field editor needs the remaining backend
-  >   convergence — migrating `custom_object_defs`(+`.fields`) onto `object_defs`/
-  >   `object_fields` so one store backs one editor. This was implicit in the P5a/P5b/P6
-  >   "custom objects converge at P7" notes but not in the original P7 checklist; it is the
-  >   one piece left and is scoped as the next focused increment. Minor follow-ups:
-  >   tags-on-create in the shared form (tags currently added via the detail panel after
-  >   create), and a stage filter in the table view (the board already handles stage).
+  > **Custom-object → registry convergence DONE** (commits `P7 custom-object→registry
+  >   convergence (backend)` + `P7 unify field managers`): `object_defs`/`object_fields` is
+  >   now the single store for EVERY object. Custom defs/fields were migrated in (id reused,
+  >   records FK repointed); `customObjectRepository` def methods sit on the registry tables
+  >   behind the same port (records stay in `custom_object_records`); registry, automation
+  >   schema, and the OLS default-seed all read `object_defs`. The two admin managers are
+  >   replaced by one `ObjectsManager` (Settings → "Objects & Fields") that edits any
+  >   object's fields. **Verified live:** boot guard converged the dev DB (records FK →
+  >   `object_defs`, 0 orphans); a custom object created post-convergence accepts records;
+  >   adding a custom field to the built-in Contact through the unified manager persisted to
+  >   `object_fields`. **P7 is complete.** Minor follow-ups (non-blocking): tags-on-create
+  >   in the shared record form (tags currently added via the detail panel after create), a
+  >   stage filter in the table view (the board already handles stage), and a single
+  >   object-scoped field API (the manager currently routes system vs custom field writes to
+  >   the existing settings vs custom-object endpoints, both writing to `object_fields`).
 - **Definition of Done:** `org_settings.custom_field_defs` no longer written; old
-  per-object custom-field UI removed; backfill verified; flags removed.
-- **Effort:** Medium (3–4 days). *(Backend half done; frontend parity+cutover is the larger
-  remaining slice — see status note.)*
+  per-object custom-field UI removed; backfill verified; flags removed. ✅ **All met** —
+  plus custom objects fully converged onto `object_defs`/`object_fields` and the two field
+  managers unified into one. **P7 complete** (branch `feat/objects-p7-convergence`).
+- **Effort:** Medium (3–4 days). *(Delivered as: backend convergence → frontend parity →
+  cutover → custom-object→registry convergence + manager unification; all verified live.)*
 
 ### P8 — Per-role detail layouts *(additive; depends only on P3 + P5b — can land before P6/P7)*
 
