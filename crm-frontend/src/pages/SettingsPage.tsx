@@ -1,8 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
-import CustomFieldManager from '../components/settings/CustomFieldManager';
-import ObjectDefManager from '../components/settings/ObjectDefManager';
+import ObjectsManager from '../components/settings/ObjectsManager';
 import KnowledgeBase from '../components/settings/KnowledgeBase';
 import PipelineStagesManager from '../components/settings/PipelineStagesManager';
 import PermissionsManager from '../components/settings/PermissionsManager';
@@ -10,8 +9,7 @@ import FieldSecurityManager from '../components/settings/FieldSecurityManager';
 
 const BASE_TABS = [
   { id: 'pipeline', label: 'Pipeline', icon: '🎯' },
-  { id: 'fields', label: 'Custom Fields', icon: '📋' },
-  { id: 'objects', label: 'Custom Objects', icon: '📦' },
+  { id: 'objects', label: 'Objects & Fields', icon: '📦' },
   { id: 'knowledge', label: 'Knowledge Base', icon: '🧠' },
   { id: 'templates', label: 'Templates', icon: '🏗️' },
 ] as const;
@@ -74,9 +72,7 @@ export default function SettingsPage() {
       <div>
         {activeTab === 'pipeline' && <PipelineStagesManager />}
 
-        {activeTab === 'fields' && <CustomFieldManager />}
-
-        {activeTab === 'objects' && <ObjectDefManager />}
+        {activeTab === 'objects' && <ObjectsManager />}
 
         {activeTab === 'permissions' && (
           <div className="space-y-10">
