@@ -82,6 +82,10 @@ type ObjectSummary struct {
 
 // ObjectDescriptor is the full schema for one object. The frontend (P3) renders
 // any object from this single shape, system or custom alike.
+//
+// As of P8, the descriptor also carries the caller's effective detail layout
+// (resolved from configured layouts, intersected with FLS). Layout is nil/empty
+// when no layout has been configured — the renderer falls back to flat field order.
 type ObjectDescriptor struct {
 	Slug         string            `json:"slug"`
 	Label        string            `json:"label"`
@@ -92,6 +96,12 @@ type ObjectDescriptor struct {
 	Searchable   bool              `json:"searchable"`
 	DisplayField string            `json:"display_field"`
 	Fields       []FieldDescriptor `json:"fields"`
+	// Layout is the caller's effective detail layout (P8). Empty/nil means
+	// no layout configured; the frontend renders the flat Fields list instead.
+	// This field is populated by the HTTP handler after schema assembly by calling
+	// ObjectLayoutUseCase.ResolveLayout, so it is omitted from the schema endpoint
+	// when the feature is not yet wired (zero value = omitempty = absent from JSON).
+	Layout []LayoutSection `json:"layout,omitempty"`
 }
 
 // FieldDescriptor is one field in an ObjectDescriptor. storage_kind / maps_to_column

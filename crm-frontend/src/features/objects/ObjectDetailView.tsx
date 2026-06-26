@@ -1,5 +1,12 @@
 import { useState, useEffect } from 'react';
-import { type ObjectSchema, type UniformRecord, getObjectRecordUnified, getStages } from '../../lib/api';
+import {
+  type ObjectSchema,
+  type UniformRecord,
+  type LayoutSection,
+  type ObjectFieldDescriptor,
+  getObjectRecordUnified,
+  getStages,
+} from '../../lib/api';
 import { formatFieldValue } from './fieldHelpers';
 import RecordRelations from './RecordRelations';
 
@@ -11,21 +18,100 @@ interface ObjectDetailViewProps {
   onClose: () => void;
 }
 
+// FieldRow is the shared single-field renderer, used by both the flat list and
+// the sectioned layout so the display is always identical.
+function FieldRow({
+  field,
+  value,
+  relationLabel,
+}: {
+  field: ObjectFieldDescriptor;
+  value: unknown;
+  relationLabel?: string;
+}) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', marginBottom: 2 }}>
+        {field.label}
+      </div>
+      <div style={{ fontSize: 14, color: '#0f172a' }}>
+        {formatFieldValue(field, value, relationLabel)}
+      </div>
+    </div>
+  );
+}
+
+// SectionPanel renders one LayoutSection with its fields in a 1- or 2-column grid.
+function SectionPanel({
+  section,
+  schema,
+  record,
+  relationLabels,
+}: {
+  section: LayoutSection;
+  schema: ObjectSchema;
+  record: UniformRecord;
+  relationLabels: Record<string, string>;
+}) {
+  const fieldMap = Object.fromEntries(schema.fields.map((f) => [f.key, f]));
+
+  return (
+    <div style={{ marginBottom: 24 }}>
+      {section.label && (
+        <div style={{
+          fontSize: 11,
+          fontWeight: 700,
+          color: '#94a3b8',
+          textTransform: 'uppercase',
+          letterSpacing: '0.08em',
+          borderBottom: '1px solid #e2e8f0',
+          paddingBottom: 6,
+          marginBottom: 14,
+        }}>
+          {section.label}
+        </div>
+      )}
+      <div
+        style={
+          section.columns === 2
+            ? { display: 'grid', gridTemplateColumns: '1fr 1fr', columnGap: 24 }
+            : undefined
+        }
+      >
+        {section.fields.map((slot) => {
+          const field = fieldMap[slot.key];
+          if (!field) return null;
+          const span = section.columns === 2 && slot.width === 'full' ? { gridColumn: '1 / -1' } : undefined;
+          return (
+            <div key={slot.key} style={span}>
+              <FieldRow
+                field={field}
+                value={record.fields[slot.key]}
+                relationLabel={relationLabels[slot.key]}
+              />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ObjectDetailView is the read-only record panel for every object, rendered from
-// the same schema as the list and form. Below the fields it shows the record's
-// universal relationships + tags (P4), identical for system and custom objects.
+// the same schema as the list and form.
+//
+// P8 layout rendering: when schema.layout is non-empty, fields are grouped into
+// LayoutSection panels (1 or 2-column). Fields absent from every section are
+// collected into a trailing "Other" section so nothing is ever lost — the layout
+// controls visual priority, not visibility (FLS controls that).
 export default function ObjectDetailView({ schema, record, onEdit, onDelete, onClose }: ObjectDetailViewProps) {
-  // Resolve native relation FIELDS (e.g. a deal's contact/company) to the target's
-  // display title, so they no longer render as raw UUIDs (closes a P3 deferral).
-  // Bounded to this single record's relation fields — the list view stays raw to
-  // avoid the per-row N+1 the plan warns about (§11).
   const [relationLabels, setRelationLabels] = useState<Record<string, string>>({});
+
   useEffect(() => {
     let cancelled = false;
     const relations = schema.fields.filter(
       (f) => f.type === 'relation' && f.target_slug && record.fields[f.key],
     );
-    // A "stage" relation has no registry target, so it resolves from the pipeline stages.
     const stageField = schema.fields.find(
       (f) => f.key === 'stage' && f.type === 'relation' && !f.target_slug && record.fields[f.key],
     );
@@ -63,6 +149,25 @@ export default function ObjectDetailView({ schema, record, onEdit, onDelete, onC
     };
   }, [schema, record]);
 
+  // Determine render mode: sectioned (P8 layout) or flat (legacy / no layout).
+  const sections = schema.layout && schema.layout.length > 0 ? schema.layout : null;
+
+  // Build an "Other" section for fields absent from all layout sections so they
+  // are always visible even if the admin forgot to add them.
+  let otherSection: LayoutSection | null = null;
+  if (sections) {
+    const inLayout = new Set(sections.flatMap((s) => s.fields.map((f) => f.key)));
+    const missing = schema.fields.filter((f) => !inLayout.has(f.key));
+    if (missing.length > 0) {
+      otherSection = {
+        id: '__other__',
+        label: 'Other',
+        columns: 1,
+        fields: missing.map((f) => ({ key: f.key })),
+      };
+    }
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <div style={{ padding: '20px 24px', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -71,12 +176,39 @@ export default function ObjectDetailView({ schema, record, onEdit, onDelete, onC
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto', padding: 24 }}>
-        {schema.fields.map((field) => (
-          <div key={field.key} style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', marginBottom: 2 }}>{field.label}</div>
-            <div style={{ fontSize: 14, color: '#0f172a' }}>{formatFieldValue(field, record.fields[field.key], relationLabels[field.key])}</div>
-          </div>
-        ))}
+        {sections ? (
+          // Sectioned layout (P8)
+          <>
+            {sections.map((section) => (
+              <SectionPanel
+                key={section.id}
+                section={section}
+                schema={schema}
+                record={record}
+                relationLabels={relationLabels}
+              />
+            ))}
+            {otherSection && (
+              <SectionPanel
+                key="__other__"
+                section={otherSection}
+                schema={schema}
+                record={record}
+                relationLabels={relationLabels}
+              />
+            )}
+          </>
+        ) : (
+          // Flat field order (fallback when no layout configured)
+          schema.fields.map((field) => (
+            <FieldRow
+              key={field.key}
+              field={field}
+              value={record.fields[field.key]}
+              relationLabel={relationLabels[field.key]}
+            />
+          ))
+        )}
 
         <RecordRelations slug={schema.slug} recordId={record.id} />
       </div>

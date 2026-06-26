@@ -344,6 +344,36 @@ func main() {
 		db.Exec(`ALTER TABLE record_embeddings ENABLE ROW LEVEL SECURITY`)
 		db.Exec(`ALTER TABLE custom_object_defs ADD COLUMN IF NOT EXISTS searchable BOOLEAN NOT NULL DEFAULT FALSE`)
 
+		// Per-role detail layouts (migration 000022, P8) — boot guard, since
+		// golang-migrate is authoritative only for fresh DBs and existing prod schema
+		// is maintained here. Mirrors migrations/000022_object_layouts.up.sql exactly.
+		// Layout is presentation only; FLS (field_permissions) stays the security
+		// boundary. The unique partial index ensures at most one is_default per object,
+		// and the role-assignment index ensures one layout per role per object.
+		db.Exec(`CREATE TABLE IF NOT EXISTS object_layouts (
+			id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			org_id       UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			object_slug  VARCHAR(100) NOT NULL,
+			name         VARCHAR(255) NOT NULL,
+			layout       JSONB NOT NULL DEFAULT '[]',
+			is_default   BOOLEAN NOT NULL DEFAULT FALSE,
+			created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			deleted_at   TIMESTAMPTZ
+		)`)
+		db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uix_object_layouts_default ON object_layouts(org_id, object_slug) WHERE is_default AND deleted_at IS NULL`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_object_layouts_org_slug ON object_layouts(org_id, object_slug) WHERE deleted_at IS NULL`)
+		db.Exec(`ALTER TABLE object_layouts ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`CREATE TABLE IF NOT EXISTS object_layout_roles (
+			id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			org_id       UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			layout_id    UUID NOT NULL REFERENCES object_layouts(id) ON DELETE CASCADE,
+			object_slug  VARCHAR(100) NOT NULL,
+			role_id      UUID NOT NULL REFERENCES roles(id) ON DELETE CASCADE
+		)`)
+		db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uix_object_layout_roles_one_per_role ON object_layout_roles(org_id, object_slug, role_id)`)
+		db.Exec(`ALTER TABLE object_layout_roles ENABLE ROW LEVEL SECURITY`)
+
 		log.Info("Seeding system roles...")
 		if err := repository.SeedSystemRoles(db); err != nil {
 			log.Error("Failed to seed system roles", zap.Error(err))
@@ -455,7 +485,12 @@ func main() {
 		// Object Registry (P2/P7): uniform view over system + custom objects, reading
 		// every field from object_fields (no blob merge after the P7 cutover).
 		objectRegistryUC := usecase.NewObjectRegistryUseCase(objectRegistryRepo)
-		objectRegistryHandler := delivery.NewObjectRegistryHandler(objectRegistryUC)
+
+		// Per-role detail layouts (P8): layout repo + usecase wired early so the
+		// registry handler can inject them at construction time below.
+		layoutRepo := repository.NewObjectLayoutRepository(db)
+		layoutUC := usecase.NewObjectLayoutUseCase(layoutRepo)
+		layoutHandler := delivery.NewObjectLayoutHandler(layoutUC)
 
 		contactRepo := repository.NewContactRepository(db)
 		contactUseCase := usecase.NewContactUseCase(contactRepo, embedWorker, embedSvc)
@@ -494,6 +529,11 @@ func main() {
 		permissionUC := usecase.NewPermissionUseCase(permissionRepo, objectRegistryUC)
 		permissionHandler := delivery.NewPermissionHandler(permissionUC)
 
+		// Object Registry handler — constructed here (after permissionUC) so it can
+		// receive both the layout usecase (P8) and the OLS/FLS authorizer (P5a/P5b).
+		// The authorizer is the same permissionUC value handed to RecordService.
+		objectRegistryHandler := delivery.NewObjectRegistryHandler(objectRegistryUC, layoutUC, permissionUC)
+
 		// RecordService now that every per-object usecase exists. linkRepo + tagRepo
 		// back the universal relationship/tag surface (P4); permissionUC enforces
 		// OLS + writes the audit trail (P5a) — the security chokepoint.
@@ -531,7 +571,7 @@ func main() {
 		voiceNoteUC := usecase.NewVoiceNoteUseCase(voiceNoteRepo, aiJobQueue, cfg, contactRepo)
 		voiceHandler := delivery.NewVoiceHandler(voiceNoteUC)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, cfg, db, redisClient, authRepo)
+		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, layoutHandler, cfg, db, redisClient, authRepo)
 
 		// --- Workflow Automation Engine ---
 		memHandler := logger.NewMemoryHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))

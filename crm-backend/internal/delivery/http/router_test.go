@@ -18,28 +18,34 @@ func TestRegisterObjectRegistryRoutes(t *testing.T) {
 	}()
 
 	e := gin.New()
-	registerObjectRegistryRoutes(e.Group("/api"), NewObjectRegistryHandler(nil), NewRecordHandler(nil), NewPermissionHandler(nil), NewSearchHandler(nil))
+	registerObjectRegistryRoutes(e.Group("/api"), NewObjectRegistryHandler(nil, nil, nil), NewRecordHandler(nil), NewPermissionHandler(nil), NewSearchHandler(nil), NewObjectLayoutHandler(nil))
 
 	want := map[string]bool{
-		"GET /api/registry/objects":                                  false,
-		"GET /api/registry/search":                                   false,
-		"GET /api/registry/objects/:slug/schema":                     false,
-		"GET /api/registry/objects/:slug/records":                    false,
-		"GET /api/registry/objects/:slug/records/:id":                false,
-		"POST /api/registry/objects/:slug/records":                   false,
-		"PATCH /api/registry/objects/:slug/records/:id":              false,
-		"DELETE /api/registry/objects/:slug/records/:id":             false,
-		"GET /api/registry/objects/:slug/records/:id/links":          false,
-		"POST /api/registry/objects/:slug/records/:id/links":         false,
-		"GET /api/registry/objects/:slug/records/:id/tags":           false,
-		"POST /api/registry/objects/:slug/records/:id/tags":          false,
-		"DELETE /api/registry/objects/:slug/records/:id/tags/:tagId": false,
-		"DELETE /api/registry/links/:id":                             false,
-		"GET /api/registry/objects/:slug/records/:id/audit":          false,
-		"GET /api/registry/objects/:slug/field-permissions":          false,
-		"PUT /api/registry/objects/:slug/field-permissions":          false,
-		"GET /api/registry/permissions":                              false,
-		"PUT /api/registry/permissions":                              false,
+		"GET /api/registry/objects":                                    false,
+		"GET /api/registry/search":                                     false,
+		"GET /api/registry/objects/:slug/schema":                       false,
+		"GET /api/registry/objects/:slug/records":                      false,
+		"GET /api/registry/objects/:slug/records/:id":                  false,
+		"POST /api/registry/objects/:slug/records":                     false,
+		"PATCH /api/registry/objects/:slug/records/:id":                false,
+		"DELETE /api/registry/objects/:slug/records/:id":               false,
+		"GET /api/registry/objects/:slug/records/:id/links":            false,
+		"POST /api/registry/objects/:slug/records/:id/links":           false,
+		"GET /api/registry/objects/:slug/records/:id/tags":             false,
+		"POST /api/registry/objects/:slug/records/:id/tags":            false,
+		"DELETE /api/registry/objects/:slug/records/:id/tags/:tagId":   false,
+		"DELETE /api/registry/links/:id":                               false,
+		"GET /api/registry/objects/:slug/records/:id/audit":            false,
+		"GET /api/registry/objects/:slug/field-permissions":            false,
+		"PUT /api/registry/objects/:slug/field-permissions":            false,
+		"GET /api/registry/permissions":                                false,
+		"PUT /api/registry/permissions":                                false,
+		// P8 layout routes:
+		"GET /api/registry/objects/:slug/layouts":                      false,
+		"POST /api/registry/objects/:slug/layouts":                     false,
+		"PATCH /api/registry/objects/:slug/layouts/:id":                false,
+		"DELETE /api/registry/objects/:slug/layouts/:id":               false,
+		"PUT /api/registry/objects/:slug/layouts/:id/roles":            false,
 	}
 	for _, r := range e.Routes() {
 		key := r.Method + " " + r.Path

@@ -885,6 +885,34 @@ export interface ObjectFieldDescriptor {
   unique?: boolean;
 }
 
+// P8 — Per-role detail layouts ----------------------------------------
+
+export interface LayoutField {
+  key: string;
+  width?: 'full' | 'half'; // grid span within a 2-column section; ignored for 1-col
+}
+
+export interface LayoutSection {
+  id: string;
+  label: string;
+  columns: 1 | 2;
+  fields: LayoutField[];
+}
+
+export interface ObjectLayout {
+  id: string;
+  org_id: string;
+  object_slug: string;
+  name: string;
+  layout: LayoutSection[];
+  is_default: boolean;
+  role_ids: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+// -----------------------------------------------------------------------
+
 export interface ObjectSchema {
   slug: string;
   label: string;
@@ -895,6 +923,8 @@ export interface ObjectSchema {
   searchable: boolean;
   display_field: string;
   fields: ObjectFieldDescriptor[];
+  // P8: resolved effective layout, already FLS-filtered. Absent/empty → flat field order.
+  layout?: LayoutSection[];
 }
 
 export interface ObjectSummary {
@@ -935,6 +965,63 @@ export async function getObjectSchema(slug: string): Promise<ObjectSchema> {
   if (!res.ok) throw new Error(json.error || 'Failed to fetch object schema');
   return json.data as ObjectSchema;
 }
+
+// P8 — Layout admin CRUD ---------------------------------------------------
+
+export async function listObjectLayouts(slug: string): Promise<ObjectLayout[]> {
+  const res = await apiFetch(`/api/registry/objects/${slug}/layouts`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch layouts');
+  return (json.data || []) as ObjectLayout[];
+}
+
+export async function createObjectLayout(
+  slug: string,
+  payload: { name: string; layout: LayoutSection[]; is_default: boolean; role_ids: string[] }
+): Promise<ObjectLayout> {
+  const res = await apiFetch(`/api/registry/objects/${slug}/layouts`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to create layout');
+  return json.data as ObjectLayout;
+}
+
+export async function updateObjectLayout(
+  slug: string,
+  id: string,
+  payload: { name?: string; layout?: LayoutSection[]; is_default?: boolean }
+): Promise<ObjectLayout> {
+  const res = await apiFetch(`/api/registry/objects/${slug}/layouts/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to update layout');
+  return json.data as ObjectLayout;
+}
+
+export async function deleteObjectLayout(slug: string, id: string): Promise<void> {
+  const res = await apiFetch(`/api/registry/objects/${slug}/layouts/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error((json as { error?: string }).error || 'Failed to delete layout');
+  }
+}
+
+export async function setLayoutRoles(slug: string, id: string, roleIds: string[]): Promise<void> {
+  const res = await apiFetch(`/api/registry/objects/${slug}/layouts/${id}/roles`, {
+    method: 'PUT',
+    body: JSON.stringify({ role_ids: roleIds }),
+  });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error((json as { error?: string }).error || 'Failed to update layout roles');
+  }
+}
+
+// --------------------------------------------------------------------------
 
 export async function listObjectRecordsUnified(slug: string, params?: {
   limit?: number;
