@@ -12,7 +12,7 @@ import (
 )
 
 // setupPermissions stands up the minimal prerequisites the 000017 FKs need
-// (organizations, roles, users, custom_object_defs), runs the real up migration,
+// (organizations, roles, users, object_defs), runs the real up migration,
 // then inserts one org and the five system roles. Returns the org id, a
 // role-name → id map, and the repository. Mirrors applyRegistrySchema
 // (object_registry_repository_test.go).
@@ -25,7 +25,8 @@ func setupPermissions(t *testing.T) (orgID uuid.UUID, roleIDs map[string]uuid.UU
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS organizations (id uuid PRIMARY KEY DEFAULT uuid_generate_v4())`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS users (id uuid PRIMARY KEY DEFAULT uuid_generate_v4(), full_name varchar, email varchar)`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS roles (id uuid PRIMARY KEY DEFAULT uuid_generate_v4(), org_id uuid, name varchar NOT NULL, is_system boolean NOT NULL DEFAULT false)`).Error)
-	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS custom_object_defs (id uuid PRIMARY KEY DEFAULT uuid_generate_v4(), org_id uuid NOT NULL, slug varchar NOT NULL, deleted_at timestamptz)`).Error)
+	// Post-P7, the OLS seed reads custom slugs from object_defs (is_system=false).
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS object_defs (id uuid PRIMARY KEY DEFAULT uuid_generate_v4(), org_id uuid NOT NULL, slug varchar NOT NULL, is_system boolean NOT NULL DEFAULT false, deleted_at timestamptz)`).Error)
 
 	runMigrationFile(t, db, "000017_object_security.up.sql")
 	runMigrationFile(t, db, "000017b_field_permissions.up.sql")
@@ -101,7 +102,7 @@ func TestEnsureDefaults_CoversCustomObjects_AndRespectsLockdown(t *testing.T) {
 	// A pre-existing custom object: the seed must cover it too (uniform path UX
 	// is non-breaking at rollout).
 	db := repo.(*permissionRepository).db
-	require.NoError(t, db.Exec(`INSERT INTO custom_object_defs (org_id, slug) VALUES (?, 'project')`, orgID).Error)
+	require.NoError(t, db.Exec(`INSERT INTO object_defs (org_id, slug, is_system) VALUES (?, 'project', false)`, orgID).Error)
 
 	require.NoError(t, repo.EnsureDefaults(ctx, orgID))
 	access, err := repo.LoadOrgAccess(ctx, orgID)
