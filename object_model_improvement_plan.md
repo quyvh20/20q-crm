@@ -8,7 +8,9 @@
 > **Through-line of this whole plan:** *all objects are equal.* Every phase moves one more
 > capability from "Contacts only" or "two separate stacks" to "every object, the same way."
 
-**Status:** Proposal / ready to implement · **Sibling doc:** `workflow_builder_improvement_plan.md`
+**Status:** ✅ **All phases delivered (P1–P8)** — convergence complete; every object shares one
+engine, API, UI, security model, search, and now per-role detail layouts. Last verified
+2026-06-29. · **Sibling doc:** `workflow_builder_improvement_plan.md`
 
 ---
 
@@ -329,7 +331,7 @@ CREATE INDEX idx_record_embeddings_fts
 ALTER TABLE record_embeddings ENABLE ROW LEVEL SECURITY;
 ```
 
-### 4.6 Detail layouts — migration `000019` (P8)
+### 4.6 Detail layouts — migration `000022` (P8) *(planned as `000019`; renumbered — P7 used `000019`–`000021`)*
 
 > Plus an idempotent boot guard in `main.go` (golang-migrate is dead on prod). Presentation
 > only — these tables never gate access; FLS (`field_permissions`) stays the security boundary.
@@ -807,32 +809,48 @@ single change does more for tenant safety than any new table.
   so different roles see a detail page arranged for their job. **Deals are excluded** (they
   stay on their bespoke legacy page). **Layout is presentation only — FLS remains the security
   boundary.**
-- **Fix:** Migration `000019` (`object_layouts` + `object_layout_roles`) + idempotent boot
+- **Fix:** Migration `000022` (`object_layouts` + `object_layout_roles`) + idempotent boot
   guard in `main.go` (golang-migrate is dead on prod). Resolve the *effective* layout per
   caller-role and **fold it into `GET …/objects/:slug/schema`**; admin CRUD under
   `…/objects/:slug/layouts`. `ObjectDetailView` renders sections from the effective layout,
-  falling back to field order when none. Behind an `objects.layouts` flag, default off.
-- **Files:** migration `000019_object_layouts.{up,down}.sql` + boot guard;
-  `object_registry_repository.go` / `object_registry_usecase.go` (layout load + effective-layout
-  resolution + FLS intersection); `object_handler.go` (CRUD + role-assignment routes); frontend
-  `ObjectDetailView` (section renderer) + a layout builder in `ObjectDefManager`.
+  falling back to field order when none.
+  > **Migration number (deviation):** landed as `000022`, not the plan's `000019` — P7's
+  > three convergence migrations (`000019`/`000020`/`000021`) consumed those slots first.
+  > **Flag:** shipped without an `objects.layouts` flag — the feature is inert by default
+  > (no layout rows ⇒ field-order fallback, byte-for-byte today's page), so a flag added no
+  > safety and the P7 cutover had already removed the flag module.
+- **Files (as built):** migration `000022_object_layouts.{up,down}.sql` + boot guard in `main.go`;
+  new `internal/domain/object_layout.go`, `internal/repository/object_layout_repository.go`,
+  `internal/usecase/object_layout_usecase.go` (layout load + 3-tier resolution + FLS intersection);
+  `object_handler.go` (schema fold) + new `object_layout_handler.go` (CRUD + role-assignment routes);
+  frontend `ObjectDetailView` (section renderer) + a Layouts tab in `ObjectsManager` (the unified
+  manager from P7, not the retired `ObjectDefManager`) + `api.ts` types/CRUD.
 - **Checklist:**
-  - [ ] Migration `000019`: `object_layouts` (`layout` JSONB, `is_default`) + `object_layout_roles`
+  - [x] Migration `000022`: `object_layouts` (`layout` JSONB, `is_default`) + `object_layout_roles`
         with a **unique `(org_id, object_slug, role_id)`** (one effective layout per role), RLS,
-        `.down`, and a boot guard
-  - [ ] Effective-layout resolver: `(role-assigned)` → `(is_default layout)` →
-        `(synthesized field-order)`; then **intersect with the role's FLS mask** (drop hidden
-        fields; never treat "absent from layout" as a security gate)
-  - [ ] Fold the effective layout into `GET …/schema` (single fetch for the renderer); cache
-        layouts per-org, resolve per-role at request time (mirrors the OLS/FLS cache pattern)
-  - [ ] Admin layout CRUD + `PUT …/layouts/:id/roles`; validate field keys against
-        `object_fields`, ignore stale keys on render; enforce **≤1 `is_default` per object**
-  - [ ] `ObjectDetailView` renders sections (fallback to field order); layout builder in
-        `ObjectDefManager` (drag fields into sections + an "applies to: [roles]" control);
-        **Deals excluded** from the picker
-  - [ ] Tests: resolver precedence (assigned > default > synth), FLS intersection (a hidden
-        field never renders regardless of layout), one-layout-per-role uniqueness, no-layout
-        fallback, admin CRUD; `go build`/`go vet` + `npx vitest run` + `npx tsc -b` clean
+        `.down`, and a boot guard (mirrors the migration exactly in `main.go`)
+  - [x] Effective-layout resolver (`object_layout_usecase.ResolveLayout`): `(role-assigned)` →
+        `(is_default layout)` → `(nil ⇒ renderer synthesizes field-order)`; then **intersect with the
+        role's FLS mask** (drop hidden fields; never treat "absent from layout" as a security gate)
+  - [x] Fold the effective layout into `GET …/registry/objects/:slug/schema` (single fetch for the
+        renderer — `descriptor.Layout` set in `object_handler.go`); layouts cached per-org (60s TTL,
+        explicit `Invalidate` on every write), resolved per-role at request time (mirrors OLS/FLS)
+  - [x] Admin layout CRUD + `PUT …/layouts/:id/roles`; enforce **≤1 `is_default` per object** (unique
+        partial index); stale field keys ignored at render time; `DeleteLayout` hard-deletes role rows
+        in the same txn (GORM soft-delete doesn't fire `ON DELETE CASCADE`, which would orphan rows)
+  - [x] `ObjectDetailView` renders sections (`LayoutSection`; 1/2-col grid; trailing "Other" section
+        for unplaced fields; fallback to field order when no layout); **Layouts tab** layout builder in
+        `ObjectsManager` (field picker scoped to globally-unplaced fields + "applies to: [roles]" +
+        default flag); **Deals excluded** from the picker
+  - [x] Tests: 8 layout-usecase unit tests (resolver precedence assigned > default > synth, FLS
+        intersection, one-layout-per-role uniqueness, no-layout fallback, cache+invalidate, admin CRUD)
+        + router registration + 4 `ObjectDetailView` section-render tests; `go build`/`go vet` +
+        `npx vitest run` (596) + `npx tsc -b` clean
+  - > **Verification note:** all gates re-run green on 2026-06-29 — `go build ./...` + `go vet ./...`
+    clean; `go test ./internal/usecase -run Layout` and the router-registration test pass; the 5
+    `ObjectDetailView` tests pass; `tsc -b` clean. The `/schema` fold, the 3-tier resolver, the FLS
+    intersection, and the boot guard were each confirmed present and wired. No live browser
+    walkthrough (same posture as P3–P7 — sectioned layouts only render behind the full local stack).
   - > **Decisions baked in (D6):** *default source* = explicit `is_default` flag **with
     field-order synthesis as the guaranteed ultimate fallback** (no object ever renders a
     broken/empty page); *endpoint* = fold the effective layout into `/schema` for a single
@@ -845,9 +863,35 @@ single change does more for tenant safety than any new table.
     column configuration is a natural follow-on and is **out of scope** here (detail page only).
 - **Definition of Done:** an admin creates two layouts for a custom object, assigns one to
   `sales` and leaves the rest on the default; a sales user's detail page renders the rep
-  layout while a manager sees the default; an FLS-hidden field appears in neither; with the
-  flag off, the detail page is byte-for-byte today's field-order page.
+  layout while a manager sees the default; an FLS-hidden field appears in neither; with no
+  layout configured, the detail page is byte-for-byte today's field-order page. ✅ **Met**
+  (commit `feat(objects): P8 per-role detail layouts`; gates re-verified 2026-06-29).
 - **Effort:** Medium–Large (~1 week).
+
+#### P8 follow-up — URL-addressable record pages + built-in default layout (delivered 2026-06-30)
+
+- **What changed:** Records used to open in a 420px slide-over drawer with no URL. Clicking a
+  record (list row, kanban card, or global-search hit) now **navigates to a full, bookmarkable
+  page** carrying the record id — `/objects/:slug/records/:id` (Salesforce-style). **Deals keep
+  their bespoke `/deals/:id` page** (revived — it was orphaned after the P7 cutover); every other
+  object uses the new generic page.
+- **Built-in default layout:** when no admin/role P8 layout is configured, the detail body now
+  **synthesizes a 2-column "Details" section** (`buildDefaultSections`) instead of a flat field
+  dump — so a record page is never blank/plain out of the box. Still presentation-only; FLS
+  remains the visibility boundary (hidden fields are already stripped from `schema.fields`).
+- **Files:** new `features/objects/recordRoutes.ts` (`recordPath`/`listPath`), new
+  `pages/ObjectRecordPage.tsx` (page chrome + edit slide-over + delete confirm); `App.tsx` route;
+  `ObjectDetailView.tsx` repurposed from drawer to a `{schema, record}` body renderer with the
+  default-layout fallback; `ObjectListView.tsx` (row/kanban click → navigate, view/edit/delete
+  slide-over removed, **Name cell is a `<Link>`** so Cmd/middle-click opens a new tab);
+  `GlobalSearch.tsx` `hrefFor` → `recordPath`.
+- **Hardening (from an adversarial review pass):** namespaced section React keys so a configured
+  section named `__other__` can't collide with the synthesized one; a section whose fields are all
+  stale/FLS-hidden now renders nothing instead of an orphaned heading.
+- **Tests/gates:** new `recordRoutes`, `ObjectRecordPage` (load/edit-in-place/delete/delete-error/
+  not-found), and updated `ObjectDetailView`/`ObjectListView`/`GlobalSearch` tests; `npx vitest run`
+  (608) + `npx tsc -b` clean. *(Live browser walkthrough still pending the full local stack, same
+  posture as P3–P8.)*
 
 ---
 

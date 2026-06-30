@@ -47,7 +47,7 @@ describe('ObjectDetailView resolves relation fields to labels', () => {
       created_at: '', updated_at: '',
     });
 
-    render(<ObjectDetailView schema={dealSchema} record={dealRecord} onEdit={() => {}} onDelete={() => {}} onClose={() => {}} />);
+    render(<ObjectDetailView schema={dealSchema} record={dealRecord} />);
 
     // The relation resolves to the company's display, not the raw id 'c1'.
     expect(await screen.findByText('Acme Corp')).toBeInTheDocument();
@@ -84,7 +84,7 @@ describe('ObjectDetailView — P8 sectioned layout', () => {
     ];
     const schema: ObjectSchema = { ...contactSchema, layout: sections };
 
-    render(<ObjectDetailView schema={schema} record={contactRecord} onEdit={() => {}} onDelete={() => {}} onClose={() => {}} />);
+    render(<ObjectDetailView schema={schema} record={contactRecord} />);
 
     // Section headings must appear.
     expect(screen.getByText('Core Info')).toBeInTheDocument();
@@ -101,7 +101,7 @@ describe('ObjectDetailView — P8 sectioned layout', () => {
     ];
     const schema: ObjectSchema = { ...contactSchema, layout: sections };
 
-    render(<ObjectDetailView schema={schema} record={contactRecord} onEdit={() => {}} onDelete={() => {}} onClose={() => {}} />);
+    render(<ObjectDetailView schema={schema} record={contactRecord} />);
 
     expect(screen.getByText('Other')).toBeInTheDocument();
     // The unlisted fields still appear under "Other".
@@ -109,25 +109,29 @@ describe('ObjectDetailView — P8 sectioned layout', () => {
     expect(screen.getByText('VIP')).toBeInTheDocument();
   });
 
-  it('falls back to flat field order when schema.layout is absent', async () => {
-    // No layout property — legacy path, all pre-P8 callers.
+  it('synthesizes a default "Details" section when no layout is configured', async () => {
+    // No layout property — built-in default keeps the page structured, never blank.
     const schema: ObjectSchema = { ...contactSchema };
 
-    render(<ObjectDetailView schema={schema} record={contactRecord} onEdit={() => {}} onDelete={() => {}} onClose={() => {}} />);
+    render(<ObjectDetailView schema={schema} record={contactRecord} />);
 
-    // No section heading should appear.
-    expect(screen.queryByText('Core Info')).not.toBeInTheDocument();
+    // The built-in default section heading appears...
+    expect(screen.getByText('Details')).toBeInTheDocument();
+    // ...there is no "Other" (the default places every field)...
     expect(screen.queryByText('Other')).not.toBeInTheDocument();
-    // But all fields should still render.
+    // ...and every field still renders.
     expect(screen.getByText('Jane Smith')).toBeInTheDocument();
     expect(screen.getByText('jane@example.com')).toBeInTheDocument();
+    expect(screen.getByText('555-1234')).toBeInTheDocument();
+    expect(screen.getByText('VIP')).toBeInTheDocument();
   });
 
-  it('falls back to flat field order when schema.layout is an empty array', async () => {
+  it('uses the default section when schema.layout is an empty array', async () => {
     const schema: ObjectSchema = { ...contactSchema, layout: [] };
 
-    render(<ObjectDetailView schema={schema} record={contactRecord} onEdit={() => {}} onDelete={() => {}} onClose={() => {}} />);
+    render(<ObjectDetailView schema={schema} record={contactRecord} />);
 
+    expect(screen.getByText('Details')).toBeInTheDocument();
     expect(screen.queryByText('Other')).not.toBeInTheDocument();
     expect(screen.getByText('Jane Smith')).toBeInTheDocument();
   });

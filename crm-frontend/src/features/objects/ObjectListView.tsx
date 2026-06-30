@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useNavigate, Link } from 'react-router-dom';
 import {
   getObjectSchema,
   listObjectRecordsUnified,
-  deleteObjectRecordUnified,
   getTags,
   getStages,
   type ObjectSchema,
@@ -12,9 +12,9 @@ import {
 } from '../../lib/api';
 import { formatFieldValue } from './fieldHelpers';
 import ObjectForm from './ObjectForm';
-import ObjectDetailView from './ObjectDetailView';
 import ObjectKanban from './ObjectKanban';
 import ImportModal from '../../components/contacts/ImportModal';
+import { recordPath } from './recordRoutes';
 
 interface ObjectListViewProps {
   slug: string;
@@ -22,11 +22,10 @@ interface ObjectListViewProps {
   onNotFound?: () => void;
 }
 
+// Viewing/editing/deleting a record now happens on its own URL-addressable page
+// (ObjectRecordPage); the list only opens the shared create form in a slide-over.
 type Panel =
   | { mode: 'create' }
-  | { mode: 'view'; record: UniformRecord }
-  | { mode: 'edit'; record: UniformRecord }
-  | { mode: 'confirmDelete'; record: UniformRecord }
   | null;
 
 interface RelationOption {
@@ -44,6 +43,11 @@ const MAX_COLUMNS = 4;
 // per-object pages (P7) — relation filters, tag filter, and semantic search all
 // driven by the schema, with zero per-object code.
 export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps) {
+  const navigate = useNavigate();
+  const openRecord = useCallback(
+    (rec: UniformRecord) => navigate(recordPath(slug, rec.id)),
+    [navigate, slug],
+  );
   const [schema, setSchema] = useState<ObjectSchema | null>(null);
   const [records, setRecords] = useState<UniformRecord[]>([]);
   const [nextCursor, setNextCursor] = useState<string | undefined>(undefined);
@@ -52,7 +56,6 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [panel, setPanel] = useState<Panel>(null);
-  const [actionError, setActionError] = useState('');
   const [showImport, setShowImport] = useState(false);
 
   // CSV import is a contact-specific affordance (the bulk importer is contact-aware).
@@ -224,25 +227,11 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
     }
   };
 
-  const closePanel = () => {
-    setPanel(null);
-    setActionError('');
-  };
+  const closePanel = () => setPanel(null);
 
   const handleSaved = () => {
     closePanel();
     fetchFirstPage();
-  };
-
-  const handleConfirmDelete = async (record: UniformRecord) => {
-    setActionError('');
-    try {
-      await deleteObjectRecordUnified(slug, record.id);
-      closePanel();
-      fetchFirstPage();
-    } catch (e) {
-      setActionError(e instanceof Error ? e.message : 'Delete failed');
-    }
   };
 
   const setFilter = (key: string, value: string) => {
@@ -331,7 +320,7 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
         <ObjectKanban
           schema={schema}
           stageKey={stageField.key}
-          onCardClick={(rec) => setPanel({ mode: 'view', record: rec })}
+          onCardClick={openRecord}
         />
       ) : (
       <>
@@ -433,10 +422,21 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
               records.map((rec) => (
                 <tr
                   key={rec.id}
-                  onClick={() => setPanel({ mode: 'view', record: rec })}
+                  onClick={() => openRecord(rec)}
                   style={{ borderBottom: '1px solid #f1f5f9', cursor: 'pointer' }}
                 >
-                  <td style={{ padding: '10px 12px', fontWeight: 500 }}>{rec.display || 'Untitled'}</td>
+                  <td style={{ padding: '10px 12px', fontWeight: 500 }}>
+                    {/* A real link so Cmd/Ctrl/middle-click opens the record in a
+                        new tab (Salesforce-style); plain click is SPA navigation.
+                        stopPropagation keeps the row's onClick from double-firing. */}
+                    <Link
+                      to={recordPath(slug, rec.id)}
+                      onClick={(e) => e.stopPropagation()}
+                      style={{ color: 'inherit', textDecoration: 'none' }}
+                    >
+                      {rec.display || 'Untitled'}
+                    </Link>
+                  </td>
                   {columns.map((f) => (
                     <td key={f.key} style={{ padding: '10px 12px', fontSize: 13 }}>
                       {formatFieldValue(f, rec.fields[f.key], relationLabel(f, rec.fields[f.key]))}
@@ -471,45 +471,21 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
       </>
       )}
 
-      {/* Slide-over */}
-      {panel && (
-        <>
-          <div onClick={closePanel} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.3)', zIndex: 49 }} />
-          <div style={{ position: 'fixed', top: 0, right: 0, bottom: 0, width: 420, background: '#fff', boxShadow: '-4px 0 20px rgba(0,0,0,0.1)', zIndex: 50 }}>
-            {panel.mode === 'create' && (
-              <ObjectForm schema={schema} onSaved={handleSaved} onCancel={closePanel} />
-            )}
-            {panel.mode === 'edit' && (
-              <ObjectForm schema={schema} record={panel.record} onSaved={handleSaved} onCancel={closePanel} />
-            )}
-            {panel.mode === 'view' && (
-              <ObjectDetailView
-                schema={schema}
-                record={panel.record}
-                onEdit={() => setPanel({ mode: 'edit', record: panel.record })}
-                onDelete={() => setPanel({ mode: 'confirmDelete', record: panel.record })}
-                onClose={closePanel}
-              />
-            )}
-            {panel.mode === 'confirmDelete' && (
-              <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-                <div style={{ padding: '20px 24px', borderBottom: '1px solid #e2e8f0' }}>
-                  <h3 style={{ margin: 0, fontWeight: 600, fontSize: 16 }}>Delete {schema.label}?</h3>
-                </div>
-                <div style={{ flex: 1, padding: 24, fontSize: 14, color: '#334155' }}>
-                  {actionError && (
-                    <div style={{ background: '#fef2f2', color: '#dc2626', padding: '8px 12px', borderRadius: 6, marginBottom: 16, fontSize: 13 }}>{actionError}</div>
-                  )}
-                  This permanently removes <strong>{panel.record.display || 'this record'}</strong>. This cannot be undone.
-                </div>
-                <div style={{ padding: '16px 24px', borderTop: '1px solid #e2e8f0', display: 'flex', gap: 8 }}>
-                  <button onClick={() => setPanel({ mode: 'view', record: panel.record })} style={{ flex: 1, padding: '10px', background: '#f1f5f9', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 500 }}>Cancel</button>
-                  <button onClick={() => handleConfirmDelete(panel.record)} style={{ flex: 1, padding: '10px', background: '#ef4444', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>Delete</button>
-                </div>
-              </div>
-            )}
+      {/* Create popup (view/edit/delete live on the record page now). A centered
+          modal — clicking the backdrop closes it; the inner box stops the click
+          from bubbling so clicks inside the form don't dismiss it. */}
+      {panel?.mode === 'create' && (
+        <div
+          onClick={closePanel}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ width: 480, maxWidth: '100%', maxHeight: '90vh', background: '#fff', borderRadius: 12, boxShadow: '0 20px 60px rgba(0,0,0,0.25)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
+          >
+            <ObjectForm schema={schema} onSaved={handleSaved} onCancel={closePanel} />
           </div>
-        </>
+        </div>
       )}
     </div>
   );

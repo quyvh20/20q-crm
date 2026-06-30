@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import type { ObjectSchema, UniformRecord } from '../../../lib/api';
 
 // Mock the API layer so the renderer is exercised without a backend. The whole
@@ -47,6 +48,21 @@ function record(partial: Partial<UniformRecord>): UniformRecord {
   };
 }
 
+// Probe that surfaces the current route so navigation can be asserted.
+function LocationProbe() {
+  const loc = useLocation();
+  return <div data-testid="loc">{loc.pathname}</div>;
+}
+
+function renderView(slug: string) {
+  return render(
+    <MemoryRouter initialEntries={[`/${slug}`]}>
+      <ObjectListView slug={slug} />
+      <LocationProbe />
+    </MemoryRouter>,
+  );
+}
+
 beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
@@ -60,7 +76,7 @@ describe('ObjectListView renders any object from its schema', () => {
       next_cursor: undefined,
     });
 
-    render(<ObjectListView slug="deal" />);
+    renderView('deal');
 
     expect(await screen.findByText('💰 Deals')).toBeInTheDocument();
     // "Acme renewal" appears in both the Name cell and the Title field column.
@@ -77,7 +93,7 @@ describe('ObjectListView renders any object from its schema', () => {
       next_cursor: undefined,
     });
 
-    render(<ObjectListView slug="project" />);
+    renderView('project');
 
     expect(await screen.findByText('📁 Projects')).toBeInTheDocument();
     expect((await screen.findAllByText('Apollo')).length).toBeGreaterThan(0);
@@ -88,11 +104,43 @@ describe('ObjectListView renders any object from its schema', () => {
     vi.mocked(getObjectSchema).mockResolvedValue(dealSchema);
     vi.mocked(listObjectRecordsUnified).mockResolvedValue({ records: [], next_cursor: undefined });
 
-    render(<ObjectListView slug="deal" />);
+    renderView('deal');
 
     fireEvent.click(await screen.findByText('+ Add Deal'));
     // ObjectForm header + a schema-driven field label appear.
     await waitFor(() => expect(screen.getByText('New Deal')).toBeInTheDocument());
     expect(screen.getByText('Create Deal')).toBeInTheDocument();
+  });
+
+  it('navigates to the unified record page when a custom-object row is clicked', async () => {
+    vi.mocked(getObjectSchema).mockResolvedValue(projectSchema);
+    vi.mocked(listObjectRecordsUnified).mockResolvedValue({
+      records: [record({ id: 'r9', object: 'project', display: 'Apollo', fields: { name: 'Apollo', status: 'active' } })],
+      next_cursor: undefined,
+    });
+
+    renderView('project');
+
+    const cell = (await screen.findAllByText('Apollo'))[0];
+    fireEvent.click(cell.closest('tr')!);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('loc').textContent).toBe('/objects/project/records/r9'),
+    );
+  });
+
+  it('navigates a deal row to the bespoke /deals/:id page', async () => {
+    vi.mocked(getObjectSchema).mockResolvedValue(dealSchema);
+    vi.mocked(listObjectRecordsUnified).mockResolvedValue({
+      records: [record({ id: 'd7', object: 'deal', display: 'Acme renewal', fields: { title: 'Acme renewal', value: 1500 } })],
+      next_cursor: undefined,
+    });
+
+    renderView('deal');
+
+    const cell = (await screen.findAllByText('Acme renewal'))[0];
+    fireEvent.click(cell.closest('tr')!);
+
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).toBe('/deals/d7'));
   });
 });

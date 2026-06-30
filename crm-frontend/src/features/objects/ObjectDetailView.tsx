@@ -13,13 +13,10 @@ import RecordRelations from './RecordRelations';
 interface ObjectDetailViewProps {
   schema: ObjectSchema;
   record: UniformRecord;
-  onEdit: () => void;
-  onDelete: () => void;
-  onClose: () => void;
 }
 
-// FieldRow is the shared single-field renderer, used by both the flat list and
-// the sectioned layout so the display is always identical.
+// FieldRow is the shared single-field renderer, used by every section so the
+// display is always identical.
 function FieldRow({
   field,
   value,
@@ -55,6 +52,12 @@ function SectionPanel({
 }) {
   const fieldMap = Object.fromEntries(schema.fields.map((f) => [f.key, f]));
 
+  // Only fields that actually exist in the schema render. A section whose fields
+  // are all stale (renamed/removed) or stripped by FLS would otherwise show an
+  // empty heading with no body — so we drop the whole section in that case.
+  const visibleFields = section.fields.filter((slot) => fieldMap[slot.key]);
+  if (visibleFields.length === 0) return null;
+
   return (
     <div style={{ marginBottom: 24 }}>
       {section.label && (
@@ -78,9 +81,8 @@ function SectionPanel({
             : undefined
         }
       >
-        {section.fields.map((slot) => {
+        {visibleFields.map((slot) => {
           const field = fieldMap[slot.key];
-          if (!field) return null;
           const span = section.columns === 2 && slot.width === 'full' ? { gridColumn: '1 / -1' } : undefined;
           return (
             <div key={slot.key} style={span}>
@@ -97,14 +99,36 @@ function SectionPanel({
   );
 }
 
-// ObjectDetailView is the read-only record panel for every object, rendered from
-// the same schema as the list and form.
+// buildDefaultSections synthesizes a clean, business-ready layout when no admin
+// layout is configured: every field in a single 2-column "Details" section, in
+// schema order. So whenever an object has fields, its record page is structured
+// rather than a flat dump (an object with zero visible fields renders just the
+// relationships panel). Presentation only; FLS already stripped any hidden fields
+// from schema.fields server-side, so this can never widen access.
+export function buildDefaultSections(schema: ObjectSchema): LayoutSection[] {
+  if (schema.fields.length === 0) return [];
+  return [
+    {
+      id: '__details__',
+      label: 'Details',
+      columns: 2,
+      fields: schema.fields.map((f) => ({ key: f.key })),
+    },
+  ];
+}
+
+// ObjectDetailView is the read-only record body for every object, rendered from
+// the same schema as the list and form. It is the body of the full record page
+// (ObjectRecordPage) — page chrome (title, back, edit/delete) lives there.
 //
-// P8 layout rendering: when schema.layout is non-empty, fields are grouped into
-// LayoutSection panels (1 or 2-column). Fields absent from every section are
-// collected into a trailing "Other" section so nothing is ever lost — the layout
-// controls visual priority, not visibility (FLS controls that).
-export default function ObjectDetailView({ schema, record, onEdit, onDelete, onClose }: ObjectDetailViewProps) {
+// Layout resolution:
+//  - schema.layout present (admin/role-resolved, P8) → render those sections, and
+//    collect any field absent from every section into a trailing "Other" section
+//    so nothing is ever lost.
+//  - schema.layout absent/empty → synthesize a default 2-column "Details" section
+//    (buildDefaultSections) so the page is never blank.
+// Layout controls visual priority, not visibility (FLS controls that).
+export default function ObjectDetailView({ schema, record }: ObjectDetailViewProps) {
   const [relationLabels, setRelationLabels] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -149,14 +173,16 @@ export default function ObjectDetailView({ schema, record, onEdit, onDelete, onC
     };
   }, [schema, record]);
 
-  // Determine render mode: sectioned (P8 layout) or flat (legacy / no layout).
-  const sections = schema.layout && schema.layout.length > 0 ? schema.layout : null;
+  // A configured (admin/role) layout takes precedence; otherwise the built-in
+  // default keeps the page structured and never blank.
+  const configured = schema.layout && schema.layout.length > 0 ? schema.layout : null;
+  const sections = configured ?? buildDefaultSections(schema);
 
-  // Build an "Other" section for fields absent from all layout sections so they
-  // are always visible even if the admin forgot to add them.
+  // "Other" only applies to a configured layout — the default already places
+  // every field, so it can never have leftovers.
   let otherSection: LayoutSection | null = null;
-  if (sections) {
-    const inLayout = new Set(sections.flatMap((s) => s.fields.map((f) => f.key)));
+  if (configured) {
+    const inLayout = new Set(configured.flatMap((s) => s.fields.map((f) => f.key)));
     const missing = schema.fields.filter((f) => !inLayout.has(f.key));
     if (missing.length > 0) {
       otherSection = {
@@ -169,54 +195,29 @@ export default function ObjectDetailView({ schema, record, onEdit, onDelete, onC
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div style={{ padding: '20px 24px', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h3 style={{ margin: 0, fontWeight: 600, fontSize: 16 }}>{schema.icon} {record.display || 'Untitled'}</h3>
-        <button onClick={onClose} aria-label="Close" style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#64748b' }}>×</button>
-      </div>
+    <div>
+      {sections.map((section) => (
+        <SectionPanel
+          // Namespaced so a configured section can never collide with the
+          // synthesized "Other" key below, whatever id an admin picks.
+          key={`sec:${section.id}`}
+          section={section}
+          schema={schema}
+          record={record}
+          relationLabels={relationLabels}
+        />
+      ))}
+      {otherSection && (
+        <SectionPanel
+          key="synth:other"
+          section={otherSection}
+          schema={schema}
+          record={record}
+          relationLabels={relationLabels}
+        />
+      )}
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: 24 }}>
-        {sections ? (
-          // Sectioned layout (P8)
-          <>
-            {sections.map((section) => (
-              <SectionPanel
-                key={section.id}
-                section={section}
-                schema={schema}
-                record={record}
-                relationLabels={relationLabels}
-              />
-            ))}
-            {otherSection && (
-              <SectionPanel
-                key="__other__"
-                section={otherSection}
-                schema={schema}
-                record={record}
-                relationLabels={relationLabels}
-              />
-            )}
-          </>
-        ) : (
-          // Flat field order (fallback when no layout configured)
-          schema.fields.map((field) => (
-            <FieldRow
-              key={field.key}
-              field={field}
-              value={record.fields[field.key]}
-              relationLabel={relationLabels[field.key]}
-            />
-          ))
-        )}
-
-        <RecordRelations slug={schema.slug} recordId={record.id} />
-      </div>
-
-      <div style={{ padding: '16px 24px', borderTop: '1px solid #e2e8f0', display: 'flex', gap: 8 }}>
-        <button onClick={onDelete} style={{ padding: '10px 16px', background: '#fef2f2', color: '#dc2626', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 500 }}>Delete</button>
-        <button onClick={onEdit} style={{ flex: 1, padding: '10px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>Edit {schema.label}</button>
-      </div>
+      <RecordRelations slug={schema.slug} recordId={record.id} />
     </div>
   );
 }

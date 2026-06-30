@@ -47,11 +47,12 @@ describe('GlobalSearch', () => {
     // Semantic hit shows a similarity %, fulltext/contact hit (no score) does not.
     expect(screen.getByText('90%')).toBeInTheDocument();
 
-    // The ticket result links to the object's area; the deal would link to detail.
+    // Every result links to its URL-addressable record page (deals would use
+    // the bespoke /deals/:id page instead).
     const ticketLink = screen.getByText('Acme ticket').closest('a');
-    expect(ticketLink).toHaveAttribute('href', '/objects/ticket');
+    expect(ticketLink).toHaveAttribute('href', '/objects/ticket/records/t1');
     const contactLink = screen.getByText('Jane Doe').closest('a');
-    expect(contactLink).toHaveAttribute('href', '/contacts');
+    expect(contactLink).toHaveAttribute('href', '/objects/contact/records/c1');
   });
 
   it('shows an empty state when nothing matches', async () => {

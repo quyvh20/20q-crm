@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { globalSearch, type SearchGroup } from '../../lib/api';
+import { recordPath } from '../../features/objects/recordRoutes';
 
 // GlobalSearch is the P6 cross-object search palette: one Ctrl+K box that spans
 // every searchable object (custom objects + contacts), grouped by object, backed
@@ -7,12 +8,10 @@ import { globalSearch, type SearchGroup } from '../../lib/api';
 // so a user only ever sees what they may read. It reuses the look of the legacy
 // contact SearchBar and replaces it in the shell when the objects.search flag is on.
 
-// hrefFor maps a result to the best available route. Deals have a detail page;
-// contacts and custom objects route to their list area (no per-record route yet).
+// hrefFor maps a result to its URL-addressable record page. Deals keep their
+// bespoke /deals/:id page; every other object lands on the unified record page.
 function hrefFor(object: string, id: string): string {
-  if (object === 'deal') return `/deals/${id}`;
-  if (object === 'contact') return '/contacts';
-  return `/objects/${object}`;
+  return recordPath(object, id);
 }
 
 export default function GlobalSearch() {

@@ -78,7 +78,7 @@ export default function ObjectForm({ schema, record, onSaved, onCancel }: Object
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <div style={{ padding: '20px 24px', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h3 style={{ margin: 0, fontWeight: 600, fontSize: 16 }}>
           {record ? `Edit ${schema.label}` : `New ${schema.label}`}
@@ -109,7 +109,7 @@ export default function ObjectForm({ schema, record, onSaved, onCancel }: Object
 
       <div style={{ padding: '16px 24px', borderTop: '1px solid #e2e8f0', display: 'flex', gap: 8 }}>
         <button onClick={onCancel} style={{ flex: 1, padding: '10px', background: '#f1f5f9', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 500 }}>Cancel</button>
-        <button onClick={handleSubmit} disabled={saving} style={{ flex: 1, padding: '10px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>
+        <button id="object-form-submit" onClick={handleSubmit} disabled={saving} style={{ flex: 1, padding: '10px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>
           {saving ? 'Saving...' : record ? `Update ${schema.label}` : `Create ${schema.label}`}
         </button>
       </div>

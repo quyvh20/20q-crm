@@ -12,6 +12,7 @@ import DealDetailPage from './pages/DealDetailPage';
 import SettingsPage from './pages/SettingsPage';
 import WorkspaceSettingsPage from './pages/WorkspaceSettingsPage';
 import CustomObjectPage from './pages/CustomObjectPage';
+import ObjectRecordPage from './pages/ObjectRecordPage';
 import AcceptInvitePage from './pages/AcceptInvitePage';
 import ConversationLogPage from './pages/ConversationLogPage';
 import VoicePage from './pages/VoicePage';
@@ -123,6 +124,11 @@ function App() {
             <Route path="/objects/:slug" element={
               <ProtectedRoute>
                 <AppLayout><CustomObjectPage /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/objects/:slug/records/:id" element={
+              <ProtectedRoute>
+                <AppLayout><ObjectRecordPage /></AppLayout>
               </ProtectedRoute>
             } />
             <Route path="/settings/ai-logs" element={
