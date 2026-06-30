@@ -401,6 +401,7 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ borderBottom: '1px solid #e2e8f0', background: '#f8fafc' }}>
+              <th style={thStyle}>#</th>
               <th style={thStyle}>Name</th>
               {columns.map((f) => (
                 <th key={f.key} style={thStyle}>{f.label}</th>
@@ -410,9 +411,9 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={columns.length + 2} style={{ padding: 40, textAlign: 'center', color: '#94a3b8' }}>Loading...</td></tr>
+              <tr><td colSpan={columns.length + 3} style={{ padding: 40, textAlign: 'center', color: '#94a3b8' }}>Loading...</td></tr>
             ) : records.length === 0 ? (
-              <tr><td colSpan={columns.length + 2} style={{ padding: 40, textAlign: 'center', color: '#94a3b8' }}>
+              <tr><td colSpan={columns.length + 3} style={{ padding: 40, textAlign: 'center', color: '#94a3b8' }}>
                 <div style={{ fontSize: 32, marginBottom: 8 }}>{schema.icon}</div>
                 {hasActiveFilters
                   ? `No ${schema.label_plural.toLowerCase()} match your filters.`
@@ -425,6 +426,9 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
                   onClick={() => openRecord(rec)}
                   style={{ borderBottom: '1px solid #f1f5f9', cursor: 'pointer' }}
                 >
+                  <td style={{ padding: '10px 12px', fontSize: 12, color: '#94a3b8', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                    {rec.number || '—'}
+                  </td>
                   <td style={{ padding: '10px 12px', fontWeight: 500 }}>
                     {/* A real link so Cmd/Ctrl/middle-click opens the record in a
                         new tab (Salesforce-style); plain click is SPA navigation.

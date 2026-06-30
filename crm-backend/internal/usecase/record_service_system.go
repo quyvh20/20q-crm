@@ -55,13 +55,14 @@ func (a *contactAdapter) nativeKeys() map[string]bool { return contactNativeKeys
 
 func (a *contactAdapter) list(ctx context.Context, orgID uuid.UUID, in domain.RecordListInput) ([]domain.UniformRecord, string, error) {
 	contacts, next, err := a.uc.List(ctx, orgID, domain.ContactFilter{
-		Q:           in.Q,
-		Limit:       in.Limit,
-		Cursor:      in.Cursor,
-		Semantic:    in.Semantic,
-		CompanyID:   filterUUID(in.Filters, "company"),
-		OwnerUserID: filterUUID(in.Filters, "owner_user_id"),
-		TagIDs:      in.TagIDs,
+		Q:             in.Q,
+		Limit:         in.Limit,
+		Cursor:        in.Cursor,
+		Semantic:      in.Semantic,
+		CompanyID:     filterUUID(in.Filters, "company"),
+		OwnerUserID:   filterUUID(in.Filters, "owner_user_id"),
+		CustomFilters: customFilters(in.Filters, "company", "owner_user_id"),
+		TagIDs:        in.TagIDs,
 	})
 	if err != nil {
 		return nil, "", err
@@ -186,7 +187,12 @@ type companyAdapter struct{ uc domain.CompanyUseCase }
 func (a *companyAdapter) nativeKeys() map[string]bool { return companyNativeKeys }
 
 func (a *companyAdapter) list(ctx context.Context, orgID uuid.UUID, in domain.RecordListInput) ([]domain.UniformRecord, string, error) {
-	companies, next, err := a.uc.List(ctx, orgID, domain.CompanyFilter{Q: in.Q, Limit: in.Limit, Cursor: in.Cursor})
+	companies, next, err := a.uc.List(ctx, orgID, domain.CompanyFilter{
+		Q:             in.Q,
+		Limit:         in.Limit,
+		Cursor:        in.Cursor,
+		CustomFilters: customFilters(in.Filters),
+	})
 	if err != nil {
 		return nil, "", err
 	}
@@ -279,12 +285,14 @@ func (a *dealAdapter) nativeKeys() map[string]bool { return dealNativeKeys }
 
 func (a *dealAdapter) list(ctx context.Context, orgID uuid.UUID, in domain.RecordListInput) ([]domain.UniformRecord, string, error) {
 	deals, next, err := a.uc.List(ctx, orgID, domain.DealFilter{
-		Q:           in.Q,
-		Limit:       in.Limit,
-		Cursor:      in.Cursor,
-		StageID:     filterUUID(in.Filters, "stage"),
-		ContactID:   filterUUID(in.Filters, "contact"),
-		OwnerUserID: filterUUID(in.Filters, "owner_user_id"),
+		Q:             in.Q,
+		Limit:         in.Limit,
+		Cursor:        in.Cursor,
+		StageID:       filterUUID(in.Filters, "stage"),
+		ContactID:     filterUUID(in.Filters, "contact"),
+		CompanyID:     filterUUID(in.Filters, "company"),
+		OwnerUserID:   filterUUID(in.Filters, "owner_user_id"),
+		CustomFilters: customFilters(in.Filters, "stage", "contact", "company", "owner_user_id"),
 	})
 	if err != nil {
 		return nil, "", err
@@ -747,6 +755,32 @@ func filterUUID(filters map[string]string, key string) *uuid.UUID {
 		return nil
 	}
 	return &id
+}
+
+// customFilters returns the filter entries whose keys are NOT among reserved (the
+// object's typed-column filter keys), so the leftovers — admin-defined relation/
+// jsonb fields — can be matched against the custom_fields blob. Empty values and
+// reserved keys are dropped; nil when nothing remains. This is what lets a custom
+// lookup field drive a reverse related list on a system object.
+func customFilters(filters map[string]string, reserved ...string) map[string]string {
+	if len(filters) == 0 {
+		return nil
+	}
+	skip := make(map[string]bool, len(reserved))
+	for _, r := range reserved {
+		skip[r] = true
+	}
+	out := map[string]string{}
+	for k, v := range filters {
+		if k == "" || strings.TrimSpace(v) == "" || skip[k] {
+			continue
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // displayString renders a JSON-decoded field value as a record title. Strings

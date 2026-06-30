@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"crm-backend/internal/domain"
 	"crm-backend/internal/fieldvalidate"
@@ -100,6 +101,25 @@ func (uc *orgSettingsUseCase) CreateFieldDef(ctx context.Context, orgID uuid.UUI
 	if err := uc.registry.EnsureSystemObjects(ctx, orgID); err != nil {
 		return nil, domain.ErrInternal
 	}
+
+	// A relation must point at a real, registered object in this org. Validating
+	// here (not just at write time) keeps a misconfigured lookup out of the schema.
+	var targetSlug *string
+	if input.Type == "relation" {
+		ts := strings.TrimSpace(input.TargetSlug)
+		if ts == "" {
+			return nil, domain.NewAppError(400, "relation type requires a target_slug")
+		}
+		target, err := uc.registry.GetDefBySlug(ctx, orgID, ts)
+		if err != nil {
+			return nil, domain.ErrInternal
+		}
+		if target == nil {
+			return nil, domain.NewAppError(400, fmt.Sprintf("target_slug %q is not a known object", ts))
+		}
+		targetSlug = &ts
+	}
+
 	def, err := uc.registry.GetDefBySlug(ctx, orgID, input.EntityType)
 	if err != nil {
 		return nil, domain.ErrInternal
@@ -140,6 +160,7 @@ func (uc *orgSettingsUseCase) CreateFieldDef(ctx context.Context, orgID uuid.UUI
 		Label:       input.Label,
 		Type:        input.Type,
 		Options:     marshalStringArray(input.Options),
+		TargetSlug:  targetSlug,
 		IsRequired:  input.Required,
 		IsSystem:    false,
 		StorageKind: "jsonb",
@@ -187,9 +208,27 @@ func (uc *orgSettingsUseCase) UpdateFieldDef(ctx context.Context, orgID uuid.UUI
 	if input.Position != nil {
 		field.Position = *input.Position
 	}
+	if input.TargetSlug != nil {
+		ts := strings.TrimSpace(*input.TargetSlug)
+		if ts != "" {
+			target, err := uc.registry.GetDefBySlug(ctx, orgID, ts)
+			if err != nil {
+				return nil, domain.ErrInternal
+			}
+			if target == nil {
+				return nil, domain.NewAppError(400, fmt.Sprintf("target_slug %q is not a known object", ts))
+			}
+			field.TargetSlug = &ts
+		} else {
+			field.TargetSlug = nil
+		}
+	}
 
 	if field.Type == "select" && len(parseOptions(field.Options)) == 0 {
 		return nil, domain.NewAppError(400, "select type requires at least one option")
+	}
+	if field.Type == "relation" && (field.TargetSlug == nil || *field.TargetSlug == "") {
+		return nil, domain.NewAppError(400, "relation type requires a target_slug")
 	}
 
 	if err := uc.registry.SaveField(ctx, field); err != nil {
@@ -264,12 +303,17 @@ func (uc *orgSettingsUseCase) bustSchemaCache(ctx context.Context, orgID uuid.UU
 // customFieldDefFromField projects an object_fields row into the legacy
 // CustomFieldDef shape the API and validator speak.
 func customFieldDefFromField(f domain.ObjectField, entityType string) domain.CustomFieldDef {
+	targetSlug := ""
+	if f.TargetSlug != nil {
+		targetSlug = *f.TargetSlug
+	}
 	return domain.CustomFieldDef{
 		Key:        f.Key,
 		Label:      f.Label,
 		Type:       f.Type,
 		EntityType: entityType,
 		Options:    parseOptions(f.Options),
+		TargetSlug: targetSlug,
 		Required:   f.IsRequired,
 		Position:   f.Position,
 	}

@@ -189,6 +189,8 @@ func registerObjectRegistryRoutes(parent *gin.RouterGroup, objectRegistryHandler
 	registry := parent.Group("/registry/objects")
 	registry.GET("", objectRegistryHandler.ListObjects)
 	registry.GET("/:slug/schema", objectRegistryHandler.GetSchema)
+	// Admin: set an object's record-number prefix (e.g. INV → INV-0001).
+	registry.PUT("/:slug/number-prefix", RequireRole(domain.RoleAdmin), objectRegistryHandler.SetNumberPrefix)
 
 	// Global, cross-object search (P6). No coarse role gate — OLS filters results
 	// per object inside SearchUseCase, so a viewer only sees what they can read.
@@ -198,6 +200,9 @@ func registerObjectRegistryRoutes(parent *gin.RouterGroup, objectRegistryHandler
 
 	registry.GET("/:slug/records", recordHandler.List)
 	registry.GET("/:slug/records/:id", recordHandler.Get)
+	// Reverse related lists (child records pointing back via a relation field).
+	// Read-level; the per-child List enforces OLS inside RecordService.
+	registry.GET("/:slug/records/:id/related-lists", recordHandler.RelatedLists)
 	registry.POST("/:slug/records", RequireRole(domain.RoleAdmin, domain.RoleManager, domain.RoleSales), recordHandler.Create)
 	registry.PATCH("/:slug/records/:id", RequireRole(domain.RoleAdmin, domain.RoleManager, domain.RoleSales), recordHandler.Update)
 	registry.DELETE("/:slug/records/:id", RequireRole(domain.RoleAdmin, domain.RoleManager), recordHandler.Delete)

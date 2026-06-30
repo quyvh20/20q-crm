@@ -49,6 +49,15 @@ func (r *dealRepository) List(ctx context.Context, orgID uuid.UUID, f domain.Dea
 	if f.ContactID != nil {
 		query = query.Where("deals.contact_id = ?", *f.ContactID)
 	}
+	if f.CompanyID != nil {
+		query = query.Where("deals.company_id = ?", *f.CompanyID)
+	}
+	for k, v := range f.CustomFilters {
+		if k == "" || v == "" {
+			continue
+		}
+		query = query.Where("deals.custom_fields ->> ? = ?", k, v)
+	}
 
 	if f.Cursor != "" {
 		decoded, err := base64.StdEncoding.DecodeString(f.Cursor)

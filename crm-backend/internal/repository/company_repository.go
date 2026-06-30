@@ -39,6 +39,13 @@ func (r *companyRepository) List(ctx context.Context, orgID uuid.UUID, f domain.
 		query = query.Where("LOWER(companies.name) LIKE ?", q)
 	}
 
+	for k, v := range f.CustomFilters {
+		if k == "" || v == "" {
+			continue
+		}
+		query = query.Where("companies.custom_fields ->> ? = ?", k, v)
+	}
+
 	// Keyset cursor: base64(id)
 	if f.Cursor != "" {
 		decoded, err := base64.StdEncoding.DecodeString(f.Cursor)

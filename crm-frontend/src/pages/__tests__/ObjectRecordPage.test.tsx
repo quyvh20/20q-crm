@@ -17,6 +17,7 @@ vi.mock('../../lib/api', () => ({
   listRecordLinks: vi.fn().mockResolvedValue([]),
   listRecordTags: vi.fn().mockResolvedValue([]),
   listRegistryObjects: vi.fn().mockResolvedValue([]),
+  listRecordRelatedLists: vi.fn().mockResolvedValue([]),
   getTags: vi.fn().mockResolvedValue([]),
   addRecordLink: vi.fn(),
   removeRecordLink: vi.fn(),

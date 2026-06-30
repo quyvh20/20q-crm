@@ -45,6 +45,9 @@ type recordService struct {
 	// here so OLS can't be forgotten in a handler. nil disables OLS/audit, which
 	// only happens in unit tests that aren't exercising security.
 	authz domain.RecordAuthorizer
+	// numberRepo allocates and resolves human-readable record numbers. nil (unit
+	// tests, or before startup wiring) simply means records carry no Number.
+	numberRepo domain.RecordNumberRepository
 }
 
 // NewRecordService wires the unified service over the existing per-object
@@ -87,6 +90,50 @@ func (s *recordService) SetEventEmitter(fn domain.RecordEventEmitter) {
 	}
 }
 
+// SetNumberRepo wires the human-readable record-number allocator. Called once at
+// startup from main.go (mirrors SetEventEmitter/SetSearchIndexer). Until set,
+// records carry no Number.
+func (s *recordService) SetNumberRepo(repo domain.RecordNumberRepository) {
+	s.numberRepo = repo
+}
+
+// applyNumbers fills rec.Number for a page of records from the number side table,
+// in one batched lookup. A nil numberRepo or a lookup error leaves Number empty —
+// numbering is a display nicety and must never fail a read.
+func (s *recordService) applyNumbers(ctx context.Context, orgID uuid.UUID, slug string, recs []domain.UniformRecord) {
+	if s.numberRepo == nil || len(recs) == 0 {
+		return
+	}
+	ids := make([]uuid.UUID, len(recs))
+	for i := range recs {
+		ids[i] = recs[i].ID
+	}
+	nums, err := s.numberRepo.NumbersFor(ctx, orgID, slug, ids)
+	if err != nil {
+		return
+	}
+	for i := range recs {
+		if n, ok := nums[recs[i].ID]; ok {
+			recs[i].Number = n
+		}
+	}
+}
+
+// allocateAndSetNumber assigns a fresh record number on create and stamps it onto
+// the response. Best-effort: a nil repo or an allocation error leaves Number empty
+// so a numbering hiccup can never fail the create itself.
+func (s *recordService) allocateAndSetNumber(ctx context.Context, orgID uuid.UUID, slug string, rec *domain.UniformRecord) {
+	if s.numberRepo == nil {
+		return
+	}
+	if err := s.numberRepo.Allocate(ctx, orgID, slug, rec.ID); err != nil {
+		return
+	}
+	if nums, err := s.numberRepo.NumbersFor(ctx, orgID, slug, []uuid.UUID{rec.ID}); err == nil {
+		rec.Number = nums[rec.ID]
+	}
+}
+
 const defaultRecordLimit = 25
 
 // List returns one uniform page of records for an object, system or custom.
@@ -109,7 +156,7 @@ func (s *recordService) List(ctx context.Context, orgID uuid.UUID, slug string, 
 		out = &domain.RecordList{Records: recs, NextCursor: next}
 	} else {
 		var err error
-		out, err = s.listCustom(ctx, orgID, slug, limit, in.Q, in.Cursor)
+		out, err = s.listCustom(ctx, orgID, slug, limit, in.Q, in.Cursor, in.Filters)
 		if err != nil {
 			return nil, err
 		}
@@ -121,6 +168,7 @@ func (s *recordService) List(ctx context.Context, orgID uuid.UUID, slug string, 
 			applyFieldMask(mask, &out.Records[i])
 		}
 	}
+	s.applyNumbers(ctx, orgID, slug, out.Records)
 	return out, nil
 }
 
@@ -136,6 +184,12 @@ func (s *recordService) Get(ctx context.Context, orgID uuid.UUID, slug string, i
 		return nil, err
 	}
 	applyFieldMask(s.fieldMask(ctx, orgID, slug), rec) // FLS: strip hidden fields
+	// Resolve the human-readable number (best-effort; never fails a read).
+	if s.numberRepo != nil {
+		if nums, err := s.numberRepo.NumbersFor(ctx, orgID, slug, []uuid.UUID{rec.ID}); err == nil {
+			rec.Number = nums[rec.ID]
+		}
+	}
 	return rec, nil
 }
 
@@ -183,6 +237,7 @@ func (s *recordService) Create(ctx context.Context, orgID, userID uuid.UUID, slu
 			return nil, err
 		}
 		s.auditCreate(ctx, orgID, slug, rec, in.Fields)
+		s.allocateAndSetNumber(ctx, orgID, slug, rec)
 		applyFieldMask(mask, rec)
 		return rec, nil
 	}
@@ -197,6 +252,7 @@ func (s *recordService) Create(ctx context.Context, orgID, userID uuid.UUID, slu
 	}
 	uniform := customToUniform(slug, rec)
 	s.auditCreate(ctx, orgID, slug, uniform, in.Fields)
+	s.allocateAndSetNumber(ctx, orgID, slug, uniform)
 	s.fireEvent(orgID, slug+"_created", uniform) // automation sees the full record
 	s.indexRecord(ctx, orgID, slug, uniform)     // search index sees the full record
 	applyFieldMask(mask, uniform)                // strip only the response
@@ -442,12 +498,13 @@ func guardFieldWrites(mask domain.FieldMask, fields map[string]interface{}) erro
 // Custom-object path
 // ============================================================
 
-func (s *recordService) listCustom(ctx context.Context, orgID uuid.UUID, slug string, limit int, q, cursor string) (*domain.RecordList, error) {
+func (s *recordService) listCustom(ctx context.Context, orgID uuid.UUID, slug string, limit int, q, cursor string, filters map[string]string) (*domain.RecordList, error) {
 	offset := decodeOffsetCursor(cursor)
 	recs, total, err := s.customObjUC.ListRecords(ctx, orgID, slug, domain.RecordFilter{
-		Limit:  limit,
-		Offset: offset,
-		Q:      q,
+		Limit:   limit,
+		Offset:  offset,
+		Q:       q,
+		Filters: filters,
 	})
 	if err != nil {
 		return nil, err

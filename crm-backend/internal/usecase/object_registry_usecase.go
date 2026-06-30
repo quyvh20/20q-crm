@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"crm-backend/internal/domain"
 
@@ -71,6 +72,27 @@ func (uc *objectRegistryUseCase) GetSchema(ctx context.Context, orgID uuid.UUID,
 	return uc.buildSchema(ctx, def)
 }
 
+// SetNumberPrefix updates an object's record-number prefix. A blank prefix resets
+// to the slug default (read path falls back to UPPER(slug)).
+func (uc *objectRegistryUseCase) SetNumberPrefix(ctx context.Context, orgID uuid.UUID, slug, prefix string) error {
+	if err := uc.repo.EnsureSystemObjects(ctx, orgID); err != nil {
+		return err
+	}
+	if err := uc.repo.SetNumberPrefix(ctx, orgID, slug, strings.TrimSpace(prefix)); err != nil {
+		return &domain.AppError{Code: http.StatusNotFound, Message: "object not found"}
+	}
+	return nil
+}
+
+// numberPrefix resolves an object's record-number prefix: the configured value, or
+// the uppercased slug as the default (matching the read-path COALESCE in SQL).
+func numberPrefix(def *domain.ObjectDef) string {
+	if def.NumberPrefix != nil && strings.TrimSpace(*def.NumberPrefix) != "" {
+		return *def.NumberPrefix
+	}
+	return strings.ToUpper(def.Slug)
+}
+
 // buildSchema assembles any object's descriptor from object_fields — system and
 // custom alike, since both now live in the registry tables (P7 convergence).
 func (uc *objectRegistryUseCase) buildSchema(ctx context.Context, def *domain.ObjectDef) (*domain.ObjectDescriptor, error) {
@@ -80,14 +102,15 @@ func (uc *objectRegistryUseCase) buildSchema(ctx context.Context, def *domain.Ob
 	}
 
 	descriptor := &domain.ObjectDescriptor{
-		Slug:        def.Slug,
-		Label:       def.Label,
-		LabelPlural: def.LabelPlural,
-		Icon:        def.Icon,
-		Color:       def.Color,
-		IsSystem:    def.IsSystem,
-		Searchable:  def.Searchable,
-		Fields:      make([]domain.FieldDescriptor, 0, len(fields)),
+		Slug:         def.Slug,
+		Label:        def.Label,
+		LabelPlural:  def.LabelPlural,
+		Icon:         def.Icon,
+		Color:        def.Color,
+		IsSystem:     def.IsSystem,
+		Searchable:   def.Searchable,
+		NumberPrefix: numberPrefix(def),
+		Fields:       make([]domain.FieldDescriptor, 0, len(fields)),
 	}
 
 	for _, f := range fields {

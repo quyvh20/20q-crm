@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"crm-backend/internal/domain"
@@ -48,6 +49,21 @@ func (f *fakeRegistryRepo) FieldCounts(_ context.Context, _ uuid.UUID) (map[uuid
 		counts[id] = len(fs)
 	}
 	return counts, nil
+}
+
+func (f *fakeRegistryRepo) SetNumberPrefix(_ context.Context, _ uuid.UUID, slug, prefix string) error {
+	for i := range f.defs {
+		if f.defs[i].Slug == slug {
+			if prefix == "" {
+				f.defs[i].NumberPrefix = nil
+			} else {
+				p := prefix
+				f.defs[i].NumberPrefix = &p
+			}
+			return nil
+		}
+	}
+	return errors.New("not found")
 }
 
 func (f *fakeRegistryRepo) ListCustomFields(_ context.Context, defID uuid.UUID) ([]domain.ObjectField, error) {
@@ -222,6 +238,43 @@ func TestListObjects_MergesSystemAndCustom(t *testing.T) {
 
 	if repo.ensureCalls != 1 {
 		t.Errorf("expected EnsureSystemObjects called once, got %d", repo.ensureCalls)
+	}
+}
+
+func TestGetSchema_NumberPrefixDefaultsToUpperSlug(t *testing.T) {
+	repo, _ := newDealRepo()
+	uc := NewObjectRegistryUseCase(repo)
+	org := uuid.New()
+	ctx := context.Background()
+
+	// With no prefix configured, the descriptor falls back to the uppercased slug.
+	got, err := uc.GetSchema(ctx, org, "deal")
+	if err != nil {
+		t.Fatalf("GetSchema: %v", err)
+	}
+	if got.NumberPrefix != "DEAL" {
+		t.Fatalf("default number_prefix: want DEAL, got %q", got.NumberPrefix)
+	}
+
+	// After SetNumberPrefix, the configured value wins.
+	if err := uc.SetNumberPrefix(ctx, org, "deal", "OPP"); err != nil {
+		t.Fatalf("SetNumberPrefix: %v", err)
+	}
+	got2, err := uc.GetSchema(ctx, org, "deal")
+	if err != nil {
+		t.Fatalf("GetSchema after set: %v", err)
+	}
+	if got2.NumberPrefix != "OPP" {
+		t.Fatalf("configured number_prefix: want OPP, got %q", got2.NumberPrefix)
+	}
+
+	// Clearing it resets to the slug default.
+	if err := uc.SetNumberPrefix(ctx, org, "deal", ""); err != nil {
+		t.Fatalf("SetNumberPrefix clear: %v", err)
+	}
+	got3, _ := uc.GetSchema(ctx, org, "deal")
+	if got3.NumberPrefix != "DEAL" {
+		t.Fatalf("cleared number_prefix: want DEAL, got %q", got3.NumberPrefix)
 	}
 }
 

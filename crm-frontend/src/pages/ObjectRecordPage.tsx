@@ -108,8 +108,13 @@ export default function ObjectRecordPage() {
         }}
       >
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>
-            {schema.icon} {schema.label}
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span>{schema.icon} {schema.label}</span>
+            {record.number && (
+              <span style={{ background: '#f1f5f9', color: '#475569', borderRadius: 6, padding: '1px 8px', fontWeight: 700, letterSpacing: '0.04em' }}>
+                {record.number}
+              </span>
+            )}
           </div>
           <h1 style={{ fontSize: 24, fontWeight: 700, margin: 0, color: '#0f172a', wordBreak: 'break-word' }}>
             {record.display || 'Untitled'}

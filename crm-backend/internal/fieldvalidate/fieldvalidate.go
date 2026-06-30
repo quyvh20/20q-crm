@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"crm-backend/internal/domain"
+
+	"github.com/google/uuid"
 )
 
 // ValidateValue checks a single value against a field definition's declared
@@ -66,6 +68,19 @@ func ValidateValue(def domain.CustomFieldDef, val interface{}) error {
 		}
 		if !valid {
 			return fmt.Errorf("value %q is not a valid option (valid: %v)", s, def.Options)
+		}
+	case "relation":
+		// A relation holds the related record's id (a UUID string), matching how
+		// system relations (contact_id, company_id) are carried in UniformRecord.
+		// Empty string means "no relation" and passes.
+		s, ok := val.(string)
+		if !ok {
+			return fmt.Errorf("expected a related record id string, got %T", val)
+		}
+		if s != "" {
+			if _, err := uuid.Parse(s); err != nil {
+				return fmt.Errorf("expected a related record id (uuid), got %q", s)
+			}
 		}
 	}
 	return nil

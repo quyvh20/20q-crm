@@ -144,6 +144,9 @@ type ContactFilter struct {
 	CompanyID   *uuid.UUID  `form:"company_id"`
 	TagIDs      []uuid.UUID `form:"tag_ids"`
 	OwnerUserID *uuid.UUID  `form:"owner_user_id"`
+	// CustomFilters matches custom (jsonb) fields exactly (custom_fields ->> key = value),
+	// powering reverse related lists for custom lookups on contacts.
+	CustomFilters map[string]string `form:"-"`
 	Cursor      string      `form:"cursor"`
 	Limit       int         `form:"limit"`
 	SortBy      string      `form:"sort_by"`    // "name", "created_at" (default)
@@ -228,6 +231,9 @@ type CompanyFilter struct {
 	Q      string `form:"q"`
 	Cursor string `form:"cursor"`
 	Limit  int    `form:"limit"`
+	// CustomFilters matches custom (jsonb) fields exactly (custom_fields ->> key = value),
+	// powering reverse related lists for custom lookups on companies.
+	CustomFilters map[string]string `form:"-"`
 }
 
 type CreateCompanyInput struct {
@@ -293,10 +299,15 @@ type DealFilter struct {
 	StageID     *uuid.UUID `form:"stage_id"`
 	OwnerUserID *uuid.UUID `form:"owner_user_id"`
 	ContactID   *uuid.UUID `form:"contact_id"`
-	Cursor      string     `form:"cursor"`
-	Limit       int        `form:"limit"`
-	SortBy      string     `form:"sort_by"`    // "value", "probability", "created_at" (default)
-	SortOrder   string     `form:"sort_order"` // "asc" or "desc" (default)
+	CompanyID   *uuid.UUID `form:"company_id"`
+	// CustomFilters matches custom (jsonb) fields exactly: custom_fields ->> key = value.
+	// It lets a deal be listed by an admin-defined relation field, which powers
+	// reverse related lists for custom lookups on deals.
+	CustomFilters map[string]string `form:"-"`
+	Cursor        string            `form:"cursor"`
+	Limit         int               `form:"limit"`
+	SortBy        string            `form:"sort_by"`    // "value", "probability", "created_at" (default)
+	SortOrder     string            `form:"sort_order"` // "asc" or "desc" (default)
 }
 
 type CreateDealInput struct {
@@ -463,16 +474,20 @@ type CreateFieldDefInput struct {
 	Type       string   `json:"type" binding:"required"`
 	EntityType string   `json:"entity_type" binding:"required"`
 	Options    []string `json:"options"`
-	Required   bool     `json:"required"`
-	Position   *int     `json:"position"`
+	// TargetSlug is required when Type == "relation": the object this lookup points at.
+	TargetSlug string `json:"target_slug"`
+	Required   bool   `json:"required"`
+	Position   *int   `json:"position"`
 }
 
 type UpdateFieldDefInput struct {
 	Label    *string  `json:"label"`
 	Type     *string  `json:"type"`
 	Options  []string `json:"options"`
-	Required *bool    `json:"required"`
-	Position *int     `json:"position"`
+	// TargetSlug repoints a relation field's lookup target. Ignored for non-relation types.
+	TargetSlug *string `json:"target_slug"`
+	Required   *bool   `json:"required"`
+	Position   *int    `json:"position"`
 }
 
 type OrgSettingsRepository interface {
@@ -523,6 +538,12 @@ type RecordFilter struct {
 	Limit  int    `json:"limit"`
 	Offset int    `json:"offset"`
 	Q      string `json:"q"`
+	// Filters maps a field key to an exact-match value, applied against the
+	// record's JSONB data (data ->> key = value). It carries relation-field
+	// filters so a custom object can be listed by "all records whose <relation>
+	// is X" — the jsonb counterpart to the system adapters' typed filters, and
+	// what powers reverse related lists for custom-object children.
+	Filters map[string]string `json:"filters,omitempty"`
 }
 
 type CustomObjectRepository interface {

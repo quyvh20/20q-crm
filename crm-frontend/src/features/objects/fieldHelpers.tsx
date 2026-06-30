@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { ObjectFieldDescriptor } from '../../lib/api';
 
 export interface RelationOption {
@@ -99,18 +100,11 @@ export function FieldInput({ field, value, onChange, relationOptions }: FieldInp
         </select>
       );
     case 'relation':
-      // A registered target gives us a proper picker; an unresolved relation
+      // A registered target gives us a searchable picker; an unresolved relation
       // (e.g. a deal's stage, not yet a registered object) falls back to a
       // raw-id input so the field is still editable.
       if (relationOptions) {
-        return (
-          <select value={String(value ?? '')} onChange={(e) => onChange(e.target.value)} style={inputStyle}>
-            <option value="">— None —</option>
-            {relationOptions.map((opt) => (
-              <option key={opt.id} value={opt.id}>{opt.label}</option>
-            ))}
-          </select>
-        );
+        return <RelationPicker value={value} onChange={onChange} options={relationOptions} />;
       }
       return (
         <input
@@ -133,4 +127,72 @@ export function FieldInput({ field, value, onChange, relationOptions }: FieldInp
         />
       );
   }
+}
+
+// RelationPicker is a searchable single-select for relation fields: type to
+// filter the target object's records by label, click to choose. It replaces the
+// bare <select>, which doesn't scale past a handful of records. The selected
+// label shows when not actively searching; clearing resets the relation.
+function RelationPicker({
+  value,
+  onChange,
+  options,
+}: {
+  value: unknown;
+  onChange: (val: unknown) => void;
+  options: RelationOption[];
+}) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const selected = options.find((o) => o.id === String(value ?? ''));
+  const q = query.trim().toLowerCase();
+  const filtered = (q ? options.filter((o) => o.label.toLowerCase().includes(q)) : options).slice(0, 50);
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <input
+        type="text"
+        // While the menu is open the input is the search box; closed, it shows the
+        // current selection's label.
+        value={open ? query : selected?.label ?? ''}
+        onFocus={() => { setQuery(''); setOpen(true); }}
+        onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+        // Delay close so a click on an option (mousedown) registers first.
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder={selected ? selected.label : '— None — (type to search)'}
+        style={inputStyle}
+      />
+      {open && (
+        <div
+          style={{
+            position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 30,
+            background: '#fff', border: '1px solid #d1d5db', borderRadius: 6,
+            marginTop: 2, maxHeight: 220, overflowY: 'auto', boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+          }}
+        >
+          <div
+            onMouseDown={() => { onChange(''); setOpen(false); }}
+            style={{ padding: '8px 10px', fontSize: 13, color: '#94a3b8', cursor: 'pointer' }}
+          >
+            — None —
+          </div>
+          {filtered.map((o) => (
+            <div
+              key={o.id}
+              onMouseDown={() => { onChange(o.id); setOpen(false); }}
+              style={{
+                padding: '8px 10px', fontSize: 14, cursor: 'pointer',
+                background: o.id === String(value ?? '') ? '#eff6ff' : '#fff',
+              }}
+            >
+              {o.label}
+            </div>
+          ))}
+          {filtered.length === 0 && (
+            <div style={{ padding: '8px 10px', fontSize: 13, color: '#94a3b8' }}>No matches</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }

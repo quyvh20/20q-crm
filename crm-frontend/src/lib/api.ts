@@ -652,7 +652,7 @@ export async function submitSummarizeMeeting(transcript: string, dealId?: string
 // Custom Field Definitions (Settings)
 // ============================================================
 
-export type FieldType = 'text' | 'number' | 'date' | 'select' | 'boolean' | 'url';
+export type FieldType = 'text' | 'number' | 'date' | 'select' | 'boolean' | 'url' | 'relation';
 export type EntityType = 'contact' | 'company' | 'deal';
 
 export interface CustomFieldDef {
@@ -661,6 +661,8 @@ export interface CustomFieldDef {
   type: FieldType;
   entity_type?: EntityType;
   options?: string[];
+  // target_slug is the related object's slug for a relation (lookup) field.
+  target_slug?: string;
   required: boolean;
   position: number;
 }
@@ -680,6 +682,7 @@ export async function createFieldDef(data: {
   type: string;
   entity_type: string;
   options?: string[];
+  target_slug?: string;
   required?: boolean;
   position?: number;
 }): Promise<CustomFieldDef> {
@@ -696,6 +699,7 @@ export async function updateFieldDef(key: string, data: {
   label?: string;
   type?: string;
   options?: string[];
+  target_slug?: string;
   required?: boolean;
   position?: number;
 }): Promise<CustomFieldDef> {
@@ -922,6 +926,8 @@ export interface ObjectSchema {
   is_system: boolean;
   searchable: boolean;
   display_field: string;
+  // Label prefix for record numbers (e.g. "DEAL" → DEAL-0001); admin-editable.
+  number_prefix?: string;
   fields: ObjectFieldDescriptor[];
   // P8: resolved effective layout, already FLS-filtered. Absent/empty → flat field order.
   layout?: LayoutSection[];
@@ -942,6 +948,9 @@ export interface UniformRecord {
   id: string;
   object: string;
   display: string;
+  // Human-readable record number (e.g. "DEAL-0001"); absent until the backend has
+  // assigned one.
+  number?: string;
   fields: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -964,6 +973,19 @@ export async function getObjectSchema(slug: string): Promise<ObjectSchema> {
   const json = await res.json();
   if (!res.ok) throw new Error(json.error || 'Failed to fetch object schema');
   return json.data as ObjectSchema;
+}
+
+// setObjectNumberPrefix updates an object's record-number prefix (admin only). An
+// empty prefix resets to the slug default (e.g. DEAL).
+export async function setObjectNumberPrefix(slug: string, prefix: string): Promise<void> {
+  const res = await apiFetch(`/api/registry/objects/${slug}/number-prefix`, {
+    method: 'PUT',
+    body: JSON.stringify({ number_prefix: prefix }),
+  });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(json.error || 'Failed to update number prefix');
+  }
 }
 
 // P8 — Layout admin CRUD ---------------------------------------------------
@@ -1058,6 +1080,27 @@ export async function getObjectRecordUnified(slug: string, id: string): Promise<
   const json = await res.json();
   if (!res.ok) throw new Error(json.error || 'Failed to fetch record');
   return json.data as UniformRecord;
+}
+
+// RelatedList is one "reverse" relationship group on a record's page: the child
+// object's records that point back at this record through a typed relation field
+// (e.g. on a Contact, the "Deals" whose `contact` field is this contact). Derived
+// from the registry, so it appears wherever a relation field targets this object.
+export interface RelatedList {
+  object: string;       // child object slug (e.g. "deal")
+  label: string;        // child object plural label (e.g. "Deals")
+  icon: string;         // child object icon
+  field_key: string;    // the relation field on the child that points back
+  field_label: string;  // that field's label (e.g. "Contact")
+  records: UniformRecord[];
+  count: number;
+}
+
+export async function listRecordRelatedLists(slug: string, id: string): Promise<RelatedList[]> {
+  const res = await apiFetch(`/api/registry/objects/${slug}/records/${id}/related-lists`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch related lists');
+  return (json.data || []) as RelatedList[];
 }
 
 export async function createObjectRecordUnified(slug: string, fields: Record<string, unknown>): Promise<UniformRecord> {

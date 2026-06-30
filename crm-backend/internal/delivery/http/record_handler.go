@@ -17,11 +17,12 @@ import (
 // legacy per-object routes (custom-object records at /api/objects/:slug/records,
 // plus /api/contacts, /api/deals, /api/companies), which remain until P7.
 type RecordHandler struct {
-	svc domain.RecordService
+	svc     domain.RecordService
+	related domain.RelatedListsUseCase
 }
 
-func NewRecordHandler(svc domain.RecordService) *RecordHandler {
-	return &RecordHandler{svc: svc}
+func NewRecordHandler(svc domain.RecordService, related domain.RelatedListsUseCase) *RecordHandler {
+	return &RecordHandler{svc: svc, related: related}
 }
 
 // reservedListParams are query keys with dedicated meaning; everything else is
@@ -87,6 +88,27 @@ func (h *RecordHandler) Get(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": rec, "error": nil})
+}
+
+// RelatedLists handles GET /api/registry/objects/:slug/records/:id/related-lists.
+// It returns the record's reverse related lists — every child object's records
+// that point back at this record through a typed relation field (e.g. a contact's
+// deals). Read-level: the underlying per-child List enforces OLS, so a caller only
+// sees children they can read.
+func (h *RecordHandler) RelatedLists(c *gin.Context) {
+	orgID := c.MustGet("org_id").(uuid.UUID)
+	slug := c.Param("slug")
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": "invalid record id"})
+		return
+	}
+	lists, err := h.related.ListRelatedLists(c.Request.Context(), orgID, slug, id)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": lists, "error": nil})
 }
 
 // Create handles POST /api/registry/objects/:slug/records

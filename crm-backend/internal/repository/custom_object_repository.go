@@ -295,12 +295,29 @@ func (r *customObjectRepository) ListRecords(ctx context.Context, orgID uuid.UUI
 		query = query.Where("custom_object_records.display_name ILIKE ?", "%"+f.Q+"%")
 	}
 
+	// Exact-match field filters against the JSONB data blob (data ->> key = value).
+	// This is how a custom object is listed by a relation value — e.g. all records
+	// whose "contact" field is X — powering reverse related lists for custom-object
+	// children. Keys are field keys, so this can never inject column names.
+	for key, val := range f.Filters {
+		if key == "" || val == "" {
+			continue
+		}
+		query = query.Where("custom_object_records.data ->> ? = ?", key, val)
+	}
+
 	// Count total
 	var total int64
 	countQ := r.db.WithContext(ctx).Model(&domain.CustomObjectRecord{}).
 		Where("org_id = ? AND object_def_id = ?", orgID, defID)
 	if f.Q != "" {
 		countQ = countQ.Where("display_name ILIKE ?", "%"+f.Q+"%")
+	}
+	for key, val := range f.Filters {
+		if key == "" || val == "" {
+			continue
+		}
+		countQ = countQ.Where("data ->> ? = ?", key, val)
 	}
 	countQ.Count(&total)
 

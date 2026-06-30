@@ -23,6 +23,9 @@ type ObjectDef struct {
 	Icon        string    `gorm:"size:50;default:'📦'" json:"icon"`
 	Color       string    `gorm:"size:20;default:'#6B7280'" json:"color"`
 	IsSystem    bool      `gorm:"not null;default:false" json:"is_system"`
+	// NumberPrefix is the admin-editable label prefix for record numbers; nil falls
+	// back to the uppercased slug at read time.
+	NumberPrefix *string `gorm:"size:16" json:"number_prefix,omitempty"`
 	// Storage is an internal flag ('table' | 'jsonb') and is never user-visible.
 	Storage        string         `gorm:"size:10;not null;default:'jsonb'" json:"-"`
 	RecordTable    *string        `gorm:"size:63" json:"-"`
@@ -95,6 +98,9 @@ type ObjectDescriptor struct {
 	IsSystem     bool              `json:"is_system"`
 	Searchable   bool              `json:"searchable"`
 	DisplayField string            `json:"display_field"`
+	// NumberPrefix is the label prefix for this object's record numbers (e.g.
+	// "DEAL" → DEAL-0001). Defaults to the uppercased slug; admin-editable.
+	NumberPrefix string            `json:"number_prefix"`
 	Fields       []FieldDescriptor `json:"fields"`
 	// Layout is the caller's effective detail layout (P8). Empty/nil means
 	// no layout configured; the frontend renders the flat Fields list instead.
@@ -127,9 +133,13 @@ type FieldDescriptor struct {
 // The shape is identical regardless of whether the record is backed by a typed
 // table or a JSONB blob — that is the whole point of "all objects equal".
 type UniformRecord struct {
-	ID        uuid.UUID              `json:"id"`
-	Object    string                 `json:"object"` // slug
-	Display   string                 `json:"display"`
+	ID      uuid.UUID `json:"id"`
+	Object  string    `json:"object"` // slug
+	Display string    `json:"display"`
+	// Number is the human-readable record identifier (e.g. "DEAL-0001"), resolved
+	// on read from the per-object sequence. Empty when numbering is unavailable
+	// (e.g. a record created before numbering, until the backfill runs).
+	Number    string                 `json:"number,omitempty"`
 	Fields    map[string]interface{} `json:"fields"`
 	CreatedAt time.Time              `json:"created_at"`
 	UpdatedAt time.Time              `json:"updated_at"`
@@ -159,6 +169,31 @@ type RecordListInput struct {
 type RecordList struct {
 	Records    []UniformRecord `json:"records"`
 	NextCursor string          `json:"next_cursor,omitempty"`
+}
+
+// RelatedList is one "reverse" relationship group on a record's page: every
+// record of a child object that points back at this record through a typed
+// relation field. E.g. on a Contact, the child object "deal" with field "contact"
+// yields the contact's Deals. Derived entirely from the registry — wherever a
+// field has type=relation and target_slug == this record's object, a related list
+// appears, in both directions, with zero per-object code.
+type RelatedList struct {
+	Object     string          `json:"object"`      // child object slug (e.g. "deal")
+	Label      string          `json:"label"`       // child object's plural label (e.g. "Deals")
+	Icon       string          `json:"icon"`        // child object's icon
+	FieldKey   string          `json:"field_key"`   // the relation field on the child that points back
+	FieldLabel string          `json:"field_label"` // that field's label (e.g. "Contact")
+	Records    []UniformRecord `json:"records"`
+	Count      int             `json:"count"`
+}
+
+// RelatedListsUseCase assembles a record's reverse related lists by walking the
+// registry for incoming relation fields and querying each child object through
+// RecordService (so OLS/FLS apply uniformly). It composes the registry and record
+// services rather than living on RecordService, keeping that interface — and its
+// many constructor call sites — unchanged.
+type RelatedListsUseCase interface {
+	ListRelatedLists(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID) ([]RelatedList, error)
 }
 
 // RecordWriteInput is the uniform create/update payload: a flat field map keyed
@@ -197,6 +232,11 @@ type RecordService interface {
 	// set, writes to searchable objects simply skip indexing.
 	SetSearchIndexer(idx RecordIndexer)
 
+	// SetNumberRepo wires the human-readable record-number allocator, called once
+	// at startup. Until set, records carry no Number (numbering is simply absent),
+	// so unit tests that don't exercise numbering need no extra wiring.
+	SetNumberRepo(repo RecordNumberRepository)
+
 	// --- Universal relationships + tags (P4) ---
 
 	// AddLink relates one record to another (any object to any object). It is
@@ -221,6 +261,18 @@ type RecordService interface {
 // ============================================================
 // Ports
 // ============================================================
+
+// RecordNumberRepository allocates and resolves human-readable record numbers.
+// Numbers live in a side table keyed by (org, object_slug, record_id), so the same
+// allocator serves typed and JSONB objects uniformly.
+type RecordNumberRepository interface {
+	// Allocate assigns the next sequence number to a record (idempotent: a record
+	// that already has one keeps it). Called from the write path after create.
+	Allocate(ctx context.Context, orgID uuid.UUID, slug string, recordID uuid.UUID) error
+	// NumbersFor returns the formatted number (e.g. "DEAL-0001") for each id that
+	// has one, using the object's current prefix. Ids without a number are omitted.
+	NumbersFor(ctx context.Context, orgID uuid.UUID, slug string, ids []uuid.UUID) (map[uuid.UUID]string, error)
+}
 
 type ObjectRegistryRepository interface {
 	// EnsureSystemObjects idempotently seeds the three system object defs and
@@ -253,6 +305,10 @@ type ObjectRegistryRepository interface {
 	CreateField(ctx context.Context, f *ObjectField) error
 	SaveField(ctx context.Context, f *ObjectField) error
 	SoftDeleteFieldByID(ctx context.Context, orgID, id uuid.UUID) error
+
+	// SetNumberPrefix updates an object's record-number label prefix (empty clears
+	// it back to the slug default). Returns ErrNotFound when the slug is unknown.
+	SetNumberPrefix(ctx context.Context, orgID uuid.UUID, slug, prefix string) error
 }
 
 type ObjectRegistryUseCase interface {
@@ -260,4 +316,7 @@ type ObjectRegistryUseCase interface {
 	ListObjects(ctx context.Context, orgID uuid.UUID) ([]ObjectSummary, error)
 	// GetSchema returns the full descriptor for one object by slug.
 	GetSchema(ctx context.Context, orgID uuid.UUID, slug string) (*ObjectDescriptor, error)
+	// SetNumberPrefix updates an object's record-number prefix (e.g. "INV"). An
+	// empty prefix resets to the slug default.
+	SetNumberPrefix(ctx context.Context, orgID uuid.UUID, slug, prefix string) error
 }

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   listRegistryObjects, getObjectSchema, getObjectDef,
   createObjectDef, updateObjectDef, deleteObjectDef,
-  createFieldDef, updateFieldDef, deleteFieldDef,
+  createFieldDef, updateFieldDef, deleteFieldDef, setObjectNumberPrefix,
   listObjectLayouts, createObjectLayout, updateObjectLayout, deleteObjectLayout, setLayoutRoles,
   getPermissionGrid,
   type ObjectSummary, type CustomFieldDef, type FieldType,
@@ -20,8 +20,8 @@ import {
 // Kanban-centric layout).
 
 const ICONS = ['📦', '🏗️', '🚗', '📋', '🎯', '💼', '🏠', '📊', '🔧', '📝', '🎪', '🧩', '📁', '🗂️', '⚙️', '🛒'];
-const FIELD_TYPES: FieldType[] = ['text', 'number', 'date', 'select', 'boolean', 'url'];
-const typeLabel = (t: string) => ({ text: 'Aa Text', number: '# Number', date: '📅 Date', select: '▼ Select', boolean: '✓ Yes/No', url: '🔗 URL' }[t] || t);
+const FIELD_TYPES: FieldType[] = ['text', 'number', 'date', 'select', 'boolean', 'url', 'relation'];
+const typeLabel = (t: string) => ({ text: 'Aa Text', number: '# Number', date: '📅 Date', select: '▼ Select', boolean: '✓ Yes/No', url: '🔗 URL', relation: '↗ Relation' }[t] || t);
 const autoSlug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 50);
 
 const inputStyle = { width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 14, boxSizing: 'border-box' as const };
@@ -144,6 +144,52 @@ function TabBar({ active, onSelect, tabs }: { active: string; onSelect: (t: stri
 }
 
 // ============================================================
+// Record-number prefix editor (admin sets the DEAL-0001 style prefix per object)
+// ============================================================
+
+function NumberPrefixEditor({ slug }: { slug: string }) {
+  const [prefix, setPrefix] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    getObjectSchema(slug)
+      .then(s => { if (!cancelled) setPrefix(s.number_prefix || ''); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [slug]);
+
+  const save = async () => {
+    setSaving(true); setErr(''); setSaved(false);
+    try { await setObjectNumberPrefix(slug, prefix.trim()); setSaved(true); }
+    catch (e) { setErr(e instanceof Error ? e.message : 'Failed to save prefix'); }
+    finally { setSaving(false); }
+  };
+
+  const sample = `${(prefix.trim() || slug).toUpperCase()}-0001`;
+  return (
+    <div style={{ border: '1px solid #e2e8f0', borderRadius: 6, padding: 12, background: '#fafbfc', marginBottom: 12 }}>
+      <label style={{ fontSize: 13, fontWeight: 500, display: 'block', marginBottom: 4 }}>Record number prefix</label>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <input
+          value={prefix}
+          onChange={e => { setPrefix(e.target.value.toUpperCase().slice(0, 16)); setSaved(false); }}
+          placeholder={slug.toUpperCase()}
+          style={{ ...inputStyle, width: 160, padding: '6px 8px', fontSize: 13 }}
+        />
+        <span style={{ fontSize: 12, color: '#64748b' }}>e.g. <code>{sample}</code></span>
+        <button onClick={save} disabled={saving} style={{ ...btn(saving ? '#94a3b8' : '#3b82f6'), padding: '6px 12px', fontSize: 13 }}>{saving ? 'Saving…' : 'Save'}</button>
+        {saved && <span style={{ color: '#16a34a', fontSize: 12 }}>Saved ✓</span>}
+      </div>
+      {err && <p style={{ color: '#dc2626', fontSize: 12, margin: '4px 0 0' }}>{err}</p>}
+      <p style={{ fontSize: 11, color: '#94a3b8', margin: '4px 0 0' }}>A friendly identifier shown on each record instead of its database id. Blank uses the object name.</p>
+    </div>
+  );
+}
+
+// ============================================================
 // Field builder (shared add/edit form for one field)
 // ============================================================
 
@@ -153,13 +199,30 @@ interface FieldDraft {
   type: string;
   options: string[];
   required: boolean;
+  target_slug?: string;
 }
-const emptyDraft: FieldDraft = { key: '', label: '', type: 'text', options: [], required: false };
+const emptyDraft: FieldDraft = { key: '', label: '', type: 'text', options: [], required: false, target_slug: '' };
 
-function FieldBuilder({ draft, setDraft, onAdd, editing }: {
+function FieldBuilder({ draft, setDraft, onAdd, editing, currentSlug }: {
   draft: FieldDraft; setDraft: (d: FieldDraft) => void; onAdd: () => void; editing: boolean;
+  /** The object being edited, excluded from relation targets to avoid an obvious self-loop. */
+  currentSlug?: string;
 }) {
   const [optInput, setOptInput] = useState('');
+  const [objects, setObjects] = useState<ObjectSummary[]>([]);
+
+  // Relation targets are every registered object; loaded lazily so the field
+  // builder only pays for it when relations are in play.
+  useEffect(() => {
+    let cancelled = false;
+    listRegistryObjects().then(o => { if (!cancelled) setObjects(o); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  const isRelation = draft.type === 'relation';
+  // A relation needs a target before it can be added/saved.
+  const canSubmit = draft.label.trim() && (!isRelation || !!draft.target_slug);
+
   return (
     <div style={{ border: '1px solid #e2e8f0', borderRadius: 6, padding: 12, background: '#fafbfc' }}>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto auto', gap: 8, alignItems: 'end' }}>
@@ -176,8 +239,26 @@ function FieldBuilder({ draft, setDraft, onAdd, editing }: {
         <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: '#64748b', cursor: 'pointer' }}>
           <input type="checkbox" checked={draft.required} onChange={e => setDraft({ ...draft, required: e.target.checked })} /> Req
         </label>
-        <button onClick={onAdd} disabled={!draft.label.trim()} style={{ ...btn(draft.label.trim() ? '#3b82f6' : '#94a3b8'), padding: '6px 14px', fontSize: 13 }}>{editing ? 'Save' : '+ Add'}</button>
+        <button onClick={onAdd} disabled={!canSubmit} style={{ ...btn(canSubmit ? '#3b82f6' : '#94a3b8'), padding: '6px 14px', fontSize: 13 }}>{editing ? 'Save' : '+ Add'}</button>
       </div>
+      {isRelation && (
+        <div style={{ marginTop: 8 }}>
+          <label style={{ fontSize: 12, color: '#64748b' }}>Related object</label>
+          <select
+            value={draft.target_slug || ''}
+            onChange={e => setDraft({ ...draft, target_slug: e.target.value })}
+            style={{ ...inputStyle, padding: '6px 8px', fontSize: 13 }}
+          >
+            <option value="">— Choose an object —</option>
+            {objects.filter(o => o.slug !== currentSlug).map(o => (
+              <option key={o.slug} value={o.slug}>{o.icon} {o.label}</option>
+            ))}
+          </select>
+          <p style={{ fontSize: 11, color: '#94a3b8', margin: '4px 0 0' }}>
+            This field links each record to one {draft.target_slug ? objects.find(o => o.slug === draft.target_slug)?.label || 'record' : 'record'}; the related object will show these in a related list.
+          </p>
+        </div>
+      )}
       {draft.type === 'select' && (
         <div style={{ marginTop: 8 }}>
           <label style={{ fontSize: 12, color: '#64748b' }}>Options (press Enter)</label>
@@ -228,8 +309,10 @@ function CustomObjectForm({ editSlug, onDone, onCancel }: { editSlug?: string; o
     if (!draft.label.trim()) return;
     const key = draft.key || autoSlug(draft.label);
     if (fields.some(f => f.key === key)) { setError(`Duplicate field key: ${key}`); return; }
+    if (draft.type === 'relation' && !draft.target_slug) { setError('Choose a related object for the relation field'); return; }
     const f: CustomFieldDef = { key, label: draft.label.trim(), type: draft.type as FieldType, required: draft.required, position: fields.length };
     if (draft.type === 'select') f.options = [...draft.options];
+    if (draft.type === 'relation') f.target_slug = draft.target_slug;
     setFields([...fields, f]);
     setDraft({ ...emptyDraft });
     setError('');
@@ -280,6 +363,9 @@ function CustomObjectForm({ editSlug, onDone, onCancel }: { editSlug?: string; o
             <p style={{ fontSize: 12, color: '#94a3b8', margin: '4px 0 0 24px' }}>Index records for semantic + full-text global search and AI.</p>
           </div>
 
+          {/* Record-number prefix is editable once the object exists (has a slug). */}
+          {editSlug && <NumberPrefixEditor slug={editSlug} />}
+
           <div style={{ marginBottom: 16 }}>
             <label style={{ fontSize: 13, fontWeight: 500, display: 'block', marginBottom: 8 }}>Fields ({fields.length})</label>
             {fields.length > 0 && (
@@ -295,7 +381,7 @@ function CustomObjectForm({ editSlug, onDone, onCancel }: { editSlug?: string; o
                 ))}
               </div>
             )}
-            <FieldBuilder draft={draft} setDraft={setDraft} onAdd={addField} editing={false} />
+            <FieldBuilder draft={draft} setDraft={setDraft} onAdd={addField} editing={false} currentSlug={slug} />
           </div>
 
           <div style={{ display: 'flex', gap: 8 }}>
@@ -315,7 +401,7 @@ function CustomObjectForm({ editSlug, onDone, onCancel }: { editSlug?: string; o
 // System object fields editor (native read-only; custom fields via settings API)
 // ============================================================
 
-interface SchemaFieldRow { key: string; label: string; type: string; is_system: boolean; required: boolean; options?: string[] }
+interface SchemaFieldRow { key: string; label: string; type: string; is_system: boolean; required: boolean; options?: string[]; target_slug?: string }
 
 function SystemFieldsEditor({ slug, onBack }: { slug: string; onBack: () => void }) {
   const [tab, setTab] = useState<'fields' | 'layouts'>('fields');
@@ -332,7 +418,7 @@ function SystemFieldsEditor({ slug, onBack }: { slug: string; onBack: () => void
     try {
       const s = await getObjectSchema(slug);
       setLabel(s.label); setIcon(s.icon);
-      setRows(s.fields.map(f => ({ key: f.key, label: f.label, type: f.type, is_system: f.is_system, required: f.required, options: f.options })));
+      setRows(s.fields.map(f => ({ key: f.key, label: f.label, type: f.type, is_system: f.is_system, required: f.required, options: f.options, target_slug: f.target_slug })));
     } catch {
       setError('Failed to load fields');
     } finally {
@@ -345,7 +431,12 @@ function SystemFieldsEditor({ slug, onBack }: { slug: string; onBack: () => void
     if (!draft.label.trim()) return;
     setError('');
     const key = draft.key || autoSlug(draft.label);
-    const payload = { label: draft.label.trim(), type: draft.type, required: draft.required, options: draft.type === 'select' ? draft.options : undefined };
+    if (draft.type === 'relation' && !draft.target_slug) { setError('Choose a related object for the relation field'); return; }
+    const payload = {
+      label: draft.label.trim(), type: draft.type, required: draft.required,
+      options: draft.type === 'select' ? draft.options : undefined,
+      target_slug: draft.type === 'relation' ? draft.target_slug : undefined,
+    };
     try {
       if (editingKey) {
         await updateFieldDef(editingKey, payload);
@@ -363,7 +454,7 @@ function SystemFieldsEditor({ slug, onBack }: { slug: string; onBack: () => void
 
   const editField = (r: SchemaFieldRow) => {
     setEditingKey(r.key);
-    setDraft({ key: r.key, label: r.label, type: r.type, options: r.options || [], required: r.required });
+    setDraft({ key: r.key, label: r.label, type: r.type, options: r.options || [], required: r.required, target_slug: r.target_slug || '' });
   };
 
   const removeField = async (key: string) => {
@@ -392,6 +483,8 @@ function SystemFieldsEditor({ slug, onBack }: { slug: string; onBack: () => void
           )}
           {error && <div style={{ background: '#fef2f2', color: '#dc2626', padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>{error}</div>}
 
+          <NumberPrefixEditor slug={slug} />
+
           <div style={{ border: '1px solid #e2e8f0', borderRadius: 6, overflow: 'hidden', marginBottom: 12 }}>
             {rows.map((r, i) => (
               <div key={r.key} style={{ display: 'flex', alignItems: 'center', padding: '8px 10px', borderBottom: i < rows.length - 1 ? '1px solid #f1f5f9' : 'none', background: r.is_system ? '#fafbfc' : '#fff' }}>
@@ -411,7 +504,7 @@ function SystemFieldsEditor({ slug, onBack }: { slug: string; onBack: () => void
           </div>
 
           <label style={{ fontSize: 13, fontWeight: 500, display: 'block', marginBottom: 6 }}>{editingKey ? `Edit field "${editingKey}"` : 'Add a custom field'}</label>
-          <FieldBuilder draft={draft} setDraft={setDraft} onAdd={saveField} editing={!!editingKey} />
+          <FieldBuilder draft={draft} setDraft={setDraft} onAdd={saveField} editing={!!editingKey} currentSlug={slug} />
 
           <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
             <button onClick={onBack} style={{ padding: '8px 16px', background: '#e2e8f0', border: 'none', borderRadius: 6, cursor: 'pointer' }}>← Back to objects</button>

@@ -340,6 +340,25 @@ func (r *objectRegistryRepository) SoftDeleteFieldByID(ctx context.Context, orgI
 	return nil
 }
 
+// SetNumberPrefix updates an object's record-number prefix. An empty prefix is
+// stored as NULL so the read path falls back to the uppercased slug.
+func (r *objectRegistryRepository) SetNumberPrefix(ctx context.Context, orgID uuid.UUID, slug, prefix string) error {
+	var val interface{}
+	if prefix != "" {
+		val = prefix
+	}
+	result := r.db.WithContext(ctx).Model(&domain.ObjectDef{}).
+		Where("org_id = ? AND slug = ? AND deleted_at IS NULL", orgID, slug).
+		Update("number_prefix", val)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
 func (r *objectRegistryRepository) FieldCounts(ctx context.Context, orgID uuid.UUID) (map[uuid.UUID]int, error) {
 	type row struct {
 		ObjectDefID uuid.UUID

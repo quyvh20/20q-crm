@@ -8,7 +8,8 @@ import {
   getStages,
 } from '../../lib/api';
 import { formatFieldValue } from './fieldHelpers';
-import RecordRelations from './RecordRelations';
+import RecordTags from './RecordTags';
+import RelatedLists from './RelatedLists';
 
 interface ObjectDetailViewProps {
   schema: ObjectSchema;
@@ -217,7 +218,13 @@ export default function ObjectDetailView({ schema, record }: ObjectDetailViewPro
         />
       )}
 
-      <RecordRelations slug={schema.slug} recordId={record.id} />
+      {/* Tags (uniform across every object). The former free-text "link any
+          record" panel was replaced by schema-driven related lists below. */}
+      <RecordTags slug={schema.slug} recordId={record.id} />
+
+      {/* Schema-driven reverse related lists (e.g. a Contact's Deals), derived
+          from relation fields that point back at this record. */}
+      <RelatedLists slug={schema.slug} recordId={record.id} />
     </div>
   );
 }

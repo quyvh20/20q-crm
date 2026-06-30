@@ -258,13 +258,19 @@ type CustomFieldDef struct {
 	Type       string   `json:"type"`
 	EntityType string   `json:"entity_type"`
 	Options    []string `json:"options,omitempty"`
-	Required   bool     `json:"required"`
-	Position   int      `json:"position"`
+	// TargetSlug is the related object's slug for a relation field (the lookup
+	// target). Empty for all non-relation types.
+	TargetSlug string `json:"target_slug,omitempty"`
+	Required   bool   `json:"required"`
+	Position   int    `json:"position"`
 }
 
 var ValidFieldTypes = map[string]bool{
 	"text": true, "number": true, "date": true,
 	"select": true, "boolean": true, "url": true,
+	// relation is an admin-creatable lookup to another object; it carries the
+	// target object in TargetSlug and stores the related record's id as its value.
+	"relation": true,
 }
 
 var ValidEntityTypes = map[string]bool{

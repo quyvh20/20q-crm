@@ -75,6 +75,62 @@ func TestOrgSettings_DuplicateKeyRejected(t *testing.T) {
 	assertAppCode(t, err, 409)
 }
 
+func TestOrgSettings_CreateRelationField(t *testing.T) {
+	repo := newSystemRegistry()
+	uc := NewOrgSettingsUseCase(repo)
+	org := uuid.New()
+	ctx := context.Background()
+
+	// A relation lookup on deal targeting company succeeds and carries the target.
+	created, err := uc.CreateFieldDef(ctx, org, domain.CreateFieldDefInput{
+		Key: "primary_partner", Label: "Primary Partner", Type: "relation",
+		EntityType: "deal", TargetSlug: "company",
+	})
+	if err != nil {
+		t.Fatalf("CreateFieldDef relation: %v", err)
+	}
+	if created.Type != "relation" || created.TargetSlug != "company" {
+		t.Fatalf("expected relation field targeting company, got %+v", created)
+	}
+
+	// It round-trips through GetFieldDefs with the target preserved.
+	defs, err := uc.GetFieldDefs(ctx, org, "deal")
+	if err != nil {
+		t.Fatalf("GetFieldDefs: %v", err)
+	}
+	found := false
+	for _, d := range defs {
+		if d.Key == "primary_partner" {
+			found = true
+			if d.TargetSlug != "company" {
+				t.Fatalf("target_slug lost on read: %+v", d)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("relation field not returned: %+v", defs)
+	}
+}
+
+func TestOrgSettings_RelationFieldValidation(t *testing.T) {
+	repo := newSystemRegistry()
+	uc := NewOrgSettingsUseCase(repo)
+	org := uuid.New()
+	ctx := context.Background()
+
+	// Missing target_slug is rejected.
+	_, err := uc.CreateFieldDef(ctx, org, domain.CreateFieldDefInput{
+		Key: "r1", Label: "R1", Type: "relation", EntityType: "deal",
+	})
+	assertAppCode(t, err, 400)
+
+	// A target that isn't a known object is rejected.
+	_, err = uc.CreateFieldDef(ctx, org, domain.CreateFieldDefInput{
+		Key: "r2", Label: "R2", Type: "relation", EntityType: "deal", TargetSlug: "unicorn",
+	})
+	assertAppCode(t, err, 400)
+}
+
 func TestOrgSettings_CreateValidation(t *testing.T) {
 	repo := newSystemRegistry()
 	uc := NewOrgSettingsUseCase(repo)

@@ -77,3 +77,26 @@ func (h *ObjectRegistryHandler) GetSchema(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"data": descriptor, "error": nil})
 }
+
+// setNumberPrefixBody is the SetNumberPrefix request payload.
+type setNumberPrefixBody struct {
+	NumberPrefix string `json:"number_prefix"`
+}
+
+// SetNumberPrefix handles PUT /api/registry/objects/:slug/number-prefix (admin).
+// It updates the object's record-number label prefix (e.g. "INV" → INV-0001); an
+// empty prefix resets to the slug default.
+func (h *ObjectRegistryHandler) SetNumberPrefix(c *gin.Context) {
+	orgID := c.MustGet("org_id").(uuid.UUID)
+	slug := c.Param("slug")
+	var body setNumberPrefixBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": err.Error()})
+		return
+	}
+	if err := h.uc.SetNumberPrefix(c.Request.Context(), orgID, slug, body.NumberPrefix); err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": "updated", "error": nil})
+}

@@ -374,6 +374,30 @@ func main() {
 		db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uix_object_layout_roles_one_per_role ON object_layout_roles(org_id, object_slug, role_id)`)
 		db.Exec(`ALTER TABLE object_layout_roles ENABLE ROW LEVEL SECURITY`)
 
+		// Human-readable record numbers (migration 000023) — boot guard, since
+		// golang-migrate is authoritative only for fresh DBs and existing prod schema
+		// is maintained here. Mirrors migrations/000023_record_numbers.up.sql. Numbers
+		// live in a side table keyed by (org, object_slug, record_id) so typed and
+		// JSONB objects are numbered uniformly.
+		db.Exec(`ALTER TABLE object_defs ADD COLUMN IF NOT EXISTS number_prefix VARCHAR(16)`)
+		db.Exec(`CREATE TABLE IF NOT EXISTS object_number_seqs (
+			org_id      UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			object_slug VARCHAR(100) NOT NULL,
+			next_seq    BIGINT NOT NULL DEFAULT 1,
+			PRIMARY KEY (org_id, object_slug)
+		)`)
+		db.Exec(`CREATE TABLE IF NOT EXISTS record_numbers (
+			org_id      UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			object_slug VARCHAR(100) NOT NULL,
+			record_id   UUID NOT NULL,
+			seq         BIGINT NOT NULL,
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (org_id, object_slug, record_id)
+		)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_record_numbers_org_slug ON record_numbers(org_id, object_slug)`)
+		db.Exec(`ALTER TABLE object_number_seqs ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`ALTER TABLE record_numbers ENABLE ROW LEVEL SECURITY`)
+
 		log.Info("Seeding system roles...")
 		if err := repository.SeedSystemRoles(db); err != nil {
 			log.Error("Failed to seed system roles", zap.Error(err))
@@ -408,6 +432,15 @@ func main() {
 			log.Error("Failed to converge custom objects into the registry", zap.Error(err))
 		} else if n > 0 {
 			log.Info("Converged custom objects into object_defs/object_fields", zap.Int64("defs", n))
+		}
+
+		// Human-readable record numbers — assign a number to every existing record
+		// and seed the per-object counters. Idempotent and boot-guarded; runs after
+		// custom objects are in object_defs so their records are numbered too.
+		if n, err := repository.BackfillRecordNumbers(db); err != nil {
+			log.Error("Failed to backfill record numbers", zap.Error(err))
+		} else if n > 0 {
+			log.Info("Backfilled human-readable record numbers", zap.Int64("records", n))
 		}
 	}
 
@@ -539,7 +572,12 @@ func main() {
 		// OLS + writes the audit trail (P5a) — the security chokepoint.
 		linkRepo := repository.NewLinkRepository(db)
 		recordService := usecase.NewRecordService(customObjUC, orgSettingsUC, contactUseCase, companyUseCase, dealUseCase, linkRepo, tagRepo, permissionUC)
-		recordHandler := delivery.NewRecordHandler(recordService)
+		// Human-readable record numbers (DEAL-0001): allocate on create, resolve on read.
+		recordService.SetNumberRepo(repository.NewRecordNumberRepository(db))
+		// Reverse related lists compose the registry + record services (P-relationships):
+		// they surface, on any record, the child records that point back at it.
+		relatedListsUC := usecase.NewRelatedListsUseCase(objectRegistryUC, recordService)
+		recordHandler := delivery.NewRecordHandler(recordService, relatedListsUC)
 
 		// Global search (P6): spans searchable custom objects (record_embeddings)
 		// plus contacts (native index), resolving every hit through RecordService so

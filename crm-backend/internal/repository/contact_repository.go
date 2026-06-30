@@ -76,6 +76,12 @@ func (r *contactRepository) List(ctx context.Context, orgID uuid.UUID, f domain.
 	if f.OwnerUserID != nil {
 		query = query.Where("contacts.owner_user_id = ?", *f.OwnerUserID)
 	}
+	for k, v := range f.CustomFilters {
+		if k == "" || v == "" {
+			continue
+		}
+		query = query.Where("contacts.custom_fields ->> ? = ?", k, v)
+	}
 	if len(f.TagIDs) > 0 {
 		query = query.Where("contacts.id IN (SELECT contact_id FROM contact_tags WHERE tag_id IN ?)", f.TagIDs)
 	}

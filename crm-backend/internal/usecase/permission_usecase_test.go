@@ -85,6 +85,9 @@ func (f *fakeRegistryUC) ListObjects(context.Context, uuid.UUID) ([]domain.Objec
 func (f *fakeRegistryUC) GetSchema(context.Context, uuid.UUID, string) (*domain.ObjectDescriptor, error) {
 	return f.schema, nil
 }
+func (f *fakeRegistryUC) SetNumberPrefix(context.Context, uuid.UUID, string, string) error {
+	return nil
+}
 
 func callerCtx(role string) context.Context {
 	return domain.WithCaller(context.Background(), role, uuid.New())
