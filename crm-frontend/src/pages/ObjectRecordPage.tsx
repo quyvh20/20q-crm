@@ -93,18 +93,16 @@ export default function ObjectRecordPage() {
         ← Back to {schema.label_plural}
       </button>
 
-      {/* Header card */}
+      {/* Header section */}
       <div
         style={{
-          background: '#fff',
-          border: '1px solid #e2e8f0',
-          borderRadius: 12,
-          padding: '20px 24px',
-          marginBottom: 16,
+          padding: '16px 0 32px 0',
+          marginBottom: 32,
           display: 'flex',
           alignItems: 'flex-start',
           justifyContent: 'space-between',
           gap: 16,
+          borderBottom: '2px solid #f1f5f9',
         }}
       >
         <div style={{ minWidth: 0 }}>
@@ -137,7 +135,7 @@ export default function ObjectRecordPage() {
       {/* Body: inline edit form when editing, layout-driven detail otherwise.
           Editing happens on the page itself (no slide-over) so the record stays
           in full view while it's being changed. */}
-      <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, overflow: 'hidden' }}>
+      <div>
         {editing ? (
           <ObjectForm
             schema={schema}
@@ -149,9 +147,7 @@ export default function ObjectRecordPage() {
             onCancel={() => setEditing(false)}
           />
         ) : (
-          <div style={{ padding: 24 }}>
-            <ObjectDetailView schema={schema} record={record} />
-          </div>
+          <ObjectDetailView schema={schema} record={record} />
         )}
       </div>
 
