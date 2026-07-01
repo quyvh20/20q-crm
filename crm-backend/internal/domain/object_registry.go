@@ -50,6 +50,11 @@ type ObjectField struct {
 	Type         string         `gorm:"size:30;not null" json:"type"`
 	Options      JSON           `gorm:"type:jsonb;default:'[]'" json:"options"`
 	TargetSlug   *string        `gorm:"size:100" json:"target_slug,omitempty"`
+	// ViaField/SourceField configure a "mirror" field: follow the relation named by
+	// ViaField to the linked record, then display that record's SourceField. Both nil
+	// for every non-mirror field.
+	ViaField    *string `gorm:"size:100" json:"via_field,omitempty"`
+	SourceField *string `gorm:"size:100" json:"source_field,omitempty"`
 	IsRequired   bool           `gorm:"not null;default:false" json:"is_required"`
 	IsUnique     bool           `gorm:"not null;default:false" json:"is_unique"`
 	IsSystem     bool           `gorm:"not null;default:false" json:"is_system"`
@@ -118,9 +123,13 @@ type FieldDescriptor struct {
 	Type       string   `json:"type"`
 	Options    []string `json:"options,omitempty"`
 	TargetSlug string   `json:"target_slug,omitempty"`
-	IsSystem   bool     `json:"is_system"`
-	Required   bool     `json:"required"`
-	Unique     bool     `json:"unique,omitempty"`
+	// Mirror-field config (see ObjectField): follow ViaField to the linked record
+	// and display its SourceField. Empty for non-mirror fields.
+	ViaField    string `json:"via_field,omitempty"`
+	SourceField string `json:"source_field,omitempty"`
+	IsSystem    bool   `json:"is_system"`
+	Required    bool   `json:"required"`
+	Unique      bool   `json:"unique,omitempty"`
 }
 
 // ============================================================

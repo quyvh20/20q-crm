@@ -398,6 +398,12 @@ func main() {
 		db.Exec(`ALTER TABLE object_number_seqs ENABLE ROW LEVEL SECURITY`)
 		db.Exec(`ALTER TABLE record_numbers ENABLE ROW LEVEL SECURITY`)
 
+		// Mirror fields (migration 000024) — boot guard. via_field/source_field
+		// configure a read-only field that displays a value pulled from a linked
+		// record. Mirrors migrations/000024_mirror_fields.up.sql.
+		db.Exec(`ALTER TABLE object_fields ADD COLUMN IF NOT EXISTS via_field VARCHAR(100)`)
+		db.Exec(`ALTER TABLE object_fields ADD COLUMN IF NOT EXISTS source_field VARCHAR(100)`)
+
 		log.Info("Seeding system roles...")
 		if err := repository.SeedSystemRoles(db); err != nil {
 			log.Error("Failed to seed system roles", zap.Error(err))

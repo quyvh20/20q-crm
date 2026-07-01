@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { ReactElement } from 'react';
 import { render, screen, cleanup, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import type { ObjectSchema, UniformRecord, LayoutSection } from '../../../lib/api';
+
+// Relation values render as <Link>, so the view must be inside a Router.
+const renderInRouter = (ui: ReactElement) => render(<MemoryRouter>{ui}</MemoryRouter>);
 
 // Mock the API: ObjectDetailView resolves native relation FIELDS to labels via
 // getObjectRecordUnified, and embeds RecordRelations (which reads links/tags).
@@ -48,13 +53,42 @@ describe('ObjectDetailView resolves relation fields to labels', () => {
       created_at: '', updated_at: '',
     });
 
-    render(<ObjectDetailView schema={dealSchema} record={dealRecord} />);
+    renderInRouter(<ObjectDetailView schema={dealSchema} record={dealRecord} />);
 
     // The relation resolves to the company's display, not the raw id 'c1'.
     expect(await screen.findByText('Acme Corp')).toBeInTheDocument();
     expect(screen.queryByText('c1')).not.toBeInTheDocument();
     // It asked for the right target record.
     await waitFor(() => expect(getObjectRecordUnified).toHaveBeenCalledWith('company', 'c1'));
+  });
+});
+
+describe('ObjectDetailView — mirror fields', () => {
+  it('shows a value mirrored from the linked record', async () => {
+    const schema: ObjectSchema = {
+      slug: 'deal', label: 'Deal', label_plural: 'Deals', icon: '💰', color: '#10B981',
+      is_system: true, searchable: false, display_field: 'title',
+      fields: [
+        { key: 'title', label: 'Title', type: 'text', is_system: true, required: true },
+        { key: 'company', label: 'Company', type: 'relation', target_slug: 'company', is_system: true, required: false },
+        { key: 'company_site', label: 'Company Website', type: 'mirror', via_field: 'company', source_field: 'website', is_system: false, required: false },
+      ],
+    };
+    const record: UniformRecord = {
+      id: 'd1', object: 'deal', display: 'Acme renewal',
+      fields: { title: 'Acme renewal', company: 'c1' },
+      created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+    };
+    // The linked company record carries the source field the mirror reads.
+    vi.mocked(getObjectRecordUnified).mockResolvedValue({
+      id: 'c1', object: 'company', display: 'Acme Corp',
+      fields: { website: 'stark.com' }, created_at: '', updated_at: '',
+    });
+
+    renderInRouter(<ObjectDetailView schema={schema} record={record} />);
+
+    // The mirror follows company -> c1 and displays that record's website.
+    expect(await screen.findByText('stark.com')).toBeInTheDocument();
   });
 });
 
@@ -85,7 +119,7 @@ describe('ObjectDetailView — P8 sectioned layout', () => {
     ];
     const schema: ObjectSchema = { ...contactSchema, layout: sections };
 
-    render(<ObjectDetailView schema={schema} record={contactRecord} />);
+    renderInRouter(<ObjectDetailView schema={schema} record={contactRecord} />);
 
     // Section headings must appear.
     expect(screen.getByText('Core Info')).toBeInTheDocument();
@@ -102,7 +136,7 @@ describe('ObjectDetailView — P8 sectioned layout', () => {
     ];
     const schema: ObjectSchema = { ...contactSchema, layout: sections };
 
-    render(<ObjectDetailView schema={schema} record={contactRecord} />);
+    renderInRouter(<ObjectDetailView schema={schema} record={contactRecord} />);
 
     expect(screen.getByText('Other')).toBeInTheDocument();
     // The unlisted fields still appear under "Other".
@@ -114,7 +148,7 @@ describe('ObjectDetailView — P8 sectioned layout', () => {
     // No layout property — built-in default keeps the page structured, never blank.
     const schema: ObjectSchema = { ...contactSchema };
 
-    render(<ObjectDetailView schema={schema} record={contactRecord} />);
+    renderInRouter(<ObjectDetailView schema={schema} record={contactRecord} />);
 
     // The built-in default section heading appears...
     expect(screen.getByText('Details')).toBeInTheDocument();
@@ -130,7 +164,7 @@ describe('ObjectDetailView — P8 sectioned layout', () => {
   it('uses the default section when schema.layout is an empty array', async () => {
     const schema: ObjectSchema = { ...contactSchema, layout: [] };
 
-    render(<ObjectDetailView schema={schema} record={contactRecord} />);
+    renderInRouter(<ObjectDetailView schema={schema} record={contactRecord} />);
 
     expect(screen.getByText('Details')).toBeInTheDocument();
     expect(screen.queryByText('Other')).not.toBeInTheDocument();

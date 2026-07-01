@@ -91,7 +91,9 @@ export default function ObjectForm({ schema, record, onSaved, onCancel }: Object
           <div style={{ background: '#fef2f2', color: '#dc2626', padding: '8px 12px', borderRadius: 6, marginBottom: 16, fontSize: 13 }}>{error}</div>
         )}
 
-        {schema.fields.map((field) => (
+        {/* Mirror fields are read-only (their value is pulled from a linked record),
+            so they have no editor here — they only render on the record's detail page. */}
+        {schema.fields.filter((field) => field.type !== 'mirror').map((field) => (
           <div key={field.key} style={{ marginBottom: 16 }}>
             <label style={{ fontSize: 13, fontWeight: 500, color: '#374151', display: 'block', marginBottom: 4 }}>
               {field.label}

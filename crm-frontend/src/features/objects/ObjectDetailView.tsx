@@ -22,10 +22,12 @@ function FieldRow({
   field,
   value,
   relationLabel,
+  mirrorValue,
 }: {
   field: ObjectFieldDescriptor;
   value: unknown;
   relationLabel?: string;
+  mirrorValue?: string;
 }) {
   return (
     <div style={{ marginBottom: 16 }}>
@@ -33,7 +35,11 @@ function FieldRow({
         {field.label}
       </div>
       <div style={{ fontSize: 14, color: '#0f172a' }}>
-        {formatFieldValue(field, value, relationLabel)}
+        {/* A mirror stores no value of its own; it shows the resolved value pulled
+            from the linked record (empty renders as an em dash). */}
+        {field.type === 'mirror'
+          ? (mirrorValue ? mirrorValue : <span style={{ color: '#94a3b8' }}>—</span>)
+          : formatFieldValue(field, value, relationLabel)}
       </div>
     </div>
   );
@@ -45,11 +51,13 @@ function SectionPanel({
   schema,
   record,
   relationLabels,
+  mirrorValues,
 }: {
   section: LayoutSection;
   schema: ObjectSchema;
   record: UniformRecord;
   relationLabels: Record<string, string>;
+  mirrorValues: Record<string, string>;
 }) {
   const fieldMap = Object.fromEntries(schema.fields.map((f) => [f.key, f]));
 
@@ -91,6 +99,7 @@ function SectionPanel({
                 field={field}
                 value={record.fields[slot.key]}
                 relationLabel={relationLabels[slot.key]}
+                mirrorValue={mirrorValues[slot.key]}
               />
             </div>
           );
@@ -131,6 +140,41 @@ export function buildDefaultSections(schema: ObjectSchema): LayoutSection[] {
 // Layout controls visual priority, not visibility (FLS controls that).
 export default function ObjectDetailView({ schema, record }: ObjectDetailViewProps) {
   const [relationLabels, setRelationLabels] = useState<Record<string, string>>({});
+  const [mirrorValues, setMirrorValues] = useState<Record<string, string>>({});
+
+  // Resolve mirror fields: follow each mirror's via relation to the linked record
+  // and read its source field. Best-effort per field; an unreadable link shows "—".
+  useEffect(() => {
+    let cancelled = false;
+    const byKey = Object.fromEntries(schema.fields.map((f) => [f.key, f]));
+    const mirrors = schema.fields.filter((f) => f.type === 'mirror' && f.via_field && f.source_field);
+    if (mirrors.length === 0) {
+      setMirrorValues({});
+      return;
+    }
+    Promise.all(
+      mirrors.map(async (m) => {
+        const via = byKey[m.via_field!];
+        const linkedId = via ? record.fields[m.via_field!] : undefined;
+        if (!via || !via.target_slug || !linkedId) return [m.key, ''] as const;
+        try {
+          const target = await getObjectRecordUnified(via.target_slug, String(linkedId));
+          const raw = target.fields[m.source_field!];
+          return [m.key, raw == null ? '' : String(raw)] as const;
+        } catch {
+          return [m.key, ''] as const;
+        }
+      }),
+    ).then((pairs) => {
+      if (cancelled) return;
+      const map: Record<string, string> = {};
+      for (const [k, v] of pairs) map[k] = v;
+      setMirrorValues(map);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [schema, record]);
 
   useEffect(() => {
     let cancelled = false;
@@ -206,6 +250,7 @@ export default function ObjectDetailView({ schema, record }: ObjectDetailViewPro
           schema={schema}
           record={record}
           relationLabels={relationLabels}
+          mirrorValues={mirrorValues}
         />
       ))}
       {otherSection && (
@@ -215,6 +260,7 @@ export default function ObjectDetailView({ schema, record }: ObjectDetailViewPro
           schema={schema}
           record={record}
           relationLabels={relationLabels}
+          mirrorValues={mirrorValues}
         />
       )}
 

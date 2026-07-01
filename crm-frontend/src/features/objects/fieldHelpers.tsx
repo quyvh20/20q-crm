@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import {
   listObjectRecordsUnified,
   getObjectRecordUnified,
   type ObjectFieldDescriptor,
 } from '../../lib/api';
+import { recordPath } from './recordRoutes';
 
 export interface RelationOption {
   id: string;
@@ -41,8 +43,24 @@ export function formatFieldValue(
       );
     case 'date':
       return new Date(String(value)).toLocaleDateString();
-    case 'relation':
-      return relationLabel || String(value);
+    case 'relation': {
+      const label = relationLabel || String(value);
+      // A resolvable target makes the value a link to that record. The pseudo
+      // "stage" relation has no target_slug, so it stays plain text. stopPropagation
+      // keeps a clickable list row from also firing when the link is clicked.
+      if (field.target_slug) {
+        return (
+          <Link
+            to={recordPath(field.target_slug, String(value))}
+            onClick={(e) => e.stopPropagation()}
+            style={{ color: '#3b82f6', textDecoration: 'none' }}
+          >
+            {label}
+          </Link>
+        );
+      }
+      return label;
+    }
     default:
       return String(value);
   }
@@ -104,11 +122,21 @@ export function FieldInput({ field, value, onChange, relationOptions }: FieldInp
         </select>
       );
     case 'relation':
-      // A registered target gives us a searchable picker; an unresolved relation
-      // (e.g. a deal's stage, not yet a registered object) falls back to a
-      // raw-id input so the field is still editable.
-      if (relationOptions) {
-        return <RelationPicker value={value} onChange={onChange} options={relationOptions} targetSlug={field.target_slug} />;
+      // Always use the searchable picker for a relation with a target object — it
+      // searches that object server-side, so it works even when the form hasn't
+      // preloaded options (or the preload failed). A relation reached without a
+      // target (e.g. a deal's stage, or a misconfigured field) uses preloaded
+      // options when present; only a relation with neither a target nor options
+      // has nothing to pick from and falls back to a plain input.
+      if (field.target_slug || relationOptions) {
+        return (
+          <RelationPicker
+            value={value}
+            onChange={onChange}
+            options={relationOptions ?? []}
+            targetSlug={field.target_slug}
+          />
+        );
       }
       return (
         <input
@@ -174,17 +202,17 @@ function RelationPicker({
     return () => { cancelled = true; };
   }, [idStr, preloadedLabel, targetSlug]);
 
-  // Debounced server search while typing (only when we know the target object).
+  // Server search while the menu is open. On open (empty query) it loads the first
+  // page immediately so the dropdown is never blank; typing filters, debounced.
   useEffect(() => {
     if (!open || !targetSlug) return;
-    const q = query.trim();
-    if (!q) { setRemote(null); return; }
+    const term = query.trim();
     let cancelled = false;
     const t = setTimeout(() => {
-      listObjectRecordsUnified(targetSlug, { q, limit: 50 })
+      listObjectRecordsUnified(targetSlug, { q: term, limit: 50 })
         .then((page) => { if (!cancelled) setRemote(page.records.map((r) => ({ id: r.id, label: r.display || r.id }))); })
         .catch(() => { if (!cancelled) setRemote(null); });
-    }, 250);
+    }, term ? 250 : 0);
     return () => { cancelled = true; clearTimeout(t); };
   }, [query, open, targetSlug]);
 

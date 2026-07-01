@@ -5,7 +5,7 @@ import {
   createFieldDef, updateFieldDef, deleteFieldDef, setObjectNumberPrefix,
   listObjectLayouts, createObjectLayout, updateObjectLayout, deleteObjectLayout, setLayoutRoles,
   getPermissionGrid,
-  type ObjectSummary, type CustomFieldDef, type FieldType,
+  type ObjectSummary, type CustomFieldDef, type FieldType, type ObjectFieldDescriptor,
   type ObjectLayout, type LayoutSection, type LayoutField, type PermRoleInfo,
 } from '../../lib/api';
 
@@ -20,8 +20,8 @@ import {
 // Kanban-centric layout).
 
 const ICONS = ['📦', '🏗️', '🚗', '📋', '🎯', '💼', '🏠', '📊', '🔧', '📝', '🎪', '🧩', '📁', '🗂️', '⚙️', '🛒'];
-const FIELD_TYPES: FieldType[] = ['text', 'number', 'date', 'select', 'boolean', 'url', 'relation'];
-const typeLabel = (t: string) => ({ text: 'Aa Text', number: '# Number', date: '📅 Date', select: '▼ Select', boolean: '✓ Yes/No', url: '🔗 URL', relation: '↗ Relation' }[t] || t);
+const FIELD_TYPES: FieldType[] = ['text', 'number', 'date', 'select', 'boolean', 'url', 'relation', 'mirror'];
+const typeLabel = (t: string) => ({ text: 'Aa Text', number: '# Number', date: '📅 Date', select: '▼ Select', boolean: '✓ Yes/No', url: '🔗 URL', relation: '↗ Relation', mirror: '⇄ Mirror' }[t] || t);
 const autoSlug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 50);
 
 const inputStyle = { width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 14, boxSizing: 'border-box' as const };
@@ -200,8 +200,10 @@ interface FieldDraft {
   options: string[];
   required: boolean;
   target_slug?: string;
+  via_field?: string;
+  source_field?: string;
 }
-const emptyDraft: FieldDraft = { key: '', label: '', type: 'text', options: [], required: false, target_slug: '' };
+const emptyDraft: FieldDraft = { key: '', label: '', type: 'text', options: [], required: false, target_slug: '', via_field: '', source_field: '' };
 
 function FieldBuilder({ draft, setDraft, onAdd, editing, currentSlug }: {
   draft: FieldDraft; setDraft: (d: FieldDraft) => void; onAdd: () => void; editing: boolean;
@@ -210,6 +212,10 @@ function FieldBuilder({ draft, setDraft, onAdd, editing, currentSlug }: {
 }) {
   const [optInput, setOptInput] = useState('');
   const [objects, setObjects] = useState<ObjectSummary[]>([]);
+  // This object's relation fields (the "via" choices for a mirror) and the fields
+  // of the currently-chosen via relation's target (the "source" choices).
+  const [thisRelations, setThisRelations] = useState<ObjectFieldDescriptor[]>([]);
+  const [sourceFields, setSourceFields] = useState<ObjectFieldDescriptor[]>([]);
 
   // Relation targets are every registered object; loaded lazily so the field
   // builder only pays for it when relations are in play.
@@ -219,9 +225,33 @@ function FieldBuilder({ draft, setDraft, onAdd, editing, currentSlug }: {
     return () => { cancelled = true; };
   }, []);
 
+  // A mirror follows one of this object's relation fields, so load them.
+  useEffect(() => {
+    if (!currentSlug) { setThisRelations([]); return; }
+    let cancelled = false;
+    getObjectSchema(currentSlug)
+      .then(s => { if (!cancelled) setThisRelations(s.fields.filter(f => f.type === 'relation' && f.target_slug)); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [currentSlug]);
+
+  // Once a via relation is chosen, load its target object's fields to mirror from.
+  const viaTarget = thisRelations.find(f => f.key === draft.via_field)?.target_slug;
+  useEffect(() => {
+    if (draft.type !== 'mirror' || !viaTarget) { setSourceFields([]); return; }
+    let cancelled = false;
+    getObjectSchema(viaTarget)
+      .then(s => { if (!cancelled) setSourceFields(s.fields); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [draft.type, viaTarget]);
+
   const isRelation = draft.type === 'relation';
-  // A relation needs a target before it can be added/saved.
-  const canSubmit = draft.label.trim() && (!isRelation || !!draft.target_slug);
+  const isMirror = draft.type === 'mirror';
+  // A relation needs a target; a mirror needs both a via relation and a source field.
+  const canSubmit = draft.label.trim()
+    && (!isRelation || !!draft.target_slug)
+    && (!isMirror || (!!draft.via_field && !!draft.source_field));
 
   return (
     <div style={{ border: '1px solid #e2e8f0', borderRadius: 6, padding: 12, background: '#fafbfc' }}>
@@ -256,6 +286,38 @@ function FieldBuilder({ draft, setDraft, onAdd, editing, currentSlug }: {
           </select>
           <p style={{ fontSize: 11, color: '#94a3b8', margin: '4px 0 0' }}>
             This field links each record to one {draft.target_slug ? objects.find(o => o.slug === draft.target_slug)?.label || 'record' : 'record'}; the related object will show these in a related list.
+          </p>
+        </div>
+      )}
+      {isMirror && (
+        <div style={{ marginTop: 8, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+          <div>
+            <label style={{ fontSize: 12, color: '#64748b' }}>Via relation</label>
+            <select
+              value={draft.via_field || ''}
+              onChange={e => setDraft({ ...draft, via_field: e.target.value, source_field: '' })}
+              style={{ ...inputStyle, padding: '6px 8px', fontSize: 13 }}
+            >
+              <option value="">— Choose a relation —</option>
+              {thisRelations.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={{ fontSize: 12, color: '#64748b' }}>Show which field</label>
+            <select
+              value={draft.source_field || ''}
+              onChange={e => setDraft({ ...draft, source_field: e.target.value })}
+              disabled={!draft.via_field}
+              style={{ ...inputStyle, padding: '6px 8px', fontSize: 13 }}
+            >
+              <option value="">{draft.via_field ? '— Choose a field —' : 'Pick a relation first'}</option>
+              {sourceFields.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
+            </select>
+          </div>
+          <p style={{ gridColumn: '1 / -1', fontSize: 11, color: '#94a3b8', margin: 0 }}>
+            {thisRelations.length === 0
+              ? 'Add a relation field to this object first — a mirror displays a field from a linked record.'
+              : `Read-only: shows the ${sourceFields.find(f => f.key === draft.source_field)?.label || 'chosen field'} of the linked ${objects.find(o => o.slug === viaTarget)?.label || 'record'}, kept in sync.`}
           </p>
         </div>
       )}
@@ -310,9 +372,11 @@ function CustomObjectForm({ editSlug, onDone, onCancel }: { editSlug?: string; o
     const key = draft.key || autoSlug(draft.label);
     if (fields.some(f => f.key === key)) { setError(`Duplicate field key: ${key}`); return; }
     if (draft.type === 'relation' && !draft.target_slug) { setError('Choose a related object for the relation field'); return; }
+    if (draft.type === 'mirror' && (!draft.via_field || !draft.source_field)) { setError('Choose a relation and a field for the mirror'); return; }
     const f: CustomFieldDef = { key, label: draft.label.trim(), type: draft.type as FieldType, required: draft.required, position: fields.length };
     if (draft.type === 'select') f.options = [...draft.options];
     if (draft.type === 'relation') f.target_slug = draft.target_slug;
+    if (draft.type === 'mirror') { f.via_field = draft.via_field; f.source_field = draft.source_field; }
     setFields([...fields, f]);
     setDraft({ ...emptyDraft });
     setError('');
@@ -401,7 +465,7 @@ function CustomObjectForm({ editSlug, onDone, onCancel }: { editSlug?: string; o
 // System object fields editor (native read-only; custom fields via settings API)
 // ============================================================
 
-interface SchemaFieldRow { key: string; label: string; type: string; is_system: boolean; required: boolean; options?: string[]; target_slug?: string }
+interface SchemaFieldRow { key: string; label: string; type: string; is_system: boolean; required: boolean; options?: string[]; target_slug?: string; via_field?: string; source_field?: string }
 
 function SystemFieldsEditor({ slug, onBack }: { slug: string; onBack: () => void }) {
   const [tab, setTab] = useState<'fields' | 'layouts'>('fields');
@@ -418,7 +482,7 @@ function SystemFieldsEditor({ slug, onBack }: { slug: string; onBack: () => void
     try {
       const s = await getObjectSchema(slug);
       setLabel(s.label); setIcon(s.icon);
-      setRows(s.fields.map(f => ({ key: f.key, label: f.label, type: f.type, is_system: f.is_system, required: f.required, options: f.options, target_slug: f.target_slug })));
+      setRows(s.fields.map(f => ({ key: f.key, label: f.label, type: f.type, is_system: f.is_system, required: f.required, options: f.options, target_slug: f.target_slug, via_field: f.via_field, source_field: f.source_field })));
     } catch {
       setError('Failed to load fields');
     } finally {
@@ -432,10 +496,13 @@ function SystemFieldsEditor({ slug, onBack }: { slug: string; onBack: () => void
     setError('');
     const key = draft.key || autoSlug(draft.label);
     if (draft.type === 'relation' && !draft.target_slug) { setError('Choose a related object for the relation field'); return; }
+    if (draft.type === 'mirror' && (!draft.via_field || !draft.source_field)) { setError('Choose a relation and a field for the mirror'); return; }
     const payload = {
       label: draft.label.trim(), type: draft.type, required: draft.required,
       options: draft.type === 'select' ? draft.options : undefined,
       target_slug: draft.type === 'relation' ? draft.target_slug : undefined,
+      via_field: draft.type === 'mirror' ? draft.via_field : undefined,
+      source_field: draft.type === 'mirror' ? draft.source_field : undefined,
     };
     try {
       if (editingKey) {
@@ -454,7 +521,7 @@ function SystemFieldsEditor({ slug, onBack }: { slug: string; onBack: () => void
 
   const editField = (r: SchemaFieldRow) => {
     setEditingKey(r.key);
-    setDraft({ key: r.key, label: r.label, type: r.type, options: r.options || [], required: r.required, target_slug: r.target_slug || '' });
+    setDraft({ key: r.key, label: r.label, type: r.type, options: r.options || [], required: r.required, target_slug: r.target_slug || '', via_field: r.via_field || '', source_field: r.source_field || '' });
   };
 
   const removeField = async (key: string) => {

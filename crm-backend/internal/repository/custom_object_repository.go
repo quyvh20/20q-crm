@@ -215,19 +215,23 @@ func reconcileCustomFields(tx *gorm.DB, orgID, defID uuid.UUID, desired []domain
 		keep[f.Key] = true
 		if ex, ok := byKey[f.Key]; ok {
 			if err := tx.Model(&domain.ObjectField{}).Where("id = ?", ex.ID).Updates(map[string]interface{}{
-				"label":       f.Label,
-				"type":        f.Type,
-				"options":     marshalStringArrayJSON(f.Options),
-				"is_required": f.Required,
-				"position":    i,
+				"label":        f.Label,
+				"type":         f.Type,
+				"options":      marshalStringArrayJSON(f.Options),
+				"target_slug":  nilIfEmpty(f.TargetSlug),
+				"via_field":    nilIfEmpty(f.ViaField),
+				"source_field": nilIfEmpty(f.SourceField),
+				"is_required":  f.Required,
+				"position":     i,
 			}).Error; err != nil {
 				return err
 			}
 		} else {
 			of := domain.ObjectField{
 				ID: uuid.New(), OrgID: orgID, ObjectDefID: defID, Key: f.Key, Label: f.Label,
-				Type: f.Type, Options: marshalStringArrayJSON(f.Options), IsRequired: f.Required,
-				IsSystem: false, StorageKind: "jsonb", Position: i,
+				Type: f.Type, Options: marshalStringArrayJSON(f.Options),
+				TargetSlug: nilIfEmpty(f.TargetSlug), ViaField: nilIfEmpty(f.ViaField), SourceField: nilIfEmpty(f.SourceField),
+				IsRequired: f.Required, IsSystem: false, StorageKind: "jsonb", Position: i,
 			}
 			if err := tx.Create(&of).Error; err != nil {
 				return err
@@ -264,6 +268,15 @@ func parseStringArray(raw domain.JSON) []string {
 		return nil
 	}
 	return out
+}
+
+// nilIfEmpty returns a pointer to s, or nil when s is empty — so an unset
+// target_slug/via_field/source_field is stored as NULL rather than "".
+func nilIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 func marshalStringArrayJSON(opts []string) domain.JSON {

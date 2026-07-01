@@ -476,8 +476,12 @@ type CreateFieldDefInput struct {
 	Options    []string `json:"options"`
 	// TargetSlug is required when Type == "relation": the object this lookup points at.
 	TargetSlug string `json:"target_slug"`
-	Required   bool   `json:"required"`
-	Position   *int   `json:"position"`
+	// ViaField/SourceField are required when Type == "mirror": follow ViaField (a
+	// relation on this object) to the linked record and display its SourceField.
+	ViaField    string `json:"via_field"`
+	SourceField string `json:"source_field"`
+	Required    bool   `json:"required"`
+	Position    *int   `json:"position"`
 }
 
 type UpdateFieldDefInput struct {
@@ -486,8 +490,11 @@ type UpdateFieldDefInput struct {
 	Options  []string `json:"options"`
 	// TargetSlug repoints a relation field's lookup target. Ignored for non-relation types.
 	TargetSlug *string `json:"target_slug"`
-	Required   *bool   `json:"required"`
-	Position   *int    `json:"position"`
+	// ViaField/SourceField repoint a mirror field. Ignored for non-mirror types.
+	ViaField    *string `json:"via_field"`
+	SourceField *string `json:"source_field"`
+	Required    *bool   `json:"required"`
+	Position    *int    `json:"position"`
 }
 
 type OrgSettingsRepository interface {

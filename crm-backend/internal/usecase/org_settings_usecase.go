@@ -128,6 +128,28 @@ func (uc *orgSettingsUseCase) CreateFieldDef(ctx context.Context, orgID uuid.UUI
 		return nil, domain.ErrInternal
 	}
 
+	// A mirror displays a value from a linked record: it follows a relation field on
+	// THIS object (via_field) and reads a field on that relation's target object
+	// (source_field). Validate both so a mirror can never dangle. Its target_slug is
+	// set to the relation's target, so the UI knows which object it reflects.
+	var viaField, sourceField *string
+	if input.Type == "mirror" {
+		via := strings.TrimSpace(input.ViaField)
+		src := strings.TrimSpace(input.SourceField)
+		if via == "" || src == "" {
+			return nil, domain.NewAppError(400, "mirror type requires via_field and source_field")
+		}
+		viaTarget, err := uc.relationTarget(ctx, def.ID, via)
+		if err != nil {
+			return nil, err
+		}
+		if err := uc.assertFieldExists(ctx, orgID, viaTarget, src); err != nil {
+			return nil, err
+		}
+		viaField, sourceField = &via, &src
+		targetSlug = &viaTarget
+	}
+
 	// Reject a key that collides with any existing field on the object — native or
 	// custom. (The legacy store only checked custom keys per entity_type; including
 	// native columns is strictly safer and matches the object_fields unique index.)
@@ -152,6 +174,9 @@ func (uc *orgSettingsUseCase) CreateFieldDef(ctx context.Context, orgID uuid.UUI
 		}
 	}
 
+	// A mirror stores no value of its own, so it can never be "required".
+	required := input.Required && input.Type != "mirror"
+
 	field := &domain.ObjectField{
 		ID:          uuid.New(),
 		OrgID:       orgID,
@@ -161,7 +186,9 @@ func (uc *orgSettingsUseCase) CreateFieldDef(ctx context.Context, orgID uuid.UUI
 		Type:        input.Type,
 		Options:     marshalStringArray(input.Options),
 		TargetSlug:  targetSlug,
-		IsRequired:  input.Required,
+		ViaField:    viaField,
+		SourceField: sourceField,
+		IsRequired:  required,
 		IsSystem:    false,
 		StorageKind: "jsonb",
 		Position:    pos,
@@ -223,12 +250,40 @@ func (uc *orgSettingsUseCase) UpdateFieldDef(ctx context.Context, orgID uuid.UUI
 			field.TargetSlug = nil
 		}
 	}
+	// Re-point a mirror's via/source. Either may be sent; the other keeps its
+	// current value. Both must resolve, and target_slug tracks the via relation.
+	if input.ViaField != nil || input.SourceField != nil {
+		via := deref(field.ViaField)
+		if input.ViaField != nil {
+			via = strings.TrimSpace(*input.ViaField)
+		}
+		src := deref(field.SourceField)
+		if input.SourceField != nil {
+			src = strings.TrimSpace(*input.SourceField)
+		}
+		if via != "" && src != "" {
+			viaTarget, err := uc.relationTarget(ctx, field.ObjectDefID, via)
+			if err != nil {
+				return nil, err
+			}
+			if err := uc.assertFieldExists(ctx, orgID, viaTarget, src); err != nil {
+				return nil, err
+			}
+			field.ViaField, field.SourceField, field.TargetSlug = &via, &src, &viaTarget
+		}
+	}
+	if field.Type == "mirror" {
+		field.IsRequired = false // mirrors store no value, so never required
+	}
 
 	if field.Type == "select" && len(parseOptions(field.Options)) == 0 {
 		return nil, domain.NewAppError(400, "select type requires at least one option")
 	}
 	if field.Type == "relation" && (field.TargetSlug == nil || *field.TargetSlug == "") {
 		return nil, domain.NewAppError(400, "relation type requires a target_slug")
+	}
+	if field.Type == "mirror" && (field.ViaField == nil || field.SourceField == nil) {
+		return nil, domain.NewAppError(400, "mirror type requires via_field and source_field")
 	}
 
 	if err := uc.registry.SaveField(ctx, field); err != nil {
@@ -302,20 +357,74 @@ func (uc *orgSettingsUseCase) bustSchemaCache(ctx context.Context, orgID uuid.UU
 
 // customFieldDefFromField projects an object_fields row into the legacy
 // CustomFieldDef shape the API and validator speak.
+// deref returns the pointed-to string, or "" for a nil pointer.
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// relationTarget resolves the target object slug of a relation field on the given
+// object def, erroring if via names anything other than a resolvable relation.
+func (uc *orgSettingsUseCase) relationTarget(ctx context.Context, objectDefID uuid.UUID, via string) (string, error) {
+	fields, err := uc.registry.ListFields(ctx, objectDefID)
+	if err != nil {
+		return "", domain.ErrInternal
+	}
+	for _, f := range fields {
+		if f.Key == via && f.Type == "relation" && f.TargetSlug != nil && *f.TargetSlug != "" {
+			return *f.TargetSlug, nil
+		}
+	}
+	return "", domain.NewAppError(400, fmt.Sprintf("via_field %q must be a relation field on this object", via))
+}
+
+// assertFieldExists checks that slug names a known object with a field keyed src.
+func (uc *orgSettingsUseCase) assertFieldExists(ctx context.Context, orgID uuid.UUID, slug, src string) error {
+	targetDef, err := uc.registry.GetDefBySlug(ctx, orgID, slug)
+	if err != nil {
+		return domain.ErrInternal
+	}
+	if targetDef == nil {
+		return domain.NewAppError(400, fmt.Sprintf("related object %q is not known", slug))
+	}
+	fields, err := uc.registry.ListFields(ctx, targetDef.ID)
+	if err != nil {
+		return domain.ErrInternal
+	}
+	for _, f := range fields {
+		if f.Key == src {
+			return nil
+		}
+	}
+	return domain.NewAppError(400, fmt.Sprintf("source_field %q does not exist on %s", src, slug))
+}
+
 func customFieldDefFromField(f domain.ObjectField, entityType string) domain.CustomFieldDef {
 	targetSlug := ""
 	if f.TargetSlug != nil {
 		targetSlug = *f.TargetSlug
 	}
+	via := ""
+	if f.ViaField != nil {
+		via = *f.ViaField
+	}
+	src := ""
+	if f.SourceField != nil {
+		src = *f.SourceField
+	}
 	return domain.CustomFieldDef{
-		Key:        f.Key,
-		Label:      f.Label,
-		Type:       f.Type,
-		EntityType: entityType,
-		Options:    parseOptions(f.Options),
-		TargetSlug: targetSlug,
-		Required:   f.IsRequired,
-		Position:   f.Position,
+		Key:         f.Key,
+		Label:       f.Label,
+		Type:        f.Type,
+		EntityType:  entityType,
+		Options:     parseOptions(f.Options),
+		TargetSlug:  targetSlug,
+		ViaField:    via,
+		SourceField: src,
+		Required:    f.IsRequired,
+		Position:    f.Position,
 	}
 }
 

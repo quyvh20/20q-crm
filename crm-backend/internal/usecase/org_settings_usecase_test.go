@@ -131,6 +131,80 @@ func TestOrgSettings_RelationFieldValidation(t *testing.T) {
 	assertAppCode(t, err, 400)
 }
 
+func TestOrgSettings_CreateMirrorField(t *testing.T) {
+	repo := newSystemRegistry()
+	uc := NewOrgSettingsUseCase(repo)
+	org := uuid.New()
+	ctx := context.Background()
+
+	// A relation on deal -> contact to mirror through.
+	if _, err := uc.CreateFieldDef(ctx, org, domain.CreateFieldDefInput{
+		Key: "primary_contact", Label: "Primary Contact", Type: "relation",
+		EntityType: "deal", TargetSlug: "contact",
+	}); err != nil {
+		t.Fatalf("create relation: %v", err)
+	}
+
+	// A mirror that displays the linked contact's first_name (contact's native field).
+	created, err := uc.CreateFieldDef(ctx, org, domain.CreateFieldDefInput{
+		Key: "contact_name", Label: "Contact Name", Type: "mirror",
+		EntityType: "deal", ViaField: "primary_contact", SourceField: "first_name",
+	})
+	if err != nil {
+		t.Fatalf("create mirror: %v", err)
+	}
+	if created.ViaField != "primary_contact" || created.SourceField != "first_name" || created.TargetSlug != "contact" {
+		t.Fatalf("mirror config wrong: %+v", created)
+	}
+
+	// Round-trips with config preserved.
+	defs, _ := uc.GetFieldDefs(ctx, org, "deal")
+	found := false
+	for _, d := range defs {
+		if d.Key == "contact_name" {
+			found = true
+			if d.ViaField != "primary_contact" || d.SourceField != "first_name" {
+				t.Fatalf("mirror config lost: %+v", d)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("mirror field not returned")
+	}
+}
+
+func TestOrgSettings_MirrorValidation(t *testing.T) {
+	repo := newSystemRegistry()
+	uc := NewOrgSettingsUseCase(repo)
+	org := uuid.New()
+	ctx := context.Background()
+
+	// via_field must be an existing relation on this object.
+	_, err := uc.CreateFieldDef(ctx, org, domain.CreateFieldDefInput{
+		Key: "m1", Label: "M1", Type: "mirror", EntityType: "deal",
+		ViaField: "nonexistent", SourceField: "first_name",
+	})
+	assertAppCode(t, err, 400)
+
+	// Missing via/source is rejected.
+	_, err = uc.CreateFieldDef(ctx, org, domain.CreateFieldDefInput{
+		Key: "m2", Label: "M2", Type: "mirror", EntityType: "deal",
+	})
+	assertAppCode(t, err, 400)
+
+	// source_field must exist on the target object.
+	if _, err := uc.CreateFieldDef(ctx, org, domain.CreateFieldDefInput{
+		Key: "primary_contact", Label: "PC", Type: "relation", EntityType: "deal", TargetSlug: "contact",
+	}); err != nil {
+		t.Fatalf("relation: %v", err)
+	}
+	_, err = uc.CreateFieldDef(ctx, org, domain.CreateFieldDefInput{
+		Key: "m3", Label: "M3", Type: "mirror", EntityType: "deal",
+		ViaField: "primary_contact", SourceField: "no_such_field",
+	})
+	assertAppCode(t, err, 400)
+}
+
 func TestOrgSettings_CreateValidation(t *testing.T) {
 	repo := newSystemRegistry()
 	uc := NewOrgSettingsUseCase(repo)

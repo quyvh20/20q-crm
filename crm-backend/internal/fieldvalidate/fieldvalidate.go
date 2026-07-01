@@ -82,6 +82,10 @@ func ValidateValue(def domain.CustomFieldDef, val interface{}) error {
 				return fmt.Errorf("expected a related record id (uuid), got %q", s)
 			}
 		}
+	case "mirror":
+		// A mirror stores no value of its own — it is resolved from a linked record
+		// at display time — so any incoming value is simply ignored.
+		return nil
 	}
 	return nil
 }

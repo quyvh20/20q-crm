@@ -652,7 +652,7 @@ export async function submitSummarizeMeeting(transcript: string, dealId?: string
 // Custom Field Definitions (Settings)
 // ============================================================
 
-export type FieldType = 'text' | 'number' | 'date' | 'select' | 'boolean' | 'url' | 'relation';
+export type FieldType = 'text' | 'number' | 'date' | 'select' | 'boolean' | 'url' | 'relation' | 'mirror';
 export type EntityType = 'contact' | 'company' | 'deal';
 
 export interface CustomFieldDef {
@@ -663,6 +663,10 @@ export interface CustomFieldDef {
   options?: string[];
   // target_slug is the related object's slug for a relation (lookup) field.
   target_slug?: string;
+  // via_field/source_field configure a mirror field: follow the relation named
+  // via_field to the linked record and display its source_field.
+  via_field?: string;
+  source_field?: string;
   required: boolean;
   position: number;
 }
@@ -683,6 +687,8 @@ export async function createFieldDef(data: {
   entity_type: string;
   options?: string[];
   target_slug?: string;
+  via_field?: string;
+  source_field?: string;
   required?: boolean;
   position?: number;
 }): Promise<CustomFieldDef> {
@@ -700,6 +706,8 @@ export async function updateFieldDef(key: string, data: {
   type?: string;
   options?: string[];
   target_slug?: string;
+  via_field?: string;
+  source_field?: string;
   required?: boolean;
   position?: number;
 }): Promise<CustomFieldDef> {
@@ -884,6 +892,9 @@ export interface ObjectFieldDescriptor {
   type: ObjectFieldType;
   options?: string[];
   target_slug?: string;
+  // Mirror-field config: follow via_field to the linked record and show source_field.
+  via_field?: string;
+  source_field?: string;
   is_system: boolean;
   required: boolean;
   unique?: boolean;

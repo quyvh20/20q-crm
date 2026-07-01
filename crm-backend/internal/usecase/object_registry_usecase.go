@@ -126,6 +126,12 @@ func (uc *objectRegistryUseCase) buildSchema(ctx context.Context, def *domain.Ob
 		if f.TargetSlug != nil {
 			fd.TargetSlug = *f.TargetSlug
 		}
+		if f.ViaField != nil {
+			fd.ViaField = *f.ViaField
+		}
+		if f.SourceField != nil {
+			fd.SourceField = *f.SourceField
+		}
 		descriptor.Fields = append(descriptor.Fields, fd)
 		// Resolve the display field's key from its id (system objects set this).
 		if def.DisplayFieldID != nil && f.ID == *def.DisplayFieldID {

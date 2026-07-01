@@ -261,8 +261,12 @@ type CustomFieldDef struct {
 	// TargetSlug is the related object's slug for a relation field (the lookup
 	// target). Empty for all non-relation types.
 	TargetSlug string `json:"target_slug,omitempty"`
-	Required   bool   `json:"required"`
-	Position   int    `json:"position"`
+	// ViaField/SourceField configure a mirror field (display the linked record's
+	// SourceField, reached via the relation named ViaField). Empty otherwise.
+	ViaField    string `json:"via_field,omitempty"`
+	SourceField string `json:"source_field,omitempty"`
+	Required    bool   `json:"required"`
+	Position    int    `json:"position"`
 }
 
 var ValidFieldTypes = map[string]bool{
@@ -271,6 +275,9 @@ var ValidFieldTypes = map[string]bool{
 	// relation is an admin-creatable lookup to another object; it carries the
 	// target object in TargetSlug and stores the related record's id as its value.
 	"relation": true,
+	// mirror is a read-only field that displays a value pulled from a linked record
+	// (see ObjectField.ViaField/SourceField); it stores no value of its own.
+	"mirror": true,
 }
 
 var ValidEntityTypes = map[string]bool{
