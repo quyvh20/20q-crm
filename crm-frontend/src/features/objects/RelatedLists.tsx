@@ -74,7 +74,7 @@ export default function RelatedLists({ slug, recordId }: RelatedListsProps) {
               {group.icon} {group.label}
             </span>
             <span style={{ fontSize: 12, color: '#94a3b8' }}>
-              {group.count}
+              {group.count}{group.has_more ? '+' : ''}
               {/* Which field on the child points back, so "Deals · via Contact" is unambiguous
                   when a child relates through more than one field. */}
               {' · via '}{group.field_label}
@@ -96,8 +96,13 @@ export default function RelatedLists({ slug, recordId }: RelatedListsProps) {
                   borderTop: i === 0 ? 'none' : '1px solid #f1f5f9',
                 }}
               >
-                <span style={{ fontWeight: 500 }}>{rec.display || 'Untitled'}</span>
-                <span style={{ color: '#94a3b8', fontSize: 12 }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                  {rec.number && (
+                    <span style={{ fontSize: 11, fontWeight: 600, color: '#94a3b8', whiteSpace: 'nowrap' }}>{rec.number}</span>
+                  )}
+                  <span style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{rec.display || 'Untitled'}</span>
+                </span>
+                <span style={{ color: '#94a3b8', fontSize: 12, whiteSpace: 'nowrap' }}>
                   {new Date(rec.created_at).toLocaleDateString()}
                 </span>
               </Link>

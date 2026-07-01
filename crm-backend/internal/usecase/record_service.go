@@ -119,6 +119,18 @@ func (s *recordService) applyNumbers(ctx context.Context, orgID uuid.UUID, slug 
 	}
 }
 
+// setRecordNumber resolves and stamps a single record's human-readable number.
+// Best-effort: a nil repo or a lookup error leaves Number empty so numbering can
+// never fail a read/write.
+func (s *recordService) setRecordNumber(ctx context.Context, orgID uuid.UUID, slug string, rec *domain.UniformRecord) {
+	if s.numberRepo == nil || rec == nil {
+		return
+	}
+	if nums, err := s.numberRepo.NumbersFor(ctx, orgID, slug, []uuid.UUID{rec.ID}); err == nil {
+		rec.Number = nums[rec.ID]
+	}
+}
+
 // allocateAndSetNumber assigns a fresh record number on create and stamps it onto
 // the response. Best-effort: a nil repo or an allocation error leaves Number empty
 // so a numbering hiccup can never fail the create itself.
@@ -129,9 +141,7 @@ func (s *recordService) allocateAndSetNumber(ctx context.Context, orgID uuid.UUI
 	if err := s.numberRepo.Allocate(ctx, orgID, slug, rec.ID); err != nil {
 		return
 	}
-	if nums, err := s.numberRepo.NumbersFor(ctx, orgID, slug, []uuid.UUID{rec.ID}); err == nil {
-		rec.Number = nums[rec.ID]
-	}
+	s.setRecordNumber(ctx, orgID, slug, rec)
 }
 
 const defaultRecordLimit = 25
@@ -184,12 +194,7 @@ func (s *recordService) Get(ctx context.Context, orgID uuid.UUID, slug string, i
 		return nil, err
 	}
 	applyFieldMask(s.fieldMask(ctx, orgID, slug), rec) // FLS: strip hidden fields
-	// Resolve the human-readable number (best-effort; never fails a read).
-	if s.numberRepo != nil {
-		if nums, err := s.numberRepo.NumbersFor(ctx, orgID, slug, []uuid.UUID{rec.ID}); err == nil {
-			rec.Number = nums[rec.ID]
-		}
-	}
+	s.setRecordNumber(ctx, orgID, slug, rec)           // resolve the human-readable number
 	return rec, nil
 }
 
@@ -285,6 +290,7 @@ func (s *recordService) Update(ctx context.Context, orgID uuid.UUID, slug string
 			return nil, err
 		}
 		s.auditUpdate(ctx, orgID, slug, rec, prior, in.Fields)
+		s.setRecordNumber(ctx, orgID, slug, rec) // keep the number on the edit echo
 		applyFieldMask(mask, rec)
 		return rec, nil
 	}
@@ -299,6 +305,7 @@ func (s *recordService) Update(ctx context.Context, orgID uuid.UUID, slug string
 	}
 	uniform := customToUniform(slug, rec)
 	s.auditUpdate(ctx, orgID, slug, uniform, prior, in.Fields)
+	s.setRecordNumber(ctx, orgID, slug, uniform)  // keep the number on the edit echo
 	s.fireEvent(orgID, slug+"_updated", uniform) // automation sees the full record
 	s.indexRecord(ctx, orgID, slug, uniform)     // search index sees the full record
 	applyFieldMask(mask, uniform)                // strip only the response

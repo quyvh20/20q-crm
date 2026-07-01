@@ -1,5 +1,9 @@
-import { useState } from 'react';
-import type { ObjectFieldDescriptor } from '../../lib/api';
+import { useState, useEffect } from 'react';
+import {
+  listObjectRecordsUnified,
+  getObjectRecordUnified,
+  type ObjectFieldDescriptor,
+} from '../../lib/api';
 
 export interface RelationOption {
   id: string;
@@ -104,7 +108,7 @@ export function FieldInput({ field, value, onChange, relationOptions }: FieldInp
       // (e.g. a deal's stage, not yet a registered object) falls back to a
       // raw-id input so the field is still editable.
       if (relationOptions) {
-        return <RelationPicker value={value} onChange={onChange} options={relationOptions} />;
+        return <RelationPicker value={value} onChange={onChange} options={relationOptions} targetSlug={field.target_slug} />;
       }
       return (
         <input
@@ -131,22 +135,64 @@ export function FieldInput({ field, value, onChange, relationOptions }: FieldInp
 
 // RelationPicker is a searchable single-select for relation fields: type to
 // filter the target object's records by label, click to choose. It replaces the
-// bare <select>, which doesn't scale past a handful of records. The selected
-// label shows when not actively searching; clearing resets the relation.
+// bare <select>, which doesn't scale past a handful of records.
+//
+// When a targetSlug is known it searches the SERVER as you type (so records beyond
+// the preloaded page are reachable) and resolves the selected record's label even
+// if it wasn't preloaded. Without a targetSlug it falls back to filtering the
+// preloaded options client-side.
 function RelationPicker({
   value,
   onChange,
   options,
+  targetSlug,
 }: {
   value: unknown;
   onChange: (val: unknown) => void;
   options: RelationOption[];
+  targetSlug?: string;
 }) {
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
-  const selected = options.find((o) => o.id === String(value ?? ''));
+  // Server-side search results (null = not searching → show preloaded options).
+  const [remote, setRemote] = useState<RelationOption[] | null>(null);
+  // Label for a selected record that isn't among the preloaded options.
+  const [fetchedLabel, setFetchedLabel] = useState<string | undefined>(undefined);
+
+  const idStr = String(value ?? '');
+  const preloadedLabel = options.find((o) => o.id === idStr)?.label;
+  const selectedLabel = preloadedLabel ?? fetchedLabel;
+
+  // Resolve the selected record's label when it wasn't in the preloaded page
+  // (e.g. the target object has more records than were loaded up front).
+  useEffect(() => {
+    if (!idStr || preloadedLabel || !targetSlug) return;
+    let cancelled = false;
+    getObjectRecordUnified(targetSlug, idStr)
+      .then((r) => { if (!cancelled) setFetchedLabel(r.display || r.id); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [idStr, preloadedLabel, targetSlug]);
+
+  // Debounced server search while typing (only when we know the target object).
+  useEffect(() => {
+    if (!open || !targetSlug) return;
+    const q = query.trim();
+    if (!q) { setRemote(null); return; }
+    let cancelled = false;
+    const t = setTimeout(() => {
+      listObjectRecordsUnified(targetSlug, { q, limit: 50 })
+        .then((page) => { if (!cancelled) setRemote(page.records.map((r) => ({ id: r.id, label: r.display || r.id }))); })
+        .catch(() => { if (!cancelled) setRemote(null); });
+    }, 250);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [query, open, targetSlug]);
+
   const q = query.trim().toLowerCase();
-  const filtered = (q ? options.filter((o) => o.label.toLowerCase().includes(q)) : options).slice(0, 50);
+  // Prefer server results while searching; otherwise filter the preloaded options.
+  const shown = remote !== null
+    ? remote
+    : (q ? options.filter((o) => o.label.toLowerCase().includes(q)) : options).slice(0, 50);
 
   return (
     <div style={{ position: 'relative' }}>
@@ -154,12 +200,12 @@ function RelationPicker({
         type="text"
         // While the menu is open the input is the search box; closed, it shows the
         // current selection's label.
-        value={open ? query : selected?.label ?? ''}
-        onFocus={() => { setQuery(''); setOpen(true); }}
+        value={open ? query : selectedLabel ?? ''}
+        onFocus={() => { setQuery(''); setRemote(null); setOpen(true); }}
         onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
         // Delay close so a click on an option (mousedown) registers first.
         onBlur={() => setTimeout(() => setOpen(false), 150)}
-        placeholder={selected ? selected.label : '— None — (type to search)'}
+        placeholder={selectedLabel ?? '— None — (type to search)'}
         style={inputStyle}
       />
       {open && (
@@ -176,19 +222,19 @@ function RelationPicker({
           >
             — None —
           </div>
-          {filtered.map((o) => (
+          {shown.map((o) => (
             <div
               key={o.id}
               onMouseDown={() => { onChange(o.id); setOpen(false); }}
               style={{
                 padding: '8px 10px', fontSize: 14, cursor: 'pointer',
-                background: o.id === String(value ?? '') ? '#eff6ff' : '#fff',
+                background: o.id === idStr ? '#eff6ff' : '#fff',
               }}
             >
               {o.label}
             </div>
           ))}
-          {filtered.length === 0 && (
+          {shown.length === 0 && (
             <div style={{ padding: '8px 10px', fontSize: 13, color: '#94a3b8' }}>No matches</div>
           )}
         </div>

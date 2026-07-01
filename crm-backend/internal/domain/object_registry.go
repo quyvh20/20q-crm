@@ -185,6 +185,9 @@ type RelatedList struct {
 	FieldLabel string          `json:"field_label"` // that field's label (e.g. "Contact")
 	Records    []UniformRecord `json:"records"`
 	Count      int             `json:"count"`
+	// HasMore is true when more children exist than were returned (the preview is
+	// capped), so the UI can show e.g. "50+" instead of a misleading exact count.
+	HasMore bool `json:"has_more"`
 }
 
 // RelatedListsUseCase assembles a record's reverse related lists by walking the

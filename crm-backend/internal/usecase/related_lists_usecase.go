@@ -49,14 +49,20 @@ func (uc *relatedListsUseCase) ListRelatedLists(ctx context.Context, orgID uuid.
 			if f.Type != "relation" || f.TargetSlug != slug {
 				continue
 			}
+			// Fetch one past the display cap so we can tell "exactly N" from "N+".
 			page, err := uc.records.List(ctx, orgID, obj.Slug, domain.RecordListInput{
 				Filters: map[string]string{f.Key: id.String()},
-				Limit:   relatedListLimit,
+				Limit:   relatedListLimit + 1,
 			})
 			if err != nil {
 				// Most often an OLS denial on the child object — skip it rather
 				// than failing the whole record page.
 				continue
+			}
+			recs := page.Records
+			hasMore := len(recs) > relatedListLimit
+			if hasMore {
+				recs = recs[:relatedListLimit]
 			}
 			out = append(out, domain.RelatedList{
 				Object:     obj.Slug,
@@ -64,8 +70,9 @@ func (uc *relatedListsUseCase) ListRelatedLists(ctx context.Context, orgID uuid.
 				Icon:       obj.Icon,
 				FieldKey:   f.Key,
 				FieldLabel: f.Label,
-				Records:    page.Records,
-				Count:      len(page.Records),
+				Records:    recs,
+				Count:      len(recs),
+				HasMore:    hasMore,
 			})
 		}
 	}

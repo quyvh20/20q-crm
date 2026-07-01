@@ -1094,6 +1094,8 @@ export interface RelatedList {
   field_label: string;  // that field's label (e.g. "Contact")
   records: UniformRecord[];
   count: number;
+  // true when more children exist than the capped preview returned (show "N+").
+  has_more?: boolean;
 }
 
 export async function listRecordRelatedLists(slug: string, id: string): Promise<RelatedList[]> {
