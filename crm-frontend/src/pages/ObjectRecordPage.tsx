@@ -67,7 +67,7 @@ export default function ObjectRecordPage() {
 
   if (loading) {
     return (
-      <div style={{ maxWidth: 880, margin: '0 auto' }}>
+      <div className="max-w-6xl mx-auto">
         <div style={{ height: 28, width: 200, background: '#f1f5f9', borderRadius: 8, marginBottom: 16 }} />
         <div style={{ height: 360, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12 }} />
       </div>
@@ -76,7 +76,7 @@ export default function ObjectRecordPage() {
 
   if (error || !schema || !record) {
     return (
-      <div style={{ maxWidth: 880, margin: '0 auto' }}>
+      <div className="max-w-6xl mx-auto">
         <button onClick={() => navigate(slug ? listPath(slug) : '/')} style={backLinkStyle}>← Back</button>
         <div style={{ padding: 40, textAlign: 'center', color: '#64748b', border: '2px dashed #e2e8f0', borderRadius: 12 }}>
           <div style={{ fontSize: 32, marginBottom: 8 }}>🔍</div>
@@ -87,7 +87,7 @@ export default function ObjectRecordPage() {
   }
 
   return (
-    <div style={{ maxWidth: 880, margin: '0 auto' }}>
+    <div className="max-w-6xl mx-auto">
       {/* Back link */}
       <button onClick={backToList} style={backLinkStyle}>
         ← Back to {schema.label_plural}
@@ -140,6 +140,7 @@ export default function ObjectRecordPage() {
           <ObjectForm
             schema={schema}
             record={record}
+            inline
             onSaved={(saved) => {
               setRecord(saved);
               setEditing(false);

@@ -13,6 +13,7 @@ interface ObjectFormProps {
   schema: ObjectSchema;
   /** Existing record when editing; omit/null to create. */
   record?: UniformRecord | null;
+  inline?: boolean;
   onSaved: (rec: UniformRecord) => void;
   onCancel: () => void;
 }
@@ -20,7 +21,7 @@ interface ObjectFormProps {
 // ObjectForm is the single create/edit form for every object. It is driven
 // entirely by the schema descriptor, so a Deal and a custom "Project" are edited
 // through the exact same component — that is the P3 "one ObjectForm" deliverable.
-export default function ObjectForm({ schema, record, onSaved, onCancel }: ObjectFormProps) {
+export default function ObjectForm({ schema, record, inline, onSaved, onCancel }: ObjectFormProps) {
   const [formData, setFormData] = useState<Record<string, unknown>>(() => ({ ...(record?.fields ?? {}) }));
   const [relationOptions, setRelationOptions] = useState<Record<string, RelationOption[]>>({});
   const [saving, setSaving] = useState(false);
@@ -78,7 +79,7 @@ export default function ObjectForm({ schema, record, onSaved, onCancel }: Object
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: inline ? 'auto' : '100%', minHeight: 0 }}>
       <div style={{ padding: '20px 24px', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h3 style={{ margin: 0, fontWeight: 600, fontSize: 16 }}>
           {record ? `Edit ${schema.label}` : `New ${schema.label}`}
@@ -86,7 +87,7 @@ export default function ObjectForm({ schema, record, onSaved, onCancel }: Object
         <button onClick={onCancel} aria-label="Close" style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#64748b' }}>×</button>
       </div>
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: 24 }}>
+      <div style={{ flex: 1, overflowY: inline ? 'visible' : 'auto', padding: 24 }}>
         {error && (
           <div style={{ background: '#fef2f2', color: '#dc2626', padding: '8px 12px', borderRadius: 6, marginBottom: 16, fontSize: 13 }}>{error}</div>
         )}
