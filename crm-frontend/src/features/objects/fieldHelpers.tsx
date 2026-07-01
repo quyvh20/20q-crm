@@ -12,6 +12,10 @@ export interface RelationOption {
   label: string;
 }
 
+// How many records the relation picker shows: the 10 newest by default, or up to
+// 10 case-insensitive matches while searching.
+const PICKER_LIMIT = 10;
+
 const inputStyle = {
   width: '100%' as const,
   padding: '8px 10px',
@@ -202,14 +206,15 @@ function RelationPicker({
     return () => { cancelled = true; };
   }, [idStr, preloadedLabel, targetSlug]);
 
-  // Server search while the menu is open. On open (empty query) it loads the first
-  // page immediately so the dropdown is never blank; typing filters, debounced.
+  // Server search while the menu is open. On open (empty query) it loads the 10
+  // newest so the dropdown is short and immediately useful; typing searches the
+  // whole object (debounced). The backend search is case-insensitive.
   useEffect(() => {
     if (!open || !targetSlug) return;
     const term = query.trim();
     let cancelled = false;
     const t = setTimeout(() => {
-      listObjectRecordsUnified(targetSlug, { q: term, limit: 50 })
+      listObjectRecordsUnified(targetSlug, { q: term, limit: PICKER_LIMIT })
         .then((page) => { if (!cancelled) setRemote(page.records.map((r) => ({ id: r.id, label: r.display || r.id }))); })
         .catch(() => { if (!cancelled) setRemote(null); });
     }, term ? 250 : 0);
@@ -217,10 +222,11 @@ function RelationPicker({
   }, [query, open, targetSlug]);
 
   const q = query.trim().toLowerCase();
-  // Prefer server results while searching; otherwise filter the preloaded options.
-  const shown = remote !== null
-    ? remote
-    : (q ? options.filter((o) => o.label.toLowerCase().includes(q)) : options).slice(0, 50);
+  // Server results when available (already query-narrowed), else the preloaded
+  // options. A case-insensitive substring filter is applied either way so matching
+  // never depends on letter case, and the list is capped at the 10 newest.
+  const base = remote !== null ? remote : options;
+  const shown = (q ? base.filter((o) => o.label.toLowerCase().includes(q)) : base).slice(0, PICKER_LIMIT);
 
   return (
     <div style={{ position: 'relative' }}>

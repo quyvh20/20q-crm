@@ -151,12 +151,15 @@ func (r *customObjectRepository) toCustomDef(ctx context.Context, def *domain.Ob
 	cfds := make([]domain.CustomFieldDef, 0, len(fields))
 	for i := range fields {
 		cfds = append(cfds, domain.CustomFieldDef{
-			Key:      fields[i].Key,
-			Label:    fields[i].Label,
-			Type:     fields[i].Type,
-			Options:  parseStringArray(fields[i].Options),
-			Required: fields[i].IsRequired,
-			Position: fields[i].Position,
+			Key:         fields[i].Key,
+			Label:       fields[i].Label,
+			Type:        fields[i].Type,
+			Options:     parseStringArray(fields[i].Options),
+			TargetSlug:  derefStr(fields[i].TargetSlug),
+			ViaField:    derefStr(fields[i].ViaField),
+			SourceField: derefStr(fields[i].SourceField),
+			Required:    fields[i].IsRequired,
+			Position:    fields[i].Position,
 		})
 	}
 	raw, err := json.Marshal(cfds)
@@ -277,6 +280,14 @@ func nilIfEmpty(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// derefStr returns the pointed-to string, or "" for a nil pointer.
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func marshalStringArrayJSON(opts []string) domain.JSON {

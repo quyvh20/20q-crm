@@ -205,16 +205,16 @@ interface FieldDraft {
 }
 const emptyDraft: FieldDraft = { key: '', label: '', type: 'text', options: [], required: false, target_slug: '', via_field: '', source_field: '' };
 
-function FieldBuilder({ draft, setDraft, onAdd, editing, currentSlug }: {
+function FieldBuilder({ draft, setDraft, onAdd, editing, currentSlug, relations = [] }: {
   draft: FieldDraft; setDraft: (d: FieldDraft) => void; onAdd: () => void; editing: boolean;
   /** The object being edited, excluded from relation targets to avoid an obvious self-loop. */
   currentSlug?: string;
+  /** This object's relation fields (from the current draft), used as a mirror's "via" choices. */
+  relations?: { key: string; label: string; target_slug?: string }[];
 }) {
   const [optInput, setOptInput] = useState('');
   const [objects, setObjects] = useState<ObjectSummary[]>([]);
-  // This object's relation fields (the "via" choices for a mirror) and the fields
-  // of the currently-chosen via relation's target (the "source" choices).
-  const [thisRelations, setThisRelations] = useState<ObjectFieldDescriptor[]>([]);
+  // Fields of the currently-chosen via relation's target (the mirror "source" choices).
   const [sourceFields, setSourceFields] = useState<ObjectFieldDescriptor[]>([]);
 
   // Relation targets are every registered object; loaded lazily so the field
@@ -225,18 +225,13 @@ function FieldBuilder({ draft, setDraft, onAdd, editing, currentSlug }: {
     return () => { cancelled = true; };
   }, []);
 
-  // A mirror follows one of this object's relation fields, so load them.
-  useEffect(() => {
-    if (!currentSlug) { setThisRelations([]); return; }
-    let cancelled = false;
-    getObjectSchema(currentSlug)
-      .then(s => { if (!cancelled) setThisRelations(s.fields.filter(f => f.type === 'relation' && f.target_slug)); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [currentSlug]);
+  // A mirror follows one of this object's relation fields. Use the relations the
+  // parent is currently editing (so a just-added, not-yet-saved relation shows up),
+  // limited to those with a resolvable target to read a field from.
+  const viaCandidates = relations.filter(r => !!r.target_slug);
 
   // Once a via relation is chosen, load its target object's fields to mirror from.
-  const viaTarget = thisRelations.find(f => f.key === draft.via_field)?.target_slug;
+  const viaTarget = viaCandidates.find(r => r.key === draft.via_field)?.target_slug;
   useEffect(() => {
     if (draft.type !== 'mirror' || !viaTarget) { setSourceFields([]); return; }
     let cancelled = false;
@@ -299,7 +294,7 @@ function FieldBuilder({ draft, setDraft, onAdd, editing, currentSlug }: {
               style={{ ...inputStyle, padding: '6px 8px', fontSize: 13 }}
             >
               <option value="">— Choose a relation —</option>
-              {thisRelations.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
+              {viaCandidates.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
             </select>
           </div>
           <div>
@@ -315,9 +310,11 @@ function FieldBuilder({ draft, setDraft, onAdd, editing, currentSlug }: {
             </select>
           </div>
           <p style={{ gridColumn: '1 / -1', fontSize: 11, color: '#94a3b8', margin: 0 }}>
-            {thisRelations.length === 0
-              ? 'Add a relation field to this object first — a mirror displays a field from a linked record.'
-              : `Read-only: shows the ${sourceFields.find(f => f.key === draft.source_field)?.label || 'chosen field'} of the linked ${objects.find(o => o.slug === viaTarget)?.label || 'record'}, kept in sync.`}
+            {relations.length === 0
+              ? 'Add a Relation field to this object first — a mirror displays a field from the record it links to.'
+              : viaCandidates.length === 0
+                ? 'This object has relation fields, but none has a related object set yet. Give a relation a target first, then a mirror can pull a field from it.'
+                : `Read-only: shows the ${sourceFields.find(f => f.key === draft.source_field)?.label || 'chosen field'} of the linked ${objects.find(o => o.slug === viaTarget)?.label || 'record'}, kept in sync.`}
           </p>
         </div>
       )}
@@ -445,7 +442,10 @@ function CustomObjectForm({ editSlug, onDone, onCancel }: { editSlug?: string; o
                 ))}
               </div>
             )}
-            <FieldBuilder draft={draft} setDraft={setDraft} onAdd={addField} editing={false} currentSlug={slug} />
+            <FieldBuilder
+              draft={draft} setDraft={setDraft} onAdd={addField} editing={false} currentSlug={slug}
+              relations={fields.filter(f => f.type === 'relation').map(f => ({ key: f.key, label: f.label, target_slug: f.target_slug }))}
+            />
           </div>
 
           <div style={{ display: 'flex', gap: 8 }}>
@@ -571,7 +571,10 @@ function SystemFieldsEditor({ slug, onBack }: { slug: string; onBack: () => void
           </div>
 
           <label style={{ fontSize: 13, fontWeight: 500, display: 'block', marginBottom: 6 }}>{editingKey ? `Edit field "${editingKey}"` : 'Add a custom field'}</label>
-          <FieldBuilder draft={draft} setDraft={setDraft} onAdd={saveField} editing={!!editingKey} currentSlug={slug} />
+          <FieldBuilder
+            draft={draft} setDraft={setDraft} onAdd={saveField} editing={!!editingKey} currentSlug={slug}
+            relations={rows.filter(r => r.type === 'relation').map(r => ({ key: r.key, label: r.label, target_slug: r.target_slug }))}
+          />
 
           <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
             <button onClick={onBack} style={{ padding: '8px 16px', background: '#e2e8f0', border: 'none', borderRadius: 6, cursor: 'pointer' }}>← Back to objects</button>
