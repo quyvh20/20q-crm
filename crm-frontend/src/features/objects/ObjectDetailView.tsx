@@ -4,6 +4,8 @@ import {
   type UniformRecord,
   type LayoutSection,
   type ObjectFieldDescriptor,
+  type RelatedList,
+  type Tag,
   getObjectRecordUnified,
   getStages,
 } from '../../lib/api';
@@ -14,6 +16,11 @@ import RelatedLists from './RelatedLists';
 interface ObjectDetailViewProps {
   schema: ObjectSchema;
   record: UniformRecord;
+  // Pre-fetched data from the parent page so child components render instantly
+  // instead of starting their own fetch waterfall after mount.
+  prefetchedRelatedLists?: RelatedList[] | null;
+  prefetchedTags?: Tag[] | null;
+  prefetchedAllTags?: Tag[] | null;
 }
 
 // FieldRow is the shared single-field renderer, used by every section so the
@@ -138,7 +145,7 @@ export function buildDefaultSections(schema: ObjectSchema): LayoutSection[] {
 //  - schema.layout absent/empty → synthesize a default 2-column "Details" section
 //    (buildDefaultSections) so the page is never blank.
 // Layout controls visual priority, not visibility (FLS controls that).
-export default function ObjectDetailView({ schema, record }: ObjectDetailViewProps) {
+export default function ObjectDetailView({ schema, record, prefetchedRelatedLists, prefetchedTags, prefetchedAllTags }: ObjectDetailViewProps) {
   const [relationLabels, setRelationLabels] = useState<Record<string, string>>({});
   const [mirrorValues, setMirrorValues] = useState<Record<string, string>>({});
 
@@ -266,11 +273,11 @@ export default function ObjectDetailView({ schema, record }: ObjectDetailViewPro
 
       {/* Tags (uniform across every object). The former free-text "link any
           record" panel was replaced by schema-driven related lists below. */}
-      <RecordTags slug={schema.slug} recordId={record.id} />
+      <RecordTags slug={schema.slug} recordId={record.id} prefetchedTags={prefetchedTags} prefetchedAllTags={prefetchedAllTags} />
 
       {/* Schema-driven reverse related lists (e.g. a Contact's Deals), derived
           from relation fields that point back at this record. */}
-      <RelatedLists slug={schema.slug} recordId={record.id} />
+      <RelatedLists slug={schema.slug} recordId={record.id} prefetchedLists={prefetchedRelatedLists} />
     </div>
   );
 }

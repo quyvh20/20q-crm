@@ -183,10 +183,22 @@ func (r *objectLayoutRepository) DeleteLayout(ctx context.Context, orgID, id uui
 // layouts from claiming the same role.
 func (r *objectLayoutRepository) SetLayoutRoles(ctx context.Context, orgID uuid.UUID, layoutID uuid.UUID, slug string, roleIDs []uuid.UUID) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 1. Remove all existing assignments for THIS layout.
 		if err := tx.Where("org_id = ? AND layout_id = ?", orgID, layoutID).
 			Delete(&domain.ObjectLayoutRole{}).Error; err != nil {
 			return err
 		}
+		// 2. Remove conflicting assignments from OTHER layouts for the same
+		//    (org, slug, role) tuples. The unique index
+		//    uix_object_layout_roles_one_per_role forbids two layouts from
+		//    claiming the same role, so we must clear the old owner first.
+		if len(roleIDs) > 0 {
+			if err := tx.Where("org_id = ? AND object_slug = ? AND role_id IN ?", orgID, slug, roleIDs).
+				Delete(&domain.ObjectLayoutRole{}).Error; err != nil {
+				return err
+			}
+		}
+		// 3. Insert new assignments.
 		for _, roleID := range roleIDs {
 			row := &domain.ObjectLayoutRole{
 				OrgID:      orgID,

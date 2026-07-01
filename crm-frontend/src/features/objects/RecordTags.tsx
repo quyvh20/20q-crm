@@ -10,6 +10,10 @@ import {
 interface RecordTagsProps {
   slug: string;
   recordId: string;
+  /** Pre-fetched tags for this record — skip initial fetch when provided. */
+  prefetchedTags?: Tag[] | null;
+  /** Pre-fetched tag palette — skip initial fetch when provided. */
+  prefetchedAllTags?: Tag[] | null;
 }
 
 // RecordTags renders a record's tags for ANY object, from the uniform tag API
@@ -17,9 +21,9 @@ interface RecordTagsProps {
 // of the former RecordRelations panel — the free-text "link any record" half was
 // retired in favor of schema-driven related lists (RelatedLists), so relationships
 // now come from typed relation fields rather than a parallel, manual store.
-export default function RecordTags({ slug, recordId }: RecordTagsProps) {
-  const [tags, setTags] = useState<Tag[]>([]);
-  const [allTags, setAllTags] = useState<Tag[]>([]);
+export default function RecordTags({ slug, recordId, prefetchedTags, prefetchedAllTags }: RecordTagsProps) {
+  const [tags, setTags] = useState<Tag[]>(prefetchedTags ?? []);
+  const [allTags, setAllTags] = useState<Tag[]>(prefetchedAllTags ?? []);
   const [error, setError] = useState('');
 
   const refresh = useCallback(async () => {
@@ -31,9 +35,11 @@ export default function RecordTags({ slug, recordId }: RecordTagsProps) {
   }, [slug, recordId]);
 
   useEffect(() => {
-    refresh();
-    getTags().then(setAllTags).catch(() => {});
-  }, [refresh]);
+    // If the parent already fetched both, skip the initial requests.
+    if (prefetchedTags != null && prefetchedAllTags != null) return;
+    if (prefetchedTags == null) refresh();
+    if (prefetchedAllTags == null) getTags().then(setAllTags).catch(() => {});
+  }, [refresh, prefetchedTags, prefetchedAllTags]);
 
   const handleAddTag = async (tagId: string) => {
     setError('');

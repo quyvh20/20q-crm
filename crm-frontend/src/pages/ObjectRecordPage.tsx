@@ -4,8 +4,13 @@ import {
   getObjectSchema,
   getObjectRecordUnified,
   deleteObjectRecordUnified,
+  listRecordRelatedLists,
+  listRecordTags,
+  getTags,
   type ObjectSchema,
   type UniformRecord,
+  type RelatedList,
+  type Tag,
 } from '../lib/api';
 import { ObjectDetailView, ObjectForm } from '../features/objects';
 import { listPath } from '../features/objects/recordRoutes';
@@ -18,6 +23,11 @@ import { listPath } from '../features/objects/recordRoutes';
 //
 // The body (ObjectDetailView) renders the admin/role layout when configured and a
 // built-in default "Details" layout otherwise — so the page is never blank.
+//
+// Performance: schema, record, related lists, tags and the tag palette are all
+// fetched in a single Promise.all so the browser sends all requests at once.
+// Child components receive the pre-fetched data as props and skip their own
+// initial fetch, eliminating the render-then-fetch waterfall.
 export default function ObjectRecordPage() {
   const { slug, id } = useParams<{ slug: string; id: string }>();
   const navigate = useNavigate();
@@ -31,14 +41,31 @@ export default function ObjectRecordPage() {
   const [deleteError, setDeleteError] = useState('');
   const [deleting, setDeleting] = useState(false);
 
+  // Pre-fetched data for child components so they render immediately.
+  const [relatedLists, setRelatedLists] = useState<RelatedList[] | null>(null);
+  const [recordTags, setRecordTags] = useState<Tag[] | null>(null);
+  const [allTags, setAllTags] = useState<Tag[] | null>(null);
+
   const load = useCallback(async () => {
     if (!slug || !id) return;
     setLoading(true);
     setError('');
     try {
-      const [s, r] = await Promise.all([getObjectSchema(slug), getObjectRecordUnified(slug, id)]);
+      // Fire ALL requests at once — schema, record, related lists, tags, tag palette.
+      // Related lists and tags only need slug+id (known from URL params), so there is
+      // no reason to wait for schema/record to finish first.
+      const [s, r, rl, rt, at] = await Promise.all([
+        getObjectSchema(slug),
+        getObjectRecordUnified(slug, id),
+        listRecordRelatedLists(slug, id).catch(() => [] as RelatedList[]),
+        listRecordTags(slug, id).catch(() => [] as Tag[]),
+        getTags().catch(() => [] as Tag[]),
+      ]);
       setSchema(s);
       setRecord(r);
+      setRelatedLists(rl);
+      setRecordTags(rt);
+      setAllTags(at);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load this record.');
     } finally {
@@ -148,7 +175,13 @@ export default function ObjectRecordPage() {
             onCancel={() => setEditing(false)}
           />
         ) : (
-          <ObjectDetailView schema={schema} record={record} />
+          <ObjectDetailView
+            schema={schema}
+            record={record}
+            prefetchedRelatedLists={relatedLists}
+            prefetchedTags={recordTags}
+            prefetchedAllTags={allTags}
+          />
         )}
       </div>
 

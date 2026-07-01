@@ -6,6 +6,8 @@ import { recordPath } from './recordRoutes';
 interface RelatedListsProps {
   slug: string;
   recordId: string;
+  /** When supplied by the parent, the component skips its own initial fetch. */
+  prefetchedLists?: RelatedList[] | null;
 }
 
 // RelatedLists renders a record's reverse relationships: for every object that
@@ -13,12 +15,14 @@ interface RelatedListsProps {
 // those child records (e.g. a Contact's "Deals"). It is schema-driven — the
 // backend derives the groups from the registry — so no per-object code is needed,
 // and each row links to the child's own record page.
-export default function RelatedLists({ slug, recordId }: RelatedListsProps) {
-  const [lists, setLists] = useState<RelatedList[]>([]);
-  const [loading, setLoading] = useState(true);
+export default function RelatedLists({ slug, recordId, prefetchedLists }: RelatedListsProps) {
+  const [lists, setLists] = useState<RelatedList[]>(prefetchedLists ?? []);
+  const [loading, setLoading] = useState(prefetchedLists == null);
   const [error, setError] = useState('');
 
   useEffect(() => {
+    // If the parent already fetched the data, skip the initial request.
+    if (prefetchedLists != null) return;
     let cancelled = false;
     setLoading(true);
     setError('');
@@ -35,7 +39,7 @@ export default function RelatedLists({ slug, recordId }: RelatedListsProps) {
     return () => {
       cancelled = true;
     };
-  }, [slug, recordId]);
+  }, [slug, recordId, prefetchedLists]);
 
   // Only groups that actually have records are worth showing; an object that
   // could relate but doesn't yet would just be visual noise.
