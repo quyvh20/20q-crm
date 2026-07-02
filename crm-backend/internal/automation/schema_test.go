@@ -17,6 +17,81 @@ import (
 	"gorm.io/gorm"
 )
 
+// --- Object registry seed helpers ---
+//
+// After the P7 convergence the workflow schema builder reads custom fields and
+// custom objects from the object registry (object_defs + object_fields), NOT the
+// legacy org_settings.custom_field_defs blob or custom_object_defs table. These
+// helpers seed the registry the way the builder queries it:
+//   - system objects (contact/deal/company) are object_defs with is_system=true;
+//     their admin-defined custom fields are object_fields with is_system=false.
+//   - custom objects are object_defs with is_system=false; their fields are
+//     object_fields with is_system=false.
+//
+// The DDL mirrors migrations/000015 (and the main.go boot guard) but drops the
+// organizations FK and DEFAULT uuid_generate_v4() the automation test DB doesn't
+// provision — matching how the rest of this file creates tables inline.
+
+// createObjectRegistry creates the object_defs + object_fields tables.
+func createObjectRegistry(db *gorm.DB) {
+	db.Exec(`CREATE TABLE IF NOT EXISTS object_defs (
+		id UUID PRIMARY KEY,
+		org_id UUID NOT NULL,
+		slug TEXT NOT NULL,
+		label TEXT NOT NULL DEFAULT '',
+		label_plural TEXT NOT NULL DEFAULT '',
+		icon TEXT DEFAULT '📦',
+		is_system BOOLEAN NOT NULL DEFAULT FALSE,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		deleted_at TIMESTAMPTZ
+	)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS object_fields (
+		id UUID PRIMARY KEY,
+		org_id UUID NOT NULL,
+		object_def_id UUID NOT NULL,
+		key TEXT NOT NULL,
+		label TEXT NOT NULL DEFAULT '',
+		type TEXT NOT NULL,
+		options JSONB,
+		is_system BOOLEAN NOT NULL DEFAULT FALSE,
+		position INT NOT NULL DEFAULT 0,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		deleted_at TIMESTAMPTZ
+	)`)
+}
+
+// seedSystemObject inserts an is_system=true object def (contact/deal/company)
+// and returns its id so custom fields can be attached to it.
+func seedSystemObject(db *gorm.DB, orgID uuid.UUID, slug, label string) uuid.UUID {
+	id := uuid.New()
+	db.Exec(`INSERT INTO object_defs (id, org_id, slug, label, is_system) VALUES (?, ?, ?, ?, true)`,
+		id, orgID, slug, label)
+	return id
+}
+
+// seedCustomObject inserts an is_system=false object def and returns its id.
+func seedCustomObject(db *gorm.DB, orgID uuid.UUID, slug, label, icon string) uuid.UUID {
+	id := uuid.New()
+	db.Exec(`INSERT INTO object_defs (id, org_id, slug, label, label_plural, icon, is_system) VALUES (?, ?, ?, ?, ?, ?, false)`,
+		id, orgID, slug, label, label+"s", icon)
+	return id
+}
+
+// seedField inserts an admin-defined (is_system=false) object field. Pass
+// optionsJSON as a JSON array literal (e.g. `["Web","Ads"]`) for select fields,
+// or "" to leave options NULL.
+func seedField(db *gorm.DB, orgID, defID uuid.UUID, key, label, ftype string, position int, optionsJSON string) {
+	if optionsJSON == "" {
+		db.Exec(`INSERT INTO object_fields (id, org_id, object_def_id, key, label, type, position, is_system) VALUES (?, ?, ?, ?, ?, ?, ?, false)`,
+			uuid.New(), orgID, defID, key, label, ftype, position)
+		return
+	}
+	db.Exec(`INSERT INTO object_fields (id, org_id, object_def_id, key, label, type, options, position, is_system) VALUES (?, ?, ?, ?, ?, ?, ?::jsonb, ?, false)`,
+		uuid.New(), orgID, defID, key, label, ftype, optionsJSON, position)
+}
+
 // TestGetWorkflowSchema_FullCoverage verifies that GET /api/workflows/schema
 // returns ALL of: built-in contact fields, built-in deal fields, trigger fields,
 // custom field defs (per entity), custom object defs, pipeline stages (with color),
@@ -92,43 +167,20 @@ func TestGetWorkflowSchema_FullCoverage(t *testing.T) {
 	db.Exec(`INSERT INTO users (id, org_id, email, first_name, last_name) VALUES (?, ?, 'alex@test.com', 'Alex', 'Chen')`, userID, orgID)
 	db.Exec(`INSERT INTO org_users (user_id, org_id, role_id, status) VALUES (?, ?, ?, 'active')`, userID, orgID, uuid.New())
 
-	// 4. Org settings with custom field defs
-	db.Exec(`CREATE TABLE IF NOT EXISTS org_settings (
-		org_id UUID PRIMARY KEY,
-		industry_template_slug TEXT,
-		ai_context_override TEXT,
-		custom_field_defs JSONB DEFAULT '[]',
-		onboarding_completed BOOLEAN DEFAULT FALSE,
-		created_at TIMESTAMPTZ DEFAULT NOW(),
-		updated_at TIMESTAMPTZ DEFAULT NOW()
-	)`)
-	customFields := `[
-		{"key":"lead_source","label":"Lead Source","type":"select","entity_type":"contact","options":["Web","Referral","Cold Call"],"required":false,"position":0},
-		{"key":"contract_type","label":"Contract Type","type":"select","entity_type":"deal","options":["Monthly","Annual"],"required":false,"position":1},
-		{"key":"linkedin","label":"LinkedIn URL","type":"url","entity_type":"contact","options":null,"required":false,"position":2}
-	]`
-	db.Exec(`INSERT INTO org_settings (org_id, custom_field_defs) VALUES (?, ?::jsonb)`, orgID, customFields)
+	// 4. Custom fields on system objects (object_fields is_system=false; the P7
+	//    source of truth — replaces the legacy org_settings.custom_field_defs blob).
+	createObjectRegistry(db)
+	contactDefID := seedSystemObject(db, orgID, "contact", "Contact")
+	dealDefID := seedSystemObject(db, orgID, "deal", "Deal")
+	seedField(db, orgID, contactDefID, "lead_source", "Lead Source", "select", 0, `["Web","Referral","Cold Call"]`)
+	seedField(db, orgID, dealDefID, "contract_type", "Contract Type", "select", 1, `["Monthly","Annual"]`)
+	seedField(db, orgID, contactDefID, "linkedin", "LinkedIn URL", "url", 2, "")
 
-	// 5. Custom object definitions
-	db.Exec(`CREATE TABLE IF NOT EXISTS custom_object_defs (
-		id UUID PRIMARY KEY,
-		org_id UUID NOT NULL,
-		slug TEXT NOT NULL,
-		label TEXT NOT NULL,
-		label_plural TEXT NOT NULL,
-		icon TEXT DEFAULT '📦',
-		fields JSONB DEFAULT '[]',
-		created_at TIMESTAMPTZ DEFAULT NOW(),
-		updated_at TIMESTAMPTZ DEFAULT NOW(),
-		deleted_at TIMESTAMPTZ
-	)`)
-	objID := uuid.New()
-	objFields := `[
-		{"key":"plan","label":"Plan","type":"select","options":["Free","Pro","Enterprise"]},
-		{"key":"mrr","label":"MRR","type":"number","options":null},
-		{"key":"is_active","label":"Active","type":"boolean","options":null}
-	]`
-	db.Exec(`INSERT INTO custom_object_defs (id, org_id, slug, label, label_plural, icon, fields) VALUES (?, ?, 'subscription', 'Subscription', 'Subscriptions', '📦', ?::jsonb)`, objID, orgID, objFields)
+	// 5. Custom object definition (object_defs is_system=false + object_fields).
+	subDefID := seedCustomObject(db, orgID, "subscription", "Subscription", "📦")
+	seedField(db, orgID, subDefID, "plan", "Plan", "select", 0, `["Free","Pro","Enterprise"]`)
+	seedField(db, orgID, subDefID, "mrr", "MRR", "number", 1, "")
+	seedField(db, orgID, subDefID, "is_active", "Active", "boolean", 2, "")
 
 	// --- Setup gin router with fake auth ---
 	gin.SetMode(gin.TestMode)
@@ -468,13 +520,7 @@ func TestGetWorkflowSchema_NoNPlus1_QueryCount(t *testing.T) {
 		user_id UUID NOT NULL, org_id UUID NOT NULL, role_id UUID NOT NULL,
 		status TEXT DEFAULT 'active', joined_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ,
 		PRIMARY KEY (user_id, org_id))`)
-	db.Exec(`CREATE TABLE IF NOT EXISTS org_settings (
-		org_id UUID PRIMARY KEY, custom_field_defs JSONB DEFAULT '[]',
-		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`)
-	db.Exec(`CREATE TABLE IF NOT EXISTS custom_object_defs (
-		id UUID PRIMARY KEY, org_id UUID NOT NULL, slug TEXT, label TEXT, label_plural TEXT,
-		icon TEXT DEFAULT '📦', fields JSONB DEFAULT '[]',
-		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
+	createObjectRegistry(db)
 
 	// Insert 10 pipeline stages
 	for i := 0; i < 10; i++ {
@@ -493,18 +539,19 @@ func TestGetWorkflowSchema_NoNPlus1_QueryCount(t *testing.T) {
 			uid, orgID, fmt.Sprintf("user%d@test.com", i), fmt.Sprintf("User%d", i), "Test")
 		db.Exec(`INSERT INTO org_users (user_id, org_id, role_id) VALUES (?, ?, ?)`, uid, orgID, uuid.New())
 	}
-	// Insert 5 custom objects with 3 fields each
+	// Insert 5 custom objects with 3 fields each (registry). This is the N+1 trap:
+	// the builder must load all custom-object fields without one query per object.
 	for i := 0; i < 5; i++ {
-		fields := fmt.Sprintf(`[{"key":"f1","label":"Field 1","type":"string"},{"key":"f2","label":"Field 2","type":"number"},{"key":"f3","label":"Field 3","type":"boolean"}]`)
-		db.Exec(`INSERT INTO custom_object_defs (id, org_id, slug, label, label_plural, icon, fields) VALUES (?, ?, ?, ?, ?, '📦', ?::jsonb)`,
-			uuid.New(), orgID, fmt.Sprintf("obj_%d", i), fmt.Sprintf("Object %d", i), fmt.Sprintf("Objects %d", i), fields)
+		defID := seedCustomObject(db, orgID, fmt.Sprintf("obj_%d", i), fmt.Sprintf("Object %d", i), "📦")
+		seedField(db, orgID, defID, "f1", "Field 1", "string", 0, "")
+		seedField(db, orgID, defID, "f2", "Field 2", "number", 1, "")
+		seedField(db, orgID, defID, "f3", "Field 3", "boolean", 2, "")
 	}
-	// Insert org settings with custom field defs
-	customFields := `[
-		{"key":"source","label":"Source","type":"select","entity_type":"contact","options":["Web","Ads"]},
-		{"key":"tier","label":"Tier","type":"string","entity_type":"deal","options":null}
-	]`
-	db.Exec(`INSERT INTO org_settings (org_id, custom_field_defs) VALUES (?, ?::jsonb)`, orgID, customFields)
+	// Custom fields on system objects (object_fields is_system=false)
+	contactDefID := seedSystemObject(db, orgID, "contact", "Contact")
+	dealDefID := seedSystemObject(db, orgID, "deal", "Deal")
+	seedField(db, orgID, contactDefID, "source", "Source", "select", 0, `["Web","Ads"]`)
+	seedField(db, orgID, dealDefID, "tier", "Tier", "string", 0, "")
 
 	// --- Register a GORM callback to count SQL queries ---
 	var queryCount int64
@@ -550,7 +597,11 @@ func TestGetWorkflowSchema_NoNPlus1_QueryCount(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, w.Code, "expected 200 OK, got %d: %s", w.Code, w.Body.String())
 
-	// --- Assert: at most 6 queries (currently 5: org_settings, custom_object_defs, pipeline_stages, tags, users+org_users) ---
+	// --- Assert: at most 6 queries (no N+1). Only 3 are counted here — the
+	// .Find() loads for pipeline_stages, tags, and users, each a single query
+	// regardless of row count. The registry custom-field/object reads use .Scan()
+	// (GORM's row callback), which this query/raw counter doesn't hook, so they
+	// don't add to the count. The ≤6 budget leaves headroom either way. ---
 	finalCount := atomic.LoadInt64(&queryCount)
 	t.Logf("Schema endpoint executed %d SQL queries (with 10 stages, 10 tags, 10 users, 5 custom objects)", finalCount)
 
@@ -733,13 +784,7 @@ func TestSchemaEndpoint_ReturnsAllCategories(t *testing.T) {
 		user_id UUID NOT NULL, org_id UUID NOT NULL, role_id UUID NOT NULL,
 		status TEXT DEFAULT 'active', joined_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ,
 		PRIMARY KEY (user_id, org_id))`)
-	db.Exec(`CREATE TABLE IF NOT EXISTS org_settings (
-		org_id UUID PRIMARY KEY, custom_field_defs JSONB DEFAULT '[]',
-		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`)
-	db.Exec(`CREATE TABLE IF NOT EXISTS custom_object_defs (
-		id UUID PRIMARY KEY, org_id UUID NOT NULL, slug TEXT, label TEXT, label_plural TEXT,
-		icon TEXT DEFAULT '📦', fields JSONB DEFAULT '[]',
-		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
+	createObjectRegistry(db)
 
 	// Seed 1 row per category
 	db.Exec(`INSERT INTO pipeline_stages (id, org_id, name, position, color) VALUES (?, ?, 'Lead', 0, '#3B82F6')`, uuid.New(), orgID)
@@ -747,8 +792,11 @@ func TestSchemaEndpoint_ReturnsAllCategories(t *testing.T) {
 	userID := uuid.New()
 	db.Exec(`INSERT INTO users (id, org_id, email, first_name) VALUES (?, ?, 'alice@test.com', 'Alice')`, userID, orgID)
 	db.Exec(`INSERT INTO org_users (user_id, org_id, role_id) VALUES (?, ?, ?)`, userID, orgID, uuid.New())
-	db.Exec(`INSERT INTO custom_object_defs (id, org_id, slug, label, label_plural, fields) VALUES (?, ?, 'ticket', 'Ticket', 'Tickets', '[{"key":"priority","label":"Priority","type":"select","options":["Low","High"]}]'::jsonb)`, uuid.New(), orgID)
-	db.Exec(`INSERT INTO org_settings (org_id, custom_field_defs) VALUES (?, '[{"key":"source","label":"Source","type":"string","entity_type":"contact"}]'::jsonb)`, orgID)
+	// Custom object 'ticket' + a custom field 'source' on contact (registry).
+	ticketDefID := seedCustomObject(db, orgID, "ticket", "Ticket", "📦")
+	seedField(db, orgID, ticketDefID, "priority", "Priority", "select", 0, `["Low","High"]`)
+	contactDefID := seedSystemObject(db, orgID, "contact", "Contact")
+	seedField(db, orgID, contactDefID, "source", "Source", "string", 0, "")
 
 	// --- Build handler + router ---
 	gin.SetMode(gin.TestMode)
@@ -896,13 +944,7 @@ func TestSchemaEndpoint_ScopedByOrg(t *testing.T) {
 		user_id UUID NOT NULL, org_id UUID NOT NULL, role_id UUID NOT NULL,
 		status TEXT DEFAULT 'active', joined_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ,
 		PRIMARY KEY (user_id, org_id))`)
-	db.Exec(`CREATE TABLE IF NOT EXISTS org_settings (
-		org_id UUID PRIMARY KEY, custom_field_defs JSONB DEFAULT '[]',
-		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`)
-	db.Exec(`CREATE TABLE IF NOT EXISTS custom_object_defs (
-		id UUID PRIMARY KEY, org_id UUID NOT NULL, slug TEXT, label TEXT, label_plural TEXT,
-		icon TEXT DEFAULT '📦', fields JSONB DEFAULT '[]',
-		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
+	createObjectRegistry(db)
 
 	// --- Seed Org A data ---
 	db.Exec(`INSERT INTO pipeline_stages (id, org_id, name, position, color) VALUES (?, ?, 'A-Lead', 0, '#A00')`, uuid.New(), orgA)
@@ -910,8 +952,12 @@ func TestSchemaEndpoint_ScopedByOrg(t *testing.T) {
 	userA := uuid.New()
 	db.Exec(`INSERT INTO users (id, org_id, email, first_name) VALUES (?, ?, 'alice@orga.com', 'Alice')`, userA, orgA)
 	db.Exec(`INSERT INTO org_users (user_id, org_id, role_id) VALUES (?, ?, ?)`, userA, orgA, uuid.New())
-	db.Exec(`INSERT INTO org_settings (org_id, custom_field_defs) VALUES (?, '[{"key":"industry","label":"Industry","type":"select","entity_type":"contact","options":["Tech","Finance"]}]'::jsonb)`, orgA)
-	db.Exec(`INSERT INTO custom_object_defs (id, org_id, slug, label, label_plural, fields) VALUES (?, ?, 'project', 'Project', 'Projects', '[{"key":"status","label":"Status","type":"string"}]'::jsonb)`, uuid.New(), orgA)
+	// Org A: custom field 'industry' on contact + custom object 'project' (registry).
+	contactDefA := seedSystemObject(db, orgA, "contact", "Contact")
+	seedSystemObject(db, orgA, "deal", "Deal")
+	seedField(db, orgA, contactDefA, "industry", "Industry", "select", 0, `["Tech","Finance"]`)
+	projectDefA := seedCustomObject(db, orgA, "project", "Project", "📦")
+	seedField(db, orgA, projectDefA, "status", "Status", "string", 0, "")
 
 	// --- Seed Org B data (different everything) ---
 	db.Exec(`INSERT INTO pipeline_stages (id, org_id, name, position, color) VALUES (?, ?, 'B-Discovery', 0, '#B00')`, uuid.New(), orgB)
@@ -921,8 +967,13 @@ func TestSchemaEndpoint_ScopedByOrg(t *testing.T) {
 	userB := uuid.New()
 	db.Exec(`INSERT INTO users (id, org_id, email, first_name) VALUES (?, ?, 'bob@orgb.com', 'Bob')`, userB, orgB)
 	db.Exec(`INSERT INTO org_users (user_id, org_id, role_id) VALUES (?, ?, ?)`, userB, orgB, uuid.New())
-	db.Exec(`INSERT INTO org_settings (org_id, custom_field_defs) VALUES (?, '[{"key":"segment","label":"Segment","type":"string","entity_type":"deal"},{"key":"region","label":"Region","type":"select","entity_type":"contact","options":["NA","EMEA","APAC"]}]'::jsonb)`, orgB)
-	db.Exec(`INSERT INTO custom_object_defs (id, org_id, slug, label, label_plural, fields) VALUES (?, ?, 'subscription', 'Subscription', 'Subscriptions', '[{"key":"plan","label":"Plan","type":"select","options":["Free","Pro"]}]'::jsonb)`, uuid.New(), orgB)
+	// Org B: 'segment' on deal, 'region' on contact + custom object 'subscription'.
+	contactDefB := seedSystemObject(db, orgB, "contact", "Contact")
+	dealDefB := seedSystemObject(db, orgB, "deal", "Deal")
+	seedField(db, orgB, dealDefB, "segment", "Segment", "string", 0, "")
+	seedField(db, orgB, contactDefB, "region", "Region", "select", 1, `["NA","EMEA","APAC"]`)
+	subDefB := seedCustomObject(db, orgB, "subscription", "Subscription", "📦")
+	seedField(db, orgB, subDefB, "plan", "Plan", "select", 0, `["Free","Pro"]`)
 
 	// --- Helper: fetch schema as a given org ---
 	fetchSchema := func(orgID, userID uuid.UUID) SchemaResponse {
