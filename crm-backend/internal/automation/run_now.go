@@ -4,6 +4,9 @@ import (
 	"errors"
 	"fmt"
 
+	"crm-backend/internal/domain"
+
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
@@ -146,4 +149,22 @@ func authorizeRunNow(role string, userID, createdBy uuid.UUID) bool {
 		return true
 	}
 	return userID != uuid.Nil && userID == createdBy
+}
+
+// authorizeRunNowCtx is the capability-aware Run Now / Retry gate (P3). The
+// creator allowance always applies. When a capability checker is wired (prod),
+// the workflows.run_any capability grants "run any" — so a custom role an admin
+// grants it to can run any workflow, not just the system roles. Without a checker
+// (unit tests), it falls back to the legacy owner/admin/manager role check so the
+// pure-function permission matrix keeps holding.
+func (h *Handler) authorizeRunNowCtx(c *gin.Context, role string, userID, createdBy uuid.UUID) bool {
+	if userID != uuid.Nil && userID == createdBy {
+		return true // creator may always run their own workflow
+	}
+	if h.capChecker != nil {
+		orgIDVal, _ := c.Get("org_id")
+		orgID, _ := orgIDVal.(uuid.UUID)
+		return h.capChecker.HasCapability(c.Request.Context(), orgID, domain.CapWorkflowsRunAny) == nil
+	}
+	return authorizeRunNow(role, userID, createdBy)
 }

@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { switchWorkspace as apiSwitchWorkspace, type Workspace } from './api';
+import { switchWorkspace as apiSwitchWorkspace, setAccessToken as setApiToken, readCsrfToken, getMyCapabilities, type Workspace } from './api';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 
@@ -23,6 +23,10 @@ interface AuthContextType {
   currentRole: string;
   isLoading: boolean;
   isAuthenticated: boolean;
+  // Effective system capabilities of the current user in the active workspace
+  // (P3). Owner gets all. Use hasCapability for permission-aware UI.
+  capabilities: string[];
+  hasCapability: (code: string) => boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (data: RegisterData) => Promise<void>;
   logout: () => Promise<void>;
@@ -49,14 +53,6 @@ interface AuthResponse {
   error: string | null;
 }
 
-interface MeResponse {
-  data: {
-    user: User;
-    workspaces?: Workspace[];
-  };
-  error: string | null;
-}
-
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 function findActiveWorkspace(workspaces: Workspace[]): Workspace | null {
@@ -70,30 +66,40 @@ function findActiveWorkspace(workspaces: Workspace[]): Workspace | null {
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
-  const [accessToken, setAccessToken] = useState<string | null>(
-    localStorage.getItem('access_token')
-  );
+  // Access token is mirrored here for context consumers, but the source of truth
+  // is the in-memory token in api.ts (setApiToken). It is never persisted (P2).
+  const [accessToken, setAccessToken] = useState<string | null>(null);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [activeWorkspace, setActiveWorkspace] = useState<Workspace | null>(null);
+  const [capabilities, setCapabilities] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   const currentRole = activeWorkspace?.role || '';
+  const hasCapability = useCallback((code: string) => capabilities.includes(code), [capabilities]);
+
+  // Fetch the caller's effective capabilities for the active org after auth
+  // changes. Fire-and-forget: on failure capabilities stay empty (UI fails closed).
+  const loadCapabilities = useCallback(() => {
+    getMyCapabilities().then(setCapabilities).catch(() => setCapabilities([]));
+  }, []);
 
   const clearAuth = useCallback(() => {
     setUser(null);
     setAccessToken(null);
+    setApiToken(null);
     setWorkspaces([]);
     setActiveWorkspace(null);
+    setCapabilities([]);
+    localStorage.removeItem('active_workspace_id');
+    // One-release shim: purge any tokens the pre-P2 build left in localStorage.
     localStorage.removeItem('access_token');
     localStorage.removeItem('refresh_token');
-    localStorage.removeItem('active_workspace_id');
   }, []);
 
   const saveAuth = useCallback((data: AuthResponse['data']) => {
     setAccessToken(data.access_token);
+    setApiToken(data.access_token); // in-memory source of truth for apiFetch
     setUser(data.user);
-    localStorage.setItem('access_token', data.access_token);
-    localStorage.setItem('refresh_token', data.refresh_token);
     if (data.workspaces) {
       setWorkspaces(data.workspaces);
       const active = findActiveWorkspace(data.workspaces);
@@ -102,31 +108,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         localStorage.setItem('active_workspace_id', active.org_id);
       }
     }
-  }, []);
+    loadCapabilities();
+  }, [loadCapabilities]);
 
   const refreshAuth = useCallback(async () => {
-    const refreshToken = localStorage.getItem('refresh_token');
-    if (!refreshToken) {
-      clearAuth();
-      return;
-    }
-
+    // The refresh token normally rides in the httpOnly cookie. One-release shim:
+    // an existing session may still have a refresh token in localStorage from the
+    // pre-cookie build — send it once in the body to bootstrap the cookie, then
+    // discard it so it's never replayed (a replay trips reuse detection).
+    const legacyRefresh = localStorage.getItem('refresh_token');
+    const activeOrgId = localStorage.getItem('active_workspace_id');
     try {
-      const activeOrgId = localStorage.getItem('active_workspace_id');
       const res = await fetch(`${API_URL}/api/auth/refresh`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': readCsrfToken() },
         body: JSON.stringify({
-          refresh_token: refreshToken,
+          ...(legacyRefresh ? { refresh_token: legacyRefresh } : {}),
           ...(activeOrgId ? { org_id: activeOrgId } : {}),
         }),
       });
-
+      // The shim token is single-use — drop the legacy copies regardless of result.
+      localStorage.removeItem('refresh_token');
+      localStorage.removeItem('access_token');
       if (!res.ok) {
         clearAuth();
         return;
       }
-
       const json: AuthResponse = await res.json();
       if (json.data) {
         saveAuth(json.data);
@@ -140,95 +148,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const loadUser = async () => {
-      // Skip auth check on /auth/callback — that page manages its own token flow.
-      // Running loadUser here causes a race condition: this fetch gets aborted
-      // when the callback page navigates away, triggering clearAuth() which
-      // wipes the tokens from localStorage before the new page loads.
+      // Skip on /auth/callback — that page bootstraps its own session (the OAuth
+      // redirect already set the refresh cookie; the page reads the short-lived
+      // access token from the URL).
       if (window.location.pathname === '/auth/callback') {
-        console.log('[AuthProvider] Skipping loadUser on /auth/callback');
         setIsLoading(false);
         return;
       }
-
-      const token = localStorage.getItem('access_token');
-      console.log('[AuthProvider] loadUser: token present?', !!token);
-      if (!token) {
-        setIsLoading(false);
-        return;
-      }
-
-      try {
-        console.log('[AuthProvider] Calling /api/auth/me with API_URL:', API_URL);
-        const res = await fetch(`${API_URL}/api/auth/me`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-
-        console.log('[AuthProvider] /api/auth/me status:', res.status);
-
-        if (res.ok) {
-          const json: MeResponse = await res.json();
-          console.log('[AuthProvider] /api/auth/me success, user:', json.data?.user?.email);
-          if (json.data) {
-            setUser(json.data.user);
-            setAccessToken(token);
-            if (json.data.workspaces) {
-              setWorkspaces(json.data.workspaces);
-              const active = findActiveWorkspace(json.data.workspaces);
-              setActiveWorkspace(active);
-
-              // Check if JWT org matches the active workspace.
-              // If not (e.g., token was refreshed for wrong org), auto-switch.
-              if (active) {
-                try {
-                  const parts = token.split('.');
-                  if (parts.length === 3) {
-                    const payload = JSON.parse(atob(parts[1]));
-                    if (payload.org_id && payload.org_id !== active.org_id) {
-                      console.log('[AuthProvider] JWT org mismatch, auto-switching workspace');
-                      const result = await apiSwitchWorkspace(active.org_id);
-                      localStorage.setItem('access_token', result.access_token);
-                      localStorage.setItem('refresh_token', result.refresh_token);
-                      setAccessToken(result.access_token);
-                      if (result.workspaces) {
-                        setWorkspaces(result.workspaces);
-                        const switched = result.workspaces.find(w => w.org_id === active.org_id) || null;
-                        setActiveWorkspace(switched);
-                      }
-                    }
-                  }
-                } catch (switchErr) {
-                  console.warn('[AuthProvider] Auto-switch failed:', switchErr);
-                }
-              }
-            }
-          }
-        } else if (res.status === 401) {
-          console.log('[AuthProvider] 401 - attempting refresh');
-          await refreshAuth();
-        } else {
-          const text = await res.text();
-          console.error('[AuthProvider] /api/auth/me failed:', res.status, text);
-          clearAuth();
-        }
-      } catch (err) {
-        // Don't clear auth on abort/navigation errors — the page is just unloading
-        if (err instanceof DOMException && err.name === 'AbortError') {
-          console.log('[AuthProvider] Fetch aborted (navigation), keeping tokens');
-          return;
-        }
-        console.error('[AuthProvider] /api/auth/me network error:', err);
-        clearAuth();
-      } finally {
-        setIsLoading(false);
-      }
+      // The access token lives only in memory, so on every fresh load/reload we
+      // re-establish the session from the refresh cookie. refreshAuth scopes the
+      // new token to the saved active workspace and populates user + workspaces.
+      await refreshAuth();
+      setIsLoading(false);
     };
 
     loadUser();
-  }, [clearAuth, refreshAuth]);
+  }, [refreshAuth]);
 
   const login = async (email: string, password: string) => {
     const res = await fetch(`${API_URL}/api/auth/login`, {
       method: 'POST',
+      credentials: 'include', // receive the httpOnly refresh + csrf cookies
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password }),
     });
@@ -244,6 +184,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const register = async (data: RegisterData) => {
     const res = await fetch(`${API_URL}/api/auth/register`, {
       method: 'POST',
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     });
@@ -257,27 +198,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const logout = async () => {
-    const refreshToken = localStorage.getItem('refresh_token');
-    if (refreshToken) {
-      try {
-        await fetch(`${API_URL}/api/auth/logout`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refresh_token: refreshToken }),
-        });
-      } catch {
-        // pass
-      }
+    try {
+      await fetch(`${API_URL}/api/auth/logout`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': readCsrfToken() },
+      });
+    } catch {
+      // Ignore network errors — local state is cleared regardless.
     }
     clearAuth();
   };
 
   const doSwitchWorkspace = async (orgId: string) => {
     const result = await apiSwitchWorkspace(orgId);
-    localStorage.setItem('access_token', result.access_token);
-    localStorage.setItem('refresh_token', result.refresh_token);
-    localStorage.setItem('active_workspace_id', orgId);
     setAccessToken(result.access_token);
+    setApiToken(result.access_token);
+    localStorage.setItem('active_workspace_id', orgId);
     if (result.workspaces) {
       setWorkspaces(result.workspaces);
       const active = result.workspaces.find(w => w.org_id === orgId) || null;
@@ -296,6 +233,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         currentRole,
         isLoading,
         isAuthenticated: !!user,
+        capabilities,
+        hasCapability,
         login,
         register,
         logout,

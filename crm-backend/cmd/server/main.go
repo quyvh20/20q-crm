@@ -110,7 +110,7 @@ func main() {
 	router.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{cfg.FrontendURL, "http://localhost:5173", "https://20q-crm.pages.dev"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "X-CSRF-Token"},
 		ExposeHeaders:    []string{"Content-Length"},
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
@@ -462,6 +462,46 @@ func main() {
 		db.Exec(`CREATE INDEX IF NOT EXISTS idx_email_verification_user  ON email_verification_tokens(user_id)`)
 		db.Exec(`ALTER TABLE email_verification_tokens ENABLE ROW LEVEL SECURITY`)
 
+		// Token version + device-aware refresh tokens (migration 000027, P2) — boot
+		// guard. Mirrors migrations/000027_token_version_and_device.up.sql. token_version
+		// backfills to 0 (matching old JWTs' absent `tv` claim, so no forced logouts);
+		// the refresh_tokens columns add the rotation chain + device metadata.
+		db.Exec(`DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_name = 'users' AND column_name = 'token_version'
+			) THEN
+				ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0;
+			END IF;
+		END $$`)
+		db.Exec(`ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS device_label VARCHAR(255)`)
+		db.Exec(`ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS ip           INET`)
+		db.Exec(`ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS user_agent   TEXT`)
+		db.Exec(`ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ`)
+		db.Exec(`ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS rotated_from UUID REFERENCES refresh_tokens(id) ON DELETE SET NULL`)
+
+		// Make custom roles real (migration 000028, P3) — boot guard. Mirrors
+		// migrations/000028_custom_roles_real.up.sql. roles.data_scope generalizes
+		// the sales_rep='own' row-scope; role_permissions.org_id scopes custom-role
+		// capability rows; the dead legacy capability vocabulary is purged so
+		// SeedSystemRoles (below) repopulates the real capability codes; and the
+		// vestigial users.role column is dropped (the user_role enum type is kept).
+		db.Exec(`ALTER TABLE roles ADD COLUMN IF NOT EXISTS data_scope VARCHAR(10) NOT NULL DEFAULT 'all'`)
+		db.Exec(`DO $$
+		BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'roles_data_scope_check') THEN
+				ALTER TABLE roles ADD CONSTRAINT roles_data_scope_check CHECK (data_scope IN ('own', 'all'));
+			END IF;
+		END $$`)
+		db.Exec(`UPDATE roles SET data_scope = 'own' WHERE name = 'sales_rep' AND is_system = TRUE`)
+		db.Exec(`ALTER TABLE role_permissions ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations(id) ON DELETE CASCADE`)
+		// Purge only the dead legacy vocabulary (colon-format codes like
+		// 'deal:read:team' / 'all:all:all'); real capability codes use dots
+		// ('members.manage'), so admin edits to capabilities are never touched.
+		db.Exec(`DELETE FROM role_permissions WHERE permission_code LIKE '%:%'`)
+		db.Exec(`ALTER TABLE users DROP COLUMN IF EXISTS role`)
+
 		log.Info("Seeding system roles...")
 		if err := repository.SeedSystemRoles(db); err != nil {
 			log.Error("Failed to seed system roles", zap.Error(err))
@@ -553,7 +593,7 @@ func main() {
 			log.Warn("RESEND_API_KEY is unset in production: email delivery is disabled and account-recovery links (raw tokens) will be written to application logs. Set RESEND_API_KEY to enable real email delivery.")
 		}
 
-		authUseCase := usecase.NewAuthUseCase(authRepo, stageRepo, cfg, mailerSvc, appEnv)
+		authUseCase := usecase.NewAuthUseCase(authRepo, stageRepo, cfg, mailerSvc, appEnv, redisClient)
 		authHandler := delivery.NewAuthHandler(authUseCase, cfg)
 
 		workspaceUseCase := usecase.NewWorkspaceUseCase(authRepo, mailerSvc, appEnv, cfg.FrontendURL)
@@ -651,9 +691,20 @@ func main() {
 		// Reverse related lists compose the registry + record services (P-relationships):
 		// they surface, on any record, the child records that point back at it.
 		relatedListsUC := usecase.NewRelatedListsUseCase(objectRegistryUC, recordService)
-		// The extra deps (registry, layouts, authorizer, tags) feed the composite
-		// record-page endpoint, which serves the whole detail page in one response.
-		recordHandler := delivery.NewRecordHandler(recordService, relatedListsUC, objectRegistryUC, layoutUC, permissionUC, tagUseCase)
+		// Record shares (P3, I2): the escape hatch that grants an 'own'-scoped role
+		// access to specific records. Ownership is enforced by reusing the
+		// scope-aware RecordService.Get inside the usecase.
+		shareRepo := repository.NewRecordShareRepository(db)
+		shareUC := usecase.NewShareUseCase(recordService, shareRepo, authRepo, permissionUC)
+		// The extra deps (registry, layouts, authorizer, tags, shares) feed the
+		// composite record-page endpoint + the share controls.
+		recordHandler := delivery.NewRecordHandler(recordService, relatedListsUC, objectRegistryUC, layoutUC, permissionUC, tagUseCase, shareUC)
+
+		// Custom role management (P3): CRUD + capability editing, gated on
+		// roles.manage. The usecase busts the permission cache on every change.
+		roleRepo := repository.NewRoleRepository(db)
+		roleUC := usecase.NewRoleUseCase(roleRepo, permissionUC)
+		roleHandler := delivery.NewRoleHandler(roleUC)
 
 		// Global search (P6): spans searchable custom objects (record_embeddings)
 		// plus contacts (native index), resolving every hit through RecordService so
@@ -685,7 +736,7 @@ func main() {
 		voiceNoteUC := usecase.NewVoiceNoteUseCase(voiceNoteRepo, aiJobQueue, cfg, contactRepo)
 		voiceHandler := delivery.NewVoiceHandler(voiceNoteUC)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, layoutHandler, cfg, db, redisClient, authRepo)
+		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, layoutHandler, roleHandler, cfg, db, redisClient, authRepo, permissionUC)
 
 		// --- Workflow Automation Engine ---
 		memHandler := logger.NewMemoryHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -697,9 +748,13 @@ func main() {
 		)
 		autoEngine.Start()
 		autoHandler := automation.NewHandler(autoEngine, db, autoLogger)
+		// Workflow authorization is now capability-driven (P3): mutating routes gate
+		// on workflows.manage, and Run Now / Retry authorize on workflows.run_any —
+		// so a custom role an admin grants those to works, not just system roles.
+		autoHandler.SetCapabilityChecker(permissionUC)
 		autoHandler.RegisterRoutes(router,
 			delivery.AuthMiddleware(cfg.JWTSecret, authRepo, redisClient),
-			delivery.RequireRole,
+			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
 		)
 
 		// Wire schema cache invalidation: when stages, tags, custom fields,

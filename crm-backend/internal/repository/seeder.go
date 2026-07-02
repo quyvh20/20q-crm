@@ -7,49 +7,69 @@ import (
 	"gorm.io/gorm"
 )
 
-var systemRoles = []struct {
-	Name        string
-	Permissions []string
-}{
-	{domain.RoleOwner, []string{"all:all:all"}},
-	{domain.RoleAdmin, []string{"user:read:all", "user:write:all", "deal:read:all", "deal:write:all", "contact:read:all", "contact:write:all"}},
-	{domain.RoleManager, []string{"deal:read:team", "deal:write:team", "contact:read:team", "contact:write:team"}},
-	{domain.RoleSales, []string{"deal:read:own", "deal:write:own", "contact:read:own", "contact:write:own"}},
-	{domain.RoleViewer, []string{"deal:read:all", "contact:read:all"}},
+// systemRoleOrder is the fixed set of built-in roles, seeded in this order.
+var systemRoleOrder = []string{
+	domain.RoleOwner, domain.RoleAdmin, domain.RoleManager, domain.RoleSales, domain.RoleViewer,
 }
 
+// SeedSystemRoles ensures the five built-in roles exist with their capability
+// grants (role_permissions as the system-capability store, plan D5) and row scope
+// (roles.data_scope). System roles are global singletons (org_id NULL) shared by
+// every org, so they are NOT admin-editable — this seeder is their single owner
+// and keeps their capabilities aligned to DefaultRoleCapabilities. Admins
+// customize by CLONING a system role into an org-scoped custom role and editing
+// that (role_usecase refuses SetCapabilities/Update/Delete on system roles).
+//
+// The seed is idempotent: it creates missing roles, aligns each role's data_scope
+// with the default, and inserts any missing default capability rows (never
+// stamping org_id — system-role rows must stay global). owner holds no capability
+// rows (it bypasses checks), so an empty table can never lock it out.
 func SeedSystemRoles(db *gorm.DB) error {
 	return db.Transaction(func(tx *gorm.DB) error {
-		for _, sr := range systemRoles {
+		for _, name := range systemRoleOrder {
 			var role domain.Role
-			// Check if system role exists
-			err := tx.Where("name = ? AND is_system = ?", sr.Name, true).First(&role).Error
+			err := tx.Where("name = ? AND is_system = ?", name, true).First(&role).Error
 			if err != nil && err != gorm.ErrRecordNotFound {
 				return err
 			}
 
+			scope := domain.DefaultRoleDataScope[name]
+			if scope == "" {
+				scope = domain.DataScopeAll
+			}
+
 			if err == gorm.ErrRecordNotFound {
-				// Create
 				role = domain.Role{
-					Name:     sr.Name,
-					IsSystem: true,
+					Name:      name,
+					IsSystem:  true,
+					DataScope: scope,
 				}
 				if err := tx.Create(&role).Error; err != nil {
 					return err
 				}
-				log.Printf("Seeded system role: %s", sr.Name)
+				log.Printf("Seeded system role: %s", name)
+			} else if role.DataScope != scope {
+				// Keep system-role scope aligned with the documented default.
+				if err := tx.Model(&domain.Role{}).Where("id = ?", role.ID).
+					Update("data_scope", scope).Error; err != nil {
+					return err
+				}
 			}
 
-			// Add/Update permissions
-			for _, pc := range sr.Permissions {
-				var rp domain.RolePermission
-				err := tx.Where("role_id = ? AND permission_code = ?", role.ID, pc).First(&rp).Error
-				if err == gorm.ErrRecordNotFound {
-					rp = domain.RolePermission{
+			// Ensure each default capability row exists (idempotent insert-missing).
+			// System-role rows are global — org_id stays NULL.
+			for _, code := range domain.DefaultRoleCapabilities[name] {
+				var exists int64
+				if err := tx.Model(&domain.RolePermission{}).
+					Where("role_id = ? AND permission_code = ?", role.ID, code).
+					Count(&exists).Error; err != nil {
+					return err
+				}
+				if exists == 0 {
+					if err := tx.Create(&domain.RolePermission{
 						RoleID:         role.ID,
-						PermissionCode: pc,
-					}
-					if err := tx.Create(&rp).Error; err != nil {
+						PermissionCode: code,
+					}).Error; err != nil {
 						return err
 					}
 				}

@@ -22,6 +22,16 @@ func NewPermissionHandler(uc domain.PermissionUseCase) *PermissionHandler {
 	return &PermissionHandler{uc: uc}
 }
 
+// GetMyCapabilities handles GET /api/auth/capabilities — the caller's effective
+// system capabilities for the active org, so the SPA can render permission-aware
+// UI (e.g. show the Roles/Permissions admin tab only to a caller with
+// roles.manage). The server still enforces every action independently.
+func (h *PermissionHandler) GetMyCapabilities(c *gin.Context) {
+	orgID := c.MustGet("org_id").(uuid.UUID)
+	caps := h.uc.CallerCapabilities(c.Request.Context(), orgID)
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"capabilities": caps}, "error": nil})
+}
+
 // GetGrid handles GET /api/registry/permissions — the full role × object matrix.
 func (h *PermissionHandler) GetGrid(c *gin.Context) {
 	orgID := c.MustGet("org_id").(uuid.UUID)

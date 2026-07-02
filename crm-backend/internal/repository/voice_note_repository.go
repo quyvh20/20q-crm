@@ -31,13 +31,14 @@ func (r *voiceNoteRepository) Create(ctx context.Context, v *domain.VoiceNote) e
 //   - The note's deal   is owned by the user OR shared with them
 //   - The note has no linked contact/deal (user created it themselves — checked via user_id)
 func voiceNoteScope(db *gorm.DB, ctx context.Context, orgID uuid.UUID) *gorm.DB {
-	role, userID, ok := extractDataScope(ctx)
-	if !ok || role != domain.RoleSales {
-		// admin / manager / owner — full org access
+	scope, userID, ok := extractDataScope(ctx)
+	if !ok || scope != domain.DataScopeOwn {
+		// 'all'-scope roles (admin / manager / owner / any all-scoped custom role) —
+		// full org access.
 		return db.Where("voice_notes.org_id = ?", orgID)
 	}
 
-	// sales: accessible if note's contact OR deal is owned/shared, OR note was created by them
+	// 'own'-scope: accessible if note's contact OR deal is owned/shared, OR note was created by them
 	return db.Where(`voice_notes.org_id = ? AND (
 		voice_notes.user_id = ?
 		OR (voice_notes.contact_id IS NOT NULL AND EXISTS (

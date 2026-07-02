@@ -6,6 +6,7 @@ import KnowledgeBase from '../components/settings/KnowledgeBase';
 import PipelineStagesManager from '../components/settings/PipelineStagesManager';
 import PermissionsManager from '../components/settings/PermissionsManager';
 import FieldSecurityManager from '../components/settings/FieldSecurityManager';
+import RolesManager from '../components/settings/RolesManager';
 
 const BASE_TABS = [
   { id: 'pipeline', label: 'Pipeline', icon: '🎯' },
@@ -25,10 +26,13 @@ type AdminTabId = (typeof ADMIN_TABS)[number]['id'];
 type TabId = BaseTabId | AdminTabId;
 
 export default function SettingsPage() {
-  const { currentRole } = useAuth();
+  const { hasCapability } = useAuth();
   const navigate = useNavigate();
-  const isAdmin = currentRole === 'admin' || currentRole === 'owner';
-  const TABS = isAdmin ? ADMIN_TABS : BASE_TABS;
+  // Capability-gated (P3): the Permissions tab needs roles.manage, so a custom
+  // role an admin grants it to sees it — not just the built-in admin/owner names.
+  // The AI Logs tab is admin oversight (members.manage). Server enforces both.
+  const canManageRoles = hasCapability('roles.manage');
+  const TABS = canManageRoles ? ADMIN_TABS : BASE_TABS;
 
   const [activeTab, setActiveTab] = useState<TabId>('pipeline');
 
@@ -76,6 +80,7 @@ export default function SettingsPage() {
 
         {activeTab === 'permissions' && (
           <div className="space-y-10">
+            <RolesManager />
             <PermissionsManager />
             <FieldSecurityManager />
           </div>

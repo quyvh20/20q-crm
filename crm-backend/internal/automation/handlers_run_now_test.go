@@ -182,33 +182,27 @@ func TestRunNowHandler_RouteNotRoleGuarded(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 
-	// requireRole spy: records the captured role set whenever a guard it produced actually
-	// runs for a request. If the run route were guarded, this would be non-empty after the
-	// request below.
-	var guardedRoleSets [][]string
-	requireRole := func(roles ...string) gin.HandlerFunc {
-		captured := append([]string(nil), roles...)
+	// requireCap spy: records the capability code whenever a guard it produced
+	// actually runs for a request. If the run route were guarded, this would be
+	// non-empty after the request below. The guard emulates capability semantics
+	// (system roles admin/manager/owner pass; a viewer is rejected).
+	var guardedCaps []string
+	requireCap := func(code string) gin.HandlerFunc {
 		return func(c *gin.Context) {
-			guardedRoleSets = append(guardedRoleSets, captured)
+			guardedCaps = append(guardedCaps, code)
 			roleVal, _ := c.Get("role")
 			roleStr, _ := roleVal.(string)
-			if roleStr == "owner" {
+			if roleStr == "owner" || roleStr == "admin" || roleStr == "manager" {
 				c.Next()
 				return
-			}
-			for _, r := range captured {
-				if r == roleStr {
-					c.Next()
-					return
-				}
 			}
 			c.AbortWithStatusJSON(http.StatusForbidden,
 				ErrorResponse{Error: ErrorBody{Code: "FORBIDDEN", Message: "insufficient permissions"}})
 		}
 	}
 
-	// authMiddleware injects a non-privileged role. If the run route were behind
-	// requireRole("admin","manager"), this caller would be rejected with 403.
+	// authMiddleware injects a non-privileged role. If the run route were behind a
+	// capability guard, this caller would be rejected with 403.
 	authMiddleware := func(c *gin.Context) {
 		c.Set("org_id", uuid.New())
 		c.Set("user_id", uuid.New())
@@ -218,7 +212,7 @@ func TestRunNowHandler_RouteNotRoleGuarded(t *testing.T) {
 
 	// engine/repo/db are nil: the invalid-:id request returns 400 before any is touched.
 	h := &Handler{logger: handlerRunNowDiscardLogger()}
-	h.RegisterRoutes(router, authMiddleware, requireRole)
+	h.RegisterRoutes(router, authMiddleware, requireCap)
 
 	// Invalid :id → handler returns 400 INVALID_ID before reaching repo/db/engine.
 	w := runNowITPostRun(router, "not-a-valid-uuid",
@@ -229,8 +223,8 @@ func TestRunNowHandler_RouteNotRoleGuarded(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code,
 		"the viewer must reach the handler and hit the :id parse (400 INVALID_ID), body: %s", w.Body.String())
 	assert.Equal(t, "INVALID_ID", runNowITErrorCode(t, w))
-	assert.Empty(t, guardedRoleSets,
-		"the /:id/run route must NOT be registered behind a requireRole guard (creator allowance is enforced in-handler)")
+	assert.Empty(t, guardedCaps,
+		"the /:id/run route must NOT be registered behind a capability guard (creator allowance is enforced in-handler)")
 }
 
 // ============================================================

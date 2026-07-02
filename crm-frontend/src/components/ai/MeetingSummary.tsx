@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { submitSummarizeMeeting } from '../../lib/api';
+import { submitSummarizeMeeting, getAccessToken } from '../../lib/api';
 
 interface MeetingSummaryProps {
   dealId?: string;
@@ -19,7 +19,7 @@ export default function MeetingSummary({ dealId, contactId, onClose, onTasksCrea
   useEffect(() => {
     if (status !== 'processing' || !jobId) return;
 
-    const token = localStorage.getItem('access_token');
+    const token = getAccessToken();
     if (!token) return;
 
     // Wait, the user's Go backend AuthMiddleware currently checks Authorization header. SSE natively in browsers doesn't support headers via EventSource!
@@ -32,6 +32,7 @@ export default function MeetingSummary({ dealId, contactId, onClose, onTasksCrea
       try {
         const response = await fetch(`${API_BASE}/api/events`, {
           headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'text/event-stream' },
+          credentials: 'include',
           signal: abort.signal
         });
         

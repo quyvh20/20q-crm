@@ -1,15 +1,16 @@
 import type { Workflow, WorkflowRun, RunDetailResponse, WorkflowListResponse, TestRunResponse, ActionSpec, TriggerSpec, ConditionGroup } from './types';
+import { getAccessToken } from '../../lib/api';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 
 async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
-  const token = localStorage.getItem('access_token');
+  const token = getAccessToken();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string> || {}),
   };
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  return fetch(`${API_URL}${path}`, { ...options, headers });
+  return fetch(`${API_URL}${path}`, { ...options, headers, credentials: 'include' });
 }
 
 // --- Workflow CRUD ---

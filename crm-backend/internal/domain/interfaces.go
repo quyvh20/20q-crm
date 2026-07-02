@@ -85,8 +85,18 @@ type AuthRepository interface {
 
 	CreateRefreshToken(ctx context.Context, token *RefreshToken) error
 	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (*RefreshToken, error)
+	// GetRefreshTokenByHashAny returns the row for a hash regardless of its
+	// revoked/expiry state, so refresh can distinguish "never existed" from
+	// "already rotated/revoked" (the reuse-detection signal). P2.
+	GetRefreshTokenByHashAny(ctx context.Context, tokenHash string) (*RefreshToken, error)
 	RevokeRefreshToken(ctx context.Context, tokenID uuid.UUID) error
 	RevokeAllUserRefreshTokens(ctx context.Context, userID uuid.UUID) error
+
+	// IncrementUserTokenVersion bumps users.token_version, invalidating every
+	// outstanding access token for the user. GetUserTokenVersion reads it for the
+	// middleware's per-request check (P2).
+	IncrementUserTokenVersion(ctx context.Context, userID uuid.UUID) error
+	GetUserTokenVersion(ctx context.Context, userID uuid.UUID) (int, error)
 
 	CreateOrgUser(ctx context.Context, ou *OrgUser) error
 	GetOrgUser(ctx context.Context, userID, orgID uuid.UUID) (*OrgUser, error)
@@ -127,8 +137,8 @@ type AuthRepository interface {
 
 type AuthUseCase interface {
 	Register(ctx context.Context, input RegisterInput) (*AuthResponse, error)
-	Login(ctx context.Context, input LoginInput) (*AuthResponse, error)
-	RefreshToken(ctx context.Context, input RefreshInput) (*AuthResponse, error)
+	Login(ctx context.Context, input LoginInput, meta RequestMeta) (*AuthResponse, error)
+	RefreshToken(ctx context.Context, input RefreshInput, meta RequestMeta) (*AuthResponse, error)
 	Logout(ctx context.Context, refreshToken string) error
 	GetMe(ctx context.Context, userID uuid.UUID) (*User, error)
 	GoogleLogin(ctx context.Context, code string) (*AuthResponse, error)

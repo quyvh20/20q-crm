@@ -184,6 +184,10 @@ type PermissionRepository interface {
 	LoadOrgAccess(ctx context.Context, orgID uuid.UUID) (map[string]map[string]ObjectAccess, error)
 	// ListRoles returns the org's roles (system + org-scoped custom).
 	ListRoles(ctx context.Context, orgID uuid.UUID) ([]Role, error)
+	// LoadOrgCapabilities returns roleName → capabilityCode → true for an org,
+	// joining role_permissions to roles (system roles + this org's custom roles).
+	// Populates the capability half of the cache in one query (P3, D5).
+	LoadOrgCapabilities(ctx context.Context, orgID uuid.UUID) (map[string]map[string]bool, error)
 	// ListPermissions returns the raw rows for the grid.
 	ListPermissions(ctx context.Context, orgID uuid.UUID) ([]ObjectPermission, error)
 	// UpsertPermission writes one (role, object) cell (insert or update). Rows are
@@ -215,8 +219,24 @@ type PermissionRepository interface {
 // RecordService enforces through) because one concrete type implements both — so
 // the constructor can return this single interface and the same value can be
 // handed to RecordService as a RecordAuthorizer.
+// CapabilityChecker answers "may this caller perform this admin capability?" It
+// is the capability counterpart to RecordAuthorizer.Authorize (which gates object
+// CRUD). Kept as its own port so RequireCapability middleware can depend on the
+// narrow surface. PermissionUseCase implements it.
+type CapabilityChecker interface {
+	// HasCapability returns nil when the context caller holds capability, or a 403
+	// AppError otherwise. A context with no caller is a trusted in-process call and
+	// is allowed; the owner role bypasses all capability checks (god-mode).
+	HasCapability(ctx context.Context, orgID uuid.UUID, capability string) error
+	// CallerCapabilities returns the context caller's effective capability codes for
+	// the org (all of them for owner). Drives permission-aware UI. Empty when there
+	// is no caller.
+	CallerCapabilities(ctx context.Context, orgID uuid.UUID) []string
+}
+
 type PermissionUseCase interface {
 	RecordAuthorizer
+	CapabilityChecker
 	GetGrid(ctx context.Context, orgID uuid.UUID) (*PermissionGrid, error)
 	SetPermission(ctx context.Context, orgID uuid.UUID, in SetPermissionInput) error
 	ListRecordAudit(ctx context.Context, orgID uuid.UUID, slug string, recordID uuid.UUID) ([]AuditView, error)
@@ -229,4 +249,8 @@ type PermissionUseCase interface {
 	// Invalidate drops the cached OLS + FLS maps for an org (called when permissions
 	// or the object set change, so live edits apply without a restart).
 	Invalidate(orgID uuid.UUID)
+	// EnsureSeeded idempotently seeds the org's default OLS grid for any object
+	// that has no rows yet. Called before cloning a role, so the clone source has
+	// its default grid materialized to copy from.
+	EnsureSeeded(ctx context.Context, orgID uuid.UUID) error
 }

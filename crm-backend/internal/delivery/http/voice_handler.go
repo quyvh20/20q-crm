@@ -85,8 +85,7 @@ func (h *VoiceHandler) Upload(c *gin.Context) {
 		}
 	}
 
-	role, _ := GetRole(c)
-	ctx := repository.WithDataScope(c.Request.Context(), role, userUUID)
+	ctx := repository.WithDataScope(c.Request.Context(), GetDataScope(c), userUUID)
 
 	note, jobID, err := h.uc.Upload(ctx, orgUUID, userUUID, input)
 	if err != nil {
@@ -125,8 +124,7 @@ func (h *VoiceHandler) List(c *gin.Context) {
 	}
 
 	userUUID, _ := GetUserID(c)
-	role, _ := GetRole(c)
-	ctx := repository.WithDataScope(c.Request.Context(), role, userUUID)
+	ctx := repository.WithDataScope(c.Request.Context(), GetDataScope(c), userUUID)
 
 	notes, err := h.uc.List(ctx, orgUUID, f)
 	if err != nil {
@@ -151,8 +149,7 @@ func (h *VoiceHandler) GetByID(c *gin.Context) {
 	}
 
 	userUUID, _ := GetUserID(c)
-	role, _ := GetRole(c)
-	ctx := repository.WithDataScope(c.Request.Context(), role, userUUID)
+	ctx := repository.WithDataScope(c.Request.Context(), GetDataScope(c), userUUID)
 
 	note, err := h.uc.GetByID(ctx, orgUUID, noteID)
 	if err != nil {
@@ -177,8 +174,7 @@ func (h *VoiceHandler) ApplyUpdates(c *gin.Context) {
 	}
 
 	userUUID, _ := GetUserID(c)
-	role, _ := GetRole(c)
-	ctx := repository.WithDataScope(c.Request.Context(), role, userUUID)
+	ctx := repository.WithDataScope(c.Request.Context(), GetDataScope(c), userUUID)
 
 	if err := h.uc.ApplyContactUpdates(ctx, orgUUID, noteID); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -202,8 +198,7 @@ func (h *VoiceHandler) Delete(c *gin.Context) {
 	}
 
 	userUUID, _ := GetUserID(c)
-	role, _ := GetRole(c)
-	ctx := repository.WithDataScope(c.Request.Context(), role, userUUID)
+	ctx := repository.WithDataScope(c.Request.Context(), GetDataScope(c), userUUID)
 
 	if err := h.uc.Delete(ctx, orgUUID, noteID); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
@@ -231,8 +226,7 @@ func (h *VoiceHandler) Analyze(c *gin.Context) {
 		return
 	}
 
-	role, _ := GetRole(c)
-	ctx := repository.WithDataScope(c.Request.Context(), role, userUUID)
+	ctx := repository.WithDataScope(c.Request.Context(), GetDataScope(c), userUUID)
 
 	err = h.uc.Analyze(ctx, orgUUID, userUUID, noteID)
 	if err != nil {

@@ -1,6 +1,6 @@
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getDeal, deleteDeal, getActivities, getStages, changeDealStage, updateDeal, getTasks, createTask, updateTask, getUsers, submitScoreDeal, type Deal, type Activity, type PipelineStage, type Task, type UserListItem } from '../lib/api';
+import { getDeal, deleteDeal, getActivities, getStages, changeDealStage, updateDeal, getTasks, createTask, updateTask, getUsers, submitScoreDeal, getAccessToken, type Deal, type Activity, type PipelineStage, type Task, type UserListItem } from '../lib/api';
 import ActivityForm from '../components/deals/ActivityForm';
 import EmailComposer from '../components/ai/EmailComposer';
 import MeetingSummary from '../components/ai/MeetingSummary';
@@ -158,7 +158,7 @@ export default function DealDetailPage() {
   useEffect(() => {
     if (!scoreJobId || scoreStatus !== 'processing') return;
 
-    const token = localStorage.getItem('access_token');
+    const token = getAccessToken();
     if (!token) return;
 
     const API_BASE = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8080';
@@ -168,9 +168,10 @@ export default function DealDetailPage() {
       try {
         const response = await fetch(`${API_BASE}/api/events`, {
           headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'text/event-stream' },
+          credentials: 'include',
           signal: abort.signal
         });
-        
+
         if (!response.ok) throw new Error('SSE failed');
         if (!response.body) return;
 

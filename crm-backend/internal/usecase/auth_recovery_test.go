@@ -21,21 +21,25 @@ import (
 // reproduce the real "UPDATE … WHERE used_at IS NULL" semantics (return 1 on the
 // winning claim, 0 otherwise) so the single-use guarantee is genuinely tested.
 type fakeAuthRepo struct {
-	users        map[uuid.UUID]*domain.User
-	usersByEmail map[string]*domain.User
-	resetTokens  map[uuid.UUID]*domain.PasswordResetToken
-	verifyTokens map[uuid.UUID]*domain.EmailVerificationToken
-	authEvents   []*domain.AuthEvent
-	revokedAll   map[uuid.UUID]int
+	users         map[uuid.UUID]*domain.User
+	usersByEmail  map[string]*domain.User
+	resetTokens   map[uuid.UUID]*domain.PasswordResetToken
+	verifyTokens  map[uuid.UUID]*domain.EmailVerificationToken
+	refreshTokens map[uuid.UUID]*domain.RefreshToken
+	tokenVersions map[uuid.UUID]int
+	authEvents    []*domain.AuthEvent
+	revokedAll    map[uuid.UUID]int
 }
 
 func newFakeAuthRepo() *fakeAuthRepo {
 	return &fakeAuthRepo{
-		users:        map[uuid.UUID]*domain.User{},
-		usersByEmail: map[string]*domain.User{},
-		resetTokens:  map[uuid.UUID]*domain.PasswordResetToken{},
-		verifyTokens: map[uuid.UUID]*domain.EmailVerificationToken{},
-		revokedAll:   map[uuid.UUID]int{},
+		users:         map[uuid.UUID]*domain.User{},
+		usersByEmail:  map[string]*domain.User{},
+		resetTokens:   map[uuid.UUID]*domain.PasswordResetToken{},
+		verifyTokens:  map[uuid.UUID]*domain.EmailVerificationToken{},
+		refreshTokens: map[uuid.UUID]*domain.RefreshToken{},
+		tokenVersions: map[uuid.UUID]int{},
+		revokedAll:    map[uuid.UUID]int{},
 	}
 }
 
@@ -142,6 +146,12 @@ func (r *fakeAuthRepo) GetLatestEmailVerificationToken(_ context.Context, userID
 
 func (r *fakeAuthRepo) RevokeAllUserRefreshTokens(_ context.Context, userID uuid.UUID) error {
 	r.revokedAll[userID]++
+	now := time.Now()
+	for _, t := range r.refreshTokens {
+		if t.UserID == userID && t.RevokedAt == nil {
+			t.RevokedAt = &now
+		}
+	}
 	return nil
 }
 
@@ -157,11 +167,46 @@ func (r *fakeAuthRepo) CreateUser(context.Context, *domain.User) error          
 func (r *fakeAuthRepo) GetUserByGoogleID(context.Context, string) (*domain.User, error) {
 	return nil, nil
 }
-func (r *fakeAuthRepo) CreateRefreshToken(context.Context, *domain.RefreshToken) error { return nil }
-func (r *fakeAuthRepo) GetRefreshTokenByHash(context.Context, string) (*domain.RefreshToken, error) {
+func (r *fakeAuthRepo) CreateRefreshToken(_ context.Context, t *domain.RefreshToken) error {
+	if t.ID == uuid.Nil {
+		t.ID = uuid.New()
+	}
+	r.refreshTokens[t.ID] = t
+	return nil
+}
+func (r *fakeAuthRepo) GetRefreshTokenByHash(_ context.Context, hash string) (*domain.RefreshToken, error) {
+	for _, t := range r.refreshTokens {
+		if t.TokenHash == hash && t.RevokedAt == nil && time.Now().Before(t.ExpiresAt) {
+			return t, nil
+		}
+	}
 	return nil, nil
 }
-func (r *fakeAuthRepo) RevokeRefreshToken(context.Context, uuid.UUID) error   { return nil }
+func (r *fakeAuthRepo) GetRefreshTokenByHashAny(_ context.Context, hash string) (*domain.RefreshToken, error) {
+	for _, t := range r.refreshTokens {
+		if t.TokenHash == hash {
+			return t, nil
+		}
+	}
+	return nil, nil
+}
+func (r *fakeAuthRepo) RevokeRefreshToken(_ context.Context, id uuid.UUID) error {
+	if t, ok := r.refreshTokens[id]; ok && t.RevokedAt == nil {
+		now := time.Now()
+		t.RevokedAt = &now
+	}
+	return nil
+}
+func (r *fakeAuthRepo) IncrementUserTokenVersion(_ context.Context, userID uuid.UUID) error {
+	r.tokenVersions[userID]++
+	if u, ok := r.users[userID]; ok {
+		u.TokenVersion++
+	}
+	return nil
+}
+func (r *fakeAuthRepo) GetUserTokenVersion(_ context.Context, userID uuid.UUID) (int, error) {
+	return r.tokenVersions[userID], nil
+}
 func (r *fakeAuthRepo) CreateOrgUser(context.Context, *domain.OrgUser) error  { return nil }
 func (r *fakeAuthRepo) GetOrgUser(context.Context, uuid.UUID, uuid.UUID) (*domain.OrgUser, error) {
 	return nil, nil
@@ -222,7 +267,9 @@ func (m *fakeMailer) SendSecurityAlert(_ context.Context, to, _, _ string) error
 
 func newTestAuthUC(repo *fakeAuthRepo, mail *fakeMailer, appEnv string) domain.AuthUseCase {
 	cfg := &config.Config{FrontendURL: "http://localhost:5173", JWTSecret: "test-secret"}
-	return NewAuthUseCase(repo, nil, cfg, mail, appEnv)
+	// nil Redis: the per-email throttle and session-cache eviction no-op, which is
+	// what we want for pure usecase unit tests.
+	return NewAuthUseCase(repo, nil, cfg, mail, appEnv, nil)
 }
 
 func ptrStr(s string) *string { return &s }

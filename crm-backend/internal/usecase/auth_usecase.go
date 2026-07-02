@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"crm-backend/internal/domain"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -33,6 +35,15 @@ const (
 	passwordResetTokenDuration     = time.Hour
 	emailVerificationTokenDuration = 24 * time.Hour
 	resendVerificationCooldown     = time.Minute
+
+	// Per-email login throttle (P2). After loginFailThreshold failures within
+	// loginFailWindow, each further failure sets an exponential lockout starting
+	// at loginLockBase and doubling, capped at loginLockCap. A successful login
+	// clears the counter. Backed by Redis; no-op when Redis is absent.
+	loginFailThreshold = 5
+	loginFailWindow    = 15 * time.Minute
+	loginLockBase      = 30 * time.Second
+	loginLockCap       = 15 * time.Minute
 )
 
 type authUseCase struct {
@@ -42,6 +53,9 @@ type authUseCase struct {
 	oauthConfig *oauth2.Config
 	mailer      domain.Mailer
 	appEnv      string
+	// redisClient backs per-email login throttling and session-cache eviction on
+	// token_version bumps (P2). Nil in dev without Redis → those paths no-op.
+	redisClient *redis.Client
 }
 
 var defaultPipelineStages = []struct {
@@ -58,7 +72,7 @@ var defaultPipelineStages = []struct {
 	{"Closed Won",  "#10B981", true,  false, 4},
 }
 
-func NewAuthUseCase(repo domain.AuthRepository, stageRepo domain.PipelineStageRepository, cfg *config.Config, mailer domain.Mailer, appEnv string) domain.AuthUseCase {
+func NewAuthUseCase(repo domain.AuthRepository, stageRepo domain.PipelineStageRepository, cfg *config.Config, mailer domain.Mailer, appEnv string, redisClient *redis.Client) domain.AuthUseCase {
 	var oauthCfg *oauth2.Config
 	if cfg.GoogleClientID != "" {
 		oauthCfg = &oauth2.Config{
@@ -76,6 +90,7 @@ func NewAuthUseCase(repo domain.AuthRepository, stageRepo domain.PipelineStageRe
 		oauthConfig: oauthCfg,
 		mailer:      mailer,
 		appEnv:      appEnv,
+		redisClient: redisClient,
 	}
 }
 
@@ -137,7 +152,6 @@ func (uc *authUseCase) Register(ctx context.Context, input domain.RegisterInput)
 		FirstName:    input.FirstName,
 		LastName:     input.LastName,
 		FullName:     fullName,
-		Role:         "admin",
 	}
 	if err := uc.authRepo.CreateUser(ctx, user); err != nil {
 		return nil, domain.NewAppError(500, "Create user err: " + err.Error())
@@ -167,12 +181,12 @@ func (uc *authUseCase) Register(ctx context.Context, input domain.RegisterInput)
 	}
 	uc.recordAuthEvent(ctx, "auth", "user.registered", orgPtr(org.ID), &user.ID, &user.ID, domain.RequestMeta{}, nil)
 
-	accessToken, err := uc.generateAccessToken(user.ID, org.ID, ownerRole.Name)
+	accessToken, err := uc.generateAccessToken(user.ID, org.ID, ownerRole, user.TokenVersion)
 	if err != nil {
 		return nil, domain.NewAppError(500, "Access token err: " + err.Error())
 	}
 
-	refreshToken, err := uc.createRefreshToken(ctx, user.ID)
+	refreshToken, err := uc.createRefreshToken(ctx, user.ID, domain.RequestMeta{}, nil)
 	if err != nil {
 		return nil, domain.NewAppError(500, "Refresh token err: " + err.Error())
 	}
@@ -195,18 +209,39 @@ func (uc *authUseCase) Register(ctx context.Context, input domain.RegisterInput)
 	}, nil
 }
 
-func (uc *authUseCase) Login(ctx context.Context, input domain.LoginInput) (*domain.AuthResponse, error) {
+func (uc *authUseCase) Login(ctx context.Context, input domain.LoginInput, meta domain.RequestMeta) (*domain.AuthResponse, error) {
+	// Per-email lockout check first — a locked account never reaches bcrypt, so a
+	// brute-force run costs the attacker a 429 instead of a hash comparison.
+	if wait := uc.loginLockRemaining(ctx, input.Email); wait > 0 {
+		uc.recordAuthEvent(ctx, "security", "login.throttled", nil, nil, nil, meta,
+			map[string]interface{}{"email": input.Email})
+		return nil, &domain.AppError{
+			Code:       http.StatusTooManyRequests,
+			Message:    domain.ErrTooManyLoginAttempts.Message,
+			RetryAfter: int(wait.Seconds()) + 1,
+		}
+	}
+
 	user, err := uc.authRepo.GetUserByEmail(ctx, input.Email)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
 	if user == nil || user.PasswordHash == nil {
+		uc.registerLoginFailure(ctx, input.Email)
+		uc.recordAuthEvent(ctx, "auth", "login.failed", nil, nil, nil, meta,
+			map[string]interface{}{"email": input.Email, "reason": "no_such_user"})
 		return nil, domain.ErrInvalidCredentials
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(*user.PasswordHash), []byte(input.Password)); err != nil {
+		uc.registerLoginFailure(ctx, input.Email)
+		uc.recordAuthEvent(ctx, "auth", "login.failed", orgPtr(user.OrgID), nil, &user.ID, meta,
+			map[string]interface{}{"email": input.Email, "reason": "bad_password"})
 		return nil, domain.ErrInvalidCredentials
 	}
+
+	// Success — clear the failure counter so the next login starts fresh.
+	uc.clearLoginFailures(ctx, input.Email)
 
 	orgUsers, err := uc.authRepo.ListOrgsByUserID(ctx, user.ID)
 	if err != nil {
@@ -235,25 +270,23 @@ func (uc *authUseCase) Login(ctx context.Context, input domain.LoginInput) (*dom
 	}
 
 	var activeOrgID uuid.UUID
-	var activeRole string
+	var activeRole *domain.Role
 	if len(orgUsers) > 0 {
 		activeOrgID = orgUsers[0].OrgID
-		if orgUsers[0].Role != nil {
-			activeRole = orgUsers[0].Role.Name
-		} else {
-			activeRole = "viewer"
-		}
+		activeRole = orgUsers[0].Role
 	}
 
-	accessToken, err := uc.generateAccessToken(user.ID, activeOrgID, activeRole)
+	accessToken, err := uc.generateAccessToken(user.ID, activeOrgID, activeRole, user.TokenVersion)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
 
-	refreshToken, err := uc.createRefreshToken(ctx, user.ID)
+	refreshToken, err := uc.createRefreshToken(ctx, user.ID, meta, nil)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
+
+	uc.recordAuthEvent(ctx, "auth", "login.success", orgPtr(activeOrgID), &user.ID, &user.ID, meta, nil)
 
 	return &domain.AuthResponse{
 		AccessToken:  accessToken,
@@ -277,16 +310,12 @@ func (uc *authUseCase) SwitchWorkspace(ctx context.Context, userID uuid.UUID, in
 		return nil, domain.ErrUserNotFound
 	}
 
-	roleName := "viewer"
-	if ou.Role != nil {
-		roleName = ou.Role.Name
-	}
-	accessToken, err := uc.generateAccessToken(userID, input.OrgID, roleName)
+	accessToken, err := uc.generateAccessToken(userID, input.OrgID, ou.Role, user.TokenVersion)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
 
-	refreshToken, err := uc.createRefreshToken(ctx, userID)
+	refreshToken, err := uc.createRefreshToken(ctx, userID, domain.RequestMeta{}, nil)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
@@ -349,10 +378,12 @@ func (uc *authUseCase) ListWorkspaces(ctx context.Context, userID uuid.UUID) ([]
 	return workspaces, nil
 }
 
-func (uc *authUseCase) RefreshToken(ctx context.Context, input domain.RefreshInput) (*domain.AuthResponse, error) {
+func (uc *authUseCase) RefreshToken(ctx context.Context, input domain.RefreshInput, meta domain.RequestMeta) (*domain.AuthResponse, error) {
 	tokenHash := hashToken(input.RefreshToken)
 
-	storedToken, err := uc.authRepo.GetRefreshTokenByHash(ctx, tokenHash)
+	// Look up the row regardless of state so we can tell "never issued" from
+	// "already rotated/revoked" — the latter is a reuse/theft signal.
+	storedToken, err := uc.authRepo.GetRefreshTokenByHashAny(ctx, tokenHash)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
@@ -360,14 +391,30 @@ func (uc *authUseCase) RefreshToken(ctx context.Context, input domain.RefreshInp
 		return nil, domain.ErrInvalidToken
 	}
 
+	// Reuse detection: a revoked/rotated token presented again means it was
+	// captured. Nuke every session (refresh tokens + access tokens via a
+	// token_version bump), alert the user, and force a clean re-login everywhere.
 	if storedToken.RevokedAt != nil {
-		return nil, domain.ErrTokenRevoked
+		_ = uc.authRepo.RevokeAllUserRefreshTokens(ctx, storedToken.UserID)
+		uc.bumpTokenVersion(ctx, storedToken.UserID)
+		var orgID *uuid.UUID
+		if u, _ := uc.authRepo.GetUserByID(ctx, storedToken.UserID); u != nil {
+			orgID = orgPtr(u.OrgID)
+			if err := uc.mailer.SendSecurityAlert(ctx, u.Email, "Suspicious sign-in activity",
+				"A previously-used sign-in token for your Guerrilla CRM account was replayed, which can indicate the token was stolen. We ended all active sessions as a precaution. Please sign in again, and reset your password if you don't recognize this activity."); err != nil {
+				log.Printf("refresh: failed to send token-reuse alert to %s: %v", u.Email, err)
+			}
+		}
+		uc.recordAuthEvent(ctx, "security", "token.reuse", orgID, &storedToken.UserID, &storedToken.UserID, meta,
+			map[string]interface{}{"refresh_token_id": storedToken.ID.String()})
+		return nil, domain.ErrTokenReuse
 	}
 
 	if time.Now().After(storedToken.ExpiresAt) {
 		return nil, domain.ErrTokenExpired
 	}
 
+	// Rotate: revoke the presented token and mint a successor linked to it.
 	_ = uc.authRepo.RevokeRefreshToken(ctx, storedToken.ID)
 
 	user, err := uc.authRepo.GetUserByID(ctx, storedToken.UserID)
@@ -377,38 +424,30 @@ func (uc *authUseCase) RefreshToken(ctx context.Context, input domain.RefreshInp
 
 	orgUsers, _ := uc.authRepo.ListOrgsByUserID(ctx, user.ID)
 	var activeOrgID uuid.UUID
-	var activeRole string
+	var activeRole *domain.Role
 	if len(orgUsers) > 0 {
 		// Default: first org
 		activeOrgID = orgUsers[0].OrgID
-		if orgUsers[0].Role != nil {
-			activeRole = orgUsers[0].Role.Name
-		} else {
-			activeRole = "viewer"
-		}
+		activeRole = orgUsers[0].Role
 
 		// If caller specified an org_id, find that org and use its role
 		if input.OrgID != nil && *input.OrgID != uuid.Nil {
 			for _, ou := range orgUsers {
 				if ou.OrgID == *input.OrgID {
 					activeOrgID = ou.OrgID
-					if ou.Role != nil {
-						activeRole = ou.Role.Name
-					} else {
-						activeRole = "viewer"
-					}
+					activeRole = ou.Role
 					break
 				}
 			}
 		}
 	}
 
-	accessToken, err := uc.generateAccessToken(user.ID, activeOrgID, activeRole)
+	accessToken, err := uc.generateAccessToken(user.ID, activeOrgID, activeRole, user.TokenVersion)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
 
-	newRefreshToken, err := uc.createRefreshToken(ctx, user.ID)
+	newRefreshToken, err := uc.createRefreshToken(ctx, user.ID, meta, &storedToken.ID)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
@@ -541,7 +580,6 @@ func (uc *authUseCase) GoogleLogin(ctx context.Context, code string) (*domain.Au
 				FirstName: googleUser.GivenName,
 				LastName:  googleUser.FamilyName,
 				FullName:  fullName,
-				Role:      "admin",
 				GoogleID:  &googleUser.ID,
 				AvatarURL: &googleUser.Picture,
 			}
@@ -581,22 +619,18 @@ func (uc *authUseCase) GoogleLogin(ctx context.Context, code string) (*domain.Au
 
 	orgUsers, _ := uc.authRepo.ListOrgsByUserID(ctx, user.ID)
 	var activeOrgID uuid.UUID
-	var activeRole string
+	var activeRole *domain.Role
 	if len(orgUsers) > 0 {
 		activeOrgID = orgUsers[0].OrgID
-		if orgUsers[0].Role != nil {
-			activeRole = orgUsers[0].Role.Name
-		} else {
-			activeRole = "viewer"
-		}
+		activeRole = orgUsers[0].Role
 	}
 
-	accessToken, err := uc.generateAccessToken(user.ID, activeOrgID, activeRole)
+	accessToken, err := uc.generateAccessToken(user.ID, activeOrgID, activeRole, user.TokenVersion)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
 
-	refreshTokenStr, err := uc.createRefreshToken(ctx, user.ID)
+	refreshTokenStr, err := uc.createRefreshToken(ctx, user.ID, domain.RequestMeta{}, nil)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
@@ -634,14 +668,42 @@ type JWTClaims struct {
 	UserID uuid.UUID `json:"user_id"`
 	OrgID  uuid.UUID `json:"org_id"`
 	Role   string    `json:"role"`
+	// RoleID and DataScope thread the caller's role identity end-to-end (P3), so
+	// every authorization layer keys off role_id and the row scope is data, not a
+	// hardcoded name check. Absent in pre-P3 tokens (decode to zero); the
+	// middleware re-resolves both authoritatively from org_users when Redis is
+	// available, so a stale/empty claim self-heals on the next request.
+	RoleID    uuid.UUID `json:"rid,omitempty"`
+	DataScope string    `json:"ds,omitempty"`
+	// TokenVersion mirrors users.token_version at mint time. The middleware
+	// rejects the token if it no longer matches, giving instant global session
+	// invalidation (P2). Absent in pre-P2 tokens → decodes to 0 → matches the
+	// default column, so old sessions survive a deploy.
+	TokenVersion int `json:"tv"`
 	jwt.RegisteredClaims
 }
 
-func (uc *authUseCase) generateAccessToken(userID, orgID uuid.UUID, role string) (string, error) {
+// generateAccessToken mints an access token for the caller's active role. role may
+// be nil (falls back to viewer / all-scope) so callers with an unresolved
+// membership still get a valid, least-privilege token.
+func (uc *authUseCase) generateAccessToken(userID, orgID uuid.UUID, role *domain.Role, tokenVersion int) (string, error) {
+	roleName := domain.RoleViewer
+	roleID := uuid.Nil
+	dataScope := domain.DataScopeAll
+	if role != nil {
+		roleName = role.Name
+		roleID = role.ID
+		if role.DataScope == domain.DataScopeOwn {
+			dataScope = domain.DataScopeOwn
+		}
+	}
 	claims := JWTClaims{
-		UserID: userID,
-		OrgID:  orgID,
-		Role:   role,
+		UserID:       userID,
+		OrgID:        orgID,
+		Role:         roleName,
+		RoleID:       roleID,
+		DataScope:    dataScope,
+		TokenVersion: tokenVersion,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(accessTokenDuration)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -652,24 +714,82 @@ func (uc *authUseCase) generateAccessToken(userID, orgID uuid.UUID, role string)
 	return token.SignedString([]byte(uc.cfg.JWTSecret))
 }
 
-func (uc *authUseCase) createRefreshToken(ctx context.Context, userID uuid.UUID) (string, error) {
+// createRefreshToken mints a hashed refresh token row. meta stamps the device/IP
+// for the sessions UI; rotatedFrom links it to its predecessor in the rotation
+// chain (nil for a fresh login). P2.
+func (uc *authUseCase) createRefreshToken(ctx context.Context, userID uuid.UUID, meta domain.RequestMeta, rotatedFrom *uuid.UUID) (string, error) {
 	b := make([]byte, refreshTokenBytes)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
 	rawToken := hex.EncodeToString(b)
 
+	now := time.Now()
 	tokenHash := hashToken(rawToken)
 	rt := &domain.RefreshToken{
-		UserID:    userID,
-		TokenHash: tokenHash,
-		ExpiresAt: time.Now().Add(refreshTokenDuration),
+		UserID:      userID,
+		TokenHash:   tokenHash,
+		ExpiresAt:   now.Add(refreshTokenDuration),
+		LastUsedAt:  &now,
+		RotatedFrom: rotatedFrom,
+	}
+	if meta.IP != "" {
+		ip := meta.IP
+		rt.IP = &ip
+	}
+	if meta.UserAgent != "" {
+		ua := meta.UserAgent
+		rt.UserAgent = &ua
+		label := deviceLabelFromUA(ua)
+		rt.DeviceLabel = &label
 	}
 	if err := uc.authRepo.CreateRefreshToken(ctx, rt); err != nil {
 		return "", err
 	}
 
 	return rawToken, nil
+}
+
+// deviceLabelFromUA extracts a short human label ("Chrome on macOS") from a
+// User-Agent string, best-effort. It never parses untrusted input into anything
+// but a display string, and falls back to a trimmed UA when it can't tell.
+func deviceLabelFromUA(ua string) string {
+	if ua == "" {
+		return "Unknown device"
+	}
+	browser := "Browser"
+	switch {
+	case strings.Contains(ua, "Edg/"):
+		browser = "Edge"
+	case strings.Contains(ua, "OPR/") || strings.Contains(ua, "Opera"):
+		browser = "Opera"
+	case strings.Contains(ua, "Firefox/"):
+		browser = "Firefox"
+	case strings.Contains(ua, "Chrome/"):
+		browser = "Chrome"
+	case strings.Contains(ua, "Safari/"):
+		browser = "Safari"
+	}
+	os := ""
+	switch {
+	case strings.Contains(ua, "Windows"):
+		os = "Windows"
+	case strings.Contains(ua, "Mac OS X") || strings.Contains(ua, "Macintosh"):
+		os = "macOS"
+	case strings.Contains(ua, "Android"):
+		os = "Android"
+	case strings.Contains(ua, "iPhone") || strings.Contains(ua, "iPad"):
+		os = "iOS"
+	case strings.Contains(ua, "Linux"):
+		os = "Linux"
+	}
+	if os != "" {
+		return browser + " on " + os
+	}
+	if len(ua) > 60 {
+		return ua[:60]
+	}
+	return ua
 }
 
 func hashToken(token string) string {
@@ -685,6 +805,89 @@ func generateSecureToken() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// --- Per-email login throttle (P2) ---
+//
+// login:fail:{email} counts recent failures; login:lock:{email} holds the
+// exponential lockout with its TTL as the remaining wait. All three helpers
+// no-op when Redis is unavailable, so dev without Redis is unaffected.
+
+func loginFailKey(email string) string { return "login:fail:" + strings.ToLower(email) }
+func loginLockKey(email string) string { return "login:lock:" + strings.ToLower(email) }
+
+// loginLockRemaining returns how long the caller must wait before another login
+// attempt, or 0 if not locked out.
+func (uc *authUseCase) loginLockRemaining(ctx context.Context, email string) time.Duration {
+	if uc.redisClient == nil {
+		return 0
+	}
+	ttl, err := uc.redisClient.TTL(ctx, loginLockKey(email)).Result()
+	if err != nil || ttl <= 0 { // -2 (no key) / -1 (no expire) both map to "not locked"
+		return 0
+	}
+	return ttl
+}
+
+// registerLoginFailure records one failed attempt and, past the threshold, arms
+// an exponential lockout.
+func (uc *authUseCase) registerLoginFailure(ctx context.Context, email string) {
+	if uc.redisClient == nil {
+		return
+	}
+	cnt, err := uc.redisClient.Incr(ctx, loginFailKey(email)).Result()
+	if err != nil {
+		return
+	}
+	if cnt == 1 {
+		uc.redisClient.Expire(ctx, loginFailKey(email), loginFailWindow)
+	}
+	if cnt > int64(loginFailThreshold) {
+		backoff := loginLockBase
+		for i := int64(loginFailThreshold + 1); i < cnt && backoff < loginLockCap; i++ {
+			backoff *= 2
+		}
+		if backoff > loginLockCap {
+			backoff = loginLockCap
+		}
+		uc.redisClient.Set(ctx, loginLockKey(email), "1", backoff)
+	}
+}
+
+// clearLoginFailures resets the throttle after a successful login.
+func (uc *authUseCase) clearLoginFailures(ctx context.Context, email string) {
+	if uc.redisClient == nil {
+		return
+	}
+	uc.redisClient.Del(ctx, loginFailKey(email), loginLockKey(email))
+}
+
+// bumpTokenVersion increments the user's token_version (invalidating every
+// outstanding access token) and evicts their cached sessions so the next request
+// re-reads the new version from the DB — making the kill instant rather than
+// TTL-bounded. Best-effort: a failure is logged, never fatal to the caller.
+func (uc *authUseCase) bumpTokenVersion(ctx context.Context, userID uuid.UUID) {
+	if err := uc.authRepo.IncrementUserTokenVersion(ctx, userID); err != nil {
+		log.Printf("token_version: failed to bump for %s: %v", userID, err)
+		return
+	}
+	uc.evictUserSessionCache(ctx, userID)
+}
+
+// evictUserSessionCache deletes the middleware's per-(user,org) session-cache
+// entries for a user by exact key (no SCAN). Called after a token_version bump.
+func (uc *authUseCase) evictUserSessionCache(ctx context.Context, userID uuid.UUID) {
+	if uc.redisClient == nil {
+		return
+	}
+	orgUsers, err := uc.authRepo.ListOrgsByUserID(ctx, userID)
+	if err != nil {
+		return
+	}
+	for _, ou := range orgUsers {
+		key := "session:" + userID.String() + ":org:" + ou.OrgID.String()
+		_ = uc.redisClient.Del(ctx, key).Err()
+	}
 }
 
 // orgPtr converts a value org id to the pointer AuthEvent.OrgID wants (nil for
@@ -804,9 +1007,9 @@ func (uc *authUseCase) ForgotPassword(ctx context.Context, input domain.ForgotPa
 }
 
 // ResetPassword consumes a reset token, sets the new password, and invalidates
-// every existing session by revoking all of the user's refresh tokens (P1's
-// session-kill; instant access-token invalidation via token_version lands in
-// P2). The token is single-use and short-TTL.
+// every existing session: it revokes all of the user's refresh tokens and bumps
+// token_version so outstanding access tokens are rejected immediately (P2). The
+// token is single-use and short-TTL.
 func (uc *authUseCase) ResetPassword(ctx context.Context, input domain.ResetPasswordInput, meta domain.RequestMeta) error {
 	if err := validatePassword(input.Password); err != nil {
 		return err
@@ -852,8 +1055,11 @@ func (uc *authUseCase) ResetPassword(ctx context.Context, input domain.ResetPass
 		return domain.ErrInternal
 	}
 
-	// Invalidate every outstanding session.
+	// Invalidate every outstanding session: revoke refresh tokens AND bump
+	// token_version so already-issued access tokens are rejected immediately
+	// (P2) rather than lingering for up to their 2h TTL.
 	_ = uc.authRepo.RevokeAllUserRefreshTokens(ctx, user.ID)
+	uc.bumpTokenVersion(ctx, user.ID)
 
 	if err := uc.mailer.SendSecurityAlert(ctx, user.Email, "Your password was changed",
 		"Your Guerrilla CRM password was just changed. If this was you, no action is needed. If you did not do this, reset your password immediately and contact your workspace admin."); err != nil {

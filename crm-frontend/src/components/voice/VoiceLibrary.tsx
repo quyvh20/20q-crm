@@ -5,6 +5,7 @@ import {
   applyVoiceNoteUpdates,
   analyzeVoiceNote,
   deleteVoiceNote,
+  getAccessToken,
   type VoiceNote,
   type ExtractedContactUpdates,
 } from '../../lib/api';
@@ -87,7 +88,7 @@ export default function VoiceLibrary({ contactId, dealId }: VoiceLibraryProps) {
   useEffect(() => {
     if (!hasPending) return;
 
-    const token = localStorage.getItem('access_token');
+    const token = getAccessToken();
     if (!token) return;
 
     const API_BASE = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8080';
@@ -97,6 +98,7 @@ export default function VoiceLibrary({ contactId, dealId }: VoiceLibraryProps) {
       try {
         const response = await fetch(`${API_BASE}/api/events`, {
           headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'text/event-stream' },
+          credentials: 'include',
           signal: abort.signal
         });
 

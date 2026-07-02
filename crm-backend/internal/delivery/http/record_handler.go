@@ -27,6 +27,7 @@ type RecordHandler struct {
 	layoutUC domain.ObjectLayoutUseCase
 	authz    domain.RecordAuthorizer
 	tags     domain.TagUseCase
+	shares   domain.ShareUseCase
 }
 
 func NewRecordHandler(
@@ -36,8 +37,72 @@ func NewRecordHandler(
 	layoutUC domain.ObjectLayoutUseCase,
 	authz domain.RecordAuthorizer,
 	tags domain.TagUseCase,
+	shares domain.ShareUseCase,
 ) *RecordHandler {
-	return &RecordHandler{svc: svc, related: related, registry: registry, layoutUC: layoutUC, authz: authz, tags: tags}
+	return &RecordHandler{svc: svc, related: related, registry: registry, layoutUC: layoutUC, authz: authz, tags: tags, shares: shares}
+}
+
+// Share handles POST /api/registry/objects/:slug/records/:id/share — grant a
+// record to a member (the escape hatch for 'own'-scoped roles, I2).
+func (h *RecordHandler) Share(c *gin.Context) {
+	orgID := c.MustGet("org_id").(uuid.UUID)
+	actorID, _ := GetUserID(c)
+	slug := c.Param("slug")
+	recordID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": "invalid record id"})
+		return
+	}
+	var input domain.ShareRecordInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": err.Error()})
+		return
+	}
+	share, err := h.shares.Share(c.Request.Context(), orgID, actorID, slug, recordID, input)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"data": share, "error": nil})
+}
+
+// Unshare handles DELETE /api/registry/objects/:slug/records/:id/share/:shareId.
+func (h *RecordHandler) Unshare(c *gin.Context) {
+	orgID := c.MustGet("org_id").(uuid.UUID)
+	actorID, _ := GetUserID(c)
+	slug := c.Param("slug")
+	recordID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": "invalid record id"})
+		return
+	}
+	shareID, err := uuid.Parse(c.Param("shareId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": "invalid share id"})
+		return
+	}
+	if err := h.shares.Unshare(c.Request.Context(), orgID, actorID, slug, recordID, shareID); err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": "revoked", "error": nil})
+}
+
+// ListShares handles GET /api/registry/objects/:slug/records/:id/shares.
+func (h *RecordHandler) ListShares(c *gin.Context) {
+	orgID := c.MustGet("org_id").(uuid.UUID)
+	slug := c.Param("slug")
+	recordID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": "invalid record id"})
+		return
+	}
+	shares, err := h.shares.List(c.Request.Context(), orgID, slug, recordID)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": shares, "error": nil})
 }
 
 // reservedListParams are query keys with dedicated meaning; everything else is

@@ -85,6 +85,39 @@ func (r *authRepository) GetRefreshTokenByHash(ctx context.Context, tokenHash st
 	return &token, nil
 }
 
+// GetRefreshTokenByHashAny returns the row for a hash regardless of revoked/expiry
+// state (nil when the hash was never issued). Refresh uses this to tell a genuinely
+// unknown token from an already-rotated one — the latter is a reuse/theft signal.
+func (r *authRepository) GetRefreshTokenByHashAny(ctx context.Context, tokenHash string) (*domain.RefreshToken, error) {
+	var token domain.RefreshToken
+	err := r.db.WithContext(ctx).
+		Where("token_hash = ?", tokenHash).
+		First(&token).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &token, nil
+}
+
+func (r *authRepository) IncrementUserTokenVersion(ctx context.Context, userID uuid.UUID) error {
+	return r.db.WithContext(ctx).
+		Model(&domain.User{}).
+		Where("id = ?", userID).
+		UpdateColumn("token_version", gorm.Expr("token_version + 1")).Error
+}
+
+func (r *authRepository) GetUserTokenVersion(ctx context.Context, userID uuid.UUID) (int, error) {
+	var tv int
+	err := r.db.WithContext(ctx).
+		Model(&domain.User{}).
+		Where("id = ?", userID).
+		Pluck("token_version", &tv).Error
+	return tv, err
+}
+
 func (r *authRepository) RevokeRefreshToken(ctx context.Context, tokenID uuid.UUID) error {
 	now := time.Now()
 	return r.db.WithContext(ctx).

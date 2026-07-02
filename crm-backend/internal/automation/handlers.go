@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 
+	"crm-backend/internal/domain"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
@@ -30,9 +32,18 @@ type Handler struct {
 	repo        *Repository
 	db          *gorm.DB
 	logger      *slog.Logger
-	rateLimiter *tokenBucket       // Rate limiter for webhook inbound
-	schemaCache *SchemaCache        // Per-org schema cache (60s TTL)
+	rateLimiter *tokenBucket // Rate limiter for webhook inbound
+	schemaCache *SchemaCache // Per-org schema cache (60s TTL)
+	// capChecker resolves the caller's workflows.run_any capability for Run Now /
+	// Retry (P3). Nil in unit tests, where authorizeRunNow's legacy role check is
+	// used; set in prod via SetCapabilityChecker.
+	capChecker domain.CapabilityChecker
 }
+
+// SetCapabilityChecker wires the P3 capability engine so Run Now / Retry authorize
+// on the workflows.run_any capability rather than hardcoded role names. Optional:
+// when unset, authorization falls back to the legacy owner/admin/manager check.
+func (h *Handler) SetCapabilityChecker(c domain.CapabilityChecker) { h.capChecker = c }
 
 // NewHandler creates a new automation HTTP handler.
 func NewHandler(engine *Engine, db *gorm.DB, logger *slog.Logger) *Handler {
@@ -56,20 +67,20 @@ func (h *Handler) InvalidateSchemaCache(orgID uuid.UUID) {
 }
 
 // RegisterRoutes registers all automation routes on the gin engine.
-func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, requireRole func(...string) gin.HandlerFunc) {
+func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, requireCap func(string) gin.HandlerFunc) {
 	workflows := router.Group("/api/workflows")
 	workflows.Use(authMiddleware)
 	{
-		workflows.POST("", requireRole("admin", "manager"), h.CreateWorkflow)
+		workflows.POST("", requireCap(domain.CapWorkflowsManage), h.CreateWorkflow)
 		workflows.GET("", h.ListWorkflows)
 		workflows.GET("/schema", h.GetWorkflowSchema)
 		workflows.GET("/schema/objects", h.GetSchemaObjects)
 		workflows.GET("/schema/objects/:slug/fields", h.GetSchemaObjectFields)
 		workflows.GET("/:id", h.GetWorkflow)
-		workflows.PUT("/:id", requireRole("admin", "manager"), h.UpdateWorkflow)
-		workflows.DELETE("/:id", requireRole("admin", "manager"), h.DeleteWorkflow)
-		workflows.POST("/:id/toggle", requireRole("admin", "manager"), h.ToggleWorkflow)
-		workflows.POST("/:id/test-run", requireRole("admin", "manager"), h.TestRun)
+		workflows.PUT("/:id", requireCap(domain.CapWorkflowsManage), h.UpdateWorkflow)
+		workflows.DELETE("/:id", requireCap(domain.CapWorkflowsManage), h.DeleteWorkflow)
+		workflows.POST("/:id/toggle", requireCap(domain.CapWorkflowsManage), h.ToggleWorkflow)
+		workflows.POST("/:id/test-run", requireCap(domain.CapWorkflowsManage), h.TestRun)
 		// Run Now intentionally has NO requireRole guard: authorization is enforced inside
 		// h.RunNow (owner/admin/manager may run any workflow; any other caller may run only
 		// a workflow they created — the creator allowance). A static route guard cannot
@@ -89,9 +100,9 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerF
 	webhooks := router.Group("/api/webhooks")
 	webhooks.Use(authMiddleware)
 	{
-		webhooks.GET("/token", requireRole("admin", "manager"), h.GetWebhookToken)
-		webhooks.POST("/reveal-secret", requireRole("admin", "manager"), h.RevealWebhookSecret)
-		webhooks.POST("/regenerate-secret", requireRole("admin", "manager"), h.RegenerateWebhookSecret)
+		webhooks.GET("/token", requireCap(domain.CapWorkflowsManage), h.GetWebhookToken)
+		webhooks.POST("/reveal-secret", requireCap(domain.CapWorkflowsManage), h.RevealWebhookSecret)
+		webhooks.POST("/regenerate-secret", requireCap(domain.CapWorkflowsManage), h.RegenerateWebhookSecret)
 	}
 
 	// Public webhook inbound
@@ -440,7 +451,7 @@ func (h *Handler) RunNow(c *gin.Context) {
 	// creates a run.
 	roleVal, _ := c.Get("role")
 	role, _ := roleVal.(string)
-	if !authorizeRunNow(role, userID, wf.CreatedBy) {
+	if !h.authorizeRunNowCtx(c, role, userID, wf.CreatedBy) {
 		h.errorResponse(c, http.StatusForbidden, "FORBIDDEN",
 			"you do not have permission to run this workflow", nil)
 		return
@@ -654,7 +665,7 @@ func (h *Handler) RetryRun(c *gin.Context) {
 	}
 	roleVal, _ := c.Get("role")
 	role, _ := roleVal.(string)
-	if !authorizeRunNow(role, userID, createdBy) {
+	if !h.authorizeRunNowCtx(c, role, userID, createdBy) {
 		h.errorResponse(c, http.StatusForbidden, "FORBIDDEN",
 			"you do not have permission to retry this run", nil)
 		return

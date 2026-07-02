@@ -39,7 +39,10 @@ type orgAccessEntry struct {
 	// fieldAccess is the FLS map: role → object → fieldKey → level. Empty when no
 	// field is restricted (the common case), so FLS costs nothing until used.
 	fieldAccess map[string]map[string]map[string]string
-	expiry      time.Time
+	// capabilities is the system-capability map: role → capabilityCode → true
+	// (P3, D5). An absent role/code default-denies.
+	capabilities map[string]map[string]bool
+	expiry       time.Time
 }
 
 // Compile-time proof the one type satisfies both ports.
@@ -159,6 +162,50 @@ func (uc *permissionUseCase) FieldMask(ctx context.Context, orgID uuid.UUID, slu
 	return mask
 }
 
+// HasCapability enforces default-deny system capabilities (P3, D5). It mirrors
+// Authorize's bypasses: a context with no caller is a trusted in-process call
+// (allowed); the owner role bypasses every capability check (god-mode). Otherwise
+// the caller's role must hold the capability code, and the absence of a row
+// denies with a 403 that names the missing capability.
+func (uc *permissionUseCase) HasCapability(ctx context.Context, orgID uuid.UUID, capability string) error {
+	caller, ok := domain.CallerFromContext(ctx)
+	if !ok {
+		return nil // trusted in-process call
+	}
+	if caller.Role == domain.RoleOwner {
+		return nil // god-mode
+	}
+
+	entry := uc.loadEntry(ctx, orgID)
+	if byCode := entry.capabilities[caller.Role]; byCode[capability] {
+		return nil
+	}
+	return domain.NewAppError(http.StatusForbidden, "you do not have the '"+capability+"' capability")
+}
+
+// CallerCapabilities returns the caller's effective capability codes for the org
+// — the full vocabulary for owner (god-mode), otherwise the role's granted set.
+// Empty for a callerless (trusted in-process) context. Used by the SPA to gate
+// permission-aware UI; the server still enforces every action independently.
+func (uc *permissionUseCase) CallerCapabilities(ctx context.Context, orgID uuid.UUID) []string {
+	caller, ok := domain.CallerFromContext(ctx)
+	if !ok {
+		return []string{}
+	}
+	if caller.Role == domain.RoleOwner {
+		return append([]string{}, domain.AllCapabilities...)
+	}
+	entry := uc.loadEntry(ctx, orgID)
+	byCode := entry.capabilities[caller.Role]
+	out := make([]string, 0, len(byCode))
+	for code, granted := range byCode {
+		if granted {
+			out = append(out, code)
+		}
+	}
+	return out
+}
+
 // accessFor returns the cached access for one role+object. A missing role or
 // missing object entry is the zero ObjectAccess — i.e. default-deny.
 func (uc *permissionUseCase) accessFor(ctx context.Context, orgID uuid.UUID, role, slug string) domain.ObjectAccess {
@@ -199,8 +246,13 @@ func (uc *permissionUseCase) loadEntry(ctx context.Context, orgID uuid.UUID) *or
 		log.Printf("field_permissions: load access for org %s: %v", orgID, err)
 		return uc.staleOrEmpty(e)
 	}
+	capabilities, err := uc.repo.LoadOrgCapabilities(ctx, orgID)
+	if err != nil {
+		log.Printf("role_permissions: load capabilities for org %s: %v", orgID, err)
+		return uc.staleOrEmpty(e)
+	}
 
-	entry := &orgAccessEntry{access: access, fieldAccess: fieldAccess, expiry: time.Now().Add(uc.ttl)}
+	entry := &orgAccessEntry{access: access, fieldAccess: fieldAccess, capabilities: capabilities, expiry: time.Now().Add(uc.ttl)}
 	uc.mu.Lock()
 	uc.cache[orgID] = entry
 	uc.mu.Unlock()
@@ -391,6 +443,13 @@ func (uc *permissionUseCase) ListRecordAudit(ctx context.Context, orgID uuid.UUI
 		return nil, err
 	}
 	return uc.repo.ListAudit(ctx, orgID, slug, recordID, 100)
+}
+
+// EnsureSeeded idempotently materializes the org's default OLS grid (delegating
+// to the repo's advisory-locked seed), so a role clone has explicit source rows
+// to copy rather than relying on the yet-unseeded default.
+func (uc *permissionUseCase) EnsureSeeded(ctx context.Context, orgID uuid.UUID) error {
+	return uc.repo.EnsureDefaults(ctx, orgID)
 }
 
 // Invalidate drops the cached access map for an org (on a permission edit, or

@@ -30,6 +30,10 @@ func Err(message string) APIResponse {
 type AppError struct {
 	Code    int    `json:"-"`
 	Message string `json:"message"`
+	// RetryAfter, when > 0, is emitted as a Retry-After response header (seconds).
+	// Used for rate-limit / lockout responses (P2). Construct a fresh AppError to
+	// set it — never mutate a shared sentinel.
+	RetryAfter int `json:"-"`
 }
 
 func (e *AppError) Error() string {
@@ -63,6 +67,12 @@ var (
 	ErrInvalidVerifyToken = NewAppError(http.StatusBadRequest, "this verification link is invalid or has expired")
 	ErrEmailNotVerified   = NewAppError(http.StatusForbidden, "please verify your email address before performing this action")
 	ErrResendTooSoon      = NewAppError(http.StatusTooManyRequests, "please wait a moment before requesting another verification email")
+
+	// Attack hardening (P2)
+	ErrTooManyRequests   = NewAppError(http.StatusTooManyRequests, "too many requests, please slow down")
+	ErrTooManyLoginAttempts = NewAppError(http.StatusTooManyRequests, "too many failed attempts, please try again later")
+	ErrTokenReuse        = NewAppError(http.StatusUnauthorized, "session ended for security reasons, please sign in again")
+	ErrMissingCSRFToken  = NewAppError(http.StatusForbidden, "missing or invalid CSRF token")
 )
 
 type CursorMeta struct {

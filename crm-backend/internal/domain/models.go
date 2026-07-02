@@ -70,13 +70,17 @@ type User struct {
 	FirstName    string         `gorm:"size:100;not null" json:"first_name"`
 	LastName     string         `gorm:"size:100;not null;default:''" json:"last_name"`
 	FullName     string         `gorm:"size:255" json:"full_name"`
-	Role         string         `gorm:"type:user_role;not null;default:'viewer'" json:"role"`
 	AvatarURL    *string        `gorm:"type:text" json:"avatar_url,omitempty"`
 	GoogleID     *string        `gorm:"size:255" json:"-"`
 	// EmailVerifiedAt is nil until the user confirms their email (P1). It is
 	// serialized (not json:"-") so the SPA can drive the "verify your email"
 	// banner. Existing users are grandfathered as verified by migration 000026.
 	EmailVerifiedAt *time.Time  `gorm:"column:email_verified_at" json:"email_verified_at"`
+	// TokenVersion is bumped to invalidate every outstanding access token for
+	// this user at once (password reset, sign-out-everywhere, refresh-token
+	// theft). The JWT carries it as the `tv` claim; the middleware rejects any
+	// token whose `tv` != this column (migration 000027, P2).
+	TokenVersion int            `gorm:"not null;default:0" json:"-"`
 	CreatedAt    time.Time      `json:"created_at"`
 	UpdatedAt    time.Time      `json:"updated_at"`
 	DeletedAt    gorm.DeletedAt `gorm:"index" json:"-"`
@@ -105,6 +109,14 @@ type RefreshToken struct {
 	TokenHash string     `gorm:"size:255;not null" json:"-"`
 	ExpiresAt time.Time  `gorm:"not null" json:"expires_at"`
 	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+	// Session hardening (migration 000027, P2). RotatedFrom links each token to
+	// its predecessor in the rotation chain; the device columns describe where
+	// the session lives (surfaced by the P4 devices UI).
+	DeviceLabel *string    `gorm:"size:255" json:"device_label,omitempty"`
+	IP          *string    `gorm:"type:inet" json:"ip,omitempty"`
+	UserAgent   *string    `gorm:"type:text" json:"user_agent,omitempty"`
+	LastUsedAt  *time.Time `json:"last_used_at,omitempty"`
+	RotatedFrom *uuid.UUID `gorm:"type:uuid" json:"-"`
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
 }

@@ -105,7 +105,7 @@ func TestGetPage_AggregatesEverything(t *testing.T) {
 		tags: []domain.Tag{{Name: "VIP"}},
 	}
 	related := &pageFakeRelated{lists: []domain.RelatedList{{Object: "deal", Label: "Deals", FieldKey: "contact"}}}
-	h := NewRecordHandler(records, related, registry, nil, nil, &pageFakeTags{all: []domain.Tag{{Name: "VIP"}, {Name: "Hot Lead"}}})
+	h := NewRecordHandler(records, related, registry, nil, nil, &pageFakeTags{all: []domain.Tag{{Name: "VIP"}, {Name: "Hot Lead"}}}, nil)
 
 	w := servePage(t, h, "contact", contactID.String())
 	if w.Code != http.StatusOK {
@@ -144,7 +144,7 @@ func TestGetPage_AggregatesEverything(t *testing.T) {
 func TestGetPage_RecordNotFoundIsFatal(t *testing.T) {
 	registry := &pageFakeRegistry{schema: &domain.ObjectDescriptor{Slug: "contact"}}
 	records := &pageFakeRecords{recs: map[string]*domain.UniformRecord{}}
-	h := NewRecordHandler(records, &pageFakeRelated{}, registry, nil, nil, nil)
+	h := NewRecordHandler(records, &pageFakeRelated{}, registry, nil, nil, nil, nil)
 
 	w := servePage(t, h, "contact", uuid.New().String())
 	if w.Code != http.StatusNotFound {
@@ -159,7 +159,7 @@ func TestGetPage_AuxiliaryFailureDegradesToEmpty(t *testing.T) {
 		"contact/" + contactID.String(): {ID: contactID, Object: "contact", Display: "Tony Stark", Fields: map[string]interface{}{}},
 	}}
 	related := &pageFakeRelated{err: domain.NewAppError(http.StatusForbidden, "denied")}
-	h := NewRecordHandler(records, related, registry, nil, nil, nil) // nil tag usecase too
+	h := NewRecordHandler(records, related, registry, nil, nil, nil, nil) // nil tag usecase too
 
 	w := servePage(t, h, "contact", contactID.String())
 	if w.Code != http.StatusOK {

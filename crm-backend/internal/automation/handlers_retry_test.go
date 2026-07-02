@@ -259,18 +259,15 @@ func TestRetryRunHandler_RouteNotRoleGuarded(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 
-	// requireRole spy that actually rejects a non-matching role — so if the retry route
-	// WERE guarded with admin/manager, a viewer would get 403.
-	requireRole := func(roles ...string) gin.HandlerFunc {
-		captured := append([]string(nil), roles...)
+	// requireCap spy that actually rejects a non-privileged role — so if the retry
+	// route WERE guarded by a capability, a viewer would get 403.
+	requireCap := func(_ string) gin.HandlerFunc {
 		return func(c *gin.Context) {
 			roleVal, _ := c.Get("role")
 			roleStr, _ := roleVal.(string)
-			for _, r := range captured {
-				if r == roleStr {
-					c.Next()
-					return
-				}
+			if roleStr == "owner" || roleStr == "admin" || roleStr == "manager" {
+				c.Next()
+				return
 			}
 			c.AbortWithStatusJSON(http.StatusForbidden,
 				ErrorResponse{Error: ErrorBody{Code: "FORBIDDEN", Message: "insufficient permissions"}})
@@ -285,7 +282,7 @@ func TestRetryRunHandler_RouteNotRoleGuarded(t *testing.T) {
 
 	// engine/repo/db nil: an invalid :runId returns 400 before any is touched.
 	h := &Handler{logger: handlerRunNowDiscardLogger()}
-	h.RegisterRoutes(router, authMiddleware, requireRole)
+	h.RegisterRoutes(router, authMiddleware, requireCap)
 
 	w := retryITPost(router, "not-a-valid-uuid")
 

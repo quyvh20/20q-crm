@@ -21,6 +21,16 @@ type Config struct {
 	GoogleRedirectURL  string `mapstructure:"GOOGLE_REDIRECT_URL"`
 	FrontendURL        string `mapstructure:"FRONTEND_URL"`
 
+	// Refresh-token cookie policy (P2). The refresh token moves out of
+	// localStorage into an httpOnly cookie. In production the frontend and API
+	// are cross-site (Cloudflare Pages + separate API host), so the cookie needs
+	// SameSite=None; Secure. Local dev is same-site over http, so it defaults to
+	// SameSite=Lax; Secure=false. CookieDomain is empty (host-only) unless a
+	// shared parent domain is configured.
+	CookieSecure   bool   `mapstructure:"COOKIE_SECURE"`
+	CookieSameSite string `mapstructure:"COOKIE_SAMESITE"` // strict | lax | none
+	CookieDomain   string `mapstructure:"COOKIE_DOMAIN"`
+
 	// Monitoring
 	SentryDSN string `mapstructure:"SENTRY_DSN"`
 
@@ -57,6 +67,9 @@ func LoadConfig() (*Config, error) {
 	viper.BindEnv("GOOGLE_CLIENT_SECRET")
 	viper.BindEnv("GOOGLE_REDIRECT_URL")
 	viper.BindEnv("FRONTEND_URL")
+	viper.BindEnv("COOKIE_SECURE")
+	viper.BindEnv("COOKIE_SAMESITE")
+	viper.BindEnv("COOKIE_DOMAIN")
 	viper.BindEnv("SENTRY_DSN")
 	viper.BindEnv("CF_ACCOUNT_ID")
 	viper.BindEnv("CF_AI_TOKEN")
@@ -76,6 +89,10 @@ func LoadConfig() (*Config, error) {
 	viper.SetDefault("JWT_SECRET", "dev-secret-change-me-in-production-32chars!")
 	viper.SetDefault("FRONTEND_URL", "http://localhost:5173")
 	viper.SetDefault("GOOGLE_REDIRECT_URL", "http://localhost:8080/api/auth/google/callback")
+	// Dev defaults: same-site over http. Production sets COOKIE_SAMESITE=none +
+	// COOKIE_SECURE=true (cross-site cookie delivery).
+	viper.SetDefault("COOKIE_SAMESITE", "lax")
+	viper.SetDefault("COOKIE_SECURE", false)
 
 	if err := viper.ReadInConfig(); err != nil {
 		log.Printf("No .env file found or error reading it, relying on environment variables: %v", err)

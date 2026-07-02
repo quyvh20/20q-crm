@@ -28,6 +28,18 @@ type fakePermRepo struct {
 	fieldPerms     []domain.FieldPermission
 	fieldUpserts   []domain.FieldPermission
 	fieldDeletes   []string // "slug:key"
+
+	// Capabilities (P3)
+	capabilities  map[string]map[string]bool // role → capability → true
+	loadCapCalls  int
+}
+
+func (f *fakePermRepo) LoadOrgCapabilities(context.Context, uuid.UUID) (map[string]map[string]bool, error) {
+	f.loadCapCalls++
+	if f.capabilities == nil {
+		return map[string]map[string]bool{}, nil
+	}
+	return f.capabilities, nil
 }
 
 func (f *fakePermRepo) EnsureDefaults(context.Context, uuid.UUID) error { f.ensureCalls++; return nil }
@@ -94,6 +106,49 @@ func (f *fakeRegistryUC) ListIncomingRelations(context.Context, uuid.UUID, strin
 
 func callerCtx(role string) context.Context {
 	return domain.WithCaller(context.Background(), role, uuid.New())
+}
+
+// ============================================================
+// HasCapability — the default-deny system-capability decision (P3, D5)
+// ============================================================
+
+func TestHasCapability_NoCaller_AllowsTrustedInternalCall(t *testing.T) {
+	uc := NewPermissionUseCase(&fakePermRepo{}, &fakeRegistryUC{})
+	if err := uc.HasCapability(context.Background(), uuid.New(), domain.CapMembersManage); err != nil {
+		t.Fatalf("expected trusted call to be allowed, got %v", err)
+	}
+}
+
+func TestHasCapability_Owner_BypassesEvenWithEmptyTable(t *testing.T) {
+	// Empty capability map: owner must still pass every capability check, so an
+	// empty table can never lock the owner out (plan risk register).
+	uc := NewPermissionUseCase(&fakePermRepo{}, &fakeRegistryUC{})
+	for _, cap := range domain.AllCapabilities {
+		if err := uc.HasCapability(callerCtx(domain.RoleOwner), uuid.New(), cap); err != nil {
+			t.Fatalf("owner should bypass capability %s, got %v", cap, err)
+		}
+	}
+}
+
+func TestHasCapability_CustomRole_PassesAndFailsCorrectly(t *testing.T) {
+	// A custom "Support Agent" role granted only audit.view flows through the SAME
+	// gate as a system role — the headline P3 behavior (I1 fixed).
+	repo := &fakePermRepo{capabilities: map[string]map[string]bool{
+		"Support Agent": {domain.CapAuditView: true},
+	}}
+	uc := NewPermissionUseCase(repo, &fakeRegistryUC{})
+
+	if err := uc.HasCapability(callerCtx("Support Agent"), uuid.New(), domain.CapAuditView); err != nil {
+		t.Fatalf("Support Agent with audit.view should pass, got %v", err)
+	}
+	err := uc.HasCapability(callerCtx("Support Agent"), uuid.New(), domain.CapMembersManage)
+	assertForbidden(t, err, "Support Agent lacking members.manage")
+}
+
+func TestHasCapability_DefaultDeny_WhenRoleAbsent(t *testing.T) {
+	uc := NewPermissionUseCase(&fakePermRepo{}, &fakeRegistryUC{})
+	err := uc.HasCapability(callerCtx("brand_new_role"), uuid.New(), domain.CapRolesManage)
+	assertForbidden(t, err, "a role with no capability rows")
 }
 
 // ============================================================

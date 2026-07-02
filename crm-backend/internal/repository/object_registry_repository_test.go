@@ -92,13 +92,23 @@ func columnExists(t *testing.T, db *gorm.DB, table, column string) bool {
 }
 
 // applyRegistrySchema creates the prerequisites (uuid-ossp + a minimal
-// organizations table the FKs need), runs the real 000015 up migration, and
-// inserts one organization. Returns its id to use as the org under test.
+// organizations table the FKs need), runs the real 000015 up migration, brings
+// object_defs/object_fields up to the columns the current repo reads, and inserts
+// one organization. Returns its id to use as the org under test.
 func applyRegistrySchema(t *testing.T, db *gorm.DB) uuid.UUID {
 	t.Helper()
 	require.NoError(t, db.Exec(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS organizations (id uuid PRIMARY KEY DEFAULT uuid_generate_v4())`).Error)
 	runMigrationFile(t, db, "000015_object_registry.up.sql")
+
+	// The registry repo reads columns added by later migrations (000023
+	// number_prefix, 000024 via_field/source_field). We can't run those migration
+	// files here — their backfills reference typed tables (contacts/deals/…) this
+	// minimal schema doesn't create — so mirror just their object_defs/object_fields
+	// column ALTERs, exactly as the main.go boot guard does.
+	require.NoError(t, db.Exec(`ALTER TABLE object_defs ADD COLUMN IF NOT EXISTS number_prefix VARCHAR(16)`).Error)
+	require.NoError(t, db.Exec(`ALTER TABLE object_fields ADD COLUMN IF NOT EXISTS via_field VARCHAR(100)`).Error)
+	require.NoError(t, db.Exec(`ALTER TABLE object_fields ADD COLUMN IF NOT EXISTS source_field VARCHAR(100)`).Error)
 
 	orgID := uuid.New()
 	require.NoError(t, db.Exec(`INSERT INTO organizations (id) VALUES (?)`, orgID).Error)

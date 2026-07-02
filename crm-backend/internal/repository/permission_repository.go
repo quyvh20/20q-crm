@@ -205,6 +205,35 @@ func (r *permissionRepository) ListRoles(ctx context.Context, orgID uuid.UUID) (
 	return roles, err
 }
 
+// LoadOrgCapabilities returns roleName → capabilityCode → true, joining
+// role_permissions to roles so the capability check (which knows the caller's
+// role name) can look up directly. Covers the global system roles plus this org's
+// custom roles. An org with no custom roles still gets the system-role rows.
+func (r *permissionRepository) LoadOrgCapabilities(ctx context.Context, orgID uuid.UUID) (map[string]map[string]bool, error) {
+	type row struct {
+		RoleName       string
+		PermissionCode string
+	}
+	var rows []row
+	if err := r.db.WithContext(ctx).
+		Table("role_permissions AS rp").
+		Select("r.name AS role_name, rp.permission_code").
+		Joins("JOIN roles r ON r.id = rp.role_id").
+		Where("r.org_id IS NULL OR r.org_id = ?", orgID).
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	out := make(map[string]map[string]bool)
+	for _, row := range rows {
+		if out[row.RoleName] == nil {
+			out[row.RoleName] = make(map[string]bool)
+		}
+		out[row.RoleName][row.PermissionCode] = true
+	}
+	return out, nil
+}
+
 func (r *permissionRepository) ListPermissions(ctx context.Context, orgID uuid.UUID) ([]domain.ObjectPermission, error) {
 	var perms []domain.ObjectPermission
 	err := r.db.WithContext(ctx).Where("org_id = ?", orgID).Find(&perms).Error

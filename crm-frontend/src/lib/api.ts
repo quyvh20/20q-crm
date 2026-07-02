@@ -1,44 +1,105 @@
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 
+// ── Session token handling (P2) ─────────────────────────────────────────────
+// The access token lives in memory only — never localStorage — so an XSS can't
+// steal a durable session. The refresh token is an httpOnly cookie the JS can't
+// read; on a 401 we transparently refresh against it. Auth calls send
+// credentials so the cookie rides along.
+
+let accessToken: string | null = null;
+
+export function setAccessToken(token: string | null): void {
+  accessToken = token;
+}
+export function getAccessToken(): string | null {
+  return accessToken;
+}
+
+// readCsrfToken pulls the readable csrf_token cookie for the double-submit header
+// the server checks on /refresh and /logout.
+export function readCsrfToken(): string {
+  const m = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/);
+  return m ? decodeURIComponent(m[1]) : '';
+}
+
+// refreshAccessToken performs a single-flight cookie-based refresh. Concurrent
+// 401s MUST share one /refresh call — two parallel refreshes would race, and the
+// second would present a just-rotated cookie and trip the server's reuse
+// detection, nuking the session. Resolves to the new access token, or null when
+// the session is truly gone. Optionally re-scopes to a workspace.
+let refreshInFlight: Promise<string | null> | null = null;
+
+export function refreshAccessToken(orgId?: string): Promise<string | null> {
+  if (!refreshInFlight) {
+    refreshInFlight = (async (): Promise<string | null> => {
+      try {
+        const res = await fetch(`${API_URL}/api/auth/refresh`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': readCsrfToken(),
+          },
+          body: JSON.stringify(orgId ? { org_id: orgId } : {}),
+        });
+        if (!res.ok) return null;
+        const json = await res.json();
+        const token = (json?.data?.access_token as string) ?? null;
+        setAccessToken(token);
+        return token;
+      } catch {
+        return null;
+      } finally {
+        refreshInFlight = null;
+      }
+    })();
+  }
+  return refreshInFlight;
+}
+
 async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
-  const token = localStorage.getItem('access_token');
-  const headers: Record<string, string> = {
-    ...(options.headers as Record<string, string> || {}),
+  const buildHeaders = (): Record<string, string> => {
+    const headers: Record<string, string> = {
+      ...(options.headers as Record<string, string> || {}),
+    };
+    const token = getAccessToken();
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    // Don't set Content-Type for FormData (browser sets the boundary itself).
+    if (!(options.body instanceof FormData)) headers['Content-Type'] = 'application/json';
+    return headers;
   };
 
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-
-  // Don't set Content-Type for FormData (browser sets boundary automatically)
-  if (!(options.body instanceof FormData)) {
-    headers['Content-Type'] = 'application/json';
-  }
-
-  const res = await fetch(`${API_URL}${path}`, { ...options, headers });
+  let res = await fetch(`${API_URL}${path}`, { ...options, headers: buildHeaders(), credentials: 'include' });
 
   if (res.status === 401) {
-    // Try refresh
-    const refreshToken = localStorage.getItem('refresh_token');
-    if (refreshToken) {
-      const refreshRes = await fetch(`${API_URL}/api/auth/refresh`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh_token: refreshToken }),
-      });
-      if (refreshRes.ok) {
-        const data = await refreshRes.json();
-        localStorage.setItem('access_token', data.data.access_token);
-        localStorage.setItem('refresh_token', data.data.refresh_token);
-        headers['Authorization'] = `Bearer ${data.data.access_token}`;
-        return fetch(`${API_URL}${path}`, { ...options, headers });
-      }
+    const newToken = await refreshAccessToken();
+    if (newToken) {
+      res = await fetch(`${API_URL}${path}`, { ...options, headers: buildHeaders(), credentials: 'include' });
+    } else {
+      setAccessToken(null);
+      window.location.href = '/login';
     }
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('refresh_token');
-    window.location.href = '/login';
   }
 
+  return res;
+}
+
+// authStreamFetch is the streaming counterpart to apiFetch: it attaches the
+// in-memory bearer token, sends credentials, and transparently retries once
+// after a single-flight refresh on 401. Returns the raw Response so the caller
+// can read the SSE body. (P2)
+async function authStreamFetch(path: string, init: RequestInit): Promise<Response> {
+  const build = (): RequestInit => {
+    const headers: Record<string, string> = { ...(init.headers as Record<string, string> || {}) };
+    const token = getAccessToken();
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return { ...init, headers, credentials: 'include' };
+  };
+  let res = await fetch(`${API_URL}${path}`, build());
+  if (res.status === 401) {
+    const newToken = await refreshAccessToken();
+    if (newToken) res = await fetch(`${API_URL}${path}`, build());
+  }
   return res;
 }
 
@@ -514,17 +575,9 @@ export async function streamChat(
   onError: (err: string) => void,
   contextId?: string,
 ) {
-  const API_BASE = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8080';
-  const token = localStorage.getItem('access_token');
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    Accept: 'text/event-stream',
-  };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-
-  const res = await fetch(`${API_BASE}/api/ai/chat`, {
+  const res = await authStreamFetch('/api/ai/chat', {
     method: 'POST',
-    headers,
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
     body: JSON.stringify({ message, context_id: contextId }),
   });
 
@@ -565,17 +618,9 @@ export async function composeEmail(
   contactId?: string,
   dealId?: string,
 ) {
-  const API_BASE = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8080';
-  const token = localStorage.getItem('access_token');
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    Accept: 'text/event-stream',
-  };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-
-  const res = await fetch(`${API_BASE}/api/ai/email/compose`, {
+  const res = await authStreamFetch('/api/ai/email/compose', {
     method: 'POST',
-    headers,
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
     body: JSON.stringify({ instruction, tone, contact_id: contactId, deal_id: dealId }),
   });
 
@@ -1302,6 +1347,146 @@ export async function setObjectPermission(input: {
 }
 
 // ============================================================
+// Custom roles (P3) — capabilities + data_scope, clone-from. roles.manage gated.
+// ============================================================
+
+// The fixed capability vocabulary (mirrors domain.AllCapabilities). Rendered as
+// checkboxes in the Roles manager.
+export const ALL_CAPABILITIES = [
+  'members.invite', 'members.manage', 'roles.manage', 'objects.manage',
+  'workflows.manage', 'workflows.run_any', 'audit.view', 'billing.manage',
+  'org.settings', 'data.export', 'pipeline.manage', 'knowledge.manage', 'records.write',
+] as const;
+export type Capability = (typeof ALL_CAPABILITIES)[number];
+
+export const CAPABILITY_LABELS: Record<string, string> = {
+  'members.invite': 'Invite members',
+  'members.manage': 'Manage members (roles, suspend, remove)',
+  'roles.manage': 'Manage roles & permission grids',
+  'objects.manage': 'Manage objects, fields & layouts',
+  'workflows.manage': 'Manage workflows',
+  'workflows.run_any': 'Run any workflow',
+  'audit.view': 'View audit log',
+  'billing.manage': 'Manage billing',
+  'org.settings': 'Edit org settings & templates',
+  'data.export': 'Export data',
+  'pipeline.manage': 'Manage pipeline stages',
+  'knowledge.manage': 'Edit the knowledge base',
+  'records.write': 'Create/edit tasks, activities, notes & tags',
+};
+
+export type DataScope = 'own' | 'all';
+
+export interface RoleDetail {
+  id: string;
+  name: string;
+  is_system: boolean;
+  is_owner: boolean;
+  data_scope: DataScope;
+  capabilities: string[];
+  member_count: number;
+}
+
+// getMyCapabilities returns the current user's effective capability codes for the
+// active org (owner gets all). Drives permission-aware UI; the server still
+// enforces every action. Returns [] on any error so the UI fails closed.
+export async function getMyCapabilities(): Promise<string[]> {
+  try {
+    const res = await apiFetch('/api/auth/capabilities');
+    if (!res.ok) return [];
+    const json = await res.json();
+    return (json.data?.capabilities || []) as string[];
+  } catch {
+    return [];
+  }
+}
+
+export async function getRoles(): Promise<RoleDetail[]> {
+  const res = await apiFetch('/api/roles');
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to load roles');
+  return (json.data || []) as RoleDetail[];
+}
+
+export async function createRole(input: {
+  name: string;
+  clone_from_id?: string;
+  data_scope?: DataScope;
+  capabilities?: string[];
+}): Promise<RoleDetail> {
+  const res = await apiFetch('/api/roles', { method: 'POST', body: JSON.stringify(input) });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to create role');
+  return json.data as RoleDetail;
+}
+
+export async function updateRole(id: string, input: { name?: string; data_scope?: DataScope }): Promise<void> {
+  const res = await apiFetch(`/api/roles/${id}`, { method: 'PATCH', body: JSON.stringify(input) });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(json.error || 'Failed to update role');
+  }
+}
+
+export async function deleteRole(id: string): Promise<void> {
+  const res = await apiFetch(`/api/roles/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(json.error || 'Failed to delete role');
+  }
+}
+
+export async function setRoleCapabilities(id: string, capabilities: string[]): Promise<void> {
+  const res = await apiFetch(`/api/roles/${id}/capabilities`, {
+    method: 'PUT',
+    body: JSON.stringify({ capabilities }),
+  });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(json.error || 'Failed to save capabilities');
+  }
+}
+
+// ============================================================
+// Record shares (P3, I2) — grant a specific record to a member; the escape hatch
+// for 'own'-scoped roles.
+// ============================================================
+
+export interface RecordShareView {
+  id: string;
+  grantee_user_id: string;
+  grantee_name: string;
+  permission_level: string;
+  created_at: string;
+}
+
+export async function getRecordShares(slug: string, id: string): Promise<RecordShareView[]> {
+  const res = await apiFetch(`/api/registry/objects/${slug}/records/${id}/shares`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to load shares');
+  return (json.data || []) as RecordShareView[];
+}
+
+export async function shareRecord(slug: string, id: string, granteeUserID: string, level = 'read'): Promise<void> {
+  const res = await apiFetch(`/api/registry/objects/${slug}/records/${id}/share`, {
+    method: 'POST',
+    body: JSON.stringify({ grantee_user_id: granteeUserID, permission_level: level }),
+  });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(json.error || 'Failed to share record');
+  }
+}
+
+export async function unshareRecord(slug: string, id: string, shareID: string): Promise<void> {
+  const res = await apiFetch(`/api/registry/objects/${slug}/records/${id}/share/${shareID}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(json.error || 'Failed to revoke share');
+  }
+}
+
+// ============================================================
 // Field-Level Security (P5b) — per-object field × role visibility/edit grid.
 // Admin-only; opt-in. A field with no cell is fully accessible (level 'edit').
 // RecordService strips 'hidden' fields from responses and rejects writes to
@@ -1476,11 +1661,12 @@ export async function sendCommand(
 
     const jsonBody = JSON.stringify(body);
 
-    // Helper to make the fetch with current token — use SSE streaming endpoint
+    // Helper to make the fetch with the current in-memory token.
     const doFetch = () => {
-      const token = localStorage.getItem('access_token');
+      const token = getAccessToken();
       return fetch(`${API_URL}/api/ai/command`, {
         method: 'POST',
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
           Accept: 'text/event-stream',
@@ -1492,29 +1678,13 @@ export async function sendCommand(
 
     let res = await doFetch();
 
-    // Auto-refresh token on 401 and retry once
+    // Auto-refresh (single-flight, cookie-based) on 401 and retry once.
     if (res.status === 401) {
-      const refreshToken = localStorage.getItem('refresh_token');
-      if (refreshToken) {
-        const refreshRes = await fetch(`${API_URL}/api/auth/refresh`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refresh_token: refreshToken }),
-        });
-        if (refreshRes.ok) {
-          const data = await refreshRes.json();
-          localStorage.setItem('access_token', data.data.access_token);
-          localStorage.setItem('refresh_token', data.data.refresh_token);
-          res = await doFetch(); // retry with fresh token
-        } else {
-          // Refresh failed — session truly expired
-          localStorage.removeItem('access_token');
-          localStorage.removeItem('refresh_token');
-          onError?.('Session expired. Please log in again.');
-          window.location.href = '/login';
-          return;
-        }
+      const newToken = await refreshAccessToken();
+      if (newToken) {
+        res = await doFetch(); // retry with the fresh token
       } else {
+        setAccessToken(null);
         onError?.('Session expired. Please log in again.');
         window.location.href = '/login';
         return;
@@ -1865,10 +2035,11 @@ export function uploadVoiceNote(
     if (dealId) formData.append('deal_id', dealId);
     if (durationSeconds) formData.append('duration_seconds', String(durationSeconds));
 
-    const token = localStorage.getItem('access_token');
+    const token = getAccessToken();
     const xhr = new XMLHttpRequest();
 
     xhr.open('POST', `${API_URL}/api/voice/upload`);
+    xhr.withCredentials = true;
 
     if (token) {
       xhr.setRequestHeader('Authorization', `Bearer ${token}`);

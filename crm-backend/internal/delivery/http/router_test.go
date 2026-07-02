@@ -3,6 +3,8 @@ package http
 import (
 	"testing"
 
+	"crm-backend/internal/domain"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -18,7 +20,12 @@ func TestRegisterObjectRegistryRoutes(t *testing.T) {
 	}()
 
 	e := gin.New()
-	registerObjectRegistryRoutes(e.Group("/api"), NewObjectRegistryHandler(nil, nil, nil), NewRecordHandler(nil, nil, nil, nil, nil, nil), NewPermissionHandler(nil), NewSearchHandler(nil), NewObjectLayoutHandler(nil))
+	// Gate factories are no-op here (handlers aren't invoked during registration),
+	// so a nil authorizer/checker is fine for asserting the route tree.
+	noopCap := func(string) gin.HandlerFunc { return func(c *gin.Context) {} }
+	noopOLS := func(domain.RecordAction) gin.HandlerFunc { return func(c *gin.Context) {} }
+	noopWrite := gin.HandlerFunc(func(c *gin.Context) {})
+	registerObjectRegistryRoutes(e.Group("/api"), NewObjectRegistryHandler(nil, nil, nil), NewRecordHandler(nil, nil, nil, nil, nil, nil, nil), NewPermissionHandler(nil), NewSearchHandler(nil), NewObjectLayoutHandler(nil), noopCap, noopOLS, noopWrite)
 
 	want := map[string]bool{
 		"GET /api/registry/objects":                                    false,
@@ -32,6 +39,9 @@ func TestRegisterObjectRegistryRoutes(t *testing.T) {
 		"POST /api/registry/objects/:slug/records":                     false,
 		"PATCH /api/registry/objects/:slug/records/:id":                false,
 		"DELETE /api/registry/objects/:slug/records/:id":               false,
+		"POST /api/registry/objects/:slug/records/:id/share":           false,
+		"DELETE /api/registry/objects/:slug/records/:id/share/:shareId": false,
+		"GET /api/registry/objects/:slug/records/:id/shares":           false,
 		"GET /api/registry/objects/:slug/records/:id/links":            false,
 		"POST /api/registry/objects/:slug/records/:id/links":           false,
 		"GET /api/registry/objects/:slug/records/:id/tags":             false,

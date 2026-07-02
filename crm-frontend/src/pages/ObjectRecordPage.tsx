@@ -15,6 +15,7 @@ import {
 } from '../lib/api';
 import { ObjectDetailView, ObjectForm } from '../features/objects';
 import { listPath } from '../features/objects/recordRoutes';
+import ShareRecordModal from '../components/records/ShareRecordModal';
 
 // ObjectRecordPage is the Salesforce-style, URL-addressable detail page for any
 // object — /objects/:slug/records/:id. Every list row, kanban card, and global
@@ -45,6 +46,7 @@ export default function ObjectRecordPage() {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleteError, setDeleteError] = useState('');
   const [deleting, setDeleting] = useState(false);
+  const [sharing, setSharing] = useState(false);
 
   // Pre-fetched data for child components; null = request still in flight.
   const [relatedLists, setRelatedLists] = useState<RelatedList[] | null>(null);
@@ -196,6 +198,7 @@ export default function ObjectRecordPage() {
         {!editing && (
           <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
             <button id="record-edit-btn" onClick={() => setEditing(true)} style={primaryBtnStyle}>Edit</button>
+            <button id="record-share-btn" onClick={() => setSharing(true)} style={secondaryBtnStyle}>Share</button>
             <button id="record-delete-btn" onClick={() => setConfirmingDelete(true)} style={dangerBtnStyle}>Delete</button>
           </div>
         )}
@@ -228,6 +231,16 @@ export default function ObjectRecordPage() {
           />
         )}
       </div>
+
+      {/* Share modal (P3, I2) */}
+      {sharing && slug && id && (
+        <ShareRecordModal
+          slug={slug}
+          recordId={id}
+          recordName={record.display || schema.label}
+          onClose={() => setSharing(false)}
+        />
+      )}
 
       {/* Delete confirmation */}
       {confirmingDelete && (
@@ -274,6 +287,17 @@ const primaryBtnStyle = {
   borderRadius: 8,
   cursor: 'pointer',
   fontWeight: 600,
+  fontSize: 14,
+};
+
+const secondaryBtnStyle = {
+  padding: '8px 16px',
+  background: '#f1f5f9',
+  color: '#334155',
+  border: 'none',
+  borderRadius: 8,
+  cursor: 'pointer',
+  fontWeight: 500,
   fontSize: 14,
 };
 
