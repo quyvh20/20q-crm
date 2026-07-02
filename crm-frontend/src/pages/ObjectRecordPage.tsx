@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   getObjectSchema,
@@ -24,10 +24,12 @@ import { listPath } from '../features/objects/recordRoutes';
 // The body (ObjectDetailView) renders the admin/role layout when configured and a
 // built-in default "Details" layout otherwise — so the page is never blank.
 //
-// Performance: schema, record, related lists, tags and the tag palette are all
-// fetched in a single Promise.all so the browser sends all requests at once.
-// Child components receive the pre-fetched data as props and skip their own
-// initial fetch, eliminating the render-then-fetch waterfall.
+// Performance: all five requests (schema, record, related lists, tags, tag
+// palette) fire in one burst, but first paint waits only for schema + record —
+// the two the header and details need. The slower panels (related lists can fan
+// out into many child queries server-side) hydrate in when their responses land,
+// so they can never hold the whole page hostage. Child components receive the
+// data as props: null means "still loading", so they don't start their own fetch.
 export default function ObjectRecordPage() {
   const { slug, id } = useParams<{ slug: string; id: string }>();
   const navigate = useNavigate();
@@ -41,36 +43,47 @@ export default function ObjectRecordPage() {
   const [deleteError, setDeleteError] = useState('');
   const [deleting, setDeleting] = useState(false);
 
-  // Pre-fetched data for child components so they render immediately.
+  // Pre-fetched data for child components; null = request still in flight.
   const [relatedLists, setRelatedLists] = useState<RelatedList[] | null>(null);
   const [recordTags, setRecordTags] = useState<Tag[] | null>(null);
   const [allTags, setAllTags] = useState<Tag[] | null>(null);
 
+  // Guards against a stale load overwriting a newer one (e.g. clicking through
+  // to a related record while the first page's slower requests are in flight).
+  const loadGen = useRef(0);
+
   const load = useCallback(async () => {
     if (!slug || !id) return;
+    const gen = ++loadGen.current;
+    const fresh = () => loadGen.current === gen;
     setLoading(true);
     setError('');
+    setRelatedLists(null);
+    setRecordTags(null);
+    setAllTags(null);
+
+    // Fire ALL requests at once — related lists and tags only need slug+id
+    // (known from URL params), so nothing waits on anything else.
+    const relatedP = listRecordRelatedLists(slug, id).catch(() => [] as RelatedList[]);
+    const tagsP = listRecordTags(slug, id).catch(() => [] as Tag[]);
+    const allTagsP = getTags().catch(() => [] as Tag[]);
+
+    // First paint needs only schema + record; the slower panels hydrate in
+    // whenever their responses land instead of blocking the whole page.
     try {
-      // Fire ALL requests at once — schema, record, related lists, tags, tag palette.
-      // Related lists and tags only need slug+id (known from URL params), so there is
-      // no reason to wait for schema/record to finish first.
-      const [s, r, rl, rt, at] = await Promise.all([
-        getObjectSchema(slug),
-        getObjectRecordUnified(slug, id),
-        listRecordRelatedLists(slug, id).catch(() => [] as RelatedList[]),
-        listRecordTags(slug, id).catch(() => [] as Tag[]),
-        getTags().catch(() => [] as Tag[]),
-      ]);
+      const [s, r] = await Promise.all([getObjectSchema(slug), getObjectRecordUnified(slug, id)]);
+      if (!fresh()) return;
       setSchema(s);
       setRecord(r);
-      setRelatedLists(rl);
-      setRecordTags(rt);
-      setAllTags(at);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load this record.');
+      if (fresh()) setError(e instanceof Error ? e.message : 'Failed to load this record.');
     } finally {
-      setLoading(false);
+      if (fresh()) setLoading(false);
     }
+
+    relatedP.then((rl) => { if (fresh()) setRelatedLists(rl); });
+    tagsP.then((rt) => { if (fresh()) setRecordTags(rt); });
+    allTagsP.then((at) => { if (fresh()) setAllTags(at); });
   }, [slug, id]);
 
   useEffect(() => {

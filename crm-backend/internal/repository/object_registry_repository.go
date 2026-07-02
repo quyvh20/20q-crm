@@ -265,6 +265,24 @@ func (r *objectRegistryRepository) ListFields(ctx context.Context, objectDefID u
 	return fields, err
 }
 
+// ListIncomingRelations finds every relation field pointing at targetSlug with a
+// single join, replacing the per-object schema walk the related-lists builder
+// used to do (~3 queries per registered object). Table()+Scan bypasses GORM's
+// soft-delete scoping, so both deleted_at filters are explicit. Ordering matches
+// ListDefs (system first, then creation order, slug tiebreak) so related lists
+// keep their stable on-page order.
+func (r *objectRegistryRepository) ListIncomingRelations(ctx context.Context, orgID uuid.UUID, targetSlug string) ([]domain.IncomingRelation, error) {
+	var out []domain.IncomingRelation
+	err := r.db.WithContext(ctx).
+		Table("object_fields").
+		Select("object_defs.slug AS child_slug, object_defs.label_plural AS child_label_plural, object_defs.icon AS child_icon, object_fields.key AS field_key, object_fields.label AS field_label").
+		Joins("JOIN object_defs ON object_defs.id = object_fields.object_def_id AND object_defs.deleted_at IS NULL").
+		Where("object_fields.org_id = ? AND object_fields.type = 'relation' AND object_fields.target_slug = ? AND object_fields.deleted_at IS NULL", orgID, targetSlug).
+		Order("object_defs.is_system DESC, object_defs.created_at ASC, object_defs.slug ASC, object_fields.position ASC, object_fields.created_at ASC").
+		Scan(&out).Error
+	return out, err
+}
+
 // ============================================================
 // Custom-field CRUD on system objects (P7)
 // ============================================================

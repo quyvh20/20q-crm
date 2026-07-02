@@ -212,3 +212,51 @@ func TestEnsureSystemObjects_Concurrent(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, defs, len(systemObjectSpecs), "concurrent seeds must not duplicate defs")
 }
+
+// TestListIncomingRelations proves the one-query reverse-relation lookup: child
+// object metadata + field key/label in stable def order, excluding non-relation
+// fields, the stage pseudo-relation (NULL target), soft-deleted fields, and
+// other orgs.
+func TestListIncomingRelations(t *testing.T) {
+	db, cleanup := startPostgres(t)
+	defer cleanup()
+	orgID := applyRegistrySchema(t, db)
+
+	repo := NewObjectRegistryRepository(db)
+	ctx := context.Background()
+	require.NoError(t, repo.EnsureSystemObjects(ctx, orgID))
+
+	// company is targeted by contact.company and deal.company (seed spec),
+	// contact def first (seeded before deal).
+	rels, err := repo.ListIncomingRelations(ctx, orgID, "company")
+	require.NoError(t, err)
+	require.Len(t, rels, 2)
+	require.Equal(t, "contact", rels[0].ChildSlug)
+	require.Equal(t, "Contacts", rels[0].ChildLabelPlural)
+	require.Equal(t, "company", rels[0].FieldKey)
+	require.Equal(t, "Company", rels[0].FieldLabel)
+	require.Equal(t, "deal", rels[1].ChildSlug)
+	require.Equal(t, "company", rels[1].FieldKey)
+
+	// contact is targeted by deal.contact only; deal.stage (target_slug NULL)
+	// never matches.
+	rels, err = repo.ListIncomingRelations(ctx, orgID, "contact")
+	require.NoError(t, err)
+	require.Len(t, rels, 1)
+	require.Equal(t, "deal", rels[0].ChildSlug)
+	require.Equal(t, "contact", rels[0].FieldKey)
+
+	// A soft-deleted relation field disappears from the results.
+	require.NoError(t, db.Exec(
+		`UPDATE object_fields SET deleted_at = now() WHERE org_id = ? AND key = 'contact' AND type = 'relation'`,
+		orgID,
+	).Error)
+	rels, err = repo.ListIncomingRelations(ctx, orgID, "contact")
+	require.NoError(t, err)
+	require.Empty(t, rels)
+
+	// Another org sees nothing.
+	rels, err = repo.ListIncomingRelations(ctx, uuid.New(), "company")
+	require.NoError(t, err)
+	require.Empty(t, rels)
+}

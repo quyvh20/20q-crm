@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"sync"
 
 	"crm-backend/internal/domain"
 
@@ -9,8 +10,8 @@ import (
 )
 
 // relatedListsUseCase builds a record's reverse related lists. For a record of
-// object A, it finds every (childObject, field) in the registry where the field
-// is a relation pointing at A, then lists that child object filtered to records
+// object A, it asks the registry for every (childObject, field) whose relation
+// points at A — one query — then lists each child object filtered to records
 // whose relation value is this record's id. Each group becomes a RelatedList.
 //
 // It composes the registry and record services so OLS/FLS, storage dispatch, and
@@ -31,49 +32,61 @@ func NewRelatedListsUseCase(registry domain.ObjectRegistryUseCase, records domai
 // unbounded scroll; deep lists get their own filtered list view later.
 const relatedListLimit = 50
 
+// relatedListConcurrency bounds the parallel child-list queries so one record
+// page can't monopolize the DB pool however many relations point at an object.
+const relatedListConcurrency = 5
+
 func (uc *relatedListsUseCase) ListRelatedLists(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID) ([]domain.RelatedList, error) {
-	objects, err := uc.registry.ListObjects(ctx, orgID)
+	rels, err := uc.registry.ListIncomingRelations(ctx, orgID, slug)
 	if err != nil {
 		return nil, err
 	}
 
-	out := make([]domain.RelatedList, 0)
-	for _, obj := range objects {
-		schema, err := uc.registry.GetSchema(ctx, orgID, obj.Slug)
-		if err != nil {
-			continue // an object we can't describe simply contributes no related list
-		}
-		for _, f := range schema.Fields {
-			// Only typed relations that point back at this record's object. The
-			// pseudo "stage" relation has an empty target_slug, so it's excluded.
-			if f.Type != "relation" || f.TargetSlug != slug {
-				continue
-			}
+	// The child lists are independent reads, so they run concurrently (bounded).
+	// Each result lands at its input index to keep the registry's stable order.
+	results := make([]*domain.RelatedList, len(rels))
+	sem := make(chan struct{}, relatedListConcurrency)
+	var wg sync.WaitGroup
+	for i, rel := range rels {
+		wg.Add(1)
+		go func(i int, rel domain.IncomingRelation) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
 			// Fetch one past the display cap so we can tell "exactly N" from "N+".
-			page, err := uc.records.List(ctx, orgID, obj.Slug, domain.RecordListInput{
-				Filters: map[string]string{f.Key: id.String()},
+			page, err := uc.records.List(ctx, orgID, rel.ChildSlug, domain.RecordListInput{
+				Filters: map[string]string{rel.FieldKey: id.String()},
 				Limit:   relatedListLimit + 1,
 			})
 			if err != nil {
 				// Most often an OLS denial on the child object — skip it rather
 				// than failing the whole record page.
-				continue
+				return
 			}
 			recs := page.Records
 			hasMore := len(recs) > relatedListLimit
 			if hasMore {
 				recs = recs[:relatedListLimit]
 			}
-			out = append(out, domain.RelatedList{
-				Object:     obj.Slug,
-				Label:      obj.LabelPlural,
-				Icon:       obj.Icon,
-				FieldKey:   f.Key,
-				FieldLabel: f.Label,
+			results[i] = &domain.RelatedList{
+				Object:     rel.ChildSlug,
+				Label:      rel.ChildLabelPlural,
+				Icon:       rel.ChildIcon,
+				FieldKey:   rel.FieldKey,
+				FieldLabel: rel.FieldLabel,
 				Records:    recs,
 				Count:      len(recs),
 				HasMore:    hasMore,
-			})
+			}
+		}(i, rel)
+	}
+	wg.Wait()
+
+	out := make([]domain.RelatedList, 0, len(rels))
+	for _, r := range results {
+		if r != nil {
+			out = append(out, *r)
 		}
 	}
 	return out, nil

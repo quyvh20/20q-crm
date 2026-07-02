@@ -88,6 +88,9 @@ func (f *fakeRegistryUC) GetSchema(context.Context, uuid.UUID, string) (*domain.
 func (f *fakeRegistryUC) SetNumberPrefix(context.Context, uuid.UUID, string, string) error {
 	return nil
 }
+func (f *fakeRegistryUC) ListIncomingRelations(context.Context, uuid.UUID, string) ([]domain.IncomingRelation, error) {
+	return nil, nil
+}
 
 func callerCtx(role string) context.Context {
 	return domain.WithCaller(context.Background(), role, uuid.New())

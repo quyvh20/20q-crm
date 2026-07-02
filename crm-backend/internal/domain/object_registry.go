@@ -199,13 +199,25 @@ type RelatedList struct {
 	HasMore bool `json:"has_more"`
 }
 
-// RelatedListsUseCase assembles a record's reverse related lists by walking the
+// RelatedListsUseCase assembles a record's reverse related lists by asking the
 // registry for incoming relation fields and querying each child object through
 // RecordService (so OLS/FLS apply uniformly). It composes the registry and record
 // services rather than living on RecordService, keeping that interface — and its
 // many constructor call sites — unchanged.
 type RelatedListsUseCase interface {
 	ListRelatedLists(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID) ([]RelatedList, error)
+}
+
+// IncomingRelation is one (child object, relation field) pair whose typed
+// relation points at a target object — the seed of one reverse related list.
+// The registry resolves all of them in a single query so the related-lists
+// builder doesn't have to walk every object's full schema.
+type IncomingRelation struct {
+	ChildSlug        string
+	ChildLabelPlural string
+	ChildIcon        string
+	FieldKey         string
+	FieldLabel       string
 }
 
 // RecordWriteInput is the uniform create/update payload: a flat field map keyed
@@ -295,6 +307,10 @@ type ObjectRegistryRepository interface {
 	ListFields(ctx context.Context, objectDefID uuid.UUID) ([]ObjectField, error)
 	// FieldCounts returns object_def_id → number of (non-deleted) fields for the org.
 	FieldCounts(ctx context.Context, orgID uuid.UUID) (map[uuid.UUID]int, error)
+	// ListIncomingRelations returns every (child object, relation field) pair whose
+	// typed relation targets targetSlug, in the same stable object order as
+	// ListDefs — one query, powering reverse related lists.
+	ListIncomingRelations(ctx context.Context, orgID uuid.UUID, targetSlug string) ([]IncomingRelation, error)
 
 	// --- Custom-field CRUD on system objects (P7) ---
 	//
@@ -331,4 +347,8 @@ type ObjectRegistryUseCase interface {
 	// SetNumberPrefix updates an object's record-number prefix (e.g. "INV"). An
 	// empty prefix resets to the slug default.
 	SetNumberPrefix(ctx context.Context, orgID uuid.UUID, slug, prefix string) error
+	// ListIncomingRelations returns every (child object, relation field) pair
+	// whose typed relation targets targetSlug — the input to reverse related
+	// lists, resolved in one query instead of a per-object schema walk.
+	ListIncomingRelations(ctx context.Context, orgID uuid.UUID, targetSlug string) ([]IncomingRelation, error)
 }

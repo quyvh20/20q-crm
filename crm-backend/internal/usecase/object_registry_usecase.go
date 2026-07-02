@@ -72,6 +72,16 @@ func (uc *objectRegistryUseCase) GetSchema(ctx context.Context, orgID uuid.UUID,
 	return uc.buildSchema(ctx, def)
 }
 
+// ListIncomingRelations returns the (child object, relation field) pairs whose
+// relation targets targetSlug — one query. EnsureSystemObjects keeps a first-touch
+// org consistent with the other read paths.
+func (uc *objectRegistryUseCase) ListIncomingRelations(ctx context.Context, orgID uuid.UUID, targetSlug string) ([]domain.IncomingRelation, error) {
+	if err := uc.repo.EnsureSystemObjects(ctx, orgID); err != nil {
+		return nil, err
+	}
+	return uc.repo.ListIncomingRelations(ctx, orgID, targetSlug)
+}
+
 // SetNumberPrefix updates an object's record-number prefix. A blank prefix resets
 // to the slug default (read path falls back to UPPER(slug)).
 func (uc *objectRegistryUseCase) SetNumberPrefix(ctx context.Context, orgID uuid.UUID, slug, prefix string) error {

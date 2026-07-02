@@ -51,6 +51,26 @@ func (f *fakeRegistryRepo) FieldCounts(_ context.Context, _ uuid.UUID) (map[uuid
 	return counts, nil
 }
 
+// ListIncomingRelations mirrors the real join: relation fields whose target_slug
+// matches, in def order.
+func (f *fakeRegistryRepo) ListIncomingRelations(_ context.Context, _ uuid.UUID, targetSlug string) ([]domain.IncomingRelation, error) {
+	var out []domain.IncomingRelation
+	for _, d := range f.defs {
+		for _, fld := range f.fields[d.ID] {
+			if fld.Type == "relation" && fld.TargetSlug != nil && *fld.TargetSlug == targetSlug {
+				out = append(out, domain.IncomingRelation{
+					ChildSlug:        d.Slug,
+					ChildLabelPlural: d.LabelPlural,
+					ChildIcon:        d.Icon,
+					FieldKey:         fld.Key,
+					FieldLabel:       fld.Label,
+				})
+			}
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeRegistryRepo) SetNumberPrefix(_ context.Context, _ uuid.UUID, slug, prefix string) error {
 	for i := range f.defs {
 		if f.defs[i].Slug == slug {

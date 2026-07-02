@@ -10,9 +10,13 @@ import {
 interface RecordTagsProps {
   slug: string;
   recordId: string;
-  /** Pre-fetched tags for this record — skip initial fetch when provided. */
+  /**
+   * Parent-owned tags for this record: an array hydrates the panel (possibly
+   * after mount), null means the parent's request is still in flight. Omit
+   * entirely (undefined) to have the component fetch for itself.
+   */
   prefetchedTags?: Tag[] | null;
-  /** Pre-fetched tag palette — skip initial fetch when provided. */
+  /** Parent-owned tag palette — same null/undefined semantics. */
   prefetchedAllTags?: Tag[] | null;
 }
 
@@ -34,12 +38,24 @@ export default function RecordTags({ slug, recordId, prefetchedTags, prefetchedA
     }
   }, [slug, recordId]);
 
+  // Hydrate from the parent's prefetch, which may land after mount (the record
+  // page no longer blocks first paint on the tag requests). Local add/remove
+  // edits are safe: the prop's identity only changes when the parent reloads.
   useEffect(() => {
-    // If the parent already fetched both, skip the initial requests.
-    if (prefetchedTags != null && prefetchedAllTags != null) return;
-    if (prefetchedTags == null) refresh();
-    if (prefetchedAllTags == null) getTags().then(setAllTags).catch(() => {});
-  }, [refresh, prefetchedTags, prefetchedAllTags]);
+    if (prefetchedTags != null) setTags(prefetchedTags);
+  }, [prefetchedTags]);
+  useEffect(() => {
+    if (prefetchedAllTags != null) setAllTags(prefetchedAllTags);
+  }, [prefetchedAllTags]);
+
+  // Self-fetch only what no parent will ever supply (undefined, not null —
+  // null means the parent's request is still in flight).
+  const selfFetchTags = prefetchedTags === undefined;
+  const selfFetchAllTags = prefetchedAllTags === undefined;
+  useEffect(() => {
+    if (selfFetchTags) refresh();
+    if (selfFetchAllTags) getTags().then(setAllTags).catch(() => {});
+  }, [refresh, selfFetchTags, selfFetchAllTags]);
 
   const handleAddTag = async (tagId: string) => {
     setError('');

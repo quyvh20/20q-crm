@@ -6,7 +6,11 @@ import { recordPath } from './recordRoutes';
 interface RelatedListsProps {
   slug: string;
   recordId: string;
-  /** When supplied by the parent, the component skips its own initial fetch. */
+  /**
+   * Parent-owned data: an array renders directly, null means the parent's
+   * request is still in flight (show loading, don't fetch). Omit entirely
+   * (undefined) for standalone usage where the component fetches for itself.
+   */
   prefetchedLists?: RelatedList[] | null;
 }
 
@@ -16,30 +20,35 @@ interface RelatedListsProps {
 // backend derives the groups from the registry — so no per-object code is needed,
 // and each row links to the child's own record page.
 export default function RelatedLists({ slug, recordId, prefetchedLists }: RelatedListsProps) {
-  const [lists, setLists] = useState<RelatedList[]>(prefetchedLists ?? []);
-  const [loading, setLoading] = useState(prefetchedLists == null);
+  // Managed mode: the parent owns fetching and may hydrate the prop after
+  // mount (null → data), so never start a duplicate request of our own.
+  const managed = prefetchedLists !== undefined;
+  const [ownLists, setOwnLists] = useState<RelatedList[]>([]);
+  const [ownLoading, setOwnLoading] = useState(!managed);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    // If the parent already fetched the data, skip the initial request.
-    if (prefetchedLists != null) return;
+    if (managed) return;
     let cancelled = false;
-    setLoading(true);
+    setOwnLoading(true);
     setError('');
     listRecordRelatedLists(slug, recordId)
       .then((l) => {
-        if (!cancelled) setLists(l);
+        if (!cancelled) setOwnLists(l);
       })
       .catch((e) => {
         if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load related records');
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) setOwnLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [slug, recordId, prefetchedLists]);
+  }, [slug, recordId, managed]);
+
+  const lists = managed ? prefetchedLists ?? [] : ownLists;
+  const loading = managed ? prefetchedLists === null : ownLoading;
 
   // Only groups that actually have records are worth showing; an object that
   // could relate but doesn't yet would just be visual noise.

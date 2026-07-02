@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"crm-backend/internal/domain"
@@ -10,32 +11,48 @@ import (
 	"github.com/google/uuid"
 )
 
-// fakeRelRegistryUC implements just the two ObjectRegistryUseCase methods the
-// related-lists usecase calls, keyed by slug (uniquely named to avoid colliding
-// with the single-schema fakeRegistryUC in permission_usecase_test.go).
+// fakeRelRegistryUC implements the one ObjectRegistryUseCase method the
+// related-lists usecase calls, deriving incoming relations from a declarative
+// objects+schemas setup (uniquely named to avoid colliding with the
+// single-schema fakeRegistryUC in permission_usecase_test.go).
 type fakeRelRegistryUC struct {
 	domain.ObjectRegistryUseCase
 	objects []domain.ObjectSummary
 	schemas map[string]*domain.ObjectDescriptor
 }
 
-func (f *fakeRelRegistryUC) ListObjects(_ context.Context, _ uuid.UUID) ([]domain.ObjectSummary, error) {
-	return f.objects, nil
-}
-func (f *fakeRelRegistryUC) GetSchema(_ context.Context, _ uuid.UUID, slug string) (*domain.ObjectDescriptor, error) {
-	if s, ok := f.schemas[slug]; ok {
-		return s, nil
+func (f *fakeRelRegistryUC) ListIncomingRelations(_ context.Context, _ uuid.UUID, targetSlug string) ([]domain.IncomingRelation, error) {
+	var out []domain.IncomingRelation
+	for _, obj := range f.objects {
+		s, ok := f.schemas[obj.Slug]
+		if !ok {
+			continue
+		}
+		for _, fd := range s.Fields {
+			if fd.Type == "relation" && fd.TargetSlug == targetSlug {
+				out = append(out, domain.IncomingRelation{
+					ChildSlug:        obj.Slug,
+					ChildLabelPlural: obj.LabelPlural,
+					ChildIcon:        obj.Icon,
+					FieldKey:         fd.Key,
+					FieldLabel:       fd.Label,
+				})
+			}
+		}
 	}
-	return nil, errors.New("no schema")
+	return out, nil
 }
 
 // fakeRelRecordSvc implements just List; it records the filtered queries and can
-// fail for a given slug to simulate an OLS denial on a child object.
+// fail for a given slug to simulate an OLS denial on a child object. The mutex
+// matters: the usecase runs child lists concurrently.
 type fakeRelRecordSvc struct {
 	domain.RecordService
 	bySlug   map[string][]domain.UniformRecord
 	failSlug string
-	calls    []relListCall
+
+	mu    sync.Mutex
+	calls []relListCall
 }
 
 type relListCall struct {
@@ -44,7 +61,9 @@ type relListCall struct {
 }
 
 func (f *fakeRelRecordSvc) List(_ context.Context, _ uuid.UUID, slug string, in domain.RecordListInput) (*domain.RecordList, error) {
+	f.mu.Lock()
 	f.calls = append(f.calls, relListCall{slug: slug, filters: in.Filters})
+	f.mu.Unlock()
 	if slug == f.failSlug {
 		return nil, errors.New("forbidden")
 	}
@@ -106,6 +125,38 @@ func TestListRelatedLists_DerivesChildrenFromIncomingRelations(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected a filtered deal list (contact=%s); calls: %+v", contactID, rec.calls)
+	}
+}
+
+// Child lists run concurrently, but the output must keep the registry's stable
+// object order — deals before tasks here — however the goroutines finish.
+func TestListRelatedLists_PreservesRegistryOrder(t *testing.T) {
+	contactID := uuid.New()
+	reg := &fakeRelRegistryUC{
+		objects: []domain.ObjectSummary{
+			{Slug: "deal", LabelPlural: "Deals", Icon: "💰"},
+			{Slug: "task", LabelPlural: "Tasks", Icon: "✅"},
+		},
+		schemas: map[string]*domain.ObjectDescriptor{
+			"deal": {Slug: "deal", Fields: []domain.FieldDescriptor{relField("contact", "Contact", "contact")}},
+			"task": {Slug: "task", Fields: []domain.FieldDescriptor{relField("contact", "Contact", "contact")}},
+		},
+	}
+	rec := &fakeRelRecordSvc{bySlug: map[string][]domain.UniformRecord{
+		"deal": {{ID: uuid.New(), Object: "deal"}},
+		"task": {{ID: uuid.New(), Object: "task"}},
+	}}
+	uc := NewRelatedListsUseCase(reg, rec)
+
+	lists, err := uc.ListRelatedLists(context.Background(), uuid.New(), "contact", contactID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(lists) != 2 {
+		t.Fatalf("expected 2 related lists, got %d: %+v", len(lists), lists)
+	}
+	if lists[0].Object != "deal" || lists[1].Object != "task" {
+		t.Errorf("expected stable [deal, task] order, got [%s, %s]", lists[0].Object, lists[1].Object)
 	}
 }
 
