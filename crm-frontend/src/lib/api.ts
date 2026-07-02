@@ -1116,6 +1116,27 @@ export async function listRecordRelatedLists(slug: string, id: string): Promise<
   return (json.data || []) as RelatedList[];
 }
 
+// RecordPageData is the one-shot payload for a record detail page: schema,
+// record, related lists, both tag sets, plus server-resolved relation labels
+// and mirror values. One request instead of five-plus, which is what makes the
+// page fast against a remote backend where every round trip costs real time.
+export interface RecordPageData {
+  schema: ObjectSchema;
+  record: UniformRecord;
+  related_lists: RelatedList[];
+  tags: Tag[];
+  all_tags: Tag[];
+  relation_labels: Record<string, string>;
+  mirror_values: Record<string, string>;
+}
+
+export async function getObjectRecordPage(slug: string, id: string): Promise<RecordPageData> {
+  const res = await apiFetch(`/api/registry/objects/${slug}/records/${id}/page`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch record page');
+  return json.data as RecordPageData;
+}
+
 export async function createObjectRecordUnified(slug: string, fields: Record<string, unknown>): Promise<UniformRecord> {
   const res = await apiFetch(`/api/registry/objects/${slug}/records`, {
     method: 'POST',

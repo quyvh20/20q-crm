@@ -16,13 +16,28 @@ import (
 // under /api/registry/objects/:slug/records so it stays strictly additive to the
 // legacy per-object routes (custom-object records at /api/objects/:slug/records,
 // plus /api/contacts, /api/deals, /api/companies), which remain until P7.
+//
+// registry/layoutUC/authz/tags exist for the composite record-page endpoint
+// (GetPage in record_page_handler.go), which folds schema, record, related
+// lists, and tags into one response; the plain CRUD endpoints don't use them.
 type RecordHandler struct {
-	svc     domain.RecordService
-	related domain.RelatedListsUseCase
+	svc      domain.RecordService
+	related  domain.RelatedListsUseCase
+	registry domain.ObjectRegistryUseCase
+	layoutUC domain.ObjectLayoutUseCase
+	authz    domain.RecordAuthorizer
+	tags     domain.TagUseCase
 }
 
-func NewRecordHandler(svc domain.RecordService, related domain.RelatedListsUseCase) *RecordHandler {
-	return &RecordHandler{svc: svc, related: related}
+func NewRecordHandler(
+	svc domain.RecordService,
+	related domain.RelatedListsUseCase,
+	registry domain.ObjectRegistryUseCase,
+	layoutUC domain.ObjectLayoutUseCase,
+	authz domain.RecordAuthorizer,
+	tags domain.TagUseCase,
+) *RecordHandler {
+	return &RecordHandler{svc: svc, related: related, registry: registry, layoutUC: layoutUC, authz: authz, tags: tags}
 }
 
 // reservedListParams are query keys with dedicated meaning; everything else is

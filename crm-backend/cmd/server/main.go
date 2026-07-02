@@ -583,7 +583,9 @@ func main() {
 		// Reverse related lists compose the registry + record services (P-relationships):
 		// they surface, on any record, the child records that point back at it.
 		relatedListsUC := usecase.NewRelatedListsUseCase(objectRegistryUC, recordService)
-		recordHandler := delivery.NewRecordHandler(recordService, relatedListsUC)
+		// The extra deps (registry, layouts, authorizer, tags) feed the composite
+		// record-page endpoint, which serves the whole detail page in one response.
+		recordHandler := delivery.NewRecordHandler(recordService, relatedListsUC, objectRegistryUC, layoutUC, permissionUC, tagUseCase)
 
 		// Global search (P6): spans searchable custom objects (record_embeddings)
 		// plus contacts (native index), resolving every hit through RecordService so

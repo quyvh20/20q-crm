@@ -200,6 +200,10 @@ func registerObjectRegistryRoutes(parent *gin.RouterGroup, objectRegistryHandler
 
 	registry.GET("/:slug/records", recordHandler.List)
 	registry.GET("/:slug/records/:id", recordHandler.Get)
+	// Composite record page: schema + record + related lists + tags + resolved
+	// relation/mirror labels in ONE response, so a remote client pays a single
+	// network round trip. Read-level, same as the endpoints it aggregates.
+	registry.GET("/:slug/records/:id/page", recordHandler.GetPage)
 	// Reverse related lists (child records pointing back via a relation field).
 	// Read-level; the per-child List enforces OLS inside RecordService.
 	registry.GET("/:slug/records/:id/related-lists", recordHandler.RelatedLists)

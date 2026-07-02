@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
+  getObjectRecordPage,
   getObjectSchema,
   getObjectRecordUnified,
   deleteObjectRecordUnified,
@@ -24,12 +25,14 @@ import { listPath } from '../features/objects/recordRoutes';
 // The body (ObjectDetailView) renders the admin/role layout when configured and a
 // built-in default "Details" layout otherwise — so the page is never blank.
 //
-// Performance: all five requests (schema, record, related lists, tags, tag
-// palette) fire in one burst, but first paint waits only for schema + record —
-// the two the header and details need. The slower panels (related lists can fan
-// out into many child queries server-side) hydrate in when their responses land,
-// so they can never hold the whole page hostage. Child components receive the
-// data as props: null means "still loading", so they don't start their own fetch.
+// Performance: the page is served by ONE composite request (/records/:id/page)
+// carrying schema, record, related lists, both tag sets, and server-resolved
+// relation/mirror labels — so a remote deployment pays a single network round
+// trip instead of five plus one per relation field. If that endpoint is
+// unavailable (deploy skew, transient failure), the page falls back to the
+// original per-endpoint burst: first paint on schema + record, slower panels
+// hydrating in as they land. Child components receive data as props: null means
+// "still loading", so they don't start their own fetch.
 export default function ObjectRecordPage() {
   const { slug, id } = useParams<{ slug: string; id: string }>();
   const navigate = useNavigate();
@@ -47,6 +50,10 @@ export default function ObjectRecordPage() {
   const [relatedLists, setRelatedLists] = useState<RelatedList[] | null>(null);
   const [recordTags, setRecordTags] = useState<Tag[] | null>(null);
   const [allTags, setAllTags] = useState<Tag[] | null>(null);
+  // Server-resolved display strings (composite endpoint only). undefined means
+  // "not provided" — ObjectDetailView then resolves them itself, as before.
+  const [relationLabels, setRelationLabels] = useState<Record<string, string> | undefined>(undefined);
+  const [mirrorValues, setMirrorValues] = useState<Record<string, string> | undefined>(undefined);
 
   // Guards against a stale load overwriting a newer one (e.g. clicking through
   // to a related record while the first page's slower requests are in flight).
@@ -61,9 +68,31 @@ export default function ObjectRecordPage() {
     setRelatedLists(null);
     setRecordTags(null);
     setAllTags(null);
+    setRelationLabels(undefined);
+    setMirrorValues(undefined);
 
-    // Fire ALL requests at once — related lists and tags only need slug+id
-    // (known from URL params), so nothing waits on anything else.
+    // One request for the whole page. On a remote backend this is the whole
+    // game: every panel arrives together after a single round trip.
+    try {
+      const page = await getObjectRecordPage(slug, id);
+      if (!fresh()) return;
+      setSchema(page.schema);
+      setRecord(page.record);
+      setRelatedLists(page.related_lists ?? []);
+      setRecordTags(page.tags ?? []);
+      setAllTags(page.all_tags ?? []);
+      setRelationLabels(page.relation_labels ?? {});
+      setMirrorValues(page.mirror_values ?? {});
+      setLoading(false);
+      return;
+    } catch {
+      if (!fresh()) return;
+      // Composite endpoint unavailable or failed — fall back to the
+      // per-endpoint burst, which also surfaces the real record error.
+    }
+
+    // Fallback: fire all requests at once — related lists and tags only need
+    // slug+id (known from URL params), so nothing waits on anything else.
     const relatedP = listRecordRelatedLists(slug, id).catch(() => [] as RelatedList[]);
     const tagsP = listRecordTags(slug, id).catch(() => [] as Tag[]);
     const allTagsP = getTags().catch(() => [] as Tag[]);
@@ -194,6 +223,8 @@ export default function ObjectRecordPage() {
             prefetchedRelatedLists={relatedLists}
             prefetchedTags={recordTags}
             prefetchedAllTags={allTags}
+            prefetchedRelationLabels={relationLabels}
+            prefetchedMirrorValues={mirrorValues}
           />
         )}
       </div>

@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"net/http"
 
 	"crm-backend/internal/domain"
@@ -57,25 +58,31 @@ func (h *ObjectRegistryHandler) GetSchema(c *gin.Context) {
 		return
 	}
 
-	// P8 layout fold — only when layouts are wired.
-	if h.layoutUC != nil {
-		if caller, ok := domain.CallerFromContext(c.Request.Context()); ok {
-			var hiddenKeys map[string]bool
-			if h.authz != nil {
-				mask := h.authz.FieldMask(c.Request.Context(), orgID, slug)
-				hiddenKeys = mask.Hidden
-			}
-			// Best-effort: a cache miss or DB error is non-fatal — the frontend
-			// falls back to field order, the same as if no layout existed.
-			if sections, resolveErr := h.layoutUC.ResolveLayout(
-				c.Request.Context(), orgID, slug, caller.Role, hiddenKeys,
-			); resolveErr == nil {
-				descriptor.Layout = sections
-			}
-		}
-	}
+	foldLayout(c.Request.Context(), h.layoutUC, h.authz, orgID, slug, descriptor)
 
 	c.JSON(http.StatusOK, gin.H{"data": descriptor, "error": nil})
+}
+
+// foldLayout resolves the caller's effective detail layout and folds it into the
+// descriptor (P8) — shared by the schema endpoint and the composite record-page
+// endpoint so both serve the identical schema shape. Best-effort: a nil layout
+// usecase, a caller-less context, or a resolve error all simply leave the layout
+// absent, and the frontend falls back to flat field order.
+func foldLayout(ctx context.Context, layoutUC domain.ObjectLayoutUseCase, authz domain.RecordAuthorizer, orgID uuid.UUID, slug string, descriptor *domain.ObjectDescriptor) {
+	if layoutUC == nil || descriptor == nil {
+		return
+	}
+	caller, ok := domain.CallerFromContext(ctx)
+	if !ok {
+		return
+	}
+	var hiddenKeys map[string]bool
+	if authz != nil {
+		hiddenKeys = authz.FieldMask(ctx, orgID, slug).Hidden
+	}
+	if sections, err := layoutUC.ResolveLayout(ctx, orgID, slug, caller.Role, hiddenKeys); err == nil {
+		descriptor.Layout = sections
+	}
 }
 
 // setNumberPrefixBody is the SetNumberPrefix request payload.

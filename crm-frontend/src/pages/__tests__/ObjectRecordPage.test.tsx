@@ -7,6 +7,9 @@ import type { ObjectSchema, UniformRecord } from '../../lib/api';
 // body resolves relations + embeds RecordRelations, and the inline edit form
 // mounts ObjectForm — so every named export those touch must exist here.
 vi.mock('../../lib/api', () => ({
+  // Composite record-page endpoint: rejected by default so the existing tests
+  // exercise the per-endpoint fallback path unchanged.
+  getObjectRecordPage: vi.fn().mockRejectedValue(new Error('unavailable')),
   getObjectSchema: vi.fn(),
   getObjectRecordUnified: vi.fn(),
   deleteObjectRecordUnified: vi.fn(),
@@ -26,6 +29,7 @@ vi.mock('../../lib/api', () => ({
 }));
 
 import {
+  getObjectRecordPage,
   getObjectSchema,
   getObjectRecordUnified,
   deleteObjectRecordUnified,
@@ -71,6 +75,27 @@ beforeEach(() => {
 });
 
 describe('ObjectRecordPage', () => {
+  it('renders the whole page from the composite endpoint without legacy calls', async () => {
+    vi.mocked(getObjectRecordPage).mockResolvedValueOnce({
+      schema: contactSchema,
+      record: contactRecord,
+      related_lists: [],
+      tags: [],
+      all_tags: [],
+      relation_labels: {},
+      mirror_values: {},
+    });
+
+    renderPage();
+
+    await waitFor(() => expect(getObjectRecordPage).toHaveBeenCalledWith('contact', 'p1'));
+    expect((await screen.findAllByText('Jane Smith')).length).toBeGreaterThan(0);
+    expect(screen.getByText('jane@example.com')).toBeInTheDocument();
+    // One request served everything — the per-endpoint fallback never fired.
+    expect(getObjectSchema).not.toHaveBeenCalled();
+    expect(getObjectRecordUnified).not.toHaveBeenCalled();
+  });
+
   it('loads the record by id from the URL and renders a structured page', async () => {
     vi.mocked(getObjectSchema).mockResolvedValue(contactSchema);
     vi.mocked(getObjectRecordUnified).mockResolvedValue(contactRecord);

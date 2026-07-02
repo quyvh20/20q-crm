@@ -21,6 +21,11 @@ interface ObjectDetailViewProps {
   prefetchedRelatedLists?: RelatedList[] | null;
   prefetchedTags?: Tag[] | null;
   prefetchedAllTags?: Tag[] | null;
+  // Server-resolved display strings from the composite record-page endpoint.
+  // When provided, the per-relation/mirror fetches below are skipped entirely
+  // (the stage pseudo-relation stays a client lookup — it has no target slug).
+  prefetchedRelationLabels?: Record<string, string>;
+  prefetchedMirrorValues?: Record<string, string>;
 }
 
 // FieldRow is the shared single-field renderer, used by every section so the
@@ -145,13 +150,34 @@ export function buildDefaultSections(schema: ObjectSchema): LayoutSection[] {
 //  - schema.layout absent/empty → synthesize a default 2-column "Details" section
 //    (buildDefaultSections) so the page is never blank.
 // Layout controls visual priority, not visibility (FLS controls that).
-export default function ObjectDetailView({ schema, record, prefetchedRelatedLists, prefetchedTags, prefetchedAllTags }: ObjectDetailViewProps) {
-  const [relationLabels, setRelationLabels] = useState<Record<string, string>>({});
-  const [mirrorValues, setMirrorValues] = useState<Record<string, string>>({});
+export default function ObjectDetailView({
+  schema,
+  record,
+  prefetchedRelatedLists,
+  prefetchedTags,
+  prefetchedAllTags,
+  prefetchedRelationLabels,
+  prefetchedMirrorValues,
+}: ObjectDetailViewProps) {
+  const [relationLabels, setRelationLabels] = useState<Record<string, string>>(prefetchedRelationLabels ?? {});
+  const [mirrorValues, setMirrorValues] = useState<Record<string, string>>(prefetchedMirrorValues ?? {});
+  // Managed mode: the composite endpoint already resolved these server-side,
+  // so the per-target fetches below are skipped.
+  const managedLabels = prefetchedRelationLabels !== undefined;
+  const managedMirrors = prefetchedMirrorValues !== undefined;
+
+  // Keep state in sync when the parent reloads with a new payload.
+  useEffect(() => {
+    if (prefetchedRelationLabels) setRelationLabels(prefetchedRelationLabels);
+  }, [prefetchedRelationLabels]);
+  useEffect(() => {
+    if (prefetchedMirrorValues) setMirrorValues(prefetchedMirrorValues);
+  }, [prefetchedMirrorValues]);
 
   // Resolve mirror fields: follow each mirror's via relation to the linked record
   // and read its source field. Best-effort per field; an unreadable link shows "—".
   useEffect(() => {
+    if (managedMirrors) return;
     let cancelled = false;
     const byKey = Object.fromEntries(schema.fields.map((f) => [f.key, f]));
     const mirrors = schema.fields.filter((f) => f.type === 'mirror' && f.via_field && f.source_field);
@@ -181,18 +207,21 @@ export default function ObjectDetailView({ schema, record, prefetchedRelatedList
     return () => {
       cancelled = true;
     };
-  }, [schema, record]);
+  }, [schema, record, managedMirrors]);
 
   useEffect(() => {
     let cancelled = false;
-    const relations = schema.fields.filter(
-      (f) => f.type === 'relation' && f.target_slug && record.fields[f.key],
-    );
+    // In managed mode the server resolved every typed relation; only the stage
+    // pseudo-relation (empty target slug) still needs the client-side lookup
+    // against the pipeline-stage list.
+    const relations = managedLabels
+      ? []
+      : schema.fields.filter((f) => f.type === 'relation' && f.target_slug && record.fields[f.key]);
     const stageField = schema.fields.find(
       (f) => f.key === 'stage' && f.type === 'relation' && !f.target_slug && record.fields[f.key],
     );
     if (relations.length === 0 && !stageField) {
-      setRelationLabels({});
+      if (!managedLabels) setRelationLabels({});
       return;
     }
     Promise.all([
@@ -216,14 +245,16 @@ export default function ObjectDetailView({ schema, record, prefetchedRelatedList
         : []),
     ]).then((pairs) => {
       if (cancelled) return;
-      const map: Record<string, string> = {};
+      // Seed from the server-resolved labels (managed mode) so the stage label
+      // merges in rather than clobbering them.
+      const map: Record<string, string> = managedLabels ? { ...prefetchedRelationLabels } : {};
       for (const [k, v] of pairs) if (v) map[k] = v;
       setRelationLabels(map);
     });
     return () => {
       cancelled = true;
     };
-  }, [schema, record]);
+  }, [schema, record, managedLabels, prefetchedRelationLabels]);
 
   // A configured (admin/role) layout takes precedence; otherwise the built-in
   // default keeps the page structured and never blank.
