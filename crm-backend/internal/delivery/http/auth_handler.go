@@ -33,16 +33,33 @@ const (
 	refreshCookieMaxAge = 7 * 24 * 60 * 60
 )
 
-// sameSiteMode maps the configured policy to the http enum. Defaults to Lax.
-func sameSiteMode(s string) http.SameSite {
-	switch strings.ToLower(s) {
-	case "strict":
-		return http.SameSiteStrictMode
-	case "none":
-		return http.SameSiteNoneMode
-	default:
-		return http.SameSiteLaxMode
+// requestIsHTTPS reports whether the request reached us over TLS, accounting for
+// a terminating proxy (Railway/Cloudflare) that sets X-Forwarded-Proto.
+func requestIsHTTPS(c *gin.Context) bool {
+	if c.Request.TLS != nil {
+		return true
 	}
+	return strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https")
+}
+
+// cookiePolicy chooses the SameSite mode + Secure flag for the auth cookies,
+// per-request so no env var is required. Any HTTPS request (production, where the
+// SPA and API are typically cross-site — Cloudflare Pages + a separate API host)
+// gets SameSite=None; Secure, without which the browser won't send the refresh
+// cookie on cross-origin requests and login silently loops back to the sign-in
+// page. Plain-http local dev gets Lax. An explicit COOKIE_SAMESITE=strict is
+// honored (locks the cookie to same-site).
+func cookiePolicy(c *gin.Context, cfg *config.Config) (http.SameSite, bool) {
+	if strings.EqualFold(cfg.CookieSameSite, "strict") {
+		return http.SameSiteStrictMode, cfg.CookieSecure
+	}
+	if requestIsHTTPS(c) {
+		return http.SameSiteNoneMode, true
+	}
+	if strings.EqualFold(cfg.CookieSameSite, "none") {
+		return http.SameSiteNoneMode, true
+	}
+	return http.SameSiteLaxMode, cfg.CookieSecure
 }
 
 func newCSRFToken() string {
@@ -55,13 +72,7 @@ func newCSRFToken() string {
 // and the readable csrf_token cookie used by the double-submit check. Called on
 // every token-minting response (login, register, refresh, switch, OAuth). P2.
 func setAuthCookies(c *gin.Context, cfg *config.Config, refreshToken string) {
-	mode := sameSiteMode(cfg.CookieSameSite)
-	secure := cfg.CookieSecure
-	// SameSite=None is invalid without Secure — browsers drop the cookie — so
-	// force Secure in that case rather than silently failing.
-	if mode == http.SameSiteNoneMode {
-		secure = true
-	}
+	mode, secure := cookiePolicy(c, cfg)
 	c.SetSameSite(mode)
 	c.SetCookie(refreshCookieName, refreshToken, refreshCookieMaxAge, "/api/auth", cfg.CookieDomain, secure, true)
 	c.SetCookie(csrfCookieName, newCSRFToken(), refreshCookieMaxAge, "/", cfg.CookieDomain, secure, false)
@@ -69,11 +80,7 @@ func setAuthCookies(c *gin.Context, cfg *config.Config, refreshToken string) {
 
 // clearAuthCookies expires both cookies (logout / failed refresh).
 func clearAuthCookies(c *gin.Context, cfg *config.Config) {
-	mode := sameSiteMode(cfg.CookieSameSite)
-	secure := cfg.CookieSecure
-	if mode == http.SameSiteNoneMode {
-		secure = true
-	}
+	mode, secure := cookiePolicy(c, cfg)
 	c.SetSameSite(mode)
 	c.SetCookie(refreshCookieName, "", -1, "/api/auth", cfg.CookieDomain, secure, true)
 	c.SetCookie(csrfCookieName, "", -1, "/", cfg.CookieDomain, secure, false)

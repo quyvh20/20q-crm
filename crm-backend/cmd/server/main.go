@@ -108,7 +108,7 @@ func main() {
 	})
 
 	router.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{cfg.FrontendURL, "http://localhost:5173", "https://20q-crm.pages.dev"},
+		AllowOrigins:     delivery.AllowedOrigins(cfg.FrontendURL),
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "X-CSRF-Token"},
 		ExposeHeaders:    []string{"Content-Length"},

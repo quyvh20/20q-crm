@@ -255,28 +255,60 @@ func RequireVerifiedEmail(authRepo domain.AuthRepository) gin.HandlerFunc {
 	}
 }
 
-// CSRFProtect guards the cookie-authenticated auth routes (/refresh, /logout)
-// with a double-submit token. It only enforces when the request actually relies
-// on the ambient refresh cookie: a request that carries the refresh token in its
-// body instead (the one-release localStorage shim) is not a CSRF vector — an
-// attacker can't read the victim's stored token — so it's allowed through for
-// the handler to validate. When the refresh cookie IS present, the readable
-// csrf_token cookie must match the X-CSRF-Token header.
-func CSRFProtect() gin.HandlerFunc {
+// AllowedOrigins is the single source of truth for the browser origins the API
+// trusts — used by both CORS and CSRF. Keep in sync with the deployment: the
+// configured frontend URL plus local dev and the Cloudflare Pages host.
+func AllowedOrigins(frontendURL string) []string {
+	return []string{frontendURL, "http://localhost:5173", "https://20q-crm.pages.dev"}
+}
+
+func normalizeOrigin(s string) string { return strings.TrimRight(strings.TrimSpace(s), "/") }
+
+// CSRFProtect guards the cookie-authenticated auth routes (/refresh, /logout).
+// It only enforces when the request actually relies on the ambient refresh
+// cookie: a request that carries the refresh token in its body instead (the
+// one-release localStorage shim) is not a CSRF vector, so it passes through.
+//
+// Primary defense is Origin validation: browsers set the Origin header on
+// cross-origin state-changing requests and JS cannot forge it, so a forged
+// request from a malicious site carries a non-allowlisted Origin and is rejected.
+// This is the CSRF defense that actually works cross-site (Cloudflare Pages
+// frontend + separate API host), where the SPA can't read the API-domain
+// csrf_token cookie via document.cookie. When no Origin header is present (rare;
+// some same-origin requests), it falls back to the same-site double-submit token.
+func CSRFProtect(allowedOrigins []string) gin.HandlerFunc {
+	allowed := make(map[string]bool, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		if n := normalizeOrigin(o); n != "" {
+			allowed[n] = true
+		}
+	}
 	return func(c *gin.Context) {
 		refreshCookie, _ := c.Cookie(refreshCookieName)
 		if refreshCookie == "" {
-			c.Next()
+			c.Next() // body-token shim — not a CSRF vector
 			return
 		}
-		csrfCookie, _ := c.Cookie(csrfCookieName)
-		header := c.GetHeader("X-CSRF-Token")
-		if csrfCookie == "" || header == "" ||
-			subtle.ConstantTimeCompare([]byte(csrfCookie), []byte(header)) != 1 {
+
+		// Origin check (works cross-site).
+		if origin := c.GetHeader("Origin"); origin != "" {
+			if allowed[normalizeOrigin(origin)] {
+				c.Next()
+				return
+			}
 			c.AbortWithStatusJSON(http.StatusForbidden, domain.Err(domain.ErrMissingCSRFToken.Message))
 			return
 		}
-		c.Next()
+
+		// No Origin header → fall back to the same-site double-submit token.
+		csrfCookie, _ := c.Cookie(csrfCookieName)
+		header := c.GetHeader("X-CSRF-Token")
+		if csrfCookie != "" && header != "" &&
+			subtle.ConstantTimeCompare([]byte(csrfCookie), []byte(header)) == 1 {
+			c.Next()
+			return
+		}
+		c.AbortWithStatusJSON(http.StatusForbidden, domain.Err(domain.ErrMissingCSRFToken.Message))
 	}
 }
 

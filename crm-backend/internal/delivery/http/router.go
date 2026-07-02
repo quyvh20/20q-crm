@@ -16,6 +16,10 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 	// group; fails open and no-ops without Redis.
 	authRateLimit := RateLimitByIP(redisClient, authIPRateLimit, authIPRateWindow)
 
+	// CSRF for the cookie-authenticated auth routes validates the request Origin
+	// against the trusted set (same list CORS uses).
+	csrf := CSRFProtect(AllowedOrigins(cfg.FrontendURL))
+
 	// P3 authorization gates. permissionUC is the single OLS + capability engine
 	// (it implements both RecordAuthorizer and CapabilityChecker), so every layer —
 	// data CRUD, admin powers, ancillary writes — keys off the caller's role_id
@@ -35,8 +39,8 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 		auth.POST("/login", authRateLimit, authHandler.Login)
 		// refresh + logout are cookie-authenticated, so they carry the CSRF
 		// double-submit check (enforced only when the refresh cookie is present).
-		auth.POST("/refresh", authRateLimit, CSRFProtect(), authHandler.Refresh)
-		auth.POST("/logout", CSRFProtect(), authHandler.Logout)
+		auth.POST("/refresh", authRateLimit, csrf, authHandler.Refresh)
+		auth.POST("/logout", csrf, authHandler.Logout)
 
 		// Account recovery + verification (P1). forgot/reset/verify are public
 		// (token-authenticated); resend-verification is for the logged-in user.
