@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"time"
 )
@@ -28,13 +29,10 @@ type resendPayload struct {
 	HTML    string `json:"html"`
 }
 
-func (m *ResendMailer) SendInvite(ctx context.Context, to, inviteLink, orgName string) error {
-	payload := resendPayload{
-		From:    m.From,
-		To:      to,
-		Subject: fmt.Sprintf("You've been invited to join %s", orgName),
-		HTML:    fmt.Sprintf("<p>You have been invited to join <strong>%s</strong> in the CRM.</p><p><a href='%s'>Click here to accept your invitation</a></p>", orgName, inviteLink),
-	}
+// send POSTs one email to the Resend API. Shared by every Send* method so the
+// HTTP/auth/timeout handling lives in one place.
+func (m *ResendMailer) send(ctx context.Context, to, subject, htmlBody string) error {
+	payload := resendPayload{From: m.From, To: to, Subject: subject, HTML: htmlBody}
 
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -61,4 +59,37 @@ func (m *ResendMailer) SendInvite(ctx context.Context, to, inviteLink, orgName s
 	}
 
 	return nil
+}
+
+func (m *ResendMailer) SendInvite(ctx context.Context, to, inviteLink, orgName string) error {
+	subject := fmt.Sprintf("You've been invited to join %s", orgName)
+	body := ctaEmail(
+		"You've been invited",
+		fmt.Sprintf("You have been invited to join <strong>%s</strong> in the CRM.", html.EscapeString(orgName)),
+		"Accept invitation", inviteLink,
+	)
+	return m.send(ctx, to, subject, body)
+}
+
+func (m *ResendMailer) SendPasswordReset(ctx context.Context, to, resetLink string) error {
+	body := ctaEmail(
+		"Reset your password",
+		"We received a request to reset your password. Click the button below to choose a new one. This link expires in 1 hour and can be used once. If you didn't request this, you can safely ignore this email.",
+		"Reset password", resetLink,
+	)
+	return m.send(ctx, to, "Reset your password", body)
+}
+
+func (m *ResendMailer) SendVerification(ctx context.Context, to, verifyLink string) error {
+	body := ctaEmail(
+		"Verify your email",
+		"Confirm this is your email address to finish setting up your account. This link expires in 24 hours.",
+		"Verify email", verifyLink,
+	)
+	return m.send(ctx, to, "Verify your email address", body)
+}
+
+func (m *ResendMailer) SendSecurityAlert(ctx context.Context, to, subject, message string) error {
+	body := plainEmail(subject, message)
+	return m.send(ctx, to, subject, body)
 }

@@ -86,6 +86,82 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 	c.JSON(http.StatusOK, domain.Success(gin.H{"message": "logged out successfully"}))
 }
 
+// requestMeta pulls transport-level detail for the auth event log.
+func requestMeta(c *gin.Context) domain.RequestMeta {
+	return domain.RequestMeta{IP: c.ClientIP(), UserAgent: c.Request.UserAgent()}
+}
+
+func (h *AuthHandler) ForgotPassword(c *gin.Context) {
+	var input domain.ForgotPasswordInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, domain.Err(err.Error()))
+		return
+	}
+
+	debugToken, err := h.authUC.ForgotPassword(c.Request.Context(), input, requestMeta(c))
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+
+	// Always the same message — never reveal whether the email exists.
+	resp := gin.H{"message": "If an account exists for that email, a password reset link has been sent."}
+	if debugToken != nil {
+		resp["debug_token"] = *debugToken
+	}
+	c.JSON(http.StatusOK, domain.Success(resp))
+}
+
+func (h *AuthHandler) ResetPassword(c *gin.Context) {
+	var input domain.ResetPasswordInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, domain.Err(err.Error()))
+		return
+	}
+
+	if err := h.authUC.ResetPassword(c.Request.Context(), input, requestMeta(c)); err != nil {
+		handleAppError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, domain.Success(gin.H{"message": "Your password has been reset. Please sign in with your new password."}))
+}
+
+func (h *AuthHandler) VerifyEmail(c *gin.Context) {
+	var input domain.VerifyEmailInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, domain.Err(err.Error()))
+		return
+	}
+
+	if err := h.authUC.VerifyEmail(c.Request.Context(), input); err != nil {
+		handleAppError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, domain.Success(gin.H{"message": "Your email address has been verified."}))
+}
+
+func (h *AuthHandler) ResendVerification(c *gin.Context) {
+	userID, ok := GetUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+
+	debugToken, err := h.authUC.ResendVerification(c.Request.Context(), userID, requestMeta(c))
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+
+	resp := gin.H{"message": "Verification email sent."}
+	if debugToken != nil {
+		resp["debug_token"] = *debugToken
+	}
+	c.JSON(http.StatusOK, domain.Success(resp))
+}
+
 func (h *AuthHandler) Me(c *gin.Context) {
 	userID, ok := GetUserID(c)
 	if !ok {

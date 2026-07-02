@@ -4,7 +4,7 @@ import GlobalSearch from "./components/common/GlobalSearch";
 import AIUsageWidget from "./components/settings/AIUsageWidget";
 import WelcomeModal from "./components/onboarding/WelcomeModal";
 import WorkspaceSwitcher from "./components/common/WorkspaceSwitcher";
-import { getObjectDefs, getFieldDefs, type CustomObjectDef } from "./lib/api";
+import { getObjectDefs, getFieldDefs, resendVerification, type CustomObjectDef } from "./lib/api";
 
 interface AppLayoutProps {
   children?: React.ReactNode;
@@ -15,6 +15,24 @@ export default function AppLayout({ children }: AppLayoutProps) {
   const [customObjects, setCustomObjects] = useState<CustomObjectDef[]>([]);
   const [showWelcome, setShowWelcome] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+
+  // Soft-gate email verification (P1): show a persistent banner with a resend
+  // action until the user confirms their email.
+  const [verifyState, setVerifyState] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
+  const [verifyMsg, setVerifyMsg] = useState('');
+  const needsVerify = !!user && !user.email_verified_at;
+
+  const handleResend = async () => {
+    setVerifyState('sending');
+    try {
+      await resendVerification();
+      setVerifyState('sent');
+      setVerifyMsg('Verification email sent — check your inbox.');
+    } catch (err) {
+      setVerifyState('error');
+      setVerifyMsg(err instanceof Error ? err.message : 'Could not send verification email.');
+    }
+  };
 
   useEffect(() => {
     Promise.all([
@@ -108,6 +126,26 @@ export default function AppLayout({ children }: AppLayoutProps) {
             )}
           </div>
         </header>
+        {needsVerify && (
+          <div className="border-b border-amber-500/30 bg-amber-500/10 px-6 py-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+            <span className="text-amber-700 dark:text-amber-300">
+              Please verify your email{user?.email ? ` (${user.email})` : ''} to keep full access.
+            </span>
+            {verifyState === 'sent' || verifyState === 'error' ? (
+              <span className={verifyState === 'sent' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}>
+                {verifyMsg}
+              </span>
+            ) : (
+              <button
+                onClick={handleResend}
+                disabled={verifyState === 'sending'}
+                className="font-medium text-amber-700 dark:text-amber-300 underline hover:no-underline disabled:opacity-60"
+              >
+                {verifyState === 'sending' ? 'Sending…' : 'Resend verification email'}
+              </button>
+            )}
+          </div>
+        )}
         <main className="flex-1 overflow-auto p-6">
           {children || (
             <div className="flex h-full items-center justify-center border-2 border-dashed border-muted rounded-xl">

@@ -10,21 +10,31 @@ const GOOGLE_ERROR_MESSAGES: Record<string, string> = {
   google_login_failed: 'Google sign-in failed. Please try again.',
 };
 
+const NOTICE_MESSAGES: Record<string, string> = {
+  'password-reset': 'Your password has been reset. Please sign in with your new password.',
+  'invitation-accepted': 'Invitation accepted. Please sign in to continue.',
+};
+
 export default function LoginPage() {
   const { login } = useAuth();
   const [searchParams] = useSearchParams();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(false);
 
-  // Show Google OAuth errors from redirect
+  // Show Google OAuth errors and post-action notices from redirect
   useEffect(() => {
     const errCode = searchParams.get('error');
     if (errCode) {
       const detail = searchParams.get('detail');
       const baseMsg = GOOGLE_ERROR_MESSAGES[errCode] || `Sign-in error: ${errCode}`;
       setError(detail ? `${baseMsg} (${detail})` : baseMsg);
+    }
+    const msg = searchParams.get('message');
+    if (msg) {
+      setNotice(NOTICE_MESSAGES[msg] || '');
     }
   }, [searchParams]);
 
@@ -80,6 +90,13 @@ export default function LoginPage() {
             <div className="flex-1 h-px bg-slate-700"></div>
           </div>
 
+          {/* Notice (e.g. after a successful password reset) */}
+          {notice && (
+            <div className="mb-4 p-3 rounded-xl bg-green-500/10 border border-green-500/20 text-green-300 text-sm">
+              {notice}
+            </div>
+          )}
+
           {/* Error */}
           {error && (
             <div className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
@@ -105,9 +122,14 @@ export default function LoginPage() {
             </div>
 
             <div>
-              <label htmlFor="login-password" className="block text-sm font-medium text-slate-300 mb-1.5">
-                Password
-              </label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label htmlFor="login-password" className="block text-sm font-medium text-slate-300">
+                  Password
+                </label>
+                <a href="/forgot-password" className="text-sm text-blue-400 hover:text-blue-300 font-medium transition-colors">
+                  Forgot password?
+                </a>
+              </div>
               <input
                 id="login-password"
                 type="password"

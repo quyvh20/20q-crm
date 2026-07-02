@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"time"
 
@@ -26,6 +27,12 @@ const (
 	accessTokenDuration  = 2 * time.Hour
 	refreshTokenDuration = 7 * 24 * time.Hour
 	refreshTokenBytes    = 32
+
+	// Account-recovery token lifetimes (P1). Reset is short-lived; verification
+	// is longer since it may sit in an inbox. Resend is throttled per user.
+	passwordResetTokenDuration     = time.Hour
+	emailVerificationTokenDuration = 24 * time.Hour
+	resendVerificationCooldown     = time.Minute
 )
 
 type authUseCase struct {
@@ -33,6 +40,8 @@ type authUseCase struct {
 	stageRepo   domain.PipelineStageRepository
 	cfg         *config.Config
 	oauthConfig *oauth2.Config
+	mailer      domain.Mailer
+	appEnv      string
 }
 
 var defaultPipelineStages = []struct {
@@ -49,7 +58,7 @@ var defaultPipelineStages = []struct {
 	{"Closed Won",  "#10B981", true,  false, 4},
 }
 
-func NewAuthUseCase(repo domain.AuthRepository, stageRepo domain.PipelineStageRepository, cfg *config.Config) domain.AuthUseCase {
+func NewAuthUseCase(repo domain.AuthRepository, stageRepo domain.PipelineStageRepository, cfg *config.Config, mailer domain.Mailer, appEnv string) domain.AuthUseCase {
 	var oauthCfg *oauth2.Config
 	if cfg.GoogleClientID != "" {
 		oauthCfg = &oauth2.Config{
@@ -65,6 +74,8 @@ func NewAuthUseCase(repo domain.AuthRepository, stageRepo domain.PipelineStageRe
 		stageRepo:   stageRepo,
 		cfg:         cfg,
 		oauthConfig: oauthCfg,
+		mailer:      mailer,
+		appEnv:      appEnv,
 	}
 }
 
@@ -146,6 +157,15 @@ func (uc *authUseCase) Register(ctx context.Context, input domain.RegisterInput)
 	if err := uc.authRepo.CreateOrgUser(ctx, ou); err != nil {
 		return nil, domain.NewAppError(500, "Create org user err: " + err.Error())
 	}
+
+	// Soft-gate email verification (plan D2): the account is fully active and
+	// logged in immediately; we just email a verification link and drive a
+	// banner off User.EmailVerifiedAt. Best-effort — never fail registration if
+	// the email can't be sent (the user can resend from the banner).
+	if _, err := uc.issueVerificationEmail(ctx, user); err != nil {
+		log.Printf("register: failed to issue verification email for %s: %v", user.Email, err)
+	}
+	uc.recordAuthEvent(ctx, "auth", "user.registered", orgPtr(org.ID), &user.ID, &user.ID, domain.RequestMeta{}, nil)
 
 	accessToken, err := uc.generateAccessToken(user.ID, org.ID, ownerRole.Name)
 	if err != nil {
@@ -492,6 +512,12 @@ func (uc *authUseCase) GoogleLogin(ctx context.Context, code string) (*domain.Au
 			if googleUser.Picture != "" {
 				user.AvatarURL = &googleUser.Picture
 			}
+			// Google has already verified this email, so a linked local account
+			// is verified too — never soft-gate an OAuth user.
+			if user.EmailVerifiedAt == nil && googleUser.VerifiedEmail {
+				now := time.Now()
+				user.EmailVerifiedAt = &now
+			}
 			if err := uc.authRepo.UpdateUser(ctx, user); err != nil {
 				return nil, domain.ErrInternal
 			}
@@ -518,6 +544,11 @@ func (uc *authUseCase) GoogleLogin(ctx context.Context, code string) (*domain.Au
 				Role:      "admin",
 				GoogleID:  &googleUser.ID,
 				AvatarURL: &googleUser.Picture,
+			}
+			// Google-provided emails are pre-verified.
+			if googleUser.VerifiedEmail {
+				now := time.Now()
+				user.EmailVerifiedAt = &now
 			}
 			if err := uc.authRepo.CreateUser(ctx, user); err != nil {
 				return nil, domain.ErrInternal
@@ -644,4 +675,258 @@ func (uc *authUseCase) createRefreshToken(ctx context.Context, userID uuid.UUID)
 func hashToken(token string) string {
 	h := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(h[:])
+}
+
+// generateSecureToken returns a 256-bit CSPRNG token as hex — the raw value that
+// goes in an email link. Only its SHA-256 hash is ever persisted.
+func generateSecureToken() (string, error) {
+	b := make([]byte, refreshTokenBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// orgPtr converts a value org id to the pointer AuthEvent.OrgID wants (nil for
+// the zero uuid, i.e. "no org").
+func orgPtr(id uuid.UUID) *uuid.UUID {
+	if id == uuid.Nil {
+		return nil
+	}
+	return &id
+}
+
+// recordAuthEvent appends one auth/admin/security event. Best-effort, mirroring
+// object_audit: a write failure is logged and swallowed so it can never fail the
+// user action that triggered it.
+func (uc *authUseCase) recordAuthEvent(ctx context.Context, category, eventType string, orgID, actorID, targetID *uuid.UUID, meta domain.RequestMeta, metadata map[string]interface{}) {
+	if metadata == nil {
+		metadata = map[string]interface{}{}
+	}
+	raw, err := json.Marshal(metadata)
+	if err != nil {
+		raw = []byte("{}")
+	}
+	e := &domain.AuthEvent{
+		OrgID:     orgID,
+		ActorID:   actorID,
+		TargetID:  targetID,
+		Category:  category,
+		EventType: eventType,
+		Metadata:  domain.JSON(raw),
+	}
+	if meta.IP != "" {
+		ip := meta.IP
+		e.IP = &ip
+	}
+	if meta.UserAgent != "" {
+		ua := meta.UserAgent
+		e.UserAgent = &ua
+	}
+	if err := uc.authRepo.WriteAuthEvent(ctx, e); err != nil {
+		log.Printf("auth_events: failed to record %s/%s: %v", category, eventType, err)
+	}
+}
+
+// issueVerificationEmail mints a hashed, single-use verification token and emails
+// the link. Shared by register and resend. Returns the raw token so callers can
+// expose a debug token in non-prod. A mail-send failure is logged, not fatal
+// (the token is valid; the user can resend).
+func (uc *authUseCase) issueVerificationEmail(ctx context.Context, user *domain.User) (string, error) {
+	rawToken, err := generateSecureToken()
+	if err != nil {
+		return "", err
+	}
+	evt := &domain.EmailVerificationToken{
+		UserID:    user.ID,
+		TokenHash: hashToken(rawToken),
+		ExpiresAt: time.Now().Add(emailVerificationTokenDuration),
+	}
+	if err := uc.authRepo.CreateEmailVerificationToken(ctx, evt); err != nil {
+		return "", err
+	}
+	link := fmt.Sprintf("%s/verify-email?token=%s", uc.cfg.FrontendURL, rawToken)
+	if err := uc.mailer.SendVerification(ctx, user.Email, link); err != nil {
+		log.Printf("verification email send failed for %s: %v", user.Email, err)
+	}
+	return rawToken, nil
+}
+
+// ForgotPassword issues a reset token and emails the link. It ALWAYS reports
+// success (no account enumeration): the caller-facing response is identical
+// whether or not the email exists. A debug token is returned only in non-prod.
+func (uc *authUseCase) ForgotPassword(ctx context.Context, input domain.ForgotPasswordInput, meta domain.RequestMeta) (*string, error) {
+	user, err := uc.authRepo.GetUserByEmail(ctx, input.Email)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+	if user == nil {
+		// Unknown email — succeed silently so existence can't be probed.
+		return nil, nil
+	}
+
+	rawToken, err := generateSecureToken()
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+	prt := &domain.PasswordResetToken{
+		UserID:    user.ID,
+		TokenHash: hashToken(rawToken),
+		ExpiresAt: time.Now().Add(passwordResetTokenDuration),
+	}
+	if err := uc.authRepo.CreatePasswordResetToken(ctx, prt); err != nil {
+		return nil, domain.ErrInternal
+	}
+
+	// Send the email and write the audit event OFF the request path (detached
+	// context — the request context is canceled once the handler returns). This
+	// keeps response latency independent of whether the account exists: both the
+	// existing- and unknown-email branches now return after the same fast DB work
+	// instead of the existing branch blocking on the Resend round-trip, which
+	// would otherwise be a timing oracle for account enumeration.
+	link := fmt.Sprintf("%s/reset-password?token=%s", uc.cfg.FrontendURL, rawToken)
+	email := user.Email
+	orgID := orgPtr(user.OrgID)
+	targetID := user.ID
+	go func() {
+		bg, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := uc.mailer.SendPasswordReset(bg, email, link); err != nil {
+			log.Printf("forgot-password: failed to send reset email to %s: %v", email, err)
+		}
+		uc.recordAuthEvent(bg, "security", "password.reset_requested", orgID, nil, &targetID, meta, nil)
+	}()
+
+	if uc.appEnv != "production" {
+		return &rawToken, nil
+	}
+	return nil, nil
+}
+
+// ResetPassword consumes a reset token, sets the new password, and invalidates
+// every existing session by revoking all of the user's refresh tokens (P1's
+// session-kill; instant access-token invalidation via token_version lands in
+// P2). The token is single-use and short-TTL.
+func (uc *authUseCase) ResetPassword(ctx context.Context, input domain.ResetPasswordInput, meta domain.RequestMeta) error {
+	if err := validatePassword(input.Password); err != nil {
+		return err
+	}
+
+	prt, err := uc.authRepo.GetPasswordResetTokenByHash(ctx, hashToken(input.Token))
+	if err != nil {
+		return domain.ErrInternal
+	}
+	if prt == nil || prt.UsedAt != nil || time.Now().After(prt.ExpiresAt) {
+		return domain.ErrInvalidResetToken
+	}
+
+	user, err := uc.authRepo.GetUserByID(ctx, prt.UserID)
+	if err != nil || user == nil {
+		return domain.ErrInvalidResetToken
+	}
+
+	// Atomically claim the token BEFORE mutating the password. Exactly one caller
+	// gets claimed == 1; a replay or a concurrent request gets 0 and is rejected.
+	// Claiming first is fail-closed: a claimed-but-not-applied token just needs a
+	// fresh reset request — strictly safer than leaving it replayable.
+	claimed, err := uc.authRepo.MarkPasswordResetTokenUsed(ctx, prt.ID)
+	if err != nil {
+		return domain.ErrInternal
+	}
+	if claimed == 0 {
+		return domain.ErrInvalidResetToken
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcryptCost)
+	if err != nil {
+		return domain.ErrInternal
+	}
+	hashStr := string(hash)
+	user.PasswordHash = &hashStr
+	// Completing a reset proves control of the inbox, so verify the email too.
+	if user.EmailVerifiedAt == nil {
+		now := time.Now()
+		user.EmailVerifiedAt = &now
+	}
+	if err := uc.authRepo.UpdateUser(ctx, user); err != nil {
+		return domain.ErrInternal
+	}
+
+	// Invalidate every outstanding session.
+	_ = uc.authRepo.RevokeAllUserRefreshTokens(ctx, user.ID)
+
+	if err := uc.mailer.SendSecurityAlert(ctx, user.Email, "Your password was changed",
+		"Your Guerrilla CRM password was just changed. If this was you, no action is needed. If you did not do this, reset your password immediately and contact your workspace admin."); err != nil {
+		log.Printf("reset-password: failed to send security alert to %s: %v", user.Email, err)
+	}
+	uc.recordAuthEvent(ctx, "security", "password.reset", orgPtr(user.OrgID), &user.ID, &user.ID, meta, nil)
+
+	return nil
+}
+
+// VerifyEmail consumes a verification token and stamps EmailVerifiedAt. Public
+// (token-authenticated); idempotent if already verified.
+func (uc *authUseCase) VerifyEmail(ctx context.Context, input domain.VerifyEmailInput) error {
+	evt, err := uc.authRepo.GetEmailVerificationTokenByHash(ctx, hashToken(input.Token))
+	if err != nil {
+		return domain.ErrInternal
+	}
+	if evt == nil || evt.UsedAt != nil || time.Now().After(evt.ExpiresAt) {
+		return domain.ErrInvalidVerifyToken
+	}
+
+	user, err := uc.authRepo.GetUserByID(ctx, evt.UserID)
+	if err != nil || user == nil {
+		return domain.ErrInvalidVerifyToken
+	}
+
+	// Atomically claim the token (single-use) before applying verification, so a
+	// replay or concurrent request can't consume it twice.
+	claimed, err := uc.authRepo.MarkEmailVerificationTokenUsed(ctx, evt.ID)
+	if err != nil {
+		return domain.ErrInternal
+	}
+	if claimed == 0 {
+		return domain.ErrInvalidVerifyToken
+	}
+
+	if user.EmailVerifiedAt == nil {
+		now := time.Now()
+		user.EmailVerifiedAt = &now
+		if err := uc.authRepo.UpdateUser(ctx, user); err != nil {
+			return domain.ErrInternal
+		}
+	}
+	uc.recordAuthEvent(ctx, "security", "email.verified", orgPtr(user.OrgID), &user.ID, &user.ID, domain.RequestMeta{}, nil)
+
+	return nil
+}
+
+// ResendVerification re-issues a verification email for the authenticated user.
+// No-op success if already verified; throttled per user (a lightweight cooldown
+// until the P2 rate-limit middleware lands).
+func (uc *authUseCase) ResendVerification(ctx context.Context, userID uuid.UUID, meta domain.RequestMeta) (*string, error) {
+	user, err := uc.authRepo.GetUserByID(ctx, userID)
+	if err != nil || user == nil {
+		return nil, domain.ErrUserNotFound
+	}
+	if user.EmailVerifiedAt != nil {
+		return nil, nil // already verified — nothing to do
+	}
+
+	if latest, _ := uc.authRepo.GetLatestEmailVerificationToken(ctx, userID); latest != nil &&
+		time.Since(latest.CreatedAt) < resendVerificationCooldown {
+		return nil, domain.ErrResendTooSoon
+	}
+
+	rawToken, err := uc.issueVerificationEmail(ctx, user)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+	uc.recordAuthEvent(ctx, "security", "email.verification_sent", orgPtr(user.OrgID), &userID, &userID, meta, nil)
+
+	if uc.appEnv != "production" {
+		return &rawToken, nil
+	}
+	return nil, nil
 }

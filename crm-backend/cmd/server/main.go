@@ -404,6 +404,64 @@ func main() {
 		db.Exec(`ALTER TABLE object_fields ADD COLUMN IF NOT EXISTS via_field VARCHAR(100)`)
 		db.Exec(`ALTER TABLE object_fields ADD COLUMN IF NOT EXISTS source_field VARCHAR(100)`)
 
+		// Auth + admin event log (migration 000025, P0) — boot guard, since
+		// golang-migrate is authoritative only for fresh DBs and existing prod
+		// schema is maintained here. Mirrors migrations/000025_auth_events.up.sql.
+		db.Exec(`CREATE TABLE IF NOT EXISTS auth_events (
+			id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			org_id      UUID REFERENCES organizations(id) ON DELETE CASCADE,
+			actor_id    UUID REFERENCES users(id) ON DELETE SET NULL,
+			target_id   UUID,
+			category    VARCHAR(20)  NOT NULL,
+			event_type  VARCHAR(60)  NOT NULL,
+			ip          INET,
+			user_agent  TEXT,
+			metadata    JSONB NOT NULL DEFAULT '{}',
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_auth_events_org   ON auth_events(org_id, created_at DESC)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_auth_events_actor ON auth_events(actor_id, created_at DESC)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_auth_events_type  ON auth_events(org_id, event_type, created_at DESC)`)
+		db.Exec(`ALTER TABLE auth_events ENABLE ROW LEVEL SECURITY`)
+
+		// Account recovery + email verification (migration 000026, P1) — boot
+		// guard. Mirrors migrations/000026_account_recovery.up.sql. The DO block
+		// adds email_verified_at AND grandfathers existing users as verified in
+		// ONE guarded step, so the backfill runs exactly once (on first creation
+		// of the column) and never re-verifies accounts made afterwards.
+		db.Exec(`DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_name = 'users' AND column_name = 'email_verified_at'
+			) THEN
+				ALTER TABLE users ADD COLUMN email_verified_at TIMESTAMPTZ;
+				UPDATE users SET email_verified_at = NOW();
+			END IF;
+		END $$`)
+		db.Exec(`CREATE TABLE IF NOT EXISTS password_reset_tokens (
+			id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			token_hash  VARCHAR(255) NOT NULL,
+			expires_at  TIMESTAMPTZ NOT NULL,
+			used_at     TIMESTAMPTZ,
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_password_reset_token ON password_reset_tokens(token_hash)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_password_reset_user  ON password_reset_tokens(user_id)`)
+		db.Exec(`ALTER TABLE password_reset_tokens ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`CREATE TABLE IF NOT EXISTS email_verification_tokens (
+			id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			token_hash  VARCHAR(255) NOT NULL,
+			expires_at  TIMESTAMPTZ NOT NULL,
+			used_at     TIMESTAMPTZ,
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_email_verification_token ON email_verification_tokens(token_hash)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_email_verification_user  ON email_verification_tokens(user_id)`)
+		db.Exec(`ALTER TABLE email_verification_tokens ENABLE ROW LEVEL SECURITY`)
+
 		log.Info("Seeding system roles...")
 		if err := repository.SeedSystemRoles(db); err != nil {
 			log.Error("Failed to seed system roles", zap.Error(err))
@@ -476,9 +534,9 @@ func main() {
 	if db != nil {
 		authRepo := repository.NewAuthRepository(db)
 		stageRepo := repository.NewPipelineStageRepository(db)
-		authUseCase := usecase.NewAuthUseCase(authRepo, stageRepo, cfg)
-		authHandler := delivery.NewAuthHandler(authUseCase, cfg)
 
+		// Mailer is built before the auth usecase now that account recovery
+		// (P1) sends reset/verification/alert emails from it.
 		var mailerSvc domain.Mailer
 		if cfg.ResendAPIKey != "" {
 			mailerSvc = mailer.NewResendMailer(cfg.ResendAPIKey, "noreply@twentyq.io")
@@ -487,6 +545,16 @@ func main() {
 		}
 
 		appEnv := os.Getenv("APP_ENV")
+		if cfg.ResendAPIKey == "" && appEnv == "production" {
+			// LogMailer writes recovery links (which embed raw tokens) to the logs.
+			// That's fine for dev, but in production it means account-recovery
+			// secrets land in durable logs — surface the misconfiguration loudly
+			// rather than failing boot (graceful degrade is a requirement).
+			log.Warn("RESEND_API_KEY is unset in production: email delivery is disabled and account-recovery links (raw tokens) will be written to application logs. Set RESEND_API_KEY to enable real email delivery.")
+		}
+
+		authUseCase := usecase.NewAuthUseCase(authRepo, stageRepo, cfg, mailerSvc, appEnv)
+		authHandler := delivery.NewAuthHandler(authUseCase, cfg)
 
 		workspaceUseCase := usecase.NewWorkspaceUseCase(authRepo, mailerSvc, appEnv, cfg.FrontendURL)
 		workspaceHandler := delivery.NewWorkspaceHandler(workspaceUseCase)

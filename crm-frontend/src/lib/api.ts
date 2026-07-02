@@ -1744,6 +1744,59 @@ export async function acceptInvite(token: string): Promise<void> {
 }
 
 // ============================================================
+// Account recovery + email verification (P1)
+// ============================================================
+// forgot/reset/verify happen while logged out, so they use bare fetch (not
+// apiFetch, which injects a stale bearer token and hard-redirects on 401).
+
+export async function forgotPassword(email: string): Promise<{ debug_token?: string }> {
+  const res = await fetch(`${API_URL}/api/auth/forgot-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(json.error || 'Failed to send reset link');
+  }
+  return json.data || {};
+}
+
+export async function resetPassword(token: string, password: string): Promise<void> {
+  const res = await fetch(`${API_URL}/api/auth/reset-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, password }),
+  });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(json.error || 'Failed to reset password');
+  }
+}
+
+export async function verifyEmail(token: string): Promise<void> {
+  const res = await fetch(`${API_URL}/api/auth/verify-email`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(json.error || 'Failed to verify email');
+  }
+}
+
+// resendVerification is called by a logged-in user from the banner, so it uses
+// apiFetch to attach the bearer token.
+export async function resendVerification(): Promise<void> {
+  const res = await apiFetch(`/api/auth/resend-verification`, { method: 'POST' });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(json.error || 'Failed to resend verification email');
+  }
+}
+
+// ============================================================
 // Voice Notes
 // ============================================================
 

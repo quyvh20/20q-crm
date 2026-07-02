@@ -127,6 +127,30 @@ func RequireRole(roles ...string) gin.HandlerFunc {
 	}
 }
 
+// RequireVerifiedEmail blocks a sensitive action until the caller has confirmed
+// their email (plan D2 soft gate). Runs after AuthMiddleware (reads user_id from
+// context) and costs one user lookup, so mount it only on the few routes that
+// warrant it. Existing users are grandfathered verified by migration 000026.
+func RequireVerifiedEmail(authRepo domain.AuthRepository) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userID, ok := GetUserID(c)
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+			return
+		}
+		user, err := authRepo.GetUserByID(c.Request.Context(), userID)
+		if err != nil || user == nil {
+			c.AbortWithStatusJSON(http.StatusForbidden, domain.Err("access denied"))
+			return
+		}
+		if user.EmailVerifiedAt == nil {
+			c.AbortWithStatusJSON(http.StatusForbidden, domain.Err(domain.ErrEmailNotVerified.Message))
+			return
+		}
+		c.Next()
+	}
+}
+
 func GetUserID(c *gin.Context) (uuid.UUID, bool) {
 	id, exists := c.Get("user_id")
 	if !exists {

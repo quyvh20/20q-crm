@@ -21,3 +21,31 @@ func (m *LogMailer) SendInvite(ctx context.Context, to, inviteLink, orgName stri
 	)
 	return nil
 }
+
+func (m *LogMailer) SendPasswordReset(ctx context.Context, to, resetLink string) error {
+	logger.Log.Info("📧 [EMAIL SENT_LOG_ONLY]",
+		zap.String("type", "Password_Reset"),
+		zap.String("to", to),
+		zap.String("reset_link", resetLink),
+	)
+	return nil
+}
+
+func (m *LogMailer) SendVerification(ctx context.Context, to, verifyLink string) error {
+	logger.Log.Info("📧 [EMAIL SENT_LOG_ONLY]",
+		zap.String("type", "Email_Verification"),
+		zap.String("to", to),
+		zap.String("verify_link", verifyLink),
+	)
+	return nil
+}
+
+func (m *LogMailer) SendSecurityAlert(ctx context.Context, to, subject, message string) error {
+	logger.Log.Info("📧 [EMAIL SENT_LOG_ONLY]",
+		zap.String("type", "Security_Alert"),
+		zap.String("to", to),
+		zap.String("subject", subject),
+		zap.String("message", message),
+	)
+	return nil
+}

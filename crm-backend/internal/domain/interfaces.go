@@ -104,6 +104,25 @@ type AuthRepository interface {
 	CreateOrgInvitation(ctx context.Context, inv *OrgInvitation) error
 	GetOrgInvitationByTokenHash(ctx context.Context, tokenHash string) (*OrgInvitation, error)
 	UpdateOrgInvitation(ctx context.Context, inv *OrgInvitation) error
+
+	// Account recovery (P1) — hashed, single-use, short-TTL tokens.
+	CreatePasswordResetToken(ctx context.Context, t *PasswordResetToken) error
+	GetPasswordResetTokenByHash(ctx context.Context, tokenHash string) (*PasswordResetToken, error)
+	// MarkPasswordResetTokenUsed atomically claims a token (UPDATE … WHERE id = ?
+	// AND used_at IS NULL) and returns rows affected: 1 = this caller won the
+	// single-use claim, 0 = already consumed (reject). This is the authoritative
+	// single-use gate, so it is race-safe and its result must be checked.
+	MarkPasswordResetTokenUsed(ctx context.Context, id uuid.UUID) (int64, error)
+
+	CreateEmailVerificationToken(ctx context.Context, t *EmailVerificationToken) error
+	GetEmailVerificationTokenByHash(ctx context.Context, tokenHash string) (*EmailVerificationToken, error)
+	MarkEmailVerificationTokenUsed(ctx context.Context, id uuid.UUID) (int64, error)
+	// GetLatestEmailVerificationToken returns a user's most recently issued
+	// verification token (used for the resend cooldown). nil when none exists.
+	GetLatestEmailVerificationToken(ctx context.Context, userID uuid.UUID) (*EmailVerificationToken, error)
+
+	// WriteAuthEvent appends one auth/admin/security event (P0). Best-effort.
+	WriteAuthEvent(ctx context.Context, e *AuthEvent) error
 }
 
 type AuthUseCase interface {
@@ -116,6 +135,15 @@ type AuthUseCase interface {
 	GetGoogleAuthURL(state string) string
 	SwitchWorkspace(ctx context.Context, userID uuid.UUID, input SwitchWorkspaceInput) (*AuthResponse, error)
 	ListWorkspaces(ctx context.Context, userID uuid.UUID) ([]WorkspaceInfo, error)
+
+	// Account recovery + email verification (P1). ForgotPassword and
+	// ResendVerification return a non-nil debug token only in non-production, to
+	// ease local testing (mirrors InviteMember). ForgotPassword never reveals
+	// whether the email exists.
+	ForgotPassword(ctx context.Context, input ForgotPasswordInput, meta RequestMeta) (*string, error)
+	ResetPassword(ctx context.Context, input ResetPasswordInput, meta RequestMeta) error
+	VerifyEmail(ctx context.Context, input VerifyEmailInput) error
+	ResendVerification(ctx context.Context, userID uuid.UUID, meta RequestMeta) (*string, error)
 }
 
 type WorkspaceUseCase interface {
@@ -136,6 +164,12 @@ type RemoveMemberInput struct {
 
 type Mailer interface {
 	SendInvite(ctx context.Context, to, inviteLink, orgName string) error
+	// SendPasswordReset / SendVerification email a one-time action link (P1).
+	SendPasswordReset(ctx context.Context, to, resetLink string) error
+	SendVerification(ctx context.Context, to, verifyLink string) error
+	// SendSecurityAlert notifies a user of a sensitive account change (e.g. a
+	// password reset) so an unexpected change is noticed quickly.
+	SendSecurityAlert(ctx context.Context, to, subject, message string) error
 }
 
 type ContactFilter struct {

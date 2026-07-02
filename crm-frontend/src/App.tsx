@@ -14,6 +14,9 @@ import WorkspaceSettingsPage from './pages/WorkspaceSettingsPage';
 import CustomObjectPage from './pages/CustomObjectPage';
 import ObjectRecordPage from './pages/ObjectRecordPage';
 import AcceptInvitePage from './pages/AcceptInvitePage';
+import ForgotPasswordPage from './pages/ForgotPasswordPage';
+import ResetPasswordPage from './pages/ResetPasswordPage';
+import VerifyEmailPage from './pages/VerifyEmailPage';
 import ConversationLogPage from './pages/ConversationLogPage';
 import VoicePage from './pages/VoicePage';
 import { WorkflowList } from './features/workflows/WorkflowList';
@@ -87,6 +90,12 @@ function App() {
             {/* Public routes */}
             <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
             <Route path="/register" element={<PublicRoute><RegisterPage /></PublicRoute>} />
+            <Route path="/forgot-password" element={<PublicRoute><ForgotPasswordPage /></PublicRoute>} />
+            {/* reset/verify are token-bearing links — left UNWRAPPED so a logged-in
+                user clicking an emailed link still lands on the flow instead of
+                being bounced to the dashboard by PublicRoute. */}
+            <Route path="/reset-password" element={<ResetPasswordPage />} />
+            <Route path="/verify-email" element={<VerifyEmailPage />} />
             <Route path="/auth/callback" element={<AuthCallbackPage />} />
             <Route path="/accept-invite" element={<AcceptInvitePage />} />
 

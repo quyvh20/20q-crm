@@ -11,6 +11,8 @@ interface User {
   full_name?: string;
   role?: string;
   avatar_url?: string;
+  // null/absent until the user verifies their email (P1). Drives the verify banner.
+  email_verified_at?: string | null;
 }
 
 interface AuthContextType {

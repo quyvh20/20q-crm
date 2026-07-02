@@ -60,6 +60,7 @@ crm-backend/stream_test.json
 # Planning docs
 workflow_builder_improvement_plan.md
 object_model_improvement_plan.md
+user_permission_improvement_plan.md
 
 # Specs
 .kiro/specs/log-activity-action/

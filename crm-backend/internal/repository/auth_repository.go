@@ -217,3 +217,74 @@ func (r *authRepository) GetOrgInvitationByTokenHash(ctx context.Context, tokenH
 func (r *authRepository) UpdateOrgInvitation(ctx context.Context, inv *domain.OrgInvitation) error {
 	return r.db.WithContext(ctx).Save(inv).Error
 }
+
+// --- Account recovery (P1) ---
+
+func (r *authRepository) CreatePasswordResetToken(ctx context.Context, t *domain.PasswordResetToken) error {
+	return r.db.WithContext(ctx).Create(t).Error
+}
+
+func (r *authRepository) GetPasswordResetTokenByHash(ctx context.Context, tokenHash string) (*domain.PasswordResetToken, error) {
+	var t domain.PasswordResetToken
+	err := r.db.WithContext(ctx).Where("token_hash = ?", tokenHash).First(&t).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &t, nil
+}
+
+func (r *authRepository) MarkPasswordResetTokenUsed(ctx context.Context, id uuid.UUID) (int64, error) {
+	// Conditional on used_at IS NULL so exactly one caller can claim the token
+	// even under concurrent requests — the atomic single-use gate.
+	res := r.db.WithContext(ctx).
+		Model(&domain.PasswordResetToken{}).
+		Where("id = ? AND used_at IS NULL", id).
+		Update("used_at", time.Now())
+	return res.RowsAffected, res.Error
+}
+
+func (r *authRepository) CreateEmailVerificationToken(ctx context.Context, t *domain.EmailVerificationToken) error {
+	return r.db.WithContext(ctx).Create(t).Error
+}
+
+func (r *authRepository) GetEmailVerificationTokenByHash(ctx context.Context, tokenHash string) (*domain.EmailVerificationToken, error) {
+	var t domain.EmailVerificationToken
+	err := r.db.WithContext(ctx).Where("token_hash = ?", tokenHash).First(&t).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &t, nil
+}
+
+func (r *authRepository) MarkEmailVerificationTokenUsed(ctx context.Context, id uuid.UUID) (int64, error) {
+	res := r.db.WithContext(ctx).
+		Model(&domain.EmailVerificationToken{}).
+		Where("id = ? AND used_at IS NULL", id).
+		Update("used_at", time.Now())
+	return res.RowsAffected, res.Error
+}
+
+func (r *authRepository) GetLatestEmailVerificationToken(ctx context.Context, userID uuid.UUID) (*domain.EmailVerificationToken, error) {
+	var t domain.EmailVerificationToken
+	err := r.db.WithContext(ctx).
+		Where("user_id = ?", userID).
+		Order("created_at DESC").
+		First(&t).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &t, nil
+}
+
+func (r *authRepository) WriteAuthEvent(ctx context.Context, e *domain.AuthEvent) error {
+	return r.db.WithContext(ctx).Create(e).Error
+}

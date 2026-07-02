@@ -73,6 +73,10 @@ type User struct {
 	Role         string         `gorm:"type:user_role;not null;default:'viewer'" json:"role"`
 	AvatarURL    *string        `gorm:"type:text" json:"avatar_url,omitempty"`
 	GoogleID     *string        `gorm:"size:255" json:"-"`
+	// EmailVerifiedAt is nil until the user confirms their email (P1). It is
+	// serialized (not json:"-") so the SPA can drive the "verify your email"
+	// banner. Existing users are grandfathered as verified by migration 000026.
+	EmailVerifiedAt *time.Time  `gorm:"column:email_verified_at" json:"email_verified_at"`
 	CreatedAt    time.Time      `json:"created_at"`
 	UpdatedAt    time.Time      `json:"updated_at"`
 	DeletedAt    gorm.DeletedAt `gorm:"index" json:"-"`

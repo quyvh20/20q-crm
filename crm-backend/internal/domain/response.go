@@ -57,6 +57,12 @@ var (
 	ErrNotMember             = NewAppError(http.StatusForbidden, "you are not a member of this workspace")
 	ErrAlreadyMember         = NewAppError(http.StatusConflict, "user is already a member of this workspace")
 	ErrCannotRemoveSuperAdmin = NewAppError(http.StatusForbidden, "cannot remove or demote the workspace creator")
+
+	// Account recovery + verification (P1)
+	ErrInvalidResetToken  = NewAppError(http.StatusBadRequest, "this password reset link is invalid or has expired")
+	ErrInvalidVerifyToken = NewAppError(http.StatusBadRequest, "this verification link is invalid or has expired")
+	ErrEmailNotVerified   = NewAppError(http.StatusForbidden, "please verify your email address before performing this action")
+	ErrResendTooSoon      = NewAppError(http.StatusTooManyRequests, "please wait a moment before requesting another verification email")
 )
 
 type CursorMeta struct {

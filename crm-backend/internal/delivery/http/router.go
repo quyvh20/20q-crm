@@ -19,6 +19,13 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 		auth.POST("/refresh", authHandler.Refresh)
 		auth.POST("/logout", authHandler.Logout)
 
+		// Account recovery + verification (P1). forgot/reset/verify are public
+		// (token-authenticated); resend-verification is for the logged-in user.
+		auth.POST("/forgot-password", authHandler.ForgotPassword)
+		auth.POST("/reset-password", authHandler.ResetPassword)
+		auth.POST("/verify-email", authHandler.VerifyEmail)
+		auth.POST("/resend-verification", AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), authHandler.ResendVerification)
+
 		auth.GET("/google", authHandler.GoogleLogin)
 		auth.GET("/google/callback", authHandler.GoogleCallback)
 
@@ -34,7 +41,11 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 		{
 			workspaces.GET("", authHandler.ListWorkspaces)
 			workspaces.GET("/members", workspaceHandler.ListMembers)
-			workspaces.POST("/invites", RequireRole(domain.RoleAdmin, domain.RoleManager), workspaceHandler.InviteMember)
+			// Inviting members is soft-gated on email verification (plan D2): a
+			// brand-new, unverified signup can't spread access until they confirm
+			// their inbox. Existing users are grandfathered verified (migration
+			// 000026), so this only ever affects fresh unverified accounts.
+			workspaces.POST("/invites", RequireRole(domain.RoleAdmin, domain.RoleManager), RequireVerifiedEmail(authRepo), workspaceHandler.InviteMember)
 			workspaces.PATCH("/members/:user_id/role", RequireRole(domain.RoleAdmin), workspaceHandler.UpdateMemberRole)
 			workspaces.POST("/members/:user_id/suspend", RequireRole(domain.RoleAdmin), workspaceHandler.SuspendMember)
 			workspaces.POST("/members/:user_id/reinstate", RequireRole(domain.RoleAdmin), workspaceHandler.ReinstateMember)
