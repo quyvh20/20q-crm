@@ -281,6 +281,11 @@ func (uc *authUseCase) Login(ctx context.Context, input domain.LoginInput, meta 
 		return nil, domain.ErrInternal
 	}
 
+	// Compare this sign-in against existing sessions BEFORE minting the new one, so
+	// a genuinely new device/IP triggers an alert (P4). Attribute it to the active
+	// workspace (not the user's legacy home org) so it lands in the right audit log.
+	uc.maybeAlertNewDevice(ctx, user, activeOrgID, meta)
+
 	refreshToken, err := uc.createRefreshToken(ctx, user.ID, meta, nil)
 	if err != nil {
 		return nil, domain.ErrInternal
@@ -391,10 +396,18 @@ func (uc *authUseCase) RefreshToken(ctx context.Context, input domain.RefreshInp
 		return nil, domain.ErrInvalidToken
 	}
 
-	// Reuse detection: a revoked/rotated token presented again means it was
-	// captured. Nuke every session (refresh tokens + access tokens via a
-	// token_version bump), alert the user, and force a clean re-login everywhere.
+	// Reuse detection: a revoked token presented again. Distinguish genuine theft
+	// from a deliberately-ended session. A token revoked because it was ROTATED
+	// has a successor in the chain — replaying it means the old token was captured,
+	// so nuke every session and alert. A token revoked by the user's own action
+	// (logout, revoke-device, sign-out-everywhere, password reset) has NO successor;
+	// replaying it is just that device coming back after the user cut it off — fail
+	// it closed with a plain 401, without nuking the user's other sessions or
+	// firing a false "your token was stolen" alarm (P4).
 	if storedToken.RevokedAt != nil {
+		if hasSuccessor, _ := uc.authRepo.RefreshTokenHasSuccessor(ctx, storedToken.ID); !hasSuccessor {
+			return nil, domain.ErrInvalidToken
+		}
 		_ = uc.authRepo.RevokeAllUserRefreshTokens(ctx, storedToken.UserID)
 		uc.bumpTokenVersion(ctx, storedToken.UserID)
 		var orgID *uuid.UUID
@@ -681,6 +694,177 @@ type JWTClaims struct {
 	// default column, so old sessions survive a deploy.
 	TokenVersion int `json:"tv"`
 	jwt.RegisteredClaims
+}
+
+// --- Session / device management (P4) ---
+
+// ListSessions returns the caller's live sessions (one per device), marking the
+// one making this request as Current by matching the presented refresh token's
+// hash. It never returns the token itself.
+func (uc *authUseCase) ListSessions(ctx context.Context, userID uuid.UUID, currentRefreshToken string) ([]domain.SessionInfo, error) {
+	tokens, err := uc.authRepo.ListActiveRefreshTokens(ctx, userID)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+	var currentHash string
+	if currentRefreshToken != "" {
+		currentHash = hashToken(currentRefreshToken)
+	}
+	out := make([]domain.SessionInfo, 0, len(tokens))
+	for _, t := range tokens {
+		si := domain.SessionInfo{
+			ID:         t.ID,
+			CreatedAt:  t.CreatedAt,
+			LastUsedAt: t.LastUsedAt,
+			Current:    currentHash != "" && t.TokenHash == currentHash,
+		}
+		if t.DeviceLabel != nil {
+			si.DeviceLabel = *t.DeviceLabel
+		}
+		if t.IP != nil {
+			si.IP = *t.IP
+		}
+		out = append(out, si)
+	}
+	return out, nil
+}
+
+// RevokeSession revokes one of the caller's own sessions (a lost/unknown device).
+// Scoped to the owner, so a caller cannot revoke another user's session. It
+// revokes the device's refresh token AND bumps token_version so the revoked
+// device's still-valid access token is rejected on its next request instead of
+// lingering for the access-token TTL — the "Revoke" control reads as an instant
+// cut-off, which matters for a security action ("revoke a device you don't
+// recognize"). The user's other devices silently re-mint an access token from
+// their own valid refresh tokens; the revoked device, having lost its refresh
+// token, cannot.
+func (uc *authUseCase) RevokeSession(ctx context.Context, userID, orgID, sessionID uuid.UUID) error {
+	n, err := uc.authRepo.RevokeRefreshTokenForUser(ctx, sessionID, userID)
+	if err != nil {
+		return domain.ErrInternal
+	}
+	if n == 0 {
+		return domain.NewAppError(http.StatusNotFound, "session not found")
+	}
+	uc.bumpTokenVersion(ctx, userID) // kill the revoked device's access token now, not in ≤2h
+	recordSecurityEvent(ctx, uc.authRepo, orgID, "session.revoked", &userID,
+		map[string]interface{}{"session_id": sessionID.String()})
+	return nil
+}
+
+// SignOutEverywhere revokes every refresh token and bumps token_version (killing
+// all outstanding access tokens instantly), then mints a fresh session for the
+// current device so the caller stays signed in here while every other device is
+// logged out. Returns the new access + refresh tokens for the handler to set.
+func (uc *authUseCase) SignOutEverywhere(ctx context.Context, userID, orgID uuid.UUID, currentRefreshToken string) (*domain.AuthResponse, error) {
+	if err := uc.authRepo.RevokeAllUserRefreshTokens(ctx, userID); err != nil {
+		return nil, domain.ErrInternal
+	}
+	uc.bumpTokenVersion(ctx, userID) // increments token_version + evicts session cache
+
+	// Reload after the bump so the new access token carries the current version.
+	user, err := uc.authRepo.GetUserByID(ctx, userID)
+	if err != nil || user == nil {
+		return nil, domain.ErrUserNotFound
+	}
+
+	orgUsers, _ := uc.authRepo.ListOrgsByUserID(ctx, userID)
+	activeOrgID := orgID
+	var activeRole *domain.Role
+	for _, ou := range orgUsers {
+		if ou.OrgID == orgID {
+			activeRole = ou.Role
+			break
+		}
+	}
+	if activeRole == nil && len(orgUsers) > 0 {
+		activeOrgID = orgUsers[0].OrgID
+		activeRole = orgUsers[0].Role
+	}
+
+	accessToken, err := uc.generateAccessToken(user.ID, activeOrgID, activeRole, user.TokenVersion)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+	meta, _ := domain.RequestMetaFromContext(ctx)
+	refreshToken, err := uc.createRefreshToken(ctx, user.ID, meta, nil)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+
+	workspaces := make([]domain.WorkspaceInfo, 0, len(orgUsers))
+	for _, ou := range orgUsers {
+		name := ""
+		orgType := "company"
+		if ou.Org != nil {
+			name = ou.Org.Name
+			orgType = ou.Org.Type
+		}
+		roleName := "viewer"
+		if ou.Role != nil {
+			roleName = ou.Role.Name
+		}
+		workspaces = append(workspaces, domain.WorkspaceInfo{
+			OrgID:   ou.OrgID,
+			OrgName: name,
+			OrgType: orgType,
+			Role:    roleName,
+			Status:  ou.Status,
+		})
+	}
+
+	recordSecurityEvent(ctx, uc.authRepo, activeOrgID, "session.signed_out_others", &userID, nil)
+
+	return &domain.AuthResponse{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		User:         *user,
+		Workspaces:   workspaces,
+	}, nil
+}
+
+// maybeAlertNewDevice emails a security alert when a login arrives from a device
+// (browser/OS label) and IP not seen among the user's existing live sessions.
+// Best-effort and off the request path; the first-ever device is not alerted (the
+// login itself is the signal). Called from Login BEFORE the new refresh token is
+// minted, so the new session isn't compared against itself.
+func (uc *authUseCase) maybeAlertNewDevice(ctx context.Context, user *domain.User, activeOrgID uuid.UUID, meta domain.RequestMeta) {
+	if uc.mailer == nil || (meta.UserAgent == "" && meta.IP == "") {
+		return
+	}
+	existing, err := uc.authRepo.ListActiveRefreshTokens(ctx, user.ID)
+	if err != nil || len(existing) == 0 {
+		return
+	}
+	label := deviceLabelFromUA(meta.UserAgent)
+	for _, t := range existing {
+		// Recognized only when BOTH the exact device (full User-Agent) AND the IP
+		// match an existing session. Matching on either alone silences real
+		// account-takeover sign-ins: a shared/NAT IP collides across unrelated
+		// people, and the coarse "Chrome on Windows" label collides across
+		// unrelated machines. So a new device OR a new network both alert.
+		sameDevice := t.UserAgent != nil && meta.UserAgent != "" && *t.UserAgent == meta.UserAgent
+		sameIP := t.IP != nil && meta.IP != "" && *t.IP == meta.IP
+		if sameDevice && sameIP {
+			return // known device on a known network
+		}
+	}
+
+	uc.recordAuthEvent(ctx, "security", "login.new_device", orgPtr(activeOrgID), &user.ID, &user.ID, meta,
+		map[string]interface{}{"device": label, "ip": meta.IP})
+
+	email := user.Email
+	ip := meta.IP
+	go func() {
+		where := label
+		if ip != "" {
+			where += " (" + ip + ")"
+		}
+		msg := fmt.Sprintf("Your Guerrilla CRM account was just signed in from a new device: %s. If this was you, no action is needed. If you don't recognize it, reset your password and use Settings → Security to sign out of other sessions.", where)
+		if err := uc.mailer.SendSecurityAlert(context.Background(), email, "New sign-in to your account", msg); err != nil {
+			log.Printf("login: failed to send new-device alert to %s: %v", email, err)
+		}
+	}()
 }
 
 // generateAccessToken mints an access token for the caller's active role. role may

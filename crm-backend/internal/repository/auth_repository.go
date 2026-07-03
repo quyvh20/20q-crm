@@ -118,6 +118,18 @@ func (r *authRepository) GetUserTokenVersion(ctx context.Context, userID uuid.UU
 	return tv, err
 }
 
+// RefreshTokenHasSuccessor reports whether any refresh token was rotated from the
+// given one, i.e. this token was superseded in a refresh chain (theft signal when
+// replayed) rather than deliberately revoked (logout/revoke-device). P4.
+func (r *authRepository) RefreshTokenHasSuccessor(ctx context.Context, tokenID uuid.UUID) (bool, error) {
+	var count int64
+	err := r.db.WithContext(ctx).
+		Model(&domain.RefreshToken{}).
+		Where("rotated_from = ?", tokenID).
+		Count(&count).Error
+	return count > 0, err
+}
+
 func (r *authRepository) RevokeRefreshToken(ctx context.Context, tokenID uuid.UUID) error {
 	now := time.Now()
 	return r.db.WithContext(ctx).
@@ -320,4 +332,78 @@ func (r *authRepository) GetLatestEmailVerificationToken(ctx context.Context, us
 
 func (r *authRepository) WriteAuthEvent(ctx context.Context, e *domain.AuthEvent) error {
 	return r.db.WithContext(ctx).Create(e).Error
+}
+
+// --- Admin audit query + session management (P4) ---
+
+// ListAuthEvents returns a filtered, paginated page of the org's audit log
+// (newest first) with each actor's name/email resolved via a LEFT JOIN, plus the
+// total matching count. Filter columns are table-qualified because the join adds a
+// `users` table that also has a `created_at` column.
+func (r *authRepository) ListAuthEvents(ctx context.Context, orgID uuid.UUID, f domain.AuthEventFilter) ([]domain.AuthEventView, int64, error) {
+	apply := func(q *gorm.DB) *gorm.DB {
+		q = q.Where("auth_events.org_id = ?", orgID)
+		if f.Category != "" {
+			q = q.Where("auth_events.category = ?", f.Category)
+		}
+		if f.EventType != "" {
+			q = q.Where("auth_events.event_type = ?", f.EventType)
+		}
+		if f.ActorID != nil {
+			q = q.Where("auth_events.actor_id = ?", *f.ActorID)
+		}
+		if f.From != nil {
+			q = q.Where("auth_events.created_at >= ?", *f.From)
+		}
+		if f.To != nil {
+			q = q.Where("auth_events.created_at <= ?", *f.To)
+		}
+		return q
+	}
+
+	var total int64
+	if err := apply(r.db.WithContext(ctx).Model(&domain.AuthEvent{})).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	offset := f.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	var rows []domain.AuthEventView
+	q := apply(r.db.WithContext(ctx).Table("auth_events")).
+		Select("auth_events.*, u.full_name AS actor_name, u.email AS actor_email").
+		Joins("LEFT JOIN users u ON u.id = auth_events.actor_id").
+		Order("auth_events.created_at DESC").
+		Limit(limit).Offset(offset)
+	if err := q.Scan(&rows).Error; err != nil {
+		return nil, 0, err
+	}
+	return rows, total, nil
+}
+
+func (r *authRepository) ListActiveRefreshTokens(ctx context.Context, userID uuid.UUID) ([]domain.RefreshToken, error) {
+	var tokens []domain.RefreshToken
+	err := r.db.WithContext(ctx).
+		Where("user_id = ? AND revoked_at IS NULL AND expires_at > ?", userID, time.Now()).
+		Order("last_used_at DESC NULLS LAST, created_at DESC").
+		Find(&tokens).Error
+	return tokens, err
+}
+
+// RevokeRefreshTokenForUser revokes one refresh token scoped to its owner and
+// returns rows affected, so a caller can never revoke another user's session and
+// can distinguish "revoked" (1) from "not found / already revoked" (0).
+func (r *authRepository) RevokeRefreshTokenForUser(ctx context.Context, id, userID uuid.UUID) (int64, error) {
+	now := time.Now()
+	res := r.db.WithContext(ctx).
+		Model(&domain.RefreshToken{}).
+		Where("id = ? AND user_id = ? AND revoked_at IS NULL", id, userID).
+		Update("revoked_at", now)
+	return res.RowsAffected, res.Error
 }

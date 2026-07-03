@@ -160,6 +160,46 @@ func (r *fakeAuthRepo) WriteAuthEvent(_ context.Context, e *domain.AuthEvent) er
 	return nil
 }
 
+func (r *fakeAuthRepo) ListAuthEvents(_ context.Context, orgID uuid.UUID, f domain.AuthEventFilter) ([]domain.AuthEventView, int64, error) {
+	var out []domain.AuthEventView
+	for _, e := range r.authEvents {
+		if e.OrgID == nil || *e.OrgID != orgID {
+			continue
+		}
+		if f.Category != "" && e.Category != f.Category {
+			continue
+		}
+		if f.EventType != "" && e.EventType != f.EventType {
+			continue
+		}
+		if f.ActorID != nil && (e.ActorID == nil || *e.ActorID != *f.ActorID) {
+			continue
+		}
+		out = append(out, domain.AuthEventView{AuthEvent: *e})
+	}
+	return out, int64(len(out)), nil
+}
+
+func (r *fakeAuthRepo) ListActiveRefreshTokens(_ context.Context, userID uuid.UUID) ([]domain.RefreshToken, error) {
+	var out []domain.RefreshToken
+	for _, t := range r.refreshTokens {
+		if t.UserID == userID && t.RevokedAt == nil && t.ExpiresAt.After(time.Now()) {
+			out = append(out, *t)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeAuthRepo) RevokeRefreshTokenForUser(_ context.Context, id, userID uuid.UUID) (int64, error) {
+	t, ok := r.refreshTokens[id]
+	if !ok || t.UserID != userID || t.RevokedAt != nil {
+		return 0, nil
+	}
+	now := time.Now()
+	t.RevokedAt = &now
+	return 1, nil
+}
+
 // --- unused stubs to satisfy domain.AuthRepository ---
 
 func (r *fakeAuthRepo) CreateOrganization(context.Context, *domain.Organization) error { return nil }
@@ -189,6 +229,14 @@ func (r *fakeAuthRepo) GetRefreshTokenByHashAny(_ context.Context, hash string) 
 		}
 	}
 	return nil, nil
+}
+func (r *fakeAuthRepo) RefreshTokenHasSuccessor(_ context.Context, id uuid.UUID) (bool, error) {
+	for _, t := range r.refreshTokens {
+		if t.RotatedFrom != nil && *t.RotatedFrom == id {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 func (r *fakeAuthRepo) RevokeRefreshToken(_ context.Context, id uuid.UUID) error {
 	if t, ok := r.refreshTokens[id]; ok && t.RevokedAt == nil {

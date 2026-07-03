@@ -2156,3 +2156,102 @@ export async function globalSearch(query: string, limit = 10): Promise<SearchRes
 }
 
 
+
+// ── Admin/auth audit log (P4) ───────────────────────────────────────────────
+// The append-only who-did-what over auth_events. Read + CSV export are gated on
+// the audit.view capability server-side.
+
+export interface AuditEvent {
+  id: string;
+  org_id?: string;
+  actor_id?: string;
+  actor_name: string;
+  actor_email: string;
+  target_id?: string;
+  category: string; // 'auth' | 'admin' | 'security'
+  event_type: string;
+  ip?: string;
+  user_agent?: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface AuditEventFilters {
+  category?: string;
+  type?: string;
+  actor?: string;
+  from?: string; // RFC3339
+  to?: string; // RFC3339
+  limit?: number;
+  offset?: number;
+}
+
+function auditQuery(f: AuditEventFilters): string {
+  const p = new URLSearchParams();
+  if (f.category) p.set('category', f.category);
+  if (f.type) p.set('type', f.type);
+  if (f.actor) p.set('actor', f.actor);
+  if (f.from) p.set('from', f.from);
+  if (f.to) p.set('to', f.to);
+  if (f.limit != null) p.set('limit', String(f.limit));
+  if (f.offset != null) p.set('offset', String(f.offset));
+  return p.toString();
+}
+
+export async function getAuditEvents(
+  f: AuditEventFilters = {},
+): Promise<{ events: AuditEvent[]; total: number }> {
+  const res = await apiFetch(`/api/audit/events?${auditQuery(f)}`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to load audit log');
+  return { events: (json.data || []) as AuditEvent[], total: (json.total || 0) as number };
+}
+
+// exportAuditCsv downloads the filtered audit log as a CSV blob (same filters as
+// the on-screen view, minus pagination).
+export async function exportAuditCsv(f: AuditEventFilters = {}): Promise<Blob> {
+  const { limit: _l, offset: _o, ...rest } = f;
+  const res = await apiFetch(`/api/audit/events/export.csv?${auditQuery(rest)}`);
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error((json as { error?: string }).error || 'Export failed');
+  }
+  return res.blob();
+}
+
+// ── Session / device management (P4) ────────────────────────────────────────
+
+export interface UserSession {
+  id: string;
+  device_label: string;
+  ip: string;
+  last_used_at?: string;
+  created_at: string;
+  current: boolean;
+}
+
+export async function getSessions(): Promise<UserSession[]> {
+  const res = await apiFetch('/api/auth/sessions');
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to load sessions');
+  return (json.data || []) as UserSession[];
+}
+
+export async function revokeSession(id: string): Promise<void> {
+  const res = await apiFetch(`/api/auth/sessions/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error((json as { error?: string }).error || 'Failed to revoke session');
+  }
+}
+
+// signOutEverywhere revokes all other sessions and re-mints this one; the server
+// returns a fresh access token that the caller must adopt so the current tab
+// keeps working (its old access token was invalidated by the token_version bump).
+export async function signOutEverywhere(): Promise<void> {
+  const res = await apiFetch('/api/auth/sessions', { method: 'DELETE' });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((json as { error?: string }).error || 'Failed to sign out other sessions');
+  const token = (json?.data?.access_token as string) ?? null;
+  if (token) setAccessToken(token);
+}

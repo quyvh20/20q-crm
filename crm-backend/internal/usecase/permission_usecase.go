@@ -27,6 +27,7 @@ import (
 type permissionUseCase struct {
 	repo       domain.PermissionRepository
 	registryUC domain.ObjectRegistryUseCase
+	audit      domain.AuthEventWriter // optional; nil in unit tests → grid-edit audit is a no-op
 	ttl        time.Duration
 
 	mu    sync.RWMutex
@@ -57,13 +58,21 @@ const defaultPermissionCacheTTL = 60 * time.Second
 // that interface embeds RecordAuthorizer, the same value is handed to
 // RecordService as its authorizer (see main.go) — no second constructor, no type
 // assertion.
-func NewPermissionUseCase(repo domain.PermissionRepository, registryUC domain.ObjectRegistryUseCase) domain.PermissionUseCase {
-	return &permissionUseCase{
+//
+// The optional variadic audit writer (P4) records OLS/FLS grid edits without
+// breaking the existing two-arg test call sites; when omitted, grid edits aren't
+// audited.
+func NewPermissionUseCase(repo domain.PermissionRepository, registryUC domain.ObjectRegistryUseCase, audit ...domain.AuthEventWriter) domain.PermissionUseCase {
+	uc := &permissionUseCase{
 		repo:       repo,
 		registryUC: registryUC,
 		ttl:        defaultPermissionCacheTTL,
 		cache:      make(map[uuid.UUID]*orgAccessEntry),
 	}
+	if len(audit) > 0 {
+		uc.audit = audit[0]
+	}
+	return uc
 }
 
 // ============================================================
@@ -349,6 +358,17 @@ func (uc *permissionUseCase) SetPermission(ctx context.Context, orgID uuid.UUID,
 		return err
 	}
 	uc.Invalidate(orgID)
+
+	roleID := in.RoleID
+	recordAdminEvent(ctx, uc.audit, orgID, "permission.ols_changed", &roleID,
+		map[string]interface{}{
+			"role_id":     in.RoleID.String(),
+			"object_slug": in.ObjectSlug,
+			"read":        in.CanRead,
+			"create":      in.CanCreate,
+			"edit":        in.CanEdit,
+			"delete":      in.CanDelete,
+		})
 	return nil
 }
 
@@ -432,6 +452,15 @@ func (uc *permissionUseCase) SetFieldPermission(ctx context.Context, orgID uuid.
 		return err
 	}
 	uc.Invalidate(orgID)
+
+	roleID := in.RoleID
+	recordAdminEvent(ctx, uc.audit, orgID, "permission.fls_changed", &roleID,
+		map[string]interface{}{
+			"role_id":     in.RoleID.String(),
+			"object_slug": in.ObjectSlug,
+			"field_key":   in.FieldKey,
+			"level":       in.Level,
+		})
 	return nil
 }
 

@@ -112,6 +112,34 @@ func AuthMiddleware(jwtSecret string, authRepo domain.AuthRepository, redisClien
 				c.AbortWithStatusJSON(http.StatusUnauthorized, domain.Err("session expired, please sign in again"))
 				return
 			}
+		} else {
+			// No Redis (e.g. a dev / small self-host deployment without a cache):
+			// there is no session cache to consult, but the authoritative account
+			// status and token_version must still be enforced from the DB —
+			// otherwise suspension and sign-out-everywhere / password-reset
+			// invalidation silently degrade to the ≤2h access-token TTL (the very
+			// gap the P4 sessions UI promises to close). One extra read per request
+			// on the cache-less path only; production runs Redis and never gets here.
+			ou, err := authRepo.GetOrgUser(c.Request.Context(), claims.UserID, claims.OrgID)
+			if err != nil || ou == nil || ou.DeletedAt != nil {
+				c.AbortWithStatusJSON(http.StatusForbidden, domain.Err("access denied"))
+				return
+			}
+			status = ou.Status
+			if ou.Role != nil {
+				roleName = ou.Role.Name
+				dataScope = domain.DataScopeAll
+				if ou.Role.DataScope == domain.DataScopeOwn {
+					dataScope = domain.DataScopeOwn
+				}
+			}
+			if tv, e := authRepo.GetUserTokenVersion(c.Request.Context(), claims.UserID); e == nil {
+				tokenVersion = tv
+			}
+			if claims.TokenVersion != tokenVersion {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, domain.Err("session expired, please sign in again"))
+				return
+			}
 		}
 
 		if status != "active" {
@@ -127,6 +155,10 @@ func AuthMiddleware(jwtSecret string, authRepo domain.AuthRepository, redisClien
 		// every method (plan P5a). Set for every protected route; a request that
 		// reaches RecordService without it is a trusted in-process call.
 		scopedCtx = domain.WithCaller(scopedCtx, roleName, claims.UserID)
+		// Carry transport detail so admin mutations (member/role/permission) can
+		// stamp an auth_events row with the actor's IP/UA without threading
+		// RequestMeta through every usecase method (P4).
+		scopedCtx = domain.WithRequestMeta(scopedCtx, domain.RequestMeta{IP: c.ClientIP(), UserAgent: c.Request.UserAgent()})
 		c.Request = c.Request.WithContext(scopedCtx)
 
 		c.Next()

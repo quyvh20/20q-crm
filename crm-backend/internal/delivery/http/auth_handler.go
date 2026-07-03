@@ -14,6 +14,7 @@ import (
 	"crm-backend/pkg/config"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 type AuthHandler struct {
@@ -239,6 +240,62 @@ func (h *AuthHandler) ResendVerification(c *gin.Context) {
 	if debugToken != nil {
 		resp["debug_token"] = *debugToken
 	}
+	c.JSON(http.StatusOK, domain.Success(resp))
+}
+
+// ListSessions returns the caller's active devices/sessions (P4). The current
+// session is flagged via the refresh cookie presented with the request.
+func (h *AuthHandler) ListSessions(c *gin.Context) {
+	userID, ok := GetUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	current, _ := c.Cookie(refreshCookieName)
+	sessions, err := h.authUC.ListSessions(c.Request.Context(), userID, current)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, domain.Success(sessions))
+}
+
+// RevokeSession revokes one of the caller's own sessions by id (P4).
+func (h *AuthHandler) RevokeSession(c *gin.Context) {
+	userID, ok := GetUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	orgID, _ := GetOrgID(c)
+	sessionID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, domain.Err("invalid session id"))
+		return
+	}
+	if err := h.authUC.RevokeSession(c.Request.Context(), userID, orgID, sessionID); err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, domain.Success(gin.H{"message": "session revoked"}))
+}
+
+// SignOutEverywhere kills every other session and re-mints this one (P4), setting
+// fresh auth cookies so the current device stays signed in.
+func (h *AuthHandler) SignOutEverywhere(c *gin.Context) {
+	userID, ok := GetUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	orgID, _ := GetOrgID(c)
+	current := refreshTokenFromRequest(c, "")
+	resp, err := h.authUC.SignOutEverywhere(c.Request.Context(), userID, orgID, current)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	setAuthCookies(c, h.cfg, resp.RefreshToken)
 	c.JSON(http.StatusOK, domain.Success(resp))
 }
 

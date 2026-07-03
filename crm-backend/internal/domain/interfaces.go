@@ -89,6 +89,12 @@ type AuthRepository interface {
 	// revoked/expiry state, so refresh can distinguish "never existed" from
 	// "already rotated/revoked" (the reuse-detection signal). P2.
 	GetRefreshTokenByHashAny(ctx context.Context, tokenHash string) (*RefreshToken, error)
+	// RefreshTokenHasSuccessor reports whether any token was rotated FROM this one
+	// (rotated_from = id). It separates genuine reuse/theft (a rotated token — one
+	// with a successor — replayed) from a deliberately-ended session (logout,
+	// revoke-device, sign-out-everywhere: revoked with no successor), so the latter
+	// fails closed without nuking the user's other sessions or crying theft. P4.
+	RefreshTokenHasSuccessor(ctx context.Context, tokenID uuid.UUID) (bool, error)
 	RevokeRefreshToken(ctx context.Context, tokenID uuid.UUID) error
 	RevokeAllUserRefreshTokens(ctx context.Context, userID uuid.UUID) error
 
@@ -133,6 +139,31 @@ type AuthRepository interface {
 
 	// WriteAuthEvent appends one auth/admin/security event (P0). Best-effort.
 	WriteAuthEvent(ctx context.Context, e *AuthEvent) error
+
+	// --- Admin audit query + session/device management (P4) ---
+
+	// ListAuthEvents returns a page of the org's audit log (newest first) joined
+	// with each actor's name/email, plus the total matching count for pagination.
+	ListAuthEvents(ctx context.Context, orgID uuid.UUID, f AuthEventFilter) ([]AuthEventView, int64, error)
+	// ListActiveRefreshTokens returns a user's live (non-revoked, unexpired)
+	// refresh tokens — one per device/session — for the sessions UI.
+	ListActiveRefreshTokens(ctx context.Context, userID uuid.UUID) ([]RefreshToken, error)
+	// RevokeRefreshTokenForUser revokes one refresh token scoped to its owner and
+	// returns rows affected (0 = not found / not owned / already revoked), so a
+	// caller can only ever revoke their own sessions.
+	RevokeRefreshTokenForUser(ctx context.Context, id, userID uuid.UUID) (int64, error)
+}
+
+// AuthEventWriter is the narrow append-only port the admin usecases
+// (workspace/role/permission) depend on to record an auth_events row (P4),
+// without pulling in the whole AuthRepository. AuthRepository satisfies it.
+type AuthEventWriter interface {
+	WriteAuthEvent(ctx context.Context, e *AuthEvent) error
+}
+
+// AuditUseCase reads the admin/auth audit log for the transparency UI (P4).
+type AuditUseCase interface {
+	ListEvents(ctx context.Context, orgID uuid.UUID, f AuthEventFilter) ([]AuthEventView, int64, error)
 }
 
 type AuthUseCase interface {
@@ -154,6 +185,15 @@ type AuthUseCase interface {
 	ResetPassword(ctx context.Context, input ResetPasswordInput, meta RequestMeta) error
 	VerifyEmail(ctx context.Context, input VerifyEmailInput) error
 	ResendVerification(ctx context.Context, userID uuid.UUID, meta RequestMeta) (*string, error)
+
+	// Session/device management (P4). ListSessions marks the caller's own session
+	// (matched by the current refresh token) as Current. RevokeSession revokes one
+	// of the caller's sessions. SignOutEverywhere revokes all sessions and bumps
+	// token_version (killing every access token instantly), then mints a fresh
+	// session for the current device so the caller stays signed in here.
+	ListSessions(ctx context.Context, userID uuid.UUID, currentRefreshToken string) ([]SessionInfo, error)
+	RevokeSession(ctx context.Context, userID, orgID, sessionID uuid.UUID) error
+	SignOutEverywhere(ctx context.Context, userID, orgID uuid.UUID, currentRefreshToken string) (*AuthResponse, error)
 }
 
 type WorkspaceUseCase interface {

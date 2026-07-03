@@ -102,6 +102,9 @@ func (uc *workspaceUseCase) InviteMember(ctx context.Context, orgID uuid.UUID, i
 		debugToken = &rawToken
 	}
 
+	recordAdminEvent(ctx, uc.authRepo, orgID, "member.invited", nil,
+		map[string]interface{}{"email": input.Email, "role": input.Role})
+
 	return &domain.MemberInfo{
 		Email:  input.Email,
 		Role:   input.Role,
@@ -153,6 +156,11 @@ func (uc *workspaceUseCase) UpdateMemberRole(ctx context.Context, orgID uuid.UUI
 		return domain.ErrNotMember
 	}
 
+	oldRole := ""
+	if ou.Role != nil {
+		oldRole = ou.Role.Name
+	}
+
 	if ou.Role != nil && ou.Role.Name == domain.RoleOwner {
 		count, _ := uc.authRepo.CountOrgUsersByRole(ctx, orgID, ou.RoleID, domain.StatusActive)
 		if count <= 1 {
@@ -165,7 +173,13 @@ func (uc *workspaceUseCase) UpdateMemberRole(ctx context.Context, orgID uuid.UUI
 		return domain.NewAppError(400, "invalid role")
 	}
 
-	return uc.authRepo.UpdateOrgUserRole(ctx, targetUserID, orgID, role.ID)
+	if err := uc.authRepo.UpdateOrgUserRole(ctx, targetUserID, orgID, role.ID); err != nil {
+		return err
+	}
+
+	recordAdminEvent(ctx, uc.authRepo, orgID, "member.role_changed", &targetUserID,
+		map[string]interface{}{"old_role": oldRole, "new_role": input.Role})
+	return nil
 }
 
 func (uc *workspaceUseCase) SuspendMember(ctx context.Context, orgID uuid.UUID, targetUserID uuid.UUID) error {
@@ -179,17 +193,29 @@ func (uc *workspaceUseCase) SuspendMember(ctx context.Context, orgID uuid.UUID, 
 			return domain.ErrCannotRemoveSuperAdmin
 		}
 	}
-	return uc.authRepo.UpdateOrgUserStatus(ctx, targetUserID, orgID, domain.StatusSuspended)
+	if err := uc.authRepo.UpdateOrgUserStatus(ctx, targetUserID, orgID, domain.StatusSuspended); err != nil {
+		return err
+	}
+	recordAdminEvent(ctx, uc.authRepo, orgID, "member.suspended", &targetUserID, nil)
+	return nil
 }
 
 func (uc *workspaceUseCase) ReinstateMember(ctx context.Context, orgID uuid.UUID, targetUserID uuid.UUID) error {
-	return uc.authRepo.UpdateOrgUserStatus(ctx, targetUserID, orgID, domain.StatusActive)
+	if err := uc.authRepo.UpdateOrgUserStatus(ctx, targetUserID, orgID, domain.StatusActive); err != nil {
+		return err
+	}
+	recordAdminEvent(ctx, uc.authRepo, orgID, "member.reinstated", &targetUserID, nil)
+	return nil
 }
 
 func (uc *workspaceUseCase) TransferOwnership(ctx context.Context, orgID uuid.UUID, targetUserID uuid.UUID) error {
 	// Need to run a transaction: Demote caller, Promoto target. For simplicity, just promote target for now
 	ownerRole, _ := uc.authRepo.GetRoleByName(ctx, domain.RoleOwner, nil)
-	return uc.authRepo.UpdateOrgUserRole(ctx, targetUserID, orgID, ownerRole.ID)
+	if err := uc.authRepo.UpdateOrgUserRole(ctx, targetUserID, orgID, ownerRole.ID); err != nil {
+		return err
+	}
+	recordAdminEvent(ctx, uc.authRepo, orgID, "member.ownership_transferred", &targetUserID, nil)
+	return nil
 }
 
 func (uc *workspaceUseCase) RemoveMember(ctx context.Context, orgID uuid.UUID, targetUserID uuid.UUID, input domain.RemoveMemberInput) error {
@@ -210,5 +236,10 @@ func (uc *workspaceUseCase) RemoveMember(ctx context.Context, orgID uuid.UUID, t
 		return domain.NewAppError(409, "Must provide reassign_to_user_id or unassign strategy")
 	}
 
-	return uc.authRepo.DeleteOrgUser(ctx, targetUserID, orgID)
+	if err := uc.authRepo.DeleteOrgUser(ctx, targetUserID, orgID); err != nil {
+		return err
+	}
+	recordAdminEvent(ctx, uc.authRepo, orgID, "member.removed", &targetUserID,
+		map[string]interface{}{"strategy": input.Strategy})
+	return nil
 }

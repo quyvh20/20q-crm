@@ -22,10 +22,18 @@ type permissionCache interface {
 type roleUseCase struct {
 	repo  domain.RoleRepository
 	cache permissionCache
+	audit domain.AuthEventWriter // optional; nil in unit tests → audit is a no-op
 }
 
-func NewRoleUseCase(repo domain.RoleRepository, cache permissionCache) domain.RoleUseCase {
-	return &roleUseCase{repo: repo, cache: cache}
+// NewRoleUseCase wires the custom-role usecase. The optional variadic audit writer
+// (P4) lets production pass the auth-event writer without breaking the existing
+// two-arg test call sites; when omitted, role mutations simply aren't audited.
+func NewRoleUseCase(repo domain.RoleRepository, cache permissionCache, audit ...domain.AuthEventWriter) domain.RoleUseCase {
+	uc := &roleUseCase{repo: repo, cache: cache}
+	if len(audit) > 0 {
+		uc.audit = audit[0]
+	}
+	return uc
 }
 
 func (uc *roleUseCase) List(ctx context.Context, orgID uuid.UUID) ([]domain.RoleDetail, error) {
@@ -111,6 +119,12 @@ func (uc *roleUseCase) Create(ctx context.Context, orgID uuid.UUID, in domain.Cr
 		}
 	}
 	uc.cache.Invalidate(orgID)
+
+	meta := map[string]interface{}{"name": role.Name, "data_scope": role.DataScope}
+	if source != nil {
+		meta["cloned_from"] = source.Name
+	}
+	recordAdminEvent(ctx, uc.audit, orgID, "role.created", &role.ID, meta)
 	return role, nil
 }
 
@@ -155,6 +169,9 @@ func (uc *roleUseCase) Update(ctx context.Context, orgID, id uuid.UUID, in domai
 		return domain.ErrInternal
 	}
 	uc.cache.Invalidate(orgID)
+
+	changes := map[string]interface{}{"name": role.Name, "data_scope": role.DataScope}
+	recordAdminEvent(ctx, uc.audit, orgID, "role.updated", &role.ID, changes)
 	return nil
 }
 
@@ -182,6 +199,9 @@ func (uc *roleUseCase) Delete(ctx context.Context, orgID, id uuid.UUID) error {
 		return domain.ErrInternal
 	}
 	uc.cache.Invalidate(orgID)
+
+	recordAdminEvent(ctx, uc.audit, orgID, "role.deleted", &id,
+		map[string]interface{}{"name": role.Name})
 	return nil
 }
 
@@ -216,10 +236,14 @@ func (uc *roleUseCase) SetCapabilities(ctx context.Context, orgID, id uuid.UUID,
 	if err != nil {
 		return err
 	}
+	oldCaps, _ := uc.repo.GetCapabilities(ctx, id) // best-effort, for the audit diff
 	if err := uc.repo.SetCapabilities(ctx, orgID, id, caps); err != nil {
 		return domain.ErrInternal
 	}
 	uc.cache.Invalidate(orgID)
+
+	recordAdminEvent(ctx, uc.audit, orgID, "role.capabilities_changed", &id,
+		map[string]interface{}{"role": role.Name, "old": oldCaps, "new": caps})
 	return nil
 }
 

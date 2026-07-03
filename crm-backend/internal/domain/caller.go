@@ -36,3 +36,19 @@ func CallerFromContext(ctx context.Context) (Caller, bool) {
 	c, ok := ctx.Value(callerCtxKey{}).(Caller)
 	return c, ok
 }
+
+type requestMetaCtxKey struct{}
+
+// WithRequestMeta carries the request's transport detail (IP, User-Agent) on the
+// context so the admin usecases (workspace/role/permission) can stamp an
+// auth_events row (P4) without threading RequestMeta through every method — the
+// same pattern WithCaller uses. Set once by the auth middleware.
+func WithRequestMeta(ctx context.Context, meta RequestMeta) context.Context {
+	return context.WithValue(ctx, requestMetaCtxKey{}, meta)
+}
+
+// RequestMetaFromContext returns the request meta and true when present.
+func RequestMetaFromContext(ctx context.Context) (RequestMeta, bool) {
+	m, ok := ctx.Value(requestMetaCtxKey{}).(RequestMeta)
+	return m, ok
+}

@@ -7,36 +7,44 @@ import PipelineStagesManager from '../components/settings/PipelineStagesManager'
 import PermissionsManager from '../components/settings/PermissionsManager';
 import FieldSecurityManager from '../components/settings/FieldSecurityManager';
 import RolesManager from '../components/settings/RolesManager';
+import AuditLogViewer from '../components/settings/AuditLogViewer';
+import SecuritySessions from '../components/settings/SecuritySessions';
 
-const BASE_TABS = [
+type Tab = { id: string; label: string; icon: string };
+
+const BASE_TABS: Tab[] = [
   { id: 'pipeline', label: 'Pipeline', icon: '🎯' },
   { id: 'objects', label: 'Objects & Fields', icon: '📦' },
   { id: 'knowledge', label: 'Knowledge Base', icon: '🧠' },
   { id: 'templates', label: 'Templates', icon: '🏗️' },
-] as const;
-
-const ADMIN_TABS = [
-  ...BASE_TABS,
-  { id: 'permissions', label: 'Permissions', icon: '🔐' },
-  { id: 'ai-logs', label: 'AI Logs', icon: '💬' },
-] as const;
-
-type BaseTabId = (typeof BASE_TABS)[number]['id'];
-type AdminTabId = (typeof ADMIN_TABS)[number]['id'];
-type TabId = BaseTabId | AdminTabId;
+  // Security (personal session management) is available to every member.
+  { id: 'security', label: 'Security', icon: '🔒' },
+];
 
 export default function SettingsPage() {
   const { hasCapability } = useAuth();
   const navigate = useNavigate();
-  // Capability-gated (P3): the Permissions tab needs roles.manage, so a custom
-  // role an admin grants it to sees it — not just the built-in admin/owner names.
-  // The AI Logs tab is admin oversight (members.manage). Server enforces both.
+  // Capability-gated (P3/P4): the Permissions tab needs roles.manage and the
+  // Audit Log needs audit.view, so a custom role an admin grants either to sees
+  // it — not just the built-in admin/owner names. AI Logs is admin oversight
+  // (members.manage). Server enforces every gate.
   const canManageRoles = hasCapability('roles.manage');
-  const TABS = canManageRoles ? ADMIN_TABS : BASE_TABS;
+  const canViewAudit = hasCapability('audit.view');
 
-  const [activeTab, setActiveTab] = useState<TabId>('pipeline');
+  const TABS: Tab[] = [
+    ...BASE_TABS,
+    ...(canViewAudit ? [{ id: 'audit', label: 'Audit Log', icon: '📋' }] : []),
+    ...(canManageRoles
+      ? [
+          { id: 'permissions', label: 'Permissions', icon: '🔐' },
+          { id: 'ai-logs', label: 'AI Logs', icon: '💬' },
+        ]
+      : []),
+  ];
 
-  const handleTab = (id: TabId) => {
+  const [activeTab, setActiveTab] = useState<string>('pipeline');
+
+  const handleTab = (id: string) => {
     if (id === 'ai-logs') {
       navigate('/settings/ai-logs');
       return;
@@ -59,7 +67,7 @@ export default function SettingsPage() {
         {TABS.map((tab) => (
           <button
             key={tab.id}
-            onClick={() => handleTab(tab.id as TabId)}
+            onClick={() => handleTab(tab.id)}
             className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
               activeTab === tab.id
                 ? 'border-blue-500 text-foreground'
@@ -85,6 +93,10 @@ export default function SettingsPage() {
             <FieldSecurityManager />
           </div>
         )}
+
+        {activeTab === 'audit' && <AuditLogViewer />}
+
+        {activeTab === 'security' && <SecuritySessions />}
 
         {activeTab === 'knowledge' && <KnowledgeBase />}
 

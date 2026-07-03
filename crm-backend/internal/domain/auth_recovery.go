@@ -51,6 +51,38 @@ type AuthEvent struct {
 
 func (AuthEvent) TableName() string { return "auth_events" }
 
+// AuthEventView is an AuthEvent joined with its actor's name/email for the admin
+// audit UI (P4). ActorName/ActorEmail are empty when the actor is a deleted user
+// or a system/pre-auth action (actor_id NULL).
+type AuthEventView struct {
+	AuthEvent
+	ActorName  string `json:"actor_name" gorm:"column:actor_name"`
+	ActorEmail string `json:"actor_email" gorm:"column:actor_email"`
+}
+
+// AuthEventFilter narrows the admin audit query (P4). Zero-value fields are
+// ignored; Limit/Offset drive pagination (the usecase clamps Limit).
+type AuthEventFilter struct {
+	Category  string     // '', 'auth', 'admin', 'security'
+	EventType string     // exact event_type match
+	ActorID   *uuid.UUID // filter to one actor
+	From      *time.Time // created_at >= From
+	To        *time.Time // created_at <= To
+	Limit     int
+	Offset    int
+}
+
+// SessionInfo is one active device/session for the sessions UI (P4), projected
+// from a live refresh_tokens row. Current marks the session making the request.
+type SessionInfo struct {
+	ID          uuid.UUID  `json:"id"`
+	DeviceLabel string     `json:"device_label"`
+	IP          string     `json:"ip"`
+	LastUsedAt  *time.Time `json:"last_used_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	Current     bool       `json:"current"`
+}
+
 // RequestMeta carries the transport-level detail (IP, User-Agent) an auth event
 // records. The handler fills it from the gin request so usecases never depend on
 // gin.

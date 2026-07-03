@@ -9,7 +9,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, objectRegistryHandler *ObjectRegistryHandler, recordHandler *RecordHandler, permissionHandler *PermissionHandler, searchHandler *SearchHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, voiceHandler *VoiceHandler, layoutHandler *ObjectLayoutHandler, roleHandler *RoleHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository, permissionUC domain.PermissionUseCase) {
+func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, objectRegistryHandler *ObjectRegistryHandler, recordHandler *RecordHandler, permissionHandler *PermissionHandler, searchHandler *SearchHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, voiceHandler *VoiceHandler, layoutHandler *ObjectLayoutHandler, roleHandler *RoleHandler, auditHandler *AuditHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository, permissionUC domain.PermissionUseCase) {
 	api := router.Group("/api")
 
 	// Per-IP rate limit on the credential endpoints (P2). Reused across the auth
@@ -53,6 +53,12 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 		auth.GET("/google/callback", authHandler.GoogleCallback)
 
 		auth.GET("/me", AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), authHandler.Me)
+		// Session / device management (P4). Bearer-authenticated (AuthMiddleware),
+		// so these aren't cookie-CSRF vectors. A user manages only their own
+		// sessions; sign-out-everywhere re-mints this device's session.
+		auth.GET("/sessions", AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), authHandler.ListSessions)
+		auth.DELETE("/sessions/:id", AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), authHandler.RevokeSession)
+		auth.DELETE("/sessions", AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), authHandler.SignOutEverywhere)
 		// The caller's effective capabilities for the active org — drives
 		// permission-aware UI (P3). Server-side gates remain authoritative.
 		auth.GET("/capabilities", AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), permissionHandler.GetMyCapabilities)
@@ -89,6 +95,15 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			roles.DELETE("/:id", cap(domain.CapRolesManage), roleHandler.Delete)
 			roles.GET("/:id/capabilities", cap(domain.CapRolesManage), roleHandler.GetCapabilities)
 			roles.PUT("/:id/capabilities", cap(domain.CapRolesManage), roleHandler.SetCapabilities)
+		}
+
+		// Admin + auth audit log (P4) — the append-only who-did-what over
+		// auth_events (logins, member/role/permission changes, security events).
+		// Read + export are gated on audit.view (owner/admin/manager by default).
+		audit := protected.Group("/audit", cap(domain.CapAuditView))
+		{
+			audit.GET("/events", auditHandler.ListEvents)
+			audit.GET("/events/export.csv", auditHandler.ExportCSV)
 		}
 
 		// Data CRUD is now Object-Level Security-driven (default seed reproduces the

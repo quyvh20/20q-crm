@@ -107,6 +107,45 @@ func TestRefreshToken_ReuseDetectionNukesSessions(t *testing.T) {
 	}
 }
 
+// A refresh token that was deliberately revoked (logout / revoke-device /
+// sign-out-everywhere) — i.e. revoked with NO successor in the rotation chain —
+// must fail closed with a plain 401 when replayed, WITHOUT nuking the user's other
+// sessions or firing the token-theft alarm. This is what keeps P4's revoke-device
+// and sign-out-everywhere controls from cascading into a full "your token was
+// stolen" logout when the cut-off device later polls with its dead cookie.
+func TestRefreshToken_DeliberatelyRevokedDoesNotNuke(t *testing.T) {
+	repo := newFakeAuthRepo()
+	u := repo.addUser(&domain.User{Email: "u@x.com", OrgID: uuid.New()})
+	raw := seedRefreshToken(repo, u.ID)
+	// Revoke it directly, as RevokeSession/logout/sign-out-all do — no rotation,
+	// so no successor token points back at it.
+	for _, tok := range repo.refreshTokens {
+		if tok.TokenHash == hashToken(raw) {
+			now := time.Now()
+			tok.RevokedAt = &now
+		}
+	}
+	mail := &fakeMailer{}
+	uc := newTestAuthUC(repo, mail, "test")
+
+	_, err := uc.RefreshToken(context.Background(), domain.RefreshInput{RefreshToken: raw}, domain.RequestMeta{})
+	if err != domain.ErrInvalidToken {
+		t.Fatalf("deliberately-revoked replay: got %v, want ErrInvalidToken", err)
+	}
+	if repo.revokedAll[u.ID] != 0 {
+		t.Error("deliberate revocation replay must NOT nuke all sessions")
+	}
+	if repo.tokenVersions[u.ID] != 0 {
+		t.Error("deliberate revocation replay must NOT bump token_version")
+	}
+	if len(mail.alerts) != 0 {
+		t.Errorf("deliberate revocation replay must NOT send a theft alert, got %d", len(mail.alerts))
+	}
+	if hasAuthEvent(repo, "token.reuse") {
+		t.Error("deliberate revocation replay must NOT write a token.reuse event")
+	}
+}
+
 func TestRefreshToken_RejectsUnknownAndExpired(t *testing.T) {
 	repo := newFakeAuthRepo()
 	u := repo.addUser(&domain.User{Email: "u@x.com", OrgID: uuid.New()})

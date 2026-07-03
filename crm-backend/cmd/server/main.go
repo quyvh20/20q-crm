@@ -673,7 +673,9 @@ func main() {
 		// RecordService enforces through and the admin grid usecase. It needs the
 		// registry usecase to list objects for the grid.
 		permissionRepo := repository.NewPermissionRepository(db)
-		permissionUC := usecase.NewPermissionUseCase(permissionRepo, objectRegistryUC)
+		// authRepo is also the AuthEventWriter (P4): OLS/FLS grid edits are audited
+		// to auth_events alongside member/role changes.
+		permissionUC := usecase.NewPermissionUseCase(permissionRepo, objectRegistryUC, authRepo)
 		permissionHandler := delivery.NewPermissionHandler(permissionUC)
 
 		// Object Registry handler — constructed here (after permissionUC) so it can
@@ -703,8 +705,13 @@ func main() {
 		// Custom role management (P3): CRUD + capability editing, gated on
 		// roles.manage. The usecase busts the permission cache on every change.
 		roleRepo := repository.NewRoleRepository(db)
-		roleUC := usecase.NewRoleUseCase(roleRepo, permissionUC)
+		roleUC := usecase.NewRoleUseCase(roleRepo, permissionUC, authRepo)
 		roleHandler := delivery.NewRoleHandler(roleUC)
+
+		// Admin + auth audit log (P4): read-only view over the append-only
+		// auth_events written by the auth/admin usecases.
+		auditUC := usecase.NewAuditUseCase(authRepo)
+		auditHandler := delivery.NewAuditHandler(auditUC)
 
 		// Global search (P6): spans searchable custom objects (record_embeddings)
 		// plus contacts (native index), resolving every hit through RecordService so
@@ -736,7 +743,7 @@ func main() {
 		voiceNoteUC := usecase.NewVoiceNoteUseCase(voiceNoteRepo, aiJobQueue, cfg, contactRepo)
 		voiceHandler := delivery.NewVoiceHandler(voiceNoteUC)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, layoutHandler, roleHandler, cfg, db, redisClient, authRepo, permissionUC)
+		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, layoutHandler, roleHandler, auditHandler, cfg, db, redisClient, authRepo, permissionUC)
 
 		// --- Workflow Automation Engine ---
 		memHandler := logger.NewMemoryHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
