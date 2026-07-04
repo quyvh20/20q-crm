@@ -83,11 +83,33 @@ func (f *fakeWidgetRepo) NextPosition(_ context.Context, _ uuid.UUID, userID uui
 	return max + 1, nil
 }
 
+// fakeDashReportUC implements just the ResolveAccess the dashboard uses: a
+// report is visible to its creator (manage) or org-wide (view), else 404 —
+// reading live from the shared reports map so mutations in a test take effect.
+type fakeDashReportUC struct {
+	domain.ReportUseCase
+	repo *fakeReportRepo
+}
+
+func (f *fakeDashReportUC) ResolveAccess(_ context.Context, _ uuid.UUID, userID uuid.UUID, id uuid.UUID) (*domain.Report, string, error) {
+	rep := f.repo.reports[id]
+	if rep == nil {
+		return nil, "", domain.ErrReportNotFound
+	}
+	if rep.CreatedBy != nil && *rep.CreatedBy == userID {
+		return rep, domain.ShareLevelManage, nil
+	}
+	if rep.Visibility == domain.ReportVisibilityOrg {
+		return rep, domain.ShareLevelView, nil
+	}
+	return nil, "", domain.ErrReportNotFound
+}
+
 func dashEnv(t *testing.T) (domain.DashboardUseCase, *fakeWidgetRepo, *fakeReportRepo, uuid.UUID) {
 	t.Helper()
 	widgets := &fakeWidgetRepo{}
 	reports := newFakeReportRepo()
-	return NewDashboardUseCase(widgets, reports), widgets, reports, uuid.New()
+	return NewDashboardUseCase(widgets, &fakeDashReportUC{repo: reports}), widgets, reports, uuid.New()
 }
 
 func seedReport(reports *fakeReportRepo, creator uuid.UUID, visibility string) *domain.Report {

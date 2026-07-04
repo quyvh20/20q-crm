@@ -36,10 +36,11 @@ type reportUseCase struct {
 	registry domain.ObjectRegistryRepository
 	authz    domain.RecordAuthorizer
 	caps     domain.CapabilityChecker
+	shares   domain.ReportShareRepository
 }
 
-func NewReportUseCase(repo domain.ReportRepository, runner domain.ReportRunner, registry domain.ObjectRegistryRepository, authz domain.RecordAuthorizer, caps domain.CapabilityChecker) domain.ReportUseCase {
-	return &reportUseCase{repo: repo, runner: runner, registry: registry, authz: authz, caps: caps}
+func NewReportUseCase(repo domain.ReportRepository, runner domain.ReportRunner, registry domain.ObjectRegistryRepository, authz domain.RecordAuthorizer, caps domain.CapabilityChecker, shares domain.ReportShareRepository) domain.ReportUseCase {
+	return &reportUseCase{repo: repo, runner: runner, registry: registry, authz: authz, caps: caps, shares: shares}
 }
 
 var (
@@ -52,7 +53,11 @@ var (
 // ============================================================
 
 func (uc *reportUseCase) List(ctx context.Context, orgID, userID uuid.UUID) ([]domain.Report, error) {
-	return uc.repo.ListVisible(ctx, orgID, userID)
+	ident, err := uc.shares.GetShareIdentity(ctx, orgID, userID)
+	if err != nil {
+		return nil, err
+	}
+	return uc.repo.ListVisible(ctx, orgID, ident)
 }
 
 func (uc *reportUseCase) Create(ctx context.Context, orgID, userID uuid.UUID, in domain.ReportInput) (*domain.Report, error) {
@@ -76,15 +81,21 @@ func (uc *reportUseCase) Create(ctx context.Context, orgID, userID uuid.UUID, in
 }
 
 func (uc *reportUseCase) Get(ctx context.Context, orgID, userID uuid.UUID, id uuid.UUID) (*domain.Report, error) {
-	return uc.getVisible(ctx, orgID, userID, id)
-}
-
-func (uc *reportUseCase) Update(ctx context.Context, orgID, userID uuid.UUID, id uuid.UUID, in domain.ReportInput) (*domain.Report, error) {
-	rep, err := uc.getVisible(ctx, orgID, userID, id)
+	rep, level, err := uc.getVisibleWithLevel(ctx, orgID, userID, id)
 	if err != nil {
 		return nil, err
 	}
-	if !uc.canManage(ctx, orgID, rep, userID) {
+	rep.AccessLevel = level // drives the frontend (show Share/Edit at the right level)
+	return rep, nil
+}
+
+func (uc *reportUseCase) Update(ctx context.Context, orgID, userID uuid.UUID, id uuid.UUID, in domain.ReportInput) (*domain.Report, error) {
+	rep, level, err := uc.getVisibleWithLevel(ctx, orgID, userID, id)
+	if err != nil {
+		return nil, err
+	}
+	// An 'edit' share (or manage) may modify the definition.
+	if !domain.ShareLevelAtLeast(level, domain.ShareLevelEdit) {
 		return nil, domain.ErrForbidden
 	}
 	cfgJSON, err := uc.validateInput(ctx, orgID, &in)
@@ -103,40 +114,85 @@ func (uc *reportUseCase) Update(ctx context.Context, orgID, userID uuid.UUID, id
 }
 
 func (uc *reportUseCase) Delete(ctx context.Context, orgID, userID uuid.UUID, id uuid.UUID) error {
-	rep, err := uc.getVisible(ctx, orgID, userID, id)
+	_, level, err := uc.getVisibleWithLevel(ctx, orgID, userID, id)
 	if err != nil {
 		return err
 	}
-	if !uc.canManage(ctx, orgID, rep, userID) {
+	// Only an owner/creator/reports.manage (manage) may delete — an 'edit' share
+	// can change a report but not destroy someone else's.
+	if level != domain.ShareLevelManage {
 		return domain.ErrForbidden
 	}
 	return uc.repo.SoftDelete(ctx, orgID, id)
 }
 
-// getVisible loads a report the caller may SEE: their own, or an org-shared
-// one. Everything else 404s — a private report's existence is not disclosed.
+// getVisible loads a report the caller may SEE (any level ≥ view); everything
+// else 404s — a report the caller has no grant on is not disclosed.
 func (uc *reportUseCase) getVisible(ctx context.Context, orgID, userID uuid.UUID, id uuid.UUID) (*domain.Report, error) {
-	rep, err := uc.repo.GetByID(ctx, orgID, id)
-	if err != nil {
-		return nil, err
-	}
-	if rep == nil {
-		return nil, domain.ErrReportNotFound
-	}
-	if rep.Visibility != domain.ReportVisibilityOrg && (rep.CreatedBy == nil || *rep.CreatedBy != userID) {
-		return nil, domain.ErrReportNotFound
-	}
-	return rep, nil
+	rep, _, err := uc.getVisibleWithLevel(ctx, orgID, userID, id)
+	return rep, err
 }
 
-// canManage: the creator edits their own reports; reports.manage is the
-// oversight power over everyone else's (owner role bypasses inside
-// HasCapability).
-func (uc *reportUseCase) canManage(ctx context.Context, orgID uuid.UUID, rep *domain.Report, userID uuid.UUID) bool {
-	if rep.CreatedBy != nil && *rep.CreatedBy == userID {
-		return true
+// getVisibleWithLevel loads a report plus the caller's effective level, 404ing
+// when the level is 'none'.
+func (uc *reportUseCase) getVisibleWithLevel(ctx context.Context, orgID, userID uuid.UUID, id uuid.UUID) (*domain.Report, string, error) {
+	rep, err := uc.repo.GetByID(ctx, orgID, id)
+	if err != nil {
+		return nil, "", err
 	}
-	return uc.caps.HasCapability(ctx, orgID, domain.CapReportsManage) == nil
+	if rep == nil {
+		return nil, "", domain.ErrReportNotFound
+	}
+	level := uc.effectiveLevel(ctx, orgID, rep, userID)
+	if level == domain.ShareLevelNone {
+		return nil, "", domain.ErrReportNotFound
+	}
+	return rep, level, nil
+}
+
+// effectiveLevel resolves the caller's highest access level on a report:
+// creator / reports.manage / owner → manage; otherwise the max of org-visibility
+// (view) and any share matching the caller directly, by role, or by group.
+func (uc *reportUseCase) effectiveLevel(ctx context.Context, orgID uuid.UUID, rep *domain.Report, userID uuid.UUID) string {
+	if rep.CreatedBy != nil && *rep.CreatedBy == userID {
+		return domain.ShareLevelManage
+	}
+	if uc.caps.HasCapability(ctx, orgID, domain.CapReportsManage) == nil {
+		return domain.ShareLevelManage
+	}
+
+	best := domain.ShareLevelNone
+	if rep.Visibility == domain.ReportVisibilityOrg {
+		best = domain.ShareLevelView
+	}
+
+	ident, err := uc.shares.GetShareIdentity(ctx, orgID, userID)
+	if err != nil {
+		return best
+	}
+	rawShares, err := uc.shares.ListRawByReport(ctx, orgID, rep.ID)
+	if err != nil {
+		return best
+	}
+	groupSet := make(map[uuid.UUID]bool, len(ident.GroupIDs))
+	for _, g := range ident.GroupIDs {
+		groupSet[g] = true
+	}
+	for _, s := range rawShares {
+		matches := (s.TargetType == domain.ShareTargetUser && s.TargetID == userID) ||
+			(s.TargetType == domain.ShareTargetRole && s.TargetID == ident.RoleID) ||
+			(s.TargetType == domain.ShareTargetGroup && groupSet[s.TargetID])
+		if matches && domain.ShareLevelRank(s.Level) > domain.ShareLevelRank(best) {
+			best = s.Level
+		}
+	}
+	return best
+}
+
+// ResolveAccess loads a report plus the caller's effective level (404 when
+// none) — the gate sibling usecases (share, comments) use.
+func (uc *reportUseCase) ResolveAccess(ctx context.Context, orgID, userID uuid.UUID, id uuid.UUID) (*domain.Report, string, error) {
+	return uc.getVisibleWithLevel(ctx, orgID, userID, id)
 }
 
 // validateInput normalizes visibility, resolves the object, and validates the

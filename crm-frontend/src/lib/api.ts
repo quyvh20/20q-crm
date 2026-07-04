@@ -2305,6 +2305,9 @@ export interface Report {
   created_by?: string;
   created_at: string;
   updated_at: string;
+  // The caller's effective level (view/comment/edit/manage), populated by
+  // GET /api/reports/:id. Drives whether the Share/Edit controls appear.
+  access_level?: 'view' | 'comment' | 'edit' | 'manage';
 }
 
 export interface ReportGroupRow {
@@ -2527,4 +2530,38 @@ export async function addGroupMember(groupId: string, userId: string): Promise<v
 export async function removeGroupMember(groupId: string, userId: string): Promise<void> {
   const res = await apiFetch(`/api/groups/${groupId}/members/${userId}`, { method: 'DELETE' });
   if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error((j as { error?: string }).error || 'Failed to remove member'); }
+}
+
+// ── Report shares (granular sharing: users/roles/groups × view/comment/edit) ──
+
+export type ShareTargetType = 'user' | 'role' | 'group';
+export type ShareLevel = 'view' | 'comment' | 'edit';
+
+export interface ReportShareView {
+  id: string;
+  target_type: ShareTargetType;
+  target_id: string;
+  target_name: string;
+  level: ShareLevel;
+  created_at: string;
+}
+
+export async function listReportShares(reportId: string): Promise<ReportShareView[]> {
+  const res = await apiFetch(`/api/reports/${reportId}/shares`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to load shares');
+  return (json.data || []) as ReportShareView[];
+}
+
+export async function addReportShare(reportId: string, targetType: ShareTargetType, targetId: string, level: ShareLevel): Promise<void> {
+  const res = await apiFetch(`/api/reports/${reportId}/shares`, {
+    method: 'POST',
+    body: JSON.stringify({ target_type: targetType, target_id: targetId, level }),
+  });
+  if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error((j as { error?: string }).error || 'Failed to share report'); }
+}
+
+export async function removeReportShare(reportId: string, shareId: string): Promise<void> {
+  const res = await apiFetch(`/api/reports/${reportId}/shares/${shareId}`, { method: 'DELETE' });
+  if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error((j as { error?: string }).error || 'Failed to remove share'); }
 }

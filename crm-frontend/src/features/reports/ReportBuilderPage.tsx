@@ -6,11 +6,11 @@ import {
   type ObjectSummary, type Report, type ReportChart as ReportChartKind, type ReportConfig,
   type ReportDateBucket, type ReportFieldDescriptor, type ReportVisibility,
 } from '../../lib/api';
-import { useAuth } from '../../lib/auth';
 import { useReportPreview, isRunnableConfig } from './useReportPreview';
 import { REPORT_TEMPLATES } from './templates';
 import ReportChart from './charts/ReportChart';
 import FilterEditor from './builder/FilterEditor';
+import ReportShareDialog from './ReportShareDialog';
 
 const CHART_TYPES: { value: ReportChartKind; label: string; icon: string }[] = [
   { value: 'bar', label: 'Bar', icon: '📊' },
@@ -40,7 +40,6 @@ export default function ReportBuilderPage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { user, hasCapability } = useAuth();
 
   const template = !id ? REPORT_TEMPLATES.find((t) => t.id === searchParams.get('template')) : undefined;
 
@@ -86,7 +85,14 @@ export default function ReportBuilderPage() {
 
   const preview = useReportPreview(loaded ? objectSlug : undefined, config);
 
-  const canManage = !existing || existing.created_by === user?.id || hasCapability('reports.manage');
+  const [showShare, setShowShare] = useState(false);
+  // A new report is fully editable by its creator. An existing one uses the
+  // server-resolved access level: edit/manage may modify; only manage may
+  // delete or change who it's shared with.
+  const level = existing?.access_level;
+  const canManage = !existing || level === 'edit' || level === 'manage';
+  const canShare = level === 'manage';
+  const canDelete = level === 'manage';
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -171,6 +177,9 @@ export default function ReportBuilderPage() {
           <option value="private">🔒 Private</option>
           <option value="org">🌐 Shared with workspace</option>
         </select>
+        {existing && canShare && (
+          <button onClick={() => setShowShare(true)} className="rounded-md border px-3 py-2 text-sm hover:bg-accent">Share</button>
+        )}
         {existing && (
           <button onClick={handleExport} className="rounded-md border px-3 py-2 text-sm hover:bg-accent">Export CSV</button>
         )}
@@ -183,7 +192,7 @@ export default function ReportBuilderPage() {
             {saveMutation.isPending ? 'Saving…' : existing ? 'Save changes' : 'Save report'}
           </button>
         )}
-        {existing && canManage && (
+        {existing && canDelete && (
           <button
             onClick={() => { if (window.confirm(`Delete report "${existing.name}"?`)) deleteMutation.mutate(); }}
             className="rounded-md border border-red-300 px-3 py-2 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-950"
@@ -192,6 +201,7 @@ export default function ReportBuilderPage() {
           </button>
         )}
       </div>
+      {showShare && existing && <ReportShareDialog reportId={existing.id} onClose={() => setShowShare(false)} />}
       {saveMutation.isError && <div className="text-sm text-red-600">{(saveMutation.error as Error).message}</div>}
 
       <div className="grid gap-4 lg:grid-cols-[400px_1fr]">

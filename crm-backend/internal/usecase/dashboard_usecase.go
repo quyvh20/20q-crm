@@ -9,18 +9,18 @@ import (
 	"github.com/google/uuid"
 )
 
-// dashboardUseCase manages the caller's own dashboard (P9 Phase B). Widgets
-// are pure layout; report visibility is re-checked on every listing so a
-// report that was unshared (or deleted) after being pinned silently drops off
-// the dashboard instead of leaking its definition. The widget's DATA is never
-// touched here — the frontend runs each report through the normal run
-// endpoint, where OLS/FLS/data scope apply.
+// dashboardUseCase manages the caller's own dashboard (P9 Phase B). Widgets are
+// pure layout; report visibility is resolved through the report usecase on every
+// read, so a report that was unshared (or deleted) after being pinned silently
+// drops off, and a report shared with the caller (directly / by role / by group)
+// can be pinned and stays visible. Widget DATA is fetched by the frontend via
+// the normal run endpoint, where OLS/FLS/data scope apply.
 type dashboardUseCase struct {
 	widgets domain.DashboardWidgetRepository
-	reports domain.ReportRepository
+	reports domain.ReportUseCase
 }
 
-func NewDashboardUseCase(widgets domain.DashboardWidgetRepository, reports domain.ReportRepository) domain.DashboardUseCase {
+func NewDashboardUseCase(widgets domain.DashboardWidgetRepository, reports domain.ReportUseCase) domain.DashboardUseCase {
 	return &dashboardUseCase{widgets: widgets, reports: reports}
 }
 
@@ -31,23 +31,13 @@ func (uc *dashboardUseCase) ListWidgets(ctx context.Context, orgID, userID uuid.
 	if err != nil {
 		return nil, err
 	}
-	ids := make([]uuid.UUID, 0, len(widgets))
-	for _, w := range widgets {
-		ids = append(ids, w.ReportID)
-	}
-	reps, err := uc.reports.GetByIDs(ctx, orgID, ids)
-	if err != nil {
-		return nil, err
-	}
-
 	out := make([]domain.DashboardWidgetView, 0, len(widgets))
 	for _, w := range widgets {
-		rep := reps[w.ReportID]
-		if rep == nil {
-			continue // report soft-deleted; the FK cascade only covers hard deletes
-		}
-		if rep.Visibility != domain.ReportVisibilityOrg && (rep.CreatedBy == nil || *rep.CreatedBy != userID) {
-			continue // report was unshared since it was pinned
+		// ResolveAccess 404s when the report is gone or no longer visible to the
+		// caller — drop those widgets rather than leaking a stub.
+		rep, _, err := uc.reports.ResolveAccess(ctx, orgID, userID, w.ReportID)
+		if err != nil {
+			continue
 		}
 		out = append(out, domain.DashboardWidgetView{DashboardWidget: w, Report: rep})
 	}
@@ -64,14 +54,9 @@ func (uc *dashboardUseCase) AddWidget(ctx context.Context, orgID, userID uuid.UU
 		return nil, domain.NewAppError(http.StatusBadRequest, "size must be 'half' or 'full'")
 	}
 
-	// Pin only reports the caller can see (mirrors getVisible in the report
-	// usecase: own report, or org-shared).
-	rep, err := uc.reports.GetByID(ctx, orgID, in.ReportID)
-	if err != nil {
+	// Pin only reports the caller can actually see.
+	if _, _, err := uc.reports.ResolveAccess(ctx, orgID, userID, in.ReportID); err != nil {
 		return nil, err
-	}
-	if rep == nil || (rep.Visibility != domain.ReportVisibilityOrg && (rep.CreatedBy == nil || *rep.CreatedBy != userID)) {
-		return nil, domain.ErrReportNotFound
 	}
 
 	// Idempotent: re-pinning returns the existing widget.
@@ -85,13 +70,7 @@ func (uc *dashboardUseCase) AddWidget(ctx context.Context, orgID, userID uuid.UU
 	if err != nil {
 		return nil, err
 	}
-	w := &domain.DashboardWidget{
-		OrgID:    orgID,
-		UserID:   userID,
-		ReportID: in.ReportID,
-		Position: pos,
-		Size:     size,
-	}
+	w := &domain.DashboardWidget{OrgID: orgID, UserID: userID, ReportID: in.ReportID, Position: pos, Size: size}
 	if err := uc.widgets.Create(ctx, w); err != nil {
 		return nil, err
 	}

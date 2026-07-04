@@ -575,6 +575,32 @@ func main() {
 		db.Exec(`ALTER TABLE user_groups ENABLE ROW LEVEL SECURITY`)
 		db.Exec(`ALTER TABLE user_group_members ENABLE ROW LEVEL SECURITY`)
 
+		// Report shares (migration 000032) — boot guard. Mirrors
+		// migrations/000032_report_shares.up.sql exactly. Granular sharing of a
+		// report with a user/role/group at a view/comment/edit level.
+		db.Exec(`CREATE TABLE IF NOT EXISTS report_shares (
+			id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			org_id      UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			report_id   UUID NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+			target_type VARCHAR(10) NOT NULL,
+			target_id   UUID NOT NULL,
+			level       VARCHAR(10) NOT NULL DEFAULT 'view',
+			created_by  UUID REFERENCES users(id) ON DELETE SET NULL,
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`)
+		db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uix_report_shares_target ON report_shares(report_id, target_type, target_id)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_report_shares_report ON report_shares(report_id)`)
+		db.Exec(`DO $$
+		BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'report_shares_target_type_check') THEN
+				ALTER TABLE report_shares ADD CONSTRAINT report_shares_target_type_check CHECK (target_type IN ('user','role','group'));
+			END IF;
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'report_shares_level_check') THEN
+				ALTER TABLE report_shares ADD CONSTRAINT report_shares_level_check CHECK (level IN ('view','comment','edit'));
+			END IF;
+		END $$`)
+		db.Exec(`ALTER TABLE report_shares ENABLE ROW LEVEL SECURITY`)
+
 		log.Info("Seeding system roles...")
 		if err := repository.SeedSystemRoles(db); err != nil {
 			log.Error("Failed to seed system roles", zap.Error(err))
@@ -791,11 +817,16 @@ func main() {
 		// authorizer and the capability checker (reports.manage oversight).
 		reportRepo := repository.NewReportRepository(db)
 		reportRunner := repository.NewReportRunnerRepository(db)
-		reportUC := usecase.NewReportUseCase(reportRepo, reportRunner, objectRegistryRepo, permissionUC, permissionUC)
+		reportShareRepo := repository.NewReportShareRepository(db)
+		reportUC := usecase.NewReportUseCase(reportRepo, reportRunner, objectRegistryRepo, permissionUC, permissionUC, reportShareRepo)
 		reportHandler := delivery.NewReportHandler(reportUC)
+		// Granular report sharing (users/roles/groups × view/comment/edit).
+		reportShareUC := usecase.NewReportShareUseCase(reportUC, reportShareRepo)
+		reportShareHandler := delivery.NewReportShareHandler(reportShareUC)
 
 		// Dashboard widgets (P9 Phase B): per-user pinned reports on the home page.
-		dashboardUC := usecase.NewDashboardUseCase(repository.NewDashboardWidgetRepository(db), reportRepo)
+		// Uses reportUC so shared reports (not just own/org) resolve for the dashboard.
+		dashboardUC := usecase.NewDashboardUseCase(repository.NewDashboardWidgetRepository(db), reportUC)
 		dashboardHandler := delivery.NewDashboardHandler(dashboardUC)
 
 		// User groups: named member groups, first used as a report-sharing target.
@@ -833,7 +864,7 @@ func main() {
 		voiceNoteUC := usecase.NewVoiceNoteUseCase(voiceNoteRepo, aiJobQueue, cfg, contactRepo)
 		voiceHandler := delivery.NewVoiceHandler(voiceNoteUC)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, layoutHandler, roleHandler, auditHandler, reportHandler, dashboardHandler, userGroupHandler, cfg, db, redisClient, authRepo, permissionUC)
+		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, layoutHandler, roleHandler, auditHandler, reportHandler, reportShareHandler, dashboardHandler, userGroupHandler, cfg, db, redisClient, authRepo, permissionUC)
 
 		// --- Workflow Automation Engine ---
 		memHandler := logger.NewMemoryHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))

@@ -55,12 +55,25 @@ func (r *reportRepository) GetByIDs(ctx context.Context, orgID uuid.UUID, ids []
 	return out, nil
 }
 
-// ListVisible returns the caller's own reports plus the org-shared ones,
-// newest first. Private reports of OTHER users never leave the database.
-func (r *reportRepository) ListVisible(ctx context.Context, orgID, userID uuid.UUID) ([]domain.Report, error) {
+// ListVisible returns the caller's own reports, org-wide reports, and reports
+// shared with them directly / via their role / via a group, newest first.
+// Private reports the caller has no grant on never leave the database.
+func (r *reportRepository) ListVisible(ctx context.Context, orgID uuid.UUID, ident domain.ShareIdentity) ([]domain.Report, error) {
+	// GORM expands `IN ?` for the group-id slice (empty → IN (NULL) = matches
+	// nothing) and adds `deleted_at IS NULL` from the model's soft-delete scope.
 	var reps []domain.Report
 	err := r.db.WithContext(ctx).
-		Where("org_id = ? AND (visibility = ? OR created_by = ?)", orgID, domain.ReportVisibilityOrg, userID).
+		Where(`org_id = ? AND (
+			created_by = ?
+			OR visibility = ?
+			OR EXISTS (
+				SELECT 1 FROM report_shares s WHERE s.report_id = reports.id AND (
+					(s.target_type = 'user'  AND s.target_id = ?) OR
+					(s.target_type = 'role'  AND s.target_id = ?) OR
+					(s.target_type = 'group' AND s.target_id IN ?)
+				)
+			)
+		)`, orgID, ident.UserID, domain.ReportVisibilityOrg, ident.UserID, ident.RoleID, ident.GroupIDs).
 		Order("updated_at DESC").
 		Find(&reps).Error
 	return reps, err

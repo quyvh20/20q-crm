@@ -50,10 +50,10 @@ func (f *fakeReportRepo) GetByIDs(_ context.Context, _ uuid.UUID, ids []uuid.UUI
 	return out, nil
 }
 
-func (f *fakeReportRepo) ListVisible(_ context.Context, _ uuid.UUID, userID uuid.UUID) ([]domain.Report, error) {
+func (f *fakeReportRepo) ListVisible(_ context.Context, _ uuid.UUID, ident domain.ShareIdentity) ([]domain.Report, error) {
 	var out []domain.Report
 	for _, r := range f.reports {
-		if r.Visibility == domain.ReportVisibilityOrg || (r.CreatedBy != nil && *r.CreatedBy == userID) {
+		if r.Visibility == domain.ReportVisibilityOrg || (r.CreatedBy != nil && *r.CreatedBy == ident.UserID) {
 			out = append(out, *r)
 		}
 	}
@@ -139,12 +139,57 @@ func reportTestRegistry() *fakeRegistryRepo {
 	}
 }
 
+// fakeShareRepo is a configurable ReportShareRepository. By default the caller
+// has no role/group handles and reports have no shares, so effectiveLevel falls
+// back to creator/cap/org-visibility — matching the pre-sharing behavior.
+type fakeShareRepo struct {
+	ident  domain.ShareIdentity
+	byRept map[uuid.UUID][]domain.ReportShare // report id → shares
+}
+
+func newFakeShareRepo() *fakeShareRepo {
+	return &fakeShareRepo{byRept: map[uuid.UUID][]domain.ReportShare{}}
+}
+func (f *fakeShareRepo) Create(_ context.Context, s *domain.ReportShare) error {
+	f.byRept[s.ReportID] = append(f.byRept[s.ReportID], *s)
+	return nil
+}
+func (f *fakeShareRepo) ListByReport(_ context.Context, _ uuid.UUID, reportID uuid.UUID) ([]domain.ReportShareView, error) {
+	var out []domain.ReportShareView
+	for _, s := range f.byRept[reportID] {
+		out = append(out, domain.ReportShareView{ID: s.ID, TargetType: s.TargetType, TargetID: s.TargetID, Level: s.Level})
+	}
+	return out, nil
+}
+func (f *fakeShareRepo) ListRawByReport(_ context.Context, _ uuid.UUID, reportID uuid.UUID) ([]domain.ReportShare, error) {
+	return f.byRept[reportID], nil
+}
+func (f *fakeShareRepo) Delete(_ context.Context, _ uuid.UUID, reportID, shareID uuid.UUID) (int64, error) {
+	kept := f.byRept[reportID][:0]
+	var n int64
+	for _, s := range f.byRept[reportID] {
+		if s.ID == shareID {
+			n++
+			continue
+		}
+		kept = append(kept, s)
+	}
+	f.byRept[reportID] = kept
+	return n, nil
+}
+func (f *fakeShareRepo) GetShareIdentity(_ context.Context, _ uuid.UUID, userID uuid.UUID) (domain.ShareIdentity, error) {
+	id := f.ident
+	id.UserID = userID
+	return id, nil
+}
+
 type reportEnv struct {
 	uc     domain.ReportUseCase
 	repo   *fakeReportRepo
 	runner *fakeReportRunner
 	authz  *fakeAuthorizer
 	caps   *fakeCaps
+	shares *fakeShareRepo
 	orgID  uuid.UUID
 }
 
@@ -153,12 +198,14 @@ func newReportEnv() *reportEnv {
 	runner := &fakeReportRunner{}
 	authz := &fakeAuthorizer{}
 	caps := &fakeCaps{}
+	shares := newFakeShareRepo()
 	return &reportEnv{
-		uc:     NewReportUseCase(repo, runner, reportTestRegistry(), authz, caps),
+		uc:     NewReportUseCase(repo, runner, reportTestRegistry(), authz, caps, shares),
 		repo:   repo,
 		runner: runner,
 		authz:  authz,
 		caps:   caps,
+		shares: shares,
 		orgID:  uuid.New(),
 	}
 }
@@ -497,6 +544,156 @@ func TestReport_TableRelationColumnsGatedByOLS(t *testing.T) {
 	}
 	if res.Rows[0]["company"] == "Acme Corp" {
 		t.Error("leaked a company name into a table column the caller cannot read")
+	}
+}
+
+// ============================================================
+// Share level resolution (Phase B)
+// ============================================================
+
+// seedForeignReport puts a private report owned by someone else directly in the
+// repo, so the caller's access must come purely from shares/visibility.
+func seedForeignReport(env *reportEnv, visibility string) *domain.Report {
+	owner := uuid.New()
+	rep := &domain.Report{ID: uuid.New(), OrgID: env.orgID, Name: "R", ObjectSlug: "deal", Visibility: visibility, CreatedBy: &owner, Config: domain.JSON(`{"chart":"bar"}`)}
+	env.repo.reports[rep.ID] = rep
+	return rep
+}
+
+func shareRow(reportID uuid.UUID, tt string, target uuid.UUID, level string) domain.ReportShare {
+	return domain.ReportShare{ID: uuid.New(), ReportID: reportID, TargetType: tt, TargetID: target, Level: level}
+}
+
+func TestReport_NoGrantIs404(t *testing.T) {
+	env := newReportEnv()
+	env.caps.allow = false // no reports.manage
+	rep := seedForeignReport(env, domain.ReportVisibilityPrivate)
+	if _, err := env.uc.Get(context.Background(), env.orgID, uuid.New(), rep.ID); err != domain.ErrReportNotFound {
+		t.Errorf("err = %v, want 404 — a report with no grant must be invisible", err)
+	}
+}
+
+func TestReport_ShareLevelHighestWins(t *testing.T) {
+	env := newReportEnv()
+	env.caps.allow = false
+	me := uuid.New()
+	roleID, groupID := uuid.New(), uuid.New()
+	env.shares.ident = domain.ShareIdentity{RoleID: roleID, GroupIDs: []uuid.UUID{groupID}}
+	rep := seedForeignReport(env, domain.ReportVisibilityPrivate)
+	// user=view, role=edit, group=comment → highest is edit.
+	env.shares.byRept[rep.ID] = []domain.ReportShare{
+		shareRow(rep.ID, domain.ShareTargetUser, me, domain.ShareLevelView),
+		shareRow(rep.ID, domain.ShareTargetRole, roleID, domain.ShareLevelEdit),
+		shareRow(rep.ID, domain.ShareTargetGroup, groupID, domain.ShareLevelComment),
+	}
+	got, err := env.uc.Get(context.Background(), env.orgID, me, rep.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.AccessLevel != domain.ShareLevelEdit {
+		t.Errorf("access_level = %q, want edit (highest of view/edit/comment)", got.AccessLevel)
+	}
+}
+
+func TestReport_VisibleByRoleAndGroup(t *testing.T) {
+	env := newReportEnv()
+	env.caps.allow = false
+	me := uuid.New()
+	roleID, groupID := uuid.New(), uuid.New()
+
+	// via role only
+	env.shares.ident = domain.ShareIdentity{RoleID: roleID}
+	rRole := seedForeignReport(env, domain.ReportVisibilityPrivate)
+	env.shares.byRept[rRole.ID] = []domain.ReportShare{shareRow(rRole.ID, domain.ShareTargetRole, roleID, domain.ShareLevelView)}
+	if _, err := env.uc.Get(context.Background(), env.orgID, me, rRole.ID); err != nil {
+		t.Errorf("role share should grant visibility: %v", err)
+	}
+
+	// via group only
+	env.shares.ident = domain.ShareIdentity{GroupIDs: []uuid.UUID{groupID}}
+	rGroup := seedForeignReport(env, domain.ReportVisibilityPrivate)
+	env.shares.byRept[rGroup.ID] = []domain.ReportShare{shareRow(rGroup.ID, domain.ShareTargetGroup, groupID, domain.ShareLevelView)}
+	if _, err := env.uc.Get(context.Background(), env.orgID, me, rGroup.ID); err != nil {
+		t.Errorf("group share should grant visibility: %v", err)
+	}
+
+	// a role/group the caller does NOT have → still 404
+	env.shares.ident = domain.ShareIdentity{RoleID: uuid.New()}
+	if _, err := env.uc.Get(context.Background(), env.orgID, me, rRole.ID); err != domain.ErrReportNotFound {
+		t.Errorf("a non-matching role must not grant access: %v", err)
+	}
+}
+
+func TestReport_EditShareUpdatesButCannotDelete(t *testing.T) {
+	env := newReportEnv()
+	env.caps.allow = false
+	me := uuid.New()
+	rep := seedForeignReport(env, domain.ReportVisibilityPrivate)
+	env.shares.byRept[rep.ID] = []domain.ReportShare{shareRow(rep.ID, domain.ShareTargetUser, me, domain.ShareLevelEdit)}
+
+	in := domain.ReportInput{Name: "Edited", ObjectSlug: "deal", Visibility: "private", Config: barByStage()}
+	if _, err := env.uc.Update(context.Background(), env.orgID, me, rep.ID, in); err != nil {
+		t.Errorf("edit share should allow update: %v", err)
+	}
+	if err := env.uc.Delete(context.Background(), env.orgID, me, rep.ID); err != domain.ErrForbidden {
+		t.Errorf("edit share must NOT allow delete: %v", err)
+	}
+}
+
+func TestReport_ViewShareCannotEdit(t *testing.T) {
+	env := newReportEnv()
+	env.caps.allow = false
+	me := uuid.New()
+	rep := seedForeignReport(env, domain.ReportVisibilityPrivate)
+	env.shares.byRept[rep.ID] = []domain.ReportShare{shareRow(rep.ID, domain.ShareTargetUser, me, domain.ShareLevelView)}
+
+	in := domain.ReportInput{Name: "X", ObjectSlug: "deal", Visibility: "private", Config: barByStage()}
+	if _, err := env.uc.Update(context.Background(), env.orgID, me, rep.ID, in); err != domain.ErrForbidden {
+		t.Errorf("view share must not allow edit: %v", err)
+	}
+}
+
+func TestReportShare_AddGatedByManage(t *testing.T) {
+	env := newReportEnv()
+	env.caps.allow = false
+	shareUC := NewReportShareUseCase(env.uc, env.shares)
+	me := uuid.New()
+	rep := seedForeignReport(env, domain.ReportVisibilityOrg) // org-visible → me has 'view'
+
+	// A viewer cannot manage the share list.
+	err := shareUC.Add(context.Background(), env.orgID, me, rep.ID, domain.AddReportShareInput{
+		TargetType: domain.ShareTargetUser, TargetID: uuid.New(), Level: domain.ShareLevelView,
+	})
+	if err != domain.ErrForbidden {
+		t.Errorf("non-manager Add = %v, want forbidden", err)
+	}
+
+	// The creator can.
+	creator := uuid.New()
+	own := &domain.Report{ID: uuid.New(), OrgID: env.orgID, Name: "Mine", Visibility: "private", CreatedBy: &creator, Config: domain.JSON(`{}`)}
+	env.repo.reports[own.ID] = own
+	if err := shareUC.Add(context.Background(), env.orgID, creator, own.ID, domain.AddReportShareInput{
+		TargetType: domain.ShareTargetGroup, TargetID: uuid.New(), Level: domain.ShareLevelEdit,
+	}); err != nil {
+		t.Errorf("creator Add failed: %v", err)
+	}
+	if len(env.shares.byRept[own.ID]) != 1 {
+		t.Errorf("share not created")
+	}
+}
+
+func TestReportShare_InvalidTargetOrLevelRejected(t *testing.T) {
+	env := newReportEnv()
+	shareUC := NewReportShareUseCase(env.uc, env.shares)
+	creator := uuid.New()
+	own := &domain.Report{ID: uuid.New(), OrgID: env.orgID, Name: "Mine", Visibility: "private", CreatedBy: &creator, Config: domain.JSON(`{}`)}
+	env.repo.reports[own.ID] = own
+
+	if err := shareUC.Add(context.Background(), env.orgID, creator, own.ID, domain.AddReportShareInput{TargetType: "team", TargetID: uuid.New(), Level: "view"}); err == nil {
+		t.Error("bad target_type should be rejected")
+	}
+	if err := shareUC.Add(context.Background(), env.orgID, creator, own.ID, domain.AddReportShareInput{TargetType: "user", TargetID: uuid.New(), Level: "manage"}); err == nil {
+		t.Error("non-storable level 'manage' should be rejected")
 	}
 }
 

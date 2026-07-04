@@ -57,6 +57,10 @@ type Report struct {
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
 	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
+	// AccessLevel is the caller's effective level on this report (view/comment/
+	// edit/manage), computed on read — never stored. Drives the frontend UI
+	// (show Share/Edit only at the right level). Empty in list responses.
+	AccessLevel string `gorm:"-" json:"access_level,omitempty"`
 }
 
 func (Report) TableName() string { return "reports" }
@@ -230,9 +234,10 @@ type ReportRepository interface {
 	// GetByIDs batch-loads reports by id (absent/deleted ids are simply
 	// missing from the map) — the dashboard's one-query summary join.
 	GetByIDs(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID) (map[uuid.UUID]*Report, error)
-	// ListVisible returns the caller's own reports plus the org-shared ones,
-	// newest first.
-	ListVisible(ctx context.Context, orgID, userID uuid.UUID) ([]Report, error)
+	// ListVisible returns every report the caller may see: their own, org-wide
+	// ones, and reports shared with them directly, via their role, or via a
+	// group they belong to (ident carries user/role/group handles). Newest first.
+	ListVisible(ctx context.Context, orgID uuid.UUID, ident ShareIdentity) ([]Report, error)
 	Update(ctx context.Context, r *Report) error
 	SoftDelete(ctx context.Context, orgID, id uuid.UUID) error
 	// ResolveGroupLabels maps UUID group keys to display labels for one kind:
@@ -273,6 +278,10 @@ type ReportUseCase interface {
 	// ListFields returns the object's queryable catalog (registry + virtual
 	// fields, minus the caller's FLS-hidden ones) for the builder UI.
 	ListFields(ctx context.Context, orgID uuid.UUID, slug string) ([]ReportFieldDescriptor, error)
+	// ResolveAccess loads a report plus the caller's effective level
+	// (view/comment/edit/manage), 404ing when the caller has no grant. Sibling
+	// usecases (share, comments) gate on the returned level.
+	ResolveAccess(ctx context.Context, orgID, userID uuid.UUID, id uuid.UUID) (*Report, string, error)
 }
 
 // ============================================================

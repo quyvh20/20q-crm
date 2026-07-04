@@ -113,12 +113,20 @@ func (r *userGroupRepository) RemoveMember(ctx context.Context, orgID, groupID, 
 }
 
 func (r *userGroupRepository) GroupIDsForUser(ctx context.Context, orgID, userID uuid.UUID) ([]uuid.UUID, error) {
-	var ids []uuid.UUID
-	err := r.db.WithContext(ctx).Raw(`
+	// Scan through a struct field so GORM uses uuid's Scanner (a bare
+	// []uuid.UUID dest fails on the driver's string representation).
+	var rows []struct{ GroupID uuid.UUID }
+	if err := r.db.WithContext(ctx).Raw(`
 		SELECT m.group_id FROM user_group_members m
 		JOIN user_groups g ON g.id = m.group_id AND g.deleted_at IS NULL
-		WHERE m.org_id = ? AND m.user_id = ?`, orgID, userID).Scan(&ids).Error
-	return ids, err
+		WHERE m.org_id = ? AND m.user_id = ?`, orgID, userID).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	ids := make([]uuid.UUID, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, r.GroupID)
+	}
+	return ids, nil
 }
 
 func (r *userGroupRepository) ExistsInOrg(ctx context.Context, orgID, id uuid.UUID) (bool, error) {
