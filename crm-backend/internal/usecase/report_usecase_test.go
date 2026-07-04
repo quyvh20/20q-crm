@@ -446,6 +446,60 @@ func TestReport_GroupedSortByLabelReordersResolvedLabels(t *testing.T) {
 	}
 }
 
+func TestReport_TableRelationColumnsLabeled(t *testing.T) {
+	env := newReportEnv()
+	stageID := uuid.New()
+	unknownID := uuid.New()
+	env.repo.labels = map[uuid.UUID]string{stageID: "Closed Won"}
+	env.runner.result = &domain.ReportResult{
+		Kind:    domain.ReportResultRows,
+		Columns: []string{"title", "stage"},
+		Rows: []map[string]any{
+			{"title": "Big Deal", "stage": stageID.String()},
+			{"title": "Orphan", "stage": unknownID.String()},
+		},
+	}
+	cfg := domain.ReportConfig{Chart: domain.ReportChartTable, Columns: []string{"title", "stage"}}
+	res, err := env.uc.Preview(context.Background(), env.orgID, "deal", cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if env.repo.labelKind != "stage" {
+		t.Errorf("labelKind = %q, want stage", env.repo.labelKind)
+	}
+	if res.Rows[0]["stage"] != "Closed Won" {
+		t.Errorf("relation column not labeled: %v", res.Rows[0]["stage"])
+	}
+	// Unknown ids are left as the raw value (a raw id beats a misleading label).
+	if res.Rows[1]["stage"] != unknownID.String() {
+		t.Errorf("unknown id should stay raw: %v", res.Rows[1]["stage"])
+	}
+	// Non-relation columns are untouched.
+	if res.Rows[0]["title"] != "Big Deal" {
+		t.Errorf("text column mangled: %v", res.Rows[0]["title"])
+	}
+}
+
+func TestReport_TableRelationColumnsGatedByOLS(t *testing.T) {
+	env := newReportEnv()
+	env.authz.deny = map[string]bool{"company:read": true}
+	companyID := uuid.New()
+	env.repo.labels = map[uuid.UUID]string{companyID: "Acme Corp"}
+	env.runner.result = &domain.ReportResult{
+		Kind:    domain.ReportResultRows,
+		Columns: []string{"title", "company"},
+		Rows:    []map[string]any{{"title": "Deal", "company": companyID.String()}},
+	}
+	cfg := domain.ReportConfig{Chart: domain.ReportChartTable, Columns: []string{"title", "company"}}
+	res, err := env.uc.Preview(context.Background(), env.orgID, "deal", cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Rows[0]["company"] == "Acme Corp" {
+		t.Error("leaked a company name into a table column the caller cannot read")
+	}
+}
+
 func TestReport_DateBucketLabels(t *testing.T) {
 	env := newReportEnv()
 	jan := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)

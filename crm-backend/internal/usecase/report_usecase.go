@@ -220,7 +220,49 @@ func (uc *reportUseCase) execute(ctx context.Context, orgID uuid.UUID, slug stri
 	}
 
 	uc.labelGroups(ctx, orgID, res, fields, cfg)
+	uc.labelTableRows(ctx, orgID, res, fields, cfg)
 	return res, nil
+}
+
+// labelTableRows resolves relation columns in a table result to display names,
+// so a `stage` / `owner` / `company` column shows "Closed Won" instead of a raw
+// UUID. Same OLS gate as group labels: a relation to an object the caller can't
+// read is left as the raw id rather than leaking a name. Non-relation columns
+// (text/number/date/select) are already human-readable and untouched.
+func (uc *reportUseCase) labelTableRows(ctx context.Context, orgID uuid.UUID, res *domain.ReportResult, fields map[string]domain.ReportField, cfg domain.ReportConfig) {
+	if res.Kind != domain.ReportResultRows {
+		return
+	}
+	for _, col := range cfg.Columns {
+		f, ok := fields[col]
+		if !ok || f.LabelKind == "" || !uc.canResolveLabels(ctx, orgID, f.LabelKind) {
+			continue
+		}
+		var ids []uuid.UUID
+		for _, row := range res.Rows {
+			if s, ok := row[col].(string); ok {
+				if id, err := uuid.Parse(s); err == nil {
+					ids = append(ids, id)
+				}
+			}
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		labels, err := uc.repo.ResolveGroupLabels(ctx, orgID, f.LabelKind, ids)
+		if err != nil {
+			continue
+		}
+		for _, row := range res.Rows {
+			if s, ok := row[col].(string); ok {
+				if id, err := uuid.Parse(s); err == nil {
+					if l, ok := labels[id]; ok && l != "" {
+						row[col] = l
+					}
+				}
+			}
+		}
+	}
 }
 
 func (uc *reportUseCase) ListFields(ctx context.Context, orgID uuid.UUID, slug string) ([]domain.ReportFieldDescriptor, error) {
