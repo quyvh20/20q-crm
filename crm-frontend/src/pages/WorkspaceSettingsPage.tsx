@@ -2,13 +2,15 @@ import { useState } from 'react';
 import { useAuth } from '../lib/auth';
 import MembersList from '../components/settings/MembersList';
 import InviteMemberModal from '../components/settings/InviteMemberModal';
+import GroupsManager from '../components/settings/GroupsManager';
 
 export default function WorkspaceSettingsPage() {
-  const { activeWorkspace, currentRole } = useAuth();
+  const { activeWorkspace, currentRole, hasCapability } = useAuth();
   const [showInvite, setShowInvite] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
   const canInvite = currentRole === 'owner' || currentRole === 'admin' || currentRole === 'manager';
+  const canManageGroups = hasCapability('groups.manage');
 
   return (
     <div className="max-w-4xl mx-auto">
@@ -36,6 +38,14 @@ export default function WorkspaceSettingsPage() {
         <h2 className="text-lg font-semibold text-foreground mb-4">Members</h2>
         <MembersList key={refreshKey} />
       </div>
+
+      {canManageGroups && (
+        <div className="bg-card border border-border rounded-2xl p-6 mt-6">
+          <h2 className="text-lg font-semibold text-foreground mb-1">User Groups</h2>
+          <p className="text-sm text-muted-foreground mb-4">Named groups of members you can share reports with.</p>
+          <GroupsManager />
+        </div>
+      )}
 
       {showInvite && (
         <InviteMemberModal

@@ -550,6 +550,31 @@ func main() {
 		END $$`)
 		db.Exec(`ALTER TABLE dashboard_widgets ENABLE ROW LEVEL SECURITY`)
 
+		// User groups (migration 000031) — boot guard. Mirrors
+		// migrations/000031_user_groups.up.sql exactly. Named org-scoped member
+		// groups; first used by granular report sharing.
+		db.Exec(`CREATE TABLE IF NOT EXISTS user_groups (
+			id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			org_id      UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			name        VARCHAR(120) NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			created_by  UUID REFERENCES users(id) ON DELETE SET NULL,
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			deleted_at  TIMESTAMPTZ
+		)`)
+		db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uix_user_groups_org_name ON user_groups(org_id, lower(name)) WHERE deleted_at IS NULL`)
+		db.Exec(`CREATE TABLE IF NOT EXISTS user_group_members (
+			group_id   UUID NOT NULL REFERENCES user_groups(id) ON DELETE CASCADE,
+			user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			org_id     UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (group_id, user_id)
+		)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_user_group_members_user ON user_group_members(user_id)`)
+		db.Exec(`ALTER TABLE user_groups ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`ALTER TABLE user_group_members ENABLE ROW LEVEL SECURITY`)
+
 		log.Info("Seeding system roles...")
 		if err := repository.SeedSystemRoles(db); err != nil {
 			log.Error("Failed to seed system roles", zap.Error(err))
@@ -773,6 +798,11 @@ func main() {
 		dashboardUC := usecase.NewDashboardUseCase(repository.NewDashboardWidgetRepository(db), reportRepo)
 		dashboardHandler := delivery.NewDashboardHandler(dashboardUC)
 
+		// User groups: named member groups, first used as a report-sharing target.
+		userGroupRepo := repository.NewUserGroupRepository(db)
+		userGroupUC := usecase.NewUserGroupUseCase(userGroupRepo)
+		userGroupHandler := delivery.NewUserGroupHandler(userGroupUC)
+
 		// Global search (P6): spans searchable custom objects (record_embeddings)
 		// plus contacts (native index), resolving every hit through RecordService so
 		// OLS/FLS apply to search results too.
@@ -803,7 +833,7 @@ func main() {
 		voiceNoteUC := usecase.NewVoiceNoteUseCase(voiceNoteRepo, aiJobQueue, cfg, contactRepo)
 		voiceHandler := delivery.NewVoiceHandler(voiceNoteUC)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, layoutHandler, roleHandler, auditHandler, reportHandler, dashboardHandler, cfg, db, redisClient, authRepo, permissionUC)
+		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, layoutHandler, roleHandler, auditHandler, reportHandler, dashboardHandler, userGroupHandler, cfg, db, redisClient, authRepo, permissionUC)
 
 		// --- Workflow Automation Engine ---
 		memHandler := logger.NewMemoryHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))

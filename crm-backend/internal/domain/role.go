@@ -145,6 +145,9 @@ const (
 	// delete any org-shared report). Creating and running one's own reports needs
 	// no capability — report DATA is gated per-viewer by OLS/FLS instead.
 	CapReportsManage = "reports.manage"
+	// CapGroupsManage gates creating/editing user groups and their membership.
+	// Listing groups needs no capability (any member picks a group when sharing).
+	CapGroupsManage = "groups.manage"
 )
 
 // AllCapabilities is the canonical list, used for validation and the roles UI.
@@ -152,7 +155,7 @@ var AllCapabilities = []string{
 	CapMembersInvite, CapMembersManage, CapRolesManage, CapObjectsManage,
 	CapWorkflowsManage, CapWorkflowsRunAny, CapAuditView, CapBillingManage,
 	CapOrgSettings, CapDataExport, CapPipelineManage, CapKnowledgeManage, CapRecordsWrite,
-	CapReportsManage,
+	CapReportsManage, CapGroupsManage,
 }
 
 // IsCapability reports whether code is a recognized capability.
@@ -178,11 +181,11 @@ var DefaultRoleCapabilities = map[string][]string{
 	RoleAdmin: {
 		CapMembersInvite, CapMembersManage, CapRolesManage, CapObjectsManage,
 		CapWorkflowsManage, CapWorkflowsRunAny, CapAuditView, CapOrgSettings, CapDataExport,
-		CapPipelineManage, CapKnowledgeManage, CapRecordsWrite, CapReportsManage,
+		CapPipelineManage, CapKnowledgeManage, CapRecordsWrite, CapReportsManage, CapGroupsManage,
 	},
 	RoleManager: {
 		CapMembersInvite, CapWorkflowsManage, CapWorkflowsRunAny, CapAuditView, CapDataExport,
-		CapPipelineManage, CapKnowledgeManage, CapRecordsWrite, CapReportsManage,
+		CapPipelineManage, CapKnowledgeManage, CapRecordsWrite, CapReportsManage, CapGroupsManage,
 	},
 	RoleSales:  {CapRecordsWrite},
 	RoleViewer: {},

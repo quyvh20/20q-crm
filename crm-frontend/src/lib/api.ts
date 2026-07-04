@@ -1356,7 +1356,7 @@ export const ALL_CAPABILITIES = [
   'members.invite', 'members.manage', 'roles.manage', 'objects.manage',
   'workflows.manage', 'workflows.run_any', 'audit.view', 'billing.manage',
   'org.settings', 'data.export', 'pipeline.manage', 'knowledge.manage', 'records.write',
-  'reports.manage',
+  'reports.manage', 'groups.manage',
 ] as const;
 export type Capability = (typeof ALL_CAPABILITIES)[number];
 
@@ -1375,6 +1375,7 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   'knowledge.manage': 'Edit the knowledge base',
   'records.write': 'Create/edit tasks, activities, notes & tags',
   'reports.manage': "Edit/delete other members' reports",
+  'groups.manage': 'Manage user groups & their members',
 };
 
 export type DataScope = 'own' | 'all';
@@ -2473,4 +2474,57 @@ export async function reorderDashboardWidgets(widgetIds: string[]): Promise<void
     const json = await res.json().catch(() => ({}));
     throw new Error((json as { error?: string }).error || 'Failed to reorder widgets');
   }
+}
+
+// ============================================================
+// User Groups — named member groups (a report-sharing target)
+// ============================================================
+
+export interface GroupMember {
+  user_id: string;
+  name: string;
+  email: string;
+}
+
+export interface UserGroup {
+  id: string;
+  name: string;
+  description: string;
+  member_count: number;
+  members: GroupMember[];
+  created_at: string;
+}
+
+export async function listGroups(): Promise<UserGroup[]> {
+  const res = await apiFetch('/api/groups');
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to load groups');
+  return (json.data || []) as UserGroup[];
+}
+
+export async function createGroup(name: string, description = ''): Promise<UserGroup> {
+  const res = await apiFetch('/api/groups', { method: 'POST', body: JSON.stringify({ name, description }) });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to create group');
+  return json.data as UserGroup;
+}
+
+export async function updateGroup(id: string, name: string, description = ''): Promise<void> {
+  const res = await apiFetch(`/api/groups/${id}`, { method: 'PATCH', body: JSON.stringify({ name, description }) });
+  if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error((j as { error?: string }).error || 'Failed to update group'); }
+}
+
+export async function deleteGroup(id: string): Promise<void> {
+  const res = await apiFetch(`/api/groups/${id}`, { method: 'DELETE' });
+  if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error((j as { error?: string }).error || 'Failed to delete group'); }
+}
+
+export async function addGroupMember(groupId: string, userId: string): Promise<void> {
+  const res = await apiFetch(`/api/groups/${groupId}/members`, { method: 'POST', body: JSON.stringify({ user_id: userId }) });
+  if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error((j as { error?: string }).error || 'Failed to add member'); }
+}
+
+export async function removeGroupMember(groupId: string, userId: string): Promise<void> {
+  const res = await apiFetch(`/api/groups/${groupId}/members/${userId}`, { method: 'DELETE' });
+  if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error((j as { error?: string }).error || 'Failed to remove member'); }
 }

@@ -9,7 +9,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, objectRegistryHandler *ObjectRegistryHandler, recordHandler *RecordHandler, permissionHandler *PermissionHandler, searchHandler *SearchHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, voiceHandler *VoiceHandler, layoutHandler *ObjectLayoutHandler, roleHandler *RoleHandler, auditHandler *AuditHandler, reportHandler *ReportHandler, dashboardHandler *DashboardHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository, permissionUC domain.PermissionUseCase) {
+func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, objectRegistryHandler *ObjectRegistryHandler, recordHandler *RecordHandler, permissionHandler *PermissionHandler, searchHandler *SearchHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, voiceHandler *VoiceHandler, layoutHandler *ObjectLayoutHandler, roleHandler *RoleHandler, auditHandler *AuditHandler, reportHandler *ReportHandler, dashboardHandler *DashboardHandler, groupHandler *UserGroupHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository, permissionUC domain.PermissionUseCase) {
 	api := router.Group("/api")
 
 	// Per-IP rate limit on the credential endpoints (P2). Reused across the auth
@@ -136,6 +136,19 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			dashboard.PUT("/widgets/reorder", dashboardHandler.Reorder)
 			dashboard.PATCH("/widgets/:id", dashboardHandler.UpdateWidget)
 			dashboard.DELETE("/widgets/:id", dashboardHandler.RemoveWidget)
+		}
+
+		// User groups: named member groups (a report-sharing target). Listing is
+		// open to any member (the share picker needs it); mutations need
+		// groups.manage.
+		groups := protected.Group("/groups")
+		{
+			groups.GET("", groupHandler.List)
+			groups.POST("", cap(domain.CapGroupsManage), groupHandler.Create)
+			groups.PATCH("/:id", cap(domain.CapGroupsManage), groupHandler.Update)
+			groups.DELETE("/:id", cap(domain.CapGroupsManage), groupHandler.Delete)
+			groups.POST("/:id/members", cap(domain.CapGroupsManage), groupHandler.AddMember)
+			groups.DELETE("/:id/members/:userId", cap(domain.CapGroupsManage), groupHandler.RemoveMember)
 		}
 
 		// Data CRUD is now Object-Level Security-driven (default seed reproduces the
