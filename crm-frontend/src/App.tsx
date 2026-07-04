@@ -23,6 +23,9 @@ import { WorkflowList } from './features/workflows/WorkflowList';
 import { WorkflowBuilder } from './features/workflows/WorkflowBuilder';
 import { RunHistory } from './features/workflows/RunHistory';
 import AIPage from './pages/AIPage';
+import ReportsListPage from './features/reports/ReportsListPage';
+import ReportBuilderPage from './features/reports/ReportBuilderPage';
+import DashboardPage from './features/reports/DashboardPage';
 
 // Initialize Sentry
 const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN;
@@ -102,7 +105,7 @@ function App() {
             {/* Protected routes */}
             <Route path="/" element={
               <ProtectedRoute>
-                <AppLayout />
+                <AppLayout><DashboardPage /></AppLayout>
               </ProtectedRoute>
             } />
             <Route path="/contacts" element={
@@ -168,6 +171,21 @@ function App() {
             <Route path="/workflows/:id/history" element={
               <ProtectedRoute>
                 <AppLayout><RunHistory /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/reports" element={
+              <ProtectedRoute>
+                <AppLayout><ReportsListPage /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/reports/new" element={
+              <ProtectedRoute>
+                <AppLayout><ReportBuilderPage /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/reports/:id" element={
+              <ProtectedRoute>
+                <AppLayout><ReportBuilderPage /></AppLayout>
               </ProtectedRoute>
             } />
           </Routes>

@@ -1356,6 +1356,7 @@ export const ALL_CAPABILITIES = [
   'members.invite', 'members.manage', 'roles.manage', 'objects.manage',
   'workflows.manage', 'workflows.run_any', 'audit.view', 'billing.manage',
   'org.settings', 'data.export', 'pipeline.manage', 'knowledge.manage', 'records.write',
+  'reports.manage',
 ] as const;
 export type Capability = (typeof ALL_CAPABILITIES)[number];
 
@@ -1373,6 +1374,7 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   'pipeline.manage': 'Manage pipeline stages',
   'knowledge.manage': 'Edit the knowledge base',
   'records.write': 'Create/edit tasks, activities, notes & tags',
+  'reports.manage': "Edit/delete other members' reports",
 };
 
 export type DataScope = 'own' | 'all';
@@ -2254,4 +2256,221 @@ export async function signOutEverywhere(): Promise<void> {
   if (!res.ok) throw new Error((json as { error?: string }).error || 'Failed to sign out other sessions');
   const token = (json?.data?.access_token as string) ?? null;
   if (token) setAccessToken(token);
+}
+
+// ============================================================
+// Reports (P9) — saved report definitions + per-viewer execution
+// ============================================================
+
+export type ReportChart = 'bar' | 'line' | 'pie' | 'donut' | 'kpi' | 'table';
+export type ReportVisibility = 'private' | 'org';
+export type ReportDateBucket = 'day' | 'week' | 'month' | 'quarter' | 'year';
+export type ReportAggregateFn = 'count' | 'count_distinct' | 'sum' | 'avg' | 'min' | 'max';
+
+// Filter shape mirrors the automation ConditionGroup JSON so both builders
+// speak one filter language.
+export interface ReportFilterRule {
+  field?: string;
+  operator?: string;
+  value?: unknown;
+  op?: 'AND' | 'OR';
+  rules?: ReportFilterRule[];
+}
+
+export interface ReportFilterGroup {
+  op?: 'AND' | 'OR';
+  rules?: ReportFilterRule[];
+}
+
+export interface ReportConfig {
+  version?: number;
+  chart: ReportChart;
+  filters?: ReportFilterGroup;
+  group_by?: { field: string; bucket?: ReportDateBucket };
+  aggregate?: { fn: ReportAggregateFn; field?: string };
+  columns?: string[];
+  sort?: { by: string; dir: 'asc' | 'desc' };
+  limit?: number;
+}
+
+export interface Report {
+  id: string;
+  org_id: string;
+  name: string;
+  description: string;
+  object_slug: string;
+  config: ReportConfig;
+  visibility: ReportVisibility;
+  created_by?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReportGroupRow {
+  key: unknown;
+  label: string;
+  value: number;
+  count: number;
+}
+
+export interface ReportResult {
+  kind: 'groups' | 'rows' | 'scalar';
+  groups?: ReportGroupRow[];
+  columns?: string[];
+  rows?: Record<string, unknown>[];
+  value: number;
+  row_count: number;
+}
+
+// One queryable field for the report builder: registry fields plus the
+// report-only virtual fields (created_at, owner, deal lifecycle), already
+// FLS-filtered for the caller.
+export interface ReportFieldDescriptor {
+  key: string;
+  label: string;
+  type: ObjectFieldType;
+  options?: string[];
+}
+
+export interface ReportInput {
+  name: string;
+  description?: string;
+  object_slug: string;
+  visibility?: ReportVisibility;
+  config: ReportConfig;
+}
+
+export async function listReports(): Promise<Report[]> {
+  const res = await apiFetch('/api/reports');
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to load reports');
+  return (json.data || []) as Report[];
+}
+
+export async function createReport(input: ReportInput): Promise<Report> {
+  const res = await apiFetch('/api/reports', { method: 'POST', body: JSON.stringify(input) });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to create report');
+  return json.data as Report;
+}
+
+export async function getReport(id: string): Promise<Report> {
+  const res = await apiFetch(`/api/reports/${id}`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to load report');
+  return json.data as Report;
+}
+
+export async function updateReport(id: string, input: ReportInput): Promise<Report> {
+  const res = await apiFetch(`/api/reports/${id}`, { method: 'PATCH', body: JSON.stringify(input) });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to update report');
+  return json.data as Report;
+}
+
+export async function deleteReport(id: string): Promise<void> {
+  const res = await apiFetch(`/api/reports/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error((json as { error?: string }).error || 'Failed to delete report');
+  }
+}
+
+export async function runReport(id: string): Promise<ReportResult> {
+  const res = await apiFetch(`/api/reports/${id}/run`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to run report');
+  return json.data as ReportResult;
+}
+
+// previewReport runs an unsaved config — the builder's live preview.
+export async function previewReport(objectSlug: string, config: ReportConfig): Promise<ReportResult> {
+  const res = await apiFetch('/api/reports/preview', {
+    method: 'POST',
+    body: JSON.stringify({ object_slug: objectSlug, config }),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Preview failed');
+  return json.data as ReportResult;
+}
+
+export async function listReportFields(slug: string): Promise<ReportFieldDescriptor[]> {
+  const res = await apiFetch(`/api/reports/objects/${slug}/fields`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to load report fields');
+  return (json.data || []) as ReportFieldDescriptor[];
+}
+
+export async function exportReportCsv(id: string): Promise<Blob> {
+  const res = await apiFetch(`/api/reports/${id}/export.csv`);
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error((json as { error?: string }).error || 'Export failed');
+  }
+  return res.blob();
+}
+
+// ── Dashboard widgets (P9 Phase B) ──────────────────────────────────────────
+// Each user pins saved reports to their own dashboard. Widgets carry layout
+// only; the data comes from runReport per widget, re-authorized per viewer.
+
+export interface DashboardWidget {
+  id: string;
+  org_id: string;
+  user_id: string;
+  report_id: string;
+  position: number;
+  size: 'half' | 'full';
+  created_at: string;
+  updated_at: string;
+  // Present on GET /api/dashboard/widgets (widgets whose report is deleted or
+  // no longer shared are dropped server-side).
+  report?: Report;
+}
+
+export async function listDashboardWidgets(): Promise<DashboardWidget[]> {
+  const res = await apiFetch('/api/dashboard/widgets');
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to load dashboard');
+  return (json.data || []) as DashboardWidget[];
+}
+
+export async function addDashboardWidget(reportId: string, size: 'half' | 'full' = 'half'): Promise<DashboardWidget> {
+  const res = await apiFetch('/api/dashboard/widgets', {
+    method: 'POST',
+    body: JSON.stringify({ report_id: reportId, size }),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to pin report');
+  return json.data as DashboardWidget;
+}
+
+export async function updateDashboardWidget(id: string, size: 'half' | 'full'): Promise<void> {
+  const res = await apiFetch(`/api/dashboard/widgets/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ size }),
+  });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error((json as { error?: string }).error || 'Failed to update widget');
+  }
+}
+
+export async function removeDashboardWidget(id: string): Promise<void> {
+  const res = await apiFetch(`/api/dashboard/widgets/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error((json as { error?: string }).error || 'Failed to remove widget');
+  }
+}
+
+export async function reorderDashboardWidgets(widgetIds: string[]): Promise<void> {
+  const res = await apiFetch('/api/dashboard/widgets/reorder', {
+    method: 'PUT',
+    body: JSON.stringify({ widget_ids: widgetIds }),
+  });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error((json as { error?: string }).error || 'Failed to reorder widgets');
+  }
 }

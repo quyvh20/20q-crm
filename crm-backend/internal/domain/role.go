@@ -141,6 +141,10 @@ const (
 	// a capability (not OLS) only because those objects aren't in the registry; an
 	// admin grants/revokes it per role like any other capability.
 	CapRecordsWrite = "records.write"
+	// CapReportsManage is an oversight power over OTHER people's reports (edit/
+	// delete any org-shared report). Creating and running one's own reports needs
+	// no capability — report DATA is gated per-viewer by OLS/FLS instead.
+	CapReportsManage = "reports.manage"
 )
 
 // AllCapabilities is the canonical list, used for validation and the roles UI.
@@ -148,6 +152,7 @@ var AllCapabilities = []string{
 	CapMembersInvite, CapMembersManage, CapRolesManage, CapObjectsManage,
 	CapWorkflowsManage, CapWorkflowsRunAny, CapAuditView, CapBillingManage,
 	CapOrgSettings, CapDataExport, CapPipelineManage, CapKnowledgeManage, CapRecordsWrite,
+	CapReportsManage,
 }
 
 // IsCapability reports whether code is a recognized capability.
@@ -173,11 +178,11 @@ var DefaultRoleCapabilities = map[string][]string{
 	RoleAdmin: {
 		CapMembersInvite, CapMembersManage, CapRolesManage, CapObjectsManage,
 		CapWorkflowsManage, CapWorkflowsRunAny, CapAuditView, CapOrgSettings, CapDataExport,
-		CapPipelineManage, CapKnowledgeManage, CapRecordsWrite,
+		CapPipelineManage, CapKnowledgeManage, CapRecordsWrite, CapReportsManage,
 	},
 	RoleManager: {
 		CapMembersInvite, CapWorkflowsManage, CapWorkflowsRunAny, CapAuditView, CapDataExport,
-		CapPipelineManage, CapKnowledgeManage, CapRecordsWrite,
+		CapPipelineManage, CapKnowledgeManage, CapRecordsWrite, CapReportsManage,
 	},
 	RoleSales:  {CapRecordsWrite},
 	RoleViewer: {},

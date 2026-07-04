@@ -502,6 +502,54 @@ func main() {
 		db.Exec(`DELETE FROM role_permissions WHERE permission_code LIKE '%:%'`)
 		db.Exec(`ALTER TABLE users DROP COLUMN IF EXISTS role`)
 
+		// Reports (migration 000029, P9) — boot guard. Mirrors
+		// migrations/000029_reports.up.sql exactly. Saved report definitions:
+		// object slug + config JSONB, re-run per viewer so OLS/FLS always apply.
+		db.Exec(`CREATE TABLE IF NOT EXISTS reports (
+			id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			org_id      UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			name        VARCHAR(255) NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			object_slug VARCHAR(100) NOT NULL,
+			config      JSONB NOT NULL DEFAULT '{}',
+			visibility  VARCHAR(10) NOT NULL DEFAULT 'private',
+			created_by  UUID REFERENCES users(id) ON DELETE SET NULL,
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			deleted_at  TIMESTAMPTZ
+		)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_reports_org ON reports(org_id) WHERE deleted_at IS NULL`)
+		db.Exec(`DO $$
+		BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'reports_visibility_check') THEN
+				ALTER TABLE reports ADD CONSTRAINT reports_visibility_check CHECK (visibility IN ('private', 'org'));
+			END IF;
+		END $$`)
+		db.Exec(`ALTER TABLE reports ENABLE ROW LEVEL SECURITY`)
+
+		// Dashboard widgets (migration 000030, P9 Phase B) — boot guard. Mirrors
+		// migrations/000030_dashboard_widgets.up.sql exactly. Per-user pinned
+		// reports; the unique index makes pinning idempotent.
+		db.Exec(`CREATE TABLE IF NOT EXISTS dashboard_widgets (
+			id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			org_id     UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			report_id  UUID NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+			position   INT NOT NULL DEFAULT 0,
+			size       VARCHAR(10) NOT NULL DEFAULT 'half',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`)
+		db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uix_dashboard_widgets_user_report ON dashboard_widgets(org_id, user_id, report_id)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_dashboard_widgets_user ON dashboard_widgets(org_id, user_id)`)
+		db.Exec(`DO $$
+		BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'dashboard_widgets_size_check') THEN
+				ALTER TABLE dashboard_widgets ADD CONSTRAINT dashboard_widgets_size_check CHECK (size IN ('half', 'full'));
+			END IF;
+		END $$`)
+		db.Exec(`ALTER TABLE dashboard_widgets ENABLE ROW LEVEL SECURITY`)
+
 		log.Info("Seeding system roles...")
 		if err := repository.SeedSystemRoles(db); err != nil {
 			log.Error("Failed to seed system roles", zap.Error(err))
@@ -713,6 +761,18 @@ func main() {
 		auditUC := usecase.NewAuditUseCase(authRepo)
 		auditHandler := delivery.NewAuditHandler(auditUC)
 
+		// Reports (P9): saved report definitions + a stateless runner that
+		// re-executes per viewer. permissionUC serves as both the OLS/FLS
+		// authorizer and the capability checker (reports.manage oversight).
+		reportRepo := repository.NewReportRepository(db)
+		reportRunner := repository.NewReportRunnerRepository(db)
+		reportUC := usecase.NewReportUseCase(reportRepo, reportRunner, objectRegistryRepo, permissionUC, permissionUC)
+		reportHandler := delivery.NewReportHandler(reportUC)
+
+		// Dashboard widgets (P9 Phase B): per-user pinned reports on the home page.
+		dashboardUC := usecase.NewDashboardUseCase(repository.NewDashboardWidgetRepository(db), reportRepo)
+		dashboardHandler := delivery.NewDashboardHandler(dashboardUC)
+
 		// Global search (P6): spans searchable custom objects (record_embeddings)
 		// plus contacts (native index), resolving every hit through RecordService so
 		// OLS/FLS apply to search results too.
@@ -743,7 +803,7 @@ func main() {
 		voiceNoteUC := usecase.NewVoiceNoteUseCase(voiceNoteRepo, aiJobQueue, cfg, contactRepo)
 		voiceHandler := delivery.NewVoiceHandler(voiceNoteUC)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, layoutHandler, roleHandler, auditHandler, cfg, db, redisClient, authRepo, permissionUC)
+		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, layoutHandler, roleHandler, auditHandler, reportHandler, dashboardHandler, cfg, db, redisClient, authRepo, permissionUC)
 
 		// --- Workflow Automation Engine ---
 		memHandler := logger.NewMemoryHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))

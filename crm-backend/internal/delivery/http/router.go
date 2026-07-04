@@ -9,7 +9,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, objectRegistryHandler *ObjectRegistryHandler, recordHandler *RecordHandler, permissionHandler *PermissionHandler, searchHandler *SearchHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, voiceHandler *VoiceHandler, layoutHandler *ObjectLayoutHandler, roleHandler *RoleHandler, auditHandler *AuditHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository, permissionUC domain.PermissionUseCase) {
+func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, objectRegistryHandler *ObjectRegistryHandler, recordHandler *RecordHandler, permissionHandler *PermissionHandler, searchHandler *SearchHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, voiceHandler *VoiceHandler, layoutHandler *ObjectLayoutHandler, roleHandler *RoleHandler, auditHandler *AuditHandler, reportHandler *ReportHandler, dashboardHandler *DashboardHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository, permissionUC domain.PermissionUseCase) {
 	api := router.Group("/api")
 
 	// Per-IP rate limit on the credential endpoints (P2). Reused across the auth
@@ -104,6 +104,38 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 		{
 			audit.GET("/events", auditHandler.ListEvents)
 			audit.GET("/events/export.csv", auditHandler.ExportCSV)
+		}
+
+		// Reports (P9). No route-level role gate on CRUD/run — any member may
+		// build reports, definitions are visibility-checked in the usecase, and
+		// report DATA is re-authorized per viewer (OLS → FLS → data scope) on
+		// every run. CSV export carries the data.export capability like the
+		// audit export above.
+		reports := protected.Group("/reports")
+		{
+			reports.GET("", reportHandler.List)
+			reports.POST("", reportHandler.Create)
+			reports.POST("/preview", reportHandler.Preview)
+			// The builder's field catalog: registry fields + report-only virtual
+			// fields (created_at, owner, deal lifecycle), FLS-filtered.
+			reports.GET("/objects/:slug/fields", reportHandler.ListFields)
+			reports.GET("/:id", reportHandler.Get)
+			reports.PATCH("/:id", reportHandler.Update)
+			reports.DELETE("/:id", reportHandler.Delete)
+			reports.GET("/:id/run", reportHandler.Run)
+			reports.GET("/:id/export.csv", cap(domain.CapDataExport), reportHandler.ExportCSV)
+		}
+
+		// Dashboard widgets (P9 Phase B): each caller manages only their own
+		// pinned reports, so there is no role gate — the usecase scopes every
+		// query to (org, caller) and re-checks report visibility on read.
+		dashboard := protected.Group("/dashboard")
+		{
+			dashboard.GET("/widgets", dashboardHandler.ListWidgets)
+			dashboard.POST("/widgets", dashboardHandler.AddWidget)
+			dashboard.PUT("/widgets/reorder", dashboardHandler.Reorder)
+			dashboard.PATCH("/widgets/:id", dashboardHandler.UpdateWidget)
+			dashboard.DELETE("/widgets/:id", dashboardHandler.RemoveWidget)
 		}
 
 		// Data CRUD is now Object-Level Security-driven (default seed reproduces the

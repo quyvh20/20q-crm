@@ -1,0 +1,408 @@
+package repository
+
+import (
+	"strings"
+	"testing"
+
+	"crm-backend/internal/domain"
+
+	"github.com/google/uuid"
+)
+
+// The builder is pure, so these tests run without a database (unlike the
+// Docker-backed integration tests, nothing here skips in -short mode).
+
+var (
+	testOrgID  = uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	testUserID = uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	testDefID  = uuid.MustParse("33333333-3333-3333-3333-333333333333")
+)
+
+func dealRef() reportTableRef {
+	return reportTableRef{Table: "deals", JSONColumn: "custom_fields"}
+}
+
+func customRef() reportTableRef {
+	id := testDefID
+	return reportTableRef{Table: "custom_object_records", JSONColumn: "data", ObjectDefID: &id}
+}
+
+func dealCatalog() []domain.ReportField {
+	return []domain.ReportField{
+		{Key: "title", Label: "Title", Type: "text", Column: "title"},
+		{Key: "value", Label: "Value", Type: "number", Column: "value"},
+		{Key: "stage", Label: "Stage", Type: "relation", Column: "stage_id", LabelKind: "stage"},
+		{Key: "owner_user_id", Label: "Owner", Type: "relation", Column: "owner_user_id", LabelKind: "user"},
+		{Key: "is_won", Label: "Won", Type: "boolean", Column: "is_won"},
+		{Key: "closed_at", Label: "Closed", Type: "date", Column: "closed_at"},
+		{Key: "created_at", Label: "Created", Type: "date", Column: "created_at"},
+		{Key: "priority", Label: "Priority", Type: "select", JSONKey: "priority", Options: []string{"low", "high"}},
+	}
+}
+
+func customCatalog() []domain.ReportField {
+	return []domain.ReportField{
+		{Key: "status", Label: "Status", Type: "select", JSONKey: "status"},
+		{Key: "sqft", Label: "Sq Ft", Type: "number", JSONKey: "sqft"},
+		{Key: "listed_on", Label: "Listed", Type: "date", JSONKey: "listed_on"},
+		{Key: "created_at", Label: "Created", Type: "date", Column: "created_at"},
+	}
+}
+
+func TestBuildReportSQL_TypedTableGroupsWithOwnScope(t *testing.T) {
+	cfg := domain.ReportConfig{
+		Chart: domain.ReportChartLine,
+		Filters: &domain.ReportFilterGroup{
+			Op:    "AND",
+			Rules: []domain.ReportFilterRule{{Field: "is_won", Operator: "eq", Value: true}},
+		},
+		GroupBy:   &domain.ReportGroupBy{Field: "closed_at", Bucket: "month"},
+		Aggregate: &domain.ReportAggregate{Fn: "sum", Field: "value"},
+	}
+	q, args, err := buildReportSQL(dealRef(), dealCatalog(), cfg, testOrgID, domain.DataScopeOwn, testUserID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "SELECT date_trunc('month', deals.closed_at) AS group_key, COALESCE(SUM(deals.value), 0) AS agg_value, COUNT(*) AS row_count " +
+		"FROM deals WHERE deals.org_id = ? AND deals.deleted_at IS NULL AND " +
+		"(deals.owner_user_id = ? OR EXISTS (SELECT 1 FROM record_shares rs WHERE rs.record_id = deals.id AND rs.record_type = ? AND rs.grantee_user_id = ?)) AND " +
+		"(deals.is_won = ?) GROUP BY 1 ORDER BY 1 ASC NULLS LAST LIMIT 100"
+	if q != want {
+		t.Errorf("query mismatch:\n got: %s\nwant: %s", q, want)
+	}
+	wantArgs := []any{testOrgID, testUserID, "deal", testUserID, true}
+	if len(args) != len(wantArgs) {
+		t.Fatalf("args = %v, want %v", args, wantArgs)
+	}
+	for i := range wantArgs {
+		if args[i] != wantArgs[i] {
+			t.Errorf("arg[%d] = %v, want %v", i, args[i], wantArgs[i])
+		}
+	}
+}
+
+func TestBuildReportSQL_JSONBCustomObject(t *testing.T) {
+	cfg := domain.ReportConfig{
+		Chart: domain.ReportChartBar,
+		Filters: &domain.ReportFilterGroup{
+			Op:    "AND",
+			Rules: []domain.ReportFilterRule{{Field: "sqft", Operator: "gt", Value: float64(2000)}},
+		},
+		GroupBy:   &domain.ReportGroupBy{Field: "status"},
+		Aggregate: &domain.ReportAggregate{Fn: "count"},
+	}
+	q, args, err := buildReportSQL(customRef(), customCatalog(), cfg, testOrgID, domain.DataScopeAll, uuid.Nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "SELECT custom_object_records.data->>'status' AS group_key, COUNT(*) AS agg_value, COUNT(*) AS row_count " +
+		"FROM custom_object_records WHERE custom_object_records.org_id = ? AND custom_object_records.deleted_at IS NULL AND custom_object_records.object_def_id = ? AND " +
+		`((CASE WHEN custom_object_records.data->>'sqft' ~ '^-?[0-9]+(\.[0-9]+)?$' THEN (custom_object_records.data->>'sqft')::numeric END) > ?) ` +
+		"GROUP BY 1 ORDER BY agg_value DESC NULLS LAST LIMIT 100"
+	if q != want {
+		t.Errorf("query mismatch:\n got: %s\nwant: %s", q, want)
+	}
+	if len(args) != 3 || args[0] != testOrgID || args[1] != testDefID || args[2] != float64(2000) {
+		t.Errorf("args = %v", args)
+	}
+}
+
+// Own scope must NOT leak onto tables it doesn't apply to today (companies,
+// custom objects) — reports must match what the list pages show.
+func TestBuildReportSQL_OwnScopeOnlyForContactsAndDeals(t *testing.T) {
+	cfg := domain.ReportConfig{
+		Chart:     domain.ReportChartBar,
+		GroupBy:   &domain.ReportGroupBy{Field: "status"},
+		Aggregate: &domain.ReportAggregate{Fn: "count"},
+	}
+	q, _, err := buildReportSQL(customRef(), customCatalog(), cfg, testOrgID, domain.DataScopeOwn, testUserID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(q, "owner_user_id") || strings.Contains(q, "record_shares") {
+		t.Errorf("own-scope predicate leaked onto custom_object_records: %s", q)
+	}
+}
+
+func TestBuildReportSQL_ScalarKPI(t *testing.T) {
+	cfg := domain.ReportConfig{
+		Chart:     domain.ReportChartKPI,
+		Aggregate: &domain.ReportAggregate{Fn: "sum", Field: "value"},
+	}
+	q, _, err := buildReportSQL(dealRef(), dealCatalog(), cfg, testOrgID, domain.DataScopeAll, uuid.Nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "SELECT COALESCE(SUM(deals.value), 0) AS agg_value, COUNT(*) AS row_count FROM deals WHERE deals.org_id = ? AND deals.deleted_at IS NULL"
+	if q != want {
+		t.Errorf("query mismatch:\n got: %s\nwant: %s", q, want)
+	}
+}
+
+func TestBuildReportSQL_TableMode(t *testing.T) {
+	cfg := domain.ReportConfig{
+		Chart:   domain.ReportChartTable,
+		Columns: []string{"title", "value", "priority"},
+		Sort:    &domain.ReportSort{By: "value", Dir: "desc"},
+		Limit:   5000, // above cap → clamped
+	}
+	q, _, err := buildReportSQL(dealRef(), dealCatalog(), cfg, testOrgID, domain.DataScopeAll, uuid.Nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := `SELECT deals.id AS "id", deals.title AS "title", deals.value AS "value", deals.custom_fields->>'priority' AS "priority" ` +
+		"FROM deals WHERE deals.org_id = ? AND deals.deleted_at IS NULL ORDER BY deals.value DESC NULLS LAST LIMIT 1000"
+	if q != want {
+		t.Errorf("query mismatch:\n got: %s\nwant: %s", q, want)
+	}
+}
+
+func TestBuildReportSQL_GroupLimitClamped(t *testing.T) {
+	cfg := domain.ReportConfig{
+		Chart:     domain.ReportChartBar,
+		GroupBy:   &domain.ReportGroupBy{Field: "stage"},
+		Aggregate: &domain.ReportAggregate{Fn: "count"},
+		Limit:     999,
+	}
+	q, _, err := buildReportSQL(dealRef(), dealCatalog(), cfg, testOrgID, domain.DataScopeAll, uuid.Nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasSuffix(q, "LIMIT 100") {
+		t.Errorf("group limit not clamped to %d: %s", domain.MaxReportGroups, q)
+	}
+}
+
+func TestBuildReportSQL_EveryOperator(t *testing.T) {
+	cases := []struct {
+		name     string
+		field    string
+		operator string
+		value    any
+		wantSQL  string // substring that must appear in the WHERE
+		wantErr  bool
+	}{
+		{"eq text", "title", "eq", "Acme", "deals.title = ?", false},
+		{"neq text", "title", "neq", "Acme", "deals.title IS DISTINCT FROM ?", false},
+		{"contains", "title", "contains", "acme", "deals.title ILIKE ?", false},
+		{"not_contains", "title", "not_contains", "acme", "deals.title NOT ILIKE ?", false},
+		{"starts_with", "title", "starts_with", "A", "deals.title ILIKE ?", false},
+		{"ends_with", "title", "ends_with", "Z", "deals.title ILIKE ?", false},
+		{"gt number", "value", "gt", float64(10), "deals.value > ?", false},
+		{"gte number", "value", "gte", float64(10), "deals.value >= ?", false},
+		{"lt number", "value", "lt", float64(10), "deals.value < ?", false},
+		{"lte number", "value", "lte", float64(10), "deals.value <= ?", false},
+		{"in select", "priority", "in", []any{"low", "high"}, "IN (?, ?)", false},
+		{"not_in relation", "stage", "not_in", []any{"a0000000-0000-0000-0000-000000000000"}, "IS NULL OR deals.stage_id NOT IN (?)", false},
+		{"is_empty text col", "title", "is_empty", nil, "(deals.title IS NULL OR deals.title = '')", false},
+		{"is_not_empty text col", "title", "is_not_empty", nil, "(deals.title IS NOT NULL AND deals.title <> '')", false},
+		{"is_empty number col", "value", "is_empty", nil, "deals.value IS NULL", false},
+		{"eq bool", "is_won", "eq", true, "deals.is_won = ?", false},
+		{"date gt", "closed_at", "gt", "2026-01-01", "deals.closed_at > ?", false},
+		// Type gating: text ops against non-text columns are rejected.
+		{"contains on number", "value", "contains", "1", "", true},
+		{"contains on relation", "stage", "contains", "x", "", true},
+		{"gt on text", "title", "gt", "A", "", true},
+		{"unknown operator", "title", "regex", ".*", "", true},
+		{"unknown field", "nope", "eq", "x", "", true},
+		{"number wants number", "value", "eq", "not-a-number", "", true},
+		{"bool wants bool", "is_won", "eq", "maybe", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := domain.ReportConfig{
+				Chart:     domain.ReportChartBar,
+				Filters:   &domain.ReportFilterGroup{Op: "AND", Rules: []domain.ReportFilterRule{{Field: tc.field, Operator: tc.operator, Value: tc.value}}},
+				GroupBy:   &domain.ReportGroupBy{Field: "stage"},
+				Aggregate: &domain.ReportAggregate{Fn: "count"},
+			}
+			q, _, err := buildReportSQL(dealRef(), dealCatalog(), cfg, testOrgID, domain.DataScopeAll, uuid.Nil)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got query: %s", q)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !strings.Contains(q, tc.wantSQL) {
+				t.Errorf("query %q does not contain %q", q, tc.wantSQL)
+			}
+		})
+	}
+}
+
+func TestBuildReportSQL_NestedGroupsAndOr(t *testing.T) {
+	cfg := domain.ReportConfig{
+		Chart: domain.ReportChartBar,
+		Filters: &domain.ReportFilterGroup{
+			Op: "AND",
+			Rules: []domain.ReportFilterRule{
+				{Field: "is_won", Operator: "eq", Value: false},
+				{Op: "OR", Rules: []domain.ReportFilterRule{
+					{Field: "value", Operator: "gt", Value: float64(1000)},
+					{Field: "priority", Operator: "eq", Value: "high"},
+				}},
+			},
+		},
+		GroupBy:   &domain.ReportGroupBy{Field: "stage"},
+		Aggregate: &domain.ReportAggregate{Fn: "count"},
+	}
+	q, args, err := buildReportSQL(dealRef(), dealCatalog(), cfg, testOrgID, domain.DataScopeAll, uuid.Nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(q, "(deals.is_won = ? AND (deals.value > ? OR deals.custom_fields->>'priority' = ?))") {
+		t.Errorf("nested group SQL wrong: %s", q)
+	}
+	if len(args) != 4 { // org + three filter values
+		t.Errorf("args = %v", args)
+	}
+}
+
+func TestBuildReportSQL_DepthAndRuleCaps(t *testing.T) {
+	// Depth: nest 6 levels of groups.
+	deep := domain.ReportFilterRule{Field: "title", Operator: "eq", Value: "x"}
+	for i := 0; i < 6; i++ {
+		deep = domain.ReportFilterRule{Op: "AND", Rules: []domain.ReportFilterRule{deep}}
+	}
+	cfg := domain.ReportConfig{
+		Chart:     domain.ReportChartBar,
+		Filters:   &domain.ReportFilterGroup{Op: "AND", Rules: []domain.ReportFilterRule{deep}},
+		GroupBy:   &domain.ReportGroupBy{Field: "stage"},
+		Aggregate: &domain.ReportAggregate{Fn: "count"},
+	}
+	if _, _, err := buildReportSQL(dealRef(), dealCatalog(), cfg, testOrgID, domain.DataScopeAll, uuid.Nil); err == nil {
+		t.Error("expected depth-cap error")
+	}
+
+	// Rules: 51 leaves.
+	var rules []domain.ReportFilterRule
+	for i := 0; i < 51; i++ {
+		rules = append(rules, domain.ReportFilterRule{Field: "title", Operator: "eq", Value: "x"})
+	}
+	cfg.Filters = &domain.ReportFilterGroup{Op: "OR", Rules: rules}
+	if _, _, err := buildReportSQL(dealRef(), dealCatalog(), cfg, testOrgID, domain.DataScopeAll, uuid.Nil); err == nil {
+		t.Error("expected rule-cap error")
+	}
+}
+
+func TestBuildReportSQL_BucketWhitelist(t *testing.T) {
+	cfg := domain.ReportConfig{
+		Chart:     domain.ReportChartBar,
+		GroupBy:   &domain.ReportGroupBy{Field: "closed_at", Bucket: "millennium'); DROP TABLE deals;--"},
+		Aggregate: &domain.ReportAggregate{Fn: "count"},
+	}
+	if _, _, err := buildReportSQL(dealRef(), dealCatalog(), cfg, testOrgID, domain.DataScopeAll, uuid.Nil); err == nil {
+		t.Error("expected bucket whitelist error")
+	}
+	// Bucket on a non-date field is rejected too.
+	cfg.GroupBy = &domain.ReportGroupBy{Field: "stage", Bucket: "month"}
+	if _, _, err := buildReportSQL(dealRef(), dealCatalog(), cfg, testOrgID, domain.DataScopeAll, uuid.Nil); err == nil {
+		t.Error("expected bucket-on-non-date error")
+	}
+}
+
+// Injection attempts: hostile identifiers can only arrive via a poisoned
+// catalog entry (the config path is closed by the unknown-field check); the
+// builder still refuses them.
+func TestBuildReportSQL_RejectsHostileIdentifiers(t *testing.T) {
+	badCatalog := []domain.ReportField{
+		{Key: "evil", Type: "text", Column: `title" FROM users;--`},
+	}
+	cfg := domain.ReportConfig{
+		Chart:     domain.ReportChartBar,
+		GroupBy:   &domain.ReportGroupBy{Field: "evil"},
+		Aggregate: &domain.ReportAggregate{Fn: "count"},
+	}
+	if _, _, err := buildReportSQL(dealRef(), badCatalog, cfg, testOrgID, domain.DataScopeAll, uuid.Nil); err == nil {
+		t.Error("expected hostile column to be rejected")
+	}
+
+	badJSON := []domain.ReportField{
+		{Key: "evil2", Type: "text", JSONKey: `x'||(SELECT password_hash FROM users LIMIT 1)||'`},
+	}
+	cfg.GroupBy = &domain.ReportGroupBy{Field: "evil2"}
+	if _, _, err := buildReportSQL(dealRef(), badJSON, cfg, testOrgID, domain.DataScopeAll, uuid.Nil); err == nil {
+		t.Error("expected hostile JSON key to be rejected")
+	}
+}
+
+func TestBuildReportSQL_AggregateGating(t *testing.T) {
+	mk := func(fn, field string) domain.ReportConfig {
+		return domain.ReportConfig{
+			Chart:     domain.ReportChartKPI,
+			Aggregate: &domain.ReportAggregate{Fn: fn, Field: field},
+		}
+	}
+	// sum on a text field → rejected.
+	if _, _, err := buildReportSQL(dealRef(), dealCatalog(), mk("sum", "title"), testOrgID, domain.DataScopeAll, uuid.Nil); err == nil {
+		t.Error("expected sum-on-text error")
+	}
+	// unknown fn → rejected.
+	if _, _, err := buildReportSQL(dealRef(), dealCatalog(), mk("median", "value"), testOrgID, domain.DataScopeAll, uuid.Nil); err == nil {
+		t.Error("expected unknown-fn error")
+	}
+	// count_distinct works on any type.
+	q, _, err := buildReportSQL(dealRef(), dealCatalog(), mk("count_distinct", "stage"), testOrgID, domain.DataScopeAll, uuid.Nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(q, "COUNT(DISTINCT deals.stage_id)") {
+		t.Errorf("count_distinct SQL wrong: %s", q)
+	}
+}
+
+func TestBuildReportSQL_EmptyInList(t *testing.T) {
+	mk := func(op string) domain.ReportConfig {
+		return domain.ReportConfig{
+			Chart:     domain.ReportChartBar,
+			Filters:   &domain.ReportFilterGroup{Op: "AND", Rules: []domain.ReportFilterRule{{Field: "priority", Operator: op, Value: []any{}}}},
+			GroupBy:   &domain.ReportGroupBy{Field: "stage"},
+			Aggregate: &domain.ReportAggregate{Fn: "count"},
+		}
+	}
+	q, _, err := buildReportSQL(dealRef(), dealCatalog(), mk("in"), testOrgID, domain.DataScopeAll, uuid.Nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(q, "(FALSE)") {
+		t.Errorf("empty in-list should collapse to FALSE: %s", q)
+	}
+	q, _, err = buildReportSQL(dealRef(), dealCatalog(), mk("not_in"), testOrgID, domain.DataScopeAll, uuid.Nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(q, "(TRUE)") {
+		t.Errorf("empty not-in should collapse to TRUE: %s", q)
+	}
+}
+
+func TestBuildReportSQL_LikeWildcardsEscaped(t *testing.T) {
+	cfg := domain.ReportConfig{
+		Chart:     domain.ReportChartBar,
+		Filters:   &domain.ReportFilterGroup{Op: "AND", Rules: []domain.ReportFilterRule{{Field: "title", Operator: "contains", Value: "50%_off"}}},
+		GroupBy:   &domain.ReportGroupBy{Field: "stage"},
+		Aggregate: &domain.ReportAggregate{Fn: "count"},
+	}
+	_, args, err := buildReportSQL(dealRef(), dealCatalog(), cfg, testOrgID, domain.DataScopeAll, uuid.Nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// args: org, pattern
+	pattern, _ := args[len(args)-1].(string)
+	if pattern != `%50\%\_off%` {
+		t.Errorf("pattern = %q, want %q", pattern, `%50\%\_off%`)
+	}
+}
+
+func TestBuildReportSQL_TableModeUnknownColumnRejected(t *testing.T) {
+	cfg := domain.ReportConfig{
+		Chart:   domain.ReportChartTable,
+		Columns: []string{"title", "password_hash"},
+	}
+	if _, _, err := buildReportSQL(dealRef(), dealCatalog(), cfg, testOrgID, domain.DataScopeAll, uuid.Nil); err == nil {
+		t.Error("expected unknown column to be rejected")
+	}
+}
