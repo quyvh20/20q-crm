@@ -75,10 +75,21 @@ var defaultPipelineStages = []struct {
 func NewAuthUseCase(repo domain.AuthRepository, stageRepo domain.PipelineStageRepository, cfg *config.Config, mailer domain.Mailer, appEnv string, redisClient *redis.Client) domain.AuthUseCase {
 	var oauthCfg *oauth2.Config
 	if cfg.GoogleClientID != "" {
+		// The OAuth callback must return to the FRONTEND origin so it flows back
+		// through the same /api proxy as every other request — that is what keeps
+		// the session cookie first-party. A cross-site callback host (e.g. the API
+		// domain directly) sets a third-party cookie the browser then refuses to
+		// send, which loops login forever. Derive it from FrontendURL when set so
+		// no separate GOOGLE_REDIRECT_URL has to be kept in sync with the proxy;
+		// falls back to the explicit config for setups without a FrontendURL.
+		redirectURL := cfg.GoogleRedirectURL
+		if cfg.FrontendURL != "" {
+			redirectURL = strings.TrimRight(cfg.FrontendURL, "/") + "/api/auth/google/callback"
+		}
 		oauthCfg = &oauth2.Config{
 			ClientID:     cfg.GoogleClientID,
 			ClientSecret: cfg.GoogleClientSecret,
-			RedirectURL:  cfg.GoogleRedirectURL,
+			RedirectURL:  redirectURL,
 			Scopes:       []string{"openid", "email", "profile"},
 			Endpoint:     google.Endpoint,
 		}
