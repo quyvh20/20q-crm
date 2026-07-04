@@ -2565,3 +2565,34 @@ export async function removeReportShare(reportId: string, shareId: string): Prom
   const res = await apiFetch(`/api/reports/${reportId}/shares/${shareId}`, { method: 'DELETE' });
   if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error((j as { error?: string }).error || 'Failed to remove share'); }
 }
+
+// ── Report comments (thread on a saved report; posting needs level >= comment) ──
+
+export interface ReportCommentView {
+  id: string;
+  author_id?: string;
+  author_name: string;
+  body: string;
+  created_at: string;
+  can_delete: boolean;
+}
+
+export async function listReportComments(reportId: string): Promise<ReportCommentView[]> {
+  const res = await apiFetch(`/api/reports/${reportId}/comments`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to load comments');
+  return (json.data || []) as ReportCommentView[];
+}
+
+export async function addReportComment(reportId: string, body: string): Promise<void> {
+  const res = await apiFetch(`/api/reports/${reportId}/comments`, {
+    method: 'POST',
+    body: JSON.stringify({ body }),
+  });
+  if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error((j as { error?: string }).error || 'Failed to post comment'); }
+}
+
+export async function deleteReportComment(reportId: string, commentId: string): Promise<void> {
+  const res = await apiFetch(`/api/reports/${reportId}/comments/${commentId}`, { method: 'DELETE' });
+  if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error((j as { error?: string }).error || 'Failed to delete comment'); }
+}

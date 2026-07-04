@@ -11,6 +11,7 @@ import { REPORT_TEMPLATES } from './templates';
 import ReportChart from './charts/ReportChart';
 import FilterEditor from './builder/FilterEditor';
 import ReportShareDialog from './ReportShareDialog';
+import ReportComments from './ReportComments';
 
 const CHART_TYPES: { value: ReportChartKind; label: string; icon: string }[] = [
   { value: 'bar', label: 'Bar', icon: '📊' },
@@ -375,7 +376,8 @@ export default function ReportBuilderPage() {
           )}
         </div>
 
-        {/* Live preview */}
+        {/* Live preview + discussion */}
+        <div className="space-y-4">
         <div className="rounded-xl border bg-card p-4">
           <div className="mb-3 flex items-center justify-between">
             <h3 className="text-sm font-semibold">{name.trim() || 'Preview'}</h3>
@@ -396,6 +398,10 @@ export default function ReportBuilderPage() {
           ) : preview.data ? (
             <ReportChart chart={config.chart} result={preview.data} height={380} columnLabels={fieldLabels} />
           ) : null}
+        </div>
+        {existing && (
+          <ReportComments reportId={existing.id} canComment={['comment', 'edit', 'manage'].includes(level ?? '')} />
+        )}
         </div>
       </div>
     </div>

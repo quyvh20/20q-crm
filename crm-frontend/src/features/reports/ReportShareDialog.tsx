@@ -7,8 +7,8 @@ import {
 } from '../../lib/api';
 
 // ReportShareDialog manages a report's granular share list: grant a user, role,
-// or group access at view/edit (comment lands with the comments feature).
-// Shown only to a caller who can 'manage' the report.
+// or group access at view/comment/edit. Shown only to a caller who can 'manage'
+// the report.
 const TARGET_TABS: { type: ShareTargetType; label: string }[] = [
   { type: 'user', label: 'People' },
   { type: 'role', label: 'Roles' },
@@ -16,6 +16,7 @@ const TARGET_TABS: { type: ShareTargetType; label: string }[] = [
 ];
 const LEVELS: { value: ShareLevel; label: string }[] = [
   { value: 'view', label: 'Can view' },
+  { value: 'comment', label: 'Can comment' },
   { value: 'edit', label: 'Can edit' },
 ];
 const TYPE_ICON: Record<ShareTargetType, string> = { user: '👤', role: '🛡️', group: '👥' };
@@ -132,7 +133,7 @@ export default function ReportShareDialog({ reportId, onClose }: { reportId: str
                   <span className="flex-1 truncate">{s.target_name}</span>
                   <select
                     aria-label={`Level for ${s.target_name}`}
-                    value={s.level === 'comment' ? 'view' : s.level}
+                    value={s.level}
                     onChange={(e) => changeLevel(s, e.target.value as ShareLevel)}
                     disabled={busy}
                     className="rounded border bg-background px-1.5 py-1 text-xs"

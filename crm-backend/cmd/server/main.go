@@ -601,6 +601,23 @@ func main() {
 		END $$`)
 		db.Exec(`ALTER TABLE report_shares ENABLE ROW LEVEL SECURITY`)
 
+		// Report comments (migration 000033) — boot guard. Mirrors
+		// migrations/000033_report_comments.up.sql exactly. A comment thread on a
+		// saved report; read = can see the report, post = level >= comment, delete
+		// = author or manage (enforced in the usecase).
+		db.Exec(`CREATE TABLE IF NOT EXISTS report_comments (
+			id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			org_id     UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			report_id  UUID NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+			author_id  UUID REFERENCES users(id) ON DELETE SET NULL,
+			body       TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			deleted_at TIMESTAMPTZ
+		)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_report_comments_report ON report_comments(report_id) WHERE deleted_at IS NULL`)
+		db.Exec(`ALTER TABLE report_comments ENABLE ROW LEVEL SECURITY`)
+
 		log.Info("Seeding system roles...")
 		if err := repository.SeedSystemRoles(db); err != nil {
 			log.Error("Failed to seed system roles", zap.Error(err))
@@ -823,6 +840,10 @@ func main() {
 		// Granular report sharing (users/roles/groups × view/comment/edit).
 		reportShareUC := usecase.NewReportShareUseCase(reportUC, reportShareRepo)
 		reportShareHandler := delivery.NewReportShareHandler(reportShareUC)
+		// Report comment thread — reuses reportUC.ResolveAccess to gate read/post/delete.
+		reportCommentRepo := repository.NewReportCommentRepository(db)
+		reportCommentUC := usecase.NewReportCommentUseCase(reportUC, reportCommentRepo)
+		reportCommentHandler := delivery.NewReportCommentHandler(reportCommentUC)
 
 		// Dashboard widgets (P9 Phase B): per-user pinned reports on the home page.
 		// Uses reportUC so shared reports (not just own/org) resolve for the dashboard.
@@ -864,7 +885,7 @@ func main() {
 		voiceNoteUC := usecase.NewVoiceNoteUseCase(voiceNoteRepo, aiJobQueue, cfg, contactRepo)
 		voiceHandler := delivery.NewVoiceHandler(voiceNoteUC)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, layoutHandler, roleHandler, auditHandler, reportHandler, reportShareHandler, dashboardHandler, userGroupHandler, cfg, db, redisClient, authRepo, permissionUC)
+		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, layoutHandler, roleHandler, auditHandler, reportHandler, reportShareHandler, reportCommentHandler, dashboardHandler, userGroupHandler, cfg, db, redisClient, authRepo, permissionUC)
 
 		// --- Workflow Automation Engine ---
 		memHandler := logger.NewMemoryHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
