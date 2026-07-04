@@ -1,4 +1,4 @@
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8080' : '');
 
 // ── Session token handling (P2) ─────────────────────────────────────────────
 // The access token lives in memory only — never localStorage — so an XSS can't

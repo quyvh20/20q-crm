@@ -76,10 +76,12 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Build with production API URL
+      # No VITE_API_URL: the SPA calls a same-origin /api, which the Pages
+      # Function in crm-frontend/functions/api proxies to the backend. This keeps
+      # the auth cookie first-party (see that file) — cross-site third-party
+      # cookies are now blocked by browsers and broke login.
+      - name: Build (same-origin API via the Pages /api proxy)
         run: npm run build
-        env:
-          VITE_API_URL: https://20q-crm-production.up.railway.app
 
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3

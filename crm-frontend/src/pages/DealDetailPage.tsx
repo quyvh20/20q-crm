@@ -161,7 +161,7 @@ export default function DealDetailPage() {
     const token = getAccessToken();
     if (!token) return;
 
-    const API_BASE = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8080';
+    const API_BASE = (import.meta as any).env?.VITE_API_URL ?? ((import.meta as any).env?.DEV ? 'http://localhost:8080' : '');
     const abort = new AbortController();
 
     const pullEvents = async () => {

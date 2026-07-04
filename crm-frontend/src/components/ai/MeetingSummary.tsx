@@ -25,7 +25,7 @@ export default function MeetingSummary({ dealId, contactId, onClose, onTasksCrea
     // Wait, the user's Go backend AuthMiddleware currently checks Authorization header. SSE natively in browsers doesn't support headers via EventSource!
     // Using a polyfill or fetch workaround is preferred. Let's use the fetch workaround.
 
-    const API_BASE = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8080';
+    const API_BASE = (import.meta as any).env?.VITE_API_URL ?? ((import.meta as any).env?.DEV ? 'http://localhost:8080' : '');
     const abort = new AbortController();
 
     const pullEvents = async () => {
