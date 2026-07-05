@@ -168,18 +168,13 @@ export default function ReportBuilderPage() {
           className={`min-w-56 flex-1 rounded-md border bg-background px-3 py-2 text-lg font-semibold ${nameError ? 'border-red-500' : ''}`}
           disabled={!canManage}
         />
-        <select
-          aria-label="Visibility"
-          value={visibility}
-          onChange={(e) => setVisibility(e.target.value as ReportVisibility)}
-          className="rounded-md border bg-background px-2 py-2 text-sm"
-          disabled={!canManage}
-        >
-          <option value="private">🔒 Private</option>
-          <option value="org">🌐 Shared with workspace</option>
-        </select>
         {existing && canShare && (
-          <button onClick={() => setShowShare(true)} className="rounded-md border px-3 py-2 text-sm hover:bg-accent">Share</button>
+          <>
+            <span className="rounded-md border px-2 py-2 text-sm text-muted-foreground">
+              {existing.visibility === 'org' ? '🌐 Workspace' : '🔒 Private'}
+            </span>
+            <button onClick={() => setShowShare(true)} className="rounded-md border px-3 py-2 text-sm hover:bg-accent">Share</button>
+          </>
         )}
         {existing && (
           <button onClick={handleExport} className="rounded-md border px-3 py-2 text-sm hover:bg-accent">Export CSV</button>
@@ -202,7 +197,7 @@ export default function ReportBuilderPage() {
           </button>
         )}
       </div>
-      {showShare && existing && <ReportShareDialog reportId={existing.id} onClose={() => setShowShare(false)} />}
+      {showShare && existing && <ReportShareDialog report={existing} onClose={() => setShowShare(false)} />}
       {saveMutation.isError && <div className="text-sm text-red-600">{(saveMutation.error as Error).message}</div>}
 
       <div className="grid gap-4 lg:grid-cols-[400px_1fr]">

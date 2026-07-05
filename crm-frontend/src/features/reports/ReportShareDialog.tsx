@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  listReportShares, addReportShare, removeReportShare,
+  listReportShares, addReportShare, removeReportShare, updateReport,
   getWorkspaceMembers, getRoles, listGroups,
-  type ReportShareView, type ShareTargetType, type ShareLevel,
-  type WorkspaceMember, type RoleDetail, type UserGroup,
+  type Report, type ReportShareView, type ShareTargetType, type ShareLevel,
+  type ReportVisibility, type WorkspaceMember, type RoleDetail, type UserGroup,
 } from '../../lib/api';
 
 // ReportShareDialog manages a report's granular share list: grant a user, role,
@@ -21,8 +21,9 @@ const LEVELS: { value: ShareLevel; label: string }[] = [
 ];
 const TYPE_ICON: Record<ShareTargetType, string> = { user: '👤', role: '🛡️', group: '👥' };
 
-export default function ReportShareDialog({ reportId, onClose }: { reportId: string; onClose: () => void }) {
+export default function ReportShareDialog({ report, onClose }: { report: Report; onClose: () => void }) {
   const [shares, setShares] = useState<ReportShareView[]>([]);
+  const [visibility, setVisibility] = useState<ReportVisibility>(report.visibility);
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
   const [roles, setRoles] = useState<RoleDetail[]>([]);
   const [groups, setGroups] = useState<UserGroup[]>([]);
@@ -36,7 +37,7 @@ export default function ReportShareDialog({ reportId, onClose }: { reportId: str
   const load = useCallback(async () => {
     try {
       setLoading(true);
-      const [s, m, r, g] = await Promise.all([listReportShares(reportId), getWorkspaceMembers(), getRoles(), listGroups()]);
+      const [s, m, r, g] = await Promise.all([listReportShares(report.id), getWorkspaceMembers(), getRoles(), listGroups()]);
       setShares(s);
       setMembers(m.filter((x) => x.status === 'active'));
       setRoles(r);
@@ -46,8 +47,23 @@ export default function ReportShareDialog({ reportId, onClose }: { reportId: str
     } finally {
       setLoading(false);
     }
-  }, [reportId]);
+  }, [report.id]);
   useEffect(() => { load(); }, [load]);
+
+  // General access ("Private" vs "Anyone in the workspace") is stored on the
+  // report itself, so changing it re-saves the report through the normal
+  // update endpoint (requires ≥edit — the Share button only shows to managers).
+  const changeVisibility = async (v: ReportVisibility) => {
+    setBusy(true); setError('');
+    try {
+      await updateReport(report.id, {
+        name: report.name, description: report.description,
+        object_slug: report.object_slug, visibility: v, config: report.config,
+      });
+      setVisibility(v);
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to update access'); }
+    finally { setBusy(false); }
+  };
 
   // Candidates for the active tab, excluding already-shared targets.
   const sharedIds = useMemo(() => new Set(shares.map((s) => s.target_id)), [shares]);
@@ -61,7 +77,7 @@ export default function ReportShareDialog({ reportId, onClose }: { reportId: str
     if (!selected) return;
     setBusy(true); setError('');
     try {
-      await addReportShare(reportId, tab, selected, level);
+      await addReportShare(report.id, tab, selected, level);
       setSelected('');
       await load();
     } catch (e) {
@@ -71,14 +87,14 @@ export default function ReportShareDialog({ reportId, onClose }: { reportId: str
 
   const changeLevel = async (s: ReportShareView, next: ShareLevel) => {
     setBusy(true); setError('');
-    try { await addReportShare(reportId, s.target_type, s.target_id, next); await load(); }
+    try { await addReportShare(report.id, s.target_type, s.target_id, next); await load(); }
     catch (e) { setError(e instanceof Error ? e.message : 'Failed to update'); }
     finally { setBusy(false); }
   };
 
   const remove = async (shareId: string) => {
     setBusy(true); setError('');
-    try { await removeReportShare(reportId, shareId); setShares((c) => c.filter((s) => s.id !== shareId)); }
+    try { await removeReportShare(report.id, shareId); setShares((c) => c.filter((s) => s.id !== shareId)); }
     catch (e) { setError(e instanceof Error ? e.message : 'Failed to remove'); }
     finally { setBusy(false); }
   };
@@ -92,6 +108,21 @@ export default function ReportShareDialog({ reportId, onClose }: { reportId: str
         </div>
 
         {error && <div className="mb-3 text-sm text-red-600">{error}</div>}
+
+        {/* General access */}
+        <div className="mb-4">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">General access</div>
+          <select
+            aria-label="General access"
+            value={visibility}
+            onChange={(e) => changeVisibility(e.target.value as ReportVisibility)}
+            disabled={busy}
+            className="w-full rounded-md border bg-background px-2 py-2 text-sm"
+          >
+            <option value="private">🔒 Private — only people added here</option>
+            <option value="org">🌐 Anyone in the workspace can view</option>
+          </select>
+        </div>
 
         {/* Add a share */}
         <div className="space-y-2 rounded-xl border p-3">

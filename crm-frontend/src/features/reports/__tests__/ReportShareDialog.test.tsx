@@ -1,20 +1,27 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
-import type { ReportShareView, WorkspaceMember, RoleDetail, UserGroup } from '../../../lib/api';
+import type { Report, ReportShareView, WorkspaceMember, RoleDetail, UserGroup } from '../../../lib/api';
 
 vi.mock('../../../lib/api', () => ({
   listReportShares: vi.fn(),
   addReportShare: vi.fn(),
   removeReportShare: vi.fn(),
+  updateReport: vi.fn(),
   getWorkspaceMembers: vi.fn(),
   getRoles: vi.fn(),
   listGroups: vi.fn(),
 }));
 
 import {
-  listReportShares, addReportShare, removeReportShare, getWorkspaceMembers, getRoles, listGroups,
+  listReportShares, addReportShare, removeReportShare, updateReport, getWorkspaceMembers, getRoles, listGroups,
 } from '../../../lib/api';
 import ReportShareDialog from '../ReportShareDialog';
+
+const report = (partial: Partial<Report> = {}): Report => ({
+  id: 'rep1', org_id: 'org1', name: 'Deals by stage', description: '', object_slug: 'deal',
+  config: { chart: 'bar', aggregate: { fn: 'count' } }, visibility: 'private',
+  created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', ...partial,
+});
 
 const member = (id: string, name: string): WorkspaceMember => ({
   user_id: id, email: `${name}@x.com`, first_name: name, last_name: '', full_name: name, role: 'sales_rep', status: 'active',
@@ -37,7 +44,7 @@ describe('ReportShareDialog', () => {
   it('shows the empty state, then adds a user share at edit', async () => {
     vi.mocked(listReportShares).mockResolvedValue([]);
     vi.mocked(addReportShare).mockResolvedValue(undefined);
-    render(<ReportShareDialog reportId="rep1" onClose={() => {}} />);
+    render(<ReportShareDialog report={report()} onClose={() => {}} />);
 
     await waitFor(() => expect(screen.getByText(/Not shared with anyone yet/)).toBeTruthy());
     fireEvent.change(screen.getByLabelText('Share target'), { target: { value: 'u1' } });
@@ -48,7 +55,7 @@ describe('ReportShareDialog', () => {
 
   it('switches the target tab to Groups and lists group candidates', async () => {
     vi.mocked(listReportShares).mockResolvedValue([]);
-    render(<ReportShareDialog reportId="rep1" onClose={() => {}} />);
+    render(<ReportShareDialog report={report()} onClose={() => {}} />);
     await waitFor(() => expect(screen.getByText('Groups')).toBeTruthy());
     fireEvent.click(screen.getByText('Groups'));
     const select = screen.getByLabelText('Share target') as HTMLSelectElement;
@@ -60,10 +67,20 @@ describe('ReportShareDialog', () => {
     const s = share({ target_name: 'West Region', target_type: 'group', level: 'view' });
     vi.mocked(listReportShares).mockResolvedValue([s]);
     vi.mocked(removeReportShare).mockResolvedValue(undefined);
-    render(<ReportShareDialog reportId="rep1" onClose={() => {}} />);
+    render(<ReportShareDialog report={report()} onClose={() => {}} />);
 
     await waitFor(() => expect(screen.getByLabelText('Remove West Region')).toBeTruthy());
     fireEvent.click(screen.getByLabelText('Remove West Region'));
     await waitFor(() => expect(removeReportShare).toHaveBeenCalledWith('rep1', s.id));
+  });
+
+  it('changes general access to workspace via updateReport', async () => {
+    vi.mocked(listReportShares).mockResolvedValue([]);
+    vi.mocked(updateReport).mockResolvedValue(report({ visibility: 'org' }));
+    render(<ReportShareDialog report={report()} onClose={() => {}} />);
+
+    await waitFor(() => expect(screen.getByLabelText('General access')).toBeTruthy());
+    fireEvent.change(screen.getByLabelText('General access'), { target: { value: 'org' } });
+    await waitFor(() => expect(updateReport).toHaveBeenCalledWith('rep1', expect.objectContaining({ visibility: 'org' })));
   });
 });
