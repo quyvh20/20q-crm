@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   listReportShares, addReportShare, removeReportShare, updateReport,
   getWorkspaceMembers, getRoles, listGroups,
@@ -24,6 +25,7 @@ const TYPE_ICON: Record<ShareTargetType, string> = { user: '👤', role: '🛡�
 
 export default function ReportShareDialog({ report, onClose }: { report: Report; onClose: () => void }) {
   const { user } = useAuth();
+  const queryClient = useQueryClient();
   const [shares, setShares] = useState<ReportShareView[]>([]);
   const [visibility, setVisibility] = useState<ReportVisibility>(report.visibility);
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
@@ -63,6 +65,10 @@ export default function ReportShareDialog({ report, onClose }: { report: Report;
         object_slug: report.object_slug, visibility: v, config: report.config,
       });
       setVisibility(v);
+      // Refresh the caches that read visibility off the report: the builder's
+      // header badge (['report', id]) and the reports list/dashboard (['reports']).
+      queryClient.invalidateQueries({ queryKey: ['report', report.id] });
+      queryClient.invalidateQueries({ queryKey: ['reports'] });
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed to update access'); }
     finally { setBusy(false); }
   };

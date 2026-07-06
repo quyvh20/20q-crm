@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { Report, ReportShareView, WorkspaceMember, RoleDetail, UserGroup } from '../../../lib/api';
 
 vi.mock('../../../lib/api', () => ({
@@ -38,6 +39,15 @@ const share = (partial: Partial<ReportShareView>): ReportShareView => ({
   id: crypto.randomUUID(), target_type: 'user', target_id: crypto.randomUUID(), target_name: 'Someone', level: 'view', created_at: '2026-01-01T00:00:00Z', ...partial,
 });
 
+// The dialog calls useQueryClient (to invalidate report caches on visibility
+// change), so renders need a QueryClientProvider.
+const renderDialog = (r: Report = report()) =>
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <ReportShareDialog report={r} onClose={() => {}} />
+    </QueryClientProvider>,
+  );
+
 beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
@@ -53,7 +63,7 @@ describe('ReportShareDialog', () => {
   it('shows the empty state, then adds a user share at edit', async () => {
     vi.mocked(listReportShares).mockResolvedValue([]);
     vi.mocked(addReportShare).mockResolvedValue(undefined);
-    render(<ReportShareDialog report={report()} onClose={() => {}} />);
+    renderDialog();
 
     await waitFor(() => expect(screen.getByText(/Not shared with anyone yet/)).toBeTruthy());
     fireEvent.change(screen.getByLabelText('Share target'), { target: { value: 'u1' } });
@@ -67,7 +77,7 @@ describe('ReportShareDialog', () => {
     // is meaningless — the owner already has full access), but Bob should.
     vi.mocked(useAuth).mockReturnValue(authAs('u1'));
     vi.mocked(listReportShares).mockResolvedValue([]);
-    render(<ReportShareDialog report={report()} onClose={() => {}} />);
+    renderDialog();
 
     const select = screen.getByLabelText('Share target') as HTMLSelectElement;
     await waitFor(() => expect([...select.options].some((o) => o.textContent === 'Bob')).toBe(true));
@@ -76,7 +86,7 @@ describe('ReportShareDialog', () => {
 
   it('switches the target tab to Groups and lists group candidates', async () => {
     vi.mocked(listReportShares).mockResolvedValue([]);
-    render(<ReportShareDialog report={report()} onClose={() => {}} />);
+    renderDialog();
     await waitFor(() => expect(screen.getByText('Groups')).toBeTruthy());
     fireEvent.click(screen.getByText('Groups'));
     const select = screen.getByLabelText('Share target') as HTMLSelectElement;
@@ -88,7 +98,7 @@ describe('ReportShareDialog', () => {
     const s = share({ target_name: 'West Region', target_type: 'group', level: 'view' });
     vi.mocked(listReportShares).mockResolvedValue([s]);
     vi.mocked(removeReportShare).mockResolvedValue(undefined);
-    render(<ReportShareDialog report={report()} onClose={() => {}} />);
+    renderDialog();
 
     await waitFor(() => expect(screen.getByLabelText('Remove West Region')).toBeTruthy());
     fireEvent.click(screen.getByLabelText('Remove West Region'));
@@ -98,7 +108,7 @@ describe('ReportShareDialog', () => {
   it('changes general access to workspace via updateReport', async () => {
     vi.mocked(listReportShares).mockResolvedValue([]);
     vi.mocked(updateReport).mockResolvedValue(report({ visibility: 'org' }));
-    render(<ReportShareDialog report={report()} onClose={() => {}} />);
+    renderDialog();
 
     await waitFor(() => expect(screen.getByLabelText('General access')).toBeTruthy());
     fireEvent.change(screen.getByLabelText('General access'), { target: { value: 'org' } });
