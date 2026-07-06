@@ -5,6 +5,7 @@ import {
   type Report, type ReportShareView, type ShareTargetType, type ShareLevel,
   type ReportVisibility, type WorkspaceMember, type RoleDetail, type UserGroup,
 } from '../../lib/api';
+import { useAuth } from '../../lib/auth';
 
 // ReportShareDialog manages a report's granular share list: grant a user, role,
 // or group access at view/comment/edit. Shown only to a caller who can 'manage'
@@ -22,6 +23,7 @@ const LEVELS: { value: ShareLevel; label: string }[] = [
 const TYPE_ICON: Record<ShareTargetType, string> = { user: '👤', role: '🛡️', group: '👥' };
 
 export default function ReportShareDialog({ report, onClose }: { report: Report; onClose: () => void }) {
+  const { user } = useAuth();
   const [shares, setShares] = useState<ReportShareView[]>([]);
   const [visibility, setVisibility] = useState<ReportVisibility>(report.visibility);
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
@@ -65,13 +67,15 @@ export default function ReportShareDialog({ report, onClose }: { report: Report;
     finally { setBusy(false); }
   };
 
-  // Candidates for the active tab, excluding already-shared targets.
+  // Candidates for the active tab, excluding already-shared targets. The current
+  // user is never a People candidate: the owner/manager already holds full
+  // access, so sharing to oneself is meaningless (and rejected by the backend).
   const sharedIds = useMemo(() => new Set(shares.map((s) => s.target_id)), [shares]);
   const candidates = useMemo(() => {
-    if (tab === 'user') return members.filter((m) => !sharedIds.has(m.user_id)).map((m) => ({ id: m.user_id, name: m.full_name || m.email }));
+    if (tab === 'user') return members.filter((m) => !sharedIds.has(m.user_id) && m.user_id !== user?.id).map((m) => ({ id: m.user_id, name: m.full_name || m.email }));
     if (tab === 'role') return roles.filter((r) => !sharedIds.has(r.id)).map((r) => ({ id: r.id, name: r.name }));
     return groups.filter((g) => !sharedIds.has(g.id)).map((g) => ({ id: g.id, name: g.name }));
-  }, [tab, members, roles, groups, sharedIds]);
+  }, [tab, members, roles, groups, sharedIds, user?.id]);
 
   const add = async () => {
     if (!selected) return;

@@ -12,10 +12,16 @@ vi.mock('../../../lib/api', () => ({
   listGroups: vi.fn(),
 }));
 
+vi.mock('../../../lib/auth', () => ({ useAuth: vi.fn() }));
+
 import {
   listReportShares, addReportShare, removeReportShare, updateReport, getWorkspaceMembers, getRoles, listGroups,
 } from '../../../lib/api';
+import { useAuth } from '../../../lib/auth';
 import ReportShareDialog from '../ReportShareDialog';
+
+// The dialog only reads user?.id off the auth context; a minimal stub suffices.
+const authAs = (id: string) => ({ user: { id } }) as unknown as ReturnType<typeof useAuth>;
 
 const report = (partial: Partial<Report> = {}): Report => ({
   id: 'rep1', org_id: 'org1', name: 'Deals by stage', description: '', object_slug: 'deal',
@@ -35,6 +41,9 @@ const share = (partial: Partial<ReportShareView>): ReportShareView => ({
 beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
+  // Current user defaults to someone outside the member list so the other tests
+  // still see both Alice and Bob as candidates.
+  vi.mocked(useAuth).mockReturnValue(authAs('me'));
   vi.mocked(getWorkspaceMembers).mockResolvedValue([member('u1', 'Alice'), member('u2', 'Bob')]);
   vi.mocked(getRoles).mockResolvedValue([role('r1', 'sales_rep')]);
   vi.mocked(listGroups).mockResolvedValue([grp('g1', 'West Region')]);
@@ -51,6 +60,18 @@ describe('ReportShareDialog', () => {
     fireEvent.change(screen.getByLabelText('Access level'), { target: { value: 'edit' } });
     fireEvent.click(screen.getByText('Add'));
     await waitFor(() => expect(addReportShare).toHaveBeenCalledWith('rep1', 'user', 'u1', 'edit'));
+  });
+
+  it('never offers the current user as a People share target', async () => {
+    // Log in as u1 (Alice); she must not appear in the picker (sharing to self
+    // is meaningless — the owner already has full access), but Bob should.
+    vi.mocked(useAuth).mockReturnValue(authAs('u1'));
+    vi.mocked(listReportShares).mockResolvedValue([]);
+    render(<ReportShareDialog report={report()} onClose={() => {}} />);
+
+    const select = screen.getByLabelText('Share target') as HTMLSelectElement;
+    await waitFor(() => expect([...select.options].some((o) => o.textContent === 'Bob')).toBe(true));
+    expect([...select.options].some((o) => o.textContent === 'Alice')).toBe(false);
   });
 
   it('switches the target tab to Groups and lists group candidates', async () => {

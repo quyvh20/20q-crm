@@ -29,7 +29,8 @@ func (uc *reportShareUseCase) List(ctx context.Context, orgID, userID, reportID 
 }
 
 func (uc *reportShareUseCase) Add(ctx context.Context, orgID, userID, reportID uuid.UUID, in domain.AddReportShareInput) error {
-	if err := uc.requireManage(ctx, orgID, userID, reportID); err != nil {
+	report, err := uc.requireManage(ctx, orgID, userID, reportID)
+	if err != nil {
 		return err
 	}
 	switch in.TargetType {
@@ -40,6 +41,13 @@ func (uc *reportShareUseCase) Add(ctx context.Context, orgID, userID, reportID u
 	if !domain.IsStorableShareLevel(in.Level) {
 		return domain.NewAppError(http.StatusBadRequest, "level must be 'view', 'comment', or 'edit'")
 	}
+	// A report's owner (its creator) already holds 'manage' implicitly, as does
+	// the acting caller (who just passed requireManage). A user share targeting
+	// either is a redundant self-share and is rejected.
+	if in.TargetType == domain.ShareTargetUser &&
+		(in.TargetID == userID || (report.CreatedBy != nil && in.TargetID == *report.CreatedBy)) {
+		return domain.NewAppError(http.StatusBadRequest, "cannot share a report with its owner")
+	}
 	return uc.shares.Create(ctx, &domain.ReportShare{
 		OrgID: orgID, ReportID: reportID,
 		TargetType: in.TargetType, TargetID: in.TargetID, Level: in.Level,
@@ -48,7 +56,7 @@ func (uc *reportShareUseCase) Add(ctx context.Context, orgID, userID, reportID u
 }
 
 func (uc *reportShareUseCase) Remove(ctx context.Context, orgID, userID, reportID, shareID uuid.UUID) error {
-	if err := uc.requireManage(ctx, orgID, userID, reportID); err != nil {
+	if _, err := uc.requireManage(ctx, orgID, userID, reportID); err != nil {
 		return err
 	}
 	n, err := uc.shares.Delete(ctx, orgID, reportID, shareID)
@@ -61,13 +69,15 @@ func (uc *reportShareUseCase) Remove(ctx context.Context, orgID, userID, reportI
 	return nil
 }
 
-func (uc *reportShareUseCase) requireManage(ctx context.Context, orgID, userID, reportID uuid.UUID) error {
-	_, level, err := uc.reports.ResolveAccess(ctx, orgID, userID, reportID)
+// requireManage resolves the caller's access and returns the report when the
+// caller may manage its share list (creator/owner/reports.manage).
+func (uc *reportShareUseCase) requireManage(ctx context.Context, orgID, userID, reportID uuid.UUID) (*domain.Report, error) {
+	report, level, err := uc.reports.ResolveAccess(ctx, orgID, userID, reportID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if level != domain.ShareLevelManage {
-		return domain.ErrForbidden
+		return nil, domain.ErrForbidden
 	}
-	return nil
+	return report, nil
 }

@@ -697,6 +697,48 @@ func TestReportShare_InvalidTargetOrLevelRejected(t *testing.T) {
 	}
 }
 
+func TestReportShare_SelfTargetRejected(t *testing.T) {
+	env := newReportEnv()
+	shareUC := NewReportShareUseCase(env.uc, env.shares)
+	creator := uuid.New()
+	own := &domain.Report{ID: uuid.New(), OrgID: env.orgID, Name: "Mine", Visibility: "private", CreatedBy: &creator, Config: domain.JSON(`{}`)}
+	env.repo.reports[own.ID] = own
+
+	// Sharing a report back to its owner (target == created_by == the acting
+	// caller) is redundant — the owner already holds 'manage' — so it must be a
+	// 400, and no row may be written.
+	err := shareUC.Add(context.Background(), env.orgID, creator, own.ID, domain.AddReportShareInput{
+		TargetType: domain.ShareTargetUser, TargetID: creator, Level: domain.ShareLevelView,
+	})
+	if code := appErrCode(t, err); code != http.StatusBadRequest {
+		t.Errorf("self-share code = %d, want 400", code)
+	}
+	if len(env.shares.byRept[own.ID]) != 0 {
+		t.Errorf("a self-share must not be persisted: %+v", env.shares.byRept[own.ID])
+	}
+
+	// A manager who is not the creator likewise cannot share to themselves (they
+	// too already hold manage). caps.allow makes an arbitrary caller a manager.
+	env.caps.allow = true
+	manager := uuid.New()
+	if code := appErrCode(t, shareUC.Add(context.Background(), env.orgID, manager, own.ID, domain.AddReportShareInput{
+		TargetType: domain.ShareTargetUser, TargetID: manager, Level: domain.ShareLevelView,
+	})); code != http.StatusBadRequest {
+		t.Errorf("manager self-share code = %d, want 400", code)
+	}
+
+	// Sharing to a different user still succeeds.
+	other := uuid.New()
+	if err := shareUC.Add(context.Background(), env.orgID, creator, own.ID, domain.AddReportShareInput{
+		TargetType: domain.ShareTargetUser, TargetID: other, Level: domain.ShareLevelView,
+	}); err != nil {
+		t.Errorf("sharing to another user failed: %v", err)
+	}
+	if len(env.shares.byRept[own.ID]) != 1 {
+		t.Errorf("share to another user not persisted: %+v", env.shares.byRept[own.ID])
+	}
+}
+
 func TestReport_DateBucketLabels(t *testing.T) {
 	env := newReportEnv()
 	jan := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
