@@ -124,6 +124,7 @@ func TestDoD_LogActivity_WebhookToTimeline(t *testing.T) {
 		db:          db,
 		logger:      slog.Default(),
 		rateLimiter: newTokenBucket(),
+		capChecker:  capAllow{},
 	}
 	gin.SetMode(gin.TestMode)
 	router := gin.New()

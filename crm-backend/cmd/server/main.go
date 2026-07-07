@@ -618,7 +618,137 @@ func main() {
 		db.Exec(`CREATE INDEX IF NOT EXISTS idx_report_comments_report ON report_comments(report_id) WHERE deleted_at IS NULL`)
 		db.Exec(`ALTER TABLE report_comments ENABLE ROW LEVEL SECURITY`)
 
+		// Authorization hardening (P10 P0) — boot guard. Mirrors
+		// migrations/000034_authz_p0_hardening.up.sql. roles gain is_owner
+		// (enforcement reads the flag via domain.IsOwnerRole, never the name
+		// string) plus the P6 metadata columns whose DDL lands early
+		// (description/template_key/seeded_from_role_id); users gain
+		// default_org_id (R2 default workspace) and a LOWER(email) index (P2
+		// case-insensitive lookup); password_reset_tokens gain initiated_by
+		// (admin-sent links); org_invitations gain resend/revoke stamps.
+		// Integrity guards follow the log-and-skip rule: report offenders at
+		// ERROR and skip the constraint — never crash boot on tenant data.
+		db.Exec(`ALTER TABLE roles ADD COLUMN IF NOT EXISTS is_owner BOOLEAN NOT NULL DEFAULT FALSE`)
+		db.Exec(`ALTER TABLE roles ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''`)
+		db.Exec(`ALTER TABLE roles ADD COLUMN IF NOT EXISTS template_key VARCHAR(40)`)
+		db.Exec(`ALTER TABLE roles ADD COLUMN IF NOT EXISTS seeded_from_role_id UUID REFERENCES roles(id) ON DELETE SET NULL`)
+		db.Exec(`UPDATE roles SET is_owner = TRUE WHERE name = 'owner' AND is_system = TRUE AND is_owner = FALSE`)
+		db.Exec(`UPDATE roles SET template_key = name WHERE is_system = TRUE AND template_key IS NULL`)
+
+		// Role-name uniqueness: the permission caches are keyed by role name
+		// until the P5 id re-key, so duplicate names silently merge grants.
+		var dupNames int64
+		db.Raw(`SELECT COUNT(*) FROM (
+			SELECT name FROM roles WHERE org_id IS NULL GROUP BY name HAVING COUNT(*) > 1
+			UNION ALL
+			SELECT name FROM roles WHERE org_id IS NOT NULL GROUP BY org_id, name HAVING COUNT(*) > 1
+		) d`).Scan(&dupNames)
+		if dupNames > 0 {
+			log.Error("roles: duplicate role names exist — uniqueness indexes skipped; merge the duplicates manually", zap.Int64("names", dupNames))
+		} else {
+			if err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_roles_global_name ON roles(name) WHERE org_id IS NULL`).Error; err != nil {
+				log.Error("roles: failed to create uq_roles_global_name", zap.Error(err))
+			}
+			if err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_roles_org_name ON roles(org_id, name) WHERE org_id IS NOT NULL`).Error; err != nil {
+				log.Error("roles: failed to create uq_roles_org_name", zap.Error(err))
+			}
+		}
+
+		// At most one owner role per org scope (the global system owner is the
+		// org_id IS NULL singleton).
+		var dupOwners int64
+		db.Raw(`SELECT COUNT(*) FROM (SELECT org_id FROM roles WHERE is_owner AND org_id IS NOT NULL GROUP BY org_id HAVING COUNT(*) > 1) d`).Scan(&dupOwners)
+		if dupOwners > 0 {
+			log.Error("roles: orgs with multiple is_owner roles exist — uq_roles_one_owner skipped", zap.Int64("orgs", dupOwners))
+		} else if err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_roles_one_owner ON roles(org_id) WHERE is_owner AND org_id IS NOT NULL`).Error; err != nil {
+			log.Error("roles: failed to create uq_roles_one_owner", zap.Error(err))
+		}
+
+		// Shadow guard: a non-system role named 'owner' would hit the name-keyed
+		// owner bypass (until P5) — forbid at the DB, not just in role_usecase.
+		// NOT VALID protects new rows immediately; VALIDATE only when clean.
+		db.Exec(`DO $$
+		BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'roles_no_owner_shadow') THEN
+				ALTER TABLE roles ADD CONSTRAINT roles_no_owner_shadow CHECK (is_system OR name <> 'owner') NOT VALID;
+			END IF;
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'roles_owner_lineage') THEN
+				ALTER TABLE roles ADD CONSTRAINT roles_owner_lineage CHECK (NOT is_owner OR template_key = 'owner') NOT VALID;
+			END IF;
+		END $$`)
+		var shadowRows int64
+		db.Raw(`SELECT COUNT(*) FROM roles WHERE NOT is_system AND name = 'owner'`).Scan(&shadowRows)
+		if shadowRows > 0 {
+			log.Error("roles: org-scoped roles named 'owner' exist — roles_no_owner_shadow left NOT VALID; rename them", zap.Int64("rows", shadowRows))
+		} else {
+			db.Exec(`ALTER TABLE roles VALIDATE CONSTRAINT roles_no_owner_shadow`)
+		}
+		var lineageRows int64
+		db.Raw(`SELECT COUNT(*) FROM roles WHERE is_owner AND template_key IS DISTINCT FROM 'owner'`).Scan(&lineageRows)
+		if lineageRows > 0 {
+			log.Error("roles: is_owner rows without owner lineage exist — roles_owner_lineage left NOT VALID", zap.Int64("rows", lineageRows))
+		} else {
+			db.Exec(`ALTER TABLE roles VALIDATE CONSTRAINT roles_owner_lineage`)
+		}
+
+		db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS default_org_id UUID REFERENCES organizations(id) ON DELETE SET NULL`)
+		// LOWER(email) index for the P2 case-insensitive lookup, promoted to UNIQUE
+		// (P9) so the DB — not just normalizeEmail — forbids casing-forked accounts.
+		// uniqueEmailIndex confirms a UNIQUE index by that name actually exists (checks
+		// pg_index.indisunique, not just the name, so a mis-created non-unique index of
+		// the same name can't masquerade as the constraint). The whole block is
+		// WORK-idempotent: once the unique index exists it is the canonical index and
+		// the interim non-unique one is dropped and never rebuilt — a restart does the
+		// cheap catalog check + a no-op DROP IF EXISTS, not a fresh index build.
+		const uniqueEmailIndex = `SELECT EXISTS(SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = 'uq_users_email_lower' AND i.indisunique)`
+		var hasUniqueEmail bool
+		db.Raw(uniqueEmailIndex).Scan(&hasUniqueEmail)
+		if hasUniqueEmail {
+			// Steady state: the unique index is canonical; clean up the interim
+			// non-unique index if a prior boot was interrupted before dropping it.
+			db.Exec(`DROP INDEX IF EXISTS idx_users_email_lower`)
+		} else {
+			// Interim: a non-unique index keeps the lookup fast while the promotion is
+			// pending (e.g. blocked on case-dupes below).
+			db.Exec(`CREATE INDEX IF NOT EXISTS idx_users_email_lower ON users(LOWER(email))`)
+			var emailDups int64
+			db.Raw(`SELECT COUNT(*) FROM (SELECT LOWER(email) FROM users GROUP BY LOWER(email) HAVING COUNT(*) > 1) d`).Scan(&emailDups)
+			if emailDups > 0 {
+				log.Error("users: case-insensitive duplicate emails exist — UNIQUE email index skipped; merge them so the P2 case-insensitive lookup can't fork one human into two accounts", zap.Int64("emails", emailDups))
+			} else if err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_users_email_lower ON users(LOWER(email))`).Error; err != nil {
+				log.Error("users: failed to create uq_users_email_lower", zap.Error(err))
+			} else {
+				// Drop the redundant non-unique index only after the UNIQUE one is
+				// confirmed present, so a swallowed CREATE error can never leave the
+				// column index-less.
+				db.Raw(uniqueEmailIndex).Scan(&hasUniqueEmail)
+				if hasUniqueEmail {
+					db.Exec(`DROP INDEX IF EXISTS idx_users_email_lower`)
+				}
+			}
+		}
+
+		db.Exec(`ALTER TABLE password_reset_tokens ADD COLUMN IF NOT EXISTS initiated_by UUID REFERENCES users(id) ON DELETE SET NULL`)
+		db.Exec(`DELETE FROM password_reset_tokens WHERE expires_at < NOW() - INTERVAL '30 days'`)
+
+		db.Exec(`ALTER TABLE org_invitations ADD COLUMN IF NOT EXISTS resent_at TIMESTAMPTZ`)
+		db.Exec(`ALTER TABLE org_invitations ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ`)
+
+		// One-time sweep: report shares whose role/group target no longer exists
+		// (report_shares.target_id has no FK; DeleteRole now cleans up in-tx).
+		if res := db.Exec(`DELETE FROM report_shares WHERE target_type = 'role' AND NOT EXISTS (SELECT 1 FROM roles r WHERE r.id = report_shares.target_id)`); res.RowsAffected > 0 {
+			log.Info("report_shares: swept orphaned role-targeted shares", zap.Int64("rows", res.RowsAffected))
+		}
+		if res := db.Exec(`DELETE FROM report_shares WHERE target_type = 'group' AND NOT EXISTS (SELECT 1 FROM user_groups g WHERE g.id = report_shares.target_id)`); res.RowsAffected > 0 {
+			log.Info("report_shares: swept orphaned group-targeted shares", zap.Int64("rows", res.RowsAffected))
+		}
+
 		log.Info("Seeding system roles...")
+		// SeedSystemRoles is also the idempotent boot backfill for new capability
+		// codes on existing installs: it inserts any DefaultRoleCapabilities row that
+		// is missing for a system role. So the P7 `analytics.view` grant lands on the
+		// existing admin+manager system roles here (org_id NULL). Pre-existing CUSTOM
+		// role clones don't get it (release-noted) — an admin re-clones or grants it.
 		if err := repository.SeedSystemRoles(db); err != nil {
 			log.Error("Failed to seed system roles", zap.Error(err))
 		}
@@ -693,27 +823,36 @@ func main() {
 
 		// Mailer is built before the auth usecase now that account recovery
 		// (P1) sends reset/verification/alert emails from it.
+		//
+		// Fail-closed environment handling (P10 P1): anything outside the
+		// explicit development/test allowlist is treated as production — the old
+		// `appEnv == "production"` string match failed OPEN when APP_ENV was
+		// unset (which it is on prod today). A production-like boot without a
+		// mail provider REFUSES to start unless MAIL_DISABLED=true explicitly
+		// accepts running without email: silently degrading to LogMailer meant
+		// password-reset links went nowhere while users waited.
+		appEnv := cfg.AppEnv
+		devLike := appEnv == "development" || appEnv == "test"
 		var mailerSvc domain.Mailer
-		if cfg.ResendAPIKey != "" {
-			mailerSvc = mailer.NewResendMailer(cfg.ResendAPIKey, "noreply@twentyq.io")
-		} else {
+		switch {
+		case cfg.ResendAPIKey != "":
+			mailerSvc = mailer.NewResendMailer(cfg.ResendAPIKey, cfg.MailFrom)
+		case devLike || cfg.MailDisabled:
+			if cfg.MailDisabled && !devLike {
+				log.Warn("MAIL_DISABLED=true: email delivery is off — password reset, invites, and security alerts will only be logged (redacted)")
+			}
 			mailerSvc = mailer.NewLogMailer()
-		}
-
-		appEnv := os.Getenv("APP_ENV")
-		if cfg.ResendAPIKey == "" && appEnv == "production" {
-			// LogMailer writes recovery links (which embed raw tokens) to the logs.
-			// That's fine for dev, but in production it means account-recovery
-			// secrets land in durable logs — surface the misconfiguration loudly
-			// rather than failing boot (graceful degrade is a requirement).
-			log.Warn("RESEND_API_KEY is unset in production: email delivery is disabled and account-recovery links (raw tokens) will be written to application logs. Set RESEND_API_KEY to enable real email delivery.")
+		default:
+			log.Fatal("RESEND_API_KEY is not set and this is a production-like environment (APP_ENV is not development/test): refusing to boot, because account-recovery emails would silently go nowhere. Fix one of: set RESEND_API_KEY; set APP_ENV=development for local dev; or set MAIL_DISABLED=true to explicitly run without email.")
 		}
 
 		authUseCase := usecase.NewAuthUseCase(authRepo, stageRepo, cfg, mailerSvc, appEnv, redisClient)
 		authHandler := delivery.NewAuthHandler(authUseCase, cfg)
 
-		workspaceUseCase := usecase.NewWorkspaceUseCase(authRepo, mailerSvc, appEnv, cfg.FrontendURL)
-		workspaceHandler := delivery.NewWorkspaceHandler(workspaceUseCase)
+		// Session evictor (P10 P0): membership/role mutations delete the target's
+		// per-(user, org) session-cache entry so suspend/remove/demote apply on
+		// the next request instead of after the 5-minute cache TTL.
+		sessionEvictor := &usecase.RedisSessionEvictor{Client: redisClient}
 
 		budget := ai.NewBudgetGuard(db, redisClient)
 		gateway := ai.NewAIGateway(
@@ -819,10 +958,21 @@ func main() {
 		recordHandler := delivery.NewRecordHandler(recordService, relatedListsUC, objectRegistryUC, layoutUC, permissionUC, tagUseCase, shareUC)
 
 		// Custom role management (P3): CRUD + capability editing, gated on
-		// roles.manage. The usecase busts the permission cache on every change.
+		// roles.manage. The fanout busts the layout cache alongside the OLS/FLS
+		// cache (the layout role-map is name-keyed until P5), and the evictor
+		// refreshes members' sessions on rename/rescope (P10 P0).
 		roleRepo := repository.NewRoleRepository(db)
-		roleUC := usecase.NewRoleUseCase(roleRepo, permissionUC, authRepo)
+		roleUC := usecase.NewRoleUseCase(roleRepo,
+			&usecase.PermissionCacheFanout{Perm: permissionUC, Layouts: layoutUC},
+			authRepo, sessionEvictor)
 		roleHandler := delivery.NewRoleHandler(roleUC)
+
+		// Workspace/member management. Built here (after permissionUC + roleRepo) so
+		// it can enforce escalation guard #2 (P6): permissionUC checks the caller's
+		// capabilities and roleRepo reads the target role's, so assigning/inviting
+		// into a role that can manage roles/members requires the caller's roles.manage.
+		workspaceUseCase := usecase.NewWorkspaceUseCase(authRepo, mailerSvc, appEnv, cfg.FrontendURL, sessionEvictor, permissionUC, roleRepo)
+		workspaceHandler := delivery.NewWorkspaceHandler(workspaceUseCase)
 
 		// Admin + auth audit log (P4): read-only view over the append-only
 		// auth_events written by the auth/admin usecases.
@@ -876,7 +1026,10 @@ func main() {
 		chatSessionRepo := repository.NewChatSessionRepository(db)
 		chatSessionHandler := delivery.NewChatSessionHandler(chatSessionRepo)
 
-		commandCenter := ai.NewCommandCenter(gateway, kbBuilder, contactRepo, dealRepo, taskRepo, activityRepo, chatSessionRepo, customObjUC, log)
+		// permissionUC binds the AI to the unified capability + OLS/FLS stack (P7):
+		// the AI now enforces the same object/field/own-scope rules and the
+		// analytics.view forecast gate as REST, instead of a parallel role-name RBAC.
+		commandCenter := ai.NewCommandCenter(gateway, kbBuilder, contactRepo, dealRepo, taskRepo, activityRepo, chatSessionRepo, customObjUC, permissionUC, log)
 		commandHandler := delivery.NewCommandHandler(commandCenter)
 
 		eventsHandler := delivery.NewEventsHandler(redisClient)
@@ -891,16 +1044,22 @@ func main() {
 		memHandler := logger.NewMemoryHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 		autoLogger := slog.New(memHandler)
 		slog.SetDefault(autoLogger)
+		// Run-as-creator actor model (P8, §3.5): the engine resolves each workflow's
+		// author into a full Caller (callerResolver) and enforces the SAME OLS/FLS +
+		// audit chokepoint REST/AI use (permissionUC) as that author — so an own-scope
+		// role holding workflows.manage can no longer escalate past its OLS by
+		// authoring a workflow, and automation writes are attributed in the audit trail.
 		autoEngine = automation.NewEngine(db, autoLogger,
 			automation.WithWorkers(5),
-			automation.WithEmailExecutor(cfg.ResendAPIKey, "noreply@twentyq.io"),
+			automation.WithEmailExecutor(cfg.ResendAPIKey, cfg.MailFrom),
+			automation.WithAuthorizer(permissionUC),
+			automation.WithCallerResolver(usecase.NewCallerResolver(authRepo)),
 		)
 		autoEngine.Start()
-		autoHandler := automation.NewHandler(autoEngine, db, autoLogger)
-		// Workflow authorization is now capability-driven (P3): mutating routes gate
-		// on workflows.manage, and Run Now / Retry authorize on workflows.run_any —
-		// so a custom role an admin grants those to works, not just system roles.
-		autoHandler.SetCapabilityChecker(permissionUC)
+		// capChecker is REQUIRED (P8): Run Now / Retry authorize on workflows.run_any
+		// with no role-name fallback. authz (permissionUC) stamps the webhook-inbound
+		// contact upsert audit as the system actor.
+		autoHandler := automation.NewHandler(autoEngine, db, autoLogger, permissionUC, permissionUC)
 		autoHandler.RegisterRoutes(router,
 			delivery.AuthMiddleware(cfg.JWTSecret, authRepo, redisClient),
 			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },

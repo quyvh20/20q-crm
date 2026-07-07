@@ -35,10 +35,15 @@ vi.mock('./api', () => ({
 // rendering/open-on-click tests see the control on every row.
 const mockAuth = vi.hoisted(() => ({
   user: { id: 'user-1' } as { id: string } | null,
-  currentRole: 'admin' as string,
+  // canRunAny stands in for holding the workflows.run_any capability (P6) — the
+  // old owner/admin/manager "privileged" set.
+  canRunAny: true,
 }));
 vi.mock('../../lib/auth', () => ({
-  useAuth: () => mockAuth,
+  useAuth: () => ({
+    user: mockAuth.user,
+    hasCapability: (code: string) => code === 'workflows.run_any' && mockAuth.canRunAny,
+  }),
 }));
 
 // Stable navigate spy; WorkflowList only consumes `useNavigate` from the router.
@@ -136,7 +141,7 @@ beforeEach(() => {
   mockGetWorkflows.mockResolvedValue(listResponse(TWO_WORKFLOWS));
   // Default to a privileged caller so the Run Now control renders on every row.
   mockAuth.user = { id: 'user-1' };
-  mockAuth.currentRole = 'admin';
+  mockAuth.canRunAny = true;
 });
 
 // ── Req 8.1: a Run Now control is displayed for EACH workflow row ──────
@@ -255,8 +260,8 @@ describe('WorkflowList — Duplicate workflow', () => {
 // ── Run Now visibility mirrors backend authorization (creator allowance) ──────
 describe('WorkflowList — Run Now visibility by permission', () => {
   it('shows Run Now on every row for a privileged role regardless of creator', async () => {
-    // Manager who created neither workflow still sees both controls.
-    mockAuth.currentRole = 'manager';
+    // A run_any holder who created neither workflow still sees both controls.
+    mockAuth.canRunAny = true;
     mockAuth.user = { id: 'someone-else' };
     mockGetWorkflows.mockResolvedValue(
       listResponse([
@@ -272,7 +277,7 @@ describe('WorkflowList — Run Now visibility by permission', () => {
   });
 
   it('hides Run Now for a non-privileged caller on workflows they did not create', async () => {
-    mockAuth.currentRole = 'viewer';
+    mockAuth.canRunAny = false;
     mockAuth.user = { id: 'viewer-1' };
     mockGetWorkflows.mockResolvedValue(
       listResponse([makeWorkflow({ id: 'wf-foreign', name: 'Not Mine', created_by: 'author-x' })]),
@@ -285,8 +290,8 @@ describe('WorkflowList — Run Now visibility by permission', () => {
   });
 
   it('shows Run Now to a non-privileged caller only on workflows they created', async () => {
-    // A viewer who created exactly one of the two listed workflows.
-    mockAuth.currentRole = 'viewer';
+    // A non-run_any caller who created exactly one of the two listed workflows.
+    mockAuth.canRunAny = false;
     mockAuth.user = { id: 'viewer-1' };
     mockGetWorkflows.mockResolvedValue(
       listResponse([

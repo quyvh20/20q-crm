@@ -39,11 +39,12 @@ func (s *stubLayoutRepo) LoadOrgLayouts(_ context.Context, orgID uuid.UUID) (map
 	return m, nil
 }
 
-// LoadOrgLayoutRoleMap joins layouts → roles in memory.
-func (s *stubLayoutRepo) LoadOrgLayoutRoleMap(_ context.Context, orgID uuid.UUID) (map[string]map[string]uuid.UUID, error) {
-	// Build a lookup: role_id → RoleID's "name" field (we embed the name in RoleID for
-	// testing convenience — see helpers below).
-	result := map[string]map[string]uuid.UUID{}
+// LoadOrgLayoutRoleMap joins layouts → roles in memory. Keyed by role id (R1
+// re-key; the P5 name bridge was deleted in P9).
+func (s *stubLayoutRepo) LoadOrgLayoutRoleMap(_ context.Context, orgID uuid.UUID) (*domain.LayoutRoleMap, error) {
+	result := &domain.LayoutRoleMap{
+		ByID: map[string]map[uuid.UUID]uuid.UUID{},
+	}
 	for _, r := range s.roles {
 		if r.OrgID != orgID {
 			continue
@@ -59,12 +60,10 @@ func (s *stubLayoutRepo) LoadOrgLayoutRoleMap(_ context.Context, orgID uuid.UUID
 		if !found {
 			continue
 		}
-		if result[r.ObjectSlug] == nil {
-			result[r.ObjectSlug] = map[string]uuid.UUID{}
+		if result.ByID[r.ObjectSlug] == nil {
+			result.ByID[r.ObjectSlug] = map[uuid.UUID]uuid.UUID{}
 		}
-		// We store the role name in the ObjectSlug field of a sentinel
-		// ObjectLayoutRole, keyed by roleName.
-		result[r.ObjectSlug][r.ObjectSlug+"::"+r.RoleID.String()] = r.LayoutID
+		result.ByID[r.ObjectSlug][r.RoleID] = r.LayoutID
 	}
 	return result, nil
 }
@@ -187,50 +186,47 @@ func makeSection(id, label string, cols int, keys ...string) domain.LayoutSectio
 // ============================================================
 
 // TestResolveLayout_RoleAssigned verifies that the role-assigned layout (Tier 1)
-// wins over an is_default layout when both exist.
+// wins over an is_default layout when both exist. Assignment is keyed by role ID
+// (P5 re-key).
 func TestResolveLayout_RoleAssigned(t *testing.T) {
 	orgID := uuid.New()
 	roleLayout := makeLayout(orgID, "contact", "Sales layout", false, makeSection("s1", "Core", 1, "email", "phone"))
 	defaultLayout := makeLayout(orgID, "contact", "Default layout", true, makeSection("s2", "All Fields", 1, "name", "company"))
 
 	repo := newStubRepo(roleLayout, defaultLayout)
-	// Assign roleLayout to the "sales" role by seeding role map via SetLayoutRoles.
-	// We use a sentinel roleID so LoadOrgLayoutRoleMap can match it.
 	salesRoleID := uuid.New()
-	repo.roles = append(repo.roles, domain.ObjectLayoutRole{
-		ID: uuid.New(), OrgID: orgID, LayoutID: roleLayout.ID, ObjectSlug: "contact", RoleID: salesRoleID,
-	})
-
-	// Patch LoadOrgLayoutRoleMap to return slug→roleName→layoutID using a custom
-	// roleNameRepo (simpler: use a thin wrapper so we can control the role name).
-	// Instead of that complexity, test via the usecase's ResolveLayout directly
-	// after seeding cache. We do that by using a custom stub that overrides
-	// LoadOrgLayoutRoleMap to return the correct mapping.
-	type mappedRepo struct {
-		*stubLayoutRepo
-		roleMap map[string]map[string]uuid.UUID
-	}
-	mapped := &struct {
-		domain.ObjectLayoutRepository
-		roleMap map[string]map[string]uuid.UUID
-	}{
-		ObjectLayoutRepository: repo,
-		roleMap: map[string]map[string]uuid.UUID{
-			"contact": {"sales": roleLayout.ID},
-		},
-	}
-	_ = mapped // used below via fullRepo
-
-	// Use a real implementation via fullStubRepo that overrides LoadOrgLayoutRoleMap.
-	fullRepo := &fullStubRepo{stubLayoutRepo: repo, roleMapOverride: map[string]map[string]uuid.UUID{
-		"contact": {"sales": roleLayout.ID},
+	fullRepo := &fullStubRepo{stubLayoutRepo: repo, roleMapOverride: &domain.LayoutRoleMap{
+		ByID: map[string]map[uuid.UUID]uuid.UUID{"contact": {salesRoleID: roleLayout.ID}},
 	}}
 
 	uc := usecase.NewObjectLayoutUseCase(fullRepo)
-	sections, err := uc.ResolveLayout(context.Background(), orgID, "contact", "sales", nil)
+	sections, err := uc.ResolveLayout(context.Background(), orgID, "contact",
+		domain.Caller{Role: "sales", RoleID: salesRoleID}, nil)
 	require.NoError(t, err)
 	require.Len(t, sections, 1)
 	assert.Equal(t, "s1", sections[0].ID, "role-assigned layout should win over default")
+}
+
+// TestResolveLayout_NoRoleID_FallsToDefault verifies that since the P9 bridge
+// removal a caller carrying no RoleID no longer resolves a role-assigned layout
+// by name — it falls through to the is_default layout instead.
+func TestResolveLayout_NoRoleID_FallsToDefault(t *testing.T) {
+	orgID := uuid.New()
+	roleLayout := makeLayout(orgID, "contact", "Sales layout", false, makeSection("s1", "Core", 1, "email"))
+	defaultLayout := makeLayout(orgID, "contact", "Default layout", true, makeSection("s2", "All", 1, "name"))
+
+	// The stored assignment is keyed by a role id, but the caller carries only a
+	// name (no RoleID) — Tier 1 misses, so Tier 2 (default) wins.
+	fullRepo := &fullStubRepo{stubLayoutRepo: newStubRepo(roleLayout, defaultLayout), roleMapOverride: &domain.LayoutRoleMap{
+		ByID: map[string]map[uuid.UUID]uuid.UUID{"contact": {uuid.New(): roleLayout.ID}},
+	}}
+
+	uc := usecase.NewObjectLayoutUseCase(fullRepo)
+	sections, err := uc.ResolveLayout(context.Background(), orgID, "contact",
+		domain.Caller{Role: "sales"}, nil) // no RoleID → no name fallback
+	require.NoError(t, err)
+	require.Len(t, sections, 1)
+	assert.Equal(t, "s2", sections[0].ID, "a name-only caller falls to the default layout (no name bridge)")
 }
 
 // TestResolveLayout_DefaultFallback verifies that the is_default layout (Tier 2)
@@ -239,9 +235,9 @@ func TestResolveLayout_DefaultFallback(t *testing.T) {
 	orgID := uuid.New()
 	defaultLayout := makeLayout(orgID, "contact", "Default layout", true, makeSection("s2", "All Fields", 1, "name", "email"))
 
-	fullRepo := &fullStubRepo{stubLayoutRepo: newStubRepo(defaultLayout), roleMapOverride: map[string]map[string]uuid.UUID{}}
+	fullRepo := &fullStubRepo{stubLayoutRepo: newStubRepo(defaultLayout), roleMapOverride: nil}
 	uc := usecase.NewObjectLayoutUseCase(fullRepo)
-	sections, err := uc.ResolveLayout(context.Background(), orgID, "contact", "manager", nil)
+	sections, err := uc.ResolveLayout(context.Background(), orgID, "contact", domain.Caller{Role: "manager", RoleID: uuid.New()}, nil)
 	require.NoError(t, err)
 	require.Len(t, sections, 1)
 	assert.Equal(t, "s2", sections[0].ID, "default layout should be returned when role has no assignment")
@@ -251,9 +247,9 @@ func TestResolveLayout_DefaultFallback(t *testing.T) {
 // a role-assigned nor a default layout exists. The renderer synthesises field order.
 func TestResolveLayout_NoLayoutFallback(t *testing.T) {
 	orgID := uuid.New()
-	fullRepo := &fullStubRepo{stubLayoutRepo: newStubRepo(), roleMapOverride: map[string]map[string]uuid.UUID{}}
+	fullRepo := &fullStubRepo{stubLayoutRepo: newStubRepo(), roleMapOverride: nil}
 	uc := usecase.NewObjectLayoutUseCase(fullRepo)
-	sections, err := uc.ResolveLayout(context.Background(), orgID, "contact", "admin", nil)
+	sections, err := uc.ResolveLayout(context.Background(), orgID, "contact", domain.Caller{Role: "admin", RoleID: uuid.New()}, nil)
 	require.NoError(t, err)
 	assert.Nil(t, sections, "nil sections signal no-layout: renderer uses flat field order")
 }
@@ -265,11 +261,11 @@ func TestResolveLayout_FLSIntersection(t *testing.T) {
 	layout := makeLayout(orgID, "contact", "Default", true,
 		makeSection("s1", "Core", 1, "email", "phone", "revenue"),
 	)
-	fullRepo := &fullStubRepo{stubLayoutRepo: newStubRepo(layout), roleMapOverride: map[string]map[string]uuid.UUID{}}
+	fullRepo := &fullStubRepo{stubLayoutRepo: newStubRepo(layout), roleMapOverride: nil}
 	uc := usecase.NewObjectLayoutUseCase(fullRepo)
 
 	hiddenKeys := map[string]bool{"revenue": true}
-	sections, err := uc.ResolveLayout(context.Background(), orgID, "contact", "sales", hiddenKeys)
+	sections, err := uc.ResolveLayout(context.Background(), orgID, "contact", domain.Caller{Role: "sales", RoleID: uuid.New()}, hiddenKeys)
 	require.NoError(t, err)
 	require.Len(t, sections, 1)
 
@@ -288,7 +284,7 @@ func TestResolveLayout_FLSIntersection(t *testing.T) {
 
 func TestCreateLayout_NameRequired(t *testing.T) {
 	orgID := uuid.New()
-	fullRepo := &fullStubRepo{stubLayoutRepo: newStubRepo(), roleMapOverride: map[string]map[string]uuid.UUID{}}
+	fullRepo := &fullStubRepo{stubLayoutRepo: newStubRepo(), roleMapOverride: nil}
 	uc := usecase.NewObjectLayoutUseCase(fullRepo)
 	_, err := uc.CreateLayout(context.Background(), orgID, "contact", domain.CreateLayoutInput{Name: ""})
 	require.Error(t, err)
@@ -301,7 +297,7 @@ func TestCreateLayout_DefaultCleared(t *testing.T) {
 	orgID := uuid.New()
 	existing := makeLayout(orgID, "contact", "Old default", true, makeSection("s0", "Old", 1, "name"))
 	repo := newStubRepo(existing)
-	fullRepo := &fullStubRepo{stubLayoutRepo: repo, roleMapOverride: map[string]map[string]uuid.UUID{}}
+	fullRepo := &fullStubRepo{stubLayoutRepo: repo, roleMapOverride: nil}
 	uc := usecase.NewObjectLayoutUseCase(fullRepo)
 
 	_, err := uc.CreateLayout(context.Background(), orgID, "contact", domain.CreateLayoutInput{
@@ -323,7 +319,7 @@ func TestCreateLayout_DefaultCleared(t *testing.T) {
 
 func TestDeleteLayout_NotFound(t *testing.T) {
 	orgID := uuid.New()
-	fullRepo := &fullStubRepo{stubLayoutRepo: newStubRepo(), roleMapOverride: map[string]map[string]uuid.UUID{}}
+	fullRepo := &fullStubRepo{stubLayoutRepo: newStubRepo(), roleMapOverride: nil}
 	uc := usecase.NewObjectLayoutUseCase(fullRepo)
 	err := uc.DeleteLayout(context.Background(), orgID, "contact", uuid.New())
 	require.Error(t, err)
@@ -336,11 +332,11 @@ func TestSetLayoutRoles_CacheInvalidated(t *testing.T) {
 	orgID := uuid.New()
 	layout := makeLayout(orgID, "contact", "L1", false, makeSection("s1", "Core", 1, "name"))
 	repo := newStubRepo(layout)
-	fullRepo := &fullStubRepo{stubLayoutRepo: repo, roleMapOverride: map[string]map[string]uuid.UUID{}}
+	fullRepo := &fullStubRepo{stubLayoutRepo: repo, roleMapOverride: nil}
 	uc := usecase.NewObjectLayoutUseCase(fullRepo)
 
 	// Warm the cache by resolving once (no layout configured → nil).
-	_, err := uc.ResolveLayout(context.Background(), orgID, "contact", "sales", nil)
+	_, err := uc.ResolveLayout(context.Background(), orgID, "contact", domain.Caller{Role: "sales", RoleID: uuid.New()}, nil)
 	require.NoError(t, err)
 
 	// Now set this layout as the default, then verify the next resolve picks it up
@@ -349,8 +345,8 @@ func TestSetLayoutRoles_CacheInvalidated(t *testing.T) {
 	require.NoError(t, err)
 
 	// Must reload after invalidation — update the role map override too.
-	fullRepo.roleMapOverride = map[string]map[string]uuid.UUID{}
-	sections, err := uc.ResolveLayout(context.Background(), orgID, "contact", "sales", nil)
+	fullRepo.roleMapOverride = nil
+	sections, err := uc.ResolveLayout(context.Background(), orgID, "contact", domain.Caller{Role: "sales", RoleID: uuid.New()}, nil)
 	require.NoError(t, err)
 	assert.NotNil(t, sections, "after Invalidate, updated default layout should be served")
 }
@@ -361,10 +357,15 @@ func TestSetLayoutRoles_CacheInvalidated(t *testing.T) {
 
 type fullStubRepo struct {
 	*stubLayoutRepo
-	roleMapOverride map[string]map[string]uuid.UUID
+	roleMapOverride *domain.LayoutRoleMap
 }
 
-func (f *fullStubRepo) LoadOrgLayoutRoleMap(_ context.Context, _ uuid.UUID) (map[string]map[string]uuid.UUID, error) {
+func (f *fullStubRepo) LoadOrgLayoutRoleMap(_ context.Context, _ uuid.UUID) (*domain.LayoutRoleMap, error) {
+	if f.roleMapOverride == nil {
+		return &domain.LayoutRoleMap{
+			ByID: map[string]map[uuid.UUID]uuid.UUID{},
+		}, nil
+	}
 	return f.roleMapOverride, nil
 }
 

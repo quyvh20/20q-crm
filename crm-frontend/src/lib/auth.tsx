@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { switchWorkspace as apiSwitchWorkspace, setAccessToken as setApiToken, readCsrfToken, getMyCapabilities, type Workspace } from './api';
+import { switchWorkspace as apiSwitchWorkspace, setAccessToken as setApiToken, readCsrfToken, getMyPermissions, type Workspace, type MyPermissions, type DataScope } from './api';
 
 const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8080' : '');
 
@@ -23,15 +23,28 @@ interface AuthContextType {
   currentRole: string;
   isLoading: boolean;
   isAuthenticated: boolean;
+  // R2 multi-org state (P4). needsChooser drives /choose-workspace; defaultOrgId
+  // marks the user's home workspace (the switcher star); hasActiveWorkspace is
+  // false for the zero-membership dead-end.
+  needsChooser: boolean;
+  defaultOrgId: string | null;
+  hasActiveWorkspace: boolean;
   // Effective system capabilities of the current user in the active workspace
-  // (P3). Owner gets all. Use hasCapability for permission-aware UI.
+  // (P3). Owner gets all. Use hasCapability (or usePermissions().can) for
+  // permission-aware UI.
   capabilities: string[];
   hasCapability: (code: string) => boolean;
+  // Role identity + row scope for the active workspace (P6). dataScope 'own' means
+  // the caller only sees records they own/were shared; roleId is the authoritative
+  // role identity; isOwner marks god-mode.
+  dataScope: DataScope;
+  roleId: string;
+  isOwner: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (data: RegisterData) => Promise<void>;
   logout: () => Promise<void>;
   refreshAuth: () => Promise<void>;
-  switchWorkspace: (orgId: string) => Promise<void>;
+  switchWorkspace: (orgId: string, setDefault?: boolean) => Promise<void>;
 }
 
 interface RegisterData {
@@ -49,20 +62,16 @@ interface AuthResponse {
     refresh_token: string;
     user: User;
     workspaces?: Workspace[];
+    // R2 org-selection contract (P3/P4). active_org_id is the org the token is
+    // bound to (empty ⇒ zero-membership dead-end); needs_chooser ⇒ show the chooser.
+    active_org_id?: string;
+    default_org_id?: string;
+    needs_chooser?: boolean;
   };
   error: string | null;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
-
-function findActiveWorkspace(workspaces: Workspace[]): Workspace | null {
-  const savedId = localStorage.getItem('active_workspace_id');
-  if (savedId) {
-    const found = workspaces.find(w => w.org_id === savedId);
-    if (found) return found;
-  }
-  return workspaces.length > 0 ? workspaces[0] : null;
-}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -71,26 +80,39 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [activeWorkspace, setActiveWorkspace] = useState<Workspace | null>(null);
-  const [capabilities, setCapabilities] = useState<string[]>([]);
+  const [needsChooser, setNeedsChooser] = useState(false);
+  const [defaultOrgId, setDefaultOrgId] = useState<string | null>(null);
+  const [perms, setPerms] = useState<MyPermissions | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   const currentRole = activeWorkspace?.role || '';
-  const hasCapability = useCallback((code: string) => capabilities.includes(code), [capabilities]);
+  const capabilities = perms?.capabilities ?? [];
+  const dataScope: DataScope = perms?.data_scope ?? 'all';
+  const roleId = perms?.role_id ?? '';
+  const isOwner = perms?.is_owner ?? false;
+  const hasCapability = useCallback((code: string) => (perms?.capabilities ?? []).includes(code), [perms]);
 
-  // Fetch the caller's effective capabilities for the active org after auth
-  // changes. Fire-and-forget: on failure capabilities stay empty (UI fails closed).
+  // Fetch the caller's effective permissions (capabilities + role identity + row
+  // scope) for the active org after auth changes. Fire-and-forget: on failure
+  // perms stay null (UI fails closed — no capabilities, 'all' scope is inert
+  // without them).
   const loadCapabilities = useCallback(() => {
-    getMyCapabilities().then(setCapabilities).catch(() => setCapabilities([]));
+    getMyPermissions().then(setPerms).catch(() => setPerms(null));
   }, []);
 
-  const clearAuth = useCallback(() => {
+  // clearAuth splits (P4): a hard logout (full=true) forgets everything, but a
+  // failed refresh (full=false) KEEPS active_workspace_id so the next refresh
+  // re-scopes to the same org — the durable home is the server-side default_org_id.
+  const clearAuth = useCallback((full = true) => {
     setUser(null);
     setAccessToken(null);
     setApiToken(null);
     setWorkspaces([]);
     setActiveWorkspace(null);
-    setCapabilities([]);
-    localStorage.removeItem('active_workspace_id');
+    setNeedsChooser(false);
+    setDefaultOrgId(null);
+    setPerms(null);
+    if (full) localStorage.removeItem('active_workspace_id');
     // One-release shim: purge any tokens the pre-P2 build left in localStorage.
     localStorage.removeItem('access_token');
     localStorage.removeItem('refresh_token');
@@ -100,13 +122,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setAccessToken(data.access_token);
     setApiToken(data.access_token); // in-memory source of truth for apiFetch
     setUser(data.user);
-    if (data.workspaces) {
-      setWorkspaces(data.workspaces);
-      const active = findActiveWorkspace(data.workspaces);
-      setActiveWorkspace(active);
-      if (active) {
-        localStorage.setItem('active_workspace_id', active.org_id);
-      }
+    setNeedsChooser(!!data.needs_chooser);
+    setDefaultOrgId(data.default_org_id ?? null);
+    const list = data.workspaces ?? [];
+    setWorkspaces(list);
+    // Trust the server's active_org_id rather than inferring from localStorage /
+    // array order (P4) — this is what kills the "UI shows org A, token is org B"
+    // class of bug. active_org_id empty ⇒ zero-membership dead-end.
+    const active = data.active_org_id ? list.find(w => w.org_id === data.active_org_id) ?? null : null;
+    setActiveWorkspace(active);
+    if (active) {
+      localStorage.setItem('active_workspace_id', active.org_id);
+    } else {
+      localStorage.removeItem('active_workspace_id');
     }
     loadCapabilities();
   }, [loadCapabilities]);
@@ -118,31 +146,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // discard it so it's never replayed (a replay trips reuse detection).
     const legacyRefresh = localStorage.getItem('refresh_token');
     const activeOrgId = localStorage.getItem('active_workspace_id');
-    try {
-      const res = await fetch(`${API_URL}/api/auth/refresh`, {
+    const post = (orgId: string | null) =>
+      fetch(`${API_URL}/api/auth/refresh`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': readCsrfToken() },
         body: JSON.stringify({
           ...(legacyRefresh ? { refresh_token: legacyRefresh } : {}),
-          ...(activeOrgId ? { org_id: activeOrgId } : {}),
+          ...(orgId ? { org_id: orgId } : {}),
         }),
       });
+    try {
+      let res = await post(activeOrgId);
       // The shim token is single-use — drop the legacy copies regardless of result.
       localStorage.removeItem('refresh_token');
       localStorage.removeItem('access_token');
+      // 409 ORG_UNAVAILABLE: the saved active org is gone. Retry a plain refresh
+      // into the default/first org; saveAuth then flags needs_chooser so the
+      // AuthProvider routes to the chooser with an explanation (P4).
+      if (res.status === 409) {
+        localStorage.removeItem('active_workspace_id');
+        res = await post(null);
+      }
       if (!res.ok) {
-        clearAuth();
+        clearAuth(false); // keep active_workspace_id across a failed refresh
         return;
       }
       const json: AuthResponse = await res.json();
       if (json.data) {
         saveAuth(json.data);
       } else {
-        clearAuth();
+        clearAuth(false);
       }
     } catch {
-      clearAuth();
+      clearAuth(false);
     }
   }, [clearAuth, saveAuth]);
 
@@ -210,16 +247,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     clearAuth();
   };
 
-  const doSwitchWorkspace = async (orgId: string) => {
-    const result = await apiSwitchWorkspace(orgId);
+  const doSwitchWorkspace = async (orgId: string, setDefault = false) => {
+    const result = await apiSwitchWorkspace(orgId, setDefault);
     setAccessToken(result.access_token);
     setApiToken(result.access_token);
-    localStorage.setItem('active_workspace_id', orgId);
-    if (result.workspaces) {
-      setWorkspaces(result.workspaces);
-      const active = result.workspaces.find(w => w.org_id === orgId) || null;
-      setActiveWorkspace(active);
-    }
+    localStorage.setItem('active_workspace_id', result.active_org_id || orgId);
+    setNeedsChooser(false);
+    if (result.default_org_id) setDefaultOrgId(result.default_org_id);
+    // Hard reload so the whole app (queries, capabilities) re-establishes against
+    // the new org. On reload, refreshAuth re-scopes to active_workspace_id.
     window.location.reload();
   };
 
@@ -233,8 +269,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         currentRole,
         isLoading,
         isAuthenticated: !!user,
+        needsChooser,
+        defaultOrgId,
+        hasActiveWorkspace: !!activeWorkspace,
         capabilities,
         hasCapability,
+        dataScope,
+        roleId,
+        isOwner,
         login,
         register,
         logout,
@@ -253,4 +295,20 @@ export function useAuth() {
     throw new Error('useAuth must be used within an AuthProvider');
   }
   return context;
+}
+
+// usePermissions is the single hook the permission-aware UI reads (P6): the
+// caller's capabilities + role identity + row scope, plus can(code) for gating.
+// It's a thin projection over the auth context so gates read
+// `usePermissions().can('members.manage')` instead of hardcoded role-name checks.
+export function usePermissions() {
+  const { capabilities, dataScope, roleId, currentRole, isOwner, hasCapability } = useAuth();
+  return {
+    capabilities,
+    dataScope,
+    roleId,
+    roleName: currentRole,
+    isOwner,
+    can: hasCapability,
+  };
 }

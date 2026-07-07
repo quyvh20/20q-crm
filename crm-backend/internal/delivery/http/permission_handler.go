@@ -23,13 +23,30 @@ func NewPermissionHandler(uc domain.PermissionUseCase) *PermissionHandler {
 }
 
 // GetMyCapabilities handles GET /api/auth/capabilities — the caller's effective
-// system capabilities for the active org, so the SPA can render permission-aware
-// UI (e.g. show the Roles/Permissions admin tab only to a caller with
-// roles.manage). The server still enforces every action independently.
+// system capabilities PLUS their role identity for the active org, so the SPA's
+// usePermissions() hook can drive permission-aware UI (show the Roles admin tab
+// only with roles.manage; scope assignee pickers when data_scope is 'own'; etc).
+// The server still enforces every action independently. Identity fields come from
+// the middleware-resolved caller/context (role_id + is_owner from the Caller,
+// data_scope from the gin context, both authoritative post-P5).
 func (h *PermissionHandler) GetMyCapabilities(c *gin.Context) {
 	orgID := c.MustGet("org_id").(uuid.UUID)
 	caps := h.uc.CallerCapabilities(c.Request.Context(), orgID)
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{"capabilities": caps}, "error": nil})
+	roleName, _ := GetRole(c)
+	dataScope := GetDataScope(c)
+	var roleID uuid.UUID
+	var isOwner bool
+	if caller, ok := domain.CallerFromContext(c.Request.Context()); ok {
+		roleID = caller.RoleID
+		isOwner = caller.IsOwner
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"capabilities": caps,
+		"data_scope":   dataScope,
+		"role_id":      roleID,
+		"role_name":    roleName,
+		"is_owner":     isOwner,
+	}, "error": nil})
 }
 
 // GetGrid handles GET /api/registry/permissions — the full role × object matrix.

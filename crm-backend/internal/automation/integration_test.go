@@ -325,6 +325,7 @@ func TestIntegration_CreateWorkflow_HappyAndValidation(t *testing.T) {
 		db:          db,
 		logger:      slog.Default(),
 		rateLimiter: newTokenBucket(),
+		capChecker:  capAllow{},
 	}
 
 	gin.SetMode(gin.TestMode)
@@ -602,7 +603,7 @@ func TestIntegration_WebhookInbound_E2E(t *testing.T) {
 	orgID := uuid.New()
 	executor := &countingExecutor{}
 	engine := makeEngine(db, map[string]ActionExecutor{
-		"send_email": executor,
+		"send_email":  executor,
 		"test_action": executor,
 	})
 	defer engine.cancel()
@@ -648,6 +649,7 @@ func TestIntegration_WebhookInbound_E2E(t *testing.T) {
 		db:          db,
 		logger:      slog.Default(),
 		rateLimiter: newTokenBucket(),
+		capChecker:  capAllow{},
 	}
 
 	gin.SetMode(gin.TestMode)
@@ -785,8 +787,8 @@ func TestIntegration_FullPipeline_VIPContact(t *testing.T) {
 			ID:   "create_followup",
 			Type: ActionCreateTask,
 			Params: map[string]any{
-				"title":      "Follow up with VIP: {{contact.first_name}}",
-				"priority":   "high",
+				"title":       "Follow up with VIP: {{contact.first_name}}",
+				"priority":    "high",
 				"due_in_days": float64(3),
 			},
 		},
@@ -1494,6 +1496,7 @@ func TestIntegration_WebhookInbound_AsyncTriggerSurvivesRequestCancel(t *testing
 		db:          db,
 		logger:      slog.Default(),
 		rateLimiter: newTokenBucket(),
+		capChecker:  capAllow{},
 	}
 
 	gin.SetMode(gin.TestMode)

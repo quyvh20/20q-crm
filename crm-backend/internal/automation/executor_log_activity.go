@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"crm-backend/internal/domain"
+
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
@@ -50,16 +52,23 @@ func (e *ActivityExecutor) Execute(ctx context.Context, run *WorkflowRun, action
 		return nil, fmt.Errorf("log_activity: no valid contact or deal identifier in trigger context")
 	}
 
-	// 5. Insert exactly one row; occurred_at/created_at = DB NOW(); user_id = NULL.
-	// RETURNING created_at reads back the DB-generated server timestamp so it can be
-	// surfaced in the output map (no second round-trip, no clock skew with Go's time).
+	// 5. Insert exactly one row; occurred_at/created_at = DB NOW().
+	// user_id is the workflow author (P8 run-as-creator attribution) when the engine
+	// resolved one, else NULL — a system/unresolved actor. RETURNING created_at reads
+	// back the DB-generated server timestamp so it can be surfaced in the output map
+	// (no second round-trip, no clock skew with Go's time).
+	var actorID *uuid.UUID
+	if caller, ok := domain.CallerFromContext(ctx); ok && caller.UserID != uuid.Nil {
+		id := caller.UserID
+		actorID = &id
+	}
 	activityID := uuid.New()
 	var createdAt time.Time
 	err := e.db.WithContext(ctx).Raw(
 		`INSERT INTO activities (id, org_id, type, contact_id, deal_id, user_id, title, body, occurred_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, NULL, ?, ?, NOW(), NOW(), NOW())
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())
 		 RETURNING created_at`,
-		activityID, run.OrgID, activityType, contactID, dealID, title, bodyPtr,
+		activityID, run.OrgID, activityType, contactID, dealID, actorID, title, bodyPtr,
 	).Scan(&createdAt).Error
 	if err != nil {
 		return nil, fmt.Errorf("log_activity: %w", err) // non-retryable (Req 9.2)

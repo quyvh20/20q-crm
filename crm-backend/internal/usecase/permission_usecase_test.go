@@ -14,7 +14,7 @@ import (
 // ============================================================
 
 type fakePermRepo struct {
-	access      map[string]map[string]domain.ObjectAccess
+	access      map[uuid.UUID]map[string]domain.ObjectAccess
 	loadCalls   int
 	ensureCalls int
 	upserts     []domain.ObjectPermission
@@ -23,30 +23,30 @@ type fakePermRepo struct {
 	perms       []domain.ObjectPermission
 
 	// FLS (P5b)
-	fieldAccess    map[string]map[string]map[string]string // role → slug → key → level
+	fieldAccess    map[uuid.UUID]map[string]map[string]string // roleID → slug → key → level
 	loadFieldCalls int
 	fieldPerms     []domain.FieldPermission
 	fieldUpserts   []domain.FieldPermission
 	fieldDeletes   []string // "slug:key"
 
 	// Capabilities (P3)
-	capabilities  map[string]map[string]bool // role → capability → true
+	capabilities  map[uuid.UUID]map[string]bool // roleID → capability → true
 	loadCapCalls  int
 }
 
-func (f *fakePermRepo) LoadOrgCapabilities(context.Context, uuid.UUID) (map[string]map[string]bool, error) {
+func (f *fakePermRepo) LoadOrgCapabilities(context.Context, uuid.UUID) (map[uuid.UUID]map[string]bool, error) {
 	f.loadCapCalls++
 	if f.capabilities == nil {
-		return map[string]map[string]bool{}, nil
+		return map[uuid.UUID]map[string]bool{}, nil
 	}
 	return f.capabilities, nil
 }
 
 func (f *fakePermRepo) EnsureDefaults(context.Context, uuid.UUID) error { f.ensureCalls++; return nil }
-func (f *fakePermRepo) LoadOrgAccess(context.Context, uuid.UUID) (map[string]map[string]domain.ObjectAccess, error) {
+func (f *fakePermRepo) LoadOrgAccess(context.Context, uuid.UUID) (map[uuid.UUID]map[string]domain.ObjectAccess, error) {
 	f.loadCalls++
 	if f.access == nil {
-		return map[string]map[string]domain.ObjectAccess{}, nil
+		return map[uuid.UUID]map[string]domain.ObjectAccess{}, nil
 	}
 	return f.access, nil
 }
@@ -67,10 +67,10 @@ func (f *fakePermRepo) WriteAudit(_ context.Context, a *domain.ObjectAudit) erro
 func (f *fakePermRepo) ListAudit(context.Context, uuid.UUID, string, uuid.UUID, int) ([]domain.AuditView, error) {
 	return nil, nil
 }
-func (f *fakePermRepo) LoadOrgFieldAccess(context.Context, uuid.UUID) (map[string]map[string]map[string]string, error) {
+func (f *fakePermRepo) LoadOrgFieldAccess(context.Context, uuid.UUID) (map[uuid.UUID]map[string]map[string]string, error) {
 	f.loadFieldCalls++
 	if f.fieldAccess == nil {
-		return map[string]map[string]map[string]string{}, nil
+		return map[uuid.UUID]map[string]map[string]string{}, nil
 	}
 	return f.fieldAccess, nil
 }
@@ -104,8 +104,22 @@ func (f *fakeRegistryUC) ListIncomingRelations(context.Context, uuid.UUID, strin
 	return nil, nil
 }
 
+// trid derives a stable role id from a role name, so test grant maps and caller
+// contexts agree without threading ids everywhere.
+func trid(role string) uuid.UUID {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("role:"+role))
+}
+
+// callerCtx builds a FULL caller identity (rid + owner flag), simulating what the
+// auth middleware resolves — the sole authorization path since the P9 bridge
+// removal (a caller with no rid resolves to no grants).
 func callerCtx(role string) context.Context {
-	return domain.WithCaller(context.Background(), role, uuid.New())
+	return domain.WithCallerIdentity(context.Background(), domain.Caller{
+		Role:    role,
+		UserID:  uuid.New(),
+		RoleID:  trid(role),
+		IsOwner: role == domain.RoleOwner,
+	})
 }
 
 // ============================================================
@@ -133,8 +147,8 @@ func TestHasCapability_Owner_BypassesEvenWithEmptyTable(t *testing.T) {
 func TestHasCapability_CustomRole_PassesAndFailsCorrectly(t *testing.T) {
 	// A custom "Support Agent" role granted only audit.view flows through the SAME
 	// gate as a system role — the headline P3 behavior (I1 fixed).
-	repo := &fakePermRepo{capabilities: map[string]map[string]bool{
-		"Support Agent": {domain.CapAuditView: true},
+	repo := &fakePermRepo{capabilities: map[uuid.UUID]map[string]bool{
+		trid("Support Agent"): {domain.CapAuditView: true},
 	}}
 	uc := NewPermissionUseCase(repo, &fakeRegistryUC{})
 
@@ -174,8 +188,8 @@ func TestAuthorize_Owner_Bypasses(t *testing.T) {
 }
 
 func TestAuthorize_EnforcesPerActionBits(t *testing.T) {
-	repo := &fakePermRepo{access: map[string]map[string]domain.ObjectAccess{
-		domain.RoleViewer: {"deal": {Read: true}}, // read-only
+	repo := &fakePermRepo{access: map[uuid.UUID]map[string]domain.ObjectAccess{
+		trid(domain.RoleViewer): {"deal": {Read: true}}, // read-only
 	}}
 	uc := NewPermissionUseCase(repo, &fakeRegistryUC{})
 
@@ -188,8 +202,8 @@ func TestAuthorize_EnforcesPerActionBits(t *testing.T) {
 
 func TestAuthorize_DefaultDeny_WhenNoRow(t *testing.T) {
 	// sales_rep has rows for "deal" but none for the custom "project" object.
-	repo := &fakePermRepo{access: map[string]map[string]domain.ObjectAccess{
-		domain.RoleSales: {"deal": {Read: true, Create: true, Edit: true}},
+	repo := &fakePermRepo{access: map[uuid.UUID]map[string]domain.ObjectAccess{
+		trid(domain.RoleSales): {"deal": {Read: true, Create: true, Edit: true}},
 	}}
 	uc := NewPermissionUseCase(repo, &fakeRegistryUC{})
 
@@ -207,8 +221,8 @@ func TestAuthorize_DefaultDeny_WhenNoRow(t *testing.T) {
 
 func TestAuthorize_CachesPerOrg_AndInvalidates(t *testing.T) {
 	org := uuid.New()
-	repo := &fakePermRepo{access: map[string]map[string]domain.ObjectAccess{
-		domain.RoleManager: {"deal": {Read: true}},
+	repo := &fakePermRepo{access: map[uuid.UUID]map[string]domain.ObjectAccess{
+		trid(domain.RoleManager): {"deal": {Read: true}},
 	}}
 	uc := NewPermissionUseCase(repo, &fakeRegistryUC{})
 
@@ -232,8 +246,8 @@ func TestAuthorize_CachesPerOrg_AndInvalidates(t *testing.T) {
 
 func TestSetPermission_UpsertsAndBustsCache(t *testing.T) {
 	org := uuid.New()
-	repo := &fakePermRepo{access: map[string]map[string]domain.ObjectAccess{
-		domain.RoleManager: {"deal": {Read: true}},
+	repo := &fakePermRepo{access: map[uuid.UUID]map[string]domain.ObjectAccess{
+		trid(domain.RoleManager): {"deal": {Read: true}},
 	}}
 	uc := NewPermissionUseCase(repo, &fakeRegistryUC{})
 
@@ -294,8 +308,8 @@ func TestAudit_WritesRow(t *testing.T) {
 }
 
 func TestListRecordAudit_RequiresReadAccess(t *testing.T) {
-	repo := &fakePermRepo{access: map[string]map[string]domain.ObjectAccess{
-		domain.RoleViewer: {"deal": {Read: true}},
+	repo := &fakePermRepo{access: map[uuid.UUID]map[string]domain.ObjectAccess{
+		trid(domain.RoleViewer): {"deal": {Read: true}},
 	}}
 	uc := NewPermissionUseCase(repo, &fakeRegistryUC{})
 
@@ -354,8 +368,8 @@ func TestGetGrid_AssemblesObjectsRolesMatrix(t *testing.T) {
 // ============================================================
 
 func TestFieldMask_NoCaller_ReturnsEmpty(t *testing.T) {
-	repo := &fakePermRepo{fieldAccess: map[string]map[string]map[string]string{
-		domain.RoleViewer: {"deal": {"value": "hidden"}},
+	repo := &fakePermRepo{fieldAccess: map[uuid.UUID]map[string]map[string]string{
+		trid(domain.RoleViewer): {"deal": {"value": "hidden"}},
 	}}
 	uc := NewPermissionUseCase(repo, &fakeRegistryUC{})
 	// No caller => trusted in-process call: never masked, so automation/AI see all.
@@ -365,8 +379,8 @@ func TestFieldMask_NoCaller_ReturnsEmpty(t *testing.T) {
 }
 
 func TestFieldMask_Owner_Bypasses(t *testing.T) {
-	repo := &fakePermRepo{fieldAccess: map[string]map[string]map[string]string{
-		domain.RoleOwner: {"deal": {"value": "hidden"}},
+	repo := &fakePermRepo{fieldAccess: map[uuid.UUID]map[string]map[string]string{
+		trid(domain.RoleOwner): {"deal": {"value": "hidden"}},
 	}}
 	uc := NewPermissionUseCase(repo, &fakeRegistryUC{})
 	if m := uc.FieldMask(callerCtx(domain.RoleOwner), uuid.New(), "deal"); !m.Empty() {
@@ -375,8 +389,8 @@ func TestFieldMask_Owner_Bypasses(t *testing.T) {
 }
 
 func TestFieldMask_HiddenAndReadLevels(t *testing.T) {
-	repo := &fakePermRepo{fieldAccess: map[string]map[string]map[string]string{
-		domain.RoleViewer: {"deal": {"value": "hidden", "stage": "read", "title": "edit"}},
+	repo := &fakePermRepo{fieldAccess: map[uuid.UUID]map[string]map[string]string{
+		trid(domain.RoleViewer): {"deal": {"value": "hidden", "stage": "read", "title": "edit"}},
 	}}
 	uc := NewPermissionUseCase(repo, &fakeRegistryUC{})
 
@@ -406,8 +420,8 @@ func TestFieldMask_HiddenAndReadLevels(t *testing.T) {
 func TestFieldMask_NoRows_ReturnsEmpty_AndSharesOLSCache(t *testing.T) {
 	org := uuid.New()
 	// OLS rows exist but no FLS rows — the common case.
-	repo := &fakePermRepo{access: map[string]map[string]domain.ObjectAccess{
-		domain.RoleSales: {"deal": {Read: true}},
+	repo := &fakePermRepo{access: map[uuid.UUID]map[string]domain.ObjectAccess{
+		trid(domain.RoleSales): {"deal": {Read: true}},
 	}}
 	uc := NewPermissionUseCase(repo, &fakeRegistryUC{})
 

@@ -226,7 +226,7 @@ func TestDoD_Execute_VipHighValue_NestedYesPath(t *testing.T) {
 
 	// Execute the tree (no repo needed — we skip action log persistence)
 	engine.repo = nil
-	completed, err := engine.executeStepsRecursive(steps, run, completedSteps, &evalCtx, "", "")
+	completed, err := engine.executeStepsRecursive(context.Background(), steps, run, completedSteps, &evalCtx, "", "")
 	require.NoError(t, err)
 	assert.True(t, completed)
 
@@ -243,15 +243,15 @@ func TestDoD_Execute_VipHighValue_NestedYesPath(t *testing.T) {
 	assert.Equal(t, []string{"high_value_task"}, taskExec.calls)
 
 	// Verify step paths are tracked
-	assert.True(t, completedSteps["0"])               // notify_start
-	assert.True(t, completedSteps["1|yes|0"])          // vip_greet
-	assert.True(t, completedSteps["1|yes|1|yes|0"])    // high_value_task
-	assert.True(t, completedSteps["1|yes|1|yes|1"])    // high_value_email
-	assert.True(t, completedSteps["2"])                // final_cleanup
+	assert.True(t, completedSteps["0"])             // notify_start
+	assert.True(t, completedSteps["1|yes|0"])       // vip_greet
+	assert.True(t, completedSteps["1|yes|1|yes|0"]) // high_value_task
+	assert.True(t, completedSteps["1|yes|1|yes|1"]) // high_value_email
+	assert.True(t, completedSteps["2"])             // final_cleanup
 
 	// Verify NO path steps were NOT executed
-	assert.False(t, completedSteps["1|no|0"])          // non_vip_task
-	assert.False(t, completedSteps["1|yes|1|no|0"])    // low_value_task
+	assert.False(t, completedSteps["1|no|0"])       // non_vip_task
+	assert.False(t, completedSteps["1|yes|1|no|0"]) // low_value_task
 
 	// Verify evalCtx.Actions has outputs for each step
 	assert.NotNil(t, evalCtx.Actions["notify_start"])
@@ -294,7 +294,7 @@ func TestDoD_Execute_NonVip_OuterNoPath(t *testing.T) {
 	}
 
 	engine.repo = nil
-	completed, err := engine.executeStepsRecursive(steps, run, completedSteps, &evalCtx, "", "")
+	completed, err := engine.executeStepsRecursive(context.Background(), steps, run, completedSteps, &evalCtx, "", "")
 	require.NoError(t, err)
 	assert.True(t, completed)
 
@@ -308,9 +308,9 @@ func TestDoD_Execute_NonVip_OuterNoPath(t *testing.T) {
 	assert.Equal(t, []string{"non_vip_task"}, taskExec.calls)
 
 	// Verify correct paths tracked
-	assert.True(t, completedSteps["0"])               // notify_start
-	assert.True(t, completedSteps["1|no|0"])           // non_vip_task
-	assert.True(t, completedSteps["2"])                // final_cleanup
+	assert.True(t, completedSteps["0"])      // notify_start
+	assert.True(t, completedSteps["1|no|0"]) // non_vip_task
+	assert.True(t, completedSteps["2"])      // final_cleanup
 
 	// Verify yes path steps were NOT executed
 	assert.False(t, completedSteps["1|yes|0"])
@@ -367,7 +367,7 @@ func TestDoD_CrashRecovery_ResumeNestedYes(t *testing.T) {
 	}
 
 	engine.repo = nil
-	completed, err := engine.executeStepsRecursive(steps, run, completedSteps, &evalCtx, "", "")
+	completed, err := engine.executeStepsRecursive(context.Background(), steps, run, completedSteps, &evalCtx, "", "")
 	require.NoError(t, err)
 	assert.True(t, completed)
 
@@ -415,10 +415,10 @@ func TestDoD_CrashRecovery_ConditionBranchDeterminedByCompletedSteps(t *testing.
 	// On resume, even if we pass a different contact (non-VIP), the engine must
 	// still follow the YES branch because it detects completed steps inside YES.
 	completedSteps := map[string]bool{
-		"0":             true,
-		"notify_start":  true,
-		"1|yes|0":       true,
-		"vip_greet":     true,
+		"0":            true,
+		"notify_start": true,
+		"1|yes|0":      true,
+		"vip_greet":    true,
 	}
 
 	emailExec := &fakeExecutor{output: map[string]any{"sent": true}}
@@ -449,7 +449,7 @@ func TestDoD_CrashRecovery_ConditionBranchDeterminedByCompletedSteps(t *testing.
 	}
 
 	engine.repo = nil
-	completed, err := engine.executeStepsRecursive(steps, run, completedSteps, &evalCtx, "", "")
+	completed, err := engine.executeStepsRecursive(context.Background(), steps, run, completedSteps, &evalCtx, "", "")
 	require.NoError(t, err)
 	assert.True(t, completed)
 
@@ -549,7 +549,7 @@ func TestDoD_Execute_VipLowValue_InnerNoPath(t *testing.T) {
 	}
 
 	engine.repo = nil
-	completed, err := engine.executeStepsRecursive(steps, run, completedSteps, &evalCtx, "", "")
+	completed, err := engine.executeStepsRecursive(context.Background(), steps, run, completedSteps, &evalCtx, "", "")
 	require.NoError(t, err)
 	assert.True(t, completed)
 
@@ -615,7 +615,7 @@ func TestDoD_CrashAndResume_FullScenario(t *testing.T) {
 	}
 
 	engine.repo = nil
-	completed, err := engine.executeStepsRecursive(steps, run, completedSteps, &evalCtx, "", "")
+	completed, err := engine.executeStepsRecursive(context.Background(), steps, run, completedSteps, &evalCtx, "", "")
 	assert.Error(t, err, "should fail on crash")
 	assert.False(t, completed)
 
@@ -643,7 +643,7 @@ func TestDoD_CrashAndResume_FullScenario(t *testing.T) {
 
 	run2 := &WorkflowRun{ID: run.ID} // Same run ID
 	engine2.repo = nil
-	completed2, err2 := engine2.executeStepsRecursive(steps, run2, completedSteps, &evalCtx, "", "")
+	completed2, err2 := engine2.executeStepsRecursive(context.Background(), steps, run2, completedSteps, &evalCtx, "", "")
 	require.NoError(t, err2)
 	assert.True(t, completed2)
 

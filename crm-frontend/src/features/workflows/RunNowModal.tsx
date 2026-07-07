@@ -43,28 +43,22 @@ export function entityKindForTrigger(triggerType: string | undefined): 'contact'
 }
 
 /**
- * Org roles permitted to Run Now ANY workflow, mirroring the backend `authorizeRunNow`
- * privileged set: the requireRole("admin","manager") guard the other workflow-mutating
- * endpoints use, plus "owner" (a superuser that passes every role guard).
- */
-const PRIVILEGED_RUN_NOW_ROLES = new Set(['owner', 'admin', 'manager']);
-
-/**
  * Reports whether a caller may Run Now the given workflow, mirroring the backend
  * `authorizeRunNow` permission model so the UI can hide the control when the server would
- * reject it with 403. A privileged role (owner/admin/manager) may run any workflow in the
- * org; any other caller may run ONLY a workflow they created — the creator allowance. An
- * unknown caller id never satisfies the creator check.
+ * reject it with 403. A caller holding the `workflows.run_any` capability (P6 — owner /
+ * admin / manager by default, but any custom role an admin grants it to) may run any
+ * workflow in the org; any other caller may run ONLY a workflow they created — the creator
+ * allowance. An unknown caller id never satisfies the creator check.
  *
  * The backend remains the source of truth; this is a UX affordance, not the security
  * boundary (the endpoint still enforces authorization).
  */
 export function canRunWorkflowNow(
-  role: string | undefined,
+  canRunAny: boolean,
   userId: string | undefined,
   workflow: { created_by: string | null },
 ): boolean {
-  if (role && PRIVILEGED_RUN_NOW_ROLES.has(role)) return true;
+  if (canRunAny) return true;
   return !!userId && userId === workflow.created_by;
 }
 
@@ -90,13 +84,13 @@ export function builderRunNowAvailability(opts: {
   createdBy: string | null;
   trigger: { type: string } | null;
   isDirty: boolean;
-  role: string | undefined;
+  canRunAny: boolean;
   userId: string | undefined;
 }): RunNowAvailability {
   const visible =
     !!opts.workflowId &&
     !!opts.trigger &&
-    canRunWorkflowNow(opts.role, opts.userId, { created_by: opts.createdBy });
+    canRunWorkflowNow(opts.canRunAny, opts.userId, { created_by: opts.createdBy });
   return { visible, enabled: visible && !opts.isDirty };
 }
 

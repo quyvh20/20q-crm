@@ -262,27 +262,21 @@ describe('RunNowModal — in-flight submission', () => {
 describe('canRunWorkflowNow', () => {
   const wf = { created_by: 'creator-1' };
 
-  it('allows privileged roles to run any workflow regardless of creator', () => {
-    for (const role of ['owner', 'admin', 'manager']) {
-      expect(canRunWorkflowNow(role, 'someone-else', wf)).toBe(true);
-    }
+  it('allows a caller with workflows.run_any to run any workflow regardless of creator', () => {
+    expect(canRunWorkflowNow(true, 'someone-else', wf)).toBe(true);
+    expect(canRunWorkflowNow(true, undefined, wf)).toBe(true);
   });
 
-  it('allows a non-privileged caller to run only a workflow they created', () => {
-    expect(canRunWorkflowNow('viewer', 'creator-1', wf)).toBe(true);
-    expect(canRunWorkflowNow('member', 'creator-1', wf)).toBe(true);
-    expect(canRunWorkflowNow('', 'creator-1', wf)).toBe(true);
+  it('allows a caller without run_any to run only a workflow they created', () => {
+    expect(canRunWorkflowNow(false, 'creator-1', wf)).toBe(true);
   });
 
-  it('denies a non-privileged caller on a workflow created by someone else', () => {
-    expect(canRunWorkflowNow('viewer', 'someone-else', wf)).toBe(false);
-    expect(canRunWorkflowNow('member', 'someone-else', wf)).toBe(false);
-    expect(canRunWorkflowNow('guest', 'someone-else', wf)).toBe(false);
+  it('denies a caller without run_any on a workflow created by someone else', () => {
+    expect(canRunWorkflowNow(false, 'someone-else', wf)).toBe(false);
   });
 
   it('denies when the caller id is unknown (never satisfies the creator check)', () => {
-    expect(canRunWorkflowNow('viewer', undefined, wf)).toBe(false);
-    expect(canRunWorkflowNow(undefined, undefined, wf)).toBe(false);
+    expect(canRunWorkflowNow(false, undefined, wf)).toBe(false);
   });
 });
 
@@ -293,7 +287,7 @@ describe('builderRunNowAvailability', () => {
     createdBy: 'creator-1',
     trigger: { type: 'contact_created' } as { type: string } | null,
     isDirty: false,
-    role: 'admin' as string | undefined,
+    canRunAny: true,
     userId: 'someone' as string | undefined,
   };
 
@@ -311,9 +305,9 @@ describe('builderRunNowAvailability', () => {
     });
   });
 
-  it('is hidden when the caller is not authorized (non-privileged, not creator)', () => {
+  it('is hidden when the caller is not authorized (no run_any, not creator)', () => {
     expect(
-      builderRunNowAvailability({ ...base, role: 'viewer', userId: 'other', createdBy: 'creator-1' }),
+      builderRunNowAvailability({ ...base, canRunAny: false, userId: 'other', createdBy: 'creator-1' }),
     ).toEqual({ visible: false, enabled: false });
   });
 
@@ -328,9 +322,9 @@ describe('builderRunNowAvailability', () => {
     expect(builderRunNowAvailability(base)).toEqual({ visible: true, enabled: true });
   });
 
-  it('honors the creator allowance: a non-privileged creator sees it (enabled when clean)', () => {
+  it('honors the creator allowance: a creator without run_any sees it (enabled when clean)', () => {
     expect(
-      builderRunNowAvailability({ ...base, role: 'viewer', userId: 'creator-1', createdBy: 'creator-1' }),
+      builderRunNowAvailability({ ...base, canRunAny: false, userId: 'creator-1', createdBy: 'creator-1' }),
     ).toEqual({ visible: true, enabled: true });
   });
 });

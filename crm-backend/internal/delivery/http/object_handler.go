@@ -80,7 +80,7 @@ func foldLayout(ctx context.Context, layoutUC domain.ObjectLayoutUseCase, authz 
 	if authz != nil {
 		hiddenKeys = authz.FieldMask(ctx, orgID, slug).Hidden
 	}
-	if sections, err := layoutUC.ResolveLayout(ctx, orgID, slug, caller.Role, hiddenKeys); err == nil {
+	if sections, err := layoutUC.ResolveLayout(ctx, orgID, slug, caller, hiddenKeys); err == nil {
 		descriptor.Layout = sections
 	}
 }

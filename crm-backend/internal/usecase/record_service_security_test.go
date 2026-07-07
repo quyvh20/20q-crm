@@ -13,6 +13,17 @@ import (
 // Fakes specific to OLS + audit
 // ============================================================
 
+// secCtx builds a full caller identity for the RecordService security tests
+// (replacing the removed domain.WithCaller name-only bridge). RoleID is a fresh
+// id: the fakeAuthorizer keys its decision off slug:action, not the role, so the
+// id value is irrelevant — only "a caller is present" (a user call, not a trusted
+// in-process one) and the exact UserID (asserted as the audit actor) matter.
+func secCtx(role string, userID uuid.UUID) context.Context {
+	return domain.WithCallerIdentity(context.Background(), domain.Caller{
+		Role: role, UserID: userID, RoleID: uuid.New(),
+	})
+}
+
 type authzCall struct {
 	slug   string
 	action domain.RecordAction
@@ -108,7 +119,7 @@ func TestRecordService_DeniedCreate_DoesNotReachUsecase(t *testing.T) {
 	authz := &fakeAuthorizer{deny: map[string]bool{"deal:create": true}}
 	svc := newSecService(nil, deal, authz)
 
-	ctx := domain.WithCaller(context.Background(), domain.RoleViewer, uuid.New())
+	ctx := secCtx(domain.RoleViewer, uuid.New())
 	_, err := svc.Create(ctx, uuid.New(), uuid.New(), "deal", domain.RecordWriteInput{
 		Fields: map[string]interface{}{"title": "X"},
 	})
@@ -126,7 +137,7 @@ func TestRecordService_DeniedRead_BlocksList(t *testing.T) {
 	authz := &fakeAuthorizer{deny: map[string]bool{"deal:read": true}}
 	svc := newSecService(nil, &fakeDealUC{}, authz)
 
-	ctx := domain.WithCaller(context.Background(), "contractor", uuid.New())
+	ctx := secCtx("contractor", uuid.New())
 	_, err := svc.List(ctx, uuid.New(), "deal", domain.RecordListInput{})
 	assertForbidden(t, err, "list denied by OLS")
 }
@@ -141,7 +152,7 @@ func TestRecordService_AuthorizesActionPerVerb(t *testing.T) {
 	}
 	authz := &fakeAuthorizer{}
 	svc := newSecService(custom, nil, authz)
-	ctx := domain.WithCaller(context.Background(), domain.RoleManager, uuid.New())
+	ctx := secCtx(domain.RoleManager, uuid.New())
 	org := uuid.New()
 
 	cases := []struct {
@@ -184,7 +195,7 @@ func TestRecordService_AuditsCreate(t *testing.T) {
 	authz := &fakeAuthorizer{}
 	svc := newSecService(custom, nil, authz)
 	actor := uuid.New()
-	ctx := domain.WithCaller(context.Background(), domain.RoleManager, actor)
+	ctx := secCtx(domain.RoleManager, actor)
 
 	if _, err := svc.Create(ctx, uuid.New(), actor, "project", domain.RecordWriteInput{
 		Fields: map[string]interface{}{"name": "Acme"},
@@ -214,7 +225,7 @@ func TestRecordService_AuditsUpdate_WithFieldDiff(t *testing.T) {
 	}
 	authz := &fakeAuthorizer{}
 	svc := newSecService(custom, nil, authz)
-	ctx := domain.WithCaller(context.Background(), domain.RoleManager, uuid.New())
+	ctx := secCtx(domain.RoleManager, uuid.New())
 
 	if _, err := svc.Update(ctx, uuid.New(), "project", recID, domain.RecordWriteInput{
 		Fields: map[string]interface{}{"status": "closed"},
@@ -243,7 +254,7 @@ func TestRecordService_AuditsDelete(t *testing.T) {
 	}
 	authz := &fakeAuthorizer{}
 	svc := newSecService(custom, nil, authz)
-	ctx := domain.WithCaller(context.Background(), domain.RoleManager, uuid.New())
+	ctx := secCtx(domain.RoleManager, uuid.New())
 
 	if err := svc.Delete(ctx, uuid.New(), "project", recID); err != nil {
 		t.Fatalf("delete: %v", err)
@@ -282,7 +293,7 @@ func hiddenMask(slug, key string) *fakeAuthorizer {
 func TestRecordService_FLS_StripsHiddenFieldOnGet(t *testing.T) {
 	custom := newFLSCustom(`{"name":"P","value":999}`)
 	svc := newSecService(custom, nil, hiddenMask("project", "value"))
-	ctx := domain.WithCaller(context.Background(), domain.RoleViewer, uuid.New())
+	ctx := secCtx(domain.RoleViewer, uuid.New())
 
 	rec, err := svc.Get(ctx, uuid.New(), "project", custom.prior.ID)
 	if err != nil {
@@ -300,7 +311,7 @@ func TestRecordService_FLS_StripsHiddenFieldOnGet(t *testing.T) {
 func TestRecordService_FLS_StripsHiddenFieldOnList(t *testing.T) {
 	custom := newFLSCustom(`{"name":"P","value":999}`)
 	svc := newSecService(custom, nil, hiddenMask("project", "value"))
-	ctx := domain.WithCaller(context.Background(), domain.RoleViewer, uuid.New())
+	ctx := secCtx(domain.RoleViewer, uuid.New())
 
 	list, err := svc.List(ctx, uuid.New(), "project", domain.RecordListInput{})
 	if err != nil {
@@ -320,7 +331,7 @@ func TestRecordService_FLS_RejectsWriteToHiddenField_OnUpdate(t *testing.T) {
 	custom := newFLSCustom(`{"value":1}`)
 	authz := hiddenMask("project", "value")
 	svc := newSecService(custom, nil, authz)
-	ctx := domain.WithCaller(context.Background(), domain.RoleViewer, uuid.New())
+	ctx := secCtx(domain.RoleViewer, uuid.New())
 
 	_, err := svc.Update(ctx, uuid.New(), "project", custom.prior.ID, domain.RecordWriteInput{
 		Fields: map[string]interface{}{"value": 2},
@@ -341,7 +352,7 @@ func TestRecordService_FLS_RejectsWriteToReadOnlyField_OnCreate(t *testing.T) {
 		"project": {ReadOnly: map[string]bool{"locked": true}},
 	}}
 	svc := newSecService(custom, nil, authz)
-	ctx := domain.WithCaller(context.Background(), domain.RoleSales, uuid.New())
+	ctx := secCtx(domain.RoleSales, uuid.New())
 
 	_, err := svc.Create(ctx, uuid.New(), uuid.New(), "project", domain.RecordWriteInput{
 		Fields: map[string]interface{}{"locked": "x"},
@@ -357,7 +368,7 @@ func TestRecordService_FLS_RejectsWriteToReadOnlyField_OnCreate(t *testing.T) {
 func TestRecordService_FLS_StripsHiddenFieldFromWriteResponse(t *testing.T) {
 	custom := newFLSCustom(`{"name":"P","value":42}`)
 	svc := newSecService(custom, nil, hiddenMask("project", "value"))
-	ctx := domain.WithCaller(context.Background(), domain.RoleManager, uuid.New())
+	ctx := secCtx(domain.RoleManager, uuid.New())
 
 	rec, err := svc.Create(ctx, uuid.New(), uuid.New(), "project", domain.RecordWriteInput{
 		Fields: map[string]interface{}{"name": "P"},
@@ -381,7 +392,7 @@ func TestRecordService_FLS_StripsHiddenFieldFromWriteResponse(t *testing.T) {
 func TestRecordService_FLS_EmptyMask_LeavesRecordIntact(t *testing.T) {
 	custom := newFLSCustom(`{"name":"P","value":1}`)
 	svc := newSecService(custom, nil, &fakeAuthorizer{}) // no masks
-	ctx := domain.WithCaller(context.Background(), domain.RoleViewer, uuid.New())
+	ctx := secCtx(domain.RoleViewer, uuid.New())
 
 	rec, err := svc.Get(ctx, uuid.New(), "project", custom.prior.ID)
 	if err != nil {

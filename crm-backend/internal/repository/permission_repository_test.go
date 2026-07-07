@@ -68,7 +68,7 @@ func TestMigration000017_UpDownRoundTrip(t *testing.T) {
 }
 
 func TestEnsureDefaults_SeedsLegacyMatrix_AndIsIdempotent(t *testing.T) {
-	orgID, _, repo := setupPermissions(t)
+	orgID, roleIDs, repo := setupPermissions(t)
 	ctx := context.Background()
 
 	require.NoError(t, repo.EnsureDefaults(ctx, orgID))
@@ -78,12 +78,12 @@ func TestEnsureDefaults_SeedsLegacyMatrix_AndIsIdempotent(t *testing.T) {
 
 	// Every system role gets read on every system object; the matrix mirrors the
 	// legacy RequireRole gates exactly.
-	require.True(t, access[domain.RoleViewer]["deal"].Read, "viewer reads deals")
-	require.False(t, access[domain.RoleViewer]["deal"].Create, "viewer can't create")
-	require.True(t, access[domain.RoleSales]["contact"].Edit, "sales edits contacts")
-	require.False(t, access[domain.RoleSales]["contact"].Delete, "sales can't delete")
-	require.True(t, access[domain.RoleManager]["company"].Delete, "manager deletes companies")
-	require.True(t, access[domain.RoleAdmin]["deal"].Delete, "admin deletes deals")
+	require.True(t, access[roleIDs[domain.RoleViewer]]["deal"].Read, "viewer reads deals")
+	require.False(t, access[roleIDs[domain.RoleViewer]]["deal"].Create, "viewer can't create")
+	require.True(t, access[roleIDs[domain.RoleSales]]["contact"].Edit, "sales edits contacts")
+	require.False(t, access[roleIDs[domain.RoleSales]]["contact"].Delete, "sales can't delete")
+	require.True(t, access[roleIDs[domain.RoleManager]]["company"].Delete, "manager deletes companies")
+	require.True(t, access[roleIDs[domain.RoleAdmin]]["deal"].Delete, "admin deletes deals")
 
 	// Idempotent: a second pass adds nothing.
 	before, err := repo.ListPermissions(ctx, orgID)
@@ -107,7 +107,7 @@ func TestEnsureDefaults_CoversCustomObjects_AndRespectsLockdown(t *testing.T) {
 	require.NoError(t, repo.EnsureDefaults(ctx, orgID))
 	access, err := repo.LoadOrgAccess(ctx, orgID)
 	require.NoError(t, err)
-	require.True(t, access[domain.RoleSales]["project"].Create, "sales can create projects by default")
+	require.True(t, access[roleIDs[domain.RoleSales]]["project"].Create, "sales can create projects by default")
 
 	// An admin locks viewers fully out of project (explicit all-false row).
 	require.NoError(t, repo.UpsertPermission(ctx, domain.ObjectPermission{
@@ -119,7 +119,40 @@ func TestEnsureDefaults_CoversCustomObjects_AndRespectsLockdown(t *testing.T) {
 	require.NoError(t, repo.EnsureDefaults(ctx, orgID))
 	access, err = repo.LoadOrgAccess(ctx, orgID)
 	require.NoError(t, err)
-	require.False(t, access[domain.RoleViewer]["project"].Read, "explicit lock-down must survive re-seed")
+	require.False(t, access[roleIDs[domain.RoleViewer]]["project"].Read, "explicit lock-down must survive re-seed")
+}
+
+// TestEnsureDefaults_SeedsCustomRolesFromLineage: a custom role seeded from a
+// system template (P6) inherits that template's default OLS on newly-seeded
+// objects, while a lineage-less custom role is left at zero — the old behavior,
+// so existing custom roles aren't silently granted access (P6 new-object seeding).
+func TestEnsureDefaults_SeedsCustomRolesFromLineage(t *testing.T) {
+	orgID, roleIDs, repo := setupPermissions(t)
+	ctx := context.Background()
+	db := repo.(*permissionRepository).db
+
+	// The P0 boot guard adds these columns in prod; the test's migration-based
+	// roles table predates them, so add them here to exercise lineage seeding.
+	require.NoError(t, db.Exec(`ALTER TABLE roles ADD COLUMN IF NOT EXISTS template_key varchar(40)`).Error)
+	require.NoError(t, db.Exec(`ALTER TABLE roles ADD COLUMN IF NOT EXISTS seeded_from_role_id uuid`).Error)
+
+	// A custom role cloned from viewer (records lineage), plus a lineage-less one.
+	seeded := uuid.New()
+	require.NoError(t, db.Exec(`INSERT INTO roles (id, org_id, name, is_system, seeded_from_role_id) VALUES (?, ?, 'Junior Viewer', false, ?)`,
+		seeded, orgID, roleIDs[domain.RoleViewer]).Error)
+	legacy := uuid.New()
+	require.NoError(t, db.Exec(`INSERT INTO roles (id, org_id, name, is_system) VALUES (?, ?, 'Legacy Custom', false)`,
+		legacy, orgID).Error)
+
+	require.NoError(t, repo.EnsureDefaults(ctx, orgID))
+	access, err := repo.LoadOrgAccess(ctx, orgID)
+	require.NoError(t, err)
+
+	// The seeded custom role inherits viewer's template access (read-only).
+	require.True(t, access[seeded]["deal"].Read, "a viewer-seeded custom role reads deals")
+	require.False(t, access[seeded]["deal"].Create, "a viewer-seeded custom role can't create")
+	// The lineage-less custom role is left untouched (no rows) — prior behavior.
+	require.Empty(t, access[legacy], "a lineage-less custom role must not be auto-seeded")
 }
 
 func TestWriteAndListAudit(t *testing.T) {
@@ -204,7 +237,7 @@ func TestFieldPermissions_UpsertLoadDelete(t *testing.T) {
 	}))
 	access, err = repo.LoadOrgFieldAccess(ctx, orgID)
 	require.NoError(t, err)
-	require.Equal(t, "hidden", access[domain.RoleViewer]["deal"]["value"], "load joins role name → slug → key → level")
+	require.Equal(t, "hidden", access[roleIDs[domain.RoleViewer]]["deal"]["value"], "load joins role name → slug → key → level")
 
 	// Upsert the same cell to a weaker level: update, not duplicate.
 	require.NoError(t, repo.UpsertFieldPermission(ctx, domain.FieldPermission{
@@ -245,8 +278,8 @@ func TestUpsertPermission_InsertThenUpdate(t *testing.T) {
 	}))
 	access, err := repo.LoadOrgAccess(ctx, orgID)
 	require.NoError(t, err)
-	require.True(t, access[domain.RoleViewer]["deal"].Read)
-	require.False(t, access[domain.RoleViewer]["deal"].Edit)
+	require.True(t, access[roleIDs[domain.RoleViewer]]["deal"].Read)
+	require.False(t, access[roleIDs[domain.RoleViewer]]["deal"].Edit)
 
 	// Update the same cell (grant edit, revoke read).
 	require.NoError(t, repo.UpsertPermission(ctx, domain.ObjectPermission{
@@ -254,8 +287,8 @@ func TestUpsertPermission_InsertThenUpdate(t *testing.T) {
 	}))
 	access, err = repo.LoadOrgAccess(ctx, orgID)
 	require.NoError(t, err)
-	require.False(t, access[domain.RoleViewer]["deal"].Read, "update replaced the bits")
-	require.True(t, access[domain.RoleViewer]["deal"].Edit)
+	require.False(t, access[roleIDs[domain.RoleViewer]]["deal"].Read, "update replaced the bits")
+	require.True(t, access[roleIDs[domain.RoleViewer]]["deal"].Edit)
 
 	// Still one row for the cell (upsert, not insert-twice).
 	perms, err := repo.ListPermissions(ctx, orgID)

@@ -24,6 +24,11 @@ import (
 // The org → (role → object → access) map is cached in-process with a short TTL
 // and an explicit Invalidate, so a permission edit applies on the next request
 // without a restart (plan R5: O(1) after warm).
+//
+// NOTE: this cache is per-process. Invalidate only reaches the local replica, so
+// a permission edit propagates to OTHER replicas after the 60s TTL, not
+// instantly. Acceptable while Railway runs a single replica (P10 §3.1); revisit
+// with Redis pub/sub fan-out if replicas ever scale.
 type permissionUseCase struct {
 	repo       domain.PermissionRepository
 	registryUC domain.ObjectRegistryUseCase
@@ -35,14 +40,15 @@ type permissionUseCase struct {
 }
 
 type orgAccessEntry struct {
-	// access is the OLS map: role → object → access bits.
-	access map[string]map[string]domain.ObjectAccess
-	// fieldAccess is the FLS map: role → object → fieldKey → level. Empty when no
-	// field is restricted (the common case), so FLS costs nothing until used.
-	fieldAccess map[string]map[string]map[string]string
-	// capabilities is the system-capability map: role → capabilityCode → true
+	// access is the OLS map: roleID → object → access bits (P5 re-key: grants are
+	// looked up by role identity so a rename can never detach or merge them).
+	access map[uuid.UUID]map[string]domain.ObjectAccess
+	// fieldAccess is the FLS map: roleID → object → fieldKey → level. Empty when
+	// no field is restricted (the common case), so FLS costs nothing until used.
+	fieldAccess map[uuid.UUID]map[string]map[string]string
+	// capabilities is the system-capability map: roleID → capabilityCode → true
 	// (P3, D5). An absent role/code default-denies.
-	capabilities map[string]map[string]bool
+	capabilities map[uuid.UUID]map[string]bool
 	expiry       time.Time
 }
 
@@ -79,8 +85,24 @@ func NewPermissionUseCase(repo domain.PermissionRepository, registryUC domain.Ob
 // RecordAuthorizer (called by RecordService on every entry)
 // ============================================================
 
+// callerIsOwner is the owner check: the IsOwner flag (resolved from
+// roles.is_owner by the middleware, never a name string) is authoritative. The
+// P5 name-fallback bridge was deleted in P9, so a caller merely NAMED 'owner'
+// does not bypass — only the resolved flag does.
+func callerIsOwner(caller domain.Caller) bool {
+	return caller.IsOwner
+}
+
+// resolveRoleID returns the role identity authorization keys off (R1 re-key). A
+// caller with a RoleID uses it directly — present or not in the grant maps,
+// absence default-denies. Since the P9 bridge removal there is no name fallback:
+// a caller carrying no RoleID resolves to nothing and is default-denied.
+func (uc *permissionUseCase) resolveRoleID(caller domain.Caller) (uuid.UUID, bool) {
+	return caller.RoleID, caller.RoleID != uuid.Nil
+}
+
 // Authorize enforces default-deny OLS. A context with no caller is a trusted
-// in-process call (automation, AI, seed) and is allowed; the owner role bypasses
+// in-process call (automation, AI, seed) and is allowed; the owner bypasses
 // OLS; otherwise the caller's role must have the action bit for the object, and
 // the absence of any row denies.
 func (uc *permissionUseCase) Authorize(ctx context.Context, orgID uuid.UUID, slug string, action domain.RecordAction) error {
@@ -88,13 +110,15 @@ func (uc *permissionUseCase) Authorize(ctx context.Context, orgID uuid.UUID, slu
 	if !ok {
 		return nil // trusted in-process call — middleware always sets a caller for user traffic
 	}
-	if caller.Role == domain.RoleOwner {
-		return nil // god-mode, matching RequireRole
+	if callerIsOwner(caller) {
+		return nil // god-mode
 	}
 
-	access := uc.accessFor(ctx, orgID, caller.Role, slug)
-	if access.Allows(action) {
-		return nil
+	entry := uc.loadEntry(ctx, orgID)
+	if roleID, ok := uc.resolveRoleID(caller); ok {
+		if entry.access[roleID][slug].Allows(action) {
+			return nil
+		}
 	}
 	return domain.NewAppError(http.StatusForbidden, "you do not have permission to "+string(action)+" "+slug+" records")
 }
@@ -139,12 +163,16 @@ func (uc *permissionUseCase) FieldMask(ctx context.Context, orgID uuid.UUID, slu
 	if !ok {
 		return domain.FieldMask{} // trusted in-process call
 	}
-	if caller.Role == domain.RoleOwner {
+	if callerIsOwner(caller) {
 		return domain.FieldMask{} // god-mode, matching OLS
 	}
 
 	entry := uc.loadEntry(ctx, orgID)
-	byObject := entry.fieldAccess[caller.Role]
+	roleID, ok := uc.resolveRoleID(caller)
+	if !ok {
+		return domain.FieldMask{} // unresolvable role: OLS already default-denies access entirely
+	}
+	byObject := entry.fieldAccess[roleID]
 	if byObject == nil {
 		return domain.FieldMask{}
 	}
@@ -181,13 +209,15 @@ func (uc *permissionUseCase) HasCapability(ctx context.Context, orgID uuid.UUID,
 	if !ok {
 		return nil // trusted in-process call
 	}
-	if caller.Role == domain.RoleOwner {
+	if callerIsOwner(caller) {
 		return nil // god-mode
 	}
 
 	entry := uc.loadEntry(ctx, orgID)
-	if byCode := entry.capabilities[caller.Role]; byCode[capability] {
-		return nil
+	if roleID, ok := uc.resolveRoleID(caller); ok {
+		if entry.capabilities[roleID][capability] {
+			return nil
+		}
 	}
 	return domain.NewAppError(http.StatusForbidden, "you do not have the '"+capability+"' capability")
 }
@@ -201,11 +231,15 @@ func (uc *permissionUseCase) CallerCapabilities(ctx context.Context, orgID uuid.
 	if !ok {
 		return []string{}
 	}
-	if caller.Role == domain.RoleOwner {
+	if callerIsOwner(caller) {
 		return append([]string{}, domain.AllCapabilities...)
 	}
 	entry := uc.loadEntry(ctx, orgID)
-	byCode := entry.capabilities[caller.Role]
+	roleID, ok := uc.resolveRoleID(caller)
+	if !ok {
+		return []string{}
+	}
+	byCode := entry.capabilities[roleID]
 	out := make([]string, 0, len(byCode))
 	for code, granted := range byCode {
 		if granted {
@@ -213,16 +247,6 @@ func (uc *permissionUseCase) CallerCapabilities(ctx context.Context, orgID uuid.
 		}
 	}
 	return out
-}
-
-// accessFor returns the cached access for one role+object. A missing role or
-// missing object entry is the zero ObjectAccess — i.e. default-deny.
-func (uc *permissionUseCase) accessFor(ctx context.Context, orgID uuid.UUID, role, slug string) domain.ObjectAccess {
-	entry := uc.loadEntry(ctx, orgID)
-	if byObject, ok := entry.access[role]; ok {
-		return byObject[slug]
-	}
-	return domain.ObjectAccess{}
 }
 
 // loadEntry returns the org's cached OLS + FLS maps, refreshing on a cold/expired
@@ -261,7 +285,12 @@ func (uc *permissionUseCase) loadEntry(ctx context.Context, orgID uuid.UUID) *or
 		return uc.staleOrEmpty(e)
 	}
 
-	entry := &orgAccessEntry{access: access, fieldAccess: fieldAccess, capabilities: capabilities, expiry: time.Now().Add(uc.ttl)}
+	entry := &orgAccessEntry{
+		access:       access,
+		fieldAccess:  fieldAccess,
+		capabilities: capabilities,
+		expiry:       time.Now().Add(uc.ttl),
+	}
 	uc.mu.Lock()
 	uc.cache[orgID] = entry
 	uc.mu.Unlock()
@@ -275,7 +304,7 @@ func (uc *permissionUseCase) staleOrEmpty(e *orgAccessEntry) *orgAccessEntry {
 	if e != nil {
 		return e
 	}
-	return &orgAccessEntry{access: map[string]map[string]domain.ObjectAccess{}}
+	return &orgAccessEntry{access: map[uuid.UUID]map[string]domain.ObjectAccess{}}
 }
 
 // ============================================================
@@ -316,12 +345,12 @@ func (uc *permissionUseCase) GetGrid(ctx context.Context, orgID uuid.UUID) (*dom
 			IsSystem: o.IsSystem,
 		})
 	}
-	for _, role := range roles {
+	for i := range roles {
 		grid.Roles = append(grid.Roles, domain.PermRoleInfo{
-			ID:       role.ID,
-			Name:     role.Name,
-			IsSystem: role.IsSystem,
-			IsOwner:  role.Name == domain.RoleOwner,
+			ID:       roles[i].ID,
+			Name:     roles[i].Name,
+			IsSystem: roles[i].IsSystem,
+			IsOwner:  domain.IsOwnerRole(&roles[i]),
 		})
 	}
 	for _, p := range perms {
@@ -405,12 +434,12 @@ func (uc *permissionUseCase) GetFieldGrid(ctx context.Context, orgID uuid.UUID, 
 			IsSystem: f.IsSystem,
 		})
 	}
-	for _, role := range roles {
+	for i := range roles {
 		grid.Roles = append(grid.Roles, domain.PermRoleInfo{
-			ID:       role.ID,
-			Name:     role.Name,
-			IsSystem: role.IsSystem,
-			IsOwner:  role.Name == domain.RoleOwner,
+			ID:       roles[i].ID,
+			Name:     roles[i].Name,
+			IsSystem: roles[i].IsSystem,
+			IsOwner:  domain.IsOwnerRole(&roles[i]),
 		})
 	}
 	for _, p := range perms {

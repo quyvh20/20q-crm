@@ -130,41 +130,20 @@ func newRunNowIdempotencyKey() string {
 	return "run_now:" + uuid.NewString()
 }
 
-// authorizeRunNow reports whether a caller with the given org role and id may Run Now a
-// workflow created by createdBy (the Run Now permission model).
+// authorizeRunNowCtx is the capability-driven Run Now / Retry gate. The creator
+// allowance always applies: a caller may run/retry a workflow they created. Any
+// other caller must hold the workflows.run_any capability — so a custom role an
+// admin grants it to can run any workflow, not just the system roles.
 //
-// A privileged role — "owner", "admin", or "manager" — may run ANY workflow in the org,
-// matching the requireRole("admin","manager") guard the other workflow-mutating endpoints
-// use, plus "owner", which delivery.RequireRole treats as a superuser that passes every
-// role guard. Any other caller (e.g. a member/viewer, or a creator later demoted) may run
-// ONLY a workflow they themselves created — the creator allowance. A nil caller id never
-// satisfies the creator check, so an unauthenticated/identity-less request is denied.
-//
-// It is a pure function (no gin/DB) so the permission matrix can be exhaustively
-// unit-tested; the handler reads role from the request context and createdBy from the
-// loaded workflow and delegates the decision here.
-func authorizeRunNow(role string, userID, createdBy uuid.UUID) bool {
-	switch role {
-	case "owner", "admin", "manager":
-		return true
-	}
-	return userID != uuid.Nil && userID == createdBy
-}
-
-// authorizeRunNowCtx is the capability-aware Run Now / Retry gate (P3). The
-// creator allowance always applies. When a capability checker is wired (prod),
-// the workflows.run_any capability grants "run any" — so a custom role an admin
-// grants it to can run any workflow, not just the system roles. Without a checker
-// (unit tests), it falls back to the legacy owner/admin/manager role check so the
-// pure-function permission matrix keeps holding.
-func (h *Handler) authorizeRunNowCtx(c *gin.Context, role string, userID, createdBy uuid.UUID) bool {
+// As of P8 the legacy owner/admin/manager role-NAME fallback is gone: the handler's
+// capChecker is required (NewHandler panics on nil), so authorization never keys off
+// a tenant-editable role name. A nil caller id never satisfies the creator check, so
+// an identity-less request is denied unless its role holds workflows.run_any.
+func (h *Handler) authorizeRunNowCtx(c *gin.Context, userID, createdBy uuid.UUID) bool {
 	if userID != uuid.Nil && userID == createdBy {
 		return true // creator may always run their own workflow
 	}
-	if h.capChecker != nil {
-		orgIDVal, _ := c.Get("org_id")
-		orgID, _ := orgIDVal.(uuid.UUID)
-		return h.capChecker.HasCapability(c.Request.Context(), orgID, domain.CapWorkflowsRunAny) == nil
-	}
-	return authorizeRunNow(role, userID, createdBy)
+	orgIDVal, _ := c.Get("org_id")
+	orgID, _ := orgIDVal.(uuid.UUID)
+	return h.capChecker.HasCapability(c.Request.Context(), orgID, domain.CapWorkflowsRunAny) == nil
 }

@@ -3,7 +3,6 @@ package http
 import (
 	"crypto/subtle"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -56,61 +55,71 @@ func AuthMiddleware(jwtSecret string, authRepo domain.AuthRepository, redisClien
 		status := "active"
 		roleName := claims.Role
 		// Default to trusting the claim's values; the cache/DB path below overrides
-		// them with the authoritative version/scope when Redis is available.
+		// them with the authoritative version/scope/identity when available.
 		tokenVersion := claims.TokenVersion
 		dataScope := claims.DataScope
 		if dataScope == "" {
 			dataScope = domain.DataScopeAll // pre-P3 token → default to org-wide scope
 		}
+		// Role identity (P5 re-key): the rid claim carries it since P3; the cache/DB
+		// re-resolution below is authoritative. IsOwner comes ONLY from cache/DB —
+		// never from a name comparison on the claim.
+		roleID := claims.RoleID
+		isOwner := false
 
-		if redisClient != nil {
-			cacheKey := "session:" + claims.UserID.String() + ":org:" + claims.OrgID.String()
-			val, err := redisClient.Get(c.Request.Context(), cacheKey).Result()
-			if err == nil && val != "" {
-				// Value is "status:roleName:tokenVersion:dataScope" (P3). Shorter
-				// legacy entries (pre-P2/P3) are still honored for the fields they
-				// carry; missing trailing fields leave the claim's value in place
-				// until the entry expires and is rewritten in the full form.
-				parts := strings.SplitN(val, ":", 4)
-				if len(parts) >= 2 {
-					status = parts[0]
-					roleName = parts[1]
-					if len(parts) >= 3 {
-						if v, e := strconv.Atoi(parts[2]); e == nil {
-							tokenVersion = v
-						}
-					}
-					if len(parts) >= 4 && parts[3] != "" {
-						dataScope = parts[3]
-					}
+		// resolveFromDB reads the authoritative membership + token version. Used on
+		// the no-Redis path, on a cache miss, and on a malformed cache entry (which
+		// is treated as a miss — fail-safe, never trust a corrupt value). Returns
+		// false after aborting when the membership is gone.
+		resolveFromDB := func() bool {
+			ou, err := authRepo.GetOrgUser(c.Request.Context(), claims.UserID, claims.OrgID)
+			if err != nil || ou == nil || ou.DeletedAt != nil {
+				c.AbortWithStatusJSON(http.StatusForbidden, domain.Err("access denied"))
+				return false
+			}
+			status = ou.Status
+			roleID = ou.RoleID
+			if ou.Role != nil {
+				roleName = ou.Role.Name
+				isOwner = domain.IsOwnerRole(ou.Role)
+				dataScope = domain.DataScopeAll
+				if ou.Role.DataScope == domain.DataScopeOwn {
+					dataScope = domain.DataScopeOwn
 				}
 			} else {
-				// Cache miss, hit DB
-				ou, err := authRepo.GetOrgUser(c.Request.Context(), claims.UserID, claims.OrgID)
-				if err != nil || ou == nil || ou.DeletedAt != nil {
-					c.AbortWithStatusJSON(http.StatusForbidden, domain.Err("access denied"))
+				// Role-less membership (unresolved/deleted role): least-privilege,
+				// fail-closed — the NARROWEST 'own' scope, never a stale-token 'all'
+				// (mirrors generateAccessToken's P9 nil-role fix). roleID stays as the
+				// stored value, so OLS default-denies when it matches no grants.
+				dataScope = domain.DataScopeOwn
+			}
+			if tv, e := authRepo.GetUserTokenVersion(c.Request.Context(), claims.UserID); e == nil {
+				tokenVersion = tv
+			}
+			return true
+		}
+
+		if redisClient != nil {
+			cacheKey := usecase.SessionCacheKey(claims.UserID, claims.OrgID)
+			val, err := redisClient.Get(c.Request.Context(), cacheKey).Result()
+			parsed := false
+			if err == nil && val != "" {
+				// v2 value: status:tv:ds:rid:isOwner:roleName (P5). v2 keys are only
+				// ever written in this full form; a malformed value falls through to
+				// the DB below instead of being partially trusted.
+				if s, tv, ds, rid, owner, name, ok := usecase.ParseSessionCacheValue(val); ok {
+					status, tokenVersion, dataScope, roleID, isOwner, roleName = s, tv, ds, rid, owner, name
+					parsed = true
+				}
+			}
+			if !parsed {
+				// Cache miss (or malformed entry) — hit the DB and rewrite the entry.
+				if !resolveFromDB() {
 					return
 				}
-				status = ou.Status
-				if ou.Role != nil {
-					roleName = ou.Role.Name
-					dataScope = domain.DataScopeAll
-					if ou.Role.DataScope == domain.DataScopeOwn {
-						dataScope = domain.DataScopeOwn
-					}
-				}
-				if tv, e := authRepo.GetUserTokenVersion(c.Request.Context(), claims.UserID); e == nil {
-					tokenVersion = tv
-				}
-				_ = redisClient.Set(c.Request.Context(), cacheKey, status+":"+roleName+":"+strconv.Itoa(tokenVersion)+":"+dataScope, 5*time.Minute).Err()
-			}
-
-			// Instant global invalidation (P2): a token minted before a
-			// password reset / sign-out-everywhere / theft-triggered bump carries
-			// a stale version and is rejected here.
-			if claims.TokenVersion != tokenVersion {
-				c.AbortWithStatusJSON(http.StatusUnauthorized, domain.Err("session expired, please sign in again"))
-				return
+				_ = redisClient.Set(c.Request.Context(), cacheKey,
+					usecase.EncodeSessionCacheValue(status, tokenVersion, dataScope, roleID, isOwner, roleName),
+					5*time.Minute).Err()
 			}
 		} else {
 			// No Redis (e.g. a dev / small self-host deployment without a cache):
@@ -120,26 +129,17 @@ func AuthMiddleware(jwtSecret string, authRepo domain.AuthRepository, redisClien
 			// invalidation silently degrade to the ≤2h access-token TTL (the very
 			// gap the P4 sessions UI promises to close). One extra read per request
 			// on the cache-less path only; production runs Redis and never gets here.
-			ou, err := authRepo.GetOrgUser(c.Request.Context(), claims.UserID, claims.OrgID)
-			if err != nil || ou == nil || ou.DeletedAt != nil {
-				c.AbortWithStatusJSON(http.StatusForbidden, domain.Err("access denied"))
+			if !resolveFromDB() {
 				return
 			}
-			status = ou.Status
-			if ou.Role != nil {
-				roleName = ou.Role.Name
-				dataScope = domain.DataScopeAll
-				if ou.Role.DataScope == domain.DataScopeOwn {
-					dataScope = domain.DataScopeOwn
-				}
-			}
-			if tv, e := authRepo.GetUserTokenVersion(c.Request.Context(), claims.UserID); e == nil {
-				tokenVersion = tv
-			}
-			if claims.TokenVersion != tokenVersion {
-				c.AbortWithStatusJSON(http.StatusUnauthorized, domain.Err("session expired, please sign in again"))
-				return
-			}
+		}
+
+		// Instant global invalidation (P2): a token minted before a password reset /
+		// sign-out-everywhere / theft-triggered bump carries a stale version and is
+		// rejected here.
+		if claims.TokenVersion != tokenVersion {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, domain.Err("session expired, please sign in again"))
+			return
 		}
 
 		if status != "active" {
@@ -152,9 +152,17 @@ func AuthMiddleware(jwtSecret string, authRepo domain.AuthRepository, redisClien
 		scopedCtx := repository.WithDataScope(c.Request.Context(), dataScope, claims.UserID)
 		// Carry the caller identity so RecordService can enforce Object-Level
 		// Security and stamp the audit actor without threading role/user through
-		// every method (plan P5a). Set for every protected route; a request that
-		// reaches RecordService without it is a trusted in-process call.
-		scopedCtx = domain.WithCaller(scopedCtx, roleName, claims.UserID)
+		// every method (plan P5a). Authorization keys off RoleID/IsOwner (P5); the
+		// name rides along for display/audit and the bridge fallback. Set for every
+		// protected route; a request that reaches RecordService without it is a
+		// trusted in-process call.
+		scopedCtx = domain.WithCallerIdentity(scopedCtx, domain.Caller{
+			Role:      roleName,
+			UserID:    claims.UserID,
+			RoleID:    roleID,
+			IsOwner:   isOwner,
+			DataScope: dataScope,
+		})
 		// Carry transport detail so admin mutations (member/role/permission) can
 		// stamp an auth_events row with the actor's IP/UA without threading
 		// RequestMeta through every usecase method (P4).
@@ -162,36 +170,6 @@ func AuthMiddleware(jwtSecret string, authRepo domain.AuthRepository, redisClien
 		c.Request = c.Request.WithContext(scopedCtx)
 
 		c.Next()
-	}
-}
-
-func RequireRole(roles ...string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		userRole, exists := c.Get("role")
-		if !exists {
-			c.AbortWithStatusJSON(http.StatusForbidden, domain.Err("role not found in context"))
-			return
-		}
-
-		roleStr, ok := userRole.(string)
-		if !ok {
-			c.AbortWithStatusJSON(http.StatusForbidden, domain.Err("invalid role type"))
-			return
-		}
-
-		if roleStr == domain.RoleOwner {
-			c.Next()
-			return
-		}
-
-		for _, r := range roles {
-			if r == roleStr {
-				c.Next()
-				return
-			}
-		}
-
-		c.AbortWithStatusJSON(http.StatusForbidden, domain.Err("insufficient permissions"))
 	}
 }
 
@@ -207,7 +185,7 @@ func abortWithAppError(c *gin.Context, err error) {
 }
 
 // RequireCapability gates a route on a system capability (P3, D5), replacing the
-// hardcoded RequireRole name lists for admin/workspace powers. It reads the
+// old hardcoded role-name lists for admin/workspace powers. It reads the
 // caller (set by AuthMiddleware) from the request context; the owner role
 // bypasses, and a role without the capability row is default-denied with a 403
 // that names the missing capability — so custom roles work through the SAME gate

@@ -17,7 +17,7 @@ const ROLE_COLORS: Record<string, string> = {
 };
 
 export default function ConversationLogPage() {
-  const { currentRole } = useAuth();
+  const { hasCapability } = useAuth();
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -28,7 +28,7 @@ export default function ConversationLogPage() {
   const [error, setError] = useState('');
 
   const limit = 20;
-  const canAccess = currentRole === 'owner' || currentRole === 'admin';
+  const canAccess = hasCapability('members.manage');
 
   useEffect(() => {
     if (!canAccess) return;

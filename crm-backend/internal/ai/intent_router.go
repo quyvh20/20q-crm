@@ -98,12 +98,15 @@ func MatchIntent(message string) string {
 	return ""
 }
 
-// ExecuteIntent runs a matched intent by code — no AI needed.
+// ExecuteIntent runs a matched intent by code — no AI needed. The caller carries
+// the identity + row scope (P7) so the fast path enforces OLS and labels/own-scope
+// exactly like the full AI path, rather than switching on the role name.
 func (cc *CommandCenter) ExecuteIntent(
 	ctx context.Context,
 	intentName string,
 	orgID, userID uuid.UUID,
-	role, message string,
+	caller domain.Caller,
+	message string,
 ) *IntentResult {
 	switch intentName {
 	// ── Navigation ──
@@ -126,17 +129,17 @@ func (cc *CommandCenter) ExecuteIntent(
 
 	// ── Data queries ──
 	case "search_deals":
-		return cc.intentSearchDeals(ctx, orgID, userID, role, 10, "created_at", "desc")
+		return cc.intentSearchDeals(ctx, orgID, caller, 10, "created_at", "desc")
 	case "top_deals":
-		return cc.intentSearchDeals(ctx, orgID, userID, role, 5, "value", "desc")
+		return cc.intentSearchDeals(ctx, orgID, caller, 5, "value", "desc")
 	case "search_contacts":
-		return cc.intentSearchContacts(ctx, orgID, userID, role)
+		return cc.intentSearchContacts(ctx, orgID, caller)
 	case "my_tasks":
 		return cc.intentMyTasks(ctx, orgID, userID)
 
 	// ── Analytics ──
 	case "analytics_pipeline", "analytics_revenue":
-		return cc.intentAnalytics(ctx, orgID, userID, role, intentName)
+		return cc.intentAnalytics(ctx, orgID, caller, intentName)
 
 	// ── Help ──
 	case "help":
@@ -206,18 +209,20 @@ func (cc *CommandCenter) intentCreateDeal(message string) *IntentResult {
 
 func (cc *CommandCenter) intentSearchDeals(
 	ctx context.Context,
-	orgID, userID uuid.UUID,
-	role string,
+	orgID uuid.UUID,
+	caller domain.Caller,
 	limit int,
 	sortBy, sortOrder string,
 ) *IntentResult {
+	if cc.authz != nil && cc.authz.Authorize(ctx, orgID, "deal", domain.ActionRead) != nil {
+		return &IntentResult{Text: "You don't have access to deals."}
+	}
+	ownScope := effectiveScope(caller) == domain.DataScopeOwn
+	// Own-scope is applied at the repository from the request context; no name check.
 	filter := domain.DealFilter{
 		Limit:     limit,
 		SortBy:    sortBy,
 		SortOrder: sortOrder,
-	}
-	if role == "sales_rep" {
-		filter.OwnerUserID = &userID
 	}
 
 	deals, _, err := cc.dealRepo.List(ctx, orgID, filter)
@@ -227,7 +232,7 @@ func (cc *CommandCenter) intentSearchDeals(
 	}
 
 	if len(deals) == 0 {
-		if role == "sales_rep" {
+		if ownScope {
 			return &IntentResult{Text: "You don't have any deals assigned to you yet. Click **+ New Deal** to create one!"}
 		}
 		return &IntentResult{Text: "No deals found in the pipeline yet."}
@@ -238,9 +243,9 @@ func (cc *CommandCenter) intentSearchDeals(
 	if sortBy == "value" {
 		b.WriteString(fmt.Sprintf("### 💰 Top %d Deals by Value\n\n", len(deals)))
 	} else {
-		scope := "Your"
-		if role != "sales_rep" {
-			scope = "All"
+		scope := "All"
+		if ownScope {
+			scope = "Your"
 		}
 		b.WriteString(fmt.Sprintf("### 📊 %s Deals (%d)\n\n", scope, len(deals)))
 	}
@@ -293,13 +298,15 @@ func (cc *CommandCenter) intentSearchDeals(
 
 func (cc *CommandCenter) intentSearchContacts(
 	ctx context.Context,
-	orgID, userID uuid.UUID,
-	role string,
+	orgID uuid.UUID,
+	caller domain.Caller,
 ) *IntentResult {
-	filter := domain.ContactFilter{Limit: 10, SortBy: "created_at", SortOrder: "desc"}
-	if role == "sales_rep" {
-		filter.OwnerUserID = &userID
+	if cc.authz != nil && cc.authz.Authorize(ctx, orgID, "contact", domain.ActionRead) != nil {
+		return &IntentResult{Text: "You don't have access to contacts."}
 	}
+	ownScope := effectiveScope(caller) == domain.DataScopeOwn
+	// Own-scope is applied at the repository from the request context; no name check.
+	filter := domain.ContactFilter{Limit: 10, SortBy: "created_at", SortOrder: "desc"}
 
 	contacts, _, err := cc.contactRepo.List(ctx, orgID, filter)
 	if err != nil {
@@ -308,15 +315,15 @@ func (cc *CommandCenter) intentSearchContacts(
 	}
 
 	if len(contacts) == 0 {
-		if role == "sales_rep" {
+		if ownScope {
 			return &IntentResult{Text: "You don't have any contacts assigned to you yet. Click **+ New Contact** to add one!"}
 		}
 		return &IntentResult{Text: "No contacts found in the system yet."}
 	}
 
-	scope := "Your"
-	if role != "sales_rep" {
-		scope = "All"
+	scope := "All"
+	if ownScope {
+		scope = "Your"
 	}
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("### 👥 %s Contacts (%d)\n\n", scope, len(contacts)))
@@ -410,13 +417,17 @@ func (cc *CommandCenter) intentMyTasks(
 
 func (cc *CommandCenter) intentAnalytics(
 	ctx context.Context,
-	orgID, userID uuid.UUID,
-	role, intentName string,
+	orgID uuid.UUID,
+	caller domain.Caller,
+	intentName string,
 ) *IntentResult {
-	filter := domain.DealFilter{Limit: 500}
-	if role == "sales_rep" {
-		filter.OwnerUserID = &userID
+	if cc.authz != nil && cc.authz.Authorize(ctx, orgID, "deal", domain.ActionRead) != nil {
+		return &IntentResult{Text: "You don't have access to deals."}
 	}
+	ownScope := effectiveScope(caller) == domain.DataScopeOwn
+	// This is a scoped pipeline/revenue SUMMARY (own vs all, applied at the repo),
+	// not the org-wide forecast — so it needs no analytics.view gate.
+	filter := domain.DealFilter{Limit: 500}
 
 	deals, _, err := cc.dealRepo.List(ctx, orgID, filter)
 	if err != nil {
@@ -440,7 +451,7 @@ func (cc *CommandCenter) intentAnalytics(
 	}
 
 	scope := "Org-wide"
-	if role == "sales_rep" {
+	if ownScope {
 		scope = "Your"
 	}
 

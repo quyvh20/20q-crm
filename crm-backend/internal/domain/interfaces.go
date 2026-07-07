@@ -3,6 +3,7 @@ package domain
 import (
 	"context"
 	"mime/multipart"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -19,6 +20,10 @@ type RegisterInput struct {
 type LoginInput struct {
 	Email    string `json:"email" binding:"required,email"`
 	Password string `json:"password" binding:"required"`
+	// OrgID lets a programmatic client bind the session to a specific workspace at
+	// login (R2, P3). Validated as an ACTIVE membership; a mismatch is a 403, never
+	// a silent fallback. Browser logins omit it and let the selection chain decide.
+	OrgID *uuid.UUID `json:"org_id"`
 }
 
 type RefreshInput struct {
@@ -28,6 +33,9 @@ type RefreshInput struct {
 
 type SwitchWorkspaceInput struct {
 	OrgID uuid.UUID `json:"org_id" binding:"required"`
+	// SetDefault persists OrgID as the user's default workspace (R2, P3) so the
+	// chooser isn't shown again — the "Make this my default" checkbox / switcher star.
+	SetDefault bool `json:"set_default"`
 }
 
 type WorkspaceInfo struct {
@@ -36,6 +44,8 @@ type WorkspaceInfo struct {
 	OrgType string    `json:"org_type"`
 	Role    string    `json:"role"`
 	Status  string    `json:"status"`
+	// MemberCount is the org's active-member count, shown on the chooser cards (P3).
+	MemberCount int `json:"member_count"`
 }
 
 type AuthResponse struct {
@@ -43,15 +53,27 @@ type AuthResponse struct {
 	RefreshToken string          `json:"refresh_token"`
 	User         User            `json:"user"`
 	Workspaces   []WorkspaceInfo `json:"workspaces"`
+	// R2 org-selection contract (P3). ActiveOrgID is the org the access token is
+	// bound to (uuid.Nil ⇒ the user has no active workspace: the zero-membership
+	// dead-end). DefaultOrgID echoes the user's saved default (drives the switcher
+	// star). NeedsChooser is true when there are multiple active workspaces and no
+	// valid default resolved one — the SPA shows /choose-workspace.
+	ActiveOrgID  uuid.UUID  `json:"active_org_id"`
+	DefaultOrgID *uuid.UUID `json:"default_org_id,omitempty"`
+	NeedsChooser bool       `json:"needs_chooser"`
 }
 
+// InviteMemberInput / UpdateMemberRoleInput are keyed by role_id, not the role
+// NAME (P6): names are tenant-editable vocabulary, so a rename/duplicate must
+// never re-point an assignment. The server resolves the id to a role usable by
+// the org and enforces the owner + escalation guards.
 type InviteMemberInput struct {
-	Email string `json:"email" binding:"required,email"`
-	Role  string `json:"role" binding:"required"`
+	Email  string    `json:"email" binding:"required,email"`
+	RoleID uuid.UUID `json:"role_id" binding:"required"`
 }
 
 type UpdateMemberRoleInput struct {
-	Role string `json:"role" binding:"required"`
+	RoleID uuid.UUID `json:"role_id" binding:"required"`
 }
 
 type MemberInfo struct {
@@ -61,8 +83,34 @@ type MemberInfo struct {
 	LastName  string    `json:"last_name"`
 	FullName  string    `json:"full_name"`
 	AvatarURL *string   `json:"avatar_url,omitempty"`
-	Role      string    `json:"role"`
-	Status    string    `json:"status"`
+	// RoleID is the authoritative role identity; Role is its name for display (P6).
+	RoleID uuid.UUID `json:"role_id"`
+	Role   string    `json:"role"`
+	Status string    `json:"status"`
+}
+
+// AcceptInviteInput carries the invite token and, for a brand-new non-OAuth
+// invitee, the password + name they set on the accept page (P2). Password is
+// optional: an existing account (or one that will use "Continue with Google")
+// accepts without it. When present it is policy-checked before being stored.
+type AcceptInviteInput struct {
+	Token     string `json:"token" binding:"required"`
+	Password  string `json:"password"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+}
+
+// InvitationInfo is one pending invitation rendered for the members panel (P2):
+// enough to show who was invited, as what, and whether it can still be accepted.
+type InvitationInfo struct {
+	ID        uuid.UUID  `json:"id"`
+	Email     string     `json:"email"`
+	RoleID    uuid.UUID  `json:"role_id"`
+	Role      string     `json:"role"`
+	Status    string     `json:"status"`
+	ExpiresAt time.Time  `json:"expires_at"`
+	CreatedAt time.Time  `json:"created_at"`
+	ResentAt  *time.Time `json:"resent_at,omitempty"`
 }
 
 type GoogleUserInfo struct {
@@ -107,6 +155,12 @@ type AuthRepository interface {
 	CreateOrgUser(ctx context.Context, ou *OrgUser) error
 	GetOrgUser(ctx context.Context, userID, orgID uuid.UUID) (*OrgUser, error)
 	ListOrgsByUserID(ctx context.Context, userID uuid.UUID) ([]OrgUser, error)
+	// SetUserDefaultOrg sets (or, with a nil orgID, clears) users.default_org_id —
+	// the durable home-workspace memory the R2 selection chain honors (P3).
+	SetUserDefaultOrg(ctx context.Context, userID uuid.UUID, orgID *uuid.UUID) error
+	// CountActiveMembersByOrgs returns active-member counts for the given orgs in
+	// ONE aggregate query (no N+1), for the chooser cards' member count (P3).
+	CountActiveMembersByOrgs(ctx context.Context, orgIDs []uuid.UUID) (map[uuid.UUID]int, error)
 	ListMembersByOrgID(ctx context.Context, orgID uuid.UUID) ([]OrgUser, error)
 	UpdateOrgUserRole(ctx context.Context, userID, orgID, roleID uuid.UUID) error
 	UpdateOrgUserStatus(ctx context.Context, userID, orgID uuid.UUID, status string) error
@@ -117,18 +171,44 @@ type AuthRepository interface {
 	GetRoleByName(ctx context.Context, name string, orgID *uuid.UUID) (*Role, error)
 	GetRoleByID(ctx context.Context, id uuid.UUID) (*Role, error)
 
+	// TransferOrgOwnership atomically demotes the current owner to demoteRoleID
+	// and promotes the target to ownerRoleID in one transaction, so the org can
+	// never be observed with zero or two owners.
+	TransferOrgOwnership(ctx context.Context, orgID, fromUserID, toUserID, ownerRoleID, demoteRoleID uuid.UUID) error
+
 	CreateOrgInvitation(ctx context.Context, inv *OrgInvitation) error
 	GetOrgInvitationByTokenHash(ctx context.Context, tokenHash string) (*OrgInvitation, error)
+	GetOrgInvitationByID(ctx context.Context, id, orgID uuid.UUID) (*OrgInvitation, error)
 	UpdateOrgInvitation(ctx context.Context, inv *OrgInvitation) error
+	// ListPendingInvitations returns an org's still-actionable invitations
+	// (pending, unexpired, not revoked), newest first, for the members panel (P2).
+	ListPendingInvitations(ctx context.Context, orgID uuid.UUID) ([]OrgInvitation, error)
+	// AcceptInvitation runs the whole accept in ONE transaction (P2): create the
+	// invitee (createUser) or set a password on the existing account
+	// (newPasswordHash), UPSERT the org_users membership to active (reinstating a
+	// previously-removed row), and mark the invitation accepted — so a partial
+	// accept can never strand a half-joined member. user must carry the final id.
+	AcceptInvitation(ctx context.Context, inv *OrgInvitation, user *User, createUser bool, newPasswordHash *string) error
 
 	// Account recovery (P1) — hashed, single-use, short-TTL tokens.
 	CreatePasswordResetToken(ctx context.Context, t *PasswordResetToken) error
 	GetPasswordResetTokenByHash(ctx context.Context, tokenHash string) (*PasswordResetToken, error)
+	// GetLatestPasswordResetToken returns the user's most recently issued reset
+	// token regardless of state (nil when none) — backs the per-email cooldown.
+	GetLatestPasswordResetToken(ctx context.Context, userID uuid.UUID) (*PasswordResetToken, error)
+	// VoidActivePasswordResetTokens marks every outstanding (unused) reset token
+	// consumed so only the newest link works — issuing a fresh token must not
+	// widen the interception window with older, still-live ones.
+	VoidActivePasswordResetTokens(ctx context.Context, userID uuid.UUID) error
 	// MarkPasswordResetTokenUsed atomically claims a token (UPDATE … WHERE id = ?
 	// AND used_at IS NULL) and returns rows affected: 1 = this caller won the
 	// single-use claim, 0 = already consumed (reject). This is the authoritative
 	// single-use gate, so it is race-safe and its result must be checked.
 	MarkPasswordResetTokenUsed(ctx context.Context, id uuid.UUID) (int64, error)
+	// CountAdminResetTokensSince counts admin-initiated reset links (initiated_by
+	// IS NOT NULL) minted for a user since `since` — the per-target daily cap that
+	// stops any workspace admin from bombing a shared user with reset emails (P2).
+	CountAdminResetTokensSince(ctx context.Context, userID uuid.UUID, since time.Time) (int64, error)
 
 	CreateEmailVerificationToken(ctx context.Context, t *EmailVerificationToken) error
 	GetEmailVerificationTokenByHash(ctx context.Context, tokenHash string) (*EmailVerificationToken, error)
@@ -174,7 +254,11 @@ type AuthUseCase interface {
 	GetMe(ctx context.Context, userID uuid.UUID) (*User, error)
 	GoogleLogin(ctx context.Context, code string) (*AuthResponse, error)
 	GetGoogleAuthURL(state string) string
-	SwitchWorkspace(ctx context.Context, userID uuid.UUID, input SwitchWorkspaceInput) (*AuthResponse, error)
+	// SwitchWorkspace re-mints the session for a validated ACTIVE membership. It
+	// threads request meta into the new refresh token and revokes the presented
+	// one (switch hygiene, P3) so a switch never orphans a live 7-day credential;
+	// input.SetDefault persists the target as the user's default.
+	SwitchWorkspace(ctx context.Context, userID uuid.UUID, input SwitchWorkspaceInput, meta RequestMeta, currentRefreshToken string) (*AuthResponse, error)
 	ListWorkspaces(ctx context.Context, userID uuid.UUID) ([]WorkspaceInfo, error)
 
 	// Account recovery + email verification (P1). ForgotPassword and
@@ -199,11 +283,27 @@ type AuthUseCase interface {
 type WorkspaceUseCase interface {
 	ListMembers(ctx context.Context, orgID uuid.UUID) ([]MemberInfo, error)
 	InviteMember(ctx context.Context, orgID uuid.UUID, input InviteMemberInput) (*MemberInfo, *string, error)
-	AcceptInvite(ctx context.Context, token string) error
+	// AcceptInvite joins the invitee to the org transactionally, optionally setting
+	// the password/name they chose on the accept page (P2).
+	AcceptInvite(ctx context.Context, input AcceptInviteInput) error
+	// ListInvitations / ResendInvitation / RevokeInvitation drive the pending-
+	// invitations panel (P2). Resend re-mints a fresh 256-bit token; revoke kills
+	// the pending token so it can no longer be accepted.
+	ListInvitations(ctx context.Context, orgID uuid.UUID) ([]InvitationInfo, error)
+	ResendInvitation(ctx context.Context, orgID, invitationID uuid.UUID) (*string, error)
+	RevokeInvitation(ctx context.Context, orgID, invitationID uuid.UUID) error
 	UpdateMemberRole(ctx context.Context, orgID uuid.UUID, targetUserID uuid.UUID, input UpdateMemberRoleInput) error
 	SuspendMember(ctx context.Context, orgID uuid.UUID, targetUserID uuid.UUID) error
 	ReinstateMember(ctx context.Context, orgID uuid.UUID, targetUserID uuid.UUID) error
-	TransferOwnership(ctx context.Context, orgID uuid.UUID, targetUserID uuid.UUID) error
+	// SendMemberResetLink emails a target member a password-reset link on an
+	// admin's behalf (P2). The admin never sees or sets the password (accounts are
+	// global); the token is never returned in any env. Shares the self-serve
+	// per-email cooldown plus a per-target daily cap.
+	SendMemberResetLink(ctx context.Context, orgID, callerUserID, targetUserID uuid.UUID, meta RequestMeta) error
+	// TransferOwnership is the ONLY path that mints an owner. The caller must be
+	// the current owner (verified inside, not just at the route), and the current
+	// owner is demoted in the same transaction the target is promoted.
+	TransferOwnership(ctx context.Context, orgID uuid.UUID, callerUserID, targetUserID uuid.UUID) error
 	RemoveMember(ctx context.Context, orgID uuid.UUID, targetUserID uuid.UUID, input RemoveMemberInput) error
 }
 

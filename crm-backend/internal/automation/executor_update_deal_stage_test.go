@@ -88,7 +88,7 @@ func TestUpdateRecord_DealStageChange_WritesActivityLog(t *testing.T) {
 	require.NoError(t, db.Exec(`INSERT INTO pipeline_stages (id, org_id, name, position, is_won) VALUES (?, ?, 'Closed Won', 1, true)`, wonStageID, orgID).Error)
 	require.NoError(t, db.Exec(`INSERT INTO deals (id, org_id, title, stage_id, is_won) VALUES (?, ?, 'Acme renewal', ?, false)`, dealID, orgID, leadStageID).Error)
 
-	exec := NewUpdateRecordExecutor(db)
+	exec := NewUpdateRecordExecutor(db, nil)
 	run := &WorkflowRun{ID: uuid.New(), WorkflowID: uuid.New(), OrgID: orgID}
 	action := ActionSpec{Type: ActionUpdateRecord, ID: "ur1", Params: map[string]any{
 		"updates": []any{
@@ -154,7 +154,7 @@ func TestUpdateRecord_DealStageChange_PlainStage(t *testing.T) {
 	require.NoError(t, db.Exec(`INSERT INTO pipeline_stages (id, org_id, name, position) VALUES (?, ?, 'Negotiation', 1)`, negotiationStageID, orgID).Error)
 	require.NoError(t, db.Exec(`INSERT INTO deals (id, org_id, title, stage_id) VALUES (?, ?, 'Acme', ?)`, dealID, orgID, leadStageID).Error)
 
-	exec := NewUpdateRecordExecutor(db)
+	exec := NewUpdateRecordExecutor(db, nil)
 	run := &WorkflowRun{ID: uuid.New(), WorkflowID: uuid.New(), OrgID: orgID}
 	action := ActionSpec{Type: ActionUpdateRecord, ID: "ur1", Params: map[string]any{
 		"updates": []any{
@@ -213,7 +213,7 @@ func TestUpdateRecord_DealNumericColumnIncrement(t *testing.T) {
 	dealID := uuid.New()
 	require.NoError(t, db.Exec(`INSERT INTO deals (id, org_id, title, value, probability) VALUES (?, ?, 'Acme', 1000.00, 40)`, dealID, orgID).Error)
 
-	exec := NewUpdateRecordExecutor(db)
+	exec := NewUpdateRecordExecutor(db, nil)
 	run := &WorkflowRun{ID: uuid.New(), WorkflowID: uuid.New(), OrgID: orgID}
 	action := ActionSpec{Type: ActionUpdateRecord, ID: "ur1", Params: map[string]any{
 		"updates": []any{
@@ -256,7 +256,7 @@ func TestUpdateRecord_DealCustomFieldIncrement_TemplatedAndFractional(t *testing
 	dealID := uuid.New()
 	require.NoError(t, db.Exec(`INSERT INTO deals (id, org_id, title, custom_fields) VALUES (?, ?, 'Acme', '{"score": 10}'::jsonb)`, dealID, orgID).Error)
 
-	exec := NewUpdateRecordExecutor(db)
+	exec := NewUpdateRecordExecutor(db, nil)
 	run := &WorkflowRun{ID: uuid.New(), WorkflowID: uuid.New(), OrgID: orgID}
 	action := ActionSpec{Type: ActionUpdateRecord, ID: "ur1", Params: map[string]any{
 		"updates": []any{
@@ -306,7 +306,7 @@ func TestUpdateRecord_DealStageChange_UnknownStageRolledBack(t *testing.T) {
 	require.NoError(t, db.Exec(`INSERT INTO pipeline_stages (id, org_id, name, position) VALUES (?, ?, 'Lead', 0)`, leadStageID, orgID).Error)
 	require.NoError(t, db.Exec(`INSERT INTO deals (id, org_id, title, stage_id) VALUES (?, ?, 'Acme renewal', ?)`, dealID, orgID, leadStageID).Error)
 
-	exec := NewUpdateRecordExecutor(db)
+	exec := NewUpdateRecordExecutor(db, nil)
 	run := &WorkflowRun{ID: uuid.New(), WorkflowID: uuid.New(), OrgID: orgID}
 	action := ActionSpec{Type: ActionUpdateRecord, ID: "ur1", Params: map[string]any{
 		"updates": []any{
@@ -384,7 +384,7 @@ func TestUpdateRecord_DealStageChange_DoesNotReTrigger(t *testing.T) {
 
 	repo := NewRepository(db)
 	engine := makeEngine(db, map[string]ActionExecutor{
-		ActionUpdateRecord: NewUpdateRecordExecutor(db),
+		ActionUpdateRecord: NewUpdateRecordExecutor(db, nil),
 	})
 	defer engine.cancel()
 
@@ -444,7 +444,7 @@ func TestUpdateRecord_DealScalarColumnSet_NoSideEffects(t *testing.T) {
 	dealID := uuid.New()
 	require.NoError(t, db.Exec(`INSERT INTO deals (id, org_id, title) VALUES (?, ?, 'Old title')`, dealID, orgID).Error)
 
-	exec := NewUpdateRecordExecutor(db)
+	exec := NewUpdateRecordExecutor(db, nil)
 	run := &WorkflowRun{ID: uuid.New(), WorkflowID: uuid.New(), OrgID: orgID}
 	action := ActionSpec{Type: ActionUpdateRecord, ID: "ur1", Params: map[string]any{
 		"updates": []any{
@@ -503,7 +503,7 @@ func TestUpdateRecord_DealStageChange_ReopenClearsTerminalState(t *testing.T) {
 	// A deal that is already won: in the won stage, is_won=true, closed_at set.
 	require.NoError(t, db.Exec(`INSERT INTO deals (id, org_id, title, stage_id, is_won, closed_at) VALUES (?, ?, 'Acme', ?, true, NOW())`, dealID, orgID, wonStageID).Error)
 
-	exec := NewUpdateRecordExecutor(db)
+	exec := NewUpdateRecordExecutor(db, nil)
 	run := &WorkflowRun{ID: uuid.New(), WorkflowID: uuid.New(), OrgID: orgID}
 	action := ActionSpec{Type: ActionUpdateRecord, ID: "ur1", Params: map[string]any{
 		"updates": []any{

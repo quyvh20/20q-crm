@@ -5,11 +5,11 @@ import InviteMemberModal from '../components/settings/InviteMemberModal';
 import GroupsManager from '../components/settings/GroupsManager';
 
 export default function WorkspaceSettingsPage() {
-  const { activeWorkspace, currentRole, hasCapability } = useAuth();
+  const { activeWorkspace, hasCapability } = useAuth();
   const [showInvite, setShowInvite] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
-  const canInvite = currentRole === 'owner' || currentRole === 'admin' || currentRole === 'manager';
+  const canInvite = hasCapability('members.invite');
   const canManageGroups = hasCapability('groups.manage');
 
   return (

@@ -1,0 +1,14 @@
+ALTER TABLE org_invitations DROP COLUMN IF EXISTS revoked_at;
+ALTER TABLE org_invitations DROP COLUMN IF EXISTS resent_at;
+ALTER TABLE password_reset_tokens DROP COLUMN IF EXISTS initiated_by;
+DROP INDEX IF EXISTS idx_users_email_lower;
+ALTER TABLE users DROP COLUMN IF EXISTS default_org_id;
+ALTER TABLE roles DROP CONSTRAINT IF EXISTS roles_owner_lineage;
+ALTER TABLE roles DROP CONSTRAINT IF EXISTS roles_no_owner_shadow;
+DROP INDEX IF EXISTS uq_roles_one_owner;
+DROP INDEX IF EXISTS uq_roles_org_name;
+DROP INDEX IF EXISTS uq_roles_global_name;
+ALTER TABLE roles DROP COLUMN IF EXISTS seeded_from_role_id;
+ALTER TABLE roles DROP COLUMN IF EXISTS template_key;
+ALTER TABLE roles DROP COLUMN IF EXISTS description;
+ALTER TABLE roles DROP COLUMN IF EXISTS is_owner;

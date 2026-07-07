@@ -19,7 +19,7 @@ import GroupsManager from '../GroupsManager';
 function member(partial: Partial<WorkspaceMember>): WorkspaceMember {
   return {
     user_id: crypto.randomUUID(), email: 'x@y.z', first_name: 'X', last_name: 'Y',
-    full_name: 'X Y', role: 'sales_rep', status: 'active', ...partial,
+    full_name: 'X Y', role_id: 'role-sales', role: 'sales_rep', status: 'active', ...partial,
   };
 }
 function group(partial: Partial<UserGroup>): UserGroup {

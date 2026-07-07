@@ -20,7 +20,7 @@ import (
 //
 //	| Stage         | Condition                          | HTTP | Error code          |
 //	| Auth          | Missing/invalid org context        | 401  | UNAUTHORIZED        |
-//	| Authz         | Not owner/admin/manager nor creator| 403  | FORBIDDEN           |
+//	| Authz         | Lacks workflows.run_any, not creator| 403 | FORBIDDEN           |
 //	| Path          | :id not a valid UUID               | 400  | INVALID_ID          |
 //	| Body          | Both / neither of contact/deal id  | 400  | INVALID_REQUEST     |
 //	| Body          | Present id not a valid UUID        | 400  | INVALID_ID          |
@@ -33,8 +33,9 @@ import (
 //     validation — all return BEFORE the handler touches h.repo / h.db / h.engine
 //     (verified against handlers.go: getContext → parse :id → classifyRunNowRequest →
 //     GetWorkflowByID). They run against a Handler whose only populated field is a discard
-//     logger, so they need no database. The authorization decision itself is a pure
-//     function (authorizeRunNow) and is unit-tested exhaustively without HTTP or a DB.
+//     logger, so they need no database. The authorization decision itself (creator
+//     allowance + the workflows.run_any capability) is unit-tested in
+//     TestAuthorizeRunNowCtx (p8_helpers_test.go) without HTTP or a DB.
 //   - DB-backed (skips without Docker): the engine-failure 500, the success 201, and the
 //     authorization 201/403 paths require a real workflow + contact load, so they reuse the
 //     package's integration scaffolding (setupTestDB / makeEngine) and the sibling seed
@@ -43,13 +44,14 @@ import (
 //     testcontainers/Docker is unavailable, consistent with the rest of the package.
 //
 // Authorization model (Run Now creator allowance): unlike the other workflow-mutating
-// endpoints, the /:id/run route carries NO requireRole guard. owner/admin/manager may run
-// any workflow in the org; any other caller may run ONLY a workflow they created. This is
-// enforced inside RunNow (it needs the loaded workflow's CreatedBy), so it is tested as the
-// pure authorizeRunNow matrix plus DB-backed handler tests proving a non-privileged creator
-// is allowed (201) and a non-privileged non-creator is forbidden (403). A separate test
-// proves the route is registered WITHOUT a role guard (a non-privileged caller reaches the
-// handler rather than being rejected by route middleware).
+// endpoints, the /:id/run route carries NO route-level capability guard. A caller with the
+// workflows.run_any capability may run any workflow in the org; any other caller may run
+// ONLY a workflow they created. This is enforced inside RunNow (it needs the loaded
+// workflow's CreatedBy), so it is tested as the TestAuthorizeRunNowCtx capability matrix
+// plus DB-backed handler tests proving a non-privileged creator is allowed (201) and a
+// non-privileged non-creator is forbidden (403). A separate test proves the route is
+// registered WITHOUT a capability guard (a non-privileged caller reaches the handler rather
+// than being rejected by route middleware).
 //
 // Validates: Requirements 1.2, 1.3, 1.4, 2.6, 6.7, 7.2, 7.3, 7.5
 
@@ -127,51 +129,11 @@ func TestRunNowHandler_MissingOrgContextReturns401(t *testing.T) {
 	assert.Nil(t, resp.Data, "a 401 response must contain no run id")
 }
 
-// ============================================================
-// Authorization: pure permission matrix (Req 1.2, 1.4)
-// ============================================================
-
-// TestRunNowAuthorized exhaustively verifies the Run Now permission decision
-// (authorizeRunNow), the pure function the handler delegates to. owner/admin/manager may
-// run ANY workflow regardless of who created it; any other role (or a missing role) may run
-// ONLY a workflow they created; a nil caller id never satisfies the creator allowance.
-//
-// Validates: Requirements 1.2, 1.4
-func TestRunNowAuthorized(t *testing.T) {
-	creator := uuid.New()
-	other := uuid.New()
-
-	cases := []struct {
-		name      string
-		role      string
-		userID    uuid.UUID
-		createdBy uuid.UUID
-		want      bool
-	}{
-		{"owner runs any workflow", "owner", other, creator, true},
-		{"admin runs any workflow", "admin", other, creator, true},
-		{"manager runs any workflow", "manager", other, creator, true},
-		{"viewer runs own workflow (creator allowance)", "viewer", creator, creator, true},
-		{"member runs own workflow (creator allowance)", "member", creator, creator, true},
-		{"empty role runs own workflow (creator allowance)", "", creator, creator, true},
-		{"viewer cannot run another's workflow", "viewer", other, creator, false},
-		{"member cannot run another's workflow", "member", other, creator, false},
-		{"unknown role cannot run another's workflow", "guest", other, creator, false},
-		{"nil caller id never satisfies creator check", "viewer", uuid.Nil, uuid.Nil, false},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, authorizeRunNow(tc.role, tc.userID, tc.createdBy),
-				"authorizeRunNow(%q, creator=%v) for createdBy=%v", tc.role, tc.userID == tc.createdBy, tc.createdBy)
-		})
-	}
-}
-
 // TestRunNowHandler_RouteNotRoleGuarded drives the real Handler.RegisterRoutes with a
-// requireRole spy to prove the POST /api/workflows/:id/run route is registered WITHOUT a
-// role guard — a deliberate departure from the other workflow-mutating endpoints so the
-// creator allowance can be enforced in-handler. A non-privileged ("viewer") caller must
+// requireCap spy to prove the POST /api/workflows/:id/run route is registered WITHOUT a
+// route-level capability guard — a deliberate departure from the other workflow-mutating
+// endpoints so the creator allowance can be enforced in-handler. A non-privileged
+// ("viewer") caller must
 // therefore reach the handler rather than being rejected by route middleware. The request
 // uses an invalid :id so the handler returns 400 INVALID_ID immediately, before any
 // repo/db/engine access (which are nil here) — proving the caller got past routing without
@@ -232,9 +194,9 @@ func TestRunNowHandler_RouteNotRoleGuarded(t *testing.T) {
 // ============================================================
 
 // TestRunNowHandler_CreatorAllowanceAllowsNonPrivilegedCreator verifies the creator
-// allowance end to end: a caller whose role is NOT owner/admin/manager ("viewer") may still
-// Run Now a workflow they created. The seeded workflow's CreatedBy is set to the caller's
-// user id, so authorizeRunNow permits it and the request succeeds with 201.
+// allowance end to end: a caller WITHOUT the workflows.run_any capability ("viewer") may
+// still Run Now a workflow they created. The seeded workflow's CreatedBy is set to the
+// caller's user id, so authorizeRunNowCtx permits it and the request succeeds with 201.
 //
 // Validates: Requirements 1.2
 func TestRunNowHandler_CreatorAllowanceAllowsNonPrivilegedCreator(t *testing.T) {
@@ -253,7 +215,7 @@ func TestRunNowHandler_CreatorAllowanceAllowsNonPrivilegedCreator(t *testing.T) 
 
 	engine := makeEngine(db, map[string]ActionExecutor{})
 	defer engine.cancel()
-	handler := NewHandler(engine, db, handlerRunNowDiscardLogger())
+	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capDeny{}, nil)
 	// Non-privileged caller ("viewer") — only the creator allowance can authorize this run.
 	router := runNowITRouterWithRole(handler, orgID, userID, "viewer")
 
@@ -272,10 +234,10 @@ func TestRunNowHandler_CreatorAllowanceAllowsNonPrivilegedCreator(t *testing.T) 
 		"the creator's run must persist exactly one run")
 }
 
-// TestRunNowHandler_NonCreatorNonPrivilegedForbidden verifies that a caller who is neither
-// privileged (owner/admin/manager) NOR the workflow's creator is rejected with 403
+// TestRunNowHandler_NonCreatorNonPrivilegedForbidden verifies that a caller who neither
+// holds the workflows.run_any capability NOR is the workflow's creator is rejected with 403
 // FORBIDDEN and creates no run. The seeded workflow's CreatedBy is a different user, and the
-// caller's role is "viewer", so authorizeRunNow denies it.
+// caller lacks workflows.run_any, so authorizeRunNowCtx denies it.
 //
 // Validates: Requirements 1.2, 1.4
 func TestRunNowHandler_NonCreatorNonPrivilegedForbidden(t *testing.T) {
@@ -294,7 +256,7 @@ func TestRunNowHandler_NonCreatorNonPrivilegedForbidden(t *testing.T) {
 
 	engine := makeEngine(db, map[string]ActionExecutor{})
 	defer engine.cancel()
-	handler := NewHandler(engine, db, handlerRunNowDiscardLogger())
+	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capDeny{}, nil)
 	router := runNowITRouterWithRole(handler, orgID, callerID, "viewer")
 
 	// Workflow created by someone OTHER than the caller → creator allowance does not apply.
@@ -427,7 +389,7 @@ func TestRunNowHandler_EngineFailureReturns500NoRunID(t *testing.T) {
 
 	engine := makeEngine(db, map[string]ActionExecutor{})
 	defer engine.cancel()
-	handler := NewHandler(engine, db, handlerRunNowDiscardLogger())
+	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capAllow{}, nil)
 	router := runNowITRouter(handler, orgID, userID)
 
 	// Seed a compatible contact workflow + in-org contact so the request reaches the
@@ -477,7 +439,7 @@ func TestRunNowHandler_SuccessReturns201WithIDAndStatus(t *testing.T) {
 
 	engine := makeEngine(db, map[string]ActionExecutor{})
 	defer engine.cancel()
-	handler := NewHandler(engine, db, handlerRunNowDiscardLogger())
+	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capAllow{}, nil)
 	router := runNowITRouter(handler, orgID, userID)
 
 	wf := runNowITWorkflow(t, db, orgID, TriggerContactCreated)

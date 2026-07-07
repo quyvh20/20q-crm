@@ -38,7 +38,9 @@ describe('PermissionsManager — role × object grid', () => {
 
     // Defaults to the first editable role (sales_rep), not owner.
     expect(await screen.findByText('Deal')).toBeInTheDocument();
-    expect(screen.getByText('Project')).toBeInTheDocument();
+    // "Project" now appears both in the table row and in the no-access nudge
+    // banner (sales_rep has no read grant for it), so match at least one.
+    expect(screen.getAllByText('Project').length).toBeGreaterThan(0);
 
     // Existing grants are reflected; an object with no row is default-deny.
     expect((screen.getByLabelText('sales_rep Read Deal') as HTMLInputElement).checked).toBe(true);

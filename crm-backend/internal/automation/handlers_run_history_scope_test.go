@@ -229,7 +229,7 @@ func TestGetRunDetailHandler_ForeignOrgRunReturns404(t *testing.T) {
 
 	engine := makeEngine(db, map[string]ActionExecutor{})
 	defer engine.cancel()
-	handler := NewHandler(engine, db, handlerRunNowDiscardLogger())
+	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capAllow{}, nil)
 	router := runHistITRouter(handler, callerOrg, uuid.New(), "admin")
 
 	// A real run owned by another org. retryITSeedRun (handlers_retry_test.go) seeds a run
@@ -258,7 +258,7 @@ func TestGetRunDetailHandler_InOrgRunReturns200(t *testing.T) {
 
 	engine := makeEngine(db, map[string]ActionExecutor{})
 	defer engine.cancel()
-	handler := NewHandler(engine, db, handlerRunNowDiscardLogger())
+	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capAllow{}, nil)
 	router := runHistITRouter(handler, orgID, uuid.New(), "admin")
 
 	run := retryITSeedRun(t, db, orgID, StatusCompleted, []int{0})
@@ -289,7 +289,7 @@ func TestListRunsHandler_ForeignOrgWorkflowReturns404(t *testing.T) {
 
 	engine := makeEngine(db, map[string]ActionExecutor{})
 	defer engine.cancel()
-	handler := NewHandler(engine, db, handlerRunNowDiscardLogger())
+	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capAllow{}, nil)
 	router := runHistITRouter(handler, callerOrg, uuid.New(), "admin")
 
 	// A workflow (with a run) owned by another org. runNowITWorkflow (run_now_integration_
@@ -325,7 +325,7 @@ func TestListRunsHandler_InOrgWorkflowReturns200(t *testing.T) {
 
 	engine := makeEngine(db, map[string]ActionExecutor{})
 	defer engine.cancel()
-	handler := NewHandler(engine, db, handlerRunNowDiscardLogger())
+	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capAllow{}, nil)
 	router := runHistITRouter(handler, orgID, uuid.New(), "admin")
 
 	wf := runNowITWorkflow(t, db, orgID, TriggerContactCreated)

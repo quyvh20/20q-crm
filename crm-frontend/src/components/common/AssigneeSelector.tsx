@@ -9,13 +9,16 @@ interface Props {
 }
 
 export default function AssigneeSelector({ value, onChange, disabled }: Props) {
-  const { user, currentRole } = useAuth();
+  const { user, dataScope } = useAuth();
   const [users, setUsers] = useState<UserListItem[]>([]);
 
-  const isSales = currentRole === 'sales_rep';
+  // An 'own'-scoped role only sees records it owns, so it can only assign to
+  // itself — generalizes the old hardcoded sales_rep check to any custom role
+  // whose data_scope is 'own' (P6).
+  const ownScoped = dataScope === 'own';
 
   useEffect(() => {
-    if (isSales) {
+    if (ownScoped) {
       if (user) {
         setUsers([{ id: user.id, first_name: user.first_name, last_name: user.last_name, email: user.email }]);
         onChange(user.id);
@@ -23,13 +26,13 @@ export default function AssigneeSelector({ value, onChange, disabled }: Props) {
       return;
     }
     getUsers().then(setUsers).catch(() => setUsers([]));
-  }, [isSales, user]);
+  }, [ownScoped, user]);
 
   return (
     <select
       value={value || ''}
       onChange={e => onChange(e.target.value || undefined)}
-      disabled={disabled || isSales}
+      disabled={disabled || ownScoped}
       className="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all disabled:opacity-60 disabled:cursor-not-allowed"
     >
       <option value="">Unassigned</option>

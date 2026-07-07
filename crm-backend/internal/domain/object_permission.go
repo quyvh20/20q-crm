@@ -179,15 +179,15 @@ type PermissionRepository interface {
 	// that has ZERO permission rows. Advisory-locked per org; safe to call on the
 	// cache-miss load path.
 	EnsureDefaults(ctx context.Context, orgID uuid.UUID) error
-	// LoadOrgAccess returns roleName → objectSlug → access for an org, joining
-	// object_permissions to roles. Populates the OLS cache in one query.
-	LoadOrgAccess(ctx context.Context, orgID uuid.UUID) (map[string]map[string]ObjectAccess, error)
+	// LoadOrgAccess returns roleID → objectSlug → access for an org. Keyed by
+	// role_id (P5 re-key): grants must survive a role rename/duplicate, so the
+	// cache key is the role's identity, never its tenant-editable name.
+	LoadOrgAccess(ctx context.Context, orgID uuid.UUID) (map[uuid.UUID]map[string]ObjectAccess, error)
 	// ListRoles returns the org's roles (system + org-scoped custom).
 	ListRoles(ctx context.Context, orgID uuid.UUID) ([]Role, error)
-	// LoadOrgCapabilities returns roleName → capabilityCode → true for an org,
-	// joining role_permissions to roles (system roles + this org's custom roles).
-	// Populates the capability half of the cache in one query (P3, D5).
-	LoadOrgCapabilities(ctx context.Context, orgID uuid.UUID) (map[string]map[string]bool, error)
+	// LoadOrgCapabilities returns roleID → capabilityCode → true for an org
+	// (system roles + this org's custom roles). Keyed by role_id (P5 re-key).
+	LoadOrgCapabilities(ctx context.Context, orgID uuid.UUID) (map[uuid.UUID]map[string]bool, error)
 	// ListPermissions returns the raw rows for the grid.
 	ListPermissions(ctx context.Context, orgID uuid.UUID) ([]ObjectPermission, error)
 	// UpsertPermission writes one (role, object) cell (insert or update). Rows are
@@ -200,10 +200,10 @@ type PermissionRepository interface {
 
 	// --- Field-Level Security (P5b) ---
 
-	// LoadOrgFieldAccess returns roleName → objectSlug → fieldKey → level for an
-	// org, joining field_permissions to roles. Populates the FLS half of the cache
-	// in one query; an org with no restrictions returns an empty map (zero overhead).
-	LoadOrgFieldAccess(ctx context.Context, orgID uuid.UUID) (map[string]map[string]map[string]string, error)
+	// LoadOrgFieldAccess returns roleID → objectSlug → fieldKey → level for an
+	// org (P5 re-key). Populates the FLS half of the cache in one query; an org
+	// with no restrictions returns an empty map (zero overhead).
+	LoadOrgFieldAccess(ctx context.Context, orgID uuid.UUID) (map[uuid.UUID]map[string]map[string]string, error)
 	// ListFieldPermissions returns the raw restriction rows for one object (the
 	// admin field-security grid). Only genuine restrictions exist as rows.
 	ListFieldPermissions(ctx context.Context, orgID uuid.UUID, slug string) ([]FieldPermission, error)

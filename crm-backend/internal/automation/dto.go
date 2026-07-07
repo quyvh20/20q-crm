@@ -152,7 +152,7 @@ type WebhookInboundResponse struct {
 // WebhookTokenResponse is returned by GET /api/webhooks/token. It powers the
 // builder's inbound-webhook setup panel (P17). The secret is MASKED (last 4 chars
 // only) — the full secret is exposed solely by the regenerate endpoint. The route
-// is guarded by requireRole(admin, manager).
+// is guarded by the workflows.manage capability (requireCap(CapWorkflowsManage)).
 type WebhookTokenResponse struct {
 	Token        string `json:"token"`         // org token embedded in the inbound URL path
 	SecretMasked string `json:"secret_masked"` // signing secret, masked for display

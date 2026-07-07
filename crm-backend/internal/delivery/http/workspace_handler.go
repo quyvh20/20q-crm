@@ -61,20 +61,101 @@ func (h *WorkspaceHandler) InviteMember(c *gin.Context) {
 }
 
 func (h *WorkspaceHandler) AcceptInvite(c *gin.Context) {
-	var input struct {
-		Token string `json:"token" binding:"required"`
-	}
+	var input domain.AcceptInviteInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, domain.Err(err.Error()))
 		return
 	}
 
-	if err := h.workspaceUC.AcceptInvite(c.Request.Context(), input.Token); err != nil {
+	if err := h.workspaceUC.AcceptInvite(c.Request.Context(), input); err != nil {
 		handleAppError(c, err)
 		return
 	}
 
 	c.JSON(http.StatusOK, domain.Success(gin.H{"message": "invitation accepted"}))
+}
+
+// ListInvitations returns the org's pending invitations for the members panel (P2).
+func (h *WorkspaceHandler) ListInvitations(c *gin.Context) {
+	orgID, ok := GetOrgID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	invites, err := h.workspaceUC.ListInvitations(c.Request.Context(), orgID)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, domain.Success(invites))
+}
+
+// ResendInvitation re-mints and re-sends a pending invitation (P2).
+func (h *WorkspaceHandler) ResendInvitation(c *gin.Context) {
+	orgID, ok := GetOrgID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	invID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, domain.Err("invalid invitation id"))
+		return
+	}
+	debugToken, err := h.workspaceUC.ResendInvitation(c.Request.Context(), orgID, invID)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	resp := gin.H{"message": "invitation resent"}
+	if debugToken != nil {
+		resp["debug_token"] = *debugToken
+	}
+	c.JSON(http.StatusOK, domain.Success(resp))
+}
+
+// RevokeInvitation kills a pending invitation (P2).
+func (h *WorkspaceHandler) RevokeInvitation(c *gin.Context) {
+	orgID, ok := GetOrgID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	invID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, domain.Err("invalid invitation id"))
+		return
+	}
+	if err := h.workspaceUC.RevokeInvitation(c.Request.Context(), orgID, invID); err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, domain.Success(gin.H{"message": "invitation revoked"}))
+}
+
+// SendMemberResetLink emails a member a password-reset link on the admin's behalf
+// (P2). The admin never sees or sets the password.
+func (h *WorkspaceHandler) SendMemberResetLink(c *gin.Context) {
+	orgID, ok := GetOrgID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	callerID, ok := GetUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	targetUserID, err := uuid.Parse(c.Param("user_id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, domain.Err("invalid user id"))
+		return
+	}
+	if err := h.workspaceUC.SendMemberResetLink(c.Request.Context(), orgID, callerID, targetUserID, requestMeta(c)); err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, domain.Success(gin.H{"message": "We've emailed this member a password reset link."}))
 }
 
 func (h *WorkspaceHandler) UpdateMemberRole(c *gin.Context) {
@@ -179,6 +260,11 @@ func (h *WorkspaceHandler) TransferOwnership(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
 		return
 	}
+	callerID, ok := GetUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
 
 	targetUserID, err := uuid.Parse(c.Param("user_id"))
 	if err != nil {
@@ -186,7 +272,7 @@ func (h *WorkspaceHandler) TransferOwnership(c *gin.Context) {
 		return
 	}
 
-	if err := h.workspaceUC.TransferOwnership(c.Request.Context(), orgID, targetUserID); err != nil {
+	if err := h.workspaceUC.TransferOwnership(c.Request.Context(), orgID, callerID, targetUserID); err != nil {
 		handleAppError(c, err)
 		return
 	}

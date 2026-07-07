@@ -38,7 +38,7 @@ func TestUpdateRecord_ContactUpdate_ColumnCustomFieldAndTag(t *testing.T) {
 		contactID, orgID,
 	).Error)
 
-	exec := NewUpdateRecordExecutor(db)
+	exec := NewUpdateRecordExecutor(db, nil)
 	run := &WorkflowRun{ID: uuid.New(), WorkflowID: uuid.New(), OrgID: orgID}
 	action := ActionSpec{Type: ActionUpdateRecord, ID: "ur1", Params: map[string]any{
 		"updates": []any{
@@ -105,7 +105,7 @@ func TestUpdateRecord_CustomObjectUpdate_JSONBData(t *testing.T) {
 		recordID, orgID,
 	).Error)
 
-	exec := NewUpdateRecordExecutor(db)
+	exec := NewUpdateRecordExecutor(db, nil)
 	run := &WorkflowRun{ID: uuid.New(), WorkflowID: uuid.New(), OrgID: orgID}
 	action := ActionSpec{Type: ActionUpdateRecord, ID: "ur1", Params: map[string]any{
 		"updates": []any{

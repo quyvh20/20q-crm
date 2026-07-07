@@ -150,7 +150,7 @@ func TestRetryRunHandler_ForeignOrgRunReturns404(t *testing.T) {
 
 	engine := makeEngine(db, map[string]ActionExecutor{})
 	defer engine.cancel()
-	handler := NewHandler(engine, db, handlerRunNowDiscardLogger())
+	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capAllow{}, nil)
 	router := retryITRouter(handler, callerOrg, uuid.New(), "admin")
 
 	run := retryITSeedRun(t, db, ownerOrg, StatusFailed, []int{0})
@@ -188,7 +188,7 @@ func TestRetryRunHandler_RejectsNonFailedRun(t *testing.T) {
 
 			engine := makeEngine(db, map[string]ActionExecutor{})
 			defer engine.cancel()
-			handler := NewHandler(engine, db, handlerRunNowDiscardLogger())
+			handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capAllow{}, nil)
 			router := retryITRouter(handler, orgID, uuid.New(), "admin")
 
 			run := retryITSeedRun(t, db, orgID, status, []int{0})
@@ -221,7 +221,7 @@ func TestRetryRunHandler_FailedRunReturns200AndResets(t *testing.T) {
 
 	engine := makeEngine(db, map[string]ActionExecutor{})
 	defer engine.cancel()
-	handler := NewHandler(engine, db, handlerRunNowDiscardLogger())
+	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capAllow{}, nil)
 	router := retryITRouter(handler, orgID, uuid.New(), "admin")
 
 	run := retryITSeedRun(t, db, orgID, StatusFailed, []int{0})
@@ -251,10 +251,10 @@ func TestRetryRunHandler_FailedRunReturns200AndResets(t *testing.T) {
 // Authorization: creator allowance (org admin OR workflow creator)
 // ============================================================
 
-// TestRetryRunHandler_RouteNotRoleGuarded proves the retry route carries NO requireRole
-// guard (authorization is in-handler, like Run Now): a non-privileged "viewer" must reach
-// the handler rather than be rejected by route middleware. The request uses an invalid
-// :runId so the handler returns 400 INVALID_ID before any repo/db/engine access.
+// TestRetryRunHandler_RouteNotRoleGuarded proves the retry route carries NO route-level
+// capability guard (authorization is in-handler, like Run Now): a non-privileged "viewer"
+// must reach the handler rather than be rejected by route middleware. The request uses an
+// invalid :runId so the handler returns 400 INVALID_ID before any repo/db/engine access.
 func TestRetryRunHandler_RouteNotRoleGuarded(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -309,7 +309,7 @@ func TestRetryRunHandler_CreatorAllowanceAllowsNonPrivilegedCreator(t *testing.T
 
 	engine := makeEngine(db, map[string]ActionExecutor{})
 	defer engine.cancel()
-	handler := NewHandler(engine, db, handlerRunNowDiscardLogger())
+	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capDeny{}, nil)
 	router := retryITRouter(handler, orgID, userID, "viewer") // non-privileged
 
 	// Workflow created BY the caller → creator allowance applies.
@@ -341,7 +341,7 @@ func TestRetryRunHandler_NonCreatorNonPrivilegedForbidden(t *testing.T) {
 
 	engine := makeEngine(db, map[string]ActionExecutor{})
 	defer engine.cancel()
-	handler := NewHandler(engine, db, handlerRunNowDiscardLogger())
+	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capDeny{}, nil)
 	router := retryITRouter(handler, orgID, callerID, "viewer")
 
 	// Workflow created by SOMEONE ELSE → creator allowance does not apply.

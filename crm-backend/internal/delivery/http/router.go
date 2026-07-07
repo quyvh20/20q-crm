@@ -77,10 +77,19 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			// plan D2) a verified email — a brand-new unverified signup can't spread
 			// access until they confirm their inbox.
 			workspaces.POST("/invites", cap(domain.CapMembersInvite), RequireVerifiedEmail(authRepo), workspaceHandler.InviteMember)
+			// Pending-invitation lifecycle (P2). List/revoke need only members.invite
+			// (you can un-send what you can send); resend re-emails, so it carries the
+			// same verified-email gate as the initial invite.
+			workspaces.GET("/invitations", cap(domain.CapMembersInvite), workspaceHandler.ListInvitations)
+			workspaces.POST("/invitations/:id/resend", cap(domain.CapMembersInvite), RequireVerifiedEmail(authRepo), workspaceHandler.ResendInvitation)
+			workspaces.DELETE("/invitations/:id", cap(domain.CapMembersInvite), workspaceHandler.RevokeInvitation)
 			workspaces.PATCH("/members/:user_id/role", cap(domain.CapMembersManage), workspaceHandler.UpdateMemberRole)
 			workspaces.POST("/members/:user_id/suspend", cap(domain.CapMembersManage), workspaceHandler.SuspendMember)
 			workspaces.POST("/members/:user_id/reinstate", cap(domain.CapMembersManage), workspaceHandler.ReinstateMember)
 			workspaces.POST("/members/:user_id/transfer", cap(domain.CapMembersManage), workspaceHandler.TransferOwnership)
+			// Admin "Send reset link" (P2): emails the member a self-serve reset — the
+			// admin never sees or sets the password (accounts span workspaces).
+			workspaces.POST("/members/:user_id/send-reset-link", cap(domain.CapMembersManage), workspaceHandler.SendMemberResetLink)
 			workspaces.DELETE("/members/:user_id", cap(domain.CapMembersManage), workspaceHandler.RemoveMember)
 		}
 
@@ -89,8 +98,15 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 		// so a role created here appears in them automatically.
 		roles := protected.Group("/roles")
 		{
+			// /options + /catalog are any-member (no roles.manage): they carry no
+			// grant data, only the role identities + capability labels every picker
+			// and the report Share dialog need (P6). The full grants payload (List /
+			// capabilities) stays gated.
+			roles.GET("/options", roleHandler.Options)
+			roles.GET("/catalog", roleHandler.Catalog)
 			roles.GET("", cap(domain.CapRolesManage), roleHandler.List)
 			roles.POST("", cap(domain.CapRolesManage), roleHandler.Create)
+			roles.POST("/:id/duplicate", cap(domain.CapRolesManage), roleHandler.Duplicate)
 			roles.PATCH("/:id", cap(domain.CapRolesManage), roleHandler.Update)
 			roles.DELETE("/:id", cap(domain.CapRolesManage), roleHandler.Delete)
 			roles.GET("/:id/capabilities", cap(domain.CapRolesManage), roleHandler.GetCapabilities)

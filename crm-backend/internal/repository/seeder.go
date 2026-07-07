@@ -39,10 +39,13 @@ func SeedSystemRoles(db *gorm.DB) error {
 			}
 
 			if err == gorm.ErrRecordNotFound {
+				templateKey := name
 				role = domain.Role{
-					Name:      name,
-					IsSystem:  true,
-					DataScope: scope,
+					Name:        name,
+					IsSystem:    true,
+					IsOwner:     name == domain.RoleOwner,
+					TemplateKey: &templateKey,
+					DataScope:   scope,
 				}
 				if err := tx.Create(&role).Error; err != nil {
 					return err
@@ -52,6 +55,13 @@ func SeedSystemRoles(db *gorm.DB) error {
 				// Keep system-role scope aligned with the documented default.
 				if err := tx.Model(&domain.Role{}).Where("id = ?", role.ID).
 					Update("data_scope", scope).Error; err != nil {
+					return err
+				}
+			}
+			if name == domain.RoleOwner && !role.IsOwner {
+				// Realign the flag for rows created before is_owner existed.
+				if err := tx.Model(&domain.Role{}).Where("id = ?", role.ID).
+					Update("is_owner", true).Error; err != nil {
 					return err
 				}
 			}

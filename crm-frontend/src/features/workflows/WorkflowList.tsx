@@ -19,7 +19,8 @@ export const WorkflowList: React.FC = () => {
   const [toast, setToast] = useState<{ message: string; type: 'error' | 'success'; action?: ToastAction } | null>(null);
   const [runNowTarget, setRunNowTarget] = useState<Workflow | null>(null);
   const navigate = useNavigate();
-  const { user, currentRole } = useAuth();
+  const { user, hasCapability } = useAuth();
+  const canRunAny = hasCapability('workflows.run_any');
 
   // Search term, active/inactive filter, and page all live in the URL query string,
   // so they survive reload + back/forward and a narrowed list can be deep-linked.
@@ -323,7 +324,7 @@ export const WorkflowList: React.FC = () => {
                   {/* Run Now is shown only to callers the backend would authorize
                       (owner/admin/manager, or the workflow's creator) so a forbidden
                       caller isn't offered a control that would 403. */}
-                  {canRunWorkflowNow(currentRole, user?.id, wf) && (
+                  {canRunWorkflowNow(canRunAny, user?.id, wf) && (
                     <button
                       onClick={() => setRunNowTarget(wf)}
                       className="px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20 transition-colors"

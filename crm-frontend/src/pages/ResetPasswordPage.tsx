@@ -1,13 +1,23 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { resetPassword } from '../lib/api';
 import { useAuth } from '../lib/auth';
 
 export default function ResetPasswordPage() {
   const [searchParams] = useSearchParams();
-  const token = searchParams.get('token');
+  // Capture the token once, then scrub it from the address bar so the raw reset
+  // token can't be shoulder-surfed, bookmarked, or leaked via the Referer header
+  // (P2). The ref keeps it usable after the URL is rewritten.
+  const tokenRef = useRef(searchParams.get('token'));
+  const token = tokenRef.current;
   const navigate = useNavigate();
   const { logout } = useAuth();
+
+  useEffect(() => {
+    if (token && window.history?.replaceState) {
+      window.history.replaceState(null, '', window.location.pathname);
+    }
+  }, [token]);
 
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');

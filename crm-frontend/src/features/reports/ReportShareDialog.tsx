@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   listReportShares, addReportShare, removeReportShare, updateReport,
-  getWorkspaceMembers, getRoles, listGroups,
+  getWorkspaceMembers, getRoleOptions, listGroups,
   type Report, type ReportShareView, type ShareTargetType, type ShareLevel,
-  type ReportVisibility, type WorkspaceMember, type RoleDetail, type UserGroup,
+  type ReportVisibility, type WorkspaceMember, type RoleOption, type UserGroup,
 } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 
@@ -29,7 +29,7 @@ export default function ReportShareDialog({ report, onClose }: { report: Report;
   const [shares, setShares] = useState<ReportShareView[]>([]);
   const [visibility, setVisibility] = useState<ReportVisibility>(report.visibility);
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
-  const [roles, setRoles] = useState<RoleDetail[]>([]);
+  const [roles, setRoles] = useState<RoleOption[]>([]);
   const [groups, setGroups] = useState<UserGroup[]>([]);
   const [tab, setTab] = useState<ShareTargetType>('user');
   const [selected, setSelected] = useState('');
@@ -39,18 +39,20 @@ export default function ReportShareDialog({ report, onClose }: { report: Report;
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
-    try {
-      setLoading(true);
-      const [s, m, r, g] = await Promise.all([listReportShares(report.id), getWorkspaceMembers(), getRoles(), listGroups()]);
-      setShares(s);
-      setMembers(m.filter((x) => x.status === 'active'));
-      setRoles(r);
-      setGroups(g);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load sharing');
-    } finally {
-      setLoading(false);
-    }
+    setLoading(true);
+    setError('');
+    // allSettled (P6): each picker source loads independently, so one 403/failure
+    // (e.g. a member without members.manage) can't blank the whole dialog. The
+    // current share list is the only must-have; the rest degrade to empty pickers.
+    const [s, m, r, g] = await Promise.allSettled([
+      listReportShares(report.id), getWorkspaceMembers(), getRoleOptions(), listGroups(),
+    ]);
+    if (s.status === 'fulfilled') setShares(s.value);
+    else setError(s.reason instanceof Error ? s.reason.message : 'Failed to load sharing');
+    setMembers(m.status === 'fulfilled' ? m.value.filter((x) => x.status === 'active') : []);
+    setRoles(r.status === 'fulfilled' ? r.value : []);
+    setGroups(g.status === 'fulfilled' ? g.value : []);
+    setLoading(false);
   }, [report.id]);
   useEffect(() => { load(); }, [load]);
 

@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"strings"
 
+	"crm-backend/internal/domain"
+
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
@@ -27,13 +29,27 @@ import (
 //	}
 //
 // All updates execute inside a single DB transaction for multi-field atomicity.
+//
+// P8 (run-as-creator): the write mechanics stay direct-SQL + transactional — that
+// is the whole reason this executor doesn't route through RecordService, which
+// can't express the increment/decrement/tag/multi-field-atomic semantics here and
+// isn't transactional across fields (see handleDealStageChange's KEEP IN SYNC
+// note). Instead the executor enforces the SAME chokepoint RecordService uses —
+// the injected domain.RecordAuthorizer (PermissionUseCase) — running as the
+// workflow author whose Caller the engine put on the context: OLS (Authorize),
+// FLS (FieldMask), own-scope (owner_user_id/record_shares for contacts+deals), and
+// the P5a audit trail. A nil authz (unit tests) disables enforcement, matching the
+// pre-P8 trusted behavior.
 type UpdateRecordExecutor struct {
-	db *gorm.DB
+	db    *gorm.DB
+	authz domain.RecordAuthorizer
 }
 
-// NewUpdateRecordExecutor creates a new update record executor.
-func NewUpdateRecordExecutor(db *gorm.DB) *UpdateRecordExecutor {
-	return &UpdateRecordExecutor{db: db}
+// NewUpdateRecordExecutor creates a new update record executor. authz is the
+// OLS/FLS + audit chokepoint the write is enforced through as the workflow author
+// (P8); nil disables enforcement (unit tests).
+func NewUpdateRecordExecutor(db *gorm.DB, authz domain.RecordAuthorizer) *UpdateRecordExecutor {
+	return &UpdateRecordExecutor{db: db, authz: authz}
 }
 
 // FieldUpdate describes a single field mutation within an update_record action.
@@ -97,6 +113,13 @@ func (e *UpdateRecordExecutor) Execute(ctx context.Context, run *WorkflowRun, ac
 
 	entity := resolveEntity(evalCtx)
 
+	// Run-as-creator gate (P8): OLS (edit on this object) + FLS (each touched field
+	// is writable by the author's role). Own-scope + audit are enforced per-entity
+	// below, where the resolved record id is known.
+	if err := e.authorizeWrite(ctx, run, entity, updates, evalCtx); err != nil {
+		return nil, err
+	}
+
 	switch entity {
 	case "contact":
 		return e.executeContact(ctx, run, updates, evalCtx)
@@ -106,6 +129,91 @@ func (e *UpdateRecordExecutor) Execute(ctx context.Context, run *WorkflowRun, ac
 		// Custom object entity — update the JSONB data column
 		return e.executeCustomObject(ctx, run, updates, evalCtx, entity)
 	}
+}
+
+// authorizeWrite enforces the workflow author's Object- and Field-Level Security
+// before any mutation (P8). It delegates to the same authorizer RecordService
+// uses; a nil authz (unit tests) is a no-op.
+func (e *UpdateRecordExecutor) authorizeWrite(ctx context.Context, run *WorkflowRun, slug string, updates []FieldUpdate, evalCtx EvalContext) error {
+	if e.authz == nil {
+		return nil
+	}
+	if err := e.authz.Authorize(ctx, run.OrgID, slug, domain.ActionEdit); err != nil {
+		return err
+	}
+	mask := e.authz.FieldMask(ctx, run.OrgID, slug)
+	if mask.Empty() {
+		return nil
+	}
+	for _, upd := range updates {
+		key := flsFieldKey(InterpolateTemplate(upd.Field, evalCtx), slug)
+		if key == "" {
+			continue
+		}
+		if !mask.CanWrite(key) {
+			return fmt.Errorf("update_record: your role may not edit the '%s' field", key)
+		}
+	}
+	return nil
+}
+
+// flsFieldKey maps an update's field path to the object field key FLS is keyed by:
+// it strips the entity prefix ("deal.stage" → "stage") and the custom-field prefix
+// ("custom_fields.score" → "score"), matching how RecordService flattens fields.
+func flsFieldKey(field, slug string) string {
+	f := strings.TrimPrefix(field, slug+".")
+	f = strings.TrimPrefix(f, "custom_fields.")
+	return f
+}
+
+// enforceOwnScope denies the write when the workflow author is own-scoped (and not
+// owner) and the target record is neither owned by nor shared to them — mirroring
+// the read-layer owned-OR-shared rule in repository/scopes.go so automation can't
+// mutate records the author could never see. Applies only to contacts/deals (the
+// only objects with owner_user_id + record_shares); custom objects have no owner
+// column, so their object-level OLS above is the gate. A nil authz or a non-own
+// caller is a no-op.
+func (e *UpdateRecordExecutor) enforceOwnScope(ctx context.Context, run *WorkflowRun, table, recordType string, recordID uuid.UUID) error {
+	if e.authz == nil {
+		return nil
+	}
+	caller, ok := domain.CallerFromContext(ctx)
+	if !ok || caller.IsOwner || caller.DataScope != domain.DataScopeOwn {
+		return nil
+	}
+	allowed, err := ownScopeAllows(ctx, e.db, run.OrgID, table, recordType, recordID, caller.UserID)
+	if err != nil {
+		return fmt.Errorf("update_record: own-scope check failed: %w", err)
+	}
+	if !allowed {
+		return fmt.Errorf("update_record: your role may only modify %s records you own", recordType)
+	}
+	return nil
+}
+
+// audit attributes an automation record write to the workflow author in the P5a
+// object_audit trail (best-effort; a nil authz is a no-op). Mirrors
+// RecordService.auditUpdate so an automation edit shows in the per-record history
+// alongside UI/API edits, attributed to the author rather than "system".
+func (e *UpdateRecordExecutor) audit(ctx context.Context, run *WorkflowRun, slug string, recordID uuid.UUID, results []map[string]any) {
+	if e.authz == nil {
+		return
+	}
+	caller, _ := domain.CallerFromContext(ctx)
+	changes := make(map[string]interface{}, len(results))
+	for _, r := range results {
+		if field, _ := r["field"].(string); field != "" {
+			changes[field] = r
+		}
+	}
+	e.authz.Audit(ctx, domain.AuditEntry{
+		OrgID:      run.OrgID,
+		ActorID:    caller.UserID,
+		ObjectSlug: slug,
+		RecordID:   recordID,
+		Action:     domain.ActionEdit,
+		Changes:    changes,
+	})
 }
 
 // executeContact handles updates targeting a contact record.
@@ -131,6 +239,12 @@ func (e *UpdateRecordExecutor) executeContact(ctx context.Context, run *Workflow
 	}
 	if !exists {
 		return nil, fmt.Errorf("update_record: contact %s not found in org %s", contactID, run.OrgID.String())
+	}
+
+	// Own-scope (P8): an own-scoped author may only mutate contacts they own/are
+	// shared. Runs after the org existence check so "not in org" stays distinct.
+	if err := e.enforceOwnScope(ctx, run, "contacts", "contact", cid); err != nil {
+		return nil, err
 	}
 
 	var results []map[string]any
@@ -174,6 +288,9 @@ func (e *UpdateRecordExecutor) executeContact(ctx context.Context, run *Workflow
 	if txErr != nil {
 		return nil, fmt.Errorf("update_record: %w", txErr)
 	}
+
+	// Attribute the write to the workflow author in the audit trail (P8).
+	e.audit(ctx, run, "contact", cid, results)
 
 	snapshot, err := e.readContactSnapshot(ctx, run.OrgID, cid)
 	if err != nil {
@@ -324,6 +441,11 @@ func (e *UpdateRecordExecutor) executeCustomObject(ctx context.Context, run *Wor
 		return nil, fmt.Errorf("update_record: commit failed: %w", err)
 	}
 
+	// Attribute the write to the workflow author in the audit trail (P8). Custom
+	// objects have no owner_user_id, so object-level OLS (authorizeWrite) is the
+	// gate; there is no per-row own-scope check.
+	e.audit(ctx, run, slug, rid, results)
+
 	slog.Info("update_record: custom object updated",
 		"slug", slug,
 		"record_id", recordID,
@@ -362,6 +484,11 @@ func (e *UpdateRecordExecutor) executeDeal(ctx context.Context, run *WorkflowRun
 	}
 	if !exists {
 		return nil, fmt.Errorf("update_record: deal %s not found in org %s", dealID, run.OrgID.String())
+	}
+
+	// Own-scope (P8): an own-scoped author may only mutate deals they own/are shared.
+	if err := e.enforceOwnScope(ctx, run, "deals", "deal", did); err != nil {
+		return nil, err
 	}
 
 	var results []map[string]any
@@ -408,6 +535,9 @@ func (e *UpdateRecordExecutor) executeDeal(ctx context.Context, run *WorkflowRun
 	if txErr != nil {
 		return nil, fmt.Errorf("update_record: %w", txErr)
 	}
+
+	// Attribute the write to the workflow author in the audit trail (P8).
+	e.audit(ctx, run, "deal", did, results)
 
 	snapshot, err := e.readDealSnapshot(ctx, run.OrgID, did)
 	if err != nil {

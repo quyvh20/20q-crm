@@ -26,8 +26,9 @@ const defaultLayoutCacheTTL = 60 * time.Second
 type orgLayoutEntry struct {
 	// layouts: objectSlug → ordered list of layouts
 	layouts map[string][]domain.ObjectLayout
-	// roleMap: objectSlug → roleName → layoutID
-	roleMap map[string]map[string]uuid.UUID
+	// roleMap: id-keyed role→layout assignments (R1 re-key). The P5 name-keyed
+	// bridge was deleted in P9 — layouts resolve by role id only.
+	roleMap *domain.LayoutRoleMap
 	expiry  time.Time
 }
 
@@ -54,30 +55,34 @@ func NewObjectLayoutUseCase(repo domain.ObjectLayoutRepository) domain.ObjectLay
 // Per-request resolver — the hot path
 // ============================================================
 
-// ResolveLayout returns the effective layout sections for callerRole on object slug,
-// with FLS-hidden fields already stripped from every section.
+// ResolveLayout returns the effective layout sections for the caller on object
+// slug, with FLS-hidden fields already stripped from every section.
 //
 // Three-tier resolver (plan §5.3):
-//  1. Role-assigned layout   — callerRole matches an explicit assignment
+//  1. Role-assigned layout   — caller.RoleID matches an explicit assignment
 //  2. Default layout         — is_default=true for this (org, slug)
 //  3. nil                    — no layout; renderer synthesises field-order
 //
 // The result is served from the per-org cache; Invalidate busts it on any write.
-func (uc *objectLayoutUseCase) ResolveLayout(ctx context.Context, orgID uuid.UUID, slug, callerRole string, hiddenKeys map[string]bool) ([]domain.LayoutSection, error) {
+func (uc *objectLayoutUseCase) ResolveLayout(ctx context.Context, orgID uuid.UUID, slug string, caller domain.Caller, hiddenKeys map[string]bool) ([]domain.LayoutSection, error) {
 	entry := uc.loadEntry(ctx, orgID)
 
 	var resolved *domain.ObjectLayout
 
-	// Tier 1 — role-assigned layout.
-	if callerRole != "" {
-		if slugRoles := entry.roleMap[slug]; slugRoles != nil {
-			if layoutID, ok := slugRoles[callerRole]; ok {
-				for i := range entry.layouts[slug] {
-					if entry.layouts[slug][i].ID == layoutID {
-						resolved = &entry.layouts[slug][i]
-						break
-					}
-				}
+	// Tier 1 — role-assigned layout, by role id (R1 re-key; the P5 name bridge was
+	// deleted in P9). Layout is presentation only, so a miss just falls to the
+	// default layout.
+	layoutID, assigned := uuid.Nil, false
+	if entry.roleMap != nil && caller.RoleID != uuid.Nil {
+		if id, ok := entry.roleMap.ByID[slug][caller.RoleID]; ok {
+			layoutID, assigned = id, true
+		}
+	}
+	if assigned {
+		for i := range entry.layouts[slug] {
+			if entry.layouts[slug][i].ID == layoutID {
+				resolved = &entry.layouts[slug][i]
+				break
 			}
 		}
 	}
@@ -159,7 +164,9 @@ func (uc *objectLayoutUseCase) staleOrEmpty(e *orgLayoutEntry) *orgLayoutEntry {
 	}
 	return &orgLayoutEntry{
 		layouts: map[string][]domain.ObjectLayout{},
-		roleMap: map[string]map[string]uuid.UUID{},
+		roleMap: &domain.LayoutRoleMap{
+			ByID: map[string]map[uuid.UUID]uuid.UUID{},
+		},
 	}
 }
 

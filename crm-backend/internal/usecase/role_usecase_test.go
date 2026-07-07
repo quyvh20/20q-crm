@@ -16,6 +16,7 @@ type fakeRoleRepo struct {
 	byName       map[string]*domain.Role
 	caps         map[uuid.UUID][]string
 	memberCounts map[uuid.UUID]int64
+	memberIDs    map[uuid.UUID][]uuid.UUID
 	cloned       [][2]uuid.UUID // (src, dst) pairs passed to ClonePermissions
 }
 
@@ -25,6 +26,7 @@ func newFakeRoleRepo() *fakeRoleRepo {
 		byName:       map[string]*domain.Role{},
 		caps:         map[uuid.UUID][]string{},
 		memberCounts: map[uuid.UUID]int64{},
+		memberIDs:    map[uuid.UUID][]uuid.UUID{},
 	}
 }
 
@@ -36,6 +38,24 @@ func (f *fakeRoleRepo) add(r *domain.Role) *domain.Role {
 
 func (f *fakeRoleRepo) ListDetailed(context.Context, uuid.UUID) ([]domain.RoleDetail, error) {
 	return nil, nil
+}
+func (f *fakeRoleRepo) ListOptions(_ context.Context, _ uuid.UUID) ([]domain.RoleOption, error) {
+	out := make([]domain.RoleOption, 0, len(f.roles))
+	for _, r := range f.roles {
+		out = append(out, domain.RoleOption{
+			ID: r.ID, Name: r.Name, Description: r.Description,
+			IsSystem: r.IsSystem, IsOwner: domain.IsOwnerRole(r), DataScope: r.DataScope,
+		})
+	}
+	return out, nil
+}
+func (f *fakeRoleRepo) ReassignMembers(_ context.Context, _, fromRoleID, toRoleID uuid.UUID) ([]uuid.UUID, error) {
+	ids := f.memberIDs[fromRoleID]
+	f.memberIDs[toRoleID] = append(f.memberIDs[toRoleID], ids...)
+	delete(f.memberIDs, fromRoleID)
+	f.memberCounts[toRoleID] += f.memberCounts[fromRoleID]
+	f.memberCounts[fromRoleID] = 0
+	return ids, nil
 }
 func (f *fakeRoleRepo) GetInOrg(_ context.Context, _, id uuid.UUID) (*domain.Role, error) {
 	return f.roles[id], nil
@@ -69,15 +89,25 @@ func (f *fakeRoleRepo) ClonePermissions(_ context.Context, _, src, dst uuid.UUID
 func (f *fakeRoleRepo) CountActiveMembers(_ context.Context, _, id uuid.UUID) (int64, error) {
 	return f.memberCounts[id], nil
 }
+func (f *fakeRoleRepo) ListMemberIDs(_ context.Context, _, id uuid.UUID) ([]uuid.UUID, error) {
+	return f.memberIDs[id], nil
+}
 
 type fakeInvalidator struct{ calls int }
 
 func (f *fakeInvalidator) Invalidate(uuid.UUID)                          { f.calls++ }
 func (f *fakeInvalidator) EnsureSeeded(context.Context, uuid.UUID) error { return nil }
 
+// fakeEvictor counts per-(user, org) session evictions (P10 P0).
+type fakeEvictor struct{ evicted [][2]uuid.UUID }
+
+func (f *fakeEvictor) EvictOrgSession(_ context.Context, userID, orgID uuid.UUID) {
+	f.evicted = append(f.evicted, [2]uuid.UUID{userID, orgID})
+}
+
 func newRoleUC(repo *fakeRoleRepo) (domain.RoleUseCase, *fakeInvalidator) {
 	inv := &fakeInvalidator{}
-	return NewRoleUseCase(repo, inv), inv
+	return NewRoleUseCase(repo, inv, nil, nil), inv
 }
 
 func assertRoleErr(t *testing.T, err error, want int, ctx string) {
@@ -188,6 +218,131 @@ func TestRoleDelete_InUseRefused(t *testing.T) {
 	custom := repo.add(&domain.Role{ID: uuid.New(), Name: "Support Agent", IsSystem: false})
 	repo.memberCounts[custom.ID] = 2
 	uc, _ := newRoleUC(repo)
-	err := uc.Delete(context.Background(), orgID, custom.ID)
-	assertRoleErr(t, err, 409, "deleting an in-use role")
+	err := uc.Delete(context.Background(), orgID, custom.ID, nil)
+	assertRoleErr(t, err, 409, "deleting an in-use role without a reassign target")
+}
+
+// TestRoleUpdate_RenameEvictsMemberSessions: the session cache carries roleName
+// + data_scope, so renaming or rescoping a role must evict every member's entry
+// or they authorize under stale data for the cache TTL (P10 P0).
+func TestRoleUpdate_RenameEvictsMemberSessions(t *testing.T) {
+	repo := newFakeRoleRepo()
+	orgID := uuid.New()
+	custom := repo.add(&domain.Role{ID: uuid.New(), Name: "Support Agent", IsSystem: false, DataScope: domain.DataScopeAll})
+	m1, m2 := uuid.New(), uuid.New()
+	repo.memberIDs[custom.ID] = []uuid.UUID{m1, m2}
+	ev := &fakeEvictor{}
+	uc := NewRoleUseCase(repo, &fakeInvalidator{}, nil, ev)
+
+	newName := "Support Tier 2"
+	if err := uc.Update(context.Background(), orgID, custom.ID, domain.UpdateRoleInput{Name: &newName}); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if len(ev.evicted) != 2 {
+		t.Fatalf("expected both members' sessions evicted on rename, got %d", len(ev.evicted))
+	}
+
+	// A no-op update (same scope, no rename) must not evict anyone.
+	ev.evicted = nil
+	scope := domain.DataScopeAll
+	if err := uc.Update(context.Background(), orgID, custom.ID, domain.UpdateRoleInput{DataScope: &scope}); err != nil {
+		t.Fatalf("no-op update: %v", err)
+	}
+	if len(ev.evicted) != 0 {
+		t.Fatalf("no-op update must not evict sessions, got %d", len(ev.evicted))
+	}
+
+	// Rescoping own↔all changes the session value's ds field — must evict.
+	own := domain.DataScopeOwn
+	if err := uc.Update(context.Background(), orgID, custom.ID, domain.UpdateRoleInput{DataScope: &own}); err != nil {
+		t.Fatalf("rescope: %v", err)
+	}
+	if len(ev.evicted) != 2 {
+		t.Fatalf("expected both members' sessions evicted on rescope, got %d", len(ev.evicted))
+	}
+}
+
+// TestRoleDelete_WithReassignMovesMembers: deleting an in-use role while naming a
+// reassign target moves every member onto it (transactional), evicts their
+// sessions, then deletes the source (P6 delete-with-reassign).
+func TestRoleDelete_WithReassignMovesMembers(t *testing.T) {
+	repo := newFakeRoleRepo()
+	orgID := uuid.New()
+	src := repo.add(&domain.Role{ID: uuid.New(), Name: "Support Agent", OrgID: &orgID})
+	dst := repo.add(&domain.Role{ID: uuid.New(), Name: "Support Lead", OrgID: &orgID})
+	repo.memberCounts[src.ID] = 3
+	repo.memberIDs[src.ID] = []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}
+	ev := &fakeEvictor{}
+	uc := NewRoleUseCase(repo, &fakeInvalidator{}, nil, ev)
+
+	if err := uc.Delete(context.Background(), orgID, src.ID, &dst.ID); err != nil {
+		t.Fatalf("delete-with-reassign: %v", err)
+	}
+	if _, ok := repo.roles[src.ID]; ok {
+		t.Fatal("source role must be deleted after reassign")
+	}
+	if repo.memberCounts[dst.ID] != 3 {
+		t.Fatalf("members should have moved to the target, got %d", repo.memberCounts[dst.ID])
+	}
+	if len(ev.evicted) != 3 {
+		t.Fatalf("expected 3 session evictions for moved members, got %d", len(ev.evicted))
+	}
+}
+
+// TestRoleDelete_ReassignGuards: the reassign target can't be the role being
+// deleted, and members can't be moved into the owner role.
+func TestRoleDelete_ReassignGuards(t *testing.T) {
+	repo := newFakeRoleRepo()
+	orgID := uuid.New()
+	src := repo.add(&domain.Role{ID: uuid.New(), Name: "Agent", OrgID: &orgID})
+	owner := repo.add(&domain.Role{ID: uuid.New(), Name: domain.RoleOwner, IsSystem: true, IsOwner: true})
+	repo.memberCounts[src.ID] = 1
+	uc := NewRoleUseCase(repo, &fakeInvalidator{}, nil, &fakeEvictor{})
+
+	if err := uc.Delete(context.Background(), orgID, src.ID, &src.ID); err == nil {
+		t.Fatal("reassigning members to the role being deleted must be rejected")
+	}
+	if err := uc.Delete(context.Background(), orgID, src.ID, &owner.ID); err == nil {
+		t.Fatal("reassigning members into the owner role must be rejected")
+	}
+	if _, ok := repo.roles[src.ID]; !ok {
+		t.Fatal("the role must survive a rejected reassign")
+	}
+}
+
+// TestRoleDuplicate_ClonesAndRecordsLineage: duplicate copies capabilities +
+// OLS/FLS + scope, records the source as lineage (seeded_from + template_key),
+// and — with ReassignMembers — moves the source's members onto the copy (P6).
+func TestRoleDuplicate_ClonesAndRecordsLineage(t *testing.T) {
+	repo := newFakeRoleRepo()
+	orgID := uuid.New()
+	src := repo.add(&domain.Role{ID: uuid.New(), Name: domain.RoleManager, IsSystem: true, DataScope: domain.DataScopeAll})
+	repo.caps[src.ID] = []string{domain.CapRecordsWrite, domain.CapReportsManage}
+	repo.memberIDs[src.ID] = []uuid.UUID{uuid.New(), uuid.New()}
+	repo.memberCounts[src.ID] = 2
+	ev := &fakeEvictor{}
+	uc := NewRoleUseCase(repo, &fakeInvalidator{}, nil, ev)
+
+	role, err := uc.Duplicate(context.Background(), orgID, src.ID, domain.DuplicateRoleInput{Name: "Regional Manager", ReassignMembers: true})
+	if err != nil {
+		t.Fatalf("duplicate: %v", err)
+	}
+	if role.SeededFromRoleID == nil || *role.SeededFromRoleID != src.ID {
+		t.Fatal("duplicate must record seeded_from_role_id = source")
+	}
+	if role.TemplateKey == nil || *role.TemplateKey != domain.RoleManager {
+		t.Fatal("duplicate must inherit the source's system-template lineage")
+	}
+	if len(repo.caps[role.ID]) != 2 {
+		t.Fatalf("expected 2 capabilities copied, got %d", len(repo.caps[role.ID]))
+	}
+	if len(repo.cloned) != 1 || repo.cloned[0] != [2]uuid.UUID{src.ID, role.ID} {
+		t.Fatalf("expected ClonePermissions(src→copy), got %v", repo.cloned)
+	}
+	if repo.memberCounts[role.ID] != 2 {
+		t.Fatalf("members should be reassigned to the copy, got %d", repo.memberCounts[role.ID])
+	}
+	if len(ev.evicted) != 2 {
+		t.Fatalf("expected 2 evictions for reassigned members, got %d", len(ev.evicted))
+	}
 }

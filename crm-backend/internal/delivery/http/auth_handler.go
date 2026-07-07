@@ -2,6 +2,7 @@ package http
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -32,6 +33,11 @@ const (
 	// refreshCookieMaxAge mirrors usecase.refreshTokenDuration (7 days). Kept in
 	// seconds for http cookies.
 	refreshCookieMaxAge = 7 * 24 * 60 * 60
+	// oauthStateCookieName binds the OAuth `state` to the browser that started
+	// the flow; the callback must present the same value or it is a forged
+	// (CSRF'd) login. Short-lived: the Google round-trip takes seconds.
+	oauthStateCookieName   = "oauth_state"
+	oauthStateCookieMaxAge = 5 * 60
 )
 
 // requestIsHTTPS reports whether the request reached us over TLS, accounting for
@@ -145,6 +151,17 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 
 	resp, err := h.authUC.RefreshToken(c.Request.Context(), input, requestMeta(c))
 	if err != nil {
+		// The requested workspace is gone but the session is still valid: DON'T
+		// clear cookies — the SPA retries a plain refresh into its default/first org
+		// and routes to the chooser (R2 fail-closed, P3).
+		if ouErr, ok := err.(*domain.OrgUnavailableError); ok {
+			c.JSON(http.StatusConflict, gin.H{
+				"code":       "ORG_UNAVAILABLE",
+				"workspaces": ouErr.Workspaces,
+				"error":      "You no longer have access to that workspace.",
+			})
+			return
+		}
 		// Clear the cookies so a rotated/revoked session doesn't linger and keep
 		// bouncing off the server.
 		clearAuthCookies(c, h.cfg)
@@ -333,7 +350,9 @@ func (h *AuthHandler) SwitchWorkspace(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.authUC.SwitchWorkspace(c.Request.Context(), userID, input)
+	// Thread device meta + the presented refresh token so SwitchWorkspace can stamp
+	// the new session's device row and revoke the old credential (switch hygiene, P3).
+	resp, err := h.authUC.SwitchWorkspace(c.Request.Context(), userID, input, requestMeta(c), refreshTokenFromRequest(c, ""))
 	if err != nil {
 		handleAppError(c, err)
 		return
@@ -359,6 +378,17 @@ func (h *AuthHandler) ListWorkspaces(c *gin.Context) {
 	c.JSON(http.StatusOK, domain.Success(workspaces))
 }
 
+// oauthStateCookiePolicy is cookiePolicy with Strict downgraded to Lax: the
+// state cookie must survive the top-level cross-site redirect BACK from Google,
+// which SameSite=Strict blocks (Lax sends cookies on top-level GET navigations).
+func oauthStateCookiePolicy(c *gin.Context, cfg *config.Config) (http.SameSite, bool) {
+	mode, secure := cookiePolicy(c, cfg)
+	if mode == http.SameSiteStrictMode {
+		mode = http.SameSiteLaxMode
+	}
+	return mode, secure
+}
+
 func (h *AuthHandler) GoogleLogin(c *gin.Context) {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
@@ -369,6 +399,12 @@ func (h *AuthHandler) GoogleLogin(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, domain.Err("Google OAuth not configured"))
 		return
 	}
+
+	// Persist the state so GoogleCallback can validate it — a state that is
+	// generated but never checked is no CSRF protection at all (P10 P1).
+	mode, secure := oauthStateCookiePolicy(c, h.cfg)
+	c.SetSameSite(mode)
+	c.SetCookie(oauthStateCookieName, state, oauthStateCookieMaxAge, "/api/auth", h.cfg.CookieDomain, secure, true)
 
 	c.Redirect(http.StatusTemporaryRedirect, url)
 }
@@ -383,6 +419,22 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 	if errMsg := c.Query("error"); errMsg != "" {
 		c.Redirect(http.StatusTemporaryRedirect,
 			fmt.Sprintf("%s/login?error=%s", frontendURL, errMsg))
+		return
+	}
+
+	// Validate the OAuth state against the cookie set in GoogleLogin. The cookie
+	// is single-use (cleared here regardless of outcome). Without this check an
+	// attacker can silently log the victim into an attacker-controlled session
+	// (login CSRF) by sending them a crafted callback URL.
+	stateCookie, cookieErr := c.Cookie(oauthStateCookieName)
+	mode, secure := oauthStateCookiePolicy(c, h.cfg)
+	c.SetSameSite(mode)
+	c.SetCookie(oauthStateCookieName, "", -1, "/api/auth", h.cfg.CookieDomain, secure, true)
+	state := c.Query("state")
+	if cookieErr != nil || stateCookie == "" || state == "" ||
+		subtle.ConstantTimeCompare([]byte(stateCookie), []byte(state)) != 1 {
+		c.Redirect(http.StatusTemporaryRedirect,
+			fmt.Sprintf("%s/login?error=invalid_oauth_state", frontendURL))
 		return
 	}
 
@@ -404,10 +456,13 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 	log.Printf("[GoogleCallback] Success for user %s, redirecting to %s", resp.User.Email, frontendURL)
 	// Set the refresh token as an httpOnly cookie server-side rather than leaking
 	// it in the redirect URL (which lands in history/logs). Only the short-lived
-	// access token travels in the URL, for the SPA to pick up into memory. (P2)
+	// access token travels back — in the URL FRAGMENT (never sent to servers, kept
+	// out of access logs / the Referer header), not the query string (P3). The
+	// needs_chooser flag rides in the query so the callback page can route a
+	// multi-org user to the chooser after applying the same server-side selection.
 	setAuthCookies(c, h.cfg, resp.RefreshToken)
-	redirectURL := fmt.Sprintf("%s/auth/callback?access_token=%s",
-		frontendURL, url.QueryEscape(resp.AccessToken))
+	redirectURL := fmt.Sprintf("%s/auth/callback?needs_chooser=%t#access_token=%s",
+		frontendURL, resp.NeedsChooser, url.QueryEscape(resp.AccessToken))
 	c.Redirect(http.StatusTemporaryRedirect, redirectURL)
 }
 

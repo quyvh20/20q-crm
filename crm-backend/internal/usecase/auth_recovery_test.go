@@ -2,6 +2,8 @@ package usecase
 
 import (
 	"context"
+	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,6 +31,8 @@ type fakeAuthRepo struct {
 	tokenVersions map[uuid.UUID]int
 	authEvents    []*domain.AuthEvent
 	revokedAll    map[uuid.UUID]int
+	// memberships backs the R2 org-selection tests (P3), keyed userID|orgID.
+	memberships map[string]*domain.OrgUser
 }
 
 func newFakeAuthRepo() *fakeAuthRepo {
@@ -40,6 +44,7 @@ func newFakeAuthRepo() *fakeAuthRepo {
 		refreshTokens: map[uuid.UUID]*domain.RefreshToken{},
 		tokenVersions: map[uuid.UUID]int{},
 		revokedAll:    map[uuid.UUID]int{},
+		memberships:   map[string]*domain.OrgUser{},
 	}
 }
 
@@ -50,6 +55,20 @@ func (r *fakeAuthRepo) addUser(u *domain.User) *domain.User {
 	r.users[u.ID] = u
 	r.usersByEmail[u.Email] = u
 	return u
+}
+
+// addMembership registers an active/suspended membership for the R2 selection
+// tests, with a minimal Org + Role so buildWorkspaces can render it.
+func (r *fakeAuthRepo) addMembership(userID, orgID uuid.UUID, role *domain.Role, status string) *domain.OrgUser {
+	ou := &domain.OrgUser{
+		UserID: userID, OrgID: orgID, Status: status, Role: role,
+		Org: &domain.Organization{ID: orgID, Name: "Org-" + orgID.String()[:8], Type: "company"},
+	}
+	if role != nil {
+		ou.RoleID = role.ID
+	}
+	r.memberships[userID.String()+"|"+orgID.String()] = ou
+	return ou
 }
 
 // --- methods used by the recovery flows ---
@@ -102,6 +121,36 @@ func (r *fakeAuthRepo) MarkPasswordResetTokenUsed(_ context.Context, id uuid.UUI
 	now := time.Now()
 	t.UsedAt = &now
 	return 1, nil
+}
+
+func (r *fakeAuthRepo) GetLatestPasswordResetToken(_ context.Context, userID uuid.UUID) (*domain.PasswordResetToken, error) {
+	var latest *domain.PasswordResetToken
+	for _, t := range r.resetTokens {
+		if t.UserID == userID && (latest == nil || t.CreatedAt.After(latest.CreatedAt)) {
+			latest = t
+		}
+	}
+	return latest, nil
+}
+
+func (r *fakeAuthRepo) VoidActivePasswordResetTokens(_ context.Context, userID uuid.UUID) error {
+	now := time.Now()
+	for _, t := range r.resetTokens {
+		if t.UserID == userID && t.UsedAt == nil {
+			t.UsedAt = &now
+		}
+	}
+	return nil
+}
+
+func (r *fakeAuthRepo) CountAdminResetTokensSince(_ context.Context, userID uuid.UUID, since time.Time) (int64, error) {
+	var n int64
+	for _, t := range r.resetTokens {
+		if t.UserID == userID && t.InitiatedBy != nil && t.CreatedAt.After(since) {
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (r *fakeAuthRepo) CreateEmailVerificationToken(_ context.Context, t *domain.EmailVerificationToken) error {
@@ -255,12 +304,43 @@ func (r *fakeAuthRepo) IncrementUserTokenVersion(_ context.Context, userID uuid.
 func (r *fakeAuthRepo) GetUserTokenVersion(_ context.Context, userID uuid.UUID) (int, error) {
 	return r.tokenVersions[userID], nil
 }
-func (r *fakeAuthRepo) CreateOrgUser(context.Context, *domain.OrgUser) error  { return nil }
-func (r *fakeAuthRepo) GetOrgUser(context.Context, uuid.UUID, uuid.UUID) (*domain.OrgUser, error) {
-	return nil, nil
+func (r *fakeAuthRepo) CreateOrgUser(context.Context, *domain.OrgUser) error { return nil }
+func (r *fakeAuthRepo) GetOrgUser(_ context.Context, userID, orgID uuid.UUID) (*domain.OrgUser, error) {
+	return r.memberships[userID.String()+"|"+orgID.String()], nil
 }
-func (r *fakeAuthRepo) ListOrgsByUserID(context.Context, uuid.UUID) ([]domain.OrgUser, error) {
-	return nil, nil
+
+// ListOrgsByUserID mirrors the real repo: ACTIVE memberships only, deterministic
+// order (joined_at is zero here so fall back to a stable org_id sort).
+func (r *fakeAuthRepo) ListOrgsByUserID(_ context.Context, userID uuid.UUID) ([]domain.OrgUser, error) {
+	var out []domain.OrgUser
+	for _, ou := range r.memberships {
+		if ou.UserID == userID && ou.Status == domain.StatusActive {
+			out = append(out, *ou)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].OrgID.String() < out[j].OrgID.String() })
+	return out, nil
+}
+
+func (r *fakeAuthRepo) SetUserDefaultOrg(_ context.Context, userID uuid.UUID, orgID *uuid.UUID) error {
+	if u, ok := r.users[userID]; ok {
+		u.DefaultOrgID = orgID
+	}
+	return nil
+}
+
+func (r *fakeAuthRepo) CountActiveMembersByOrgs(_ context.Context, orgIDs []uuid.UUID) (map[uuid.UUID]int, error) {
+	want := map[uuid.UUID]bool{}
+	for _, id := range orgIDs {
+		want[id] = true
+	}
+	out := map[uuid.UUID]int{}
+	for _, ou := range r.memberships {
+		if want[ou.OrgID] && ou.Status == domain.StatusActive {
+			out[ou.OrgID]++
+		}
+	}
+	return out, nil
 }
 func (r *fakeAuthRepo) ListMembersByOrgID(context.Context, uuid.UUID) ([]domain.OrgUser, error) {
 	return nil, nil
@@ -288,29 +368,87 @@ func (r *fakeAuthRepo) CreateOrgInvitation(context.Context, *domain.OrgInvitatio
 func (r *fakeAuthRepo) GetOrgInvitationByTokenHash(context.Context, string) (*domain.OrgInvitation, error) {
 	return nil, nil
 }
+func (r *fakeAuthRepo) GetOrgInvitationByID(context.Context, uuid.UUID, uuid.UUID) (*domain.OrgInvitation, error) {
+	return nil, nil
+}
+func (r *fakeAuthRepo) ListPendingInvitations(context.Context, uuid.UUID) ([]domain.OrgInvitation, error) {
+	return nil, nil
+}
+func (r *fakeAuthRepo) AcceptInvitation(context.Context, *domain.OrgInvitation, *domain.User, bool, *string) error {
+	return nil
+}
 func (r *fakeAuthRepo) UpdateOrgInvitation(context.Context, *domain.OrgInvitation) error { return nil }
+func (r *fakeAuthRepo) TransferOrgOwnership(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID) error {
+	return nil
+}
 
-// fakeMailer records recipients per email type. SendPasswordReset is invoked from
-// ForgotPassword's goroutine, so tests never assert on it (avoids a race);
-// SendSecurityAlert / SendVerification are called synchronously and are asserted.
+// fakeMailer records recipients per email type. SendPasswordReset AND
+// SendSecurityAlert are invoked from detached goroutines (ForgotPassword /
+// ResetPassword side effects), so the counters are mutex-guarded and async
+// assertions go through waitForAlerts.
 type fakeMailer struct {
+	mu      sync.Mutex
 	resets  []string
 	verifs  []string
 	alerts  []string
+	invites []string
 }
 
-func (m *fakeMailer) SendInvite(context.Context, string, string, string) error { return nil }
+func (m *fakeMailer) SendInvite(_ context.Context, to, _, _ string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.invites = append(m.invites, to)
+	return nil
+}
 func (m *fakeMailer) SendPasswordReset(_ context.Context, to, _ string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.resets = append(m.resets, to)
 	return nil
 }
 func (m *fakeMailer) SendVerification(_ context.Context, to, _ string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.verifs = append(m.verifs, to)
 	return nil
 }
 func (m *fakeMailer) SendSecurityAlert(_ context.Context, to, _, _ string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.alerts = append(m.alerts, to)
 	return nil
+}
+
+func (m *fakeMailer) alertCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.alerts)
+}
+
+func (m *fakeMailer) verifCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.verifs)
+}
+
+func (m *fakeMailer) resetVerifs() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.verifs = nil
+}
+
+// waitForAlerts polls until the async security-alert goroutine has delivered
+// (or the deadline passes) — the alert is fire-and-forget by design.
+func waitForAlerts(t *testing.T, m *fakeMailer, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if m.alertCount() >= want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Errorf("expected %d security alert(s), got %d after waiting", want, m.alertCount())
 }
 
 func newTestAuthUC(repo *fakeAuthRepo, mail *fakeMailer, appEnv string) domain.AuthUseCase {
@@ -363,6 +501,79 @@ func TestForgotPassword_NonProdReturnsDebugToken(t *testing.T) {
 	}
 }
 
+// TestForgotPassword_DebugTokenFailsClosed is the regression test for the P10
+// P1 takeover hole: the old `appEnv != "production"` gate returned the raw
+// reset token whenever APP_ENV was unset or typo'd — which it was on prod. Only
+// the explicit development/test allowlist may enable debug tokens.
+func TestForgotPassword_DebugTokenFailsClosed(t *testing.T) {
+	for _, appEnv := range []string{"", "prod", "Production", "staging"} {
+		repo := newFakeAuthRepo()
+		repo.addUser(&domain.User{Email: "real@x.com", PasswordHash: ptrStr("old"), OrgID: uuid.New()})
+		uc := newTestAuthUC(repo, &fakeMailer{}, appEnv)
+
+		debug, err := uc.ForgotPassword(context.Background(), domain.ForgotPasswordInput{Email: "real@x.com"}, domain.RequestMeta{})
+		if err != nil {
+			t.Fatalf("appEnv=%q: forgot err: %v", appEnv, err)
+		}
+		if debug != nil {
+			t.Errorf("appEnv=%q must NOT return a debug token — that is an account-takeover primitive", appEnv)
+		}
+	}
+}
+
+// TestForgotPassword_PerEmailCooldown: a second request within the cooldown
+// silently succeeds (enumeration-safe) but mints no new token — the guard
+// against reset-email bombing.
+func TestForgotPassword_PerEmailCooldown(t *testing.T) {
+	repo := newFakeAuthRepo()
+	repo.addUser(&domain.User{Email: "real@x.com", PasswordHash: ptrStr("old"), OrgID: uuid.New()})
+	uc := newTestAuthUC(repo, &fakeMailer{}, "development")
+	ctx := context.Background()
+
+	first, err := uc.ForgotPassword(ctx, domain.ForgotPasswordInput{Email: "real@x.com"}, domain.RequestMeta{})
+	if err != nil || first == nil {
+		t.Fatalf("first request should mint a token: token=%v err=%v", first, err)
+	}
+	second, err := uc.ForgotPassword(ctx, domain.ForgotPasswordInput{Email: "real@x.com"}, domain.RequestMeta{})
+	if err != nil {
+		t.Fatalf("throttled request must still report success (no enumeration signal): %v", err)
+	}
+	if second != nil {
+		t.Error("throttled request must not mint or return a token")
+	}
+	if len(repo.resetTokens) != 1 {
+		t.Errorf("expected exactly 1 reset token after the throttled repeat, got %d", len(repo.resetTokens))
+	}
+}
+
+// TestForgotPassword_VoidsPriorTokens: a fresh request invalidates outstanding
+// unused tokens, so re-requesting narrows rather than widens the window of
+// concurrently valid reset links.
+func TestForgotPassword_VoidsPriorTokens(t *testing.T) {
+	repo := newFakeAuthRepo()
+	u := repo.addUser(&domain.User{Email: "real@x.com", PasswordHash: ptrStr("old"), OrgID: uuid.New()})
+	// Seed an OLD outstanding token (past the cooldown) directly.
+	oldRaw := seedResetToken(repo, u.ID, time.Hour)
+	for _, tok := range repo.resetTokens {
+		tok.CreatedAt = time.Now().Add(-2 * time.Minute)
+	}
+	uc := newTestAuthUC(repo, &fakeMailer{}, "development")
+	ctx := context.Background()
+
+	fresh, err := uc.ForgotPassword(ctx, domain.ForgotPasswordInput{Email: "real@x.com"}, domain.RequestMeta{})
+	if err != nil || fresh == nil {
+		t.Fatalf("request should mint a token: token=%v err=%v", fresh, err)
+	}
+
+	// The old token must be dead; the fresh one must work.
+	if err := uc.ResetPassword(ctx, domain.ResetPasswordInput{Token: oldRaw, Password: "New-Pass1!"}, domain.RequestMeta{}); err != domain.ErrInvalidResetToken {
+		t.Errorf("prior token must be voided by the new request: got %v, want ErrInvalidResetToken", err)
+	}
+	if err := uc.ResetPassword(ctx, domain.ResetPasswordInput{Token: *fresh, Password: "New-Pass1!"}, domain.RequestMeta{}); err != nil {
+		t.Errorf("the freshly minted token must be usable: %v", err)
+	}
+}
+
 // ============================================================
 // ResetPassword — set password, single-use, expiry, revoke sessions
 // ============================================================
@@ -405,10 +616,8 @@ func TestResetPassword_SucceedsAndKillsSessions(t *testing.T) {
 	if repo.revokedAll[u.ID] != 1 {
 		t.Errorf("expected all refresh tokens revoked once, got %d", repo.revokedAll[u.ID])
 	}
-	// Security alert sent.
-	if len(mail.alerts) != 1 {
-		t.Errorf("expected 1 security alert, got %d", len(mail.alerts))
-	}
+	// Security alert sent (async — the alert is detached from the request).
+	waitForAlerts(t, mail, 1)
 	// Reset also verifies the email (control of inbox proven).
 	if u.EmailVerifiedAt == nil {
 		t.Error("expected email_verified_at to be set after reset")
@@ -536,8 +745,8 @@ func TestResendVerification_CooldownAndAlreadyVerified(t *testing.T) {
 	if debug == nil {
 		t.Error("non-prod resend should return a debug token")
 	}
-	if len(mail.verifs) != 1 {
-		t.Errorf("expected 1 verification email, got %d", len(mail.verifs))
+	if mail.verifCount() != 1 {
+		t.Errorf("expected 1 verification email, got %d", mail.verifCount())
 	}
 
 	// Immediate second resend hits the cooldown.
@@ -548,11 +757,11 @@ func TestResendVerification_CooldownAndAlreadyVerified(t *testing.T) {
 	// An already-verified user is a no-op success (no new token, no email).
 	now := time.Now()
 	verified := repo.addUser(&domain.User{Email: "v@x.com", OrgID: uuid.New(), EmailVerifiedAt: &now})
-	mail.verifs = nil
+	mail.resetVerifs()
 	if _, err := uc.ResendVerification(ctx, verified.ID, domain.RequestMeta{}); err != nil {
 		t.Fatalf("resend for verified user should be nil: %v", err)
 	}
-	if len(mail.verifs) != 0 {
+	if mail.verifCount() != 0 {
 		t.Error("verified user must not receive a verification email")
 	}
 }

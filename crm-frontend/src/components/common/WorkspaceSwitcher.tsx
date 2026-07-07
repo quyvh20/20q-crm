@@ -1,11 +1,24 @@
 import { useState, useRef, useEffect } from 'react';
+import { Star } from 'lucide-react';
 import { useAuth } from '../../lib/auth';
 
 export default function WorkspaceSwitcher() {
-  const { activeWorkspace, workspaces, switchWorkspace } = useAuth();
+  const { activeWorkspace, workspaces, switchWorkspace, defaultOrgId } = useAuth();
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+
+  // The star sets a workspace as the default home (switch-workspace with
+  // set_default), so the chooser is never shown again (P4).
+  const handleSetDefault = async (e: React.MouseEvent, orgId: string) => {
+    e.stopPropagation();
+    setSwitching(true);
+    try {
+      await switchWorkspace(orgId, true);
+    } catch {
+      setSwitching(false);
+    }
+  };
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -60,20 +73,31 @@ export default function WorkspaceSwitcher() {
 
       {open && (
         <div className="absolute left-0 right-0 top-full mt-1 bg-card border border-border rounded-xl shadow-xl z-50 overflow-hidden">
-          {workspaces.map(ws => (
-            <button
-              key={ws.org_id}
-              onClick={() => handleSwitch(ws.org_id)}
-              className={`w-full text-left px-4 py-3 hover:bg-accent transition-colors border-b border-border last:border-0 ${
-                ws.org_id === activeWorkspace?.org_id ? 'bg-accent/50' : ''
-              }`}
-            >
-              <p className="text-sm font-medium text-foreground truncate">{ws.org_name}</p>
-              <p className="text-xs text-muted-foreground capitalize">
-                {ws.org_type} · {ws.role?.replace('_', ' ')}
-              </p>
-            </button>
-          ))}
+          {workspaces.map(ws => {
+            const isDefault = ws.org_id === defaultOrgId;
+            return (
+              <div
+                key={ws.org_id}
+                className={`flex items-center gap-2 px-4 py-3 hover:bg-accent transition-colors border-b border-border last:border-0 ${
+                  ws.org_id === activeWorkspace?.org_id ? 'bg-accent/50' : ''
+                }`}
+              >
+                <button onClick={() => handleSwitch(ws.org_id)} className="flex-1 min-w-0 text-left">
+                  <p className="text-sm font-medium text-foreground truncate">{ws.org_name}</p>
+                  <p className="text-xs text-muted-foreground capitalize">
+                    {ws.org_type} · {ws.role?.replace('_', ' ')}
+                  </p>
+                </button>
+                <button
+                  onClick={e => handleSetDefault(e, ws.org_id)}
+                  title={isDefault ? 'Default workspace' : 'Make default'}
+                  className={`shrink-0 p-1 rounded-md transition-colors ${isDefault ? 'text-yellow-500' : 'text-muted-foreground hover:text-yellow-500'}`}
+                >
+                  <Star className={`w-4 h-4 ${isDefault ? 'fill-yellow-500' : ''}`} />
+                </button>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

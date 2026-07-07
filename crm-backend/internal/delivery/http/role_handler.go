@@ -32,6 +32,53 @@ func (h *RoleHandler) List(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": roles, "error": nil})
 }
 
+// Options handles GET /api/roles/options — the minimal role list any member may
+// read to populate role pickers (member/invite dropdowns, the report Share
+// dialog). Unlike List it carries no capabilities, so it needs no roles.manage
+// gate (P6).
+func (h *RoleHandler) Options(c *gin.Context) {
+	orgID := c.MustGet("org_id").(uuid.UUID)
+	roles, err := h.uc.Options(c.Request.Context(), orgID)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": roles, "error": nil})
+}
+
+// Catalog handles GET /api/roles/catalog — the static capability metadata
+// (labels, descriptions, groups, sensitive flags) any member may read to render
+// the roles UI (P6). The vocabulary is compile-time, so this is served straight
+// from the domain catalog.
+func (h *RoleHandler) Catalog(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"capabilities": domain.CapabilityCatalog,
+		"groups":       domain.CapabilityGroups,
+	}, "error": nil})
+}
+
+// Duplicate handles POST /api/roles/:id/duplicate — clone a role into a new
+// custom role, optionally reassigning the source's members onto the copy (P6).
+func (h *RoleHandler) Duplicate(c *gin.Context) {
+	orgID := c.MustGet("org_id").(uuid.UUID)
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": "invalid role id"})
+		return
+	}
+	var input domain.DuplicateRoleInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": err.Error()})
+		return
+	}
+	role, err := h.uc.Duplicate(c.Request.Context(), orgID, id, input)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"data": role, "error": nil})
+}
+
 // Create handles POST /api/roles (create or clone-from).
 func (h *RoleHandler) Create(c *gin.Context) {
 	orgID := c.MustGet("org_id").(uuid.UUID)
@@ -68,7 +115,10 @@ func (h *RoleHandler) Update(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": "saved", "error": nil})
 }
 
-// Delete handles DELETE /api/roles/:id.
+// Delete handles DELETE /api/roles/:id. When members still hold the role, the
+// caller passes ?reassign_to=<role_id> to move them onto another role in the same
+// transaction (P6 delete-with-reassign); omitting it while members remain is a 409
+// that drives the "N people have this role — move them to:" picker.
 func (h *RoleHandler) Delete(c *gin.Context) {
 	orgID := c.MustGet("org_id").(uuid.UUID)
 	id, err := uuid.Parse(c.Param("id"))
@@ -76,7 +126,16 @@ func (h *RoleHandler) Delete(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": "invalid role id"})
 		return
 	}
-	if err := h.uc.Delete(c.Request.Context(), orgID, id); err != nil {
+	var reassignTo *uuid.UUID
+	if raw := c.Query("reassign_to"); raw != "" {
+		target, err := uuid.Parse(raw)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": "invalid reassign_to role id"})
+			return
+		}
+		reassignTo = &target
+	}
+	if err := h.uc.Delete(c.Request.Context(), orgID, id, reassignTo); err != nil {
 		handleAppError(c, err)
 		return
 	}

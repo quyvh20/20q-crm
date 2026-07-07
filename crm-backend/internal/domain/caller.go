@@ -18,16 +18,35 @@ import (
 // request has a caller. A request WITHOUT a caller is therefore an in-process,
 // trusted call (automation, AI, a seed/migration) and OLS treats it as such.
 type Caller struct {
+	// Role is the role NAME — display/audit vocabulary only. Authorization keys
+	// off RoleID exclusively (the P5 name-fallback bridge was deleted in P9); a
+	// caller with no RoleID resolves to no grants and is default-denied.
 	Role   string
 	UserID uuid.UUID
+	// RoleID is the caller's role identity (R1 re-key). Names are tenant-editable
+	// vocabulary — a rename or duplicate must never change what a role can do, so
+	// every authorization layer (OLS/FLS/capabilities/layouts) looks up grants by
+	// this id. uuid.Nil means "not resolved": since the P9 bridge removal there is
+	// no name fallback, so an unresolved role is default-denied everywhere.
+	RoleID uuid.UUID
+	// IsOwner marks the god-mode principal, resolved from roles.is_owner (never
+	// the name string) by the auth middleware. Every owner bypass keys off this.
+	IsOwner bool
+	// DataScope is the caller's row visibility ('own' | 'all'), resolved from the
+	// role's data_scope by the auth middleware (same value threaded to the repos via
+	// repository.WithDataScope). Empty on a name-only bridge caller. The AI reads it
+	// to fork own-scope and shape its persona (P7); REST relies on the repo-layer
+	// scope, so it doesn't need to read this.
+	DataScope string
 }
 
 type callerCtxKey struct{}
 
-// WithCaller returns a context carrying the caller identity. Called once by the
-// auth middleware after the role is resolved.
-func WithCaller(ctx context.Context, role string, userID uuid.UUID) context.Context {
-	return context.WithValue(ctx, callerCtxKey{}, Caller{Role: role, UserID: userID})
+// WithCallerIdentity returns a context carrying the full caller identity —
+// role id + owner flag included (P5). Set once by the auth middleware after the
+// membership is resolved.
+func WithCallerIdentity(ctx context.Context, c Caller) context.Context {
+	return context.WithValue(ctx, callerCtxKey{}, c)
 }
 
 // CallerFromContext returns the caller and true when one is present. A missing
@@ -42,7 +61,7 @@ type requestMetaCtxKey struct{}
 // WithRequestMeta carries the request's transport detail (IP, User-Agent) on the
 // context so the admin usecases (workspace/role/permission) can stamp an
 // auth_events row (P4) without threading RequestMeta through every method — the
-// same pattern WithCaller uses. Set once by the auth middleware.
+// same pattern WithCallerIdentity uses. Set once by the auth middleware.
 func WithRequestMeta(ctx context.Context, meta RequestMeta) context.Context {
 	return context.WithValue(ctx, requestMetaCtxKey{}, meta)
 }

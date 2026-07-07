@@ -191,6 +191,7 @@ func runNowExecSetup(t *testing.T) (*runNowExecEnv, func()) {
 		db:          db,
 		logger:      slog.Default(),
 		rateLimiter: newTokenBucket(),
+		capChecker:  capAllow{},
 	}
 
 	gin.SetMode(gin.TestMode)

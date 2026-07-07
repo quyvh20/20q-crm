@@ -16,7 +16,12 @@ type PasswordResetToken struct {
 	TokenHash string     `gorm:"size:255;not null" json:"-"`
 	ExpiresAt time.Time  `gorm:"not null" json:"expires_at"`
 	UsedAt    *time.Time `json:"used_at,omitempty"`
-	CreatedAt time.Time  `gorm:"not null;default:now()" json:"created_at"`
+	// InitiatedBy is the admin who sent an admin-triggered reset link (P2). NULL
+	// for a self-serve forgot-password request. It both audits the sender and
+	// keys the per-target daily cap (count of admin-initiated links), so one org's
+	// admin can't harass a user who is a member of several workspaces.
+	InitiatedBy *uuid.UUID `gorm:"type:uuid" json:"initiated_by,omitempty"`
+	CreatedAt   time.Time  `gorm:"not null;default:now()" json:"created_at"`
 }
 
 func (PasswordResetToken) TableName() string { return "password_reset_tokens" }

@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"crm-backend/internal/domain"
+
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
@@ -33,6 +35,14 @@ type Engine struct {
 	cancel    context.CancelFunc
 	executors map[string]ActionExecutor
 	scheduler *Scheduler
+	// authz is the OLS/FLS + audit chokepoint the record-writing executors enforce
+	// through, running as the workflow author (P8, §3.5). Same value REST/AI use
+	// (PermissionUseCase). nil disables enforcement (unit tests) — then writes run
+	// unrestricted, matching pre-P8 behavior.
+	authz domain.RecordAuthorizer
+	// callerResolver resolves the workflow author's identity so actions run as the
+	// creator. nil (unit tests) ⇒ no caller attached ⇒ legacy trusted behavior.
+	callerResolver CallerResolver
 	// PostActionLogHook is called inside commitActionAndRun after both DB writes
 	// (UpdateActionLogTx + UpdateRunTx) but before tx.Commit(). Exported so tests
 	// can inject a panic to simulate a crash and verify that uncommitted writes
@@ -85,6 +95,19 @@ func WithEmailExecutor(apiKey, fromEmail string) EngineOption {
 	}
 }
 
+// WithAuthorizer wires the OLS/FLS + audit chokepoint (PermissionUseCase) so the
+// record-writing executors enforce and audit as the workflow author (P8). Without
+// it the executors write unrestricted (pre-P8 behavior), so prod MUST set it.
+func WithAuthorizer(authz domain.RecordAuthorizer) EngineOption {
+	return func(e *Engine) { e.authz = authz }
+}
+
+// WithCallerResolver wires the run-as-creator identity resolver (P8). Without it
+// the engine attaches no caller and actions keep the legacy trusted behavior.
+func WithCallerResolver(r CallerResolver) EngineOption {
+	return func(e *Engine) { e.callerResolver = r }
+}
+
 // RegisterExecutor registers an action executor for a given action type.
 func (e *Engine) RegisterExecutor(actionType string, executor ActionExecutor) {
 	e.executors[actionType] = executor
@@ -99,7 +122,7 @@ func (e *Engine) Start() {
 		e.executors[ActionCreateTask] = NewTaskExecutor(e.db)
 	}
 	if _, ok := e.executors[ActionAssignUser]; !ok {
-		e.executors[ActionAssignUser] = NewAssignUserExecutor(e.db)
+		e.executors[ActionAssignUser] = NewAssignUserExecutor(e.db, e.authz)
 	}
 	if _, ok := e.executors[ActionSendWebhook]; !ok {
 		e.executors[ActionSendWebhook] = NewWebhookExecutor()
@@ -108,7 +131,7 @@ func (e *Engine) Start() {
 		e.executors[ActionDelay] = NewDelayExecutor()
 	}
 	if _, ok := e.executors[ActionUpdateRecord]; !ok {
-		executor := NewUpdateRecordExecutor(e.db)
+		executor := NewUpdateRecordExecutor(e.db, e.authz)
 		e.executors[ActionUpdateRecord] = executor
 		e.executors[ActionUpdateContact] = executor // backward compat
 	}
@@ -477,6 +500,12 @@ func (e *Engine) processRun(runID uuid.UUID) {
 	// Build eval context from trigger context
 	evalCtx := e.buildEvalContext(run)
 
+	// Resolve the actor context ONCE per run: the workflow author's Caller (P8
+	// run-as-creator), so record-writing executors enforce OLS/FLS/own-scope and
+	// attribute the audit trail to the author. Engine bookkeeping below keeps using
+	// e.ctx (system) — only action side-effects run under execCtx.
+	execCtx := e.actorContext(e.ctx, run)
+
 	// Check if this is a steps-based (P13 tree) workflow
 	if len(ver.Steps) > 0 && string(ver.Steps) != "null" {
 		var steps []StepSpec
@@ -500,7 +529,7 @@ func (e *Engine) processRun(runID uuid.UUID) {
 		}
 
 		e.logger.Info("automation: starting steps execution", "run_id", runID.String(), "steps_count", len(steps))
-		completed, execErr := e.executeStepsRecursive(steps, run, completedSteps, &evalCtx, "", "")
+		completed, execErr := e.executeStepsRecursive(execCtx, steps, run, completedSteps, &evalCtx, "", "")
 		e.logger.Info("automation: finished steps execution", "run_id", runID.String(), "completed", completed, "execErr", execErr)
 		if execErr != nil {
 			return
@@ -581,7 +610,7 @@ func (e *Engine) processRun(runID uuid.UUID) {
 		e.repo.CreateActionLogStandalone(e.ctx, actionLog)
 
 		startTime := time.Now()
-		output, execErr := e.executeAction(e.ctx, run, action, evalCtx)
+		output, execErr := e.executeAction(execCtx, run, action, evalCtx)
 		durationMs := time.Since(startTime).Milliseconds()
 
 		actionLog.DurationMs = durationMs
@@ -678,7 +707,7 @@ func (e *Engine) processRun(runID uuid.UUID) {
 	}
 }
 
-func (e *Engine) executeStepsRecursive(steps []StepSpec, run *WorkflowRun, completedSteps map[string]bool, evalCtx *EvalContext, parentPath string, branch string) (bool, error) {
+func (e *Engine) executeStepsRecursive(execCtx context.Context, steps []StepSpec, run *WorkflowRun, completedSteps map[string]bool, evalCtx *EvalContext, parentPath string, branch string) (bool, error) {
 	for i, step := range steps {
 		stepPath := BuildStepPath(parentPath, branch, i)
 		if e.ctx.Err() != nil {
@@ -735,7 +764,7 @@ func (e *Engine) executeStepsRecursive(steps []StepSpec, run *WorkflowRun, compl
 
 			startTime := time.Now()
 			e.logger.Info("automation: calling executeAction", "run_id", run.ID.String(), "action_type", action.Type)
-			output, execErr := e.executeAction(e.ctx, run, action, *evalCtx)
+			output, execErr := e.executeAction(execCtx, run, action, *evalCtx)
 			durationMs := time.Since(startTime).Milliseconds()
 			actionLog.DurationMs = durationMs
 			e.logger.Info("automation: executeAction finished", "run_id", run.ID.String(), "duration_ms", durationMs, "execErr", execErr)
@@ -822,12 +851,12 @@ func (e *Engine) executeStepsRecursive(steps []StepSpec, run *WorkflowRun, compl
 			}
 
 			if runYes {
-				completed, err := e.executeStepsRecursive(step.YesSteps, run, completedSteps, evalCtx, stepPath, "yes")
+				completed, err := e.executeStepsRecursive(execCtx, step.YesSteps, run, completedSteps, evalCtx, stepPath, "yes")
 				if err != nil || !completed {
 					return completed, err
 				}
 			} else {
-				completed, err := e.executeStepsRecursive(step.NoSteps, run, completedSteps, evalCtx, stepPath, "no")
+				completed, err := e.executeStepsRecursive(execCtx, step.NoSteps, run, completedSteps, evalCtx, stepPath, "no")
 				if err != nil || !completed {
 					return completed, err
 				}

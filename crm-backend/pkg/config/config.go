@@ -9,6 +9,11 @@ import (
 type Config struct {
 	// App
 	Port string `mapstructure:"PORT"`
+	// AppEnv gates dev-only escape hatches (debug tokens) and the fail-closed
+	// mail check. Read through viper so a local crm-backend/.env works. Anything
+	// other than the explicit "development"/"test" allowlist values is treated
+	// as production — unset/typo'd fails CLOSED (P10 P1).
+	AppEnv string `mapstructure:"APP_ENV"`
 
 	// Database & Cache
 	DatabaseURL string `mapstructure:"DATABASE_URL"`
@@ -46,6 +51,14 @@ type Config struct {
 
 	// Email
 	ResendAPIKey string `mapstructure:"RESEND_API_KEY"`
+	// MailFrom is the From address for all outgoing mail; the domain must be
+	// verified in Resend or every send silently fails at the provider.
+	MailFrom string `mapstructure:"MAIL_FROM"`
+	// MailDisabled is the explicit escape hatch for prod-like deployments that
+	// genuinely run without email: without it, production boot REFUSES to start
+	// when RESEND_API_KEY is missing rather than silently dropping recovery
+	// emails (P10 P1).
+	MailDisabled bool `mapstructure:"MAIL_DISABLED"`
 
 	// Storage (Cloudflare R2 — optional, falls back to base64-in-redis for dev)
 	R2AccountID       string `mapstructure:"R2_ACCOUNT_ID"`
@@ -76,7 +89,10 @@ func LoadConfig() (*Config, error) {
 	viper.BindEnv("CF_AI_GATEWAY_ID")
 	viper.BindEnv("CF_AI_GATEWAY_TOKEN")
 
+	viper.BindEnv("APP_ENV")
 	viper.BindEnv("RESEND_API_KEY")
+	viper.BindEnv("MAIL_FROM")
+	viper.BindEnv("MAIL_DISABLED")
 	viper.BindEnv("R2_ACCOUNT_ID")
 	viper.BindEnv("R2_ACCESS_KEY_ID")
 	viper.BindEnv("R2_SECRET_ACCESS_KEY")
@@ -93,6 +109,8 @@ func LoadConfig() (*Config, error) {
 	// COOKIE_SECURE=true (cross-site cookie delivery).
 	viper.SetDefault("COOKIE_SAMESITE", "lax")
 	viper.SetDefault("COOKIE_SECURE", false)
+	viper.SetDefault("MAIL_FROM", "noreply@twentyq.io")
+	// No default for APP_ENV: absence must mean "production" (fail closed).
 
 	if err := viper.ReadInConfig(); err != nil {
 		log.Printf("No .env file found or error reading it, relying on environment variables: %v", err)

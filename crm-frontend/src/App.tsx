@@ -14,6 +14,8 @@ import WorkspaceSettingsPage from './pages/WorkspaceSettingsPage';
 import CustomObjectPage from './pages/CustomObjectPage';
 import ObjectRecordPage from './pages/ObjectRecordPage';
 import AcceptInvitePage from './pages/AcceptInvitePage';
+import ChooseWorkspacePage from './pages/ChooseWorkspacePage';
+import NoWorkspacePage from './pages/NoWorkspacePage';
 import ForgotPasswordPage from './pages/ForgotPasswordPage';
 import ResetPasswordPage from './pages/ResetPasswordPage';
 import VerifyEmailPage from './pages/VerifyEmailPage';
@@ -47,8 +49,8 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30_000, retry: 1 } },
 });
 
-function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, isLoading } = useAuth();
+function ProtectedRoute({ children, requireWorkspace = true }: { children: React.ReactNode; requireWorkspace?: boolean }) {
+  const { isAuthenticated, isLoading, needsChooser, hasActiveWorkspace } = useAuth();
 
   if (isLoading) {
     return (
@@ -60,6 +62,18 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />;
+  }
+
+  // R2 workspace gate (P4): a multi-org user with no resolved default chooses one;
+  // a user with no active workspace lands on the dead-end. The chooser / dead-end
+  // pages themselves pass requireWorkspace={false} to avoid a redirect loop.
+  if (requireWorkspace) {
+    if (needsChooser) {
+      return <Navigate to="/choose-workspace" replace />;
+    }
+    if (!hasActiveWorkspace) {
+      return <Navigate to="/no-workspace" replace />;
+    }
   }
 
   return <>{children}</>;
@@ -101,6 +115,15 @@ function App() {
             <Route path="/verify-email" element={<VerifyEmailPage />} />
             <Route path="/auth/callback" element={<AuthCallbackPage />} />
             <Route path="/accept-invite" element={<AcceptInvitePage />} />
+
+            {/* Authenticated but pre-workspace: the R2 chooser + zero-membership
+                dead-end. requireWorkspace={false} so they don't redirect to themselves. */}
+            <Route path="/choose-workspace" element={
+              <ProtectedRoute requireWorkspace={false}><ChooseWorkspacePage /></ProtectedRoute>
+            } />
+            <Route path="/no-workspace" element={
+              <ProtectedRoute requireWorkspace={false}><NoWorkspacePage /></ProtectedRoute>
+            } />
 
             {/* Protected routes */}
             <Route path="/" element={

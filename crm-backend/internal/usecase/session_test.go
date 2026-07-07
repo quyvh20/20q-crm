@@ -208,7 +208,7 @@ func TestRoleChange_EmitsAuditEvent(t *testing.T) {
 	orgID := uuid.New()
 	viewer := roleRepo.add(&domain.Role{ID: uuid.New(), Name: domain.RoleViewer, IsSystem: true, DataScope: domain.DataScopeAll})
 	audit := newFakeAuthRepo()
-	uc := NewRoleUseCase(roleRepo, &fakeInvalidator{}, audit)
+	uc := NewRoleUseCase(roleRepo, &fakeInvalidator{}, audit, nil)
 
 	_, err := uc.Create(context.Background(), orgID, domain.CreateRoleInput{
 		Name:        "Support Agent",

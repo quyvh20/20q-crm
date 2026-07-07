@@ -10,7 +10,7 @@ export const RunHistory: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
-  const { user, currentRole } = useAuth();
+  const { user, hasCapability } = useAuth();
   // A run id handed over via navigation state — set by the "Run started" toast's
   // "View run" link and by the builder's Run Now. When present, auto-open that run's
   // detail and scroll/flash it once it appears in the loaded list.
@@ -168,7 +168,7 @@ export const RunHistory: React.FC = () => {
   // Retry permission mirrors the backend (authorizeRunNow): owner/admin/manager, or the
   // workflow's creator. The same rule gates Run Now, so we reuse canRunWorkflowNow. The
   // server still enforces it (403) — this only drives the disabled state in the UI.
-  const canRetry = canRunWorkflowNow(currentRole, user?.id, {
+  const canRetry = canRunWorkflowNow(hasCapability('workflows.run_any'), user?.id, {
     created_by: workflow?.created_by ?? null,
   });
 

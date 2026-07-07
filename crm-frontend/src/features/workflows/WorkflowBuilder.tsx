@@ -58,7 +58,7 @@ export const WorkflowBuilder: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const store = useBuilderStore();
-  const { user, currentRole } = useAuth();
+  const { user, hasCapability } = useAuth();
 
   // In-builder "Run Now": shown only for a saved workflow the caller may run, and
   // disabled while there are unsaved edits (it executes the persisted version).
@@ -68,7 +68,7 @@ export const WorkflowBuilder: React.FC = () => {
     createdBy: store.createdBy,
     trigger: store.trigger,
     isDirty: store.isDirty,
-    role: currentRole,
+    canRunAny: hasCapability('workflows.run_any'),
     userId: user?.id,
   });
 

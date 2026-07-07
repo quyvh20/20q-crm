@@ -76,6 +76,12 @@ type User struct {
 	// serialized (not json:"-") so the SPA can drive the "verify your email"
 	// banner. Existing users are grandfathered as verified by migration 000026.
 	EmailVerifiedAt *time.Time  `gorm:"column:email_verified_at" json:"email_verified_at"`
+	// DefaultOrgID is the user's chosen home workspace (R2, P3). It is the durable,
+	// server-side memory that drives org selection at login/refresh so a multi-org
+	// user isn't asked to choose every time. Validated as an ACTIVE membership at
+	// every use; an invalid value (left an org, suspended, org deleted) is treated
+	// as NULL and self-cleared. Column added in the P0 000034 boot guard.
+	DefaultOrgID *uuid.UUID `gorm:"type:uuid;column:default_org_id" json:"default_org_id,omitempty"`
 	// TokenVersion is bumped to invalidate every outstanding access token for
 	// this user at once (password reset, sign-out-everywhere, refresh-token
 	// theft). The JWT carries it as the `tv` claim; the middleware rejects any

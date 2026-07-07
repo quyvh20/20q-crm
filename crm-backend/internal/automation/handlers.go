@@ -35,18 +35,23 @@ type Handler struct {
 	rateLimiter *tokenBucket // Rate limiter for webhook inbound
 	schemaCache *SchemaCache // Per-org schema cache (60s TTL)
 	// capChecker resolves the caller's workflows.run_any capability for Run Now /
-	// Retry (P3). Nil in unit tests, where authorizeRunNow's legacy role check is
-	// used; set in prod via SetCapabilityChecker.
+	// Retry. Required as of P8 (NewHandler panics on nil): the legacy
+	// owner/admin/manager name fallback was deleted, so Run Now / Retry authorize
+	// purely on the capability (plus the creator allowance).
 	capChecker domain.CapabilityChecker
+	// authz stamps the P5a audit trail for the inbound-webhook contact upsert, which
+	// runs as the system actor (P8). nil (unit tests) simply skips the audit.
+	authz domain.RecordAuthorizer
 }
 
-// SetCapabilityChecker wires the P3 capability engine so Run Now / Retry authorize
-// on the workflows.run_any capability rather than hardcoded role names. Optional:
-// when unset, authorization falls back to the legacy owner/admin/manager check.
-func (h *Handler) SetCapabilityChecker(c domain.CapabilityChecker) { h.capChecker = c }
-
-// NewHandler creates a new automation HTTP handler.
-func NewHandler(engine *Engine, db *gorm.DB, logger *slog.Logger) *Handler {
+// NewHandler creates a new automation HTTP handler. capChecker is required: Run Now
+// and Retry authorize on workflows.run_any (there is no role-name fallback as of
+// P8), so a nil checker is a wiring bug and panics rather than silently failing
+// open. authz stamps the webhook-inbound audit trail (may be nil in unit tests).
+func NewHandler(engine *Engine, db *gorm.DB, logger *slog.Logger, capChecker domain.CapabilityChecker, authz domain.RecordAuthorizer) *Handler {
+	if capChecker == nil {
+		panic("automation.NewHandler: capChecker is required (Run Now / Retry authorize on workflows.run_any; the role-name fallback was removed in P8)")
+	}
 	return &Handler{
 		engine:      engine,
 		repo:        engine.Repo(),
@@ -54,6 +59,8 @@ func NewHandler(engine *Engine, db *gorm.DB, logger *slog.Logger) *Handler {
 		logger:      logger,
 		rateLimiter: newTokenBucket(),
 		schemaCache: NewSchemaCache(60 * time.Second),
+		capChecker:  capChecker,
+		authz:       authz,
 	}
 }
 
@@ -81,17 +88,18 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerF
 		workflows.DELETE("/:id", requireCap(domain.CapWorkflowsManage), h.DeleteWorkflow)
 		workflows.POST("/:id/toggle", requireCap(domain.CapWorkflowsManage), h.ToggleWorkflow)
 		workflows.POST("/:id/test-run", requireCap(domain.CapWorkflowsManage), h.TestRun)
-		// Run Now intentionally has NO requireRole guard: authorization is enforced inside
-		// h.RunNow (owner/admin/manager may run any workflow; any other caller may run only
-		// a workflow they created — the creator allowance). A static route guard cannot
-		// express the creator check because it needs the loaded workflow's CreatedBy.
+		// Run Now intentionally has NO route-level capability guard: authorization is
+		// enforced inside h.RunNow (a caller with the workflows.run_any capability may
+		// run any workflow; any other caller may run only a workflow they created — the
+		// creator allowance). A static route guard cannot express the creator check
+		// because it needs the loaded workflow's CreatedBy.
 		workflows.POST("/:id/run", h.RunNow)
 		workflows.GET("/:id/runs", h.ListRuns)
 		workflows.GET("/runs/:runId", h.GetRunDetail)
 		// Retry a failed run (P21): re-queues it to resume from the failed step. Like Run
-		// Now, it carries NO requireRole guard — authorization (owner/admin/manager, or the
-		// workflow's creator) is enforced inside h.RetryRun, which needs the workflow's
-		// CreatedBy.
+		// Now, it carries no route-level capability guard — authorization (the
+		// workflows.run_any capability, or the workflow's creator) is enforced inside
+		// h.RetryRun, which needs the workflow's CreatedBy.
 		workflows.POST("/runs/:runId/retry", h.RetryRun)
 	}
 
@@ -399,11 +407,11 @@ func (h *Handler) TestRun(c *gin.Context) {
 // before entity loading and run creation so an incompatible request can never produce a
 // created-then-failed run (Req 4.4).
 //
-// Authorization is enforced here rather than via route middleware: owner/admin/manager may
-// run any workflow in the org, while any other caller may run ONLY a workflow they created
-// (creator allowance, see authorizeRunNow). The check runs right after the workflow is
-// loaded — it needs the workflow's CreatedBy — and before any side effect, so an
-// unauthorized request yields 403 and never creates a run.
+// Authorization is enforced here rather than via route middleware: a caller with the
+// workflows.run_any capability may run any workflow in the org, while any other caller may
+// run ONLY a workflow they created (creator allowance, see authorizeRunNowCtx). The check
+// runs right after the workflow is loaded — it needs the workflow's CreatedBy — and before
+// any side effect, so an unauthorized request yields 403 and never creates a run.
 func (h *Handler) RunNow(c *gin.Context) {
 	// Auth / org context — getContext writes the 401 itself (Req 1.3). userID identifies
 	// the caller for the creator allowance below.
@@ -445,13 +453,11 @@ func (h *Handler) RunNow(c *gin.Context) {
 		return
 	}
 
-	// Authorization (creator allowance): owner/admin/manager may run any workflow in the
-	// org; any other caller may run only a workflow they created. Enforced after the load
-	// (needs wf.CreatedBy) and before any side effect, so an unauthorized request never
-	// creates a run.
-	roleVal, _ := c.Get("role")
-	role, _ := roleVal.(string)
-	if !h.authorizeRunNowCtx(c, role, userID, wf.CreatedBy) {
+	// Authorization: the creator may run their own workflow; any other caller must
+	// hold workflows.run_any (P8 — no role-name fallback). Enforced after the load
+	// (needs wf.CreatedBy) and before any side effect, so an unauthorized request
+	// never creates a run.
+	if !h.authorizeRunNowCtx(c, userID, wf.CreatedBy) {
 		h.errorResponse(c, http.StatusForbidden, "FORBIDDEN",
 			"you do not have permission to run this workflow", nil)
 		return
@@ -624,11 +630,11 @@ func (h *Handler) GetRunDetail(c *gin.Context) {
 // belong to the caller's org; a run from another org is reported as not found so its
 // existence is not leaked.
 //
-// Authorization mirrors Run Now (so the route carries NO requireRole guard): owner/admin/
-// manager may retry any run in the org, and any other caller may retry only a run whose
-// workflow they created. The decision needs the workflow's CreatedBy, so it is enforced
-// here after the workflow is loaded, before any state change. A successful retry is written
-// to the structured log as an audit event (actor + timestamp).
+// Authorization mirrors Run Now (so the route carries no route-level capability guard): a
+// caller with the workflows.run_any capability may retry any run in the org, and any other
+// caller may retry only a run whose workflow they created. The decision needs the workflow's
+// CreatedBy, so it is enforced here after the workflow is loaded, before any state change. A
+// successful retry is written to the structured log as an audit event (actor + timestamp).
 func (h *Handler) RetryRun(c *gin.Context) {
 	orgID, userID := h.getContext(c)
 	if orgID == uuid.Nil {
@@ -655,17 +661,15 @@ func (h *Handler) RetryRun(c *gin.Context) {
 		return
 	}
 
-	// Authorization (creator allowance): owner/admin/manager may retry any run; any other
-	// caller may retry only a run whose workflow they created. Load the workflow for its
-	// CreatedBy — a soft-deleted/absent workflow yields uuid.Nil, so only the privileged
-	// roles can retry an orphaned run.
+	// Authorization (creator allowance): a caller with the workflows.run_any capability may
+	// retry any run; any other caller may retry only a run whose workflow they created. Load
+	// the workflow for its CreatedBy — a soft-deleted/absent workflow yields uuid.Nil, so only
+	// a workflows.run_any holder can retry an orphaned run.
 	var createdBy uuid.UUID
 	if wf, werr := h.repo.GetWorkflowByID(ctx, orgID, run.WorkflowID); werr == nil && wf != nil {
 		createdBy = wf.CreatedBy
 	}
-	roleVal, _ := c.Get("role")
-	role, _ := roleVal.(string)
-	if !h.authorizeRunNowCtx(c, role, userID, createdBy) {
+	if !h.authorizeRunNowCtx(c, userID, createdBy) {
 		h.errorResponse(c, http.StatusForbidden, "FORBIDDEN",
 			"you do not have permission to retry this run", nil)
 		return
@@ -859,6 +863,30 @@ func (h *Handler) WebhookInbound(c *gin.Context) {
 			contactData["phone"], datatypes.JSON(cfJSON),
 		)
 		eventType = TriggerContactCreated
+	}
+
+	// Audit the webhook-driven contact write as the SYSTEM actor (P8 webhook-run
+	// actor). An inbound webhook is org-token-authenticated with no human creator,
+	// so the audit row carries a nil actor (rendered as "System") plus the source,
+	// keeping this automation write attributable in the per-record history like a
+	// UI/API/workflow write. Synchronous + best-effort; a nil authz (tests) skips it.
+	if h.authz != nil {
+		action := domain.ActionCreate
+		if eventType == TriggerContactUpdated {
+			action = domain.ActionEdit
+		}
+		// context.Background(), NOT c.Request.Context(): the audit is a durable
+		// side-effect that must complete even if the external webhook client
+		// disconnects (which cancels the request context). The contact upsert above
+		// already runs on h.db for the same reason.
+		h.authz.Audit(context.Background(), domain.AuditEntry{
+			OrgID:      token.OrgID,
+			ActorID:    uuid.Nil, // system actor — inbound webhook, no human author
+			ObjectSlug: "contact",
+			RecordID:   contactID,
+			Action:     action,
+			Changes:    map[string]interface{}{"source": "webhook_inbound", "email": email},
+		})
 	}
 
 	// Trigger event asynchronously

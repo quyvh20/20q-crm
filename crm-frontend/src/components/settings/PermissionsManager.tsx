@@ -58,6 +58,20 @@ export default function PermissionsManager() {
 
   const selectedRole: PermRoleInfo | undefined = grid?.roles.find((r) => r.id === selectedRoleId);
 
+  // Nudge: objects that some non-owner role can't even read (P6). New objects and
+  // blank/zero-access custom roles land here, so an admin isn't surprised that a
+  // role sees nothing. Owner is excluded (it bypasses OLS).
+  const zeroAccess = useMemo(() => {
+    if (!grid) return [] as { label: string; count: number }[];
+    const nonOwner = grid.roles.filter((r) => !r.is_owner);
+    return grid.objects
+      .map((o) => ({
+        label: o.label,
+        count: nonOwner.filter((r) => !cellMap.get(`${r.id}:${o.slug}`)?.read).length,
+      }))
+      .filter((x) => x.count > 0);
+  }, [grid, cellMap]);
+
   const cellFor = (roleId: string, slug: string) => {
     if (selectedRole?.is_owner) return { read: true, create: true, edit: true, delete: true };
     const c = cellMap.get(`${roleId}:${slug}`);
@@ -108,6 +122,19 @@ export default function PermissionsManager() {
 
       {error && (
         <div className="bg-red-50 text-red-700 text-sm rounded-md px-3 py-2">{error}</div>
+      )}
+
+      {zeroAccess.length > 0 && (
+        <div className="bg-amber-50 text-amber-800 text-sm rounded-md px-3 py-2 border border-amber-200">
+          ⚠ Some roles have no access to{' '}
+          {zeroAccess.map((z, i) => (
+            <span key={z.label}>
+              {i > 0 ? ', ' : ''}
+              <strong>{z.label}</strong> ({z.count} role{z.count === 1 ? '' : 's'})
+            </span>
+          ))}
+          . Grant read access below so those roles aren't locked out.
+        </div>
       )}
 
       {/* Role selector */}

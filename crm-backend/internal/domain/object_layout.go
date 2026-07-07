@@ -134,14 +134,22 @@ type UpdateLayoutInput struct {
 // Ports
 // ============================================================
 
+// LayoutRoleMap is the org's layout role-assignment index (R1 re-key): the
+// authoritative slug → roleID → layoutID map. The P5 name-keyed bridge (ByName)
+// was deleted in P9 — layouts resolve by role id only.
+type LayoutRoleMap struct {
+	ByID map[string]map[uuid.UUID]uuid.UUID
+}
+
 // ObjectLayoutRepository persists layouts and their role assignments.
 type ObjectLayoutRepository interface {
 	// LoadOrgLayouts returns all non-deleted layouts for the org, grouped by
 	// object_slug, with Sections already decoded. Used to warm the per-org cache.
 	LoadOrgLayouts(ctx context.Context, orgID uuid.UUID) (map[string][]ObjectLayout, error)
-	// LoadOrgLayoutRoleMap returns slug → roleName → layoutID for the org in one
-	// JOIN query, so the usecase cache resolves roles without extra DB round-trips.
-	LoadOrgLayoutRoleMap(ctx context.Context, orgID uuid.UUID) (map[string]map[string]uuid.UUID, error)
+	// LoadOrgLayoutRoleMap returns the org's role→layout assignment index (keyed by
+	// role id) in one query, so the usecase cache resolves roles without extra DB
+	// round-trips.
+	LoadOrgLayoutRoleMap(ctx context.Context, orgID uuid.UUID) (*LayoutRoleMap, error)
 
 	// GetLayout returns one layout (with Sections decoded) owned by the org, or nil.
 	GetLayout(ctx context.Context, orgID, id uuid.UUID) (*ObjectLayout, error)
@@ -166,12 +174,12 @@ type ObjectLayoutRepository interface {
 
 // ObjectLayoutUseCase is the per-request resolver and the admin CRUD surface.
 type ObjectLayoutUseCase interface {
-	// ResolveLayout returns the effective layout sections for a caller with
+	// ResolveLayout returns the effective layout sections for the caller with
 	// FLS-hidden keys already stripped out of every section. Returns nil when no
 	// layout is configured — the renderer falls back to flat field order.
-	// Resolver precedence: role-assigned → is_default → nil.
+	// Resolver precedence: role-assigned (by caller.RoleID) → is_default → nil.
 	// Results are served from a per-org cache (60-second TTL, busted on any write).
-	ResolveLayout(ctx context.Context, orgID uuid.UUID, slug, callerRole string, hiddenKeys map[string]bool) ([]LayoutSection, error)
+	ResolveLayout(ctx context.Context, orgID uuid.UUID, slug string, caller Caller, hiddenKeys map[string]bool) ([]LayoutSection, error)
 
 	// Admin CRUD (all admin-only at the HTTP layer):
 	ListLayouts(ctx context.Context, orgID uuid.UUID, slug string) ([]LayoutWithRoles, error)

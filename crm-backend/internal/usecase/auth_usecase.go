@@ -35,6 +35,10 @@ const (
 	passwordResetTokenDuration     = time.Hour
 	emailVerificationTokenDuration = 24 * time.Hour
 	resendVerificationCooldown     = time.Minute
+	// Per-email cooldown between forgot-password requests (P10 P1): the only
+	// other guard is 30 req/min/IP, which no-ops without Redis — without this,
+	// one caller can bomb a victim's inbox with reset emails.
+	passwordResetRequestCooldown = time.Minute
 
 	// Per-email login throttle (P2). After loginFailThreshold failures within
 	// loginFailWindow, each further failure sets an exponential lockout starting
@@ -125,6 +129,7 @@ func (uc *authUseCase) seedDefaultStages(ctx context.Context, orgID uuid.UUID) {
 }
 
 func (uc *authUseCase) Register(ctx context.Context, input domain.RegisterInput) (*domain.AuthResponse, error) {
+	input.Email = normalizeEmail(input.Email)
 	existing, err := uc.authRepo.GetUserByEmail(ctx, input.Email)
 	if err != nil {
 		return nil, domain.NewAppError(500, "Get user err: " + err.Error())
@@ -204,11 +209,12 @@ func (uc *authUseCase) Register(ctx context.Context, input domain.RegisterInput)
 
 	workspaces := []domain.WorkspaceInfo{
 		{
-			OrgID:   org.ID,
-			OrgName: org.Name,
-			OrgType: org.Type,
-			Role:    ownerRole.Name,
-			Status:  domain.StatusActive,
+			OrgID:       org.ID,
+			OrgName:     org.Name,
+			OrgType:     org.Type,
+			Role:        ownerRole.Name,
+			Status:      domain.StatusActive,
+			MemberCount: 1,
 		},
 	}
 
@@ -217,6 +223,8 @@ func (uc *authUseCase) Register(ctx context.Context, input domain.RegisterInput)
 		RefreshToken: refreshToken,
 		User:         *user,
 		Workspaces:   workspaces,
+		ActiveOrgID:  org.ID,
+		NeedsChooser: false,
 	}, nil
 }
 
@@ -259,32 +267,19 @@ func (uc *authUseCase) Login(ctx context.Context, input domain.LoginInput, meta 
 		return nil, domain.ErrInternal
 	}
 
-	workspaces := make([]domain.WorkspaceInfo, 0, len(orgUsers))
-	for _, ou := range orgUsers {
-		name := ""
-		orgType := "company"
-		if ou.Org != nil {
-			name = ou.Org.Name
-			orgType = ou.Org.Type
-		}
-		roleName := "viewer"
-		if ou.Role != nil {
-			roleName = ou.Role.Name
-		}
-		workspaces = append(workspaces, domain.WorkspaceInfo{
-			OrgID:   ou.OrgID,
-			OrgName: name,
-			OrgType: orgType,
-			Role:    roleName,
-			Status:  ou.Status,
-		})
+	// R2 server-side org selection (P3): explicit org_id → valid default → sole →
+	// deterministic first. An explicit org the user can't access is a hard 403,
+	// never a silent fallback into some other org.
+	sel, needsChooser, explicitMiss := uc.resolveActiveOrg(ctx, user, orgUsers, input.OrgID)
+	if explicitMiss {
+		return nil, domain.NewAppError(http.StatusForbidden, "you are not an active member of the requested workspace")
 	}
 
 	var activeOrgID uuid.UUID
 	var activeRole *domain.Role
-	if len(orgUsers) > 0 {
-		activeOrgID = orgUsers[0].OrgID
-		activeRole = orgUsers[0].Role
+	if sel != nil {
+		activeOrgID = sel.OrgID
+		activeRole = sel.Role
 	}
 
 	accessToken, err := uc.generateAccessToken(user.ID, activeOrgID, activeRole, user.TokenVersion)
@@ -308,16 +303,36 @@ func (uc *authUseCase) Login(ctx context.Context, input domain.LoginInput, meta 
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 		User:         *user,
-		Workspaces:   workspaces,
+		Workspaces:   uc.buildWorkspaces(ctx, orgUsers),
+		ActiveOrgID:  activeOrgID,
+		DefaultOrgID: user.DefaultOrgID,
+		NeedsChooser: needsChooser,
 	}, nil
 }
 
-func (uc *authUseCase) SwitchWorkspace(ctx context.Context, userID uuid.UUID, input domain.SwitchWorkspaceInput) (*domain.AuthResponse, error) {
+// resolveActiveOrg runs the R2 selection chain over already-loaded memberships
+// and, as a side effect, self-clears a stored default that no longer resolves to
+// an active membership (P3). Returns the chosen membership (nil ⇒ no active
+// workspace when explicitMiss is false), whether the SPA needs the chooser, and
+// whether an explicitly requested org was NOT an active membership. It mutates
+// user.DefaultOrgID in place when it clears the stored one so the response echoes
+// the corrected value.
+func (uc *authUseCase) resolveActiveOrg(ctx context.Context, user *domain.User, orgUsers []domain.OrgUser, requested *uuid.UUID) (sel *domain.OrgUser, needsChooser, explicitMiss bool) {
+	var defaultInvalid bool
+	sel, needsChooser, defaultInvalid, explicitMiss = selectActiveOrg(orgUsers, requested, user.DefaultOrgID)
+	if defaultInvalid {
+		_ = uc.authRepo.SetUserDefaultOrg(ctx, user.ID, nil)
+		user.DefaultOrgID = nil
+	}
+	return sel, needsChooser, explicitMiss
+}
+
+func (uc *authUseCase) SwitchWorkspace(ctx context.Context, userID uuid.UUID, input domain.SwitchWorkspaceInput, meta domain.RequestMeta, currentRefreshToken string) (*domain.AuthResponse, error) {
 	ou, err := uc.authRepo.GetOrgUser(ctx, userID, input.OrgID)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
-	if ou == nil || ou.Status != "active" {
+	if ou == nil || ou.Status != domain.StatusActive {
 		return nil, domain.ErrNotMember
 	}
 
@@ -326,43 +341,42 @@ func (uc *authUseCase) SwitchWorkspace(ctx context.Context, userID uuid.UUID, in
 		return nil, domain.ErrUserNotFound
 	}
 
+	// "Make this my default": persist so the chooser isn't shown again (P3).
+	if input.SetDefault {
+		orgID := input.OrgID
+		if err := uc.authRepo.SetUserDefaultOrg(ctx, userID, &orgID); err != nil {
+			return nil, domain.ErrInternal
+		}
+		user.DefaultOrgID = &orgID
+	}
+
 	accessToken, err := uc.generateAccessToken(userID, input.OrgID, ou.Role, user.TokenVersion)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
 
-	refreshToken, err := uc.createRefreshToken(ctx, userID, domain.RequestMeta{}, nil)
+	// Switch hygiene (P3): revoke the refresh token the caller presented so the
+	// switch doesn't orphan a live 7-day credential, and mint the successor with
+	// real device meta (the old path stamped blank device rows).
+	if currentRefreshToken != "" {
+		if st, _ := uc.authRepo.GetRefreshTokenByHash(ctx, hashToken(currentRefreshToken)); st != nil {
+			_ = uc.authRepo.RevokeRefreshToken(ctx, st.ID)
+		}
+	}
+	refreshToken, err := uc.createRefreshToken(ctx, userID, meta, nil)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
 
 	orgUsers, _ := uc.authRepo.ListOrgsByUserID(ctx, userID)
-	workspaces := make([]domain.WorkspaceInfo, 0, len(orgUsers))
-	for _, o := range orgUsers {
-		name := ""
-		orgType := "company"
-		if o.Org != nil {
-			name = o.Org.Name
-			orgType = o.Org.Type
-		}
-		roleName := "viewer"
-		if o.Role != nil {
-			roleName = o.Role.Name
-		}
-		workspaces = append(workspaces, domain.WorkspaceInfo{
-			OrgID:   o.OrgID,
-			OrgName: name,
-			OrgType: orgType,
-			Role:    roleName,
-			Status:  o.Status,
-		})
-	}
-
 	return &domain.AuthResponse{
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 		User:         *user,
-		Workspaces:   workspaces,
+		Workspaces:   uc.buildWorkspaces(ctx, orgUsers),
+		ActiveOrgID:  input.OrgID,
+		DefaultOrgID: user.DefaultOrgID,
+		NeedsChooser: false,
 	}, nil
 }
 
@@ -371,27 +385,7 @@ func (uc *authUseCase) ListWorkspaces(ctx context.Context, userID uuid.UUID) ([]
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
-	workspaces := make([]domain.WorkspaceInfo, 0, len(orgUsers))
-	for _, ou := range orgUsers {
-		name := ""
-		orgType := "company"
-		if ou.Org != nil {
-			name = ou.Org.Name
-			orgType = ou.Org.Type
-		}
-		roleName := "viewer"
-		if ou.Role != nil {
-			roleName = ou.Role.Name
-		}
-		workspaces = append(workspaces, domain.WorkspaceInfo{
-			OrgID:   ou.OrgID,
-			OrgName: name,
-			OrgType: orgType,
-			Role:    roleName,
-			Status:  ou.Status,
-		})
-	}
-	return workspaces, nil
+	return uc.buildWorkspaces(ctx, orgUsers), nil
 }
 
 func (uc *authUseCase) RefreshToken(ctx context.Context, input domain.RefreshInput, meta domain.RequestMeta) (*domain.AuthResponse, error) {
@@ -438,32 +432,32 @@ func (uc *authUseCase) RefreshToken(ctx context.Context, input domain.RefreshInp
 		return nil, domain.ErrTokenExpired
 	}
 
-	// Rotate: revoke the presented token and mint a successor linked to it.
-	_ = uc.authRepo.RevokeRefreshToken(ctx, storedToken.ID)
-
 	user, err := uc.authRepo.GetUserByID(ctx, storedToken.UserID)
 	if err != nil || user == nil {
 		return nil, domain.ErrUserNotFound
 	}
 
 	orgUsers, _ := uc.authRepo.ListOrgsByUserID(ctx, user.ID)
+
+	// R2 fail-closed selection (P3). Run it BEFORE rotating the presented token so
+	// a 409 leaves the caller's refresh cookie intact — the SPA can retry a plain
+	// (no-org) refresh into its default/first org and route to the chooser. The old
+	// silent orgUsers[0] fallback could flip a multi-org user into another org on a
+	// cookie-only refresh; now an explicit org that isn't an active membership is a
+	// hard 409 ORG_UNAVAILABLE.
+	sel, needsChooser, explicitMiss := uc.resolveActiveOrg(ctx, user, orgUsers, input.OrgID)
+	if explicitMiss {
+		return nil, &domain.OrgUnavailableError{Workspaces: uc.buildWorkspaces(ctx, orgUsers)}
+	}
+
+	// Rotate: revoke the presented token and mint a successor linked to it.
+	_ = uc.authRepo.RevokeRefreshToken(ctx, storedToken.ID)
+
 	var activeOrgID uuid.UUID
 	var activeRole *domain.Role
-	if len(orgUsers) > 0 {
-		// Default: first org
-		activeOrgID = orgUsers[0].OrgID
-		activeRole = orgUsers[0].Role
-
-		// If caller specified an org_id, find that org and use its role
-		if input.OrgID != nil && *input.OrgID != uuid.Nil {
-			for _, ou := range orgUsers {
-				if ou.OrgID == *input.OrgID {
-					activeOrgID = ou.OrgID
-					activeRole = ou.Role
-					break
-				}
-			}
-		}
+	if sel != nil {
+		activeOrgID = sel.OrgID
+		activeRole = sel.Role
 	}
 
 	accessToken, err := uc.generateAccessToken(user.ID, activeOrgID, activeRole, user.TokenVersion)
@@ -476,32 +470,14 @@ func (uc *authUseCase) RefreshToken(ctx context.Context, input domain.RefreshInp
 		return nil, domain.ErrInternal
 	}
 
-	workspaces := make([]domain.WorkspaceInfo, 0, len(orgUsers))
-	for _, ou := range orgUsers {
-		name := ""
-		orgType := "company"
-		if ou.Org != nil {
-			name = ou.Org.Name
-			orgType = ou.Org.Type
-		}
-		roleName := "viewer"
-		if ou.Role != nil {
-			roleName = ou.Role.Name
-		}
-		workspaces = append(workspaces, domain.WorkspaceInfo{
-			OrgID:   ou.OrgID,
-			OrgName: name,
-			OrgType: orgType,
-			Role:    roleName,
-			Status:  ou.Status,
-		})
-	}
-
 	return &domain.AuthResponse{
 		AccessToken:  accessToken,
 		RefreshToken: newRefreshToken,
 		User:         *user,
-		Workspaces:   workspaces,
+		Workspaces:   uc.buildWorkspaces(ctx, orgUsers),
+		ActiveOrgID:  activeOrgID,
+		DefaultOrgID: user.DefaultOrgID,
+		NeedsChooser: needsChooser,
 	}, nil
 }
 
@@ -558,6 +534,9 @@ func (uc *authUseCase) GoogleLogin(ctx context.Context, code string) (*domain.Au
 	if err := json.Unmarshal(body, &googleUser); err != nil {
 		return nil, domain.ErrInternal
 	}
+	// Normalize so a Google account whose email differs only by case from an
+	// existing local account links to it instead of forking a new one (P2).
+	googleUser.Email = normalizeEmail(googleUser.Email)
 
 	user, err := uc.authRepo.GetUserByGoogleID(ctx, googleUser.ID)
 	if err != nil {
@@ -642,11 +621,15 @@ func (uc *authUseCase) GoogleLogin(ctx context.Context, code string) (*domain.Au
 	}
 
 	orgUsers, _ := uc.authRepo.ListOrgsByUserID(ctx, user.ID)
+
+	// Same R2 selection chain as password login (P3): a returning multi-org Google
+	// user lands on their default, or is asked to choose. No explicit org on OAuth.
+	sel, needsChooser, _ := uc.resolveActiveOrg(ctx, user, orgUsers, nil)
 	var activeOrgID uuid.UUID
 	var activeRole *domain.Role
-	if len(orgUsers) > 0 {
-		activeOrgID = orgUsers[0].OrgID
-		activeRole = orgUsers[0].Role
+	if sel != nil {
+		activeOrgID = sel.OrgID
+		activeRole = sel.Role
 	}
 
 	accessToken, err := uc.generateAccessToken(user.ID, activeOrgID, activeRole, user.TokenVersion)
@@ -659,32 +642,14 @@ func (uc *authUseCase) GoogleLogin(ctx context.Context, code string) (*domain.Au
 		return nil, domain.ErrInternal
 	}
 
-	workspaces := make([]domain.WorkspaceInfo, 0, len(orgUsers))
-	for _, o := range orgUsers {
-		name := ""
-		orgType := "company"
-		if o.Org != nil {
-			name = o.Org.Name
-			orgType = o.Org.Type
-		}
-		roleName := "viewer"
-		if o.Role != nil {
-			roleName = o.Role.Name
-		}
-		workspaces = append(workspaces, domain.WorkspaceInfo{
-			OrgID:   o.OrgID,
-			OrgName: name,
-			OrgType: orgType,
-			Role:    roleName,
-			Status:  o.Status,
-		})
-	}
-
 	return &domain.AuthResponse{
 		AccessToken:  accessToken,
 		RefreshToken: refreshTokenStr,
 		User:         *user,
-		Workspaces:   workspaces,
+		Workspaces:   uc.buildWorkspaces(ctx, orgUsers),
+		ActiveOrgID:  activeOrgID,
+		DefaultOrgID: user.DefaultOrgID,
+		NeedsChooser: needsChooser,
 	}, nil
 }
 
@@ -803,34 +768,16 @@ func (uc *authUseCase) SignOutEverywhere(ctx context.Context, userID, orgID uuid
 		return nil, domain.ErrInternal
 	}
 
-	workspaces := make([]domain.WorkspaceInfo, 0, len(orgUsers))
-	for _, ou := range orgUsers {
-		name := ""
-		orgType := "company"
-		if ou.Org != nil {
-			name = ou.Org.Name
-			orgType = ou.Org.Type
-		}
-		roleName := "viewer"
-		if ou.Role != nil {
-			roleName = ou.Role.Name
-		}
-		workspaces = append(workspaces, domain.WorkspaceInfo{
-			OrgID:   ou.OrgID,
-			OrgName: name,
-			OrgType: orgType,
-			Role:    roleName,
-			Status:  ou.Status,
-		})
-	}
-
 	recordSecurityEvent(ctx, uc.authRepo, activeOrgID, "session.signed_out_others", &userID, nil)
 
 	return &domain.AuthResponse{
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 		User:         *user,
-		Workspaces:   workspaces,
+		Workspaces:   uc.buildWorkspaces(ctx, orgUsers),
+		ActiveOrgID:  activeOrgID,
+		DefaultOrgID: user.DefaultOrgID,
+		NeedsChooser: false,
 	}, nil
 }
 
@@ -878,16 +825,21 @@ func (uc *authUseCase) maybeAlertNewDevice(ctx context.Context, user *domain.Use
 	}()
 }
 
-// generateAccessToken mints an access token for the caller's active role. role may
-// be nil (falls back to viewer / all-scope) so callers with an unresolved
-// membership still get a valid, least-privilege token.
+// generateAccessToken mints an access token for the caller's active role. role
+// may be nil (an unresolved/zero membership — e.g. the zero-workspace login that
+// binds to uuid.Nil), in which case it mints a least-privilege token: no role id
+// (so OLS default-denies) and the NARROWEST 'own' data scope. P9 fixed the prior
+// fail-open here, which minted the WIDER 'all' scope for a role-less caller —
+// exploitable on a nil-role membership over a real org, where reads have no OLS
+// route gate and fall through to the repository scope filter.
 func (uc *authUseCase) generateAccessToken(userID, orgID uuid.UUID, role *domain.Role, tokenVersion int) (string, error) {
 	roleName := domain.RoleViewer
 	roleID := uuid.Nil
-	dataScope := domain.DataScopeAll
+	dataScope := domain.DataScopeOwn
 	if role != nil {
 		roleName = role.Name
 		roleID = role.ID
+		dataScope = domain.DataScopeAll
 		if role.DataScope == domain.DataScopeOwn {
 			dataScope = domain.DataScopeOwn
 		}
@@ -992,6 +944,97 @@ func hashToken(token string) string {
 	return hex.EncodeToString(h[:])
 }
 
+// normalizeEmail lowercases and trims an email for storage so casing/whitespace
+// can't fork one human into two accounts or silently break a reset lookup (P2).
+// Paired with the case-insensitive GetUserByEmail read; writers call this.
+func normalizeEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
+// buildWorkspaces renders a user's memberships for an AuthResponse, resolving
+// each org's active-member count in ONE query (P3). It is the single source of
+// the workspaces payload — every auth path (login/refresh/switch/oauth/me) goes
+// through here, so the shape can't drift between them. orgUsers comes from
+// ListOrgsByUserID, which is already ACTIVE-only and deterministically ordered.
+func (uc *authUseCase) buildWorkspaces(ctx context.Context, orgUsers []domain.OrgUser) []domain.WorkspaceInfo {
+	orgIDs := make([]uuid.UUID, 0, len(orgUsers))
+	for _, ou := range orgUsers {
+		orgIDs = append(orgIDs, ou.OrgID)
+	}
+	counts, _ := uc.authRepo.CountActiveMembersByOrgs(ctx, orgIDs)
+
+	ws := make([]domain.WorkspaceInfo, 0, len(orgUsers))
+	for _, ou := range orgUsers {
+		name := ""
+		orgType := "company"
+		if ou.Org != nil {
+			name = ou.Org.Name
+			orgType = ou.Org.Type
+		}
+		roleName := "viewer"
+		if ou.Role != nil {
+			roleName = ou.Role.Name
+		}
+		ws = append(ws, domain.WorkspaceInfo{
+			OrgID:       ou.OrgID,
+			OrgName:     name,
+			OrgType:     orgType,
+			Role:        roleName,
+			Status:      ou.Status,
+			MemberCount: counts[ou.OrgID],
+		})
+	}
+	return ws
+}
+
+// selectActiveOrg implements the R2 server-side org-selection chain (P3) over the
+// caller's ACTIVE memberships: explicit request → valid saved default → the sole
+// membership → deterministic first (with the chooser). It returns the chosen
+// membership (nil ⇒ zero active workspaces), whether the SPA should show the
+// chooser, whether the stored default was invalid (caller self-clears it), and
+// whether an explicitly requested org was NOT an active membership (login 403 /
+// refresh 409). orgUsers is already ACTIVE-only, but the filter is kept as a
+// defensive belt so a future caller passing mixed statuses can't misselect.
+func selectActiveOrg(orgUsers []domain.OrgUser, requested, defaultOrgID *uuid.UUID) (selected *domain.OrgUser, needsChooser, defaultInvalid, explicitMiss bool) {
+	active := make([]domain.OrgUser, 0, len(orgUsers))
+	for i := range orgUsers {
+		if orgUsers[i].Status == domain.StatusActive {
+			active = append(active, orgUsers[i])
+		}
+	}
+	find := func(id uuid.UUID) *domain.OrgUser {
+		for i := range active {
+			if active[i].OrgID == id {
+				return &active[i]
+			}
+		}
+		return nil
+	}
+
+	if requested != nil && *requested != uuid.Nil {
+		if sel := find(*requested); sel != nil {
+			return sel, false, false, false
+		}
+		return nil, false, false, true // asked for an org they can't access
+	}
+
+	if defaultOrgID != nil && *defaultOrgID != uuid.Nil {
+		if sel := find(*defaultOrgID); sel != nil {
+			return sel, false, false, false
+		}
+		defaultInvalid = true // stored default no longer resolves → self-clear
+	}
+
+	switch len(active) {
+	case 0:
+		return nil, false, defaultInvalid, false // zero-membership dead-end
+	case 1:
+		return &active[0], false, defaultInvalid, false
+	default:
+		return &active[0], true, defaultInvalid, false // first + prompt the chooser
+	}
+}
+
 // generateSecureToken returns a 256-bit CSPRNG token as hex — the raw value that
 // goes in an email link. Only its SHA-256 hash is ever persisted.
 func generateSecureToken() (string, error) {
@@ -1080,9 +1123,17 @@ func (uc *authUseCase) evictUserSessionCache(ctx context.Context, userID uuid.UU
 		return
 	}
 	for _, ou := range orgUsers {
-		key := "session:" + userID.String() + ":org:" + ou.OrgID.String()
-		_ = uc.redisClient.Del(ctx, key).Err()
+		_ = uc.redisClient.Del(ctx, SessionCacheKey(userID, ou.OrgID)).Err()
 	}
+}
+
+// debugTokensEnabled gates the raw-token debug escape hatch (forgot-password /
+// resend-verification / invites) on an explicit environment ALLOWLIST. The old
+// `appEnv != "production"` check failed OPEN: an unset or typo'd APP_ENV on a
+// production deployment handed working account-takeover tokens to any anonymous
+// caller. Only exact dev/test values may enable it (P10 P1).
+func debugTokensEnabled(appEnv string) bool {
+	return appEnv == "development" || appEnv == "test"
 }
 
 // orgPtr converts a value org id to the pointer AuthEvent.OrgID wants (nil for
@@ -1163,6 +1214,19 @@ func (uc *authUseCase) ForgotPassword(ctx context.Context, input domain.ForgotPa
 		return nil, nil
 	}
 
+	// Per-email cooldown. Silently succeed (identical to the unknown-email
+	// branch) so the throttle itself can't be probed for account existence.
+	if latest, err := uc.authRepo.GetLatestPasswordResetToken(ctx, user.ID); err == nil && latest != nil &&
+		time.Since(latest.CreatedAt) < passwordResetRequestCooldown {
+		return nil, nil
+	}
+
+	// Only the newest link may work: void outstanding tokens so re-requesting
+	// narrows (never widens) the interception window.
+	if err := uc.authRepo.VoidActivePasswordResetTokens(ctx, user.ID); err != nil {
+		return nil, domain.ErrInternal
+	}
+
 	rawToken, err := generateSecureToken()
 	if err != nil {
 		return nil, domain.ErrInternal
@@ -1191,11 +1255,15 @@ func (uc *authUseCase) ForgotPassword(ctx context.Context, input domain.ForgotPa
 		defer cancel()
 		if err := uc.mailer.SendPasswordReset(bg, email, link); err != nil {
 			log.Printf("forgot-password: failed to send reset email to %s: %v", email, err)
+			// Surface delivery failures to support instead of losing them in logs:
+			// a reset the user never receives looks to them like the reset is broken.
+			uc.recordAuthEvent(bg, "security", "reset_email_failed", orgID, nil, &targetID, meta,
+				map[string]interface{}{"reason": err.Error()})
 		}
 		uc.recordAuthEvent(bg, "security", "password.reset_requested", orgID, nil, &targetID, meta, nil)
 	}()
 
-	if uc.appEnv != "production" {
+	if debugTokensEnabled(uc.appEnv) {
 		return &rawToken, nil
 	}
 	return nil, nil
@@ -1256,11 +1324,22 @@ func (uc *authUseCase) ResetPassword(ctx context.Context, input domain.ResetPass
 	_ = uc.authRepo.RevokeAllUserRefreshTokens(ctx, user.ID)
 	uc.bumpTokenVersion(ctx, user.ID)
 
-	if err := uc.mailer.SendSecurityAlert(ctx, user.Email, "Your password was changed",
-		"Your Guerrilla CRM password was just changed. If this was you, no action is needed. If you did not do this, reset your password immediately and contact your workspace admin."); err != nil {
-		log.Printf("reset-password: failed to send security alert to %s: %v", user.Email, err)
-	}
-	uc.recordAuthEvent(ctx, "security", "password.reset", orgPtr(user.OrgID), &user.ID, &user.ID, meta, nil)
+	// Alert + audit run on a DETACHED context: the request context is canceled
+	// the moment the handler returns, and this codebase has already been bitten
+	// by fire-and-forget work dying with the request (the automation webhook
+	// lesson). The password is committed either way — these are side effects.
+	email := user.Email
+	orgID := orgPtr(user.OrgID)
+	targetID := user.ID
+	go func() {
+		bg, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := uc.mailer.SendSecurityAlert(bg, email, "Your password was changed",
+			"Your Guerrilla CRM password was just changed. If this was you, no action is needed. If you did not do this, reset your password immediately and contact your workspace admin."); err != nil {
+			log.Printf("reset-password: failed to send security alert to %s: %v", email, err)
+		}
+		uc.recordAuthEvent(bg, "security", "password.reset", orgID, &targetID, &targetID, meta, nil)
+	}()
 
 	return nil
 }
@@ -1326,7 +1405,7 @@ func (uc *authUseCase) ResendVerification(ctx context.Context, userID uuid.UUID,
 	}
 	uc.recordAuthEvent(ctx, "security", "email.verification_sent", orgPtr(user.OrgID), &userID, &userID, meta, nil)
 
-	if uc.appEnv != "production" {
+	if debugTokensEnabled(uc.appEnv) {
 		return &rawToken, nil
 	}
 	return nil, nil

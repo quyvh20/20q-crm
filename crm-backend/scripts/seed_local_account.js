@@ -36,6 +36,8 @@ function request(path, body, token, method = 'POST') {
 }
 const post = (path, body, token) => request(path, body, token, 'POST');
 const put = (path, body, token) => request(path, body, token, 'PUT');
+const get = (path, token) => request(path, {}, token, 'GET');
+const patch = (path, body, token) => request(path, body, token, 'PATCH');
 
 async function main() {
   const EMAIL = 'local_admin@20q.com';
@@ -108,10 +110,85 @@ async function main() {
   }
   console.log('  deals:', dealRes);
 
+  // ── P6 (dynamic-role UX) test scaffolding ──────────────────────────────────
+  // A custom role, a second user holding it, a pending invitation, and a second
+  // org with a cross-membership so the role dropdowns, delete-with-reassign,
+  // duplicate & customize, invitations panel, and the workspace chooser are all
+  // locally exercisable. These are best-effort: invites hit RequireVerifiedEmail,
+  // so if the local admin's email isn't verified some steps log and are skipped —
+  // the custom role and business data above still seed regardless.
+  const SECOND_EMAIL = 'john@20q.com';
+  const THIRD_EMAIL = 'jane@20q.com';
+  const DEVOWNER_EMAIL = 'devowner@20q.com';
+
+  console.log('7. Custom role (Sales Manager, cloned from manager)...');
+  let salesManagerRoleId, viewerRoleId;
+  try {
+    const roles = (await get('/api/roles', token)).body?.data || [];
+    const managerId = roles.find(r => r.name === 'manager')?.id;
+    viewerRoleId = roles.find(r => r.name === 'viewer')?.id;
+    if (!roles.some(r => r.name === 'Sales Manager')) {
+      const rr = await post('/api/roles', {
+        name: 'Sales Manager',
+        description: 'Manager-level access focused on the sales pipeline.',
+        clone_from_id: managerId,
+      }, token);
+      salesManagerRoleId = rr.body?.data?.id;
+      console.log('  created Sales Manager:', salesManagerRoleId || rr.raw?.substring(0, 200));
+    } else {
+      salesManagerRoleId = roles.find(r => r.name === 'Sales Manager')?.id;
+      console.log('  Sales Manager already exists:', salesManagerRoleId);
+    }
+  } catch (e) { console.log('  role step failed:', e.message); }
+
+  console.log('8. Second user (john@20q.com) invited as Sales Manager + accepted...');
+  try {
+    const inv = await post('/api/workspaces/invites', { email: SECOND_EMAIL, role_id: salesManagerRoleId || viewerRoleId }, token);
+    const dtok = inv.body?.data?.debug_token;
+    if (dtok) {
+      const acc = await post('/api/auth/accept-invite', { token: dtok, password: PASSWORD, first_name: 'John', last_name: 'Rep' });
+      console.log('  john joined:', acc.status);
+    } else {
+      console.log('  invite returned no debug_token (status ' + inv.status + ') — skipping accept:', inv.raw?.substring(0, 160));
+    }
+  } catch (e) { console.log('  second-user step failed:', e.message); }
+
+  console.log('9. Pending invitation (jane@20q.com as viewer, left pending)...');
+  try {
+    const inv = await post('/api/workspaces/invites', { email: THIRD_EMAIL, role_id: viewerRoleId }, token);
+    console.log('  pending invite status:', inv.status);
+  } catch (e) { console.log('  pending-invite step failed:', e.message); }
+
+  console.log('10. Second org (Acme DevCorp) + local_admin cross-membership...');
+  try {
+    const reg2 = await post('/api/auth/register', {
+      email: DEVOWNER_EMAIL, password: PASSWORD, first_name: 'Dev', last_name: 'Owner', org_name: 'Acme DevCorp',
+    });
+    let devToken = reg2.body?.data?.access_token;
+    if (reg2.status === 409) {
+      const login2 = await post('/api/auth/login', { email: DEVOWNER_EMAIL, password: PASSWORD });
+      devToken = login2.body?.data?.access_token;
+    }
+    if (devToken) {
+      const devRoles = (await get('/api/roles', devToken)).body?.data || [];
+      const devAdminId = devRoles.find(r => r.name === 'admin')?.id;
+      const inv = await post('/api/workspaces/invites', { email: EMAIL, role_id: devAdminId }, devToken);
+      const dtok = inv.body?.data?.debug_token;
+      if (dtok) {
+        // local_admin already exists → accept adds membership (no password needed).
+        const acc = await post('/api/auth/accept-invite', { token: dtok });
+        console.log('  local_admin added to Acme DevCorp as admin:', acc.status);
+      } else {
+        console.log('  cross-org invite returned no debug_token (status ' + inv.status + '):', inv.raw?.substring(0, 160));
+      }
+    }
+  } catch (e) { console.log('  second-org step failed:', e.message); }
+
   console.log('\nSEED COMPLETE');
   console.log('-------------------------------');
-  console.log(`Email:    ${EMAIL}`);
-  console.log(`Password: ${PASSWORD}`);
+  console.log(`Admin:    ${EMAIL} / ${PASSWORD}  (owns Local Test Corp; admin in Acme DevCorp)`);
+  console.log(`Member:   ${SECOND_EMAIL} / ${PASSWORD}  (Sales Manager custom role, if invites are enabled)`);
+  console.log(`Dev org:  ${DEVOWNER_EMAIL} / ${PASSWORD}  (owns Acme DevCorp)`);
   console.log('-------------------------------');
 }
 main().catch(console.error);

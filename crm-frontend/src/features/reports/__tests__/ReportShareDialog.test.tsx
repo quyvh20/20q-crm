@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { Report, ReportShareView, WorkspaceMember, RoleDetail, UserGroup } from '../../../lib/api';
+import type { Report, ReportShareView, WorkspaceMember, RoleOption, UserGroup } from '../../../lib/api';
 
 vi.mock('../../../lib/api', () => ({
   listReportShares: vi.fn(),
@@ -9,14 +9,14 @@ vi.mock('../../../lib/api', () => ({
   removeReportShare: vi.fn(),
   updateReport: vi.fn(),
   getWorkspaceMembers: vi.fn(),
-  getRoles: vi.fn(),
+  getRoleOptions: vi.fn(),
   listGroups: vi.fn(),
 }));
 
 vi.mock('../../../lib/auth', () => ({ useAuth: vi.fn() }));
 
 import {
-  listReportShares, addReportShare, removeReportShare, updateReport, getWorkspaceMembers, getRoles, listGroups,
+  listReportShares, addReportShare, removeReportShare, updateReport, getWorkspaceMembers, getRoleOptions, listGroups,
 } from '../../../lib/api';
 import { useAuth } from '../../../lib/auth';
 import ReportShareDialog from '../ReportShareDialog';
@@ -31,9 +31,9 @@ const report = (partial: Partial<Report> = {}): Report => ({
 });
 
 const member = (id: string, name: string): WorkspaceMember => ({
-  user_id: id, email: `${name}@x.com`, first_name: name, last_name: '', full_name: name, role: 'sales_rep', status: 'active',
+  user_id: id, email: `${name}@x.com`, first_name: name, last_name: '', full_name: name, role_id: 'role-sales', role: 'sales_rep', status: 'active',
 });
-const role = (id: string, name: string): RoleDetail => ({ id, name, is_system: true, is_owner: false, data_scope: 'all', capabilities: [], member_count: 1 });
+const role = (id: string, name: string): RoleOption => ({ id, name, description: '', is_system: true, is_owner: false, data_scope: 'all' });
 const grp = (id: string, name: string): UserGroup => ({ id, name, description: '', member_count: 0, members: [], created_at: '2026-01-01T00:00:00Z' });
 const share = (partial: Partial<ReportShareView>): ReportShareView => ({
   id: crypto.randomUUID(), target_type: 'user', target_id: crypto.randomUUID(), target_name: 'Someone', level: 'view', created_at: '2026-01-01T00:00:00Z', ...partial,
@@ -55,7 +55,7 @@ beforeEach(() => {
   // still see both Alice and Bob as candidates.
   vi.mocked(useAuth).mockReturnValue(authAs('me'));
   vi.mocked(getWorkspaceMembers).mockResolvedValue([member('u1', 'Alice'), member('u2', 'Bob')]);
-  vi.mocked(getRoles).mockResolvedValue([role('r1', 'sales_rep')]);
+  vi.mocked(getRoleOptions).mockResolvedValue([role('r1', 'sales_rep')]);
   vi.mocked(listGroups).mockResolvedValue([grp('g1', 'West Region')]);
 });
 

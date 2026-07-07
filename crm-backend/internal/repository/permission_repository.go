@@ -70,19 +70,19 @@ func (r *permissionRepository) EnsureDefaults(ctx context.Context, orgID uuid.UU
 			return nil // lost the race — winner already seeded
 		}
 
-		roleIDByName, err := r.systemRoleIDs(ctx, tx)
+		// roleID → the default access to seed. Covers the system roles (by name) AND
+		// custom roles resolved through their template lineage (P6), so an object
+		// added after a custom role was created still inherits that role's template
+		// access instead of leaving it invisibly denied (the zero-OLS trap).
+		seedAccess, err := r.seedAccessByRole(ctx, tx, orgID)
 		if err != nil {
 			return err
 		}
 
 		now := time.Now()
-		rows := make([]domain.ObjectPermission, 0, len(unseeded)*len(defaultRoleAccess))
+		rows := make([]domain.ObjectPermission, 0, len(unseeded)*len(seedAccess))
 		for _, slug := range unseeded {
-			for roleName, access := range defaultRoleAccess {
-				roleID, ok := roleIDByName[roleName]
-				if !ok {
-					continue // a system role not seeded yet — skip, will be covered next pass
-				}
+			for roleID, access := range seedAccess {
 				rows = append(rows, domain.ObjectPermission{
 					OrgID:      orgID,
 					RoleID:     roleID,
@@ -142,49 +142,78 @@ func (r *permissionRepository) unseededSlugs(ctx context.Context, db *gorm.DB, o
 	return out, nil
 }
 
-// systemRoleIDs returns role name → id for the global system roles.
-func (r *permissionRepository) systemRoleIDs(ctx context.Context, db *gorm.DB) (map[string]uuid.UUID, error) {
+// seedAccessByRole returns roleID → the default ObjectAccess to seed for a new
+// object, covering both the global system roles and this org's custom roles (P6).
+// A system role IS its own template; a custom role resolves through its lineage
+// (seedTemplateName). A role with no resolvable template (a legacy custom role
+// created before the wizard recorded lineage) is omitted — left at zero rows,
+// matching the pre-P6 behavior rather than silently granting it access.
+func (r *permissionRepository) seedAccessByRole(ctx context.Context, db *gorm.DB, orgID uuid.UUID) (map[uuid.UUID]domain.ObjectAccess, error) {
 	var roles []domain.Role
 	if err := db.WithContext(ctx).
-		Where("org_id IS NULL AND is_system = ?", true).
+		Where("org_id IS NULL OR org_id = ?", orgID).
 		Find(&roles).Error; err != nil {
 		return nil, err
 	}
-	out := make(map[string]uuid.UUID, len(roles))
-	for _, role := range roles {
-		out[role.Name] = role.ID
+	byID := make(map[uuid.UUID]domain.Role, len(roles))
+	for i := range roles {
+		byID[roles[i].ID] = roles[i]
+	}
+	out := make(map[uuid.UUID]domain.ObjectAccess, len(roles))
+	for i := range roles {
+		name := seedTemplateName(roles[i], byID)
+		if name == "" {
+			continue
+		}
+		if access, ok := defaultRoleAccess[name]; ok {
+			out[roles[i].ID] = access
+		}
 	}
 	return out, nil
 }
 
-// LoadOrgAccess returns roleName → objectSlug → access in one query, joining
-// permissions to roles so the OLS check (which only knows the caller's role name)
-// can look up directly.
-func (r *permissionRepository) LoadOrgAccess(ctx context.Context, orgID uuid.UUID) (map[string]map[string]domain.ObjectAccess, error) {
-	type row struct {
-		RoleName   string
-		ObjectSlug string
-		CanRead    bool
-		CanCreate  bool
-		CanEdit    bool
-		CanDelete  bool
+// seedTemplateName resolves the system-role template whose default OLS a role
+// should inherit on a new object. A system role is its own template; a custom
+// role follows its denormalized template_key, or one hop through
+// seeded_from_role_id to a system (or template-bearing) source. Returns "" when
+// unresolvable, so a lineage-less custom role is left untouched.
+func seedTemplateName(role domain.Role, byID map[uuid.UUID]domain.Role) string {
+	if role.IsSystem {
+		return role.Name
 	}
-	var rows []row
+	if role.TemplateKey != nil && *role.TemplateKey != "" {
+		return *role.TemplateKey
+	}
+	if role.SeededFromRoleID != nil {
+		if src, ok := byID[*role.SeededFromRoleID]; ok {
+			if src.IsSystem {
+				return src.Name
+			}
+			if src.TemplateKey != nil && *src.TemplateKey != "" {
+				return *src.TemplateKey
+			}
+		}
+	}
+	return ""
+}
+
+// LoadOrgAccess returns roleID → objectSlug → access in one query. Keyed by
+// role_id (P5 re-key) — the grant table already stores role_id, so no JOIN is
+// needed and a role rename can never detach a role from its grants.
+func (r *permissionRepository) LoadOrgAccess(ctx context.Context, orgID uuid.UUID) (map[uuid.UUID]map[string]domain.ObjectAccess, error) {
+	var rows []domain.ObjectPermission
 	if err := r.db.WithContext(ctx).
-		Table("object_permissions AS op").
-		Select("r.name AS role_name, op.object_slug, op.can_read, op.can_create, op.can_edit, op.can_delete").
-		Joins("JOIN roles r ON r.id = op.role_id").
-		Where("op.org_id = ?", orgID).
-		Scan(&rows).Error; err != nil {
+		Where("org_id = ?", orgID).
+		Find(&rows).Error; err != nil {
 		return nil, err
 	}
 
-	out := make(map[string]map[string]domain.ObjectAccess)
+	out := make(map[uuid.UUID]map[string]domain.ObjectAccess)
 	for _, row := range rows {
-		if out[row.RoleName] == nil {
-			out[row.RoleName] = make(map[string]domain.ObjectAccess)
+		if out[row.RoleID] == nil {
+			out[row.RoleID] = make(map[string]domain.ObjectAccess)
 		}
-		out[row.RoleName][row.ObjectSlug] = domain.ObjectAccess{
+		out[row.RoleID][row.ObjectSlug] = domain.ObjectAccess{
 			Read:   row.CanRead,
 			Create: row.CanCreate,
 			Edit:   row.CanEdit,
@@ -205,31 +234,30 @@ func (r *permissionRepository) ListRoles(ctx context.Context, orgID uuid.UUID) (
 	return roles, err
 }
 
-// LoadOrgCapabilities returns roleName → capabilityCode → true, joining
-// role_permissions to roles so the capability check (which knows the caller's
-// role name) can look up directly. Covers the global system roles plus this org's
-// custom roles. An org with no custom roles still gets the system-role rows.
-func (r *permissionRepository) LoadOrgCapabilities(ctx context.Context, orgID uuid.UUID) (map[string]map[string]bool, error) {
+// LoadOrgCapabilities returns roleID → capabilityCode → true, keyed by role_id
+// (P5 re-key). The JOIN to roles remains only to scope the rows to the global
+// system roles plus this org's custom roles.
+func (r *permissionRepository) LoadOrgCapabilities(ctx context.Context, orgID uuid.UUID) (map[uuid.UUID]map[string]bool, error) {
 	type row struct {
-		RoleName       string
+		RoleID         uuid.UUID
 		PermissionCode string
 	}
 	var rows []row
 	if err := r.db.WithContext(ctx).
 		Table("role_permissions AS rp").
-		Select("r.name AS role_name, rp.permission_code").
+		Select("rp.role_id, rp.permission_code").
 		Joins("JOIN roles r ON r.id = rp.role_id").
 		Where("r.org_id IS NULL OR r.org_id = ?", orgID).
 		Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 
-	out := make(map[string]map[string]bool)
+	out := make(map[uuid.UUID]map[string]bool)
 	for _, row := range rows {
-		if out[row.RoleName] == nil {
-			out[row.RoleName] = make(map[string]bool)
+		if out[row.RoleID] == nil {
+			out[row.RoleID] = make(map[string]bool)
 		}
-		out[row.RoleName][row.PermissionCode] = true
+		out[row.RoleID][row.PermissionCode] = true
 	}
 	return out, nil
 }
@@ -310,36 +338,27 @@ func (r *permissionRepository) ListAudit(ctx context.Context, orgID uuid.UUID, s
 // Field-Level Security (P5b)
 // ============================================================
 
-// LoadOrgFieldAccess returns roleName → objectSlug → fieldKey → level in one
-// query, joining field_permissions to roles so the FLS check (which only knows
-// the caller's role name) can look up directly. An org with no restrictions
-// returns an empty map, so the FLS half of the cache stays empty and free.
-func (r *permissionRepository) LoadOrgFieldAccess(ctx context.Context, orgID uuid.UUID) (map[string]map[string]map[string]string, error) {
-	type row struct {
-		RoleName   string
-		ObjectSlug string
-		FieldKey   string
-		Level      string
-	}
-	var rows []row
+// LoadOrgFieldAccess returns roleID → objectSlug → fieldKey → level in one
+// query, keyed by role_id (P5 re-key) — the restriction table stores role_id, so
+// no JOIN is needed. An org with no restrictions returns an empty map, so the
+// FLS half of the cache stays empty and free.
+func (r *permissionRepository) LoadOrgFieldAccess(ctx context.Context, orgID uuid.UUID) (map[uuid.UUID]map[string]map[string]string, error) {
+	var rows []domain.FieldPermission
 	if err := r.db.WithContext(ctx).
-		Table("field_permissions AS fp").
-		Select("r.name AS role_name, fp.object_slug, fp.field_key, fp.level").
-		Joins("JOIN roles r ON r.id = fp.role_id").
-		Where("fp.org_id = ?", orgID).
-		Scan(&rows).Error; err != nil {
+		Where("org_id = ?", orgID).
+		Find(&rows).Error; err != nil {
 		return nil, err
 	}
 
-	out := make(map[string]map[string]map[string]string)
+	out := make(map[uuid.UUID]map[string]map[string]string)
 	for _, row := range rows {
-		if out[row.RoleName] == nil {
-			out[row.RoleName] = make(map[string]map[string]string)
+		if out[row.RoleID] == nil {
+			out[row.RoleID] = make(map[string]map[string]string)
 		}
-		if out[row.RoleName][row.ObjectSlug] == nil {
-			out[row.RoleName][row.ObjectSlug] = make(map[string]string)
+		if out[row.RoleID][row.ObjectSlug] == nil {
+			out[row.RoleID][row.ObjectSlug] = make(map[string]string)
 		}
-		out[row.RoleName][row.ObjectSlug][row.FieldKey] = row.Level
+		out[row.RoleID][row.ObjectSlug][row.FieldKey] = row.Level
 	}
 	return out, nil
 }

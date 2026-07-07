@@ -218,16 +218,14 @@ var readOnlyToolNames = map[string]bool{
 	"navigate_to":     true,
 }
 
-// AllowedTools returns the subset of tools a given role may call.
-func AllowedTools(role string) []Tool {
-	return AllowedToolsWithSchema(role, nil, nil)
-}
-
-// AllowedToolsWithSchema returns tools with org-specific custom fields injected
-// as first-class parameters into create_contact and create_deal.
-// Custom fields appear identically to base fields (e.g., prefill_name), so the
-// AI model treats them with equal priority.
-func AllowedToolsWithSchema(role string, contactFields []domain.CustomFieldDef, dealFields []domain.CustomFieldDef) []Tool {
+// AllowedToolsWithSchema returns the tools available to the caller, with
+// org-specific custom fields injected as first-class parameters into
+// create_contact and create_deal (they appear identically to base fields, so the
+// model treats them with equal priority). readOnly drops the write tools, leaving
+// the read-only set — P7 derives readOnly from the caller's capabilities + OLS
+// (records.write / object create-edit) instead of the old role-name switch, so a
+// custom role is gated by what it can actually do.
+func AllowedToolsWithSchema(readOnly bool, contactFields []domain.CustomFieldDef, dealFields []domain.CustomFieldDef) []Tool {
 	// Deep-copy tools so we don't mutate the global slice
 	tools := make([]Tool, len(allCRMTools))
 	for i, t := range allCRMTools {
@@ -244,8 +242,7 @@ func AllowedToolsWithSchema(role string, contactFields []domain.CustomFieldDef, 
 		}
 	}
 
-	// Role filter
-	if role == "viewer" {
+	if readOnly {
 		var filtered []Tool
 		for _, t := range tools {
 			if readOnlyToolNames[t.Name] {

@@ -25,14 +25,14 @@ type CommandEvent struct {
 
 // CommandRequest carries everything needed for one conversational turn.
 type CommandRequest struct {
-	SessionID      uuid.UUID        `json:"session_id"`
-	UserMessage    string           `json:"message"`
-	History        []HistoryMessage `json:"history,omitempty"`
-	UserRole       string           `json:"role"`
-	Workspaces     []WorkspaceInfo  `json:"workspaces,omitempty"` // all workspaces the user belongs to
-	Confirmed      bool             `json:"confirmed,omitempty"`
-	ConfirmedTool  string           `json:"confirmed_tool,omitempty"`
-	ConfirmedArgs  json.RawMessage  `json:"confirmed_args,omitempty"`
+	SessionID     uuid.UUID        `json:"session_id"`
+	UserMessage   string           `json:"message"`
+	History       []HistoryMessage `json:"history,omitempty"`
+	UserRole      string           `json:"role"`
+	Workspaces    []WorkspaceInfo  `json:"workspaces,omitempty"` // all workspaces the user belongs to
+	Confirmed     bool             `json:"confirmed,omitempty"`
+	ConfirmedTool string           `json:"confirmed_tool,omitempty"`
+	ConfirmedArgs json.RawMessage  `json:"confirmed_args,omitempty"`
 }
 
 // WorkspaceInfo is a compact workspace descriptor for AI context.
@@ -47,6 +47,23 @@ type HistoryMessage struct {
 	Content string `json:"content"` // trimmed text
 }
 
+// aiAuthorizer is the P7 convergence port: the AI enforces the SAME OLS/FLS/
+// capability rules as REST by delegating to the permission usecase (which reads
+// the caller off the context the middleware set). domain.PermissionUseCase
+// satisfies it. nil in unit tests → the AI falls back to its legacy role-name
+// behavior (the bridge shadow), so existing tests keep passing.
+type aiAuthorizer interface {
+	Authorize(ctx context.Context, orgID uuid.UUID, slug string, action domain.RecordAction) error
+	FieldMask(ctx context.Context, orgID uuid.UUID, slug string) domain.FieldMask
+	HasCapability(ctx context.Context, orgID uuid.UUID, capability string) error
+	CallerCapabilities(ctx context.Context, orgID uuid.UUID) []string
+	// Audit records one AI-driven write in the P5a object_audit trail (P8). The AI
+	// writes custom objects via customObjUC directly (not RecordService), which is
+	// the audit chokepoint — so the AI must stamp the audit itself to close the P7
+	// gap ("custom-object create/update still bypass audit"). Best-effort.
+	Audit(ctx context.Context, e domain.AuditEntry)
+}
+
 // CommandCenter orchestrates agentic AI with tool calling.
 type CommandCenter struct {
 	gateway          *AIGateway
@@ -57,8 +74,11 @@ type CommandCenter struct {
 	activityRepo     domain.ActivityRepository
 	sessionRepo      domain.ChatSessionRepository
 	customObjUC      domain.CustomObjectUseCase
-	sessionCtx       *SessionContextCache
-	logger           *zap.Logger
+	// authz binds the AI to the unified capability + OLS/FLS stack (P7). nil ⇒
+	// legacy role-name behavior (bridge shadow / unit tests).
+	authz      aiAuthorizer
+	sessionCtx *SessionContextCache
+	logger     *zap.Logger
 }
 
 func NewCommandCenter(
@@ -70,6 +90,7 @@ func NewCommandCenter(
 	activityRepo domain.ActivityRepository,
 	sessionRepo domain.ChatSessionRepository,
 	customObjUC domain.CustomObjectUseCase,
+	authz aiAuthorizer,
 	logger *zap.Logger,
 ) *CommandCenter {
 	return &CommandCenter{
@@ -81,9 +102,85 @@ func NewCommandCenter(
 		activityRepo:     activityRepo,
 		sessionRepo:      sessionRepo,
 		customObjUC:      customObjUC,
+		authz:            authz,
 		sessionCtx:       NewSessionContextCache(),
 		logger:           logger,
 	}
+}
+
+// ── P7 convergence helpers ────────────────────────────────────────────────────
+
+// aiCaller resolves the request's Caller. The auth middleware sets the full
+// identity (RoleID/IsOwner/DataScope) on the request context, which the command
+// handler threads down; a name-only fallback (from roleName) covers legacy/test
+// contexts where no caller is on the context.
+func aiCaller(ctx context.Context, userID uuid.UUID, roleName string) domain.Caller {
+	if c, ok := domain.CallerFromContext(ctx); ok {
+		return c
+	}
+	return domain.Caller{Role: roleName, UserID: userID}
+}
+
+// effectiveScope is the caller's row scope, falling back to the role name only
+// when a bridge caller carries no DataScope (name-only context / tests).
+func effectiveScope(caller domain.Caller) string {
+	if caller.DataScope != "" {
+		return caller.DataScope
+	}
+	if caller.Role == domain.RoleSales {
+		return domain.DataScopeOwn
+	}
+	return domain.DataScopeAll
+}
+
+// callerCanWrite reports whether the AI should expose write tools: owner, the
+// records.write capability, or OLS create/edit on a core object. With no authz
+// wired (tests/bridge) it falls back to "any non-viewer role" — the old rule.
+func (cc *CommandCenter) callerCanWrite(ctx context.Context, orgID uuid.UUID, caller domain.Caller) bool {
+	if cc.authz == nil {
+		return caller.Role != domain.RoleViewer
+	}
+	if caller.IsOwner {
+		return true
+	}
+	for _, c := range cc.authz.CallerCapabilities(ctx, orgID) {
+		if c == domain.CapRecordsWrite {
+			return true
+		}
+	}
+	return cc.authz.Authorize(ctx, orgID, "deal", domain.ActionEdit) == nil ||
+		cc.authz.Authorize(ctx, orgID, "contact", domain.ActionCreate) == nil
+}
+
+// callerHasCapability reports whether the caller holds a capability (owner + no-
+// authz-bridge both allow). Used for the analytics.view forecast gate.
+func (cc *CommandCenter) callerHasCapability(ctx context.Context, orgID uuid.UUID, capability string) bool {
+	if cc.authz == nil {
+		return true // bridge/tests: don't over-restrict when the stack isn't wired
+	}
+	return cc.authz.HasCapability(ctx, orgID, capability) == nil
+}
+
+// authorizeObject enforces OLS for an AI data action, returning a tool-shaped
+// error payload (and false) on denial. No-op (allow) when authz isn't wired.
+func (cc *CommandCenter) authorizeObject(ctx context.Context, orgID uuid.UUID, slug string, action domain.RecordAction) (json.RawMessage, bool) {
+	if cc.authz == nil {
+		return nil, true
+	}
+	if err := cc.authz.Authorize(ctx, orgID, slug, action); err != nil {
+		out, _ := json.Marshal(map[string]any{"error": err.Error()})
+		return out, false
+	}
+	return nil, true
+}
+
+// fieldMask returns the caller's Field-Level Security mask for an object, so AI
+// read tools omit fields the caller can't see (P7). Empty when authz isn't wired.
+func (cc *CommandCenter) fieldMask(ctx context.Context, orgID uuid.UUID, slug string) domain.FieldMask {
+	if cc.authz == nil {
+		return domain.FieldMask{}
+	}
+	return cc.authz.FieldMask(ctx, orgID, slug)
 }
 
 // Execute processes a user message and returns a channel of SSE events.
@@ -150,7 +247,7 @@ func (cc *CommandCenter) Execute(
 				zap.String("intent", intentName),
 				zap.String("message", req.UserMessage),
 			)
-			result := cc.ExecuteIntent(ctx, intentName, orgID, userID, req.UserRole, req.UserMessage)
+			result := cc.ExecuteIntent(ctx, intentName, orgID, userID, aiCaller(ctx, userID, req.UserRole), req.UserMessage)
 			if result != nil {
 				for _, ev := range result.Events {
 					events <- ev
@@ -174,14 +271,17 @@ func (cc *CommandCenter) Execute(
 		// ── Emit thinking event so the user gets real-time feedback ─────────
 		events <- CommandEvent{Type: "thinking", Message: "Analyzing your request…"}
 
-		// ── Build role-scoped system prompt ──────────────────────────────────
-		sysPrompt := cc.buildRolePrompt(ctx, orgID, req)
+		// ── Build access-scoped system prompt ───────────────────────────────
+		// P7: the caller's real identity (RoleID/IsOwner/DataScope) rides the request
+		// context; resolve it once and drive the persona + tool list from what the
+		// caller can actually do, not the role name.
+		caller := aiCaller(ctx, userID, req.UserRole)
+		sysPrompt := cc.buildRolePrompt(ctx, orgID, req, caller)
 
 		// Inject session context from intent router results (deals, contacts shown earlier)
 		if sessionContext := cc.sessionCtx.BuildContextPrompt(req.SessionID); sessionContext != "" {
 			sysPrompt += sessionContext
 		}
-
 
 		// ── Build messages array (system + history + new user message) ───────
 		messages := []Message{{Role: "system", Content: sysPrompt}}
@@ -190,10 +290,14 @@ func (cc *CommandCenter) Execute(
 		}
 		messages = append(messages, Message{Role: "user", Content: req.UserMessage})
 
-		// ── Get allowed tools for this role (with dynamic custom fields) ────
+		// ── Get allowed tools (with dynamic custom fields) ─────────────────
+		// The tool list is derived from what the caller can actually do
+		// (capabilities + OLS), not the role name (P7; the P9 cleanup removed the
+		// old viewer-name shadow).
 		contactFields, _ := cc.knowledgeBuilder.settingsUC.GetFieldDefs(ctx, orgID, "contact")
 		dealFields, _ := cc.knowledgeBuilder.settingsUC.GetFieldDefs(ctx, orgID, "deal")
-		tools := AllowedToolsWithSchema(req.UserRole, contactFields, dealFields)
+		readOnly := !cc.callerCanWrite(ctx, orgID, caller)
+		tools := AllowedToolsWithSchema(readOnly, contactFields, dealFields)
 
 		// ── First AI call with tools ─────────────────────────────────────────
 		events <- CommandEvent{Type: "thinking", Message: "Thinking…"}
@@ -224,13 +328,13 @@ func (cc *CommandCenter) Execute(
 		// ── Separate safe reads from writes that need confirmation ────────────
 		// create_deal / create_contact / create_object_record → form events (not DB writes, handled below)
 		writeTools := map[string]bool{
-			"update_deal":             true,
-			"create_task":             true,
-			"log_activity":            true,
-			"create_contact":          true,
-			"create_deal":             true,
-			"create_object_record":    true,
-			"update_object_record":    true,
+			"update_deal":          true,
+			"create_task":          true,
+			"log_activity":         true,
+			"create_contact":       true,
+			"create_deal":          true,
+			"create_object_record": true,
+			"update_object_record": true,
 		}
 		var readCalls, writeCalls []ToolCall
 		for _, tc := range response.ToolCalls {
@@ -300,10 +404,10 @@ func (cc *CommandCenter) Execute(
 				displayName, _ := p["display_name"].(string)
 				fields, _ := p["fields"].(map[string]interface{})
 				formData, _ := json.Marshal(map[string]any{
-					"form_type":       "custom_object",
-					"object_slug":     slug,
+					"form_type":            "custom_object",
+					"object_slug":          slug,
 					"prefill_display_name": displayName,
-					"prefill_fields":  fields,
+					"prefill_fields":       fields,
 				})
 				events <- CommandEvent{Type: "form", Data: formData}
 				continue // don't add to remainingWrites
@@ -446,8 +550,11 @@ func (cc *CommandCenter) Execute(
 	return events, nil
 }
 
-// buildRolePrompt creates a concise, role-scoped system prompt.
-func (cc *CommandCenter) buildRolePrompt(ctx context.Context, orgID uuid.UUID, req CommandRequest) string {
+// buildRolePrompt creates a concise, access-scoped system prompt. P7: the persona
+// is templated from what the caller can actually do — their row scope
+// (caller.DataScope) and capabilities — not the role name, so a custom role gets
+// guidance matching its real access instead of a hardcoded name-branch default.
+func (cc *CommandCenter) buildRolePrompt(ctx context.Context, orgID uuid.UUID, req CommandRequest, caller domain.Caller) string {
 	// Try to get company KB for context
 	kbSection := ""
 	if cc.knowledgeBuilder != nil {
@@ -456,26 +563,32 @@ func (cc *CommandCenter) buildRolePrompt(ctx context.Context, orgID uuid.UUID, r
 		}
 	}
 
-	var roleInstructions string
-	switch req.UserRole {
-	case "owner", "admin":
-		roleInstructions = `FULL ACCESS: org-wide analytics, all deals, all contacts, team performance.
-- Present org-level summaries by default; drill into individuals only when asked.`
-	case "manager":
-		roleInstructions = `TEAM SCOPE: all deals and contacts in the org for coaching.
-- Provide pipeline health, rep performance, stale-deal insights.
-- Cannot change roles or access billing/admin settings.`
-	case "sales_rep":
-		roleInstructions = `OWN RECORDS ONLY: deals and contacts owned by the current user — no one else's.
-- If asked for team/org-wide data politely decline: "I can only see your own records."
-- For "summarize my work" or "my leads" → call search_deals + search_contacts with OwnerUserID already applied server-side.`
-	case "viewer":
-		roleInstructions = `READ-ONLY: search and view data only.
-- ANY write request → respond: "You have viewer access and cannot make changes."
-- Do NOT call: create_task, update_deal, log_activity, create_contact, create_deal.`
-	default:
-		roleInstructions = `Restricted read-only CRM access.`
+	// Compose the persona from data-shape signals rather than a role name.
+	scope := effectiveScope(caller)
+	canWrite := cc.callerCanWrite(ctx, orgID, caller)
+	canAnalytics := cc.callerHasCapability(ctx, orgID, domain.CapAnalyticsView)
+
+	var lines []string
+	if scope == domain.DataScopeOwn {
+		lines = append(lines, `OWN RECORDS ONLY: you can only see and act on deals and contacts owned by the current user (plus records explicitly shared with them) — no one else's.
+- If asked for team/org-wide data, politely decline: "I can only see your own records." — the server enforces this, so never claim to show data you can't access.`)
+	} else {
+		lines = append(lines, `FULL RECORD ACCESS: all deals and contacts in the workspace.
+- Present org-level summaries by default; drill into individuals only when asked.`)
 	}
+	if canWrite {
+		lines = append(lines, `You can create and update records (deals, contacts, tasks, activities). Follow the WRITE SAFETY rules below.`)
+	} else {
+		lines = append(lines, `READ-ONLY: search and view only.
+- ANY write request → respond: "You don't have permission to make changes."
+- Do NOT call: create_task, update_deal, log_activity, create_contact, create_deal, create_object_record, update_object_record.`)
+	}
+	if canAnalytics {
+		lines = append(lines, `You can view pipeline forecasts and analytics.`)
+	} else {
+		lines = append(lines, `You cannot view org-wide forecasts — if asked, explain you don't have analytics access.`)
+	}
+	roleInstructions := strings.Join(lines, "\n")
 
 	// Multi-workspace context switching hint
 	workspaceHint := ""
@@ -680,8 +793,15 @@ func (cc *CommandCenter) executeTool(ctx context.Context, orgID, userID uuid.UUI
 
 // ─── Tool implementations ─────────────────────────────────────────────────────
 
-// toolSearchContacts: sales_rep sees only their own contacts; others see all.
+// toolSearchContacts: reads are OLS-gated and own-scope is applied at the
+// repository from the request context (P7) — an 'own'-scoped role (sales_rep or a
+// custom clone) sees only its own/shared records without a name check. FLS hides
+// fields the caller can't see.
 func (cc *CommandCenter) toolSearchContacts(ctx context.Context, orgID, userID uuid.UUID, role string, params map[string]interface{}) json.RawMessage {
+	if denied, ok := cc.authorizeObject(ctx, orgID, "contact", domain.ActionRead); !ok {
+		return denied
+	}
+	caller := aiCaller(ctx, userID, role)
 	query, _ := params["query"].(string)
 	limit := 10
 	if l, ok := params["limit"].(float64); ok && l > 0 {
@@ -699,9 +819,6 @@ func (cc *CommandCenter) toolSearchContacts(ctx context.Context, orgID, userID u
 		SortBy:    sortBy,
 		SortOrder: sortOrder,
 	}
-	if role == "sales_rep" {
-		filter.OwnerUserID = &userID
-	}
 
 	contacts, _, err := cc.contactRepo.List(ctx, orgID, filter)
 	if err != nil {
@@ -711,26 +828,26 @@ func (cc *CommandCenter) toolSearchContacts(ctx context.Context, orgID, userID u
 
 	// Empty state: give the AI a human-readable message to relay
 	if len(contacts) == 0 {
-		msg := "You currently have no contacts assigned to you."
-		if role != "sales_rep" {
-			msg = "No contacts found matching your search criteria."
-			if query == "" {
-				msg = "There are no contacts in the system yet."
-			}
+		msg := "No contacts found matching your search criteria."
+		if effectiveScope(caller) == domain.DataScopeOwn {
+			msg = "You currently have no contacts assigned to you."
+		} else if query == "" {
+			msg = "There are no contacts in the system yet."
 		}
 		out, _ := json.Marshal(map[string]any{"count": 0, "contacts": []any{}, "empty_message": msg})
 		return out
 	}
 
+	mask := cc.fieldMask(ctx, orgID, "contact")
 	simplified := make([]map[string]interface{}, len(contacts))
 	for i, c := range contacts {
 		m := map[string]interface{}{
 			"id": c.ID, "name": strings.TrimSpace(c.FirstName + " " + c.LastName),
 		}
-		if c.Email != nil {
+		if c.Email != nil && !mask.Hidden["email"] {
 			m["email"] = *c.Email
 		}
-		if c.Phone != nil {
+		if c.Phone != nil && !mask.Hidden["phone"] {
 			m["phone"] = *c.Phone
 		}
 		if c.Company != nil {
@@ -742,8 +859,14 @@ func (cc *CommandCenter) toolSearchContacts(ctx context.Context, orgID, userID u
 	return out
 }
 
-// toolSearchDeals: sales_rep sees only their own deals; others see all org deals.
+// toolSearchDeals: OLS-gated; own-scope is applied at the repository from the
+// request context (P7), so any 'own'-scoped role sees only its own deals without a
+// name check. FLS hides fields the caller can't see.
 func (cc *CommandCenter) toolSearchDeals(ctx context.Context, orgID, userID uuid.UUID, role string, params map[string]interface{}) json.RawMessage {
+	if denied, ok := cc.authorizeObject(ctx, orgID, "deal", domain.ActionRead); !ok {
+		return denied
+	}
+	caller := aiCaller(ctx, userID, role)
 	query, _ := params["query"].(string)
 	limit := 10
 	if l, ok := params["limit"].(float64); ok && l > 0 {
@@ -763,9 +886,6 @@ func (cc *CommandCenter) toolSearchDeals(ctx context.Context, orgID, userID uuid
 		SortBy:    sortBy,
 		SortOrder: sortOrder,
 	}
-	if role == "sales_rep" {
-		filter.OwnerUserID = &userID
-	}
 
 	deals, _, err := cc.dealRepo.List(ctx, orgID, filter)
 	if err != nil {
@@ -775,23 +895,28 @@ func (cc *CommandCenter) toolSearchDeals(ctx context.Context, orgID, userID uuid
 
 	// Empty state: give the AI a human-readable message to relay
 	if len(deals) == 0 {
-		msg := "You currently have no deals assigned to you."
-		if role != "sales_rep" {
-			msg = "No deals found in the pipeline matching your criteria."
+		msg := "No deals found in the pipeline matching your criteria."
+		if effectiveScope(caller) == domain.DataScopeOwn {
+			msg = "You currently have no deals assigned to you."
 		}
 		out, _ := json.Marshal(map[string]any{"count": 0, "deals": []any{}, "empty_message": msg})
 		return out
 	}
 
+	mask := cc.fieldMask(ctx, orgID, "deal")
 	simplified := make([]map[string]interface{}, len(deals))
 	for i, d := range deals {
 		m := map[string]interface{}{
-			"id":          d.ID,
-			"title":       d.Title,
-			"value":       d.Value,
-			"probability": d.Probability,
-			"is_won":      d.IsWon,
-			"is_lost":     d.IsLost,
+			"id":      d.ID,
+			"title":   d.Title,
+			"is_won":  d.IsWon,
+			"is_lost": d.IsLost,
+		}
+		if !mask.Hidden["value"] {
+			m["value"] = d.Value
+		}
+		if !mask.Hidden["probability"] {
+			m["probability"] = d.Probability
 		}
 		if d.Stage != nil {
 			m["stage"] = d.Stage.Name
@@ -809,6 +934,12 @@ func (cc *CommandCenter) toolSearchDeals(ctx context.Context, orgID, userID uuid
 }
 
 func (cc *CommandCenter) toolCreateTask(ctx context.Context, orgID, userID uuid.UUID, params map[string]interface{}) json.RawMessage {
+	// Tasks/activities/tags are the collaboration objects gated by records.write
+	// (they have no OLS grid of their own) — enforce it here too (P7).
+	if !cc.callerHasCapability(ctx, orgID, domain.CapRecordsWrite) {
+		out, _ := json.Marshal(map[string]any{"error": "you don't have permission to create tasks"})
+		return out
+	}
 	title, _ := params["title"].(string)
 	priority := "medium"
 	if p, ok := params["priority"].(string); ok {
@@ -866,15 +997,22 @@ func (cc *CommandCenter) toolUpdateDeal(ctx context.Context, orgID, userID uuid.
 		return out
 	}
 
+	// GetByID is scoped by the request context (P7): an 'own'-scoped caller only
+	// finds its own/shared deals, so a not-owned deal simply returns "not found" —
+	// no name check needed for the own-scope boundary.
 	deal, err := cc.dealRepo.GetByID(ctx, orgID, dealID)
 	if err != nil || deal == nil {
 		out, _ := json.Marshal(map[string]any{"error": "deal not found"})
 		return out
 	}
 
-	// ← RBAC guard: sales_rep can only edit their own deals
-	if role == "sales_rep" && deal.OwnerUserID != nil && *deal.OwnerUserID != userID {
-		out, _ := json.Marshal(map[string]any{"error": "access denied: you can only update deals you own"})
+	// Object-level edit permission is the authoritative gate (P7). The own-scope
+	// boundary is already enforced by GetByID above (an own-scoped caller only
+	// finds its own/shared deals); this OLS check governs whether the role may edit
+	// deals at all.
+	caller := aiCaller(ctx, userID, role)
+	if cc.authz != nil && cc.authz.Authorize(ctx, orgID, "deal", domain.ActionEdit) != nil {
+		out, _ := json.Marshal(map[string]any{"error": "you don't have permission to update deals"})
 		return out
 	}
 
@@ -909,14 +1047,29 @@ func (cc *CommandCenter) toolUpdateDeal(ctx context.Context, orgID, userID uuid.
 		return out
 	}
 
-	// Log optional note as activity
+	// Stamp the P5a audit trail (P8): AI deal edits go through dealRepo directly,
+	// bypassing RecordService's audit chokepoint, so attribute the change here.
+	dealChanges := map[string]interface{}{}
+	if v, ok := params["status"]; ok {
+		dealChanges["status"] = v
+	}
+	if v, ok := params["probability"]; ok {
+		dealChanges["probability"] = v
+	}
+	cc.auditRecordWrite(ctx, orgID, caller.UserID, "deal", dealID, domain.ActionEdit, dealChanges)
+
+	// Log optional note as activity, attributed to the real caller. The
+	// update_object_record → toolUpdateDeal delegation passes uuid.Nil as the raw
+	// userID, so stamp the activity from the resolved caller (the request context's
+	// user) instead — never a nil actor (P7).
 	if note, ok := params["note"].(string); ok && note != "" {
 		title := "AI Assistant: Deal Update"
+		actorID := caller.UserID
 		_ = cc.activityRepo.Create(ctx, &domain.Activity{
 			OrgID:      orgID,
 			Type:       "note",
 			DealID:     &dealID,
-			UserID:     &userID,
+			UserID:     &actorID,
 			Title:      &title,
 			Body:       &note,
 			OccurredAt: time.Now(),
@@ -924,16 +1077,20 @@ func (cc *CommandCenter) toolUpdateDeal(ctx context.Context, orgID, userID uuid.
 	}
 
 	out, _ := json.Marshal(map[string]any{
-		"updated":  true,
-		"deal_id":  dealID,
-		"title":    deal.Title,
-		"is_won":   deal.IsWon,
-		"is_lost":  deal.IsLost,
+		"updated": true,
+		"deal_id": dealID,
+		"title":   deal.Title,
+		"is_won":  deal.IsWon,
+		"is_lost": deal.IsLost,
 	})
 	return out
 }
 
 func (cc *CommandCenter) toolLogActivity(ctx context.Context, orgID, userID uuid.UUID, params map[string]interface{}) json.RawMessage {
+	if !cc.callerHasCapability(ctx, orgID, domain.CapRecordsWrite) {
+		out, _ := json.Marshal(map[string]any{"error": "you don't have permission to log activities"})
+		return out
+	}
 	actType, _ := params["type"].(string)
 	title, _ := params["title"].(string)
 
@@ -968,17 +1125,19 @@ func (cc *CommandCenter) toolLogActivity(ctx context.Context, orgID, userID uuid
 	return out
 }
 
-// toolGetAnalytics: viewer gets read of pipeline; sales_rep only sees their own.
+// toolGetAnalytics: pipeline/revenue are scoped to what the caller can see (own
+// vs all, applied at the repository from the request context); forecast is gated
+// on the analytics.view capability (P7), not a role name.
 func (cc *CommandCenter) toolGetAnalytics(ctx context.Context, orgID, userID uuid.UUID, role string, params map[string]interface{}) json.RawMessage {
+	if denied, ok := cc.authorizeObject(ctx, orgID, "deal", domain.ActionRead); !ok {
+		return denied
+	}
+	caller := aiCaller(ctx, userID, role)
 	metric, _ := params["metric"].(string)
 
 	switch metric {
 	case "pipeline", "revenue":
-		filter := domain.DealFilter{Limit: 200}
-		if role == "sales_rep" {
-			filter.OwnerUserID = &userID // only their pipeline
-		}
-		deals, _, _ := cc.dealRepo.List(ctx, orgID, filter)
+		deals, _, _ := cc.dealRepo.List(ctx, orgID, domain.DealFilter{Limit: 200})
 		var totalValue float64
 		activeCount, wonCount := 0, 0
 		for _, d := range deals {
@@ -992,7 +1151,7 @@ func (cc *CommandCenter) toolGetAnalytics(ctx context.Context, orgID, userID uui
 		}
 		out, _ := json.Marshal(map[string]any{
 			"metric":       metric,
-			"scope":        scopeLabel(role, "deals"),
+			"scope":        scopeLabel(effectiveScope(caller), "deals"),
 			"total_value":  totalValue,
 			"active_deals": activeCount,
 			"won_deals":    wonCount,
@@ -1001,9 +1160,10 @@ func (cc *CommandCenter) toolGetAnalytics(ctx context.Context, orgID, userID uui
 		return out
 
 	case "forecast":
-		if role == "viewer" || role == "sales_rep" {
-			// Forecast is org-wide — restrict for these roles
-			out, _ := json.Marshal(map[string]any{"error": "forecast analytics requires manager or above access"})
+		// Forecast is gated on the analytics.view capability (seeded to admin+
+		// manager), not a role name (P7; the P9 cleanup removed the name shadow).
+		if !cc.callerHasCapability(ctx, orgID, domain.CapAnalyticsView) {
+			out, _ := json.Marshal(map[string]any{"error": "you don't have permission to view forecasts (requires the analytics capability)"})
 			return out
 		}
 		rows, _ := cc.dealRepo.Forecast(ctx, orgID)
@@ -1016,9 +1176,9 @@ func (cc *CommandCenter) toolGetAnalytics(ctx context.Context, orgID, userID uui
 	}
 }
 
-// scopeLabel returns a text description of what data scope was applied.
-func scopeLabel(role, entity string) string {
-	if role == "sales_rep" {
+// scopeLabel returns a text description of the data scope applied ('own' | 'all').
+func scopeLabel(scope, entity string) string {
+	if scope == domain.DataScopeOwn {
 		return "your own " + entity
 	}
 	return "org-wide " + entity
@@ -1059,7 +1219,10 @@ func (cc *CommandCenter) toolSearchObjects(ctx context.Context, orgID uuid.UUID,
 		}
 	}
 
-	// For base objects, delegate to existing tools
+	// For base objects, delegate to the typed tools — they resolve the caller from
+	// the request context, so OLS + own-scope apply there (the "owner" arg is only a
+	// name-only fallback for a context with no caller; it's ignored when the AI
+	// request carries one, which it always does).
 	if slug == "contact" || slug == "contacts" {
 		return cc.toolSearchContacts(ctx, orgID, uuid.Nil, "owner", map[string]interface{}{"query": query, "limit": float64(limit)})
 	}
@@ -1067,7 +1230,10 @@ func (cc *CommandCenter) toolSearchObjects(ctx context.Context, orgID uuid.UUID,
 		return cc.toolSearchDeals(ctx, orgID, uuid.Nil, "owner", map[string]interface{}{"query": query, "limit": float64(limit)})
 	}
 
-	// Custom object search
+	// Custom object search — OLS-gated on the object slug (P7).
+	if denied, ok := cc.authorizeObject(ctx, orgID, slug, domain.ActionRead); !ok {
+		return denied
+	}
 	if cc.customObjUC == nil {
 		out, _ := json.Marshal(map[string]any{"error": "custom objects not configured"})
 		return out
@@ -1107,6 +1273,37 @@ func (cc *CommandCenter) toolSearchObjects(ctx context.Context, orgID uuid.UUID,
 	return out
 }
 
+// auditRecordWrite stamps one AI-driven custom-object write in the P5a
+// object_audit trail (P8). The AI writes custom objects via customObjUC directly,
+// which bypasses RecordService's audit chokepoint, so it must record the audit
+// itself. Best-effort + nil-safe: a nil authorizer (bridge / unit tests) skips it.
+func (cc *CommandCenter) auditRecordWrite(ctx context.Context, orgID, actorID uuid.UUID, slug string, recordID uuid.UUID, action domain.RecordAction, fields map[string]interface{}) {
+	if cc.authz == nil {
+		return
+	}
+	changes := make(map[string]interface{}, len(fields))
+	for k, v := range fields {
+		changes[k] = map[string]interface{}{"new": v}
+	}
+	cc.authz.Audit(ctx, domain.AuditEntry{
+		OrgID:      orgID,
+		ActorID:    actorID,
+		ObjectSlug: slug,
+		RecordID:   recordID,
+		Action:     action,
+		Changes:    changes,
+	})
+}
+
+// actorUserID resolves the acting user's id from the request context caller, for
+// audit attribution on tool paths that don't already thread a userID.
+func (cc *CommandCenter) actorUserID(ctx context.Context) uuid.UUID {
+	if c, ok := domain.CallerFromContext(ctx); ok {
+		return c.UserID
+	}
+	return uuid.Nil
+}
+
 // toolCreateObjectRecord creates a record for a custom object.
 func (cc *CommandCenter) toolCreateObjectRecord(ctx context.Context, orgID, userID uuid.UUID, params map[string]interface{}) json.RawMessage {
 	slug, _ := params["object_slug"].(string)
@@ -1120,6 +1317,9 @@ func (cc *CommandCenter) toolCreateObjectRecord(ctx context.Context, orgID, user
 		return out
 	}
 
+	if denied, ok := cc.authorizeObject(ctx, orgID, slug, domain.ActionCreate); !ok {
+		return denied
+	}
 	if cc.customObjUC == nil {
 		out, _ := json.Marshal(map[string]any{"error": "custom objects not configured"})
 		return out
@@ -1145,6 +1345,15 @@ func (cc *CommandCenter) toolCreateObjectRecord(ctx context.Context, orgID, user
 		out, _ := json.Marshal(map[string]any{"error": "Failed to create " + slug + " record: " + err.Error()})
 		return out
 	}
+
+	// Stamp the P5a audit trail (P8): the AI writes custom objects via customObjUC
+	// directly, bypassing RecordService's audit chokepoint, so attribute the write
+	// to the acting user here to close the P7-deferred gap.
+	crChanges := map[string]interface{}{"display_name": displayName}
+	for k, v := range fields {
+		crChanges[k] = v
+	}
+	cc.auditRecordWrite(ctx, orgID, userID, slug, record.ID, domain.ActionCreate, crChanges)
 
 	out, _ := json.Marshal(map[string]any{
 		"success":      true,
@@ -1189,6 +1398,9 @@ func (cc *CommandCenter) toolUpdateObjectRecord(ctx context.Context, orgID uuid.
 	}
 
 	// ── Custom object update ──────────────────────────────────────────────
+	if denied, ok := cc.authorizeObject(ctx, orgID, slug, domain.ActionEdit); !ok {
+		return denied
+	}
 	if cc.customObjUC == nil {
 		out, _ := json.Marshal(map[string]any{"error": "custom objects not configured"})
 		return out
@@ -1213,6 +1425,21 @@ func (cc *CommandCenter) toolUpdateObjectRecord(ctx context.Context, orgID uuid.
 		return out
 	}
 
+	// Stamp the P5a audit trail (P8): custom-object writes bypass RecordService's
+	// audit chokepoint, so the AI attributes the edit to the acting caller here.
+	// display_name is a first-class edit target, so include it in the diff — an
+	// update that touches only display_name must not audit an empty change set.
+	updChanges := map[string]interface{}{}
+	if f, ok := params["fields"].(map[string]interface{}); ok {
+		for k, v := range f {
+			updChanges[k] = v
+		}
+	}
+	if v, ok := params["display_name"].(string); ok && v != "" {
+		updChanges["display_name"] = v
+	}
+	cc.auditRecordWrite(ctx, orgID, cc.actorUserID(ctx), slug, record.ID, domain.ActionEdit, updChanges)
+
 	out, _ := json.Marshal(map[string]any{
 		"success":      true,
 		"id":           record.ID,
@@ -1225,6 +1452,11 @@ func (cc *CommandCenter) toolUpdateObjectRecord(ctx context.Context, orgID uuid.
 
 // toolUpdateContact handles contact updates via the unified update_object_record tool.
 func (cc *CommandCenter) toolUpdateContact(ctx context.Context, orgID, contactID uuid.UUID, params map[string]interface{}) json.RawMessage {
+	if denied, ok := cc.authorizeObject(ctx, orgID, "contact", domain.ActionEdit); !ok {
+		return denied
+	}
+	// GetByID is context-scoped: an 'own'-scoped caller only finds its own/shared
+	// contacts, so a not-owned contact returns "not found" (P7).
 	contact, err := cc.contactRepo.GetByID(ctx, orgID, contactID)
 	if err != nil || contact == nil {
 		out, _ := json.Marshal(map[string]any{"error": "contact not found"})
@@ -1275,12 +1507,25 @@ func (cc *CommandCenter) toolUpdateContact(ctx context.Context, orgID, contactID
 		return out
 	}
 
+	// Stamp the P5a audit trail (P8): AI contact edits go through contactRepo
+	// directly, bypassing RecordService's audit chokepoint.
+	contactChanges := map[string]interface{}{}
+	if v, ok := params["display_name"].(string); ok && v != "" {
+		contactChanges["display_name"] = v
+	}
+	if fields, ok := params["fields"].(map[string]interface{}); ok {
+		for k, v := range fields {
+			contactChanges[k] = v
+		}
+	}
+	cc.auditRecordWrite(ctx, orgID, cc.actorUserID(ctx), "contact", contactID, domain.ActionEdit, contactChanges)
+
 	out, _ := json.Marshal(map[string]any{
-		"success":    true,
-		"id":         contact.ID,
-		"name":       strings.TrimSpace(contact.FirstName + " " + contact.LastName),
+		"success":     true,
+		"id":          contact.ID,
+		"name":        strings.TrimSpace(contact.FirstName + " " + contact.LastName),
 		"object_type": "contact",
-		"message":    "Contact updated successfully",
+		"message":     "Contact updated successfully",
 	})
 	return out
 }

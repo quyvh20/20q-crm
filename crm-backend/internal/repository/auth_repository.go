@@ -27,9 +27,13 @@ func (r *authRepository) CreateUser(ctx context.Context, user *domain.User) erro
 	return r.db.WithContext(ctx).Create(user).Error
 }
 
+// GetUserByEmail matches case-insensitively (LOWER(email)) so a user who signs
+// up as "Sam@x.com" is found by "sam@x.com" — the #1 real-world "reset email
+// never arrived" cause (P2). Backed by the idx_users_email_lower functional
+// index. Writers normalize to lowercase, so this only rescues legacy rows.
 func (r *authRepository) GetUserByEmail(ctx context.Context, email string) (*domain.User, error) {
 	var user domain.User
-	err := r.db.WithContext(ctx).Where("email = ?", email).First(&user).Error
+	err := r.db.WithContext(ctx).Where("LOWER(email) = LOWER(?)", email).First(&user).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
@@ -167,12 +171,50 @@ func (r *authRepository) GetOrgUser(ctx context.Context, userID, orgID uuid.UUID
 
 func (r *authRepository) ListOrgsByUserID(ctx context.Context, userID uuid.UUID) ([]domain.OrgUser, error) {
 	var orgUsers []domain.OrgUser
+	// Deterministic order: login/refresh/OAuth all take orgUsers[0] as the active
+	// workspace, so without an ORDER BY a multi-org user's default org is whatever
+	// Postgres returns first (P10 P0).
 	err := r.db.WithContext(ctx).
 		Preload("Org").
 		Preload("Role").
 		Where("user_id = ? AND status = 'active'", userID).
+		Order("joined_at ASC, org_id ASC").
 		Find(&orgUsers).Error
 	return orgUsers, err
+}
+
+// SetUserDefaultOrg sets users.default_org_id, or clears it (SQL NULL) when
+// orgID is nil. UpdateColumn (not Update) so a nil pointer actually writes NULL
+// rather than being skipped as a zero value (P3).
+func (r *authRepository) SetUserDefaultOrg(ctx context.Context, userID uuid.UUID, orgID *uuid.UUID) error {
+	return r.db.WithContext(ctx).
+		Model(&domain.User{}).
+		Where("id = ?", userID).
+		UpdateColumn("default_org_id", orgID).Error
+}
+
+// CountActiveMembersByOrgs returns active-member counts keyed by org in one
+// GROUP BY query (P3). Orgs with no active members are absent from the map (→ 0).
+func (r *authRepository) CountActiveMembersByOrgs(ctx context.Context, orgIDs []uuid.UUID) (map[uuid.UUID]int, error) {
+	out := make(map[uuid.UUID]int, len(orgIDs))
+	if len(orgIDs) == 0 {
+		return out, nil
+	}
+	type row struct {
+		OrgID uuid.UUID
+		Cnt   int
+	}
+	var rows []row
+	err := r.db.WithContext(ctx).
+		Model(&domain.OrgUser{}).
+		Select("org_id, COUNT(*) AS cnt").
+		Where("org_id IN ? AND status = 'active'", orgIDs).
+		Group("org_id").
+		Scan(&rows).Error
+	for _, rw := range rows {
+		out[rw.OrgID] = rw.Cnt
+	}
+	return out, err
 }
 
 func (r *authRepository) ListMembersByOrgID(ctx context.Context, orgID uuid.UUID) ([]domain.OrgUser, error) {
@@ -206,9 +248,11 @@ func (r *authRepository) DeleteOrgUser(ctx context.Context, userID, orgID uuid.U
 		Delete(&domain.OrgUser{}).Error // GORM will soft-delete if DeletedAt exists
 }
 
+// GetOrgUserByEmail resolves membership by email case-insensitively (P2): the
+// invite dup-check ran through here and was bypassable by casing before.
 func (r *authRepository) GetOrgUserByEmail(ctx context.Context, email string, orgID uuid.UUID) (*domain.OrgUser, error) {
 	var user domain.User
-	err := r.db.WithContext(ctx).Where("email = ?", email).First(&user).Error
+	err := r.db.WithContext(ctx).Where("LOWER(email) = LOWER(?)", email).First(&user).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
@@ -246,6 +290,19 @@ func (r *authRepository) GetRoleByID(ctx context.Context, id uuid.UUID) (*domain
 	return &role, err
 }
 
+func (r *authRepository) TransferOrgOwnership(ctx context.Context, orgID, fromUserID, toUserID, ownerRoleID, demoteRoleID uuid.UUID) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&domain.OrgUser{}).
+			Where("user_id = ? AND org_id = ?", fromUserID, orgID).
+			Update("role_id", demoteRoleID).Error; err != nil {
+			return err
+		}
+		return tx.Model(&domain.OrgUser{}).
+			Where("user_id = ? AND org_id = ?", toUserID, orgID).
+			Update("role_id", ownerRoleID).Error
+	})
+}
+
 func (r *authRepository) CreateOrgInvitation(ctx context.Context, inv *domain.OrgInvitation) error {
 	return r.db.WithContext(ctx).Create(inv).Error
 }
@@ -259,8 +316,59 @@ func (r *authRepository) GetOrgInvitationByTokenHash(ctx context.Context, tokenH
 	return &inv, err
 }
 
+// GetOrgInvitationByID scopes the lookup to the org so one workspace's admin can
+// never resend/revoke another workspace's invitation by id (P2).
+func (r *authRepository) GetOrgInvitationByID(ctx context.Context, id, orgID uuid.UUID) (*domain.OrgInvitation, error) {
+	var inv domain.OrgInvitation
+	err := r.db.WithContext(ctx).Where("id = ? AND org_id = ?", id, orgID).First(&inv).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &inv, err
+}
+
+// ListPendingInvitations returns the org's still-actionable invitations (P2):
+// pending, unexpired, not revoked — newest first.
+func (r *authRepository) ListPendingInvitations(ctx context.Context, orgID uuid.UUID) ([]domain.OrgInvitation, error) {
+	var invites []domain.OrgInvitation
+	err := r.db.WithContext(ctx).
+		Where("org_id = ? AND status = 'pending' AND revoked_at IS NULL AND expires_at > ?", orgID, time.Now()).
+		Order("created_at DESC").
+		Find(&invites).Error
+	return invites, err
+}
+
 func (r *authRepository) UpdateOrgInvitation(ctx context.Context, inv *domain.OrgInvitation) error {
 	return r.db.WithContext(ctx).Save(inv).Error
+}
+
+// AcceptInvitation runs the full accept in one transaction (P2): create the
+// invitee or set a password on the existing account, UPSERT the membership to
+// active (reinstating a previously-removed row via ON CONFLICT), and mark the
+// invitation accepted. org_users has a composite (user_id, org_id) PK, so the
+// UPSERT is the clean way to reinstate without racing a check-then-insert.
+func (r *authRepository) AcceptInvitation(ctx context.Context, inv *domain.OrgInvitation, user *domain.User, createUser bool, newPasswordHash *string) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if createUser {
+			if err := tx.Create(user).Error; err != nil {
+				return err
+			}
+		} else if newPasswordHash != nil {
+			if err := tx.Model(&domain.User{}).Where("id = ?", user.ID).
+				Update("password_hash", *newPasswordHash).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Exec(`INSERT INTO org_users (user_id, org_id, role_id, status, joined_at)
+			VALUES (?, ?, ?, 'active', now())
+			ON CONFLICT (user_id, org_id)
+			DO UPDATE SET role_id = EXCLUDED.role_id, status = 'active', deleted_at = NULL`,
+			user.ID, inv.OrgID, inv.RoleID).Error; err != nil {
+			return err
+		}
+		return tx.Model(&domain.OrgInvitation{}).Where("id = ?", inv.ID).
+			Update("status", "accepted").Error
+	})
 }
 
 // --- Account recovery (P1) ---
@@ -289,6 +397,40 @@ func (r *authRepository) MarkPasswordResetTokenUsed(ctx context.Context, id uuid
 		Where("id = ? AND used_at IS NULL", id).
 		Update("used_at", time.Now())
 	return res.RowsAffected, res.Error
+}
+
+// CountAdminResetTokensSince counts admin-initiated reset links (initiated_by IS
+// NOT NULL) minted for a user since `since` — the durable per-target daily cap,
+// which works without Redis (unlike the IP rate limit) (P2).
+func (r *authRepository) CountAdminResetTokensSince(ctx context.Context, userID uuid.UUID, since time.Time) (int64, error) {
+	var count int64
+	err := r.db.WithContext(ctx).
+		Model(&domain.PasswordResetToken{}).
+		Where("user_id = ? AND initiated_by IS NOT NULL AND created_at > ?", userID, since).
+		Count(&count).Error
+	return count, err
+}
+
+func (r *authRepository) GetLatestPasswordResetToken(ctx context.Context, userID uuid.UUID) (*domain.PasswordResetToken, error) {
+	var t domain.PasswordResetToken
+	err := r.db.WithContext(ctx).
+		Where("user_id = ?", userID).
+		Order("created_at DESC").
+		First(&t).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &t, nil
+}
+
+func (r *authRepository) VoidActivePasswordResetTokens(ctx context.Context, userID uuid.UUID) error {
+	return r.db.WithContext(ctx).
+		Model(&domain.PasswordResetToken{}).
+		Where("user_id = ? AND used_at IS NULL", userID).
+		Update("used_at", time.Now()).Error
 }
 
 func (r *authRepository) CreateEmailVerificationToken(ctx context.Context, t *domain.EmailVerificationToken) error {

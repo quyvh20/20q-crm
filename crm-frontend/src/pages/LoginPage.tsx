@@ -8,6 +8,7 @@ const GOOGLE_ERROR_MESSAGES: Record<string, string> = {
   access_denied: 'Google sign-in was cancelled',
   missing_code: 'Google sign-in failed: missing authorization code',
   google_login_failed: 'Google sign-in failed. Please try again.',
+  invalid_oauth_state: 'Google sign-in could not be verified. Please start again from this page.',
 };
 
 const NOTICE_MESSAGES: Record<string, string> = {
@@ -101,6 +102,14 @@ export default function LoginPage() {
           {error && (
             <div className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
               {error}
+              {/* Stranded-passwordless hint (P2): an invited user, or one who
+                  usually signs in with Google, may never have set a password.
+                  Enumeration-safe — this is generic client text, shown on any
+                  failed sign-in, never a server "no password" signal. */}
+              <p className="mt-2 text-red-300/80 text-xs">
+                Invited to a workspace, or usually sign in with Google? You may not have a password yet —{' '}
+                <a href="/forgot-password" className="underline hover:text-red-200">send yourself a reset link</a> to set one.
+              </p>
             </div>
           )}
 

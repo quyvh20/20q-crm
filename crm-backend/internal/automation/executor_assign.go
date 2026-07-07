@@ -5,18 +5,23 @@ import (
 	"fmt"
 	"log/slog"
 
+	"crm-backend/internal/domain"
+
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
 // AssignUserExecutor assigns a user to a contact or deal.
 type AssignUserExecutor struct {
-	db *gorm.DB
+	db    *gorm.DB
+	authz domain.RecordAuthorizer
 }
 
-// NewAssignUserExecutor creates a new assign user executor.
-func NewAssignUserExecutor(db *gorm.DB) *AssignUserExecutor {
-	return &AssignUserExecutor{db: db}
+// NewAssignUserExecutor creates a new assign user executor. authz enforces the
+// workflow author's OLS/FLS/own-scope and audits the reassignment (P8); nil
+// disables enforcement (unit tests).
+func NewAssignUserExecutor(db *gorm.DB, authz domain.RecordAuthorizer) *AssignUserExecutor {
+	return &AssignUserExecutor{db: db, authz: authz}
 }
 
 // Execute assigns a user to the specified entity.
@@ -130,6 +135,13 @@ func (e *AssignUserExecutor) Execute(ctx context.Context, run *WorkflowRun, acti
 		return nil, fmt.Errorf("assign_user: invalid entity ID: %w", err)
 	}
 
+	// Run-as-creator gate (P8): reassigning ownership is an edit — OLS(edit) on the
+	// object, FLS on owner_user_id, and own-scope on the target record, as the
+	// workflow author.
+	if err := e.authorize(ctx, run, entity, uid); err != nil {
+		return nil, err
+	}
+
 	// Update the entity's owner_user_id
 	table := entity + "s"
 	err = e.db.WithContext(ctx).
@@ -138,6 +150,19 @@ func (e *AssignUserExecutor) Execute(ctx context.Context, run *WorkflowRun, acti
 		Update("owner_user_id", assigneeID).Error
 	if err != nil {
 		return nil, fmt.Errorf("assign_user: update error: %w", err)
+	}
+
+	// Attribute the reassignment to the workflow author in the audit trail (P8).
+	if e.authz != nil {
+		caller, _ := domain.CallerFromContext(ctx)
+		e.authz.Audit(ctx, domain.AuditEntry{
+			OrgID:      run.OrgID,
+			ActorID:    caller.UserID,
+			ObjectSlug: entity,
+			RecordID:   uid,
+			Action:     domain.ActionEdit,
+			Changes:    map[string]interface{}{"owner_user_id": map[string]interface{}{"new": assigneeID.String()}},
+		})
 	}
 
 	slog.Info("automation: user assigned",
@@ -153,4 +178,30 @@ func (e *AssignUserExecutor) Execute(ctx context.Context, run *WorkflowRun, acti
 		"assignee_id": assigneeID.String(),
 		"strategy":    strategy,
 	}, nil
+}
+
+// authorize enforces the workflow author's OLS(edit) + FLS(owner_user_id) +
+// own-scope before a reassignment (P8). A nil authz (unit tests) is a no-op.
+func (e *AssignUserExecutor) authorize(ctx context.Context, run *WorkflowRun, entity string, recordID uuid.UUID) error {
+	if e.authz == nil {
+		return nil
+	}
+	if err := e.authz.Authorize(ctx, run.OrgID, entity, domain.ActionEdit); err != nil {
+		return err
+	}
+	if mask := e.authz.FieldMask(ctx, run.OrgID, entity); !mask.CanWrite("owner_user_id") {
+		return fmt.Errorf("assign_user: your role may not reassign the owner of %s records", entity)
+	}
+	caller, ok := domain.CallerFromContext(ctx)
+	if !ok || caller.IsOwner || caller.DataScope != domain.DataScopeOwn {
+		return nil
+	}
+	allowed, err := ownScopeAllows(ctx, e.db, run.OrgID, entity+"s", entity, recordID, caller.UserID)
+	if err != nil {
+		return fmt.Errorf("assign_user: own-scope check failed: %w", err)
+	}
+	if !allowed {
+		return fmt.Errorf("assign_user: your role may only reassign %s records you own", entity)
+	}
+	return nil
 }

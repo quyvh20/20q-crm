@@ -44,6 +44,18 @@ func NewAppError(code int, message string) *AppError {
 	return &AppError{Code: code, Message: message}
 }
 
+// OrgUnavailableError is returned by RefreshToken when the caller asks to refresh
+// into a specific org they are no longer an ACTIVE member of (R2 fail-closed, P3).
+// It carries the caller's current workspaces so the handler can answer 409
+// {code:"ORG_UNAVAILABLE", workspaces:[...]} and the SPA can route to the chooser
+// ("You no longer have access to Acme") instead of silently flipping the user
+// into a different org.
+type OrgUnavailableError struct {
+	Workspaces []WorkspaceInfo
+}
+
+func (e *OrgUnavailableError) Error() string { return "workspace no longer available" }
+
 var (
 	ErrInvalidCredentials    = NewAppError(http.StatusUnauthorized, "invalid email or password")
 	ErrEmailAlreadyExists    = NewAppError(http.StatusConflict, "email already registered")

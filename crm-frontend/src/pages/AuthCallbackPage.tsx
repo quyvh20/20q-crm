@@ -8,9 +8,11 @@ const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://l
  * Handles the Google OAuth callback redirect.
  *
  * The server has already set the refresh token as an httpOnly cookie; only the
- * short-lived access token arrives in the URL. We hold it in memory, verify it
- * against /api/auth/me, then redirect. On the subsequent full-page load the
- * AuthProvider re-establishes the session from the cookie.
+ * short-lived access token arrives — in the URL FRAGMENT (P3), which never hits
+ * server logs or the Referer header. We hold it in memory, verify it against
+ * /api/auth/me, then redirect (to the chooser when the server flagged a multi-org
+ * user via needs_chooser). On the subsequent full-page load the AuthProvider
+ * re-establishes the session from the cookie.
  */
 export default function AuthCallbackPage() {
   const [searchParams] = useSearchParams();
@@ -22,7 +24,15 @@ export default function AuthCallbackPage() {
     if (processed.current) return;
     processed.current = true;
 
-    const accessToken = searchParams.get('access_token');
+    // The access token rides in the URL fragment; needs_chooser rides in the query.
+    const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    const accessToken = hashParams.get('access_token');
+    const needsChooser = searchParams.get('needs_chooser') === 'true';
+    const destination = needsChooser ? '/choose-workspace' : '/';
+    // Scrub the token out of the address bar / history immediately.
+    if (window.history?.replaceState) {
+      window.history.replaceState(null, '', window.location.pathname);
+    }
     if (!accessToken) {
       console.error('[AuthCallback] Missing access token, redirecting to login');
       setStatus('Missing authentication token...');
@@ -41,7 +51,7 @@ export default function AuthCallbackPage() {
       .then(async (res) => {
         if (res.ok) {
           setStatus('Welcome! Redirecting...');
-          setTimeout(() => { window.location.replace('/'); }, 200);
+          setTimeout(() => { window.location.replace(destination); }, 200);
         } else {
           setAccessToken(null);
           const text = await res.text();

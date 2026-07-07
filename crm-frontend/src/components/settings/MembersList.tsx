@@ -1,21 +1,29 @@
 import { useState, useEffect } from 'react';
-import { getWorkspaceMembers, updateMemberRole, removeMember, suspendMember, reinstateMember, transferOwnership, type WorkspaceMember } from '../../lib/api';
+import { getWorkspaceMembers, updateMemberRole, removeMember, suspendMember, reinstateMember, transferOwnership, sendMemberResetLink, listInvitations, resendInvitation, revokeInvitation, getRoleOptions, type WorkspaceMember, type Invitation, type RoleOption } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
-import { ShieldAlert, PauseCircle, PlayCircle, UserMinus, Crown, Shield } from 'lucide-react';
+import { ShieldAlert, PauseCircle, PlayCircle, UserMinus, Crown, Shield, KeyRound, CheckCircle2, RotateCw, X } from 'lucide-react';
 
-const ROLE_OPTIONS = ['admin', 'manager', 'sales_rep', 'viewer'];
+// prettyRole title-cases a role name for display ("sales_rep" → "Sales Rep").
+const prettyRole = (name: string) =>
+  name.split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 
 export default function MembersList() {
-  const { currentRole, user } = useAuth();
+  const { user, hasCapability, isOwner } = useAuth();
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
+  const [roles, setRoles] = useState<RoleOption[]>([]);
   const [loading, setLoading] = useState(true);
 
   // States for reassign modal
   const [reassignModalUser, setReassignModalUser] = useState<WorkspaceMember | null>(null);
   const [targetOwnerId, setTargetOwnerId] = useState<string>('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [noticeMsg, setNoticeMsg] = useState('');
+  const [invitations, setInvitations] = useState<Invitation[]>([]);
 
-  const canManage = currentRole === 'owner' || currentRole === 'admin';
+  const canManage = hasCapability('members.manage');
+  // Owner role ids (resolved from the dynamic options, P6) so the owner member is
+  // shown as a locked badge — you transfer ownership, you don't re-assign it.
+  const ownerRoleIds = new Set(roles.filter((r) => r.is_owner).map((r) => r.id));
 
   const fetchMembers = () => {
     setLoading(true);
@@ -24,17 +32,61 @@ export default function MembersList() {
       .finally(() => setLoading(false));
   };
 
+  const fetchInvitations = () => {
+    if (!canManage) return;
+    listInvitations().then(setInvitations).catch(() => setInvitations([]));
+  };
+
   useEffect(() => {
     fetchMembers();
+    fetchInvitations();
+    if (canManage) getRoleOptions().then(setRoles).catch(() => setRoles([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleRoleChange = async (userId: string, newRole: string) => {
-    // Optimistic UI update
-    setMembers(prev => prev.map(m => m.user_id === userId ? { ...m, role: newRole } : m));
+  const handleSendReset = async (m: WorkspaceMember) => {
+    if (!confirm(`Email ${m.full_name || m.email} a password reset link? You won't see or set their password — their account may span workspaces.`)) return;
+    setErrorMsg(''); setNoticeMsg('');
     try {
-      await updateMemberRole(userId, newRole);
+      await sendMemberResetLink(m.user_id);
+      setNoticeMsg(`A password reset link was emailed to ${m.email}.`);
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to send reset link');
+    }
+  };
+
+  const handleResendInvite = async (inv: Invitation) => {
+    setErrorMsg(''); setNoticeMsg('');
+    try {
+      await resendInvitation(inv.id);
+      setNoticeMsg(`Invitation resent to ${inv.email}.`);
+      fetchInvitations();
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to resend invitation');
+    }
+  };
+
+  const handleRevokeInvite = async (inv: Invitation) => {
+    if (!confirm(`Revoke the invitation for ${inv.email}? Their link will stop working.`)) return;
+    setErrorMsg(''); setNoticeMsg('');
+    try {
+      await revokeInvitation(inv.id);
+      fetchInvitations();
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to revoke invitation');
+    }
+  };
+
+  const handleRoleChange = async (userId: string, newRoleId: string) => {
+    // Optimistic UI update (keyed by role_id, P6; also update the display name).
+    const newName = roles.find(r => r.id === newRoleId)?.name ?? '';
+    setMembers(prev => prev.map(m => m.user_id === userId ? { ...m, role_id: newRoleId, role: newName } : m));
+    setErrorMsg('');
+    try {
+      await updateMemberRole(userId, newRoleId);
       getWorkspaceMembers().then(setMembers);
-    } catch {
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to update role');
       // Revert if failed
       getWorkspaceMembers().then(setMembers);
     }
@@ -109,6 +161,12 @@ export default function MembersList() {
             {errorMsg}
           </div>
         )}
+        {noticeMsg && (
+          <div className="mb-4 p-3 bg-green-500/10 border border-green-500/20 text-green-500 text-sm rounded-lg flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4" />
+            {noticeMsg}
+          </div>
+        )}
         <table className="w-full text-left">
           <thead>
             <tr className="border-b border-border">
@@ -142,14 +200,16 @@ export default function MembersList() {
                   </div>
                 </td>
                 <td className="py-3 pr-4">
-                  {canManage && m.role !== 'owner' && m.user_id !== user?.id && m.status !== 'deleted' ? (
+                  {canManage && !ownerRoleIds.has(m.role_id) && m.user_id !== user?.id && m.status !== 'deleted' ? (
                     <select
-                      value={m.role}
+                      value={m.role_id}
                       onChange={e => handleRoleChange(m.user_id, e.target.value)}
                       className="px-2 py-1 flex items-center text-sm bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
                     >
-                      {ROLE_OPTIONS.map(r => (
-                        <option key={r} value={r}>{r.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}</option>
+                      {roles.map(r => (
+                        <option key={r.id} value={r.id} disabled={r.is_owner}>
+                          {prettyRole(r.name)}{r.is_owner ? ' — transfer instead' : ''}
+                        </option>
                       ))}
                     </select>
                   ) : (
@@ -179,9 +239,14 @@ export default function MembersList() {
                       {/* We make it visible always for simplicity on touch, or use visibility tricks. Using visible here. */}
                     </div>
                     <div className="flex items-center justify-end gap-3">
-                      {m.user_id !== user?.id && m.role !== 'owner' && (
+                      {m.user_id !== user?.id && m.status !== 'invited' && m.status !== 'deleted' && (
+                        <button onClick={() => handleSendReset(m)} title="Send password reset link" className="text-muted-foreground hover:text-blue-400 transition-colors">
+                          <KeyRound className="w-4 h-4" />
+                        </button>
+                      )}
+                      {m.user_id !== user?.id && !ownerRoleIds.has(m.role_id) && (
                         <>
-                          {currentRole === 'owner' && m.status === 'active' && (
+                          {isOwner && m.status === 'active' && (
                             <button onClick={() => handleTransfer(m.user_id)} title="Transfer Ownership" className="text-muted-foreground hover:text-purple-400 transition-colors">
                               <Crown className="w-4 h-4" />
                             </button>
@@ -212,6 +277,52 @@ export default function MembersList() {
           <p className="text-center text-muted-foreground py-8 text-sm">No members found.</p>
         )}
       </div>
+
+      {canManage && invitations.length > 0 && (
+        <div className="mt-8">
+          <h3 className="text-sm font-semibold text-foreground mb-3 flex items-center gap-2">
+            Pending invitations
+            <span className="text-[11px] font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20 px-1.5 py-0.5 rounded-full">{invitations.length}</span>
+          </h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="border-b border-border">
+                  <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">Email</th>
+                  <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">Role</th>
+                  <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">Expires</th>
+                  <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {invitations.map(inv => (
+                  <tr key={inv.id} className="border-b border-border/50 hover:bg-accent/30 transition-colors">
+                    <td className="py-3 pr-4 text-sm text-foreground">{inv.email}</td>
+                    <td className="py-3 pr-4">
+                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-neutral-800 text-neutral-300 capitalize border border-neutral-700">
+                        {inv.role?.replace('_', ' ')}
+                      </span>
+                    </td>
+                    <td className="py-3 pr-4 text-xs text-muted-foreground">
+                      {new Date(inv.expires_at).toLocaleDateString()}
+                    </td>
+                    <td className="py-3 text-right">
+                      <div className="flex items-center justify-end gap-3">
+                        <button onClick={() => handleResendInvite(inv)} title="Resend invitation" className="text-muted-foreground hover:text-blue-400 transition-colors">
+                          <RotateCw className="w-4 h-4" />
+                        </button>
+                        <button onClick={() => handleRevokeInvite(inv)} title="Revoke invitation" className="text-muted-foreground hover:text-red-400 transition-colors">
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {reassignModalUser && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">

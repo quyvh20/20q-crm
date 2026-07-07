@@ -103,7 +103,7 @@ func TestMaskSecret(t *testing.T) {
 	})
 
 	t.Run("does not leak the true length (fixed bullet run)", func(t *testing.T) {
-		short := maskSecret("aaaa1234")  // len 8
+		short := maskSecret("aaaa1234")    // len 8
 		long := maskSecret("bbbbbbbb1234") // len 12
 		assert.Equal(t, strings.Repeat("•", 12)+"1234", short)
 		assert.Equal(t, strings.Repeat("•", 12)+"1234", long)
@@ -177,6 +177,7 @@ func webhookTokenTestRouter(t *testing.T) (*gin.Engine, *gorm.DB, uuid.UUID, fun
 		db:          db,
 		logger:      slog.Default(),
 		rateLimiter: newTokenBucket(),
+		capChecker:  capAllow{},
 	}
 
 	gin.SetMode(gin.TestMode)
@@ -449,6 +450,7 @@ func TestWebhookTokenEndpoint_OrgScoped(t *testing.T) {
 		db:          db,
 		logger:      slog.Default(),
 		rateLimiter: newTokenBucket(),
+		capChecker:  capAllow{},
 	}
 
 	gin.SetMode(gin.TestMode)

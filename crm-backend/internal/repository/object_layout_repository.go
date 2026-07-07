@@ -46,30 +46,34 @@ func (r *objectLayoutRepository) LoadOrgLayouts(ctx context.Context, orgID uuid.
 	return result, nil
 }
 
-// LoadOrgLayoutRoleMap returns slug → roleName → layoutID for the org in one
+// LoadOrgLayoutRoleMap returns the org's role→layout assignment index in one
 // query, joining object_layout_roles → roles → object_layouts. Only roles
-// assigned to non-deleted layouts are included.
-func (r *objectLayoutRepository) LoadOrgLayoutRoleMap(ctx context.Context, orgID uuid.UUID) (map[string]map[string]uuid.UUID, error) {
+// assigned to non-deleted layouts are included (the roles JOIN also drops
+// assignments whose role was deleted). Keyed by role_id (R1 re-key) so a role
+// rename can't misroute layouts; the P5 name bridge was deleted in P9.
+func (r *objectLayoutRepository) LoadOrgLayoutRoleMap(ctx context.Context, orgID uuid.UUID) (*domain.LayoutRoleMap, error) {
 	type row struct {
 		ObjectSlug string    `gorm:"column:object_slug"`
-		RoleName   string    `gorm:"column:role_name"`
+		RoleID     uuid.UUID `gorm:"column:role_id"`
 		LayoutID   uuid.UUID `gorm:"column:layout_id"`
 	}
 	var rows []row
 	if err := r.db.WithContext(ctx).Raw(`
-		SELECT olr.object_slug, ro.name AS role_name, olr.layout_id
+		SELECT olr.object_slug, olr.role_id, olr.layout_id
 		FROM object_layout_roles olr
 		JOIN roles ro ON ro.id = olr.role_id
 		JOIN object_layouts ol ON ol.id = olr.layout_id
 		WHERE olr.org_id = ? AND ol.deleted_at IS NULL`, orgID).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	result := make(map[string]map[string]uuid.UUID)
+	result := &domain.LayoutRoleMap{
+		ByID: make(map[string]map[uuid.UUID]uuid.UUID),
+	}
 	for _, r := range rows {
-		if result[r.ObjectSlug] == nil {
-			result[r.ObjectSlug] = make(map[string]uuid.UUID)
+		if result.ByID[r.ObjectSlug] == nil {
+			result.ByID[r.ObjectSlug] = make(map[uuid.UUID]uuid.UUID)
 		}
-		result[r.ObjectSlug][r.RoleName] = r.LayoutID
+		result.ByID[r.ObjectSlug][r.RoleID] = r.LayoutID
 	}
 	return result, nil
 }

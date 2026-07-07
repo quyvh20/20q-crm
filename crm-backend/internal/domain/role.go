@@ -12,12 +12,38 @@ type Role struct {
 	OrgID     *uuid.UUID `gorm:"type:uuid" json:"org_id,omitempty"`
 	Name      string     `gorm:"size:255;not null" json:"name"`
 	IsSystem  bool       `gorm:"not null;default:false" json:"is_system"`
+	// IsOwner marks the god-mode role. Authorization must read THIS flag (via
+	// IsOwnerRole), never compare the name string: names are tenant-editable
+	// vocabulary, and the DB backs the flag with a one-owner-per-org unique index
+	// plus a shadow CHECK so a tenant can never mint a second owner (P10 P0).
+	IsOwner bool `gorm:"not null;default:false" json:"is_owner"`
+	// TemplateKey records which built-in template a role descends from (system
+	// roles: their own name; a custom role: the system template its lineage
+	// resolves to). The roles_owner_lineage CHECK requires is_owner rows to carry
+	// 'owner', so a materialized/custom row can never claim god-mode without owner
+	// lineage. New-object OLS seeding (EnsureDefaults) reads it to give a custom
+	// role its template's default access on objects added after the role (P6).
+	TemplateKey *string `gorm:"size:40" json:"template_key,omitempty"`
+	// Description is the admin-authored blurb shown in the roles UI / pickers (P6).
+	Description string `gorm:"type:text;not null;default:''" json:"description"`
+	// SeededFromRoleID records the concrete role this one was cloned/seeded from
+	// (the new-role wizard's "start from a template or duplicate" — P6). Kept for
+	// lineage display and new-object seeding; the FK is ON DELETE SET NULL so
+	// deleting the source doesn't cascade.
+	SeededFromRoleID *uuid.UUID `gorm:"type:uuid" json:"seeded_from_role_id,omitempty"`
 	// DataScope is the row visibility of the role: 'own' (owned + shared records)
 	// or 'all' (the whole org). Generalizes the hardcoded sales_rep check (P3, D6).
 	DataScope string    `gorm:"size:10;not null;default:'all'" json:"data_scope"`
 	CreatedAt time.Time `gorm:"not null;default:now()" json:"created_at"`
 
 	Permissions []RolePermission `gorm:"foreignKey:RoleID" json:"permissions,omitempty"`
+}
+
+// IsOwnerRole reports whether r is the god-mode owner role. The is_owner column
+// is authoritative; the (is_system, name) pair is honored as a fallback for rows
+// created before the column's boot-guard backfill ran (e.g. an old dev DB).
+func IsOwnerRole(r *Role) bool {
+	return r != nil && (r.IsOwner || (r.IsSystem && r.Name == RoleOwner))
 }
 
 // RolePermission is one (role, capability) grant — the system-capability store
@@ -99,7 +125,12 @@ type OrgInvitation struct {
 	TokenHash string    `gorm:"size:255;not null" json:"-"`
 	ExpiresAt time.Time `gorm:"not null" json:"expires_at"`
 	Status    string    `gorm:"size:50;not null;default:'pending'" json:"status"`
-	CreatedAt time.Time `gorm:"not null;default:now()" json:"created_at"`
+	// ResentAt / RevokedAt stamp the invite-lifecycle actions added in P2: a
+	// resend re-mints the token and bumps ResentAt; a revoke sets RevokedAt and
+	// flips Status to 'revoked' so the pending token can no longer be accepted.
+	ResentAt  *time.Time `json:"resent_at,omitempty"`
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+	CreatedAt time.Time  `gorm:"not null;default:now()" json:"created_at"`
 }
 
 // System Role Names
@@ -131,7 +162,11 @@ const (
 	CapWorkflowsManage = "workflows.manage" // create/edit workflows
 	CapWorkflowsRunAny = "workflows.run_any"
 	CapAuditView       = "audit.view" // view auth/admin + record audit
-	CapBillingManage   = "billing.manage"
+	// CapAnalyticsView gates forecast/analytics — the AI forecast tool and the
+	// pipeline forecast surface (P7). Seeded to admin+manager; an 'own'-scoped role
+	// (sales_rep) is intentionally without it.
+	CapAnalyticsView = "analytics.view"
+	CapBillingManage = "billing.manage"
 	CapOrgSettings     = "org.settings"     // org-level settings/templates
 	CapDataExport      = "data.export"
 	CapPipelineManage  = "pipeline.manage"  // create/edit pipeline stages
@@ -153,7 +188,7 @@ const (
 // AllCapabilities is the canonical list, used for validation and the roles UI.
 var AllCapabilities = []string{
 	CapMembersInvite, CapMembersManage, CapRolesManage, CapObjectsManage,
-	CapWorkflowsManage, CapWorkflowsRunAny, CapAuditView, CapBillingManage,
+	CapWorkflowsManage, CapWorkflowsRunAny, CapAuditView, CapAnalyticsView, CapBillingManage,
 	CapOrgSettings, CapDataExport, CapPipelineManage, CapKnowledgeManage, CapRecordsWrite,
 	CapReportsManage, CapGroupsManage,
 }
@@ -168,6 +203,58 @@ func IsCapability(code string) bool {
 	return false
 }
 
+// CapabilityInfo is the display metadata for one capability (P6): the plain-
+// language label + description a non-technical admin sees, the group it renders
+// under, and whether it warrants a ⚠ "sensitive" chip. The vocabulary
+// (AllCapabilities) is the compile-time enforcement contract; this is the human
+// layer over it, served by GET /api/roles/catalog.
+type CapabilityInfo struct {
+	Code        string `json:"code"`
+	Label       string `json:"label"`
+	Description string `json:"description"`
+	Group       string `json:"group"`
+	Sensitive   bool   `json:"sensitive"`
+}
+
+// Capability groups, in display order (plan §3.2).
+const (
+	CapGroupPeople     = "People"
+	CapGroupSetup      = "Permissions & setup"
+	CapGroupRecords    = "Working with records"
+	CapGroupAutomation = "Automation & AI"
+	CapGroupOversight  = "Oversight"
+)
+
+// CapabilityGroups is the display order of the groups the roles UI renders.
+var CapabilityGroups = []string{
+	CapGroupPeople, CapGroupSetup, CapGroupRecords, CapGroupAutomation, CapGroupOversight,
+}
+
+// CapabilityCatalog is the human-facing description of every capability in
+// AllCapabilities (P6). Sensitive ⚠ chips flag the powers that are effectively
+// admin-equivalent or high-blast-radius: role/member management, workflow
+// authoring/execution (org-wide write + email + outbound HTTP until the P8 actor
+// model lands), org settings, bulk export, and billing. A test asserts this list
+// stays 1:1 with AllCapabilities so a new capability can't ship without copy.
+var CapabilityCatalog = []CapabilityInfo{
+	{CapMembersInvite, "Invite members", "Send workspace invitations to new members.", CapGroupPeople, false},
+	{CapMembersManage, "Manage members", "Change member roles, suspend or remove members, and transfer ownership.", CapGroupPeople, true},
+	{CapGroupsManage, "Manage user groups", "Create user groups and edit their membership.", CapGroupPeople, false},
+	{CapRolesManage, "Manage roles & permissions", "Create custom roles and edit the object/field permission grids. Effectively admin-equivalent.", CapGroupSetup, true},
+	{CapObjectsManage, "Manage objects & fields", "Create and edit objects, fields, and detail layouts.", CapGroupSetup, false},
+	{CapPipelineManage, "Manage pipeline stages", "Create and edit the deal pipeline stages.", CapGroupSetup, false},
+	{CapOrgSettings, "Manage workspace settings", "Edit organization-level settings and templates.", CapGroupSetup, true},
+	{CapBillingManage, "Manage billing", "View and change the workspace's billing and plan.", CapGroupSetup, true},
+	{CapRecordsWrite, "Edit collaboration records", "Create and edit tasks, activities, voice notes, tags, and record links.", CapGroupRecords, false},
+	{CapWorkflowsManage, "Manage workflows", "Create and edit automation workflows (org-wide write + email + outbound HTTP).", CapGroupAutomation, true},
+	{CapWorkflowsRunAny, "Run any workflow", "Manually run any workflow, not just the ones you created.", CapGroupAutomation, true},
+	{CapKnowledgeManage, "Manage knowledge base", "Edit the knowledge base that powers AI answers.", CapGroupAutomation, false},
+	{CapAuditView, "View audit log", "See the who-did-what admin and security audit trail.", CapGroupOversight, false},
+	{CapAnalyticsView, "View analytics & forecasts", "See pipeline forecasts and analytics, including from the AI assistant.", CapGroupOversight, false},
+	{CapReportsManage, "Manage all reports", "Edit and delete reports created by other people.", CapGroupOversight, false},
+	{CapDataExport, "Export data", "Export records in bulk out of the workspace.", CapGroupOversight, true},
+}
+
 // DefaultRoleCapabilities is the DEFAULT capability matrix seeded for the system
 // roles. It is only a starting point — capabilities are data, and an admin can
 // grant or revoke any of them per role (owner excepted). owner is intentionally
@@ -180,11 +267,11 @@ func IsCapability(code string) bool {
 var DefaultRoleCapabilities = map[string][]string{
 	RoleAdmin: {
 		CapMembersInvite, CapMembersManage, CapRolesManage, CapObjectsManage,
-		CapWorkflowsManage, CapWorkflowsRunAny, CapAuditView, CapOrgSettings, CapDataExport,
+		CapWorkflowsManage, CapWorkflowsRunAny, CapAuditView, CapAnalyticsView, CapOrgSettings, CapDataExport,
 		CapPipelineManage, CapKnowledgeManage, CapRecordsWrite, CapReportsManage, CapGroupsManage,
 	},
 	RoleManager: {
-		CapMembersInvite, CapWorkflowsManage, CapWorkflowsRunAny, CapAuditView, CapDataExport,
+		CapMembersInvite, CapWorkflowsManage, CapWorkflowsRunAny, CapAuditView, CapAnalyticsView, CapDataExport,
 		CapPipelineManage, CapKnowledgeManage, CapRecordsWrite, CapReportsManage, CapGroupsManage,
 	},
 	RoleSales:  {CapRecordsWrite},
@@ -207,30 +294,61 @@ var DefaultRoleDataScope = map[string]string{
 // RoleDetail is one role rendered for the admin Roles UI: identity plus its
 // capabilities and row scope, so the manager can show/edit everything in one view.
 type RoleDetail struct {
-	ID           uuid.UUID `json:"id"`
-	Name         string    `json:"name"`
-	IsSystem     bool      `json:"is_system"`
-	IsOwner      bool      `json:"is_owner"`
-	DataScope    string    `json:"data_scope"`
-	Capabilities []string  `json:"capabilities"`
+	ID           uuid.UUID  `json:"id"`
+	Name         string     `json:"name"`
+	Description  string     `json:"description"`
+	IsSystem     bool       `json:"is_system"`
+	IsOwner      bool       `json:"is_owner"`
+	DataScope    string     `json:"data_scope"`
+	TemplateKey  *string    `json:"template_key,omitempty"`
+	SeededFrom   *uuid.UUID `json:"seeded_from_role_id,omitempty"`
+	Capabilities []string   `json:"capabilities"`
 	// MemberCount is how many active members hold this role (drives "in use").
 	MemberCount int64 `json:"member_count"`
 }
 
-// CreateRoleInput creates a custom role, optionally cloning another role's OLS,
-// FLS, capabilities, and data_scope as the starting point (plan §3.3).
-type CreateRoleInput struct {
-	Name          string     `json:"name" binding:"required,min=2,max=60"`
-	CloneFromID   *uuid.UUID `json:"clone_from_id"`
-	DataScope     string     `json:"data_scope"`
-	Capabilities  []string   `json:"capabilities"`
+// RoleOption is the minimal role identity every member may read to populate role
+// pickers (P6): the Share dialog, member/invite dropdowns. It deliberately omits
+// the capability set (that stays behind roles.manage on the full List payload) —
+// a picker needs only the name/description and the flags that gate selection
+// (is_owner ⇒ rendered disabled, "transfer ownership instead").
+type RoleOption struct {
+	ID          uuid.UUID `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	IsSystem    bool      `json:"is_system"`
+	IsOwner     bool      `json:"is_owner"`
+	DataScope   string    `json:"data_scope"`
 }
 
-// UpdateRoleInput edits a custom role's name and/or row scope. Pointers so an
-// omitted field is left unchanged.
+// CreateRoleInput creates a custom role, optionally cloning another role's OLS,
+// FLS, capabilities, and data_scope as the starting point (plan §3.3). CloneFromID
+// is the wizard's "start from a template or duplicate an existing role"; the
+// source is recorded on the new role's SeededFromRoleID/TemplateKey lineage so
+// objects added later inherit the template's access (P6).
+type CreateRoleInput struct {
+	Name         string     `json:"name" binding:"required,min=2,max=60"`
+	Description  string     `json:"description"`
+	CloneFromID  *uuid.UUID `json:"clone_from_id"`
+	DataScope    string     `json:"data_scope"`
+	Capabilities []string   `json:"capabilities"`
+}
+
+// UpdateRoleInput edits a custom role's name, description, and/or row scope.
+// Pointers so an omitted field is left unchanged.
 type UpdateRoleInput struct {
-	Name      *string `json:"name"`
-	DataScope *string `json:"data_scope"`
+	Name        *string `json:"name"`
+	Description *string `json:"description"`
+	DataScope   *string `json:"data_scope"`
+}
+
+// DuplicateRoleInput clones a role (system or custom) into a new org-scoped custom
+// role the admin can then tune — the in-place-edit substitute for the immutable
+// system templates (plan §3.8, §5 decision #1). ReassignMembers moves every
+// active member of the source onto the copy in the same operation.
+type DuplicateRoleInput struct {
+	Name            string `json:"name" binding:"required,min=2,max=60"`
+	ReassignMembers bool   `json:"reassign_members"`
 }
 
 // SetCapabilitiesInput replaces a role's full capability set (idempotent PUT).
@@ -244,6 +362,9 @@ type RoleRepository interface {
 	// ListDetailed returns the org's roles (system + custom) with capabilities,
 	// data_scope, and active member counts, for the admin Roles UI.
 	ListDetailed(ctx context.Context, orgID uuid.UUID) ([]RoleDetail, error)
+	// ListOptions returns the org's roles as minimal RoleOptions (no capabilities)
+	// for the any-member role pickers (P6).
+	ListOptions(ctx context.Context, orgID uuid.UUID) ([]RoleOption, error)
 	// GetInOrg returns a role usable by the org (its own custom role or a global
 	// system role); nil if not found / not visible to the org.
 	GetInOrg(ctx context.Context, orgID, id uuid.UUID) (*Role, error)
@@ -266,14 +387,32 @@ type RoleRepository interface {
 	ClonePermissions(ctx context.Context, orgID, srcRoleID, dstRoleID uuid.UUID) error
 	// CountActiveMembers returns how many active org members hold the role.
 	CountActiveMembers(ctx context.Context, orgID, roleID uuid.UUID) (int64, error)
+	// ListMemberIDs returns the user ids of the org members holding the role
+	// (any status), so a role edit can evict their cached sessions.
+	ListMemberIDs(ctx context.Context, orgID, roleID uuid.UUID) ([]uuid.UUID, error)
+	// ReassignMembers moves every org_users row from fromRoleID to toRoleID within
+	// the org in one atomic statement and returns the user ids actually moved — the
+	// core of delete-with-reassign and duplicate-with-reassign (P6). Returning the
+	// moved set (rather than a snapshot taken before the move) is what lets the
+	// caller evict exactly those members' sessions without a capture-then-move race.
+	ReassignMembers(ctx context.Context, orgID, fromRoleID, toRoleID uuid.UUID) ([]uuid.UUID, error)
 }
 
-// RoleUseCase is the admin-facing custom-role surface (roles.manage gated).
+// RoleUseCase is the admin-facing custom-role surface. Most methods are
+// roles.manage-gated; Options is any-member (feeds the pickers, P6).
 type RoleUseCase interface {
 	List(ctx context.Context, orgID uuid.UUID) ([]RoleDetail, error)
+	// Options returns the minimal role list any member may read for pickers (P6).
+	Options(ctx context.Context, orgID uuid.UUID) ([]RoleOption, error)
 	Create(ctx context.Context, orgID uuid.UUID, in CreateRoleInput) (*Role, error)
+	// Duplicate clones a role into a new custom role, optionally reassigning the
+	// source's members onto the copy (P6).
+	Duplicate(ctx context.Context, orgID, id uuid.UUID, in DuplicateRoleInput) (*Role, error)
 	Update(ctx context.Context, orgID, id uuid.UUID, in UpdateRoleInput) error
-	Delete(ctx context.Context, orgID, id uuid.UUID) error
+	// Delete removes a custom role. When members still hold it, reassignTo must name
+	// the role to move them onto (transactional); a nil reassignTo with members
+	// present is a 409 (P6 delete-with-reassign).
+	Delete(ctx context.Context, orgID, id uuid.UUID, reassignTo *uuid.UUID) error
 	GetCapabilities(ctx context.Context, orgID, id uuid.UUID) ([]string, error)
 	SetCapabilities(ctx context.Context, orgID, id uuid.UUID, in SetCapabilitiesInput) error
 }

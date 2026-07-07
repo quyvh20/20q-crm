@@ -34,10 +34,14 @@ const mockRetryRun = vi.mocked(retryRun);
 // to a privileged caller so the button is enabled in the other tests.
 const mockAuth = vi.hoisted(() => ({
   user: { id: 'user-1' } as { id: string } | null,
-  currentRole: 'admin' as string,
+  // canRunAny stands in for holding the workflows.run_any capability (P6).
+  canRunAny: true,
 }));
 vi.mock('../../lib/auth', () => ({
-  useAuth: () => mockAuth,
+  useAuth: () => ({
+    user: mockAuth.user,
+    hasCapability: (code: string) => code === 'workflows.run_any' && mockAuth.canRunAny,
+  }),
 }));
 
 function makeWorkflow(over: Partial<Workflow> = {}): Workflow {
@@ -105,7 +109,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   // Default to a privileged caller so the Retry button is enabled wherever it renders.
   mockAuth.user = { id: 'user-1' };
-  mockAuth.currentRole = 'admin';
+  mockAuth.canRunAny = true;
   // jsdom doesn't implement scrollIntoView — provide a no-op so the highlight effect
   // doesn't throw.
   Element.prototype.scrollIntoView = vi.fn();
@@ -265,7 +269,7 @@ describe('RunHistory — retry failed run (P21)', () => {
     // Non-privileged caller who is not the workflow's creator → the server would 403, so
     // the button is shown disabled rather than offered.
     mockAuth.user = { id: 'stranger' };
-    mockAuth.currentRole = 'viewer';
+    mockAuth.canRunAny = false;
     mockGetWorkflow.mockResolvedValue(makeWorkflow({ created_by: 'someone-else' }));
     mockGetWorkflowRuns.mockResolvedValue({
       runs: [makeRun({ id: 'run-bad', status: 'failed' })],

@@ -29,23 +29,37 @@ export function readCsrfToken(): string {
 // the session is truly gone. Optionally re-scopes to a workspace.
 let refreshInFlight: Promise<string | null> | null = null;
 
+function postRefresh(orgId?: string): Promise<Response> {
+  return fetch(`${API_URL}/api/auth/refresh`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': readCsrfToken() },
+    body: JSON.stringify(orgId ? { org_id: orgId } : {}),
+  });
+}
+
 export function refreshAccessToken(orgId?: string): Promise<string | null> {
   if (!refreshInFlight) {
     refreshInFlight = (async (): Promise<string | null> => {
       try {
-        const res = await fetch(`${API_URL}/api/auth/refresh`, {
-          method: 'POST',
-          credentials: 'include',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-CSRF-Token': readCsrfToken(),
-          },
-          body: JSON.stringify(orgId ? { org_id: orgId } : {}),
-        });
+        // Default to the SPA's last active workspace so a mid-session refresh stays
+        // in the same org (P3) instead of the server silently picking default/first.
+        const targetOrg = orgId ?? localStorage.getItem('active_workspace_id') ?? undefined;
+        let res = await postRefresh(targetOrg);
+        // 409 ORG_UNAVAILABLE: the active org is gone. Drop it and retry into the
+        // default/first org so the session survives; a full reload will then route
+        // to the chooser via the AuthProvider.
+        if (res.status === 409) {
+          localStorage.removeItem('active_workspace_id');
+          res = await postRefresh(undefined);
+        }
         if (!res.ok) return null;
         const json = await res.json();
         const token = (json?.data?.access_token as string) ?? null;
         setAccessToken(token);
+        // Keep active_workspace_id in sync with the org the server actually bound.
+        const activeOrg = json?.data?.active_org_id as string | undefined;
+        if (activeOrg) localStorage.setItem('active_workspace_id', activeOrg);
         return token;
       } catch {
         return null;
@@ -1354,7 +1368,7 @@ export async function setObjectPermission(input: {
 // checkboxes in the Roles manager.
 export const ALL_CAPABILITIES = [
   'members.invite', 'members.manage', 'roles.manage', 'objects.manage',
-  'workflows.manage', 'workflows.run_any', 'audit.view', 'billing.manage',
+  'workflows.manage', 'workflows.run_any', 'audit.view', 'analytics.view', 'billing.manage',
   'org.settings', 'data.export', 'pipeline.manage', 'knowledge.manage', 'records.write',
   'reports.manage', 'groups.manage',
 ] as const;
@@ -1368,6 +1382,7 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   'workflows.manage': 'Manage workflows',
   'workflows.run_any': 'Run any workflow',
   'audit.view': 'View audit log',
+  'analytics.view': 'View analytics & forecasts',
   'billing.manage': 'Manage billing',
   'org.settings': 'Edit org settings & templates',
   'data.export': 'Export data',
@@ -1383,25 +1398,89 @@ export type DataScope = 'own' | 'all';
 export interface RoleDetail {
   id: string;
   name: string;
+  description: string;
   is_system: boolean;
   is_owner: boolean;
   data_scope: DataScope;
+  template_key?: string | null;
+  seeded_from_role_id?: string | null;
   capabilities: string[];
   member_count: number;
 }
 
-// getMyCapabilities returns the current user's effective capability codes for the
-// active org (owner gets all). Drives permission-aware UI; the server still
-// enforces every action. Returns [] on any error so the UI fails closed.
-export async function getMyCapabilities(): Promise<string[]> {
+// RoleOption is the minimal role identity any member may read for role pickers
+// (P6) — no capabilities, so it needs no roles.manage gate.
+export interface RoleOption {
+  id: string;
+  name: string;
+  description: string;
+  is_system: boolean;
+  is_owner: boolean;
+  data_scope: DataScope;
+}
+
+// CapabilityInfo is the human-facing metadata for one capability (P6), served by
+// GET /api/roles/catalog: label/description + the group it renders under + the ⚠
+// sensitive flag.
+export interface CapabilityInfo {
+  code: string;
+  label: string;
+  description: string;
+  group: string;
+  sensitive: boolean;
+}
+
+// MyPermissions is the caller's full authorization context for the active org
+// (P6): effective capability codes plus role identity + row scope. Drives the
+// usePermissions() hook; the server still enforces every action independently.
+export interface MyPermissions {
+  capabilities: string[];
+  data_scope: DataScope;
+  role_id: string;
+  role_name: string;
+  is_owner: boolean;
+}
+
+// getMyPermissions returns the caller's effective capabilities + role identity for
+// the active org (owner gets all capabilities). Fails closed to an empty, denied
+// identity on any error so the UI never over-shows.
+export async function getMyPermissions(): Promise<MyPermissions> {
+  const denied: MyPermissions = { capabilities: [], data_scope: 'all', role_id: '', role_name: '', is_owner: false };
   try {
     const res = await apiFetch('/api/auth/capabilities');
-    if (!res.ok) return [];
+    if (!res.ok) return denied;
     const json = await res.json();
-    return (json.data?.capabilities || []) as string[];
+    const d = json.data || {};
+    return {
+      capabilities: (d.capabilities || []) as string[],
+      data_scope: (d.data_scope === 'own' ? 'own' : 'all') as DataScope,
+      role_id: (d.role_id || '') as string,
+      role_name: (d.role_name || '') as string,
+      is_owner: !!d.is_owner,
+    };
   } catch {
-    return [];
+    return denied;
   }
+}
+
+// getRoleOptions returns the minimal role list any member may read for pickers
+// (member/invite dropdowns, the report Share dialog). Unblocks the callers that
+// can't hit the roles.manage-gated getRoles (P6).
+export async function getRoleOptions(): Promise<RoleOption[]> {
+  const res = await apiFetch('/api/roles/options');
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to load roles');
+  return (json.data || []) as RoleOption[];
+}
+
+// getRolesCatalog returns the capability metadata (labels/descriptions/groups/
+// sensitive flags) + group display order — any member (P6).
+export async function getRolesCatalog(): Promise<{ capabilities: CapabilityInfo[]; groups: string[] }> {
+  const res = await apiFetch('/api/roles/catalog');
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to load capability catalog');
+  const d = json.data || {};
+  return { capabilities: (d.capabilities || []) as CapabilityInfo[], groups: (d.groups || []) as string[] };
 }
 
 export async function getRoles(): Promise<RoleDetail[]> {
@@ -1413,6 +1492,7 @@ export async function getRoles(): Promise<RoleDetail[]> {
 
 export async function createRole(input: {
   name: string;
+  description?: string;
   clone_from_id?: string;
   data_scope?: DataScope;
   capabilities?: string[];
@@ -1423,7 +1503,16 @@ export async function createRole(input: {
   return json.data as RoleDetail;
 }
 
-export async function updateRole(id: string, input: { name?: string; data_scope?: DataScope }): Promise<void> {
+// duplicateRole clones a role (system or custom) into a new custom role,
+// optionally moving the source's members onto the copy (P6).
+export async function duplicateRole(id: string, input: { name: string; reassign_members?: boolean }): Promise<RoleDetail> {
+  const res = await apiFetch(`/api/roles/${id}/duplicate`, { method: 'POST', body: JSON.stringify(input) });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to duplicate role');
+  return json.data as RoleDetail;
+}
+
+export async function updateRole(id: string, input: { name?: string; description?: string; data_scope?: DataScope }): Promise<void> {
   const res = await apiFetch(`/api/roles/${id}`, { method: 'PATCH', body: JSON.stringify(input) });
   if (!res.ok) {
     const json = await res.json().catch(() => ({}));
@@ -1431,8 +1520,12 @@ export async function updateRole(id: string, input: { name?: string; data_scope?
   }
 }
 
-export async function deleteRole(id: string): Promise<void> {
-  const res = await apiFetch(`/api/roles/${id}`, { method: 'DELETE' });
+// deleteRole deletes a custom role. When members still hold it, pass
+// reassignToRoleId to move them onto another role in the same transaction; without
+// it the server 409s (the "N people have this role — move them to:" flow, P6).
+export async function deleteRole(id: string, reassignToRoleId?: string): Promise<void> {
+  const qs = reassignToRoleId ? `?reassign_to=${encodeURIComponent(reassignToRoleId)}` : '';
+  const res = await apiFetch(`/api/roles/${id}${qs}`, { method: 'DELETE' });
   if (!res.ok) {
     const json = await res.json().catch(() => ({}));
     throw new Error(json.error || 'Failed to delete role');
@@ -1806,6 +1899,7 @@ export interface Workspace {
   org_type: string;
   role: string;
   status: string;
+  member_count?: number;
 }
 
 export interface WorkspaceMember {
@@ -1815,19 +1909,25 @@ export interface WorkspaceMember {
   last_name: string;
   full_name: string;
   avatar_url?: string;
+  // role_id is the authoritative identity (member assignment is keyed by it, P6);
+  // role is its name, for display.
+  role_id: string;
   role: string;
   status: string;
 }
 
-export async function switchWorkspace(orgId: string): Promise<{
+export async function switchWorkspace(orgId: string, setDefault = false): Promise<{
   access_token: string;
   refresh_token: string;
   user: UserListItem;
   workspaces: Workspace[];
+  active_org_id: string;
+  default_org_id?: string;
+  needs_chooser: boolean;
 }> {
   const res = await apiFetch('/api/auth/switch-workspace', {
     method: 'POST',
-    body: JSON.stringify({ org_id: orgId }),
+    body: JSON.stringify({ org_id: orgId, set_default: setDefault }),
   });
   const json = await res.json();
   if (!res.ok) throw new Error(json.error || 'Failed to switch workspace');
@@ -1848,20 +1948,20 @@ export async function getWorkspaceMembers(): Promise<WorkspaceMember[]> {
   return (json.data || []) as WorkspaceMember[];
 }
 
-export async function inviteMember(email: string, role: string): Promise<{ member: WorkspaceMember; debug_token?: string }> {
+export async function inviteMember(email: string, roleId: string): Promise<{ member: WorkspaceMember; debug_token?: string }> {
   const res = await apiFetch('/api/workspaces/invites', {
     method: 'POST',
-    body: JSON.stringify({ email, role }),
+    body: JSON.stringify({ email, role_id: roleId }),
   });
   const json = await res.json();
   if (!res.ok) throw new Error(json.error || 'Failed to invite member');
   return json.data;
 }
 
-export async function updateMemberRole(userId: string, role: string): Promise<void> {
+export async function updateMemberRole(userId: string, roleId: string): Promise<void> {
   const res = await apiFetch(`/api/workspaces/members/${userId}/role`, {
     method: 'PATCH',
-    body: JSON.stringify({ role }),
+    body: JSON.stringify({ role_id: roleId }),
   });
   if (!res.ok) {
     const json = await res.json().catch(() => ({}));
@@ -1904,15 +2004,68 @@ export async function transferOwnership(userId: string): Promise<void> {
   }
 }
 
-export async function acceptInvite(token: string): Promise<void> {
+export interface AcceptInviteInput {
+  token: string;
+  // For a brand-new (non-Google) invitee, the password + name they set on the
+  // accept page (P2). Omitted for an existing account or "Continue with Google".
+  password?: string;
+  first_name?: string;
+  last_name?: string;
+}
+
+export async function acceptInvite(input: AcceptInviteInput): Promise<void> {
   const res = await fetch(`${API_URL}/api/auth/accept-invite`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token }),
+    body: JSON.stringify(input),
   });
   if (!res.ok) {
     const json = await res.json().catch(() => ({}));
     throw new Error(json.error || 'Failed to accept invitation');
+  }
+}
+
+// Pending-invitation lifecycle (P2) — powers the members-settings panel.
+export interface Invitation {
+  id: string;
+  email: string;
+  role_id: string;
+  role: string;
+  status: string;
+  expires_at: string;
+  created_at: string;
+  resent_at?: string;
+}
+
+export async function listInvitations(): Promise<Invitation[]> {
+  const res = await apiFetch('/api/workspaces/invitations');
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch invitations');
+  return (json.data || []) as Invitation[];
+}
+
+export async function resendInvitation(id: string): Promise<{ debug_token?: string }> {
+  const res = await apiFetch(`/api/workspaces/invitations/${id}/resend`, { method: 'POST' });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error || 'Failed to resend invitation');
+  return json.data || {};
+}
+
+export async function revokeInvitation(id: string): Promise<void> {
+  const res = await apiFetch(`/api/workspaces/invitations/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(json.error || 'Failed to revoke invitation');
+  }
+}
+
+// Admin "Send reset link" (P2): emails the member a self-serve reset. The admin
+// never sees or sets the password — accounts are global across workspaces.
+export async function sendMemberResetLink(userId: string): Promise<void> {
+  const res = await apiFetch(`/api/workspaces/members/${userId}/send-reset-link`, { method: 'POST' });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(json.error || 'Failed to send reset link');
   }
 }
 
