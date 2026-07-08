@@ -155,6 +155,10 @@ type AuthRepository interface {
 	CreateOrgUser(ctx context.Context, ou *OrgUser) error
 	GetOrgUser(ctx context.Context, userID, orgID uuid.UUID) (*OrgUser, error)
 	ListOrgsByUserID(ctx context.Context, userID uuid.UUID) ([]OrgUser, error)
+	// ListAllOrgMembershipsByUserID returns memberships in ALL statuses for DISPLAY
+	// only (the chooser's suspended cards). Never use it for org selection — that
+	// path stays active-only via ListOrgsByUserID.
+	ListAllOrgMembershipsByUserID(ctx context.Context, userID uuid.UUID) ([]OrgUser, error)
 	// SetUserDefaultOrg sets (or, with a nil orgID, clears) users.default_org_id —
 	// the durable home-workspace memory the R2 selection chain honors (P3).
 	SetUserDefaultOrg(ctx context.Context, userID uuid.UUID, orgID *uuid.UUID) error

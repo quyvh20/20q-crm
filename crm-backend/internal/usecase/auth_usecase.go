@@ -380,8 +380,13 @@ func (uc *authUseCase) SwitchWorkspace(ctx context.Context, userID uuid.UUID, in
 	}, nil
 }
 
+// ListWorkspaces returns ALL of a user's memberships (active + suspended) for
+// display — the workspace chooser shows suspended ones as disabled cards. This is
+// the ONLY membership path that surfaces suspended rows; org selection
+// (login/refresh/switch) stays active-only via ListOrgsByUserID + selectActiveOrg,
+// so a suspended membership can never be minted into a token.
 func (uc *authUseCase) ListWorkspaces(ctx context.Context, userID uuid.UUID) ([]domain.WorkspaceInfo, error) {
-	orgUsers, err := uc.authRepo.ListOrgsByUserID(ctx, userID)
+	orgUsers, err := uc.authRepo.ListAllOrgMembershipsByUserID(ctx, userID)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}

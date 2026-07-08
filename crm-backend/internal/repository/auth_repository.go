@@ -183,6 +183,23 @@ func (r *authRepository) ListOrgsByUserID(ctx context.Context, userID uuid.UUID)
 	return orgUsers, err
 }
 
+// ListAllOrgMembershipsByUserID returns a user's memberships in ALL statuses
+// (active first, then suspended), for DISPLAY only — the workspace chooser renders
+// suspended memberships as disabled cards so a user understands why an org they
+// remember is no longer selectable. It must NOT feed the org-selection path:
+// login/refresh/switch use the active-only ListOrgsByUserID, so a suspended
+// membership can never be minted into a token.
+func (r *authRepository) ListAllOrgMembershipsByUserID(ctx context.Context, userID uuid.UUID) ([]domain.OrgUser, error) {
+	var orgUsers []domain.OrgUser
+	err := r.db.WithContext(ctx).
+		Preload("Org").
+		Preload("Role").
+		Where("user_id = ?", userID).
+		Order("(status = 'active') DESC, joined_at ASC, org_id ASC").
+		Find(&orgUsers).Error
+	return orgUsers, err
+}
+
 // SetUserDefaultOrg sets users.default_org_id, or clears it (SQL NULL) when
 // orgID is nil. UpdateColumn (not Update) so a nil pointer actually writes NULL
 // rather than being skipped as a zero value (P3).

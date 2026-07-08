@@ -1,20 +1,46 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from '../lib/auth';
-import { Building2, Users, Check, Star, Loader2, LogOut } from 'lucide-react';
+import { getWorkspaces, type Workspace } from '../lib/api';
+import { Building2, Users, Check, Star, Loader2, LogOut, Ban, AlertTriangle } from 'lucide-react';
 
 /**
  * The R2 workspace chooser (P4). Shown when a user belongs to multiple active
  * workspaces and no valid default has resolved one. Picking a card calls
  * switch-workspace (optionally persisting it as the default), after which the
  * user is never asked again.
+ *
+ * P4 niceties: it also fetches the full membership list so SUSPENDED memberships
+ * render as disabled cards (a user understands why an org they remember is gone),
+ * and it surfaces a "you no longer have access to X" banner when a refresh 409
+ * bounced them here off an org they just lost.
  */
 export default function ChooseWorkspacePage() {
   const { workspaces, switchWorkspace, defaultOrgId, logout } = useAuth();
   const [makeDefault, setMakeDefault] = useState(true);
   const [busyOrg, setBusyOrg] = useState<string | null>(null);
   const [error, setError] = useState('');
+  // Seed from auth state (active-only); enrich with the full list (incl. suspended)
+  // once the fetch resolves so suspended cards can render.
+  const [allWorkspaces, setAllWorkspaces] = useState<Workspace[]>(workspaces);
+  // The workspace a 409 just bounced us off (read once, then cleared).
+  const [lostWorkspace] = useState<string | null>(() => {
+    const name = sessionStorage.getItem('lost_workspace_name');
+    if (name) sessionStorage.removeItem('lost_workspace_name');
+    return name;
+  });
 
-  const active = workspaces.filter(w => w.status === 'active');
+  useEffect(() => {
+    getWorkspaces()
+      .then((ws) => {
+        if (ws.length > 0) setAllWorkspaces(ws);
+      })
+      .catch(() => {
+        /* fall back to the active-only auth-state list */
+      });
+  }, []);
+
+  const active = allWorkspaces.filter((w) => w.status === 'active');
+  const suspended = allWorkspaces.filter((w) => w.status !== 'active');
 
   const choose = async (orgId: string) => {
     setError('');
@@ -35,6 +61,15 @@ export default function ChooseWorkspacePage() {
           <h1 className="text-3xl font-bold text-white tracking-tight">Choose a workspace</h1>
           <p className="text-slate-400 mt-2">You're a member of several workspaces. Pick one to continue.</p>
         </div>
+
+        {lostWorkspace && (
+          <div className="mb-4 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-sm flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+            <span>
+              You no longer have access to <span className="font-semibold">{lostWorkspace}</span>. Choose another workspace to continue.
+            </span>
+          </div>
+        )}
 
         {error && (
           <div className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
@@ -80,6 +115,33 @@ export default function ChooseWorkspacePage() {
             );
           })}
         </div>
+
+        {/* Suspended memberships — shown disabled so the user knows the org exists
+            but they can't enter it (contact an admin to be reinstated). */}
+        {suspended.length > 0 && (
+          <div className="mt-4 space-y-3">
+            <p className="text-xs uppercase tracking-wider text-slate-500 font-semibold px-1">No longer active</p>
+            {suspended.map(ws => (
+              <div
+                key={ws.org_id}
+                aria-disabled="true"
+                title="Your membership here is suspended — ask a workspace admin to reinstate you."
+                className="w-full text-left flex items-center gap-4 p-4 rounded-2xl bg-slate-800/30 border border-slate-800 opacity-60 cursor-not-allowed"
+              >
+                <div className="w-11 h-11 rounded-xl bg-slate-700/60 flex items-center justify-center shrink-0">
+                  <Ban className="w-5 h-5 text-slate-400" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-slate-300 font-semibold truncate">{ws.org_name}</p>
+                  <p className="text-xs text-slate-500 capitalize mt-0.5">
+                    {ws.role?.replace('_', ' ')} · Suspended
+                  </p>
+                </div>
+                <span className="text-[11px] text-slate-500 shrink-0">Suspended</span>
+              </div>
+            ))}
+          </div>
+        )}
 
         <label className="flex items-center gap-2 justify-center mt-6 text-sm text-slate-300 cursor-pointer select-none">
           <span

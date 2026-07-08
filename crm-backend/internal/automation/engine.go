@@ -935,6 +935,23 @@ func (e *Engine) buildEvalContext(run *WorkflowRun) EvalContext {
 	if trigger, ok := payload["trigger"].(map[string]any); ok {
 		ctx.Trigger = trigger
 	}
+
+	// Hydrate contact.* for deal-triggered runs. A deal event carries only
+	// deal.contact_id (dealToMap / loadDealForRun), with no contact object — so
+	// templates like {{contact.email}} would otherwise resolve empty and an email
+	// action would fail at runtime with "'to' is required". Load the deal's contact
+	// best-effort so the context matches what a contact trigger produces. A missing
+	// contact_id, a deleted/absent contact, or a load error just leaves contact.*
+	// empty (the prior behavior — no regression).
+	if ctx.Contact == nil && ctx.Deal != nil {
+		if cid, _ := ctx.Deal["contact_id"].(string); cid != "" {
+			if contactID, err := uuid.Parse(cid); err == nil {
+				if c := loadContactForTrigger(e.ctx, e.db, run.OrgID, contactID); c != nil {
+					ctx.Contact = c
+				}
+			}
+		}
+	}
 	if org, ok := payload["org"].(map[string]any); ok {
 		ctx.Org = org
 	}
@@ -954,6 +971,58 @@ func (e *Engine) buildEvalContext(run *WorkflowRun) EvalContext {
 	}
 
 	return ctx
+}
+
+// loadContactForTrigger reads a contact into the flat interpolation-map shape the
+// EvalContext.Contact expects (id, first_name, last_name, email, phone,
+// owner_user_id, company_id, custom_fields nested), so a deal-triggered run can
+// resolve {{contact.*}} the same way a contact-triggered run does. Best-effort:
+// returns nil on a load error or a missing/deleted contact (the caller then
+// leaves contact.* empty). Mirrors the interpolation shape of
+// UpdateRecordExecutor.readContactSnapshot but is read-only and nil-on-absent, so
+// it can't corrupt an existing contact context.
+func loadContactForTrigger(ctx context.Context, db *gorm.DB, orgID, contactID uuid.UUID) map[string]any {
+	var row struct {
+		ID           uuid.UUID  `gorm:"column:id"`
+		FirstName    string     `gorm:"column:first_name"`
+		LastName     string     `gorm:"column:last_name"`
+		Email        *string    `gorm:"column:email"`
+		Phone        *string    `gorm:"column:phone"`
+		OwnerUserID  *uuid.UUID `gorm:"column:owner_user_id"`
+		CompanyID    *uuid.UUID `gorm:"column:company_id"`
+		CustomFields *string    `gorm:"column:custom_fields"`
+	}
+	if err := db.WithContext(ctx).
+		Table("contacts").
+		Select("id, first_name, last_name, email, phone, owner_user_id, company_id, custom_fields::text").
+		Where("id = ? AND org_id = ? AND deleted_at IS NULL", contactID, orgID).
+		Scan(&row).Error; err != nil || row.ID == uuid.Nil {
+		return nil
+	}
+	m := map[string]any{
+		"id":         row.ID.String(),
+		"first_name": row.FirstName,
+		"last_name":  row.LastName,
+	}
+	if row.Email != nil {
+		m["email"] = *row.Email
+	}
+	if row.Phone != nil {
+		m["phone"] = *row.Phone
+	}
+	if row.OwnerUserID != nil {
+		m["owner_user_id"] = row.OwnerUserID.String()
+	}
+	if row.CompanyID != nil {
+		m["company_id"] = row.CompanyID.String()
+	}
+	if row.CustomFields != nil && *row.CustomFields != "" {
+		var cf map[string]any
+		if err := json.Unmarshal([]byte(*row.CustomFields), &cf); err == nil {
+			m["custom_fields"] = cf
+		}
+	}
+	return m
 }
 
 // failRun marks a run as failed. Uses standalone tx because there is no

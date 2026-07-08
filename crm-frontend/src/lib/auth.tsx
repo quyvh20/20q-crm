@@ -133,8 +133,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setActiveWorkspace(active);
     if (active) {
       localStorage.setItem('active_workspace_id', active.org_id);
+      // Remember the name too, so if this org later becomes unavailable (a 409 on
+      // refresh) the chooser / dead-end can say WHICH workspace was lost (P4 nicety).
+      localStorage.setItem('active_workspace_name', active.org_name);
     } else {
       localStorage.removeItem('active_workspace_id');
+      localStorage.removeItem('active_workspace_name');
     }
     loadCapabilities();
   }, [loadCapabilities]);
@@ -161,11 +165,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // The shim token is single-use — drop the legacy copies regardless of result.
       localStorage.removeItem('refresh_token');
       localStorage.removeItem('access_token');
-      // 409 ORG_UNAVAILABLE: the saved active org is gone. Retry a plain refresh
-      // into the default/first org; saveAuth then flags needs_chooser so the
-      // AuthProvider routes to the chooser with an explanation (P4).
+      // 409 ORG_UNAVAILABLE: the saved active org is gone. Remember its name so the
+      // chooser / dead-end can explain WHICH workspace was lost, then retry a plain
+      // refresh into the default/first org; saveAuth then flags needs_chooser so the
+      // AuthProvider routes to the chooser (P4).
       if (res.status === 409) {
+        const lostName = localStorage.getItem('active_workspace_name');
+        if (lostName) sessionStorage.setItem('lost_workspace_name', lostName);
         localStorage.removeItem('active_workspace_id');
+        localStorage.removeItem('active_workspace_name');
         res = await post(null);
       }
       if (!res.ok) {

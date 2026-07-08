@@ -322,6 +322,24 @@ func (r *fakeAuthRepo) ListOrgsByUserID(_ context.Context, userID uuid.UUID) ([]
 	return out, nil
 }
 
+func (r *fakeAuthRepo) ListAllOrgMembershipsByUserID(_ context.Context, userID uuid.UUID) ([]domain.OrgUser, error) {
+	var out []domain.OrgUser
+	for _, ou := range r.memberships {
+		if ou.UserID == userID {
+			out = append(out, *ou)
+		}
+	}
+	// Active first, then by org id — mirrors the repo's display ordering.
+	sort.Slice(out, func(i, j int) bool {
+		ai, aj := out[i].Status == domain.StatusActive, out[j].Status == domain.StatusActive
+		if ai != aj {
+			return ai
+		}
+		return out[i].OrgID.String() < out[j].OrgID.String()
+	})
+	return out, nil
+}
+
 func (r *fakeAuthRepo) SetUserDefaultOrg(_ context.Context, userID uuid.UUID, orgID *uuid.UUID) error {
 	if u, ok := r.users[userID]; ok {
 		u.DefaultOrgID = orgID
