@@ -1,6 +1,11 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Search } from 'lucide-react';
 import { useBuilderStore } from '../../../store';
+import { resolvableObjectsForTrigger } from '../../../dateField';
+
+// Meta scopes that are always resolvable regardless of the trigger (the trigger
+// pseudo-entity, plus org/user/actions roots) — never filtered by trigger scope.
+const ALWAYS_RESOLVABLE = new Set(['trigger', 'org', 'user', 'actions']);
 
 /* ------------------------------------------------------------------ */
 /*  TemplateInput — text input with {x} variable-insert button        */
@@ -169,6 +174,7 @@ const VariablePicker = React.forwardRef<HTMLDivElement, VariablePickerProps>(
   ({ onSelect, onClose, fieldFilter }, ref) => {
     const schema = useBuilderStore((s) => s.schema);
     const schemaLoading = useBuilderStore((s) => s.schemaLoading);
+    const trigger = useBuilderStore((s) => s.trigger);
     const [search, setSearch] = useState('');
     const searchRef = useRef<HTMLInputElement>(null);
     const [focusedIdx, setFocusedIdx] = useState(0);
@@ -178,11 +184,19 @@ const VariablePicker = React.forwardRef<HTMLDivElement, VariablePickerProps>(
       searchRef.current?.focus();
     }, []);
 
+    // Only offer merge tags the run's eval context can actually resolve for this
+    // trigger (A5): a deal-triggered workflow shouldn't offer contact.* tags that
+    // would render blank. Object entities are scoped to the trigger's resolvable set;
+    // meta scopes (trigger/org/user) are always available. This structurally fixes
+    // the contact.*-on-deal-trigger over-offering bug.
+    const resolvable = useMemo(() => resolvableObjectsForTrigger(trigger), [trigger]);
+
     // Build grouped variables from schema, applying fieldFilter if set
     const groups = useMemo(() => {
       if (!schema) return [];
       const allEntities = [...schema.entities, ...(schema.custom_objects || [])];
       return allEntities
+        .filter((entity) => ALWAYS_RESOLVABLE.has(entity.key) || resolvable.has(entity.key))
         .map((entity) => ({
           key: entity.key,
           label: entity.label,
@@ -192,7 +206,7 @@ const VariablePicker = React.forwardRef<HTMLDivElement, VariablePickerProps>(
             : entity.fields,
         }))
         .filter((g) => g.fields.length > 0);
-    }, [schema, fieldFilter]);
+    }, [schema, fieldFilter, resolvable]);
 
     // Filter by search
     const filteredGroups = useMemo(() => {

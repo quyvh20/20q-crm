@@ -35,6 +35,7 @@ func (r *Repository) AutoMigrate() error {
 		&WorkflowActionLog{},
 		&WorkflowOrgToken{},
 		&AutomationTimer{},
+		&EmailTemplate{},
 	); err != nil {
 		return err
 	}
@@ -49,6 +50,10 @@ func (r *Repository) AutoMigrate() error {
 	// reconcile) + a partial index over the scanner's hot path (due pending timers).
 	r.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_wf_timers_wf_dedupe ON automation_timers (workflow_id, dedupe_key)`)
 	r.db.Exec(`CREATE INDEX IF NOT EXISTS idx_wf_timers_due ON automation_timers (fire_at) WHERE status = 'pending'`)
+	// A5 email templates: case-insensitive name unique per org over LIVE rows only,
+	// so a name freed by a soft-delete can be reused (GORM can't express a partial/
+	// functional unique index, hence raw SQL like the timers indexes above).
+	r.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_email_templates_org_name ON automation_email_templates (org_id, lower(name)) WHERE deleted_at IS NULL`)
 
 	// Run data migration from actions -> steps
 	_ = r.MigrateFlatActionsToSteps(context.Background())

@@ -195,6 +195,72 @@ type WebhookSecretRevealResponse struct {
 	Secret string `json:"secret"` // full HMAC-SHA256 secret (unchanged)
 }
 
+// --- Email template DTOs (A5) ---
+
+// CreateEmailTemplateRequest is the body for POST /api/workflows/email-templates.
+// BodyJSON (the TipTap doc) is optional — a hand-edited template can omit it.
+type CreateEmailTemplateRequest struct {
+	Name       string         `json:"name" binding:"required,min=1,max=200"`
+	Subject    string         `json:"subject" binding:"max=500"`
+	BodyHTML   string         `json:"body_html"`
+	BodyJSON   datatypes.JSON `json:"body_json"`
+	ObjectSlug string         `json:"object_slug" binding:"max=100"`
+}
+
+// UpdateEmailTemplateRequest is the body for PUT /api/workflows/email-templates/:id.
+// Pointer fields make each mutation optional (a nil field is left unchanged).
+type UpdateEmailTemplateRequest struct {
+	Name       *string        `json:"name" binding:"omitempty,min=1,max=200"`
+	Subject    *string        `json:"subject" binding:"omitempty,max=500"`
+	BodyHTML   *string        `json:"body_html"`
+	BodyJSON   datatypes.JSON `json:"body_json"`
+	ObjectSlug *string        `json:"object_slug" binding:"omitempty,max=100"`
+}
+
+// EmailTemplateResponse is the API shape for a single template.
+type EmailTemplateResponse struct {
+	ID         uuid.UUID      `json:"id"`
+	OrgID      uuid.UUID      `json:"org_id"`
+	Name       string         `json:"name"`
+	Subject    string         `json:"subject"`
+	BodyHTML   string         `json:"body_html"`
+	BodyJSON   datatypes.JSON `json:"body_json,omitempty"`
+	ObjectSlug string         `json:"object_slug"`
+	CreatedBy  uuid.UUID      `json:"created_by"`
+	UpdatedBy  uuid.UUID      `json:"updated_by"`
+	CreatedAt  string         `json:"created_at"`
+	UpdatedAt  string         `json:"updated_at"`
+}
+
+// EmailTemplateListResponse is the API shape for GET /api/workflows/email-templates.
+type EmailTemplateListResponse struct {
+	Templates []EmailTemplateResponse `json:"templates"`
+	Total     int                     `json:"total"`
+}
+
+// TestSendEmailTemplateResponse confirms a test-send and echoes the recipient.
+type TestSendEmailTemplateResponse struct {
+	Status string `json:"status"`
+	To     string `json:"to"`
+}
+
+// ToEmailTemplateResponse converts a model to its response DTO.
+func ToEmailTemplateResponse(t *EmailTemplate) EmailTemplateResponse {
+	return EmailTemplateResponse{
+		ID:         t.ID,
+		OrgID:      t.OrgID,
+		Name:       t.Name,
+		Subject:    t.Subject,
+		BodyHTML:   t.BodyHTML,
+		BodyJSON:   t.BodyJSON,
+		ObjectSlug: t.ObjectSlug,
+		CreatedBy:  t.CreatedBy,
+		UpdatedBy:  t.UpdatedBy,
+		CreatedAt:  t.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		UpdatedAt:  t.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+	}
+}
+
 // --- Conversion helpers ---
 
 // ToWorkflowResponse converts a Workflow model to a response DTO.

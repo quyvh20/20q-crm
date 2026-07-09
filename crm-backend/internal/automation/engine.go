@@ -88,11 +88,26 @@ func WithWorkers(n int) EngineOption {
 	}
 }
 
-// WithEmailExecutor registers an email executor.
+// WithEmailExecutor registers an email executor. e.db is already set (NewEngine
+// assigns it before applying options) so the executor can load library email
+// templates for the send_email template_id path (A5).
 func WithEmailExecutor(apiKey, fromEmail string) EngineOption {
 	return func(e *Engine) {
-		e.executors[ActionSendEmail] = NewEmailExecutor(apiKey, fromEmail)
+		e.executors[ActionSendEmail] = NewEmailExecutor(e.db, apiKey, fromEmail)
 	}
+}
+
+// SendTestEmail sends a one-off email through the registered email executor,
+// bypassing a workflow run. Used by the email-template test-send endpoint (A5):
+// the caller renders subject/body against a sample record, then delivers it.
+// Returns an error when no email executor is configured.
+func (e *Engine) SendTestEmail(ctx context.Context, to, subject, bodyHTML string) error {
+	ex, ok := e.executors[ActionSendEmail].(*EmailExecutor)
+	if !ok || ex == nil {
+		return fmt.Errorf("email executor is not configured")
+	}
+	_, err := ex.sendEmail(ctx, "test-send", to, subject, bodyHTML, "", nil)
+	return err
 }
 
 // WithAuthorizer wires the OLS/FLS + audit chokepoint (PermissionUseCase) so the

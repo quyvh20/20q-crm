@@ -23,6 +23,14 @@ vi.mock('../../../api', async () => {
   };
 });
 
+// EmailParams (the send_email form, A5) calls useEmailTemplates; stub it so the
+// panel renders without a QueryClientProvider — the template library isn't under
+// test here, only ConfigPanel's routing/delete/dry-run.
+vi.mock('../../../queries', async () => {
+  const actual = await vi.importActual<typeof import('../../../queries')>('../../../queries');
+  return { ...actual, useEmailTemplates: () => ({ data: { templates: [], total: 0 }, isLoading: false }) };
+});
+
 const MOCK_SCHEMA: WorkflowSchema = {
   entities: [
     {

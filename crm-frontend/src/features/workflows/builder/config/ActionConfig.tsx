@@ -3,6 +3,7 @@ import { User, Target, Phone, Users, FileText, Mail, Plus, X } from 'lucide-reac
 import type { ActionSpec } from '../../types';
 import { useBuilderStore } from '../../store';
 import { TemplateInput } from './inputs';
+import { useEmailTemplates } from '../../queries';
 import { FieldPicker, type FieldMeta } from './FieldPicker';
 import { SmartValueInput } from './SmartValueInput';
 import type { SchemaField, WorkflowSchema, SchemaEntity } from '../../api';
@@ -53,23 +54,64 @@ interface ParamProps {
   setParam: (key: string, value: unknown) => void;
 }
 
-const EmailParams: React.FC<ParamProps> = ({ action, setParam }) => (
-  <div className="space-y-3">
-    <TemplateInput label="To" value={String(action.params.to || '')} onChange={(v) => setParam('to', v)} placeholder="Click {x} to insert contact email" fieldFilter="email" />
-    <TemplateInput label="CC" value={String(action.params.cc || '')} onChange={(v) => setParam('cc', v)} placeholder="Separate multiple addresses with commas" fieldFilter="email" />
-    <TemplateInput label="From Name" value={String(action.params.from_name || '')} onChange={(v) => setParam('from_name', v)} placeholder="Your Company" />
-    <TemplateInput label="Subject" value={String(action.params.subject || '')} onChange={(v) => setParam('subject', v)} placeholder="Click {x} to insert variables" />
-    <TemplateInput
-      label="Body HTML"
-      value={String(action.params.body_html || '')}
-      onChange={(v) => setParam('body_html', v)}
-      placeholder="Write your email body — click {x} to insert variables"
-      multiline
-      rows={6}
-      mono
-    />
-  </div>
-);
+const EmailParams: React.FC<ParamProps> = ({ action, setParam }) => {
+  // A5: an optional library template supplies subject/body. Inline fields still
+  // work and override the template per-action (matching the executor).
+  const { data: tmplData } = useEmailTemplates();
+  const templates = tmplData?.templates ?? [];
+  const templateId = String(action.params.template_id || '');
+  const usingTemplate = templateId !== '';
+  const templateMissing = usingTemplate && !templates.some((t) => t.id === templateId);
+
+  return (
+    <div className="space-y-3">
+      {/* Template picker */}
+      <div>
+        <div className="mb-1 flex items-center justify-between">
+          <label className="block text-sm text-muted-foreground">Template</label>
+          <a
+            href="/workflows/email-templates"
+            target="_blank"
+            rel="noreferrer"
+            className="text-xs text-primary hover:underline"
+          >
+            Manage templates
+          </a>
+        </div>
+        <select
+          value={templateId}
+          onChange={(e) => setParam('template_id', e.target.value)}
+          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+        >
+          <option value="">Write inline</option>
+          {templateMissing && <option value={templateId}>(template not found)</option>}
+          {templates.map((t) => (
+            <option key={t.id} value={t.id}>{t.name}</option>
+          ))}
+        </select>
+        {usingTemplate && (
+          <p className="mt-1 text-xs text-muted-foreground">
+            Subject &amp; body come from this template. Fill the fields below only to override them for this action.
+          </p>
+        )}
+      </div>
+
+      <TemplateInput label="To" value={String(action.params.to || '')} onChange={(v) => setParam('to', v)} placeholder="Click {x} to insert contact email" fieldFilter="email" />
+      <TemplateInput label="CC" value={String(action.params.cc || '')} onChange={(v) => setParam('cc', v)} placeholder="Separate multiple addresses with commas" fieldFilter="email" />
+      <TemplateInput label="From Name" value={String(action.params.from_name || '')} onChange={(v) => setParam('from_name', v)} placeholder="Your Company" />
+      <TemplateInput label={usingTemplate ? 'Subject (override)' : 'Subject'} value={String(action.params.subject || '')} onChange={(v) => setParam('subject', v)} placeholder={usingTemplate ? 'Leave blank to use the template subject' : 'Click {x} to insert variables'} />
+      <TemplateInput
+        label={usingTemplate ? 'Body HTML (override)' : 'Body HTML'}
+        value={String(action.params.body_html || '')}
+        onChange={(v) => setParam('body_html', v)}
+        placeholder={usingTemplate ? 'Leave blank to use the template body' : 'Write your email body — click {x} to insert variables'}
+        multiline
+        rows={6}
+        mono
+      />
+    </div>
+  );
+};
 
 // --- Log Activity params ---
 

@@ -179,6 +179,20 @@ export const WorkflowList: React.FC = () => {
         </button>
       </div>
 
+      {/* Tab nav (A5): switch to the email-templates library. Dark-styled to match
+          this legacy list page; the templates pages render a token-styled variant. */}
+      <div className="mb-6 flex items-center gap-5 border-b border-gray-700">
+        <span className="inline-flex items-center gap-1.5 border-b-2 border-indigo-500 px-1 pb-2.5 text-sm font-medium text-white">
+          Workflows
+        </span>
+        <button
+          onClick={() => navigate('/workflows/email-templates')}
+          className="inline-flex items-center gap-1.5 border-b-2 border-transparent px-1 pb-2.5 text-sm font-medium text-gray-400 transition-colors hover:text-white"
+        >
+          Email Templates
+        </button>
+      </div>
+
       {/* Search */}
       <div className="relative mb-4">
         <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm pointer-events-none">🔍</span>

@@ -234,6 +234,85 @@ export async function regenerateWebhookSecret(): Promise<WebhookSecretInfo> {
   return json.data as WebhookSecretInfo;
 }
 
+// --- Email templates (A5) ---
+
+/** A reusable, org-scoped email template. body_json is the TipTap document kept
+ *  for lossless re-editing; body_html is the canonical send source. */
+export interface EmailTemplate {
+  id: string;
+  org_id: string;
+  name: string;
+  subject: string;
+  body_html: string;
+  /** TipTap ProseMirror doc; opaque to callers other than the editor. */
+  body_json?: unknown;
+  /** Optional merge scope (e.g. "contact" / "deal"); "" = unscoped. */
+  object_slug: string;
+  created_by: string;
+  updated_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EmailTemplateListResponse {
+  templates: EmailTemplate[];
+  total: number;
+}
+
+/** Create/update payload. Omitted fields are left unchanged on update. */
+export interface SaveEmailTemplateInput {
+  name?: string;
+  subject?: string;
+  body_html?: string;
+  body_json?: unknown;
+  object_slug?: string;
+}
+
+export async function getEmailTemplates(): Promise<EmailTemplateListResponse> {
+  const res = await apiFetch('/api/workflows/email-templates');
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch email templates');
+  return json.data as EmailTemplateListResponse;
+}
+
+export async function getEmailTemplate(id: string): Promise<EmailTemplate> {
+  const res = await apiFetch(`/api/workflows/email-templates/${id}`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch email template');
+  return json.data as EmailTemplate;
+}
+
+export async function createEmailTemplate(data: SaveEmailTemplateInput): Promise<EmailTemplate> {
+  const res = await apiFetch('/api/workflows/email-templates', { method: 'POST', body: JSON.stringify(data) });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error?.message || 'Failed to create email template');
+  return json.data as EmailTemplate;
+}
+
+export async function updateEmailTemplate(id: string, data: SaveEmailTemplateInput): Promise<EmailTemplate> {
+  const res = await apiFetch(`/api/workflows/email-templates/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error?.message || 'Failed to update email template');
+  return json.data as EmailTemplate;
+}
+
+export async function deleteEmailTemplate(id: string): Promise<void> {
+  const res = await apiFetch(`/api/workflows/email-templates/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(json.error?.message || 'Failed to delete email template');
+  }
+}
+
+/** POST /:id/test-send — renders the template against a sample record and emails
+ *  it to the caller. Returns the address it was sent to. */
+export async function testSendEmailTemplate(id: string): Promise<{ status: string; to: string }> {
+  const res = await apiFetch(`/api/workflows/email-templates/${id}/test-send`, { method: 'POST' });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error?.message || 'Failed to send test email');
+  return json.data as { status: string; to: string };
+}
+
 // --- Schema (for builder field pickers) ---
 
 export interface SchemaField {

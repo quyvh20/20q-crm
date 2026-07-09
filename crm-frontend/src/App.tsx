@@ -26,6 +26,8 @@ import { WorkflowBuilder } from './features/workflows/WorkflowBuilder';
 import { NextBuilder } from './features/workflows/builder/NextBuilder';
 import { BuilderDemo } from './features/workflows/builder/__demo__/BuilderDemo';
 import { RunHistory } from './features/workflows/RunHistory';
+import { EmailTemplatesPage } from './features/workflows/EmailTemplatesPage';
+import { EmailTemplateEditor } from './features/workflows/EmailTemplateEditor';
 import AIPage from './pages/AIPage';
 import ReportsListPage from './features/reports/ReportsListPage';
 import ReportBuilderPage from './features/reports/ReportBuilderPage';
@@ -188,6 +190,23 @@ function App() {
             <Route path="/workflows" element={
               <ProtectedRoute>
                 <AppLayout><WorkflowList /></AppLayout>
+              </ProtectedRoute>
+            } />
+            {/* A5: email templates library. Static segments outrank "/workflows/:id"
+                in React Router v6 ranking, so these resolve before the builder. */}
+            <Route path="/workflows/email-templates" element={
+              <ProtectedRoute>
+                <AppLayout><EmailTemplatesPage /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/workflows/email-templates/new" element={
+              <ProtectedRoute>
+                <AppLayout><EmailTemplateEditor /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/workflows/email-templates/:id" element={
+              <ProtectedRoute>
+                <AppLayout><EmailTemplateEditor /></AppLayout>
               </ProtectedRoute>
             } />
             {/* A3.6: the new React Flow builder is now the default at /workflows/:id;

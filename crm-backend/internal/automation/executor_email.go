@@ -8,19 +8,39 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
+
+// resendBaseURL is the default Resend API base. It is a struct field (not a const)
+// so tests can point the executor at an httptest server.
+const resendBaseURL = "https://api.resend.com"
 
 // EmailExecutor sends emails via the Resend API.
 type EmailExecutor struct {
-	apiKey  string
+	apiKey    string
 	fromEmail string
+	// baseURL overrides the Resend host (tests point this at an httptest server).
+	// Empty falls back to resendBaseURL.
+	baseURL string
+	// templates loads library email templates for the template_id path (A5). nil
+	// disables template_id (a template_id then fails permanently with a clear error).
+	templates *EmailTemplateRepository
 }
 
-// NewEmailExecutor creates a new email executor.
-func NewEmailExecutor(apiKey, fromEmail string) *EmailExecutor {
+// NewEmailExecutor creates a new email executor. db is used to load library
+// templates for the send_email template_id path (A5); pass nil to disable it.
+func NewEmailExecutor(db *gorm.DB, apiKey, fromEmail string) *EmailExecutor {
+	var templates *EmailTemplateRepository
+	if db != nil {
+		templates = NewEmailTemplateRepository(db)
+	}
 	return &EmailExecutor{
-		apiKey:  apiKey,
+		apiKey:    apiKey,
 		fromEmail: fromEmail,
+		baseURL:   resendBaseURL,
+		templates: templates,
 	}
 }
 
@@ -32,7 +52,10 @@ type resendEmailPayload struct {
 	Cc      []string `json:"cc,omitempty"`
 }
 
-// Execute sends an email using Resend.
+// Execute sends an email using Resend. Subject/body come from inline params or,
+// when template_id is set (A5), from a library template — inline params override
+// the template when non-empty. All strings are interpolated with the run's
+// EvalContext via the shared InterpolateTemplate primitive.
 func (e *EmailExecutor) Execute(ctx context.Context, run *WorkflowRun, action ActionSpec, evalCtx EvalContext) (any, error) {
 	to := getStringParam(action.Params, "to", evalCtx)
 	if to == "" {
@@ -48,6 +71,35 @@ func (e *EmailExecutor) Execute(ctx context.Context, run *WorkflowRun, action Ac
 	bodyHTML := getStringParam(action.Params, "body_html", evalCtx)
 	fromName := getStringParam(action.Params, "from_name", evalCtx)
 	cc := getStringSliceParam(action.Params, "cc", evalCtx)
+
+	// A5: a library template supplies subject/body when template_id is set. Inline
+	// subject/body_html still win when non-empty (spec: "inline subject/body keeps
+	// working"). template_id itself is an id, not a template string — read it raw.
+	if templateID, _ := action.Params["template_id"].(string); templateID != "" {
+		if e.templates == nil {
+			return nil, fmt.Errorf("send_email: template_id set but no template store is configured")
+		}
+		id, err := uuid.Parse(templateID)
+		if err != nil {
+			// Malformed id can never resolve — permanent failure.
+			return nil, fmt.Errorf("send_email: invalid template_id '%s': %w", templateID, err)
+		}
+		tmpl, err := e.templates.Get(ctx, run.OrgID, id)
+		if err != nil {
+			// DB error is transient — let the engine retry.
+			return nil, NewRetryableError(fmt.Errorf("send_email: load template: %w", err))
+		}
+		if tmpl == nil {
+			// Not found or soft-deleted: a plain error = permanent failure (no retry).
+			return nil, fmt.Errorf("send_email: email template %s not found or has been deleted", templateID)
+		}
+		if subject == "" {
+			subject = InterpolateTemplate(tmpl.Subject, evalCtx)
+		}
+		if bodyHTML == "" {
+			bodyHTML = InterpolateTemplate(tmpl.BodyHTML, evalCtx)
+		}
+	}
 
 	// Runtime validation: filter invalid resolved CC addresses
 	if len(cc) > 0 {
@@ -69,6 +121,13 @@ func (e *EmailExecutor) Execute(ctx context.Context, run *WorkflowRun, action Ac
 		}
 	}
 
+	return e.sendEmail(ctx, run.ID.String(), to, subject, bodyHTML, fromName, cc)
+}
+
+// sendEmail performs the actual Resend POST for already-resolved fields. It is
+// shared by the workflow send_email action and the email-template test-send
+// (Engine.SendTestEmail). logID labels the log lines (a run id, or "test-send").
+func (e *EmailExecutor) sendEmail(ctx context.Context, logID, to, subject, bodyHTML, fromName string, cc []string) (any, error) {
 	from := e.fromEmail
 	if fromName != "" {
 		from = fmt.Sprintf("%s <%s>", fromName, e.fromEmail)
@@ -88,14 +147,18 @@ func (e *EmailExecutor) Execute(ctx context.Context, run *WorkflowRun, action Ac
 	}
 
 	slog.Info("automation: sending email",
-		"workflow_run_id", run.ID.String(),
+		"log_id", logID,
 		"to", payload.To,
 		"cc", payload.Cc,
 		"subject", payload.Subject,
 		"from", payload.From,
 	)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.resend.com/emails", bytes.NewReader(body))
+	base := e.baseURL
+	if base == "" {
+		base = resendBaseURL
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/emails", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("send_email: request creation error: %w", err)
 	}
@@ -121,14 +184,14 @@ func (e *EmailExecutor) Execute(ctx context.Context, run *WorkflowRun, action Ac
 	}
 
 	slog.Info("automation: email sent",
-		"workflow_run_id", run.ID.String(),
+		"log_id", logID,
 		"status", resp.StatusCode,
 		"resend_response", respBody,
 	)
 
 	return map[string]any{
-		"status":     "sent",
+		"status":      "sent",
 		"status_code": resp.StatusCode,
-		"response":   respBody,
+		"response":    respBody,
 	}, nil
 }

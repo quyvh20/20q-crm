@@ -88,6 +88,16 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerF
 		workflows.DELETE("/:id", requireCap(domain.CapWorkflowsManage), h.DeleteWorkflow)
 		workflows.POST("/:id/toggle", requireCap(domain.CapWorkflowsManage), h.ToggleWorkflow)
 		workflows.POST("/:id/test-run", requireCap(domain.CapWorkflowsManage), h.TestRun)
+
+		// Email templates library (A5). All manage-gated. Registered before the
+		// "/:id" param routes' subtree is unaffected — gin allows the static
+		// "email-templates" segment alongside "/:id" (same as "/schema", "/runs").
+		workflows.GET("/email-templates", requireCap(domain.CapWorkflowsManage), h.ListEmailTemplates)
+		workflows.POST("/email-templates", requireCap(domain.CapWorkflowsManage), h.CreateEmailTemplate)
+		workflows.GET("/email-templates/:id", requireCap(domain.CapWorkflowsManage), h.GetEmailTemplate)
+		workflows.PUT("/email-templates/:id", requireCap(domain.CapWorkflowsManage), h.UpdateEmailTemplate)
+		workflows.DELETE("/email-templates/:id", requireCap(domain.CapWorkflowsManage), h.DeleteEmailTemplate)
+		workflows.POST("/email-templates/:id/test-send", requireCap(domain.CapWorkflowsManage), h.TestSendEmailTemplate)
 		// Run Now intentionally has NO route-level capability guard: authorization is
 		// enforced inside h.RunNow (a caller with the workflows.run_any capability may
 		// run any workflow; any other caller may run only a workflow they created — the

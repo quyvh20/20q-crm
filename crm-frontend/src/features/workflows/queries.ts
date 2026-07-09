@@ -15,6 +15,15 @@ import {
   deleteWorkflow,
   toggleWorkflow,
   testRunWorkflow,
+  getEmailTemplates,
+  getEmailTemplate,
+  createEmailTemplate,
+  updateEmailTemplate,
+  deleteEmailTemplate,
+  testSendEmailTemplate,
+  type EmailTemplate,
+  type EmailTemplateListResponse,
+  type SaveEmailTemplateInput,
 } from './api';
 import type { Workflow, WorkflowListResponse, SaveWorkflowPayload } from './types';
 
@@ -114,6 +123,71 @@ export function useTestRun() {
     mutationFn: (vars: { id: string; body: { contact_id?: string; deal_id?: string; context?: Record<string, unknown> } }) =>
       testRunWorkflow(vars.id, vars.body),
   });
+}
+
+// ── Email templates (A5) ──────────────────────────────────────────────────────
+
+export const emailTemplateKeys = {
+  all: ['emailTemplates'] as const,
+  lists: () => [...emailTemplateKeys.all, 'list'] as const,
+  details: () => [...emailTemplateKeys.all, 'detail'] as const,
+  detail: (id: string) => [...emailTemplateKeys.details(), id] as const,
+};
+
+/** The org's email templates library. */
+export function useEmailTemplates() {
+  return useQuery<EmailTemplateListResponse>({
+    queryKey: emailTemplateKeys.lists(),
+    queryFn: getEmailTemplates,
+    refetchOnMount: 'always',
+  });
+}
+
+/** A single email template by id (disabled for the "new"/unsaved case). */
+export function useEmailTemplate(id: string | undefined) {
+  return useQuery<EmailTemplate>({
+    queryKey: emailTemplateKeys.detail(id ?? ''),
+    queryFn: () => getEmailTemplate(id!),
+    enabled: Boolean(id) && id !== 'new',
+  });
+}
+
+/** Create (id null) or update a template; primes the detail cache + invalidates the list. */
+export function useSaveEmailTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { id: string | null; input: SaveEmailTemplateInput }) =>
+      vars.id ? updateEmailTemplate(vars.id, vars.input) : createEmailTemplate(vars.input),
+    onSuccess: (tmpl) => {
+      qc.setQueryData(emailTemplateKeys.detail(tmpl.id), tmpl);
+      qc.invalidateQueries({ queryKey: emailTemplateKeys.lists() });
+    },
+  });
+}
+
+/** Delete a template (optimistic row removal); rolls back on error. */
+export function useDeleteEmailTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => deleteEmailTemplate(id),
+    onMutate: async (id) => {
+      await qc.cancelQueries({ queryKey: emailTemplateKeys.lists() });
+      const prev = qc.getQueryData<EmailTemplateListResponse>(emailTemplateKeys.lists());
+      qc.setQueryData<EmailTemplateListResponse>(emailTemplateKeys.lists(), (old) =>
+        old ? { templates: old.templates.filter((t) => t.id !== id), total: Math.max(0, old.total - 1) } : old,
+      );
+      return { prev };
+    },
+    onError: (_e, _id, ctx) => {
+      if (ctx?.prev) qc.setQueryData(emailTemplateKeys.lists(), ctx.prev);
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: emailTemplateKeys.lists() }),
+  });
+}
+
+/** Send a test render of a template to the caller. No cache interaction. */
+export function useTestSendEmailTemplate() {
+  return useMutation({ mutationFn: (id: string) => testSendEmailTemplate(id) });
 }
 
 /** Delete with optimistic row removal across all cached list variants. */

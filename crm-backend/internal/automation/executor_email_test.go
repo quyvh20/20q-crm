@@ -34,7 +34,7 @@ func TestEmailAction_CCFieldRoundTrip_ActualRun(t *testing.T) {
 	defer mockResend.Close()
 
 	// Patch the executor to hit our mock server instead of Resend
-	exec := &testableEmailExecutor{
+	exec := &EmailExecutor{
 		apiKey:    "test-api-key",
 		fromEmail: "noreply@20q.io",
 		baseURL:   mockResend.URL,
@@ -98,7 +98,7 @@ func TestEmailAction_NoCCField(t *testing.T) {
 	}))
 	defer mockResend.Close()
 
-	exec := &testableEmailExecutor{
+	exec := &EmailExecutor{
 		apiKey:    "test-key",
 		fromEmail: "noreply@20q.io",
 		baseURL:   mockResend.URL,
@@ -136,7 +136,7 @@ func TestEmailAction_EmptyCCString(t *testing.T) {
 	}))
 	defer mockResend.Close()
 
-	exec := &testableEmailExecutor{
+	exec := &EmailExecutor{
 		apiKey:    "test-key",
 		fromEmail: "noreply@20q.io",
 		baseURL:   mockResend.URL,
@@ -174,7 +174,7 @@ func TestEmailAction_CCTemplateOnly(t *testing.T) {
 	}))
 	defer mockResend.Close()
 
-	exec := &testableEmailExecutor{
+	exec := &EmailExecutor{
 		apiKey:    "test-key",
 		fromEmail: "noreply@20q.io",
 		baseURL:   mockResend.URL,
@@ -216,7 +216,7 @@ func TestPitfall_TemplateResolvesToGarbage(t *testing.T) {
 	}))
 	defer mockResend.Close()
 
-	exec := &testableEmailExecutor{
+	exec := &EmailExecutor{
 		apiKey:    "test-key",
 		fromEmail: "noreply@20q.io",
 		baseURL:   mockResend.URL,
@@ -259,7 +259,7 @@ func TestPitfall_CCTemplateResolvesToGarbage(t *testing.T) {
 	}))
 	defer mockResend.Close()
 
-	exec := &testableEmailExecutor{
+	exec := &EmailExecutor{
 		apiKey:    "test-key",
 		fromEmail: "noreply@20q.io",
 		baseURL:   mockResend.URL,
@@ -305,7 +305,7 @@ func TestPitfall_AllCCInvalid(t *testing.T) {
 	}))
 	defer mockResend.Close()
 
-	exec := &testableEmailExecutor{
+	exec := &EmailExecutor{
 		apiKey:    "test-key",
 		fromEmail: "noreply@20q.io",
 		baseURL:   mockResend.URL,
@@ -351,7 +351,7 @@ func TestPitfall_EmptyCCString_OmittedFromJSON(t *testing.T) {
 	}))
 	defer mockResend.Close()
 
-	exec := &testableEmailExecutor{
+	exec := &EmailExecutor{
 		apiKey:    "test-key",
 		fromEmail: "noreply@20q.io",
 		baseURL:   mockResend.URL,
@@ -392,7 +392,7 @@ func TestPitfall_WireFormat_CommaStringSplitCorrectly(t *testing.T) {
 	}))
 	defer mockResend.Close()
 
-	exec := &testableEmailExecutor{
+	exec := &EmailExecutor{
 		apiKey:    "test-key",
 		fromEmail: "noreply@20q.io",
 		baseURL:   mockResend.URL,
