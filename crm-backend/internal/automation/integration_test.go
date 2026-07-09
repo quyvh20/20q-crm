@@ -820,7 +820,7 @@ func TestIntegration_FullPipeline_VIPContact(t *testing.T) {
 
 	// --- Set up executors ---
 	emailExec := &recordingEmailExecutor{}
-	taskExec := NewTaskExecutor(db) // real executor, writes to tasks table
+	taskExec := NewTaskExecutor(db, nil) // real executor, writes to tasks table
 	delayExec := NewDelayExecutor() // real executor, actually waits
 
 	engine := makeEngine(db, map[string]ActionExecutor{

@@ -29,9 +29,14 @@ type UpdateWorkflowRequest struct {
 	Steps       datatypes.JSON  `json:"steps"`
 }
 
-// TestRunRequest is the request body for a dry-run.
+// TestRunRequest is the request body for a dry-run (A3.5). Prefer a sample entity
+// (contact_id / deal_id) — the server loads it and builds a realistic eval context
+// exactly like Run Now — so conditions and templates resolve against real data.
+// Context is a raw override for tests/advanced callers when no entity is supplied.
 type TestRunRequest struct {
-	Context map[string]any `json:"context" binding:"required"`
+	ContactID string         `json:"contact_id"`
+	DealID    string         `json:"deal_id"`
+	Context   map[string]any `json:"context"`
 }
 
 // RunNowRequest is the request body for POST /api/workflows/:id/run.
@@ -85,6 +90,7 @@ type WorkflowRunResponse struct {
 	CompletedActions datatypes.JSON `json:"completed_actions"`
 	LastError        string         `json:"last_error,omitempty"`
 	RetryCount       int            `json:"retry_count"`
+	WakeAt           *string        `json:"wake_at,omitempty"`
 	StartedAt        *string        `json:"started_at,omitempty"`
 	FinishedAt       *string        `json:"finished_at,omitempty"`
 	CreatedAt        string         `json:"created_at"`
@@ -112,17 +118,30 @@ type ActionLogResponse struct {
 	CreatedAt  string         `json:"created_at"`
 }
 
-// TestRunResponse is the response for a dry-run.
+// TestRunResponse is the response for a dry-run (A3.5): the top-level condition
+// gate plus one entry per step in the tree (pre-order), keyed by step id so the
+// builder can overlay run/skip status and resolved params directly onto canvas nodes.
 type TestRunResponse struct {
-	ConditionResult bool             `json:"condition_result"`
-	Actions         []TestRunAction  `json:"actions"`
+	ConditionResult bool          `json:"condition_result"`
+	Steps           []TestRunStep `json:"steps"`
 }
 
-// TestRunAction shows resolved params for each action (no side effects).
-type TestRunAction struct {
-	ID             string         `json:"id"`
-	Type           string         `json:"type"`
-	ResolvedParams map[string]any `json:"resolved_params"`
+// TestRunStep is the dry-run outcome for a single step (no side effects).
+type TestRunStep struct {
+	StepID string `json:"step_id"`
+	Type   string `json:"type"` // "action" | "condition" | "delay"
+	// Status is "run" (on the taken path) or "skip" (untaken branch, or the whole
+	// workflow gated off by failing top-level conditions).
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"` // why a step was skipped
+	// Action-only: the resolved (interpolated) params it would run with.
+	ActionType     string         `json:"action_type,omitempty"`
+	ResolvedParams map[string]any `json:"resolved_params,omitempty"`
+	// Condition-only: the evaluated result and which branch ("yes"/"no") is taken.
+	ConditionResult *bool  `json:"condition_result,omitempty"`
+	Branch          string `json:"branch,omitempty"`
+	// Delay-only: the wait duration.
+	DelaySec int `json:"delay_sec,omitempty"`
 }
 
 // RunNowResponse is the success body (HTTP 201) for POST /api/workflows/:id/run.
@@ -247,6 +266,10 @@ func ToRunResponse(run *WorkflowRun) WorkflowRunResponse {
 		LastError:        run.LastError,
 		RetryCount:       run.RetryCount,
 		CreatedAt:        run.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	}
+	if run.WakeAt != nil {
+		s := run.WakeAt.Format("2006-01-02T15:04:05Z")
+		resp.WakeAt = &s
 	}
 	if run.StartedAt != nil {
 		s := run.StartedAt.Format("2006-01-02T15:04:05Z")

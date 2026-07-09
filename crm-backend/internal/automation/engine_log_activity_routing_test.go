@@ -32,7 +32,7 @@ func TestLogActivityRouting_ExecutorRegistered(t *testing.T) {
 
 	// Replicate the default-executor registration performed by Start().
 	if _, ok := engine.executors[ActionLogActivity]; !ok {
-		engine.executors[ActionLogActivity] = NewActivityExecutor(engine.db)
+		engine.executors[ActionLogActivity] = NewActivityExecutor(engine.db, nil)
 	}
 
 	registered, ok := engine.executors[ActionLogActivity]
@@ -61,7 +61,7 @@ func TestLogActivityRouting_DispatchRoutesToExecutor(t *testing.T) {
 		db:        nil,
 	}
 	if _, ok := engine.executors[ActionLogActivity]; !ok {
-		engine.executors[ActionLogActivity] = NewActivityExecutor(engine.db)
+		engine.executors[ActionLogActivity] = NewActivityExecutor(engine.db, nil)
 	}
 
 	run := &WorkflowRun{ID: uuid.New(), OrgID: uuid.New()}
@@ -101,7 +101,7 @@ func TestLogActivityRouting_UnknownTypeStillUnknown(t *testing.T) {
 		db:        nil,
 	}
 	if _, ok := engine.executors[ActionLogActivity]; !ok {
-		engine.executors[ActionLogActivity] = NewActivityExecutor(engine.db)
+		engine.executors[ActionLogActivity] = NewActivityExecutor(engine.db, nil)
 	}
 
 	run := &WorkflowRun{ID: uuid.New(), OrgID: uuid.New()}

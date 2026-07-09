@@ -80,11 +80,17 @@ export const RunHistory: React.FC = () => {
     }
   }, [silentRefresh]);
 
-  // Auto-poll every 5 s while any run is pending or running.
+  // Auto-poll every 5 s while any run is pending or running — or parked on a
+  // delay that resumes within the next 10 minutes (longer waits change nothing
+  // worth polling for; the visibility-return refresh covers them).
   // Pauses when the tab is hidden; resumes (with an immediate refresh) when visible.
   const ACTIVE_STATUSES = ['pending', 'running'];
   useEffect(() => {
-    const hasActive = runs.some((r) => ACTIVE_STATUSES.includes(r.status));
+    const wakesSoon = (r: WorkflowRun) =>
+      r.status === 'waiting' &&
+      !!r.wake_at &&
+      new Date(r.wake_at).getTime() - Date.now() < 10 * 60 * 1000;
+    const hasActive = runs.some((r) => ACTIVE_STATUSES.includes(r.status) || wakesSoon(r));
     if (!hasActive) return;
 
     let interval: ReturnType<typeof setInterval> | null = null;
@@ -178,26 +184,26 @@ export const RunHistory: React.FC = () => {
       <div className="flex items-center gap-4 mb-8">
         <button
           onClick={() => navigate('/workflows')}
-          className="text-gray-500 hover:text-white transition-colors"
+          className="text-muted-foreground hover:text-foreground transition-colors"
         >
           ← Back
         </button>
         <div>
-          <h1 className="text-2xl font-bold text-white">
+          <h1 className="text-2xl font-bold text-foreground">
             {workflow?.name || 'Run History'}
           </h1>
-          <p className="text-sm text-gray-400 mt-1">
+          <p className="text-sm text-muted-foreground mt-1">
             {total} run{total !== 1 ? 's' : ''} total
           </p>
         </div>
       </div>
 
       {retryError && (
-        <div className="mb-4 px-4 py-2.5 rounded-lg bg-red-500/10 border border-red-500/30 text-sm text-red-300 flex items-center justify-between">
+        <div className="mb-4 px-4 py-2.5 rounded-lg bg-destructive/10 border border-destructive/40 text-sm text-destructive flex items-center justify-between">
           <span>{retryError}</span>
           <button
             onClick={() => setRetryError(null)}
-            className="text-red-400 hover:text-red-200 ml-4"
+            className="text-destructive rounded hover:bg-destructive/20 ml-4 px-1"
             aria-label="Dismiss error"
           >
             ✕
@@ -207,10 +213,10 @@ export const RunHistory: React.FC = () => {
 
       {loading ? (
         <div className="flex justify-center py-16">
-          <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+          <div className="w-8 h-8 border-2 border-border border-t-primary rounded-full animate-spin" />
         </div>
       ) : runs.length === 0 ? (
-        <div className="text-center py-16 text-gray-500">
+        <div className="text-center py-16 text-muted-foreground">
           <p className="text-lg mb-2">No runs yet</p>
           <p className="text-sm">This workflow hasn't been triggered yet</p>
         </div>
@@ -221,9 +227,9 @@ export const RunHistory: React.FC = () => {
               <div
                 onClick={() => handleSelectRun(run.id)}
                 className={`
-                  bg-gray-800/60 border rounded-xl p-4 cursor-pointer transition-all
-                  ${selectedRunId === run.id ? 'border-indigo-500 bg-gray-800' : 'border-gray-700 hover:border-gray-600'}
-                  ${flashRunId === run.id ? 'ring-2 ring-indigo-400/70' : ''}
+                  bg-muted/40 border rounded-xl p-4 cursor-pointer transition-all
+                  ${selectedRunId === run.id ? 'border-primary bg-card' : 'border-border hover:border-ring'}
+                  ${flashRunId === run.id ? 'ring-2 ring-ring' : ''}
                 `}
               >
                 <div className="flex items-center gap-4">
@@ -241,30 +247,35 @@ export const RunHistory: React.FC = () => {
                   {/* Run info */}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-3">
-                      <span className="text-xs text-gray-500 font-mono">
+                      <span className="text-xs text-muted-foreground font-mono">
                         {run.id.slice(0, 8)}...
                       </span>
-                      <span className="text-xs text-gray-500">
+                      <span className="text-xs text-muted-foreground">
                         v{run.workflow_version}
                       </span>
                       {run.retry_count > 0 && (
-                        <span className="text-xs text-amber-400">
+                        <span className="text-xs text-amber-600 dark:text-amber-400">
                           {run.retry_count} retries
                         </span>
                       )}
                     </div>
                     {run.last_error && (
-                      <p className="text-xs text-red-400 mt-1 truncate">{run.last_error}</p>
+                      <p className="text-xs text-destructive mt-1 truncate">{run.last_error}</p>
                     )}
                   </div>
 
                   {/* Timing */}
                   <div className="text-right">
-                    <p className="text-xs text-gray-500">
+                    <p className="text-xs text-muted-foreground">
                       {new Date(run.created_at).toLocaleString()}
                     </p>
+                    {run.status === 'waiting' && run.wake_at && (
+                      <p className="text-xs text-amber-600 dark:text-amber-400">
+                        ⏳ resumes {formatRelativeTime(run.wake_at)}
+                      </p>
+                    )}
                     {run.finished_at && (
-                      <p className="text-xs text-gray-600">
+                      <p className="text-xs text-muted-foreground/70">
                         Duration: {formatDuration(run.started_at, run.finished_at)}
                       </p>
                     )}
@@ -279,7 +290,7 @@ export const RunHistory: React.FC = () => {
                         handleRetry(run.id);
                       }}
                       disabled={!canRetry || retryingRunId === run.id}
-                      className="px-2.5 py-1 rounded-lg text-xs font-medium bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30 hover:text-indigo-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="px-2.5 py-1 rounded-lg text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 hover:text-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       title={
                         canRetry
                           ? 'Re-queue this run — resumes from the step that failed, keeping completed steps'
@@ -290,7 +301,7 @@ export const RunHistory: React.FC = () => {
                     </button>
                   )}
 
-                  <span className="text-gray-600 text-sm">
+                  <span className="text-muted-foreground/70 text-sm">
                     {selectedRunId === run.id ? '▼' : '▶'}
                   </span>
                 </div>
@@ -306,36 +317,36 @@ export const RunHistory: React.FC = () => {
 
                   {/* Action logs */}
                   {loadingLogs ? (
-                    <div className="py-4 text-center text-gray-600 text-sm">Loading...</div>
+                    <div className="py-4 text-center text-muted-foreground/70 text-sm">Loading...</div>
                   ) : actionLogs.length === 0 ? (
-                    <div className="py-4 text-center text-gray-600 text-sm">No action logs</div>
+                    <div className="py-4 text-center text-muted-foreground/70 text-sm">No action logs</div>
                   ) : (
                     actionLogs.map((log) => {
                       const hasDetail = log.input || log.output || log.error;
                       return (
                         <details
                           key={log.id}
-                          className="bg-gray-800/40 border border-gray-700/50 rounded-lg overflow-hidden group/log"
+                          className="bg-muted/40 border border-border/60 rounded-lg overflow-hidden group/log"
                         >
-                          <summary className="flex items-center gap-3 p-3 cursor-pointer select-none hover:bg-gray-800/60 transition-colors list-none">
+                          <summary className="flex items-center gap-3 p-3 cursor-pointer select-none hover:bg-accent hover:text-accent-foreground transition-colors list-none">
                             <span
                               className="w-2 h-2 rounded-full flex-shrink-0"
                               style={{ backgroundColor: STATUS_COLORS[log.status] || '#666' }}
                             />
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2">
-                                <span className="text-xs font-medium text-white">
+                                <span className="text-xs font-medium text-foreground">
                                   Step {log.action_idx + 1}: {ACTION_LABELS[log.action_type as keyof typeof ACTION_LABELS] || log.action_type}
                                 </span>
-                                <span className="text-xs text-gray-500">
+                                <span className="text-xs text-muted-foreground">
                                   {log.duration_ms}ms
                                 </span>
                                 {log.attempt_no > 1 && (
-                                  <span className="text-xs text-amber-400">attempt #{log.attempt_no}</span>
+                                  <span className="text-xs text-amber-600 dark:text-amber-400">attempt #{log.attempt_no}</span>
                                 )}
                               </div>
                               {log.error && (
-                                <p className="text-xs text-red-400 mt-0.5 truncate group-open/log:hidden">{log.error}</p>
+                                <p className="text-xs text-destructive mt-0.5 truncate group-open/log:hidden">{log.error}</p>
                               )}
                             </div>
                             <span
@@ -344,33 +355,50 @@ export const RunHistory: React.FC = () => {
                             >
                               {log.status}
                             </span>
+                            {/* Deep link (A3.6): jump to this step's node in the builder. Only
+                                steps-based runs carry a structural action_path; preventDefault
+                                stops the click from toggling the <details>. */}
+                            {log.action_path && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  navigate(`/workflows/${id}?node=${encodeURIComponent(log.action_path!)}`);
+                                }}
+                                title="Open this step in the builder"
+                                className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+                              >
+                                Open in builder
+                              </button>
+                            )}
                             {hasDetail && (
-                              <span className="text-gray-600 text-xs transition-transform group-open/log:rotate-90">▶</span>
+                              <span className="text-muted-foreground/70 text-xs transition-transform group-open/log:rotate-90">▶</span>
                             )}
                           </summary>
 
                           {hasDetail && (
-                            <div className="px-3 pb-3 space-y-2 border-t border-gray-700/30 pt-2">
+                            <div className="px-3 pb-3 space-y-2 border-t border-border/60 pt-2">
                               {log.input && Object.keys(log.input).length > 0 && (
                                 <div>
-                                  <p className="text-xs text-gray-500 mb-1 font-medium">Input (resolved params)</p>
-                                  <pre className="text-xs font-mono leading-relaxed p-2 bg-gray-900/60 rounded-lg border border-gray-700/30 overflow-x-auto max-h-40 overflow-y-auto">
+                                  <p className="text-xs text-muted-foreground mb-1 font-medium">Input (resolved params)</p>
+                                  <pre className="text-xs font-mono leading-relaxed p-2 bg-muted/40 rounded-lg border border-border/60 overflow-x-auto max-h-40 overflow-y-auto">
                                     {syntaxHighlightJSON(JSON.stringify(redactValue(log.input), null, 2))}
                                   </pre>
                                 </div>
                               )}
                               {log.output && Object.keys(log.output).length > 0 && (
                                 <div>
-                                  <p className="text-xs text-gray-500 mb-1 font-medium">Output</p>
-                                  <pre className="text-xs font-mono leading-relaxed p-2 bg-gray-900/60 rounded-lg border border-gray-700/30 overflow-x-auto max-h-40 overflow-y-auto">
+                                  <p className="text-xs text-muted-foreground mb-1 font-medium">Output</p>
+                                  <pre className="text-xs font-mono leading-relaxed p-2 bg-muted/40 rounded-lg border border-border/60 overflow-x-auto max-h-40 overflow-y-auto">
                                     {syntaxHighlightJSON(JSON.stringify(redactValue(log.output), null, 2))}
                                   </pre>
                                 </div>
                               )}
                               {log.error && (
                                 <div>
-                                  <p className="text-xs text-gray-500 mb-1 font-medium">Error</p>
-                                  <pre className="text-xs font-mono text-red-400 p-2 bg-red-500/5 rounded-lg border border-red-500/20 whitespace-pre-wrap">
+                                  <p className="text-xs text-muted-foreground mb-1 font-medium">Error</p>
+                                  <pre className="text-xs font-mono text-red-700 dark:text-red-300 p-2 bg-destructive/10 rounded-lg border border-destructive/30 whitespace-pre-wrap">
                                     {log.error}
                                   </pre>
                                 </div>
@@ -394,17 +422,17 @@ export const RunHistory: React.FC = () => {
           <button
             onClick={() => setPage((p) => Math.max(1, p - 1))}
             disabled={page <= 1}
-            className="px-3 py-1.5 rounded-lg text-sm bg-gray-800 text-gray-400 hover:text-white disabled:opacity-30"
+            className="px-3 py-1.5 rounded-lg text-sm bg-card text-muted-foreground hover:text-foreground disabled:opacity-30"
           >
             ←
           </button>
-          <span className="px-3 py-1.5 text-sm text-gray-500">
+          <span className="px-3 py-1.5 text-sm text-muted-foreground">
             Page {page} of {totalPages}
           </span>
           <button
             onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
             disabled={page >= totalPages}
-            className="px-3 py-1.5 rounded-lg text-sm bg-gray-800 text-gray-400 hover:text-white disabled:opacity-30"
+            className="px-3 py-1.5 rounded-lg text-sm bg-card text-muted-foreground hover:text-foreground disabled:opacity-30"
           >
             →
           </button>
@@ -422,6 +450,22 @@ function formatDuration(startStr?: string, endStr?: string): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
   return `${Math.round(ms / 60000)}min`;
+}
+
+// formatRelativeTime renders a future timestamp as "in 2m" / "in 3h 20m" /
+// "in 5d"; past-due wakes (sweeper about to pick the run up) show "any moment".
+function formatRelativeTime(iso: string): string {
+  const ms = new Date(iso).getTime() - Date.now();
+  if (ms <= 0) return 'any moment';
+  const min = Math.round(ms / 60000);
+  if (min < 1) return 'in <1m';
+  if (min < 60) return `in ${min}m`;
+  const hours = Math.floor(min / 60);
+  if (hours < 24) {
+    const rem = min % 60;
+    return rem > 0 ? `in ${hours}h ${rem}m` : `in ${hours}h`;
+  }
+  return `in ${Math.round(hours / 24)}d`;
 }
 
 // --- Trigger Context Accordion ---
@@ -481,18 +525,21 @@ function syntaxHighlightJSON(json: string): React.ReactNode[] {
     while ((tagMatch = tagRegex.exec(highlighted)) !== null) {
       if (tagMatch.index > lastIndex) {
         elements.push(
-          <span key={`t-${i}-${lastIndex}`} className="text-gray-400">
+          <span key={`t-${i}-${lastIndex}`} className="text-muted-foreground">
             {highlighted.slice(lastIndex, tagMatch.index)}
           </span>
         );
       }
       const tagType = tagMatch[1];
       const content = tagMatch[2];
+      // Theme-aware: the code block is a light token surface (bg-muted/40) in the
+      // app's light theme, so keys/strings/etc. need the darker -700 shade to stay
+      // readable; -400 is kept for a future dark theme.
       const colorClass =
-        tagType === 'k' ? 'text-indigo-400' :
-        tagType === 's' ? 'text-emerald-400' :
-        tagType === 'n' ? 'text-amber-400' :
-        'text-purple-400'; // bool/null
+        tagType === 'k' ? 'text-indigo-700 dark:text-indigo-400' :
+        tagType === 's' ? 'text-emerald-700 dark:text-emerald-400' :
+        tagType === 'n' ? 'text-amber-700 dark:text-amber-400' :
+        'text-purple-700 dark:text-purple-400'; // bool/null
       elements.push(
         <span key={`t-${i}-${tagMatch.index}`} className={colorClass}>
           {content}
@@ -503,7 +550,7 @@ function syntaxHighlightJSON(json: string): React.ReactNode[] {
 
     if (lastIndex < highlighted.length) {
       elements.push(
-        <span key={`t-${i}-end`} className="text-gray-400">
+        <span key={`t-${i}-end`} className="text-muted-foreground">
           {highlighted.slice(lastIndex)}
         </span>
       );
@@ -511,7 +558,7 @@ function syntaxHighlightJSON(json: string): React.ReactNode[] {
 
     parts.push(
       <React.Fragment key={`line-${i}`}>
-        {elements.length > 0 ? elements : <span className="text-gray-400">{line}</span>}
+        {elements.length > 0 ? elements : <span className="text-muted-foreground">{line}</span>}
         {i < lines.length - 1 ? '\n' : ''}
       </React.Fragment>
     );
@@ -536,19 +583,19 @@ const TriggerContextAccordion: React.FC<{ context: Record<string, unknown> }> = 
   };
 
   return (
-    <details className="bg-gray-800/40 border border-gray-700/50 rounded-lg overflow-hidden group/ctx">
-      <summary className="flex items-center gap-2 px-3 py-2.5 cursor-pointer select-none hover:bg-gray-800/60 transition-colors list-none">
-        <span className="text-gray-500 text-xs transition-transform group-open/ctx:rotate-90">▶</span>
-        <span className="text-xs font-medium text-gray-300">Trigger Context</span>
-        <span className="text-xs text-gray-600 ml-1">
+    <details className="bg-muted/40 border border-border/60 rounded-lg overflow-hidden group/ctx">
+      <summary className="flex items-center gap-2 px-3 py-2.5 cursor-pointer select-none hover:bg-accent hover:text-accent-foreground transition-colors list-none">
+        <span className="text-muted-foreground text-xs transition-transform group-open/ctx:rotate-90">▶</span>
+        <span className="text-xs font-medium text-foreground">Trigger Context</span>
+        <span className="text-xs text-muted-foreground/70 ml-1">
           ({Object.keys(context).length} field{Object.keys(context).length !== 1 ? 's' : ''})
         </span>
         <button
           onClick={handleCopy}
           className={`ml-auto px-2 py-0.5 rounded text-xs transition-colors ${
             copied
-              ? 'text-emerald-400 bg-emerald-400/10'
-              : 'text-gray-500 hover:text-white hover:bg-gray-700'
+              ? 'text-primary bg-primary/10'
+              : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
           }`}
           title="Copy to clipboard"
         >
@@ -556,7 +603,7 @@ const TriggerContextAccordion: React.FC<{ context: Record<string, unknown> }> = 
         </button>
       </summary>
       <div className="px-3 pb-3">
-        <pre className="text-xs font-mono leading-relaxed overflow-x-auto max-h-80 overflow-y-auto p-3 bg-gray-900/60 rounded-lg border border-gray-700/30">
+        <pre className="text-xs font-mono leading-relaxed overflow-x-auto max-h-80 overflow-y-auto p-3 bg-muted/40 rounded-lg border border-border/60">
           {syntaxHighlightJSON(jsonString)}
         </pre>
       </div>

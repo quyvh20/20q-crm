@@ -1,8 +1,10 @@
 import { create } from 'zustand';
-import type { TriggerSpec, ConditionGroup, ActionSpec, WorkflowStep } from './types';
+import type { TriggerSpec, ConditionGroup, ActionSpec, WorkflowStep, Workflow, SaveWorkflowPayload } from './types';
 import { workflowSchema, validateActionIds, validateConditionDepth } from './schemas';
 import { createWorkflow, updateWorkflow, getWorkflow, getWorkflowSchema, getObjectFields, type WorkflowSchema, type FieldItem } from './api';
 import { isNoValueOperator } from './useSchema';
+import { isValidCron } from './cron';
+import { resolvableObjectsForTrigger, objectKeyOfPath } from './dateField';
 
 interface BuilderState {
   workflowId: string | null;
@@ -49,6 +51,13 @@ interface BuilderState {
   save: () => Promise<void>;
   loadWorkflow: (id: string) => Promise<void>;
   duplicateFrom: (sourceId: string) => Promise<void>;
+  /** Hydrate builder state from an already-fetched workflow (no network). Shared by
+   *  the store's own loadWorkflow and the React Query load path in the new builder. */
+  applyLoadedWorkflow: (wf: Workflow) => void;
+  /** Build the canonical steps-only save payload from current state. */
+  buildSavePayload: () => SaveWorkflowPayload;
+  /** Detach current state into a fresh unsaved "Copy of …" draft. */
+  detachAsDuplicate: () => void;
   fetchSchema: () => Promise<void>;
   invalidateSchema: () => void;
   fetchObjectFields: (slug: string, forceRefresh?: boolean) => Promise<void>;
@@ -126,6 +135,28 @@ export function getStepAtPath(steps: WorkflowStep[], path: StepPath): WorkflowSt
 export function getParentPath(path: StepPath): StepPath | undefined {
   if (path.length === 0) return undefined;
   return path.slice(0, -1);
+}
+
+/**
+ * Parse a backend action-path string (BuildStepPath format `idx(|branch|idx)*`,
+ * e.g. "0" or "1|yes|2|no|0") into a StepPath. Returns null for an empty or
+ * malformed path. Pairs with getStepAtPath for the A3.6 run-history → canvas
+ * deep link (resolve a run's step log to its builder node).
+ */
+export function parseStepPath(path: string): StepPath | null {
+  // Only bare decimal segments are valid indices — mirrors the backend's strconv.Atoi
+  // (JS Number() would wrongly accept '', '1e2', '0x1', ' 3 ', so guard with a regex).
+  const isIndex = (s: string | undefined): s is string => !!s && /^\d+$/.test(s);
+  const parts = path.split('|');
+  if (!isIndex(parts[0])) return null;
+  const segs: StepPath = [{ index: Number(parts[0]) }];
+  for (let i = 1; i < parts.length; i += 2) {
+    const branch = parts[i];
+    const idx = parts[i + 1];
+    if ((branch !== 'yes' && branch !== 'no') || !isIndex(idx)) return null;
+    segs.push({ branch, index: Number(idx) });
+  }
+  return segs;
 }
 
 /**
@@ -328,11 +359,16 @@ function flattenSteps(steps: WorkflowStep[]): ActionSpec[] {
     if (step.type === 'action' && step.action) {
       result.push(step.action);
     } else if (step.type === 'delay') {
-      result.push({
-        id: step.id,
-        type: 'delay',
-        params: step.delay ? { duration_sec: step.delay.duration_sec } : {},
-      });
+      const d = step.delay;
+      const params: Record<string, unknown> = { duration_sec: d?.duration_sec ?? 0 };
+      if (d?.until_field) {
+        // Wait-until mode carries the field + offset/time/timezone (A4.4).
+        params.until_field = d.until_field;
+        params.offset_days = d.offset_days ?? 0;
+        params.at_time = d.at_time ?? '';
+        params.timezone = d.timezone ?? '';
+      }
+      result.push({ id: step.id, type: 'delay', params });
     }
     if (step.yes_steps) {
       result.push(...flattenSteps(step.yes_steps));
@@ -433,11 +469,13 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
     const prev = get().trigger;
     const updates: Partial<BuilderState> = { trigger, isDirty: true };
 
-    // If the source object changed, clear stale condition rules (field paths no longer valid)
+    // If the source object changed, clear stale condition rules (field paths no longer valid).
+    // A non-object trigger (schedule) has an empty slug, so leaving/entering it also drops
+    // object-scoped conditions that could no longer resolve.
     const prevSlug = prev ? extractObjectSlug(prev.type) : '';
     const newSlug = extractObjectSlug(trigger.type);
 
-    if (prev && prevSlug && newSlug && prevSlug !== newSlug) {
+    if (prev && prevSlug && prevSlug !== newSlug) {
       updates.conditions = null;
     }
 
@@ -499,14 +537,15 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
     set((s) => {
       const steps = findAndModifySteps(s.steps || [], id, (step) => {
         if (step.type === 'delay' && patch.action) {
-          const delayParams = patch.action.params as any;
-          return {
-            ...step,
-            delay: {
-              ...(step.delay || { duration_sec: 60 }),
-              ...(delayParams?.duration_sec !== undefined ? { duration_sec: Number(delayParams.duration_sec) } : {}),
-            },
-          };
+          const dp = patch.action.params as Record<string, unknown> | undefined;
+          const nextDelay: import('./types').DelayParams = { ...(step.delay || { duration_sec: 60 }) };
+          if (dp?.duration_sec !== undefined) nextDelay.duration_sec = Number(dp.duration_sec);
+          // Wait-until fields (A4.4). Empty until_field clears wait-until mode back to a fixed delay.
+          if (dp?.until_field !== undefined) nextDelay.until_field = (dp.until_field as string) || undefined;
+          if (dp?.offset_days !== undefined) nextDelay.offset_days = Number(dp.offset_days);
+          if (dp?.at_time !== undefined) nextDelay.at_time = dp.at_time as string;
+          if (dp?.timezone !== undefined) nextDelay.timezone = dp.timezone as string;
+          return { ...step, delay: nextDelay };
         }
         if (step.type === 'action' && step.action && patch.action) {
           return {
@@ -560,6 +599,35 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
     if (!state.trigger) {
       errors.trigger = ['Source is required'];
       errors['trigger.object'] = ['Select a source object'];
+    } else if (state.trigger.type === 'schedule') {
+      // Schedule is not object-based: validate the cron (+ optional timezone) instead
+      // of an object/fires-on. The backend (robfig/cron) is the authoritative parser.
+      const cron = (state.trigger.params?.cron as string) || '';
+      if (!cron.trim()) {
+        errors['trigger.params.cron'] = ['Enter a schedule'];
+        errors.trigger = ['Schedule is required'];
+      } else if (!isValidCron(cron)) {
+        errors['trigger.params.cron'] = ['Invalid cron expression'];
+        errors.trigger = ['Schedule cron is invalid'];
+      }
+      const tz = state.trigger.params?.timezone;
+      if (tz !== undefined && typeof tz !== 'string') {
+        errors['trigger.params.timezone'] = ['Invalid timezone'];
+      }
+    } else if (state.trigger.type === 'date_field') {
+      // date_field is object-based but not an event trigger: require an object + a
+      // date field. The backend re-validates offset/time/timezone.
+      const object = (state.trigger.params?.object as string) || '';
+      const field = (state.trigger.params?.field as string) || '';
+      if (!object) {
+        errors['trigger.params.object'] = ['Select an object'];
+        errors.trigger = ['Source object is required'];
+      }
+      if (!field) {
+        errors['trigger.params.field'] = ['Select a date field'];
+        if (!errors.trigger) errors.trigger = [];
+        errors.trigger.push('Date field is required');
+      }
     } else {
       const slug = extractObjectSlug(state.trigger.type);
       if (!slug) {
@@ -729,11 +797,26 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       }
 
       if (action.type === 'delay') {
-        const sec = Number(action.params.duration_sec) || 0;
-        if (sec <= 0) {
-          errors[`${key}.params.duration_sec`] = ['Duration must be a positive number'];
-        } else if (sec > 2592000) {
-          errors[`${key}.params.duration_sec`] = ['Duration exceeds maximum of 30 days (2,592,000 seconds)'];
+        const untilField = typeof action.params.until_field === 'string' ? action.params.until_field : '';
+        if (untilField) {
+          // Wait-until mode (A4.4): a field is required; offset/time/timezone default.
+          // No 30-day cap — a field-based wait can be months out.
+          // Guard against a field the run's eval context can't resolve (a deal field
+          // on a contact-triggered workflow, or a field left stale after the trigger
+          // changed): the backend would silently skip the wait instead of erroring.
+          const resolvable = resolvableObjectsForTrigger(state.trigger);
+          if (!resolvable.has(objectKeyOfPath(untilField))) {
+            errors[`${key}.params.until_field`] = [
+              "This date field isn't available for the current trigger — pick a field from the trigger's record",
+            ];
+          }
+        } else {
+          const sec = Number(action.params.duration_sec) || 0;
+          if (sec <= 0) {
+            errors[`${key}.params.duration_sec`] = ['Duration must be a positive number'];
+          } else if (sec > 2592000) {
+            errors[`${key}.params.duration_sec`] = ['Duration exceeds maximum of 30 days (2,592,000 seconds)'];
+          }
         }
       }
 
@@ -764,56 +847,32 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
     return Object.keys(errors).length === 0;
   },
 
+  // Sanitize trigger (strip UI-only _fieldMeta) + emit steps-only payload (A1:
+  // the server derives the deprecated flat actions; cleanSteps applies the
+  // send_email/update_record param sanitization the flat list used to get).
+  buildSavePayload: () => {
+    const state = get();
+    const cleanedTrigger = { ...state.trigger! };
+    if (cleanedTrigger.params) {
+      const { _fieldMeta, ...triggerParams } = cleanedTrigger.params as Record<string, unknown>;
+      cleanedTrigger.params = Object.keys(triggerParams).length > 0 ? triggerParams : undefined;
+    }
+    return {
+      name: state.name,
+      description: state.description,
+      trigger: cleanedTrigger,
+      conditions: state.conditions,
+      steps: cleanSteps(state.steps || []),
+    };
+  },
+
   save: async () => {
     const state = get();
     if (!state.validate()) return;
 
     set({ saving: true });
     try {
-      // Sanitize: strip empty CC strings → omit key entirely; clean update_record params
-      const cleanedActions = state.actions.map((a) => {
-        if (a.type === 'send_email') {
-          const params = { ...a.params };
-          const cc = typeof params.cc === 'string' ? params.cc.trim() : '';
-          if (!cc) {
-            delete params.cc;
-          }
-          return { ...a, params };
-        }
-        if (a.type === 'update_record' || (a.type as string) === 'update_contact') {
-          // Ensure only 'updates' key is emitted, strip legacy flat keys
-          const params: Record<string, unknown> = {};
-          if (Array.isArray(a.params.updates)) {
-            // Strip undefined values from each entry
-            params.updates = (a.params.updates as Array<Record<string, unknown>>).map((u) => {
-              const clean: Record<string, unknown> = { field: u.field, op: u.op };
-              if (u.op !== 'clear' && u.value !== undefined && u.value !== null) {
-                clean.value = u.value;
-              }
-              return clean;
-            });
-          }
-          return { ...a, params };
-        }
-        return a;
-      });
-
-      // Sanitize trigger: strip UI-only _fieldMeta cache from params
-      const cleanedTrigger = { ...state.trigger! };
-      if (cleanedTrigger.params) {
-        const { _fieldMeta, ...triggerParams } = cleanedTrigger.params as Record<string, unknown>;
-        cleanedTrigger.params = Object.keys(triggerParams).length > 0 ? triggerParams : undefined;
-      }
-
-      const payload = {
-        name: state.name,
-        description: state.description,
-        trigger: cleanedTrigger,
-        conditions: state.conditions,
-        actions: cleanedActions,
-        steps: cleanSteps(state.steps || []),
-      };
-
+      const payload = get().buildSavePayload();
       if (state.workflowId) {
         await updateWorkflow(state.workflowId, payload);
       } else {
@@ -826,8 +885,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
     }
   },
 
-  loadWorkflow: async (id) => {
-    const wf = await getWorkflow(id);
+  applyLoadedWorkflow: (wf) => {
     const loadedSteps = wf.steps && wf.steps.length > 0
       ? wf.steps
       : (wf.actions || []).map((a) => ({
@@ -852,19 +910,27 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
     });
   },
 
-  duplicateFrom: async (sourceId) => {
-    // Load the source workflow's full spec, then detach it into a fresh, unsaved
-    // draft (P23). Nulling workflowId/createdBy makes the next save() create a NEW
-    // workflow instead of overwriting the original; the copy starts inactive so a
-    // clone never auto-fires, and is marked dirty so the builder shows unsaved state.
-    await get().loadWorkflow(sourceId);
+  loadWorkflow: async (id) => {
+    const wf = await getWorkflow(id);
+    get().applyLoadedWorkflow(wf);
+  },
+
+  // Detach current state into a fresh, unsaved draft (P23). Nulling
+  // workflowId/createdBy makes the next save() create a NEW workflow instead of
+  // overwriting the original; the copy starts inactive so a clone never auto-fires,
+  // and is marked dirty so the builder shows unsaved state.
+  detachAsDuplicate: () =>
     set((s) => ({
       workflowId: null,
       createdBy: null,
       name: `Copy of ${s.name}`,
       isActive: false,
       isDirty: true,
-    }));
+    })),
+
+  duplicateFrom: async (sourceId) => {
+    await get().loadWorkflow(sourceId);
+    get().detachAsDuplicate();
   },
 
   fetchSchema: async () => {
@@ -932,36 +998,11 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
   },
 }));
 
-// Sync steps and actions automatically if either is updated directly (e.g. in tests via setState)
-let _syncing = false;
-useBuilderStore.subscribe((state, prevState) => {
-  if (_syncing) return;
-  if (state.actions === prevState?.actions && state.steps === prevState?.steps) return;
-
-  _syncing = true;
-  try {
-    // 1. If actions was populated directly but steps is empty:
-    if (state.actions && state.actions.length > 0 && (!state.steps || state.steps.length === 0)) {
-      const steps = state.actions.map(
-        (a) =>
-          ({
-            id: a.id,
-            type: a.type === 'delay' ? 'delay' : 'action',
-            action: a.type === 'delay' ? undefined : a,
-            delay: a.type === 'delay' ? { duration_sec: Number(a.params?.duration_sec) || 60 } : undefined,
-          } as WorkflowStep)
-      );
-      useBuilderStore.setState({ steps });
-    }
-
-    // 2. If steps was populated directly but actions is empty:
-    if (state.steps && state.steps.length > 0 && (!state.actions || state.actions.length === 0)) {
-      const actions = flattenSteps(state.steps);
-      useBuilderStore.setState({ actions });
-    }
-  } finally {
-    _syncing = false;
-  }
-});
+// The steps↔actions subscribe back-sync was removed in overhaul A1: steps are
+// the canonical format (the server derives the deprecated flat list itself).
+// The in-memory `actions` view is maintained by the tree mutations via
+// flattenSteps for the legacy config panel until the A3 builder replaces it;
+// code that seeds state directly must set `steps` (loadWorkflow maps legacy
+// actions-only workflows explicitly).
 
 

@@ -16,12 +16,15 @@ import (
 // ActivityExecutor logs an activity (call/meeting/note/email) against the
 // contact and/or deal that triggered the workflow.
 type ActivityExecutor struct {
-	db *gorm.DB
+	db    *gorm.DB
+	authz domain.RecordAuthorizer
 }
 
-// NewActivityExecutor creates a new activity executor.
-func NewActivityExecutor(db *gorm.DB) *ActivityExecutor {
-	return &ActivityExecutor{db: db}
+// NewActivityExecutor creates a new activity executor. authz enforces the
+// workflow author's read access on the linked contact/deal and audits the
+// creation (P8); nil disables enforcement (unit tests).
+func NewActivityExecutor(db *gorm.DB, authz domain.RecordAuthorizer) *ActivityExecutor {
+	return &ActivityExecutor{db: db, authz: authz}
 }
 
 // Execute inserts an activity row based on the action params. All failures are
@@ -52,6 +55,12 @@ func (e *ActivityExecutor) Execute(ctx context.Context, run *WorkflowRun, action
 		return nil, fmt.Errorf("log_activity: no valid contact or deal identifier in trigger context")
 	}
 
+	// Run-as-creator gate (P8): logging an activity against a record the author
+	// cannot read would leak its existence — enforce OLS(read) + own-scope first.
+	if err := authorizeLinkedRecordRead(ctx, e.db, e.authz, run.OrgID, contactID, dealID); err != nil {
+		return nil, fmt.Errorf("log_activity: %w", err)
+	}
+
 	// 5. Insert exactly one row; occurred_at/created_at = DB NOW().
 	// user_id is the workflow author (P8 run-as-creator attribution) when the engine
 	// resolved one, else NULL — a system/unresolved actor. RETURNING created_at reads
@@ -72,6 +81,19 @@ func (e *ActivityExecutor) Execute(ctx context.Context, run *WorkflowRun, action
 	).Scan(&createdAt).Error
 	if err != nil {
 		return nil, fmt.Errorf("log_activity: %w", err) // non-retryable (Req 9.2)
+	}
+
+	// Attribute the creation to the workflow author in the audit trail (P8).
+	if e.authz != nil {
+		caller, _ := domain.CallerFromContext(ctx)
+		e.authz.Audit(ctx, domain.AuditEntry{
+			OrgID:      run.OrgID,
+			ActorID:    caller.UserID,
+			ObjectSlug: "activity",
+			RecordID:   activityID,
+			Action:     domain.ActionCreate,
+			Changes:    map[string]interface{}{"type": map[string]interface{}{"new": activityType}, "title": map[string]interface{}{"new": title}},
+		})
 	}
 
 	slog.Info("automation: activity logged",

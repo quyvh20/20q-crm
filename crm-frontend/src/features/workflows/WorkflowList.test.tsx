@@ -2,8 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { WorkflowList } from './WorkflowList';
-import { getWorkflows } from './api';
+import { getWorkflows, toggleWorkflow, deleteWorkflow } from './api';
 import type { Workflow, WorkflowListResponse } from './types';
 
 /**
@@ -99,10 +100,15 @@ const mockGetWorkflows = vi.mocked(getWorkflows);
 // render inside a router. MemoryRouter lets each test seed the initial query string
 // (initialEntries) to exercise deep-link / back-button restoration.
 function renderList(opts?: { route?: string }) {
+  // Fresh client per render so cached lists don't bleed across tests; retry off
+  // so a rejected query surfaces immediately.
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter initialEntries={[opts?.route ?? '/workflows']}>
-      <WorkflowList />
-    </MemoryRouter>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[opts?.route ?? '/workflows']}>
+        <WorkflowList />
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
@@ -422,5 +428,43 @@ describe('WorkflowList — search and filtering (P24)', () => {
       ),
     );
     expect(screen.getByPlaceholderText(/search workflows/i)).toHaveValue('vip');
+  });
+});
+
+// ── A3.4: toggle/delete route through React Query mutations ────────────────────
+describe('WorkflowList — toggle and delete mutations', () => {
+  it('toggling a row calls the toggle API for that workflow', async () => {
+    const user = userEvent.setup();
+    vi.mocked(toggleWorkflow).mockResolvedValue(makeWorkflow({ id: 'wf-contact', is_active: false }));
+    renderList();
+    await screen.findByText('Welcome Email');
+
+    // Both fixtures start active, so each row's toggle reads "Deactivate".
+    await user.click(screen.getAllByRole('button', { name: /^Deactivate$/ })[0]);
+
+    await waitFor(() => expect(toggleWorkflow).toHaveBeenCalledWith('wf-contact'));
+  });
+
+  it('deletes the workflow when the confirm dialog is accepted', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    vi.mocked(deleteWorkflow).mockResolvedValue(undefined);
+    renderList();
+    await screen.findByText('Welcome Email');
+
+    await user.click(screen.getAllByRole('button', { name: /^Delete$/ })[0]);
+
+    await waitFor(() => expect(deleteWorkflow).toHaveBeenCalledWith('wf-contact'));
+  });
+
+  it('does not delete when the confirm dialog is dismissed', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, 'confirm').mockReturnValue(false);
+    renderList();
+    await screen.findByText('Welcome Email');
+
+    await user.click(screen.getAllByRole('button', { name: /^Delete$/ })[0]);
+
+    expect(deleteWorkflow).not.toHaveBeenCalled();
   });
 });

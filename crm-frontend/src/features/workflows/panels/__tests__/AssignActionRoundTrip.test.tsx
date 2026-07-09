@@ -3,7 +3,17 @@ import { render, screen } from '@testing-library/react';
 import { useBuilderStore } from '../../store';
 import { ActionConfigPanel } from '../ActionConfigPanel';
 import type { WorkflowSchema } from '../../api';
-import type { ActionSpec } from '../../types';
+import type { ActionSpec, WorkflowStep } from '../../types';
+
+// A1: steps are the canonical format — updateAction routes through the steps
+// tree, so tests seed a step wrapper alongside the flat actions view the
+// legacy config panel reads.
+function seedActions(actions: ActionSpec[]): { actions: ActionSpec[]; steps: WorkflowStep[] } {
+  return {
+    actions,
+    steps: actions.map((a) => ({ id: a.id, type: 'action' as const, action: a })),
+  };
+}
 
 // ── Mock API layer ───────────────────────────────────────────────────
 vi.mock('../../api', async () => {
@@ -110,7 +120,7 @@ beforeEach(() => {
 describe('TestAssignAction_SpecificUserRoundTrip', () => {
   it('stores user_id as UUID in params', () => {
     useBuilderStore.setState({
-      actions: [ASSIGN_SPECIFIC],
+      ...seedActions([ASSIGN_SPECIFIC]),
       selectedNodeId: ASSIGN_SPECIFIC.id,
     });
 
@@ -122,7 +132,7 @@ describe('TestAssignAction_SpecificUserRoundTrip', () => {
 
   it('renders user dropdown with Alice selected by name', () => {
     useBuilderStore.setState({
-      actions: [ASSIGN_SPECIFIC],
+      ...seedActions([ASSIGN_SPECIFIC]),
       selectedNodeId: ASSIGN_SPECIFIC.id,
     });
 
@@ -136,7 +146,7 @@ describe('TestAssignAction_SpecificUserRoundTrip', () => {
 
   it('shows all org users as dropdown options', () => {
     useBuilderStore.setState({
-      actions: [ASSIGN_SPECIFIC],
+      ...seedActions([ASSIGN_SPECIFIC]),
       selectedNodeId: ASSIGN_SPECIFIC.id,
     });
 
@@ -158,7 +168,7 @@ describe('TestAssignAction_SpecificUserRoundTrip', () => {
       workflowId: 'wf_assign_1',
       name: 'Assign Test',
       trigger: { type: 'contact_created', params: {} },
-      actions: [ASSIGN_SPECIFIC],
+      ...seedActions([ASSIGN_SPECIFIC]),
       isDirty: true,
     });
 
@@ -209,7 +219,7 @@ describe('TestAssignAction_SpecificUserRoundTrip', () => {
     };
 
     useBuilderStore.setState({
-      actions: [staleAssign],
+      ...seedActions([staleAssign]),
       selectedNodeId: staleAssign.id,
     });
 
@@ -227,7 +237,7 @@ describe('TestAssignAction_SpecificUserRoundTrip', () => {
 describe('TestAssignAction_RoundRobinPoolRoundTrip', () => {
   it('stores pool as array of 3 UUIDs in params', () => {
     useBuilderStore.setState({
-      actions: [ASSIGN_ROUND_ROBIN],
+      ...seedActions([ASSIGN_ROUND_ROBIN]),
       selectedNodeId: ASSIGN_ROUND_ROBIN.id,
     });
 
@@ -239,7 +249,7 @@ describe('TestAssignAction_RoundRobinPoolRoundTrip', () => {
 
   it('renders checkboxes with 3 users checked', () => {
     useBuilderStore.setState({
-      actions: [ASSIGN_ROUND_ROBIN],
+      ...seedActions([ASSIGN_ROUND_ROBIN]),
       selectedNodeId: ASSIGN_ROUND_ROBIN.id,
     });
 
@@ -258,7 +268,7 @@ describe('TestAssignAction_RoundRobinPoolRoundTrip', () => {
 
   it('shows pool count in label', () => {
     useBuilderStore.setState({
-      actions: [ASSIGN_ROUND_ROBIN],
+      ...seedActions([ASSIGN_ROUND_ROBIN]),
       selectedNodeId: ASSIGN_ROUND_ROBIN.id,
     });
 
@@ -269,7 +279,7 @@ describe('TestAssignAction_RoundRobinPoolRoundTrip', () => {
 
   it('shows user names next to checkboxes', () => {
     useBuilderStore.setState({
-      actions: [ASSIGN_ROUND_ROBIN],
+      ...seedActions([ASSIGN_ROUND_ROBIN]),
       selectedNodeId: ASSIGN_ROUND_ROBIN.id,
     });
 
@@ -287,7 +297,7 @@ describe('TestAssignAction_RoundRobinPoolRoundTrip', () => {
       workflowId: 'wf_rr_1',
       name: 'Round Robin Test',
       trigger: { type: 'contact_created', params: {} },
-      actions: [ASSIGN_ROUND_ROBIN],
+      ...seedActions([ASSIGN_ROUND_ROBIN]),
       isDirty: true,
     });
 
@@ -333,7 +343,7 @@ describe('TestAssignAction_RoundRobinPoolRoundTrip', () => {
 
   it('pool survives updateAction merge — changing entity preserves pool', () => {
     useBuilderStore.setState({
-      actions: [ASSIGN_ROUND_ROBIN],
+      ...seedActions([ASSIGN_ROUND_ROBIN]),
       selectedNodeId: ASSIGN_ROUND_ROBIN.id,
     });
 
@@ -357,7 +367,7 @@ describe('TestAssignAction_Validation', () => {
     useBuilderStore.setState({
       name: 'Validation Test',
       trigger: { type: 'contact_created', params: {} },
-      actions: [ASSIGN_ROUND_ROBIN_EMPTY],
+      ...seedActions([ASSIGN_ROUND_ROBIN_EMPTY]),
     });
 
     const isValid = useBuilderStore.getState().validate();
@@ -372,7 +382,7 @@ describe('TestAssignAction_Validation', () => {
     useBuilderStore.setState({
       name: 'Validation Test',
       trigger: { type: 'contact_created', params: {} },
-      actions: [ASSIGN_SPECIFIC_EMPTY],
+      ...seedActions([ASSIGN_SPECIFIC_EMPTY]),
     });
 
     const isValid = useBuilderStore.getState().validate();
@@ -387,7 +397,7 @@ describe('TestAssignAction_Validation', () => {
     useBuilderStore.setState({
       name: 'Valid RR',
       trigger: { type: 'contact_created', params: {} },
-      actions: [ASSIGN_ROUND_ROBIN],
+      ...seedActions([ASSIGN_ROUND_ROBIN]),
     });
 
     const isValid = useBuilderStore.getState().validate();
@@ -399,7 +409,7 @@ describe('TestAssignAction_Validation', () => {
     useBuilderStore.setState({
       name: 'Valid Specific',
       trigger: { type: 'contact_created', params: {} },
-      actions: [ASSIGN_SPECIFIC],
+      ...seedActions([ASSIGN_SPECIFIC]),
     });
 
     const isValid = useBuilderStore.getState().validate();
@@ -411,7 +421,7 @@ describe('TestAssignAction_Validation', () => {
     useBuilderStore.setState({
       name: 'Valid LL',
       trigger: { type: 'contact_created', params: {} },
-      actions: [ASSIGN_LEAST_LOADED],
+      ...seedActions([ASSIGN_LEAST_LOADED]),
     });
 
     const isValid = useBuilderStore.getState().validate();
@@ -426,7 +436,7 @@ describe('TestAssignAction_Validation', () => {
 describe('TestAssignAction_LeastLoadedInfo', () => {
   it('renders info text for least_loaded — no user picker', () => {
     useBuilderStore.setState({
-      actions: [ASSIGN_LEAST_LOADED],
+      ...seedActions([ASSIGN_LEAST_LOADED]),
       selectedNodeId: ASSIGN_LEAST_LOADED.id,
     });
 
@@ -449,7 +459,7 @@ describe('TestAssignAction_StrategySwitchMigration', () => {
   it('specific → round_robin: seeds pool with the selected user_id', () => {
     // Start with specific + Alice selected
     useBuilderStore.setState({
-      actions: [{ ...ASSIGN_SPECIFIC, params: { ...ASSIGN_SPECIFIC.params } }],
+      ...seedActions([{ ...ASSIGN_SPECIFIC, params: { ...ASSIGN_SPECIFIC.params } }]),
       selectedNodeId: ASSIGN_SPECIFIC.id,
     });
 
@@ -470,7 +480,7 @@ describe('TestAssignAction_StrategySwitchMigration', () => {
   it('round_robin → specific: takes first pool member as user_id', () => {
     // Start with round_robin + [Alice, Bob, Carol]
     useBuilderStore.setState({
-      actions: [{ ...ASSIGN_ROUND_ROBIN, params: { ...ASSIGN_ROUND_ROBIN.params } }],
+      ...seedActions([{ ...ASSIGN_ROUND_ROBIN, params: { ...ASSIGN_ROUND_ROBIN.params } }]),
       selectedNodeId: ASSIGN_ROUND_ROBIN.id,
     });
 
@@ -488,7 +498,7 @@ describe('TestAssignAction_StrategySwitchMigration', () => {
   it('specific → round_robin → specific: data survives full cycle', () => {
     // Start with specific + Alice
     useBuilderStore.setState({
-      actions: [{ ...ASSIGN_SPECIFIC, params: { ...ASSIGN_SPECIFIC.params } }],
+      ...seedActions([{ ...ASSIGN_SPECIFIC, params: { ...ASSIGN_SPECIFIC.params } }]),
       selectedNodeId: ASSIGN_SPECIFIC.id,
     });
 
@@ -509,7 +519,7 @@ describe('TestAssignAction_StrategySwitchMigration', () => {
 
   it('least_loaded → round_robin: pool starts empty (no data to migrate)', () => {
     useBuilderStore.setState({
-      actions: [{ ...ASSIGN_LEAST_LOADED, params: { ...ASSIGN_LEAST_LOADED.params } }],
+      ...seedActions([{ ...ASSIGN_LEAST_LOADED, params: { ...ASSIGN_LEAST_LOADED.params } }]),
       selectedNodeId: ASSIGN_LEAST_LOADED.id,
     });
 
@@ -527,7 +537,7 @@ describe('TestAssignAction_StrategySwitchMigration', () => {
 
   it('UserDropdown always emits UUID — never name', () => {
     useBuilderStore.setState({
-      actions: [ASSIGN_SPECIFIC],
+      ...seedActions([ASSIGN_SPECIFIC]),
       selectedNodeId: ASSIGN_SPECIFIC.id,
     });
 

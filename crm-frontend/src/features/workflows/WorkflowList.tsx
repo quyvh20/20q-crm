@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { getWorkflows, deleteWorkflow, toggleWorkflow } from './api';
+import { useWorkflowsList, useToggleWorkflow, useDeleteWorkflow } from './queries';
 import { RunNowModal, canRunWorkflowNow } from './RunNowModal';
 import type { Workflow } from './types';
 import { TRIGGER_LABELS, STATUS_COLORS } from './types';
@@ -13,9 +13,6 @@ interface ToastAction {
 }
 
 export const WorkflowList: React.FC = () => {
-  const [workflows, setWorkflows] = useState<Workflow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<{ message: string; type: 'error' | 'success'; action?: ToastAction } | null>(null);
   const [runNowTarget, setRunNowTarget] = useState<Workflow | null>(null);
   const navigate = useNavigate();
@@ -33,6 +30,14 @@ export const WorkflowList: React.FC = () => {
     activeParam === null ? undefined : activeParam === 'true';
   const page = Math.max(1, Number(searchParams.get('page') ?? '1') || 1);
   const [searchInput, setSearchInput] = useState(q);
+
+  // Server state via React Query (A3.4). keepPreviousData (in the hook) keeps the
+  // current rows visible while a new page/search/filter loads.
+  const { data, isLoading: loading, isFetching } = useWorkflowsList({ active: filterActive, q: q || undefined, page, size: 20 });
+  const workflows = data?.workflows ?? [];
+  const total = data?.total ?? 0;
+  const toggleMutation = useToggleWorkflow();
+  const deleteMutation = useDeleteWorkflow();
 
   // Patch the query string while preserving the other params, so search, filter, and
   // page never clobber one another. Empty values drop the key to keep URLs clean.
@@ -63,23 +68,6 @@ export const WorkflowList: React.FC = () => {
     setTimeout(() => setToast(null), action ? 6000 : 3000);
   };
 
-  const fetchWorkflows = useCallback(async () => {
-    setLoading(true);
-    try {
-      const resp = await getWorkflows({ active: filterActive, q: q || undefined, page, size: 20 });
-      setWorkflows(resp.workflows || []);
-      setTotal(resp.total);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
-  }, [page, filterActive, q]);
-
-  useEffect(() => {
-    fetchWorkflows();
-  }, [fetchWorkflows]);
-
   // Debounce the text box, then commit the trimmed term to the URL (?q=). Reset to
   // page 1 on a query change so results aren't hidden on a page the narrowed set no
   // longer has. replace:true keeps each keystroke out of the history stack.
@@ -98,32 +86,19 @@ export const WorkflowList: React.FC = () => {
     setSearchInput((prev) => (prev.trim() === q ? prev : q));
   }, [q]);
 
-  // Optimistic toggle — flip UI immediately, revert on error
-  const handleToggle = async (wf: Workflow) => {
-    const previousState = wf.is_active;
-    // Optimistic update
-    setWorkflows((prev) =>
-      prev.map((w) => (w.id === wf.id ? { ...w, is_active: !previousState } : w))
-    );
-    try {
-      await toggleWorkflow(wf.id);
-    } catch (e: any) {
-      // Revert on error
-      setWorkflows((prev) =>
-        prev.map((w) => (w.id === wf.id ? { ...w, is_active: previousState } : w))
-      );
-      showToast(e.message || 'Failed to toggle workflow', 'error');
-    }
+  // Toggle/delete run through React Query mutations (optimistic cache updates +
+  // rollback live in the hooks); the component only surfaces errors as a toast.
+  const handleToggle = (wf: Workflow) => {
+    toggleMutation.mutate(wf, {
+      onError: (e) => showToast((e as Error).message || 'Failed to toggle workflow', 'error'),
+    });
   };
 
-  const handleDelete = async (wf: Workflow) => {
+  const handleDelete = (wf: Workflow) => {
     if (!confirm(`Delete "${wf.name}"?`)) return;
-    try {
-      await deleteWorkflow(wf.id);
-      setWorkflows((prev) => prev.filter((w) => w.id !== wf.id));
-    } catch (e: any) {
-      showToast(e.message || 'Failed to delete workflow', 'error');
-    }
+    deleteMutation.mutate(wf.id, {
+      onError: (e) => showToast((e as Error).message || 'Failed to delete workflow', 'error'),
+    });
   };
 
   const totalPages = Math.ceil(total / 20);
@@ -267,7 +242,7 @@ export const WorkflowList: React.FC = () => {
           )}
         </div>
       ) : (
-        <div className="space-y-3">
+        <div className={`space-y-3 transition-opacity ${isFetching ? 'opacity-60' : ''}`}>
           {workflows.map((wf) => (
             <div
               key={wf.id}

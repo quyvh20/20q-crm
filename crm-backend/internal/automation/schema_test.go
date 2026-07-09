@@ -238,15 +238,17 @@ func TestGetWorkflowSchema_FullCoverage(t *testing.T) {
 	}
 	for _, expected := range []string{
 		"contact.first_name", "contact.last_name", "contact.email",
-		"contact.phone", "contact.owner_id", "contact.tags",
-		"contact.company.name", "contact.id",
+		"contact.phone", "contact.owner_user_id", "contact.tags",
+		"contact.company_id", "contact.id",
 	} {
 		assert.True(t, contactPaths[expected], "contact must have field %s", expected)
 	}
-	// Check picker types on special fields
+	// Check picker types on special fields. Owner is owner_user_id (A2): the
+	// event payload key is owner_user_id, so the old contact.owner_id never
+	// resolved.
 	for _, f := range contactEntity.Fields {
-		if f.Path == "contact.owner_id" {
-			assert.Equal(t, "user", f.PickerType, "owner_id should have picker_type=user")
+		if f.Path == "contact.owner_user_id" {
+			assert.Equal(t, "user", f.PickerType, "owner_user_id should have picker_type=user")
 		}
 		if f.Path == "contact.tags" {
 			assert.Equal(t, "tag", f.PickerType, "tags should have picker_type=tag")
@@ -272,16 +274,35 @@ func TestGetWorkflowSchema_FullCoverage(t *testing.T) {
 		dealPaths[f.Path] = true
 	}
 	for _, expected := range []string{
-		"deal.title", "deal.value", "deal.stage", "deal.probability",
-		"deal.is_won", "deal.is_lost", "deal.owner_id", "deal.id",
+		"deal.title", "deal.value", "deal.stage_id", "deal.probability",
+		"deal.is_won", "deal.is_lost", "deal.owner_user_id", "deal.id",
 	} {
 		assert.True(t, dealPaths[expected], "deal must have field %s", expected)
 	}
-	// Check deal.stage has picker_type=stage
+	// Check deal.stage_id has picker_type=stage (payload key is stage_id).
 	for _, f := range dealEntity.Fields {
-		if f.Path == "deal.stage" {
+		if f.Path == "deal.stage_id" {
 			assert.Equal(t, "stage", f.PickerType)
 		}
+	}
+
+	// ============================================================
+	// ASSERT 2b: Company is now a first-class built-in object (A2)
+	// ============================================================
+	var companyEntity *SchemaEntity
+	for i := range schema.Entities {
+		if schema.Entities[i].Key == "company" {
+			companyEntity = &schema.Entities[i]
+			break
+		}
+	}
+	require.NotNil(t, companyEntity, "company entity must exist (A2 made it first-class)")
+	companyPaths := map[string]bool{}
+	for _, f := range companyEntity.Fields {
+		companyPaths[f.Path] = true
+	}
+	for _, expected := range []string{"company.name", "company.industry", "company.website", "company.id"} {
+		assert.True(t, companyPaths[expected], "company must have field %s", expected)
 	}
 
 	// ============================================================

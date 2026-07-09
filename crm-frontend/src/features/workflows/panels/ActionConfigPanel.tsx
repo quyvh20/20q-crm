@@ -127,9 +127,15 @@ const TaskParams: React.FC<ParamProps> = ({ action, setParam }) => {
   const schema = useBuilderStore((s) => s.schema);
   const users = schema?.users || [];
 
-  // Determine assignee mode from current value
+  // Determine assignee mode from current value. The owner column is
+  // owner_user_id (A2 fix): contact.owner_id never resolved in the event payload,
+  // so "Contact Owner" silently produced no assignee. Accept the legacy value so
+  // saved actions still show as "Contact Owner"; re-saving migrates them.
   const assigneeValue = String(action.params.assignee_field || '');
-  const isContactOwner = assigneeValue === '' || assigneeValue === 'contact.owner_id';
+  const isContactOwner =
+    assigneeValue === '' ||
+    assigneeValue === 'contact.owner_user_id' ||
+    assigneeValue === 'contact.owner_id';
 
   return (
     <div className="space-y-3">
@@ -154,7 +160,7 @@ const TaskParams: React.FC<ParamProps> = ({ action, setParam }) => {
         <div className="flex rounded-lg overflow-hidden border border-gray-700 mb-2">
           <button
             type="button"
-            onClick={() => setParam('assignee_field', 'contact.owner_id')}
+            onClick={() => setParam('assignee_field', 'contact.owner_user_id')}
             className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${
               isContactOwner
                 ? 'bg-emerald-500/20 text-emerald-300 border-r border-emerald-500/30'

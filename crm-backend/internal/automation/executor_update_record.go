@@ -125,10 +125,89 @@ func (e *UpdateRecordExecutor) Execute(ctx context.Context, run *WorkflowRun, ac
 		return e.executeContact(ctx, run, updates, evalCtx)
 	case "deal":
 		return e.executeDeal(ctx, run, updates, evalCtx)
+	case "company":
+		return e.executeCompany(ctx, run, updates, evalCtx)
 	default:
 		// Custom object entity — update the JSONB data column
 		return e.executeCustomObject(ctx, run, updates, evalCtx, entity)
 	}
+}
+
+// companyColumnMap is the native-column allow-list for company field updates.
+// Companies have no tags and no owner_user_id (org-scoped, not own-scoped), so
+// company updates never touch a tag join or an own-scope check.
+var companyColumnMap = map[string]string{
+	"name":     "name",
+	"industry": "industry",
+	"website":  "website",
+}
+
+// executeCompany applies updates to the company that triggered the workflow
+// (companies live in a typed table with a custom_fields JSONB blob, like
+// contacts/deals — not the custom_object_records path). A2: company became a
+// first-class trigger object, so its update_record action needs a real handler.
+func (e *UpdateRecordExecutor) executeCompany(ctx context.Context, run *WorkflowRun, updates []FieldUpdate, evalCtx EvalContext) (any, error) {
+	companyID := ""
+	if extra, ok := evalCtx.Extra["company"].(map[string]any); ok {
+		if id, ok := extra["id"]; ok {
+			companyID = fmt.Sprintf("%v", id)
+		}
+	}
+	if companyID == "" {
+		return nil, fmt.Errorf("update_record: no company ID found in context")
+	}
+	cid, err := uuid.Parse(companyID)
+	if err != nil {
+		return nil, fmt.Errorf("update_record: invalid company ID: %w", err)
+	}
+
+	var exists bool
+	if err := e.db.WithContext(ctx).
+		Raw("SELECT EXISTS(SELECT 1 FROM companies WHERE id = ? AND org_id = ? AND deleted_at IS NULL)", cid, run.OrgID).
+		Scan(&exists).Error; err != nil {
+		return nil, fmt.Errorf("update_record: org ownership check failed: %w", err)
+	}
+	if !exists {
+		return nil, fmt.Errorf("update_record: company %s not found in org %s", companyID, run.OrgID.String())
+	}
+	// No own-scope check: companies have no owner_user_id (org-wide), so OLS/FLS
+	// (enforced in authorizeWrite) is the whole gate.
+
+	var results []map[string]any
+	txErr := e.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		results = make([]map[string]any, 0, len(updates))
+		for i, upd := range updates {
+			field := InterpolateTemplate(upd.Field, evalCtx)
+			op := upd.Op
+			if field == "" {
+				return fmt.Errorf("updates[%d].field is empty", i)
+			}
+			if !validUpdateOperations[op] {
+				return fmt.Errorf("updates[%d] invalid op '%s'", i, op)
+			}
+			field = strings.TrimPrefix(field, "company.")
+			updateParams := map[string]any{"value": upd.Value}
+			var result map[string]any
+			var err error
+			if strings.HasPrefix(field, "custom_fields.") {
+				cfKey := strings.TrimPrefix(field, "custom_fields.")
+				result, err = e.handleCustomField(ctx, tx, "companies", run.OrgID, cid, cfKey, op, updateParams, evalCtx)
+			} else {
+				result, err = e.handleGenericColumn(ctx, tx, "companies", companyColumnMap, nil, run.OrgID, cid, field, op, updateParams, evalCtx)
+			}
+			if err != nil {
+				return fmt.Errorf("updates[%d] (%s.%s): %w", i, field, op, err)
+			}
+			results = append(results, result)
+		}
+		return nil
+	})
+	if txErr != nil {
+		return nil, fmt.Errorf("update_record: %w", txErr)
+	}
+
+	e.audit(ctx, run, "company", cid, results)
+	return map[string]any{"entity": "company", "updates": results, "count": len(results)}, nil
 }
 
 // authorizeWrite enforces the workflow author's Object- and Field-Level Security

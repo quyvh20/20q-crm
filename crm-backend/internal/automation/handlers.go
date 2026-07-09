@@ -119,6 +119,30 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerF
 
 // --- Workflow CRUD ---
 
+// hasSteps reports whether a steps JSON payload holds a non-empty tree.
+func hasSteps(steps datatypes.JSON) bool {
+	return len(steps) > 0 && string(steps) != "null" && string(steps) != "[]"
+}
+
+// deriveActionsFromSteps re-derives the deprecated flat actions column from
+// the canonical steps tree so legacy consumers (TestRun, the flat execution
+// path) keep working until the column's scheduled removal (A8, 2026-09-01).
+func deriveActionsFromSteps(stepsJSON datatypes.JSON) (datatypes.JSON, error) {
+	var steps []StepSpec
+	if err := json.Unmarshal(stepsJSON, &steps); err != nil {
+		return nil, err
+	}
+	flat := FlattenStepsToActions(steps)
+	if flat == nil {
+		flat = []ActionSpec{}
+	}
+	out, err := json.Marshal(flat)
+	if err != nil {
+		return nil, err
+	}
+	return datatypes.JSON(out), nil
+}
+
 // CreateWorkflow handles POST /api/workflows
 func (h *Handler) CreateWorkflow(c *gin.Context) {
 	orgID, userID := h.getContext(c)
@@ -130,6 +154,18 @@ func (h *Handler) CreateWorkflow(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.errorResponse(c, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
 		return
+	}
+
+	// Steps are the canonical format: when present, the deprecated flat actions
+	// column is derived server-side and any client-sent actions are ignored.
+	// Actions-only bodies stay accepted until the column's removal (A8).
+	if hasSteps(req.Steps) {
+		derived, err := deriveActionsFromSteps(req.Steps)
+		if err != nil {
+			h.errorResponse(c, http.StatusBadRequest, "VALIDATION_FAILED", "invalid steps JSON: "+err.Error(), nil)
+			return
+		}
+		req.Actions = derived
 	}
 
 	// Validate JSON payloads
@@ -156,8 +192,41 @@ func (h *Handler) CreateWorkflow(c *gin.Context) {
 		return
 	}
 
+	h.armWorkflowTimers(c.Request.Context(), wf)
+
 	resp := ToWorkflowResponse(wf)
 	c.JSON(http.StatusCreated, gin.H{"data": resp})
+}
+
+// armWorkflowTimers reconciles a workflow's time-based-trigger timers after a
+// create/update/toggle (A4). A bad cron only fails arming, never the save — the
+// workflow persists and simply won't fire until the schedule is corrected (the FE
+// validates the cron; this is defense in depth).
+func (h *Handler) armWorkflowTimers(ctx context.Context, wf *Workflow) {
+	if err := h.repo.ArmScheduleTimer(ctx, wf, time.Now()); err != nil {
+		h.logger.Warn("automation: arm schedule timer failed", "error", err, "workflow_id", wf.ID.String())
+	}
+	// date_field timers are materialized per-record on writes (not armed here), but a
+	// deactivate or a change of trigger away from date_field must drop the workflow's
+	// pending date_field timers so they don't fire against the old config.
+	if !isActiveDateFieldWorkflow(wf) {
+		if err := h.repo.CancelWorkflowTimers(ctx, wf.ID, TimerKindDateField); err != nil {
+			h.logger.Warn("automation: cancel date_field timers failed", "error", err, "workflow_id", wf.ID.String())
+		}
+	}
+}
+
+// isActiveDateFieldWorkflow reports whether wf is an active workflow with a
+// date_field trigger.
+func isActiveDateFieldWorkflow(wf *Workflow) bool {
+	if !wf.IsActive {
+		return false
+	}
+	var trig TriggerSpec
+	if err := json.Unmarshal(wf.Trigger, &trig); err != nil {
+		return false
+	}
+	return trig.Type == TriggerDateField
 }
 
 // ListWorkflows handles GET /api/workflows
@@ -263,6 +332,17 @@ func (h *Handler) UpdateWorkflow(c *gin.Context) {
 		wf.Steps = req.Steps
 	}
 
+	// Steps are canonical: re-derive the deprecated flat actions from the
+	// effective steps tree, overriding any client-sent actions (A1).
+	if hasSteps(wf.Steps) {
+		derived, err := deriveActionsFromSteps(wf.Steps)
+		if err != nil {
+			h.errorResponse(c, http.StatusBadRequest, "VALIDATION_FAILED", "invalid steps JSON: "+err.Error(), nil)
+			return
+		}
+		wf.Actions = derived
+	}
+
 	// Re-validate
 	result := ValidateWorkflowPayload(wf.Trigger, wf.Conditions, wf.Actions, wf.Steps)
 	if !result.Valid {
@@ -274,6 +354,8 @@ func (h *Handler) UpdateWorkflow(c *gin.Context) {
 		h.errorResponse(c, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to update workflow", nil)
 		return
 	}
+
+	h.armWorkflowTimers(c.Request.Context(), wf)
 
 	c.JSON(http.StatusOK, gin.H{"data": ToWorkflowResponse(wf)})
 }
@@ -295,6 +377,11 @@ func (h *Handler) DeleteWorkflow(c *gin.Context) {
 		h.errorResponse(c, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to delete workflow", nil)
 		return
 	}
+
+	// Cancel any pending time-based timers so the scanner doesn't churn on a
+	// deleted workflow (it already guards firing on the workflow being active).
+	_ = h.repo.CancelWorkflowTimers(c.Request.Context(), id, TimerKindSchedule)
+	_ = h.repo.CancelWorkflowTimers(c.Request.Context(), id, TimerKindDateField)
 
 	c.JSON(http.StatusOK, gin.H{"data": nil})
 }
@@ -318,12 +405,15 @@ func (h *Handler) ToggleWorkflow(c *gin.Context) {
 		return
 	}
 
+	// Arm (now-active) or cancel (now-inactive) the workflow's schedule timer.
+	h.armWorkflowTimers(c.Request.Context(), wf)
+
 	c.JSON(http.StatusOK, gin.H{"data": ToWorkflowResponse(wf)})
 }
 
 // TestRun handles POST /api/workflows/:id/test-run
 func (h *Handler) TestRun(c *gin.Context) {
-	orgID, _ := h.getContext(c)
+	orgID, userID := h.getContext(c)
 	if orgID == uuid.Nil {
 		return
 	}
@@ -346,54 +436,68 @@ func (h *Handler) TestRun(c *gin.Context) {
 		return
 	}
 
-	// Build eval context from request
-	evalCtx := EvalContext{Actions: make(map[string]any)}
-	if contact, ok := req.Context["contact"].(map[string]any); ok {
-		evalCtx.Contact = contact
-	}
-	if deal, ok := req.Context["deal"].(map[string]any); ok {
-		evalCtx.Deal = deal
-	}
-	if trigger, ok := req.Context["trigger"].(map[string]any); ok {
-		evalCtx.Trigger = trigger
-	}
+	ctx := c.Request.Context()
 
-	// Evaluate conditions
-	conditionResult := true
-	if wf.Conditions != nil && len(wf.Conditions) > 0 {
-		var conditions ConditionGroup
-		if err := json.Unmarshal(wf.Conditions, &conditions); err == nil {
-			conditionResult = EvaluateConditions(conditions, evalCtx)
+	// Resolve the trigger type (for sample-entity compatibility + context shape).
+	var triggerSpec TriggerSpec
+	_ = json.Unmarshal(wf.Trigger, &triggerSpec)
+	triggerType := triggerSpec.Type
+
+	// Build the dry-run trigger context. Preferred: a sample entity the server loads
+	// (realistic data, mirrors Run Now). Fallback: a raw context map (tests/advanced).
+	var payload map[string]any
+	if req.ContactID != "" || req.DealID != "" {
+		// The sample path loads a real org record and echoes its interpolated fields
+		// back in resolved_params, so gate it like Run Now (creator or run_any) — a
+		// bare workflows.manage holder can't dry-run another user's workflow against
+		// an arbitrary record to read its fields. The raw-context path needs no such
+		// gate: the caller supplies the data, so there's no server-side record read.
+		if !h.authorizeRunNowCtx(c, userID, wf.CreatedBy) {
+			h.errorResponse(c, http.StatusForbidden, "FORBIDDEN",
+				"you do not have permission to test this workflow against a sample record", nil)
+			return
 		}
-	}
-
-	// Resolve action params (no side effects)
-	var actions []ActionSpec
-	json.Unmarshal(wf.Actions, &actions)
-
-	var testActions []TestRunAction
-	for _, action := range actions {
-		resolved := make(map[string]any)
-		for k, v := range action.Params {
-			if str, ok := v.(string); ok {
-				resolved[k] = InterpolateTemplate(str, evalCtx)
+		kind, entityID, cerr := classifyRunNowRequest(RunNowRequest{ContactID: req.ContactID, DealID: req.DealID})
+		if cerr != nil {
+			if errors.Is(cerr, ErrRunNowInvalidUUID) {
+				h.errorResponse(c, http.StatusBadRequest, "INVALID_ID", cerr.Error(), nil)
 			} else {
-				resolved[k] = v
+				h.errorResponse(c, http.StatusBadRequest, "INVALID_REQUEST", cerr.Error(), nil)
 			}
+			return
 		}
-		testActions = append(testActions, TestRunAction{
-			ID:             action.ID,
-			Type:           action.Type,
-			ResolvedParams: resolved,
-		})
+		expectedKind := entityKindForTrigger(triggerType)
+		if expectedKind == "" || expectedKind != kind {
+			h.errorResponse(c, http.StatusBadRequest, "INCOMPATIBLE_ENTITY",
+				fmt.Sprintf("workflow trigger type %q is not compatible with the selected %s entity", triggerType, kind), nil)
+			return
+		}
+		var entity map[string]any
+		switch kind {
+		case "contact":
+			entity, err = h.loadContactForRun(ctx, orgID, entityID)
+		case "deal":
+			entity, err = h.loadDealForRun(ctx, orgID, entityID)
+		}
+		if err != nil {
+			h.logger.Error("test run: failed to load entity", "error", err, "kind", kind, "entity_id", entityID.String())
+			h.errorResponse(c, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load entity", nil)
+			return
+		}
+		if entity == nil {
+			h.errorResponse(c, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("%s not found", kind), nil)
+			return
+		}
+		payload = buildRunNowTriggerContext(kind, triggerType, entity)
+	} else {
+		payload = req.Context
+		if payload == nil {
+			payload = map[string]any{}
+		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"data": TestRunResponse{
-			ConditionResult: conditionResult,
-			Actions:         testActions,
-		},
-	})
+	// Side-effect-free steps-tree walk (per-step run/skip + interpolation previews).
+	c.JSON(http.StatusOK, gin.H{"data": h.engine.DryRun(orgID, wf, payload)})
 }
 
 // RunNow handles POST /api/workflows/:id/run — a real, single-workflow execution
@@ -1168,6 +1272,85 @@ func (h *Handler) customObjectSchemas(ctx context.Context, orgID uuid.UUID) []cu
 	return out
 }
 
+// builtinObjectLabels/Icons describe the closed set of system objects the builder
+// offers as first-class trigger sources and field owners. Company was previously
+// absent (making it second-class); it's now included.
+var builtinObjectMeta = []struct {
+	Slug, Label, Icon string
+}{
+	{"contact", "Contact", "👤"},
+	{"deal", "Deal", "💰"},
+	{"company", "Company", "🏢"},
+}
+
+// builtinObjectFieldDefs is the single source of truth for the native fields of
+// each system object, keyed by slug. Paths mirror the emitted event payload keys
+// (contactToMap/dealToMap/companyAutomationMap) so {{slug.field}} resolves — most
+// notably the owner column is owner_user_id (not owner_id). Admin-defined custom
+// fields are layered on top from object_fields (systemCustomFieldDefs).
+func builtinObjectFieldDefs(slug string) []SchemaField {
+	switch slug {
+	case "contact":
+		return []SchemaField{
+			{Path: "contact.first_name", Label: "First Name", Type: "string"},
+			{Path: "contact.last_name", Label: "Last Name", Type: "string"},
+			{Path: "contact.email", Label: "Email", Type: "string"},
+			{Path: "contact.phone", Label: "Phone", Type: "string"},
+			{Path: "contact.owner_user_id", Label: "Owner", Type: "string", PickerType: "user"},
+			{Path: "contact.company_id", Label: "Company", Type: "string"},
+			{Path: "contact.tags", Label: "Tags", Type: "array", PickerType: "tag"},
+			{Path: "contact.id", Label: "Contact ID", Type: "string"},
+		}
+	case "deal":
+		return []SchemaField{
+			{Path: "deal.title", Label: "Title", Type: "string"},
+			{Path: "deal.value", Label: "Value", Type: "number"},
+			{Path: "deal.stage_id", Label: "Stage", Type: "string", PickerType: "stage"},
+			{Path: "deal.probability", Label: "Probability (%)", Type: "number"},
+			{Path: "deal.is_won", Label: "Is Won", Type: "boolean"},
+			{Path: "deal.is_lost", Label: "Is Lost", Type: "boolean"},
+			{Path: "deal.owner_user_id", Label: "Owner", Type: "string", PickerType: "user"},
+			{Path: "deal.contact_id", Label: "Contact", Type: "string"},
+			{Path: "deal.company_id", Label: "Company", Type: "string"},
+			{Path: "deal.expected_close_at", Label: "Expected Close", Type: "date"},
+			{Path: "deal.closed_at", Label: "Closed At", Type: "date"},
+			{Path: "deal.id", Label: "Deal ID", Type: "string"},
+		}
+	case "company":
+		return []SchemaField{
+			{Path: "company.name", Label: "Name", Type: "string"},
+			{Path: "company.industry", Label: "Industry", Type: "string"},
+			{Path: "company.website", Label: "Website", Type: "string"},
+			{Path: "company.id", Label: "Company ID", Type: "string"},
+		}
+	case "trigger":
+		return []SchemaField{
+			{Path: "trigger.type", Label: "Event Type", Type: "string"},
+			{Path: "trigger.from_stage", Label: "Previous Stage", Type: "string", PickerType: "stage"},
+			{Path: "trigger.to_stage", Label: "New Stage", Type: "string", PickerType: "stage"},
+		}
+	default:
+		return nil
+	}
+}
+
+// builtinSchemaEntities builds the system-object entities (contact/deal/company)
+// plus the synthetic trigger pseudo-entity for the workflow schema response.
+func builtinSchemaEntities() []SchemaEntity {
+	entities := make([]SchemaEntity, 0, len(builtinObjectMeta)+1)
+	for _, m := range builtinObjectMeta {
+		entities = append(entities, SchemaEntity{
+			Key: m.Slug, Label: m.Label, Icon: m.Icon,
+			Fields: builtinObjectFieldDefs(m.Slug),
+		})
+	}
+	entities = append(entities, SchemaEntity{
+		Key: "trigger", Label: "Trigger Event", Icon: "⚡",
+		Fields: builtinObjectFieldDefs("trigger"),
+	})
+	return entities
+}
+
 // GetWorkflowSchema handles GET /api/workflows/schema.
 // Returns all available fields, stages, tags, users, and custom objects
 // so the frontend builder can render smart pickers instead of raw text inputs.
@@ -1187,47 +1370,10 @@ func (h *Handler) GetWorkflowSchema(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	// 1. Built-in entity fields
-	entities := []SchemaEntity{
-		{
-			Key: "contact", Label: "Contact", Icon: "👤",
-			Fields: []SchemaField{
-				{Path: "contact.first_name", Label: "First Name", Type: "string"},
-				{Path: "contact.last_name", Label: "Last Name", Type: "string"},
-				{Path: "contact.email", Label: "Email", Type: "string"},
-				{Path: "contact.phone", Label: "Phone", Type: "string"},
-				{Path: "contact.owner_id", Label: "Owner", Type: "string", PickerType: "user"},
-				{Path: "contact.tags", Label: "Tags", Type: "array", PickerType: "tag"},
-				{Path: "contact.company.name", Label: "Company Name", Type: "string"},
-				{Path: "contact.created_at", Label: "Created At", Type: "date"},
-				{Path: "contact.id", Label: "Contact ID", Type: "string"},
-			},
-		},
-		{
-			Key: "deal", Label: "Deal", Icon: "💰",
-			Fields: []SchemaField{
-				{Path: "deal.title", Label: "Title", Type: "string"},
-				{Path: "deal.value", Label: "Value", Type: "number"},
-				{Path: "deal.stage", Label: "Stage", Type: "string", PickerType: "stage"},
-				{Path: "deal.probability", Label: "Probability (%)", Type: "number"},
-				{Path: "deal.is_won", Label: "Is Won", Type: "boolean"},
-				{Path: "deal.is_lost", Label: "Is Lost", Type: "boolean"},
-				{Path: "deal.owner_id", Label: "Owner", Type: "string", PickerType: "user"},
-				{Path: "deal.expected_close_at", Label: "Expected Close", Type: "date"},
-				{Path: "deal.closed_at", Label: "Closed At", Type: "date"},
-				{Path: "deal.created_at", Label: "Created At", Type: "date"},
-				{Path: "deal.id", Label: "Deal ID", Type: "string"},
-			},
-		},
-		{
-			Key: "trigger", Label: "Trigger Event", Icon: "⚡",
-			Fields: []SchemaField{
-				{Path: "trigger.type", Label: "Event Type", Type: "string"},
-				{Path: "trigger.from_stage", Label: "Previous Stage", Type: "string", PickerType: "stage"},
-				{Path: "trigger.to_stage", Label: "New Stage", Type: "string", PickerType: "stage"},
-			},
-		},
-	}
+	// 1. Built-in entity fields. Paths must match the emitted event payload keys
+	// (contactToMap/dealToMap/companyAutomationMap) so templates/conditions resolve
+	// — e.g. the owner column is owner_user_id, not owner_id.
+	entities := builtinSchemaEntities()
 
 	// 2. Custom field definitions (object_fields; P7 — was the org_settings blob)
 	for _, d := range h.systemCustomFieldDefs(ctx, orgID) {
@@ -1388,11 +1534,10 @@ func (h *Handler) GetSchemaObjects(c *gin.Context) {
 	ctx := c.Request.Context()
 	var objects []ObjectListItem
 
-	// Built-in entities
-	objects = append(objects,
-		ObjectListItem{Name: "contact", Label: "Contact", Icon: "👤"},
-		ObjectListItem{Name: "deal", Label: "Deal", Icon: "💰"},
-	)
+	// Built-in system objects (contact/deal/company — company was previously absent)
+	for _, m := range builtinObjectMeta {
+		objects = append(objects, ObjectListItem{Name: m.Slug, Label: m.Label, Icon: m.Icon})
+	}
 
 	// Custom objects from the registry (object_defs; P7)
 	for _, obj := range h.customObjectSchemas(ctx, orgID) {
@@ -1428,40 +1573,9 @@ func (h *Handler) GetSchemaObjectFields(c *gin.Context) {
 
 	var fields []FieldListItem
 
-	// Check built-in entities first
-	builtinFields := map[string][]SchemaField{
-		"contact": {
-			{Path: "contact.first_name", Label: "First Name", Type: "string"},
-			{Path: "contact.last_name", Label: "Last Name", Type: "string"},
-			{Path: "contact.email", Label: "Email", Type: "string"},
-			{Path: "contact.phone", Label: "Phone", Type: "string"},
-			{Path: "contact.owner_id", Label: "Owner", Type: "string", PickerType: "user"},
-			{Path: "contact.tags", Label: "Tags", Type: "array", PickerType: "tag"},
-			{Path: "contact.company.name", Label: "Company Name", Type: "string"},
-			{Path: "contact.created_at", Label: "Created At", Type: "date"},
-			{Path: "contact.id", Label: "Contact ID", Type: "string"},
-		},
-		"deal": {
-			{Path: "deal.title", Label: "Title", Type: "string"},
-			{Path: "deal.value", Label: "Value", Type: "number"},
-			{Path: "deal.stage", Label: "Stage", Type: "string", PickerType: "stage"},
-			{Path: "deal.probability", Label: "Probability (%)", Type: "number"},
-			{Path: "deal.is_won", Label: "Is Won", Type: "boolean"},
-			{Path: "deal.is_lost", Label: "Is Lost", Type: "boolean"},
-			{Path: "deal.owner_id", Label: "Owner", Type: "string", PickerType: "user"},
-			{Path: "deal.expected_close_at", Label: "Expected Close", Type: "date"},
-			{Path: "deal.closed_at", Label: "Closed At", Type: "date"},
-			{Path: "deal.created_at", Label: "Created At", Type: "date"},
-			{Path: "deal.id", Label: "Deal ID", Type: "string"},
-		},
-		"trigger": {
-			{Path: "trigger.type", Label: "Event Type", Type: "string"},
-			{Path: "trigger.from_stage", Label: "Previous Stage", Type: "string", PickerType: "stage"},
-			{Path: "trigger.to_stage", Label: "New Stage", Type: "string", PickerType: "stage"},
-		},
-	}
-
-	if builtinDefs, ok := builtinFields[slug]; ok {
+	// Built-in system objects share their field definitions with GetWorkflowSchema
+	// (single source of truth), so the picker and the token list can never drift.
+	if builtinDefs := builtinObjectFieldDefs(slug); builtinDefs != nil {
 		for _, f := range builtinDefs {
 			fields = append(fields, FieldListItem{
 				Name:  f.Path,

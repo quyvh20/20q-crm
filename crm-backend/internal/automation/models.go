@@ -54,13 +54,17 @@ type WorkflowRun struct {
 	WorkflowID       uuid.UUID      `gorm:"type:uuid;not null;index" json:"workflow_id"`
 	WorkflowVersion  int            `gorm:"not null" json:"workflow_version"`
 	OrgID            uuid.UUID      `gorm:"type:uuid;not null;index" json:"org_id"`
-	Status           string         `gorm:"size:20;not null;index" json:"status"` // pending|running|completed|failed|skipped
+	Status           string         `gorm:"size:20;not null;index" json:"status"` // pending|running|waiting|completed|failed|skipped
 	TriggerContext   datatypes.JSON `gorm:"type:jsonb;not null" json:"trigger_context"`
 	CurrentActionIdx int            `gorm:"not null;default:0" json:"current_action_idx"`
 	CompletedActions datatypes.JSON `gorm:"type:jsonb" json:"completed_actions"`
 	LastError        string         `gorm:"type:text" json:"last_error,omitempty"`
 	RetryCount       int            `gorm:"not null;default:0" json:"retry_count"`
 	NextRetryAt      *time.Time     `gorm:"index" json:"next_retry_at,omitempty"`
+	// WakeAt is the absolute deadline of an in-flight delay step. Only set while
+	// Status == StatusWaiting; the retry sweeper flips due waiting runs back to
+	// pending, so a restart never loses elapsed delay time.
+	WakeAt           *time.Time     `gorm:"index" json:"wake_at,omitempty"`
 	StartedAt        *time.Time     `json:"started_at,omitempty"`
 	FinishedAt       *time.Time     `json:"finished_at,omitempty"`
 	IdempotencyKey   string         `gorm:"size:100;not null" json:"idempotency_key"`
@@ -98,6 +102,32 @@ type WorkflowOrgToken struct {
 }
 
 func (WorkflowOrgToken) TableName() string { return "automation_workflow_org_tokens" }
+
+// AutomationTimer is a durable, absolute-time firing for time-based triggers (A4).
+// A `schedule` timer holds the next cron occurrence; a `date_field` timer holds a
+// materialized "N days before/after <record>.<date field>" moment. The scanner cron
+// claims due pending timers (FOR UPDATE SKIP LOCKED) and fires the workflow.
+//
+// DedupeKey is unique per (workflow_id) and encodes the occurrence identity — for a
+// schedule it embeds the fire time, for a date_field it embeds the source date value
+// — so re-arming, event-driven materialization, and reconciliation all converge on
+// one pending row per occurrence, and firing uses it as the run idempotency key
+// (second dedup layer on top of the atomic 'fired' claim).
+type AutomationTimer struct {
+	ID         uuid.UUID      `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	WorkflowID uuid.UUID      `gorm:"type:uuid;not null;index" json:"workflow_id"`
+	OrgID      uuid.UUID      `gorm:"type:uuid;not null;index" json:"org_id"`
+	Kind       string         `gorm:"size:20;not null" json:"kind"`   // schedule|date_field
+	Status     string         `gorm:"size:20;not null;default:'pending'" json:"status"` // pending|fired|cancelled
+	FireAt     time.Time      `gorm:"not null" json:"fire_at"`
+	DedupeKey  string         `gorm:"size:200;not null" json:"dedupe_key"`
+	Payload    datatypes.JSON `gorm:"type:jsonb" json:"payload,omitempty"`
+	FiredAt    *time.Time     `json:"fired_at,omitempty"`
+	CreatedAt  time.Time      `json:"created_at"`
+	UpdatedAt  time.Time      `json:"updated_at"`
+}
+
+func (AutomationTimer) TableName() string { return "automation_timers" }
 
 // --- JSON payload spec types ---
 
@@ -140,9 +170,24 @@ type ActionSpec struct {
 	Params map[string]any `json:"params,omitempty"`
 }
 
-// DelayParams holds the typed parameters for a delay step.
+// DelayParams holds the typed parameters for a delay step. Two modes:
+//   - fixed duration: DurationSec > 0 (capped at 30 days).
+//   - wait-until (A4.4): UntilField set → resolve to an absolute wake time from a
+//     record date field on the run's eval context, plus OffsetDays/AtTime/Timezone
+//     (the fixed-duration 30-day cap does not apply). UntilField presence is the
+//     discriminator; when set, DurationSec is ignored.
 type DelayParams struct {
-	DurationSec int `json:"duration_sec"`
+	DurationSec int    `json:"duration_sec"`
+	UntilField  string `json:"until_field,omitempty"` // dotted path, e.g. "deal.expected_close_at"
+	OffsetDays  int    `json:"offset_days,omitempty"` // negative = before, positive = after
+	AtTime      string `json:"at_time,omitempty"`     // "HH:MM"; empty → 09:00
+	Timezone    string `json:"timezone,omitempty"`    // IANA zone; empty → UTC
+}
+
+// IsWaitUntil reports whether the delay resolves its deadline from a date field
+// rather than a fixed duration.
+func (d *DelayParams) IsWaitUntil() bool {
+	return d != nil && d.UntilField != ""
 }
 
 // StepSpec represents a step in a recursive workflow steps tree.
@@ -157,19 +202,68 @@ type StepSpec struct {
 }
 
 
+// FlattenStepsToActions derives the deprecated flat actions list from a steps
+// tree: actions and delays in DFS order (branches inlined), condition nodes
+// dropped. Exact Go port of the frontend's former flattenSteps (store.ts) so
+// pre-A1 rows and server-derived rows are indistinguishable. Remove with the
+// Actions column (overhaul A8, scheduled 2026-09-01).
+func FlattenStepsToActions(steps []StepSpec) []ActionSpec {
+	var result []ActionSpec
+	for _, step := range steps {
+		switch step.Type {
+		case "action":
+			if step.Action != nil {
+				a := *step.Action
+				if a.ID == "" {
+					a.ID = step.ID
+				}
+				result = append(result, a)
+			}
+		case "delay":
+			params := map[string]any{"duration_sec": 0}
+			if step.Delay != nil {
+				params["duration_sec"] = step.Delay.DurationSec
+				if step.Delay.IsWaitUntil() {
+					params["until_field"] = step.Delay.UntilField
+					params["offset_days"] = step.Delay.OffsetDays
+					params["at_time"] = step.Delay.AtTime
+					params["timezone"] = step.Delay.Timezone
+				}
+			}
+			result = append(result, ActionSpec{
+				Type:   ActionDelay,
+				ID:     step.ID,
+				Params: params,
+			})
+		}
+		result = append(result, FlattenStepsToActions(step.YesSteps)...)
+		result = append(result, FlattenStepsToActions(step.NoSteps)...)
+	}
+	return result
+}
+
 // delayParamsFromMap converts a legacy action params map to a typed *DelayParams.
 func delayParamsFromMap(m map[string]any) *DelayParams {
 	if m == nil {
 		return nil
 	}
-	sec := 0
+	d := &DelayParams{}
 	switch v := m["duration_sec"].(type) {
 	case float64:
-		sec = int(v)
+		d.DurationSec = int(v)
 	case int:
-		sec = v
+		d.DurationSec = v
 	}
-	return &DelayParams{DurationSec: sec}
+	d.UntilField, _ = m["until_field"].(string)
+	switch v := m["offset_days"].(type) {
+	case float64:
+		d.OffsetDays = int(v)
+	case int:
+		d.OffsetDays = v
+	}
+	d.AtTime, _ = m["at_time"].(string)
+	d.Timezone, _ = m["timezone"].(string)
+	return d
 }
 
 // EvalContext holds all the data available for template interpolation and condition evaluation.
@@ -190,6 +284,11 @@ const (
 	TriggerDealStageChanged = "deal_stage_changed"
 	TriggerNoActivityDays   = "no_activity_days"
 	TriggerWebhookInbound   = "webhook_inbound"
+	// TriggerSchedule fires a workflow on a cron schedule (A4) via automation_timers.
+	TriggerSchedule = "schedule"
+	// TriggerDateField fires N days before/after a record's date field (A4), via
+	// automation_timers materialized event-driven at the record write chokepoint.
+	TriggerDateField = "date_field"
 )
 
 // Valid action types
@@ -208,6 +307,7 @@ const (
 const (
 	StatusPending   = "pending"
 	StatusRunning   = "running"
+	StatusWaiting   = "waiting" // parked on a delay step until wake_at
 	StatusCompleted = "completed"
 	StatusFailed    = "failed"
 	StatusSkipped   = "skipped"
@@ -218,6 +318,7 @@ const (
 	LogStatusSuccess  = "success"
 	LogStatusFailed   = "failed"
 	LogStatusRetrying = "retrying"
+	LogStatusWaiting  = "waiting" // delay step parked; Output carries {"wake_at": ...}
 )
 
 // RetryableError wraps an error to signal it can be retried.
@@ -292,6 +393,8 @@ var ValidTriggerTypes = map[string]bool{
 	TriggerDealStageChanged: true,
 	TriggerNoActivityDays:   true,
 	TriggerWebhookInbound:   true,
+	TriggerSchedule:         true,
+	TriggerDateField:        true,
 }
 
 // IsValidTriggerType checks if a trigger type is valid.

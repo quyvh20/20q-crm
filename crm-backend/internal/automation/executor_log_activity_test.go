@@ -299,7 +299,7 @@ func TestLogActivity_Property6_SuccessfulInsertFaithful(t *testing.T) {
 	defer cleanup()
 	orgID, contactID, dealID := laeSeedActivitySchema(t, db)
 
-	exec := NewActivityExecutor(db)
+	exec := NewActivityExecutor(db, nil)
 	ctx := context.Background()
 
 	f := func(in prop6Input) bool {
@@ -557,7 +557,7 @@ func TestLogActivity_Property7_PreconditionViolationsError(t *testing.T) {
 	// db is nil: every precondition is checked before the executor touches the DB,
 	// so a correct executor never dereferences it. A regression that reached the
 	// INSERT would surface here instead of silently passing.
-	exec := NewActivityExecutor(nil)
+	exec := NewActivityExecutor(nil, nil)
 	ctx := context.Background()
 
 	f := func(in prop7Input) bool {
@@ -594,7 +594,7 @@ func TestLogActivity_PreconditionViolations_NoInsert(t *testing.T) {
 	defer cleanup()
 	orgID, contactID, _ := laeSeedActivitySchema(t, db)
 
-	exec := NewActivityExecutor(db)
+	exec := NewActivityExecutor(db, nil)
 	ctx := context.Background()
 	run := &WorkflowRun{ID: uuid.New(), WorkflowID: uuid.New(), OrgID: orgID}
 
@@ -656,7 +656,7 @@ func TestLogActivity_OccurredAt_WithinWindow(t *testing.T) {
 	defer cleanup()
 	orgID, contactID, _ := laeSeedActivitySchema(t, db)
 
-	exec := NewActivityExecutor(db)
+	exec := NewActivityExecutor(db, nil)
 	run := &WorkflowRun{ID: uuid.New(), WorkflowID: uuid.New(), OrgID: orgID}
 	action := ActionSpec{Type: ActionLogActivity, ID: "a1", Params: map[string]any{
 		"activity_type": "meeting",
@@ -718,7 +718,7 @@ func TestLogActivity_InsertFailure_WrapsCauseNoRow(t *testing.T) {
 	orgID := uuid.New()
 	contactID := uuid.New()
 
-	exec := NewActivityExecutor(db)
+	exec := NewActivityExecutor(db, nil)
 	run := &WorkflowRun{ID: uuid.New(), WorkflowID: uuid.New(), OrgID: orgID}
 	action := ActionSpec{Type: ActionLogActivity, ID: "a1", Params: map[string]any{
 		"activity_type": "call",

@@ -282,7 +282,9 @@ export const WorkflowBuilder: React.FC = () => {
       await store.save();
       const wfId = useBuilderStore.getState().workflowId;
       if (wfId && (!id || id === 'new')) {
-        navigate(`/workflows/${wfId}`, { replace: true });
+        // Stay in the classic builder after a create (A3.6: /workflows/:id is now
+        // the new builder; the legacy one lives at /legacy).
+        navigate(`/workflows/${wfId}/legacy`, { replace: true });
       }
     } catch (e: any) {
       alert(e.message || 'Failed to save workflow');

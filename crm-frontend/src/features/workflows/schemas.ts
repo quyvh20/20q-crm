@@ -39,9 +39,23 @@ export const actionSpecSchema = z.object({
   params: z.record(z.string(), z.unknown()),
 });
 
-export const delayParamsSchema = z.object({
-  duration_sec: z.number().int().positive('Delay duration must be positive'),
-});
+// A delay is either a fixed duration (duration_sec > 0) or a wait-until (A4.4:
+// until_field set → resolve the deadline from a record date field; duration_sec is
+// ignored and may be 0). Mirrors the backend DelayParams.IsWaitUntil discriminator
+// (validateDelayParams) so the canonical steps path accepts both shapes — otherwise
+// a wait-until delay (duration_sec 0) would fail .positive() and block every save.
+export const delayParamsSchema = z
+  .object({
+    duration_sec: z.number().int().nonnegative().optional(),
+    until_field: z.string().optional(),
+    offset_days: z.number().int().optional(),
+    at_time: z.string().optional(),
+    timezone: z.string().optional(),
+  })
+  .refine(
+    (d) => (!!d.until_field && d.until_field.length > 0) || (typeof d.duration_sec === 'number' && d.duration_sec > 0),
+    { message: 'Delay duration must be positive', path: ['duration_sec'] },
+  );
 
 const stepTypes = ['action', 'condition', 'delay'] as const;
 

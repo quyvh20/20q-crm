@@ -6,18 +6,23 @@ import (
 	"log/slog"
 	"time"
 
+	"crm-backend/internal/domain"
+
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
 // TaskExecutor creates tasks in the CRM.
 type TaskExecutor struct {
-	db *gorm.DB
+	db    *gorm.DB
+	authz domain.RecordAuthorizer
 }
 
-// NewTaskExecutor creates a new task executor.
-func NewTaskExecutor(db *gorm.DB) *TaskExecutor {
-	return &TaskExecutor{db: db}
+// NewTaskExecutor creates a new task executor. authz enforces the workflow
+// author's read access on the linked contact/deal and audits the creation
+// (P8); nil disables enforcement (unit tests).
+func NewTaskExecutor(db *gorm.DB, authz domain.RecordAuthorizer) *TaskExecutor {
+	return &TaskExecutor{db: db, authz: authz}
 }
 
 // Execute creates a task based on the action params.
@@ -75,6 +80,12 @@ func (e *TaskExecutor) Execute(ctx context.Context, run *WorkflowRun, action Act
 		dueAt = &t
 	}
 
+	// Run-as-creator gate (P8): attaching a task to a record the author cannot
+	// read would leak its existence — enforce OLS(read) + own-scope first.
+	if err := authorizeLinkedRecordRead(ctx, e.db, e.authz, run.OrgID, contactID, dealID); err != nil {
+		return nil, fmt.Errorf("create_task: %w", err)
+	}
+
 	taskID := uuid.New()
 
 	// Insert task directly into the tasks table (matches existing CRM schema)
@@ -86,6 +97,19 @@ func (e *TaskExecutor) Execute(ctx context.Context, run *WorkflowRun, action Act
 
 	if err != nil {
 		return nil, fmt.Errorf("create_task: %w", err)
+	}
+
+	// Attribute the creation to the workflow author in the audit trail (P8).
+	if e.authz != nil {
+		caller, _ := domain.CallerFromContext(ctx)
+		e.authz.Audit(ctx, domain.AuditEntry{
+			OrgID:      run.OrgID,
+			ActorID:    caller.UserID,
+			ObjectSlug: "task",
+			RecordID:   taskID,
+			Action:     domain.ActionCreate,
+			Changes:    map[string]interface{}{"title": map[string]interface{}{"new": title}},
+		})
 	}
 
 	slog.Info("automation: task created",

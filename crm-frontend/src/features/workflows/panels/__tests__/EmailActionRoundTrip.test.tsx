@@ -1,9 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { useBuilderStore } from '../../store';
+import { updateWorkflow } from '../../api';
 import { ActionConfigPanel } from '../ActionConfigPanel';
 import type { WorkflowSchema } from '../../api';
-import type { ActionSpec } from '../../types';
+import type { ActionSpec, WorkflowStep } from '../../types';
+
+// A1: steps are the canonical format — updateAction routes through the steps
+// tree, so tests seed a step wrapper alongside the flat actions view the
+// legacy config panel reads.
+function seedActions(actions: ActionSpec[]): { actions: ActionSpec[]; steps: WorkflowStep[] } {
+  return {
+    actions,
+    steps: actions.map((a) => ({ id: a.id, type: 'action' as const, action: a })),
+  };
+}
 
 // ── Mock API layer ───────────────────────────────────────────────────
 vi.mock('../../api', async () => {
@@ -75,7 +86,7 @@ beforeEach(() => {
 describe('TestEmailAction_NewActionShowsPlaceholder', () => {
   it('starts with empty "to" field — no hardcoded {{contact.email}} default', () => {
     useBuilderStore.setState({
-      actions: [NEW_EMAIL_ACTION],
+      ...seedActions([NEW_EMAIL_ACTION]),
       selectedNodeId: NEW_EMAIL_ACTION.id,
     });
 
@@ -89,7 +100,7 @@ describe('TestEmailAction_NewActionShowsPlaceholder', () => {
 
   it('shows instruction placeholders on all email fields', () => {
     useBuilderStore.setState({
-      actions: [NEW_EMAIL_ACTION],
+      ...seedActions([NEW_EMAIL_ACTION]),
       selectedNodeId: NEW_EMAIL_ACTION.id,
     });
 
@@ -107,7 +118,7 @@ describe('TestEmailAction_NewActionShowsPlaceholder', () => {
 describe('TestEmailAction_TemplateRoundTrip', () => {
   it('preserves {{contact.email}} in params.to after store set → read', () => {
     useBuilderStore.setState({
-      actions: [SAVED_EMAIL_ACTION],
+      ...seedActions([SAVED_EMAIL_ACTION]),
       selectedNodeId: SAVED_EMAIL_ACTION.id,
     });
 
@@ -122,7 +133,7 @@ describe('TestEmailAction_TemplateRoundTrip', () => {
 
   it('renders TemplateInput with preserved {{contact.email}} value', () => {
     useBuilderStore.setState({
-      actions: [SAVED_EMAIL_ACTION],
+      ...seedActions([SAVED_EMAIL_ACTION]),
       selectedNodeId: SAVED_EMAIL_ACTION.id,
     });
 
@@ -135,7 +146,7 @@ describe('TestEmailAction_TemplateRoundTrip', () => {
 
   it('renders all email template fields with preserved values', () => {
     useBuilderStore.setState({
-      actions: [SAVED_EMAIL_ACTION],
+      ...seedActions([SAVED_EMAIL_ACTION]),
       selectedNodeId: SAVED_EMAIL_ACTION.id,
     });
 
@@ -149,7 +160,7 @@ describe('TestEmailAction_TemplateRoundTrip', () => {
 
   it('preserves template after updateAction merges params', () => {
     useBuilderStore.setState({
-      actions: [SAVED_EMAIL_ACTION],
+      ...seedActions([SAVED_EMAIL_ACTION]),
       selectedNodeId: SAVED_EMAIL_ACTION.id,
     });
 
@@ -169,7 +180,7 @@ describe('TestEmailAction_TemplateRoundTrip', () => {
       workflowId: 'wf_123',
       name: 'Welcome Flow',
       trigger: { type: 'contact_created', params: {} },
-      actions: [SAVED_EMAIL_ACTION],
+      ...seedActions([SAVED_EMAIL_ACTION]),
     });
 
     const state = useBuilderStore.getState();
@@ -192,7 +203,7 @@ describe('TestEmailAction_TemplateRoundTrip', () => {
       workflowId: 'wf_456',
       name: 'Onboarding',
       trigger: { type: 'contact_created', params: {} },
-      actions: [SAVED_EMAIL_ACTION],
+      ...seedActions([SAVED_EMAIL_ACTION]),
       isDirty: true,
     });
 
@@ -229,6 +240,31 @@ describe('TestEmailAction_TemplateRoundTrip', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════
+// A1: the real save() payload is steps-only — the server derives the
+// deprecated flat actions itself, so the request must NOT carry `actions`.
+// ═══════════════════════════════════════════════════════════════════════
+describe('TestSave_StepsOnlyPayload', () => {
+  it('save() sends steps and omits the actions key', async () => {
+    vi.mocked(updateWorkflow).mockResolvedValue({ id: 'wf_steps_only' } as any);
+    useBuilderStore.setState({
+      workflowId: 'wf_steps_only',
+      name: 'Steps Only Flow',
+      trigger: { type: 'contact_created', params: {} },
+      conditions: null,
+      ...seedActions([SAVED_EMAIL_ACTION]),
+    });
+
+    await useBuilderStore.getState().save();
+
+    expect(updateWorkflow).toHaveBeenCalledTimes(1);
+    const [, payload] = vi.mocked(updateWorkflow).mock.calls[0];
+    expect(payload.steps).toBeDefined();
+    expect(payload.steps!.length).toBeGreaterThan(0);
+    expect('actions' in payload).toBe(false);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
 // Test 3: CC field round-trip — save with CC, reload, CC preserved
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -248,7 +284,7 @@ const EMAIL_WITH_CC: ActionSpec = {
 describe('TestEmailAction_CCFieldRoundTrip', () => {
   it('preserves CC value in store after setState', () => {
     useBuilderStore.setState({
-      actions: [EMAIL_WITH_CC],
+      ...seedActions([EMAIL_WITH_CC]),
       selectedNodeId: EMAIL_WITH_CC.id,
     });
 
@@ -259,7 +295,7 @@ describe('TestEmailAction_CCFieldRoundTrip', () => {
 
   it('renders CC field with preserved comma-separated value', () => {
     useBuilderStore.setState({
-      actions: [EMAIL_WITH_CC],
+      ...seedActions([EMAIL_WITH_CC]),
       selectedNodeId: EMAIL_WITH_CC.id,
       schema: MOCK_SCHEMA,
     });
@@ -273,7 +309,7 @@ describe('TestEmailAction_CCFieldRoundTrip', () => {
 
   it('CC survives updateAction merge — changing subject preserves CC', () => {
     useBuilderStore.setState({
-      actions: [EMAIL_WITH_CC],
+      ...seedActions([EMAIL_WITH_CC]),
       selectedNodeId: EMAIL_WITH_CC.id,
     });
 
@@ -293,7 +329,7 @@ describe('TestEmailAction_CCFieldRoundTrip', () => {
       workflowId: 'wf_cc_test',
       name: 'CC Test Flow',
       trigger: { type: 'contact_created', params: {} },
-      actions: [EMAIL_WITH_CC],
+      ...seedActions([EMAIL_WITH_CC]),
     });
 
     const state = useBuilderStore.getState();
@@ -316,7 +352,7 @@ describe('TestEmailAction_CCFieldRoundTrip', () => {
       workflowId: 'wf_cc_789',
       name: 'CC Round-Trip',
       trigger: { type: 'contact_created', params: {} },
-      actions: [EMAIL_WITH_CC],
+      ...seedActions([EMAIL_WITH_CC]),
       isDirty: true,
     });
 
@@ -364,7 +400,7 @@ describe('TestEmailAction_CCFieldRoundTrip', () => {
     };
 
     useBuilderStore.setState({
-      actions: [emailNoCC],
+      ...seedActions([emailNoCC]),
       selectedNodeId: emailNoCC.id,
       schema: MOCK_SCHEMA,
     });

@@ -119,7 +119,7 @@ func (e *Engine) Start() {
 
 	// Register default executors if not already registered
 	if _, ok := e.executors[ActionCreateTask]; !ok {
-		e.executors[ActionCreateTask] = NewTaskExecutor(e.db)
+		e.executors[ActionCreateTask] = NewTaskExecutor(e.db, e.authz)
 	}
 	if _, ok := e.executors[ActionAssignUser]; !ok {
 		e.executors[ActionAssignUser] = NewAssignUserExecutor(e.db, e.authz)
@@ -136,7 +136,7 @@ func (e *Engine) Start() {
 		e.executors[ActionUpdateContact] = executor // backward compat
 	}
 	if _, ok := e.executors[ActionLogActivity]; !ok {
-		e.executors[ActionLogActivity] = NewActivityExecutor(e.db)
+		e.executors[ActionLogActivity] = NewActivityExecutor(e.db, e.authz)
 	}
 
 	// Run migrations
@@ -192,6 +192,17 @@ func (e *Engine) TriggerEvent(ctx context.Context, orgID uuid.UUID, eventType st
 	go func() {
 		if err := e.triggerEventInternal(ctx, orgID, eventType, payload); err != nil {
 			e.logger.Error("automation: TriggerEvent failed",
+				"org_id", orgID.String(),
+				"event_type", eventType,
+				"error", err,
+			)
+		}
+		// A4: materialize/re-arm date_field timers from this record write. Independent
+		// of the event fan-out above (a date_field workflow doesn't subscribe to the
+		// {slug}_updated event type), and a no-op when the org has no date_field
+		// workflow for the object.
+		if err := e.materializeDateFieldTimers(ctx, orgID, eventType, payload); err != nil {
+			e.logger.Error("automation: date_field materialization failed",
 				"org_id", orgID.String(),
 				"event_type", eventType,
 				"error", err,
@@ -514,22 +525,39 @@ func (e *Engine) processRun(runID uuid.UUID) {
 			return
 		}
 
-		// Populate evalCtx.Actions from successful action logs
-		completedSteps := make(map[string]bool)
-		for _, log := range actionLogs {
-			if log.Status == LogStatusSuccess {
-				completedSteps[log.ActionPath] = true
-				if len(log.Output) > 0 && string(log.Output) != "null" {
+		// Rebuild resume state from action logs. Success logs mark steps
+		// completed; waiting logs are parked delay steps. Logs are keyed by
+		// structural path, so alias them back to step IDs via the tree walk —
+		// step outputs must stay addressable as {{actions.<id>}} after resume.
+		state := newStepsExecState()
+		pathToID := stepPathIndex(steps, "", "")
+		for i := range actionLogs {
+			lg := &actionLogs[i]
+			id := pathToID[lg.ActionPath]
+			switch lg.Status {
+			case LogStatusSuccess:
+				state.markCompleted(id, lg.ActionPath)
+				if len(lg.Output) > 0 && string(lg.Output) != "null" {
 					var outputVal any
-					if err := json.Unmarshal(log.Output, &outputVal); err == nil {
-						evalCtx.Actions[log.ActionPath] = outputVal
+					if err := json.Unmarshal(lg.Output, &outputVal); err == nil {
+						evalCtx.Actions[lg.ActionPath] = outputVal
+						if id != "" {
+							evalCtx.Actions[id] = outputVal
+						}
 					}
+				}
+			case LogStatusWaiting:
+				logCopy := *lg
+				state.waiting[lg.ActionPath] = &logCopy
+				state.started[lg.ActionPath] = true
+				if id != "" {
+					state.started[id] = true
 				}
 			}
 		}
 
 		e.logger.Info("automation: starting steps execution", "run_id", runID.String(), "steps_count", len(steps))
-		completed, execErr := e.executeStepsRecursive(execCtx, steps, run, completedSteps, &evalCtx, "", "")
+		completed, execErr := e.executeStepsWithState(execCtx, steps, run, state, &evalCtx, "", "")
 		e.logger.Info("automation: finished steps execution", "run_id", runID.String(), "completed", completed, "execErr", execErr)
 		if execErr != nil {
 			return
@@ -707,7 +735,21 @@ func (e *Engine) processRun(runID uuid.UUID) {
 	}
 }
 
+// executeStepsRecursive is the legacy-signature wrapper kept for callers that
+// only carry a completed-set (tests, pre-A1 call sites). Delay steps executed
+// through it use the durable-wait path when a repository is present.
 func (e *Engine) executeStepsRecursive(execCtx context.Context, steps []StepSpec, run *WorkflowRun, completedSteps map[string]bool, evalCtx *EvalContext, parentPath string, branch string) (bool, error) {
+	state := newStepsExecState()
+	if completedSteps != nil {
+		state.completed = completedSteps
+		for k := range completedSteps {
+			state.started[k] = true
+		}
+	}
+	return e.executeStepsWithState(execCtx, steps, run, state, evalCtx, parentPath, branch)
+}
+
+func (e *Engine) executeStepsWithState(execCtx context.Context, steps []StepSpec, run *WorkflowRun, state *stepsExecState, evalCtx *EvalContext, parentPath string, branch string) (bool, error) {
 	for i, step := range steps {
 		stepPath := BuildStepPath(parentPath, branch, i)
 		if e.ctx.Err() != nil {
@@ -715,31 +757,34 @@ func (e *Engine) executeStepsRecursive(execCtx context.Context, steps []StepSpec
 		}
 
 		switch step.Type {
-		case "action", "delay":
-			if completedSteps[step.ID] || completedSteps[stepPath] {
+		case "delay":
+			if state.completed[step.ID] || state.completed[stepPath] {
+				e.logger.Info("automation: step already executed, skipping", "run_id", run.ID.String(), "step_id", step.ID, "step_path", stepPath)
+				continue
+			}
+			proceed, err := e.handleDelayStep(step, stepPath, run, state, evalCtx)
+			if err != nil {
+				return false, err
+			}
+			if !proceed {
+				// Run parked on the delay (StatusWaiting) — unwind without
+				// completing or failing; the sweeper resumes it at wake_at.
+				return false, nil
+			}
+
+		case "action":
+			if state.completed[step.ID] || state.completed[stepPath] {
 				e.logger.Info("automation: step already executed, skipping", "run_id", run.ID.String(), "step_id", step.ID, "step_path", stepPath)
 				continue
 			}
 
 			e.logger.Info("automation: executing step", "run_id", run.ID.String(), "step_id", step.ID, "step_type", step.Type)
 			var action ActionSpec
-			if step.Type == "action" {
-				if step.Action != nil {
-					action = *step.Action
-				}
-				if action.ID == "" {
-					action.ID = step.ID
-				}
-			} else {
-				delayParams := map[string]any{}
-				if step.Delay != nil {
-					delayParams["duration_sec"] = step.Delay.DurationSec
-				}
-				action = ActionSpec{
-					Type:   ActionDelay,
-					ID:     step.ID,
-					Params: delayParams,
-				}
+			if step.Action != nil {
+				action = *step.Action
+			}
+			if action.ID == "" {
+				action.ID = step.ID
 			}
 
 			actionLog := &WorkflowActionLog{
@@ -811,14 +856,8 @@ func (e *Engine) executeStepsRecursive(execCtx context.Context, steps []StepSpec
 			}
 			evalCtx.Actions[step.ID] = output
 
-			completedSteps[step.ID] = true
-			completedSteps[stepPath] = true // structural path for new runs
-			var completedList []string
-			for k := range completedSteps {
-				completedList = append(completedList, k)
-			}
-			completedJSON, _ := json.Marshal(completedList)
-			run.CompletedActions = datatypes.JSON(completedJSON)
+			state.markCompleted(step.ID, stepPath)
+			syncRunCompleted(run, state)
 			run.RetryCount = 0
 			run.LastError = ""
 			run.NextRetryAt = nil
@@ -839,10 +878,14 @@ func (e *Engine) executeStepsRecursive(execCtx context.Context, steps []StepSpec
 			e.logger.Info("automation: committed success action status successfully", "run_id", run.ID.String())
 
 		case "condition":
+			// Pin the branch that already made progress — including a branch
+			// whose only executed step is a parked delay (started, not yet
+			// completed). Re-evaluating could flip sides on resume and orphan
+			// the parked step.
 			var runYes bool
-			if hasAnyStepExecuted(step.YesSteps, completedSteps) {
+			if hasAnyStepStarted(step.YesSteps, state.started, stepPath, "yes") {
 				runYes = true
-			} else if hasAnyStepExecuted(step.NoSteps, completedSteps) {
+			} else if hasAnyStepStarted(step.NoSteps, state.started, stepPath, "no") {
 				runYes = false
 			} else {
 				if step.Condition != nil {
@@ -851,12 +894,12 @@ func (e *Engine) executeStepsRecursive(execCtx context.Context, steps []StepSpec
 			}
 
 			if runYes {
-				completed, err := e.executeStepsRecursive(execCtx, step.YesSteps, run, completedSteps, evalCtx, stepPath, "yes")
+				completed, err := e.executeStepsWithState(execCtx, step.YesSteps, run, state, evalCtx, stepPath, "yes")
 				if err != nil || !completed {
 					return completed, err
 				}
 			} else {
-				completed, err := e.executeStepsRecursive(execCtx, step.NoSteps, run, completedSteps, evalCtx, stepPath, "no")
+				completed, err := e.executeStepsWithState(execCtx, step.NoSteps, run, state, evalCtx, stepPath, "no")
 				if err != nil || !completed {
 					return completed, err
 				}
@@ -866,19 +909,11 @@ func (e *Engine) executeStepsRecursive(execCtx context.Context, steps []StepSpec
 	return true, nil
 }
 
+// hasAnyStepExecuted is the legacy ID-only pinning check, kept as a wrapper so
+// existing callers/tests keep their semantics (an ID-keyed set behaves
+// identically; path matching is a strict superset).
 func hasAnyStepExecuted(steps []StepSpec, completedSteps map[string]bool) bool {
-	for _, s := range steps {
-		if s.Type == "action" || s.Type == "delay" {
-			if completedSteps[s.ID] {
-				return true
-			}
-		} else if s.Type == "condition" {
-			if hasAnyStepExecuted(s.YesSteps, completedSteps) || hasAnyStepExecuted(s.NoSteps, completedSteps) {
-				return true
-			}
-		}
-	}
-	return false
+	return hasAnyStepStarted(steps, completedSteps, "", "")
 }
 
 // commitActionAndRun atomically updates an action log and its parent run in a single transaction.
@@ -970,7 +1005,69 @@ func (e *Engine) buildEvalContext(run *WorkflowRun) EvalContext {
 		}
 	}
 
+	// One-hop relation hydration for the system company relation (A2): a deal or
+	// contact event carries only company_id, so {{company.*}} would resolve empty.
+	// Best-effort load the related company into Extra["company"] when the trigger
+	// didn't already carry a company object. A missing/absent company just leaves
+	// company.* empty (no regression). Deal→contact hydration above is the sibling
+	// case; broader/custom relation hydration via the registry is a later step.
+	if _, hasCompany := ctx.Extra["company"]; !hasCompany {
+		companyID := ""
+		if ctx.Deal != nil {
+			companyID, _ = ctx.Deal["company_id"].(string)
+		}
+		if companyID == "" && ctx.Contact != nil {
+			companyID, _ = ctx.Contact["company_id"].(string)
+		}
+		if companyID != "" {
+			if cuid, err := uuid.Parse(companyID); err == nil {
+				if co := loadCompanyForTrigger(e.ctx, e.db, run.OrgID, cuid); co != nil {
+					ctx.Extra["company"] = co
+				}
+			}
+		}
+	}
+
 	return ctx
+}
+
+// loadCompanyForTrigger reads a company into the flat interpolation-map shape
+// {{company.*}} expects (id, name, industry, website, custom_fields nested),
+// mirroring companyAutomationMap so a deal/contact-triggered run resolves company
+// fields the same way a company-triggered run does. Best-effort: nil on load
+// error or missing/deleted company (the caller then leaves company.* empty).
+func loadCompanyForTrigger(ctx context.Context, db *gorm.DB, orgID, companyID uuid.UUID) map[string]any {
+	var row struct {
+		ID           uuid.UUID `gorm:"column:id"`
+		Name         string    `gorm:"column:name"`
+		Industry     *string   `gorm:"column:industry"`
+		Website      *string   `gorm:"column:website"`
+		CustomFields *string   `gorm:"column:custom_fields"`
+	}
+	if err := db.WithContext(ctx).
+		Table("companies").
+		Select("id, name, industry, website, custom_fields::text").
+		Where("id = ? AND org_id = ? AND deleted_at IS NULL", companyID, orgID).
+		Scan(&row).Error; err != nil || row.ID == uuid.Nil {
+		return nil
+	}
+	m := map[string]any{
+		"id":   row.ID.String(),
+		"name": row.Name,
+	}
+	if row.Industry != nil {
+		m["industry"] = *row.Industry
+	}
+	if row.Website != nil {
+		m["website"] = *row.Website
+	}
+	if row.CustomFields != nil && *row.CustomFields != "" {
+		var cf map[string]any
+		if err := json.Unmarshal([]byte(*row.CustomFields), &cf); err == nil {
+			m["custom_fields"] = cf
+		}
+	}
+	return m
 }
 
 // loadContactForTrigger reads a contact into the flat interpolation-map shape the

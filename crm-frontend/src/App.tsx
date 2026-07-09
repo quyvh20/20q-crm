@@ -23,6 +23,8 @@ import ConversationLogPage from './pages/ConversationLogPage';
 import VoicePage from './pages/VoicePage';
 import { WorkflowList } from './features/workflows/WorkflowList';
 import { WorkflowBuilder } from './features/workflows/WorkflowBuilder';
+import { NextBuilder } from './features/workflows/builder/NextBuilder';
+import { BuilderDemo } from './features/workflows/builder/__demo__/BuilderDemo';
 import { RunHistory } from './features/workflows/RunHistory';
 import AIPage from './pages/AIPage';
 import ReportsListPage from './features/reports/ReportsListPage';
@@ -104,6 +106,8 @@ function App() {
       <BrowserRouter>
         <AuthProvider>
           <Routes>
+            {/* TEMP A3 visual-verification harness — remove after verifying. */}
+            <Route path="/builder-demo" element={<BuilderDemo />} />
             {/* Public routes */}
             <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
             <Route path="/register" element={<PublicRoute><RegisterPage /></PublicRoute>} />
@@ -186,7 +190,10 @@ function App() {
                 <AppLayout><WorkflowList /></AppLayout>
               </ProtectedRoute>
             } />
-            <Route path="/workflows/:id" element={
+            {/* A3.6: the new React Flow builder is now the default at /workflows/:id;
+                the legacy dnd-kit builder stays reachable at /workflows/:id/legacy
+                until A8. Both read/write identical steps JSON (safe since A1). */}
+            <Route path="/workflows/:id/legacy" element={
               <ProtectedRoute>
                 <AppLayout><WorkflowBuilder /></AppLayout>
               </ProtectedRoute>
@@ -194,6 +201,11 @@ function App() {
             <Route path="/workflows/:id/history" element={
               <ProtectedRoute>
                 <AppLayout><RunHistory /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/workflows/:id" element={
+              <ProtectedRoute>
+                <AppLayout><NextBuilder /></AppLayout>
               </ProtectedRoute>
             } />
             <Route path="/reports" element={

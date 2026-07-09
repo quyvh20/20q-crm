@@ -2,6 +2,7 @@ package automation
 
 import (
 	"context"
+	"fmt"
 
 	"crm-backend/internal/domain"
 
@@ -93,4 +94,39 @@ func ownScopeAllows(ctx context.Context, db *gorm.DB, orgID uuid.UUID, table, re
 		"(t.owner_user_id = ? OR EXISTS (SELECT 1 FROM record_shares rs WHERE rs.record_id = t.id AND rs.record_type = ? AND rs.grantee_user_id = ?)))"
 	err := db.WithContext(ctx).Raw(q, recordID, orgID, userID, recordType, userID).Scan(&allowed).Error
 	return allowed, err
+}
+
+// authorizeLinkedRecordRead enforces the workflow author's read access (OLS +
+// own-scope) on the contact/deal a task or activity is being attached to.
+// Creating a follow-up artifact against a record the author cannot see would
+// leak its existence and bypass the P8 actor model — deny instead. A nil authz
+// (unit tests) is a no-op, matching the other executors.
+func authorizeLinkedRecordRead(ctx context.Context, db *gorm.DB, authz domain.RecordAuthorizer, orgID uuid.UUID, contactID, dealID *uuid.UUID) error {
+	if authz == nil {
+		return nil
+	}
+	caller, hasCaller := domain.CallerFromContext(ctx)
+	check := func(slug string, id *uuid.UUID) error {
+		if id == nil {
+			return nil
+		}
+		if err := authz.Authorize(ctx, orgID, slug, domain.ActionRead); err != nil {
+			return err
+		}
+		if !hasCaller || caller.IsOwner || caller.DataScope != domain.DataScopeOwn {
+			return nil
+		}
+		allowed, err := ownScopeAllows(ctx, db, orgID, slug+"s", slug, *id, caller.UserID)
+		if err != nil {
+			return fmt.Errorf("own-scope check failed for %s: %w", slug, err)
+		}
+		if !allowed {
+			return fmt.Errorf("your role may only reference %s records you own", slug)
+		}
+		return nil
+	}
+	if err := check("contact", contactID); err != nil {
+		return err
+	}
+	return check("deal", dealID)
 }

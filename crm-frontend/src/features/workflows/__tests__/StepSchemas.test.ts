@@ -64,6 +64,27 @@ describe('delayParamsSchema', () => {
   it('rejects string duration', () => {
     expect(delayParamsSchema.safeParse({ duration_sec: '60' }).success).toBe(false);
   });
+
+  // Wait-until mode (A4.4): until_field set → duration_sec ignored (may be 0).
+  it('accepts a wait-until delay with duration_sec 0', () => {
+    expect(
+      delayParamsSchema.safeParse({
+        until_field: 'deal.expected_close_at',
+        offset_days: -3,
+        at_time: '09:00',
+        timezone: 'UTC',
+        duration_sec: 0,
+      }).success,
+    ).toBe(true);
+  });
+
+  it('accepts a wait-until delay with no duration_sec at all', () => {
+    expect(delayParamsSchema.safeParse({ until_field: 'deal.closed_at' }).success).toBe(true);
+  });
+
+  it('rejects a delay with neither a positive duration nor a until_field', () => {
+    expect(delayParamsSchema.safeParse({ until_field: '', duration_sec: 0 }).success).toBe(false);
+  });
 });
 
 // ═════════════════════════════════════════════════════════════════════

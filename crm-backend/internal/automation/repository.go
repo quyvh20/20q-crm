@@ -34,6 +34,7 @@ func (r *Repository) AutoMigrate() error {
 		&WorkflowRun{},
 		&WorkflowActionLog{},
 		&WorkflowOrgToken{},
+		&AutomationTimer{},
 	); err != nil {
 		return err
 	}
@@ -43,6 +44,11 @@ func (r *Repository) AutoMigrate() error {
 	r.db.Exec(`CREATE INDEX IF NOT EXISTS idx_wf_action_logs_run_action ON automation_workflow_action_logs (run_id, action_idx)`)
 	r.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_wf_versions_wf_ver ON automation_workflow_versions (workflow_id, version)`)
 	r.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_wf_runs_wf_idemp ON automation_workflow_runs (workflow_id, idempotency_key)`)
+	r.db.Exec(`CREATE INDEX IF NOT EXISTS idx_wf_runs_waiting_wake ON automation_workflow_runs (wake_at) WHERE status = 'waiting'`)
+	// A4 automation_timers: unique occurrence per workflow (idempotent arm/re-arm/
+	// reconcile) + a partial index over the scanner's hot path (due pending timers).
+	r.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_wf_timers_wf_dedupe ON automation_timers (workflow_id, dedupe_key)`)
+	r.db.Exec(`CREATE INDEX IF NOT EXISTS idx_wf_timers_due ON automation_timers (fire_at) WHERE status = 'pending'`)
 
 	// Run data migration from actions -> steps
 	_ = r.MigrateFlatActionsToSteps(context.Background())
@@ -421,6 +427,22 @@ func (r *Repository) SweepRetries(ctx context.Context) ([]uuid.UUID, error) {
 		Select("id").
 		Where("status = ? AND next_retry_at IS NOT NULL AND next_retry_at <= ?", StatusPending, time.Now()).
 		Find(&ids).Error
+	return ids, err
+}
+
+// WakeDueWaitingRuns atomically flips waiting runs whose wake_at has arrived
+// back to pending and returns their ids. The UPDATE...RETURNING is a single
+// statement, so concurrent sweepers (multi-instance) each claim a disjoint set.
+// next_retry_at is set to now() so that even if the caller's channel push is
+// dropped, the regular SweepRetries pass re-picks the run on the next tick.
+func (r *Repository) WakeDueWaitingRuns(ctx context.Context) ([]uuid.UUID, error) {
+	var ids []uuid.UUID
+	err := r.db.WithContext(ctx).
+		Raw(`UPDATE automation_workflow_runs
+		     SET status = ?, next_retry_at = NOW(), wake_at = NULL, updated_at = NOW()
+		     WHERE status = ? AND wake_at <= NOW()
+		     RETURNING id`, StatusPending, StatusWaiting).
+		Scan(&ids).Error
 	return ids, err
 }
 

@@ -49,7 +49,12 @@ var (
 // Contact
 // ============================================================
 
-type contactAdapter struct{ uc domain.ContactUseCase }
+type contactAdapter struct {
+	uc domain.ContactUseCase
+	// emit fires contact_created/_updated/_deleted from the uniform write path
+	// (A2). Wired by RecordService.SetEventEmitter; nil before startup / in tests.
+	emit domain.RecordEventEmitter
+}
 
 func (a *contactAdapter) nativeKeys() map[string]bool { return contactNativeKeys }
 
@@ -108,6 +113,7 @@ func (a *contactAdapter) create(ctx context.Context, orgID uuid.UUID, fields map
 	if err != nil {
 		return nil, err
 	}
+	fireLifecycleEvent(a.emit, orgID, "contact_created", "contact", c.ID, contactAutomationMap(c))
 	return contactToUniform(c), nil
 }
 
@@ -150,11 +156,23 @@ func (a *contactAdapter) update(ctx context.Context, orgID, id uuid.UUID, fields
 	if err != nil {
 		return nil, err
 	}
+	fireLifecycleEvent(a.emit, orgID, "contact_updated", "contact", c.ID, contactAutomationMap(c))
 	return contactToUniform(c), nil
 }
 
 func (a *contactAdapter) delete(ctx context.Context, orgID, id uuid.UUID) error {
-	return a.uc.Delete(ctx, orgID, id)
+	// Snapshot before delete so a contact_deleted workflow can condition on the
+	// record's fields; a load failure still deletes and fires a minimal payload.
+	snap, _ := a.uc.GetByID(ctx, orgID, id)
+	if err := a.uc.Delete(ctx, orgID, id); err != nil {
+		return err
+	}
+	m := map[string]any{"id": id.String()}
+	if snap != nil {
+		m = contactAutomationMap(snap)
+	}
+	fireLifecycleEvent(a.emit, orgID, "contact_deleted", "contact", id, m)
+	return nil
 }
 
 func contactToUniform(c *domain.Contact) *domain.UniformRecord {
@@ -182,7 +200,12 @@ func contactToUniform(c *domain.Contact) *domain.UniformRecord {
 // Company
 // ============================================================
 
-type companyAdapter struct{ uc domain.CompanyUseCase }
+type companyAdapter struct {
+	uc domain.CompanyUseCase
+	// emit fires company_created/_updated/_deleted from the uniform write path
+	// (A2) — company had no automation wiring before. nil before startup / in tests.
+	emit domain.RecordEventEmitter
+}
 
 func (a *companyAdapter) nativeKeys() map[string]bool { return companyNativeKeys }
 
@@ -226,6 +249,7 @@ func (a *companyAdapter) create(ctx context.Context, orgID uuid.UUID, fields map
 	if err != nil {
 		return nil, err
 	}
+	fireLifecycleEvent(a.emit, orgID, "company_created", "company", c.ID, companyAutomationMap(c))
 	return companyToUniform(c), nil
 }
 
@@ -247,11 +271,21 @@ func (a *companyAdapter) update(ctx context.Context, orgID, id uuid.UUID, fields
 	if err != nil {
 		return nil, err
 	}
+	fireLifecycleEvent(a.emit, orgID, "company_updated", "company", c.ID, companyAutomationMap(c))
 	return companyToUniform(c), nil
 }
 
 func (a *companyAdapter) delete(ctx context.Context, orgID, id uuid.UUID) error {
-	return a.uc.Delete(ctx, orgID, id)
+	snap, _ := a.uc.GetByID(ctx, orgID, id)
+	if err := a.uc.Delete(ctx, orgID, id); err != nil {
+		return err
+	}
+	m := map[string]any{"id": id.String()}
+	if snap != nil {
+		m = companyAutomationMap(snap)
+	}
+	fireLifecycleEvent(a.emit, orgID, "company_deleted", "company", id, m)
+	return nil
 }
 
 func companyToUniform(c *domain.Company) *domain.UniformRecord {
@@ -360,6 +394,7 @@ func (a *dealAdapter) create(ctx context.Context, orgID uuid.UUID, fields map[st
 	if err != nil {
 		return nil, err
 	}
+	fireLifecycleEvent(a.emit, orgID, "deal_created", "deal", d.ID, dealAutomationMap(d))
 	return dealToUniform(d), nil
 }
 
@@ -469,6 +504,12 @@ func (a *dealAdapter) update(ctx context.Context, orgID, id uuid.UUID, fields ma
 			return nil, err
 		}
 	}
+	// Fire deal_updated for field edits so "when a deal is updated" workflows fire
+	// on uniform-path edits. A pure stage move fires only deal_stage_changed
+	// (above), matching the legacy kanban — no double event for a stage change.
+	if nonStage {
+		fireLifecycleEvent(a.emit, orgID, "deal_updated", "deal", d.ID, dealAutomationMap(d))
+	}
 	return dealToUniform(d), nil
 }
 
@@ -497,6 +538,95 @@ func (a *dealAdapter) fireStageChanged(orgID uuid.UUID, oldStageID *uuid.UUID, d
 		},
 	}
 	go a.emit(context.Background(), orgID, "deal_stage_changed", payload)
+}
+
+// fireLifecycleEvent emits a create/update/delete automation trigger for a
+// system object from the uniform write path (A2), in the same payload shape the
+// legacy handlers and the custom-object path produce ({entity_id, <slug>:
+// record, trigger}). Fire-and-forget on context.Background() so a cancelled
+// request can't kill the async run (the inbound-webhook lesson). A double-fire
+// with a legacy handler emitter for the same write is absorbed by the engine's
+// per-minute idempotency key, so this is safe to run alongside them.
+func fireLifecycleEvent(emit domain.RecordEventEmitter, orgID uuid.UUID, eventType, slug string, entityID uuid.UUID, record map[string]any) {
+	if emit == nil {
+		return
+	}
+	payload := map[string]any{
+		"entity_id": entityID.String(),
+		slug:        record,
+		"trigger": map[string]any{
+			"type":   eventType,
+			"source": "crm_ui",
+		},
+	}
+	go emit(context.Background(), orgID, eventType, payload)
+}
+
+// customFieldsAutomation flattens a custom_fields JSONB blob into "custom_fields.<k>"
+// keys on the target map, matching the delivery layer's contactToMap/dealToMap
+// convention so {{slug.custom_fields.x}} templates resolve identically regardless
+// of which write path fired the event.
+func customFieldsAutomation(m map[string]any, raw domain.JSON) {
+	if len(raw) == 0 || string(raw) == "null" || string(raw) == "{}" {
+		return
+	}
+	var cf map[string]any
+	if err := json.Unmarshal([]byte(raw), &cf); err != nil {
+		return
+	}
+	for k, v := range cf {
+		m["custom_fields."+k] = v
+	}
+}
+
+// contactAutomationMap mirrors the delivery layer's contactToMap so a uniform-path
+// contact event carries the exact shape the workflow engine expects
+// (owner_user_id, company_id, tags[], custom_fields.<k>).
+func contactAutomationMap(c *domain.Contact) map[string]any {
+	m := map[string]any{
+		"id":         c.ID.String(),
+		"first_name": c.FirstName,
+		"last_name":  c.LastName,
+	}
+	if c.Email != nil {
+		m["email"] = *c.Email
+	}
+	if c.Phone != nil {
+		m["phone"] = *c.Phone
+	}
+	if c.CompanyID != nil {
+		m["company_id"] = c.CompanyID.String()
+	}
+	if c.OwnerUserID != nil {
+		m["owner_user_id"] = c.OwnerUserID.String()
+	}
+	if len(c.Tags) > 0 {
+		tagIDs := make([]string, len(c.Tags))
+		for i, t := range c.Tags {
+			tagIDs[i] = t.ID.String()
+		}
+		m["tags"] = tagIDs
+	}
+	customFieldsAutomation(m, c.CustomFields)
+	return m
+}
+
+// companyAutomationMap is the company equivalent. Company had no legacy automation
+// map (it was never wired), so this defines the convention: id, name, industry,
+// website, custom_fields.<k> — consistent with contact/deal.
+func companyAutomationMap(c *domain.Company) map[string]any {
+	m := map[string]any{
+		"id":   c.ID.String(),
+		"name": c.Name,
+	}
+	if c.Industry != nil {
+		m["industry"] = *c.Industry
+	}
+	if c.Website != nil {
+		m["website"] = *c.Website
+	}
+	customFieldsAutomation(m, c.CustomFields)
+	return m
 }
 
 // dealAutomationMap mirrors the delivery layer's dealToMap so the uniform write
@@ -533,7 +663,16 @@ func dealAutomationMap(d *domain.Deal) map[string]any {
 }
 
 func (a *dealAdapter) delete(ctx context.Context, orgID, id uuid.UUID) error {
-	return a.uc.Delete(ctx, orgID, id)
+	snap, _ := a.uc.GetByID(ctx, orgID, id)
+	if err := a.uc.Delete(ctx, orgID, id); err != nil {
+		return err
+	}
+	m := map[string]any{"id": id.String()}
+	if snap != nil {
+		m = dealAutomationMap(snap)
+	}
+	fireLifecycleEvent(a.emit, orgID, "deal_deleted", "deal", id, m)
+	return nil
 }
 
 func dealToUniform(d *domain.Deal) *domain.UniformRecord {

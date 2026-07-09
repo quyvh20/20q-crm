@@ -83,8 +83,16 @@ func NewRecordService(
 // Until set, writes simply skip event emission.
 func (s *recordService) SetEventEmitter(fn domain.RecordEventEmitter) {
 	s.emitEvent = fn
-	// The deal adapter fires deal_stage_changed from the uniform write path (P7),
-	// so it needs the same emitter.
+	// Each system adapter fires its own create/update/delete (and the deal adapter
+	// also deal_stage_changed) from the uniform write path (A2), so they all need
+	// the emitter. A double-fire with a legacy handler emitter for the same write
+	// is absorbed by the engine's per-minute idempotency key.
+	if ca, ok := s.systemAdapters["contact"].(*contactAdapter); ok {
+		ca.emit = fn
+	}
+	if co, ok := s.systemAdapters["company"].(*companyAdapter); ok {
+		co.emit = fn
+	}
 	if da, ok := s.systemAdapters["deal"].(*dealAdapter); ok {
 		da.emit = fn
 	}
@@ -342,11 +350,15 @@ func (s *recordService) Delete(ctx context.Context, orgID uuid.UUID, slug string
 	if rec.ObjectDefID != def.ID {
 		return domain.NewAppError(http.StatusNotFound, "record not found")
 	}
+	// Snapshot the record before deletion so a {slug}_deleted workflow can
+	// condition on its fields.
+	deletedSnapshot := customToUniform(slug, rec)
 	if err := s.customObjUC.DeleteRecord(ctx, orgID, id); err != nil {
 		return err
 	}
 	s.auditDelete(ctx, orgID, slug, id)
-	s.unindexRecord(ctx, orgID, slug, id) // drop the record from the search index
+	s.unindexRecord(ctx, orgID, slug, id)              // drop the record from the search index
+	s.fireEvent(orgID, slug+"_deleted", deletedSnapshot) // automation sees the deleted record (A2)
 	return s.cascadeLinks(ctx, orgID, slug, id)
 }
 

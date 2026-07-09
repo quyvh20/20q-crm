@@ -80,7 +80,7 @@ func TestDoD_LogActivity_WebhookToTimeline(t *testing.T) {
 
 	// Real ActivityExecutor — this is the component under test.
 	engine := makeEngine(db, map[string]ActionExecutor{
-		ActionLogActivity: NewActivityExecutor(db),
+		ActionLogActivity: NewActivityExecutor(db, nil),
 	})
 	defer engine.cancel()
 

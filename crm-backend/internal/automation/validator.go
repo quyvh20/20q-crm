@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ValidationError represents a structured validation error.
@@ -148,17 +149,10 @@ func validateStepsRecursive(steps []StepSpec, path string, depth int, idSet map[
 				result.Valid = false
 				result.Errors = append(result.Errors, ValidationError{
 					Field:   stepPath + ".delay",
-					Message: "delay requires 'delay' with 'duration_sec'",
+					Message: "delay requires 'delay' with 'duration_sec' or 'until_field'",
 				})
 			} else {
-				dummyAction := ActionSpec{
-					Type: ActionDelay,
-					ID:   step.ID,
-					Params: map[string]any{
-						"duration_sec": step.Delay.DurationSec,
-					},
-				}
-				validateActionParams(dummyAction, stepPath, result)
+				validateDelayParams(step.Delay, stepPath+".delay", result)
 			}
 
 		default:
@@ -168,6 +162,47 @@ func validateStepsRecursive(steps []StepSpec, path string, depth int, idSet map[
 				Message: fmt.Sprintf("unknown step type: '%s'", step.Type),
 			})
 		}
+	}
+}
+
+// validateDelayParams validates a delay step's params. A wait-until delay (A4.4,
+// until_field set) needs only a well-formed at_time/timezone and is NOT bounded by
+// the fixed-delay 30-day cap (a field-based wait can be months out); a fixed delay
+// needs a positive duration_sec ≤ 30 days.
+func validateDelayParams(d *DelayParams, path string, result *ValidationResult) {
+	if d.IsWaitUntil() {
+		if at := d.AtTime; at != "" {
+			if _, _, ok := parseHHMM(at); !ok {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   path + ".at_time",
+					Message: "at_time must be HH:MM (24-hour)",
+				})
+			}
+		}
+		if tz := d.Timezone; tz != "" {
+			if _, err := time.LoadLocation(tz); err != nil {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   path + ".timezone",
+					Message: "invalid timezone",
+				})
+			}
+		}
+		return
+	}
+	if d.DurationSec <= 0 {
+		result.Valid = false
+		result.Errors = append(result.Errors, ValidationError{
+			Field:   path + ".duration_sec",
+			Message: "duration_sec must be a positive integer (or set until_field for a wait-until delay)",
+		})
+	} else if d.DurationSec > 2592000 { // 30 days
+		result.Valid = false
+		result.Errors = append(result.Errors, ValidationError{
+			Field:   path + ".duration_sec",
+			Message: fmt.Sprintf("duration_sec %d exceeds maximum of 2592000 (30 days)", d.DurationSec),
+		})
 	}
 }
 
@@ -262,6 +297,89 @@ func validateTrigger(data []byte, result *ValidationResult) {
 				result.Errors = append(result.Errors, ValidationError{
 					Field:   "trigger.params.entity",
 					Message: "'entity' parameter is required",
+				})
+			}
+		}
+	case TriggerSchedule:
+		// A schedule trigger needs a parseable cron; timezone is optional but must be
+		// a valid IANA zone if provided. Validated here so a bad schedule is rejected
+		// at save time rather than silently failing to arm.
+		cronExpr, _ := trigger.Params["cron"].(string)
+		if cronExpr == "" {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   "trigger.params.cron",
+				Message: "schedule trigger requires a 'cron' expression",
+			})
+		} else if _, err := cronParser.Parse(cronExpr); err != nil {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   "trigger.params.cron",
+				Message: fmt.Sprintf("invalid cron expression: %s", err.Error()),
+			})
+		}
+		if tz, ok := trigger.Params["timezone"].(string); ok && tz != "" {
+			if _, err := time.LoadLocation(tz); err != nil {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   "trigger.params.timezone",
+					Message: "invalid timezone",
+				})
+			}
+		}
+	case TriggerDateField:
+		// A date_field trigger needs an object slug + a date field path. offset_days is
+		// optional (0 = on the date); at_time (HH:MM) and timezone are optional but must
+		// be well-formed if present. Timers are materialized event-driven from record
+		// writes, so a bad config is caught here rather than silently never firing.
+		if trigger.Params == nil {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   "trigger.params",
+				Message: "date_field trigger requires params with 'object' and 'field'",
+			})
+			break
+		}
+		if obj, _ := trigger.Params["object"].(string); obj == "" {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   "trigger.params.object",
+				Message: "date_field trigger requires an 'object'",
+			})
+		}
+		if field, _ := trigger.Params["field"].(string); field == "" {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   "trigger.params.field",
+				Message: "date_field trigger requires a date 'field'",
+			})
+		}
+		if od, ok := trigger.Params["offset_days"]; ok {
+			if _, isNum := od.(float64); !isNum {
+				if _, isInt := od.(int); !isInt {
+					result.Valid = false
+					result.Errors = append(result.Errors, ValidationError{
+						Field:   "trigger.params.offset_days",
+						Message: "offset_days must be a number",
+					})
+				}
+			}
+		}
+		if at, ok := trigger.Params["at_time"].(string); ok && at != "" {
+			if _, _, valid := parseHHMM(at); !valid {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   "trigger.params.at_time",
+					Message: "at_time must be HH:MM (24-hour)",
+				})
+			}
+		}
+		if tz, ok := trigger.Params["timezone"].(string); ok && tz != "" {
+			if _, err := time.LoadLocation(tz); err != nil {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   "trigger.params.timezone",
+					Message: "invalid timezone",
 				})
 			}
 		}
@@ -516,6 +634,32 @@ func validateActionParams(action ActionSpec, path string, result *ValidationResu
 			})
 		}
 	case ActionDelay:
+		// Wait-until delay (A4.4): until_field set → validate at_time/timezone if
+		// present and skip the fixed-duration checks (a field-based wait can be
+		// months out). Mirrors validateDelayParams so this deprecated flat-actions
+		// path agrees with the canonical steps path — otherwise a wait-until delay
+		// in an actions-only body would be wrongly rejected with 400.
+		if uf, _ := action.Params["until_field"].(string); uf != "" {
+			if at, ok := action.Params["at_time"].(string); ok && at != "" {
+				if _, _, valid := parseHHMM(at); !valid {
+					result.Valid = false
+					result.Errors = append(result.Errors, ValidationError{
+						Field:   path + ".params.at_time",
+						Message: "at_time must be HH:MM (24-hour)",
+					})
+				}
+			}
+			if tz, ok := action.Params["timezone"].(string); ok && tz != "" {
+				if _, err := time.LoadLocation(tz); err != nil {
+					result.Valid = false
+					result.Errors = append(result.Errors, ValidationError{
+						Field:   path + ".params.timezone",
+						Message: "invalid timezone",
+					})
+				}
+			}
+			break
+		}
 		if raw, ok := action.Params["duration_sec"]; !ok {
 			result.Valid = false
 			result.Errors = append(result.Errors, ValidationError{

@@ -445,15 +445,25 @@ func TestCreate_CustomObject_FiresAutomationEvent(t *testing.T) {
 	}
 }
 
-func TestCreate_SystemObject_DoesNotFireUniformEvent(t *testing.T) {
-	// System objects keep their automation on the legacy pages (plan P7), so the
-	// uniform path must not double-emit a differently-shaped event for them.
-	deal := &fakeDealUC{ret: &domain.Deal{ID: uuid.New(), Title: "Acme"}}
+func TestCreate_SystemObject_FiresUniformEvent(t *testing.T) {
+	// A2 reverses the old P7 restriction: system objects now fire their own
+	// create/update/delete from the uniform write path (so AI/uniform writes
+	// trigger workflows), using the automation-shaped map. A double-fire with a
+	// legacy handler emitter for the same write is absorbed by the engine's
+	// per-minute idempotency key.
+	dealID := uuid.New()
+	stageID := uuid.New()
+	deal := &fakeDealUC{ret: &domain.Deal{ID: dealID, Title: "Acme", StageID: &stageID, IsWon: true}}
 	svc := newTestService(nil, nil, deal)
 
-	fired := make(chan struct{}, 1)
-	svc.SetEventEmitter(
-		func(_ context.Context, _ uuid.UUID, _ string, _ map[string]any) { fired <- struct{}{} })
+	var gotType string
+	var gotPayload map[string]any
+	done := make(chan struct{})
+	svc.SetEventEmitter(func(_ context.Context, _ uuid.UUID, eventType string, payload map[string]any) {
+		gotType = eventType
+		gotPayload = payload
+		close(done)
+	})
 
 	if _, err := svc.Create(context.Background(), uuid.New(), uuid.New(), "deal", domain.RecordWriteInput{
 		Fields: map[string]interface{}{"title": "Acme"},
@@ -461,10 +471,17 @@ func TestCreate_SystemObject_DoesNotFireUniformEvent(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	select {
-	case <-fired:
-		t.Error("system-object create should not fire a uniform automation event")
-	case <-time.After(100 * time.Millisecond):
-		// expected: no event
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("system-object create must fire a uniform automation event (A2)")
+	}
+	if gotType != "deal_created" {
+		t.Errorf("event type = %q, want deal_created", gotType)
+	}
+	// Automation shape (stage_id, is_won), not uniform keys (stage).
+	dm, ok := gotPayload["deal"].(map[string]any)
+	if !ok || dm["stage_id"] != stageID.String() || dm["is_won"] != true {
+		t.Errorf("deal automation map wrong: %+v", gotPayload["deal"])
 	}
 }
 

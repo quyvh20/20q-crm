@@ -1,4 +1,4 @@
-import type { Workflow, WorkflowRun, RunDetailResponse, WorkflowListResponse, TestRunResponse, ActionSpec, TriggerSpec, ConditionGroup } from './types';
+import type { Workflow, WorkflowRun, WorkflowStep, RunDetailResponse, WorkflowListResponse, TestRunResponse, ActionSpec, TriggerSpec, ConditionGroup } from './types';
 import { getAccessToken } from '../../lib/api';
 
 const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8080' : '');
@@ -39,7 +39,10 @@ export async function createWorkflow(data: {
   description?: string;
   trigger: TriggerSpec;
   conditions?: ConditionGroup | null;
-  actions: ActionSpec[];
+  /** Steps are canonical (A1); the server derives the deprecated flat actions. */
+  steps?: WorkflowStep[];
+  /** Deprecated: only for legacy actions-only payloads; ignored when steps present. */
+  actions?: ActionSpec[];
 }): Promise<Workflow> {
   const res = await apiFetch('/api/workflows', {
     method: 'POST',
@@ -61,6 +64,9 @@ export async function updateWorkflow(id: string, data: {
   description?: string;
   trigger?: TriggerSpec;
   conditions?: ConditionGroup | null;
+  /** Steps are canonical (A1); the server derives the deprecated flat actions. */
+  steps?: WorkflowStep[];
+  /** Deprecated: only for legacy actions-only payloads; ignored when steps present. */
   actions?: ActionSpec[];
 }): Promise<Workflow> {
   const res = await apiFetch(`/api/workflows/${id}`, {
@@ -93,10 +99,16 @@ export async function toggleWorkflow(id: string): Promise<Workflow> {
   return json.data as Workflow;
 }
 
-export async function testRunWorkflow(id: string, context: Record<string, unknown>): Promise<TestRunResponse> {
+/** Dry-run (A3.5): a side-effect-free steps-tree walk. Prefer a sample entity
+ *  (contact_id/deal_id) — the server resolves it into a realistic eval context;
+ *  `context` is a raw override for advanced/test callers. */
+export async function testRunWorkflow(
+  id: string,
+  body: { contact_id?: string; deal_id?: string; context?: Record<string, unknown> },
+): Promise<TestRunResponse> {
   const res = await apiFetch(`/api/workflows/${id}/test-run`, {
     method: 'POST',
-    body: JSON.stringify({ context }),
+    body: JSON.stringify(body),
   });
   const json = await res.json();
   if (!res.ok) throw new Error(json.error?.message || 'Failed to run test');

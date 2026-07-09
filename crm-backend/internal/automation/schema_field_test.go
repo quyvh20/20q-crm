@@ -178,47 +178,9 @@ func TestSchemaField_JSONShape(t *testing.T) {
 // TestSchemaField_AllBuiltinFieldsHaveRequiredProperties verifies that
 // every built-in field in the handler has path, label, and type set.
 func TestSchemaField_AllBuiltinFieldsHaveRequiredProperties(t *testing.T) {
-	// Recreate the same built-in fields from handlers.go
-	entities := []SchemaEntity{
-		{
-			Key: "contact", Label: "Contact", Icon: "👤",
-			Fields: []SchemaField{
-				{Path: "contact.first_name", Label: "First Name", Type: "string"},
-				{Path: "contact.last_name", Label: "Last Name", Type: "string"},
-				{Path: "contact.email", Label: "Email", Type: "string"},
-				{Path: "contact.phone", Label: "Phone", Type: "string"},
-				{Path: "contact.owner_id", Label: "Owner", Type: "string", PickerType: "user"},
-				{Path: "contact.tags", Label: "Tags", Type: "array", PickerType: "tag"},
-				{Path: "contact.company.name", Label: "Company Name", Type: "string"},
-				{Path: "contact.created_at", Label: "Created At", Type: "date"},
-				{Path: "contact.id", Label: "Contact ID", Type: "string"},
-			},
-		},
-		{
-			Key: "deal", Label: "Deal", Icon: "💰",
-			Fields: []SchemaField{
-				{Path: "deal.title", Label: "Title", Type: "string"},
-				{Path: "deal.value", Label: "Value", Type: "number"},
-				{Path: "deal.stage", Label: "Stage", Type: "string", PickerType: "stage"},
-				{Path: "deal.probability", Label: "Probability (%)", Type: "number"},
-				{Path: "deal.is_won", Label: "Is Won", Type: "boolean"},
-				{Path: "deal.is_lost", Label: "Is Lost", Type: "boolean"},
-				{Path: "deal.owner_id", Label: "Owner", Type: "string", PickerType: "user"},
-				{Path: "deal.expected_close_at", Label: "Expected Close", Type: "date"},
-				{Path: "deal.closed_at", Label: "Closed At", Type: "date"},
-				{Path: "deal.created_at", Label: "Created At", Type: "date"},
-				{Path: "deal.id", Label: "Deal ID", Type: "string"},
-			},
-		},
-		{
-			Key: "trigger", Label: "Trigger Event", Icon: "⚡",
-			Fields: []SchemaField{
-				{Path: "trigger.type", Label: "Event Type", Type: "string"},
-				{Path: "trigger.from_stage", Label: "Previous Stage", Type: "string", PickerType: "stage"},
-				{Path: "trigger.to_stage", Label: "New Stage", Type: "string", PickerType: "stage"},
-			},
-		},
-	}
+	// Test the ACTUAL built-in source (single source of truth) so this can't drift
+	// from the handlers.
+	entities := builtinSchemaEntities()
 
 	for _, entity := range entities {
 		for _, field := range entity.Fields {
