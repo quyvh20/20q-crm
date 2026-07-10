@@ -42,6 +42,11 @@ const (
 	// TaskWorkflowAI backs the automation `ai_generate` step (A7): a bounded
 	// free-form generation whose output feeds later workflow steps.
 	TaskWorkflowAI         AITask = "workflow_ai"
+	// TaskWorkflowDraft backs the automation copilot's NL→workflow draft (A7): a
+	// tool-calling task tuned for SPEED — a fast primary model so the interactive
+	// draft completes inside its deadline, with the frontier model as a quality
+	// fallback. (Separate from TaskCommandCenter so the assistant chat is untouched.)
+	TaskWorkflowDraft      AITask = "workflow_draft"
 )
 
 // advancedTasks are only available to pro+ plans
@@ -77,6 +82,7 @@ var taskPrimaryProvider = map[AITask]provider{
 	TaskVoiceIntelligence: providerCFWorkers,
 	TaskCommandCenter:     providerCFWorkers,
 	TaskWorkflowAI:        providerCFWorkers,
+	TaskWorkflowDraft:     providerCFWorkers,
 }
 
 // Task → model mapping per provider
@@ -97,6 +103,9 @@ var taskModels = map[AITask]map[provider]string{
 	TaskFollowup:          {providerCFWorkers: "@cf/meta/llama-3.2-3b-instruct"},
 	TaskVoiceIntelligence: {providerCFWorkers: "@cf/qwen/qwen3-30b-a3b-fp8"},
 	TaskWorkflowAI:        {providerCFWorkers: "@cf/qwen/qwen3-30b-a3b-fp8"},
+	// Draft copilot: fast MoE primary so it finishes inside the 28s deadline; the
+	// frontier kimi-k2.6 is the fallback (below) for when the fast model errors.
+	TaskWorkflowDraft:     {providerCFWorkers: "@cf/qwen/qwen3-30b-a3b-fp8"},
 }
 
 // taskFallbackModels — tried when the primary model fails (timeout, error, empty response).
@@ -104,6 +113,7 @@ var taskFallbackModels = map[AITask][]string{
 	TaskAssistantChat: {"@cf/qwen/qwen3-30b-a3b-fp8"},
 	TaskCommandCenter: {"@cf/qwen/qwen3-30b-a3b-fp8"},
 	TaskEmailCompose:  {"@cf/moonshotai/kimi-k2.6"},
+	TaskWorkflowDraft: {"@cf/moonshotai/kimi-k2.6"},
 }
 
 // taskMaxTokens enforces strict output boundaries based on empirically measured p99 usage
@@ -118,6 +128,7 @@ var taskMaxTokens = map[AITask]int{
 	TaskAnalytics:         1500,
 	TaskVoiceIntelligence: 2000,
 	TaskWorkflowAI:        1024,
+	TaskWorkflowDraft:     2048,
 }
 
 func maxTokensFor(task AITask) int {

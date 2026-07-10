@@ -113,7 +113,7 @@ func (h *Handler) generateDraft(ctx context.Context, orgID, userID uuid.UUID, pr
 	schemaJSON, _ := json.Marshal(schema)
 
 	for i := 0; i < maxDraftIterations; i++ {
-		resp, err := h.draftAI.CompleteWithTools(ctx, orgID, userID, ai.TaskCommandCenter, messages, tools)
+		resp, err := h.draftAI.CompleteWithTools(ctx, orgID, userID, ai.TaskWorkflowDraft, messages, tools)
 		if err != nil {
 			return nil, nil, fmt.Errorf("the AI copilot is unavailable right now — please try again")
 		}
