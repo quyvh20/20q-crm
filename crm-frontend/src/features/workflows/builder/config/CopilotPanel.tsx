@@ -34,22 +34,20 @@ export function CopilotPanel({ initialPrompt = '' }: { initialPrompt?: string })
   // they'd point at a banner that's gone.
   const draftPending = useBuilderStore((s) => s.draftSnapshot !== null);
   const draft = useDraftWorkflow();
-  // True when the AI was unreachable and we applied the local heuristic draft instead
-  // — drives a distinct "used a local draft" notice (and suppresses the raw error).
-  const [usedFallback, setUsedFallback] = useState(false);
 
   // Never leave the user at a dead end: if the AI call fails (service down, HTML from
-  // a proxy, timeout), build a starting draft from their text on the client and apply
-  // that. The Keep/Undo banner + canvas remain the review gate.
+  // a proxy, timeout), quietly build a starting draft from their text on the client
+  // and apply it the SAME way as an AI draft. The user just gets a draft to review —
+  // no "the AI failed" message (that reads as a broken product). The Keep/Undo banner
+  // + canvas remain the review gate; the failure is logged for diagnostics only.
   const runDraft = (p: string) => {
-    setUsedFallback(false);
     draft.mutate(
       { prompt: p, current: currentWorkflowContext() },
       {
         onSuccess: (res) => applyDraft(res.draft),
-        onError: () => {
+        onError: (err) => {
+          console.warn('[copilot] AI draft unavailable — applied a local fallback draft:', err);
           applyDraft(localDraftFromPrompt(p, useBuilderStore.getState().schema));
-          setUsedFallback(true);
         },
       },
     );
@@ -78,7 +76,6 @@ export function CopilotPanel({ initialPrompt = '' }: { initialPrompt?: string })
     setPrompt(value);
     // Drop a stale success/error banner as soon as the user edits the prompt.
     if (draft.isError || draft.isSuccess) draft.reset();
-    if (usedFallback) setUsedFallback(false);
   };
 
   const validation = draft.data?.validation;
@@ -129,26 +126,10 @@ export function CopilotPanel({ initialPrompt = '' }: { initialPrompt?: string })
         )}
       </button>
 
-      {/* AI was unreachable → we applied a local draft. Recovery, not a failure. */}
-      {usedFallback && draftPending && (
-        <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
-          <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>
-            The AI assistant was unavailable, so I built a starting draft from your description. Review and tweak it on the
-            canvas, then Save — or press <span className="font-medium">Generate draft</span> to try the AI again.
-          </span>
-        </div>
-      )}
-
-      {/* Raw error only when we did NOT recover with a local draft. */}
-      {draft.isError && !usedFallback && (
-        <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>{draft.error instanceof Error ? draft.error.message : 'Could not draft a workflow.'}</span>
-        </div>
-      )}
-
-      {draftPending && !usedFallback && draft.isSuccess && !hasIssues && (
+      {/* A draft is on the canvas — from the AI, or a local fallback if the AI was
+          unreachable. Indistinguishable to the user by design: they get a draft to
+          review either way, never a "the AI failed" message. */}
+      {draftPending && !hasIssues && (
         <div className="flex items-start gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-400">
           <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span>Draft applied to the canvas. Review it, then Keep or Undo above.</span>
@@ -168,6 +149,15 @@ export function CopilotPanel({ initialPrompt = '' }: { initialPrompt?: string })
               <li className="list-none text-amber-600/80 dark:text-amber-400/70">+{issues.length - 6} more…</li>
             )}
           </ul>
+        </div>
+      )}
+
+      {/* Genuine dead end: only if we couldn't put ANY draft on the canvas (the local
+          fallback normally guarantees one, so this is a last resort). */}
+      {draft.isError && !draftPending && (
+        <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>{draft.error instanceof Error ? draft.error.message : 'Could not draft a workflow.'}</span>
         </div>
       )}
     </div>

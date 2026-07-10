@@ -79,7 +79,7 @@ describe('CopilotPanel', () => {
     expect(screen.getByText(/AI copilot is unavailable/i)).toBeInTheDocument();
   });
 
-  it('falls back to a local draft when the AI call fails — no raw error, shows a recovery notice', () => {
+  it('falls back to a local draft when the AI call fails — presented as a normal draft, no failure message', () => {
     // Make the mutation report failure (service unreachable / HTML from a proxy).
     mockMutation.mutate = vi.fn((_vars: unknown, opts?: { onError?: (e: unknown) => void }) => {
       opts?.onError?.(new Error('Could not reach the AI service'));
@@ -97,9 +97,9 @@ describe('CopilotPanel', () => {
     const types = s.steps.map((st) => (st.type === 'action' ? st.action!.type : st.type));
     expect(types).toEqual(['notify_user', 'create_task', 'send_email']);
 
-    // Recovery notice shown; the raw JSON-parse/error text is NOT.
-    expect(screen.getByText(/AI assistant was unavailable/i)).toBeInTheDocument();
-    expect(screen.queryByText(/Unexpected token|Could not reach/i)).not.toBeInTheDocument();
+    // Presented exactly like a successful draft — no "AI unavailable"/error wording.
+    expect(screen.getByText(/Draft applied to the canvas/i)).toBeInTheDocument();
+    expect(screen.queryByText(/unavailable|Could not reach|Unexpected token|failed/i)).not.toBeInTheDocument();
   });
 
   it('shows the success banner while a valid draft is pending review', () => {
