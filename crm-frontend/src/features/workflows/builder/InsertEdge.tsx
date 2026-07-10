@@ -1,11 +1,16 @@
-// Custom edge that draws the connector and a centered "+" insert button. The
-// button is the sole way to add steps (no free-form wiring), so it's always
-// present and grows on hover.
+// Custom edge that draws the connector and a centered "+" insert button. The button
+// is the sole way to add steps (no free-form wiring). It sits in a fixed-position
+// wrapper and only changes colour on hover, so it stays pinned on the line.
 
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, type EdgeProps } from '@xyflow/react';
 import { Plus } from 'lucide-react';
 import type { BuilderEdge } from './graph';
 import { useBuilderActions } from './BuilderContext';
+
+// A clearly-visible connector colour (the design-token `--border` is nearly invisible
+// against the canvas). `--muted-foreground` at partial opacity reads as a solid grey
+// line in both light and dark themes.
+const EDGE_STROKE = 'hsl(var(--muted-foreground) / 0.55)';
 
 export function InsertEdge({
   sourceX,
@@ -30,30 +35,36 @@ export function InsertEdge({
 
   return (
     <>
-      <BaseEdge path={path} markerEnd={markerEnd} style={{ stroke: 'hsl(var(--border))', strokeWidth: 1.5 }} />
+      <BaseEdge path={path} markerEnd={markerEnd} style={{ stroke: EDGE_STROKE, strokeWidth: 2 }} />
       <EdgeLabelRenderer>
         {label && (
           <div
-            className="nodrag nopan absolute -translate-x-1/2 -translate-y-1/2 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
-            style={{ transform: `translate(-50%,-50%) translate(${labelX}px,${labelY - 14}px)`, pointerEvents: 'none' }}
+            className="nodrag nopan absolute rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
+            style={{ transform: `translate(-50%,-50%) translate(${labelX}px,${labelY - 18}px)`, pointerEvents: 'none' }}
           >
             {label}
           </div>
         )}
+        {/* The "+" lives inside a fixed-position wrapper so hover styling on the button
+            (scale/color) can never shift where it sits — it stays pinned on the line. */}
         {!readOnly && (
-          <button
-            type="button"
-            title="Add step"
-            aria-label="Add step"
-            onClick={(e) => {
-              e.stopPropagation();
-              if (data?.insert) onInsert(data.insert, { x: e.clientX, y: e.clientY });
-            }}
-            className="nodrag nopan absolute flex h-5 w-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-border bg-background text-muted-foreground opacity-70 shadow-sm transition-all hover:scale-125 hover:border-ring hover:text-foreground hover:opacity-100"
+          <div
+            className="nodrag nopan absolute"
             style={{ transform: `translate(-50%,-50%) translate(${labelX}px,${labelY}px)`, pointerEvents: 'all' }}
           >
-            <Plus className="h-3 w-3" />
-          </button>
+            <button
+              type="button"
+              title="Add step"
+              aria-label="Add step"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (data?.insert) onInsert(data.insert, { x: e.clientX, y: e.clientY });
+              }}
+              className="flex h-7 w-7 items-center justify-center rounded-full border-2 border-border bg-card text-muted-foreground shadow-sm transition-colors hover:border-primary hover:bg-primary hover:text-primary-foreground"
+            >
+              <Plus className="h-4 w-4" strokeWidth={2.5} />
+            </button>
+          </div>
         )}
       </EdgeLabelRenderer>
     </>
@@ -64,7 +75,7 @@ export function InsertEdge({
 // where the End node itself renders the "+ Add step" affordance.
 export function PlainEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd }: EdgeProps<BuilderEdge>) {
   const [path] = getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition });
-  return <BaseEdge path={path} markerEnd={markerEnd} style={{ stroke: 'hsl(var(--border))', strokeWidth: 1.5, strokeDasharray: '4 4' }} />;
+  return <BaseEdge path={path} markerEnd={markerEnd} style={{ stroke: EDGE_STROKE, strokeWidth: 2, strokeDasharray: '5 5' }} />;
 }
 
 export const edgeTypes = { insert: InsertEdge, plain: PlainEdge };

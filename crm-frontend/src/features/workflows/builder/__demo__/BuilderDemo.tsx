@@ -105,7 +105,13 @@ export function BuilderDemo() {
                 readOnly: false,
               }}
             >
-              <WorkflowCanvas trigger={trigger} steps={steps} selectedId={selectedId} onSelect={select} />
+              <WorkflowCanvas
+                trigger={trigger}
+                steps={steps}
+                selectedId={selectedId}
+                onSelect={select}
+                onReorder={(p, b, f, t) => useBuilderStore.getState().reorderSteps(p, b, f, t)}
+              />
             </BuilderContext.Provider>
           </ReactFlowProvider>
         </div>

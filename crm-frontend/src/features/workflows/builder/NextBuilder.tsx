@@ -341,6 +341,8 @@ export function NextBuilder() {
                 steps={store.steps}
                 selectedId={store.selectedNodeId}
                 onSelect={isMobile ? noopSelect : onSelect}
+                onReorder={store.reorderSteps}
+                canDrag={!isMobile}
               />
             </BuilderContext.Provider>
           </ReactFlowProvider>

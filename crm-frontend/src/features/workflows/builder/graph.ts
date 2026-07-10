@@ -7,6 +7,15 @@ import Dagre from '@dagrejs/dagre';
 import type { Node, Edge } from '@xyflow/react';
 import type { TriggerSpec, WorkflowStep } from '../types';
 
+/**
+ * Target index for a step dropped at `droppedY` among its siblings' Y positions
+ * (siblingYs must EXCLUDE the dragged step). Returns how many siblings sit above the
+ * drop point, which is exactly the arrayMove(from, to) target used by reorderSteps.
+ */
+export function reorderTargetIndex(droppedY: number, siblingYs: number[]): number {
+  return siblingYs.reduce((count, y) => count + (y < droppedY ? 1 : 0), 0);
+}
+
 export const NODE_WIDTH = 280;
 export const NODE_HEIGHTS: Record<BuilderNodeKind, number> = {
   trigger: 84,

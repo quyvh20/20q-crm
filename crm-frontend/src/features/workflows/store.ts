@@ -173,6 +173,33 @@ export function getParentPath(path: StepPath): StepPath | undefined {
 }
 
 /**
+ * Locate a step by id: which sibling list it lives in (parentId + branch), its
+ * index in that list, and the ids of all its siblings (in order). Used by the
+ * canvas drag-to-reorder to map a dropped node to a reorderSteps() call. Returns
+ * null for the trigger/end nodes or an unknown id.
+ */
+export function findStepLocation(
+  steps: WorkflowStep[],
+  id: string,
+  parentId: string | null = null,
+  branch: 'yes' | 'no' | null = null,
+): { parentId: string | null; branch: 'yes' | 'no' | null; index: number; siblingIds: string[] } | null {
+  const index = steps.findIndex((s) => s.id === id);
+  if (index !== -1) {
+    return { parentId, branch, index, siblingIds: steps.map((s) => s.id) };
+  }
+  for (const step of steps) {
+    if (step.type === 'condition') {
+      const inYes = findStepLocation(step.yes_steps ?? [], id, step.id, 'yes');
+      if (inYes) return inYes;
+      const inNo = findStepLocation(step.no_steps ?? [], id, step.id, 'no');
+      if (inNo) return inNo;
+    }
+  }
+  return null;
+}
+
+/**
  * Parse a backend action-path string (BuildStepPath format `idx(|branch|idx)*`,
  * e.g. "0" or "1|yes|2|no|0") into a StepPath. Returns null for an empty or
  * malformed path. Pairs with getStepAtPath for the A3.6 run-history → canvas
