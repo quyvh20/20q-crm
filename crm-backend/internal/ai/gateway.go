@@ -409,7 +409,22 @@ func (g *AIGateway) callCFWorkersWithTools(ctx context.Context, task AITask, mod
 				Params: params,
 			})
 		}
-		if msg.Content != "" || len(result.ToolCalls) > 0 {
+		// Reasoning models (qwen3 on Workers AI) don't populate the structured
+		// tool_calls array — they emit the call INLINE in content as
+		// "<tool_call>{...}</tool_call>". Without this, a perfectly good tool call
+		// reads as prose, the caller sees "no tool calls", and (for the copilot)
+		// every draft fails over to the client's offline fallback. Parse the inline
+		// blocks into real ToolCalls and strip them from the visible content.
+		if len(result.ToolCalls) == 0 && strings.Contains(msg.Content, "<tool_call>") {
+			inline, remaining := parseInlineToolCalls(msg.Content, tools)
+			if len(inline) > 0 {
+				result.ToolCalls = inline
+				result.Content = remaining
+				g.logger.Info("parsed inline <tool_call> block(s) from model content",
+					zap.String("model", model), zap.Int("count", len(inline)))
+			}
+		}
+		if result.Content != "" || len(result.ToolCalls) > 0 {
 			return result, nil
 		}
 	}
@@ -462,7 +477,99 @@ func (g *AIGateway) callCFWorkersWithTools(ctx context.Context, task AITask, mod
 	return result, nil
 }
 
+// inlineToolCallRe matches a "<tool_call>{json}</tool_call>" block that reasoning
+// models (qwen3) emit in content instead of the structured tool_calls array.
+var inlineToolCallRe = regexp.MustCompile(`(?s)<tool_call>\s*(\{.*?\})\s*</tool_call>`)
 
+// parseInlineToolCalls extracts tool calls a model wrote inline in its content and
+// returns them plus the content with the blocks removed. Two inner shapes exist in
+// the wild:
+//   - the documented qwen shape: {"name": "<tool name>", "arguments": {...}}
+//   - a bare-arguments shape:    {...tool arguments directly...}
+//     (observed from qwen3-30b — it skips the wrapper, so "name" may collide with
+//     an ARGUMENT named "name"; only treat it as a wrapper when "name" matches a
+//     real tool.)
+//
+// For the bare shape the tool is inferred: the defined tool whose required params
+// all appear as keys (best match wins), else the single defined tool. Blocks that
+// parse to nothing usable are skipped.
+func parseInlineToolCalls(content string, tools []Tool) ([]ToolCall, string) {
+	matches := inlineToolCallRe.FindAllStringSubmatch(content, -1)
+	if len(matches) == 0 {
+		return nil, content
+	}
+
+	toolNames := make(map[string]bool, len(tools))
+	for _, t := range tools {
+		toolNames[t.Name] = true
+	}
+
+	var calls []ToolCall
+	for i, m := range matches {
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(m[1]), &obj); err != nil {
+			continue
+		}
+
+		// Wrapper shape: {"name": <a REAL tool>, "arguments": {...}}.
+		if rawName, ok := obj["name"]; ok {
+			var name string
+			if json.Unmarshal(rawName, &name) == nil && toolNames[name] {
+				params := obj["arguments"]
+				if !json.Valid(params) || len(params) == 0 {
+					params = json.RawMessage("{}")
+				}
+				calls = append(calls, ToolCall{ID: fmt.Sprintf("inline_%d_%s", i, name), Name: name, Params: params})
+				continue
+			}
+		}
+
+		// Bare-arguments shape: infer the tool from its required params.
+		if name := inferToolByParams(obj, tools); name != "" {
+			calls = append(calls, ToolCall{ID: fmt.Sprintf("inline_%d_%s", i, name), Name: name, Params: json.RawMessage(m[1])})
+		}
+	}
+	if len(calls) == 0 {
+		return nil, content
+	}
+	return calls, strings.TrimSpace(inlineToolCallRe.ReplaceAllString(content, ""))
+}
+
+// inferToolByParams picks the defined tool whose required parameters all appear as
+// keys of obj (most required params wins, so a rich tool beats a no-args one).
+// Falls back to the sole defined tool; returns "" when ambiguous.
+func inferToolByParams(obj map[string]json.RawMessage, tools []Tool) string {
+	best, bestCount := "", -1
+	for _, t := range tools {
+		req, _ := t.Params["required"].([]string)
+		if req == nil {
+			if anyReq, ok := t.Params["required"].([]any); ok {
+				for _, r := range anyReq {
+					if s, ok := r.(string); ok {
+						req = append(req, s)
+					}
+				}
+			}
+		}
+		matched := true
+		for _, r := range req {
+			if _, ok := obj[r]; !ok {
+				matched = false
+				break
+			}
+		}
+		if matched && len(req) > bestCount {
+			best, bestCount = t.Name, len(req)
+		}
+	}
+	if best != "" && bestCount > 0 {
+		return best
+	}
+	if len(tools) == 1 {
+		return tools[0].Name
+	}
+	return ""
+}
 
 func (g *AIGateway) routePrimary(_ AITask) provider {
 	return providerCFWorkers
