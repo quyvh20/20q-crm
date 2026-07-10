@@ -55,20 +55,25 @@ jobs:
           name: server-binary
           path: crm-backend/bin/server
 
-  # The backend previously relied on Railway's GitHub auto-deploy, which stopped
-  # picking up pushes (commits sat undeployed while CI was green — the "Build
-  # Binary" artifact was never consumed by anything). Deploy explicitly with the
-  # Railway CLI instead, using the RAILWAY_TOKEN project token that already exists
-  # in the repo secrets. `railway up` uploads crm-backend/ as the build context
-  # (railway.toml + nixpacks.toml at its root, same as the dashboard builds).
+  # Explicit backend deploy via the Railway CLI (RAILWAY_TOKEN repo secret) so a
+  # push to main deterministically ships — Railway's GitHub auto-deploy proved
+  # flaky (eaeec3f sat undeployed for 45+ minutes while CI was green; the "Build
+  # Binary" artifact was never consumed by anything). Two Railway-specific rules,
+  # both learned the hard way:
+  #  - Run `railway up` from the REPO ROOT: the service sets rootDirectory
+  #    /crm-backend, so uploading crm-backend/ as the context makes Railway look
+  #    for crm-backend/crm-backend and fail ("Failed to read app source directory").
+  #  - Use --ci, not --detach: --detach returns before the build runs, so a failed
+  #    Railway build would leave this job green (a false positive). --ci streams
+  #    the build and exits non-zero on failure.
+  # NOTE: Railway's GitHub auto-deploy may ALSO build each push (double build,
+  # same code — harmless but wasteful). Disable auto-deploy in the Railway service
+  # settings to make this job the single deploy path.
   deploy-backend:
     name: Deploy Backend to Railway
     runs-on: ubuntu-latest
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    defaults:
-      run:
-        working-directory: crm-backend
 
     steps:
       - uses: actions/checkout@v4
@@ -88,7 +93,7 @@ jobs:
             | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const j=JSON.parse(d);const edges=(j.services&&j.services.edges)||[];const names=edges.map(e=>e.node&&e.node.name).filter(Boolean);console.log(names.find(n=>!/postgres|redis|mysql|db/i.test(n))||'')}catch(e){console.log('')}})" \
             || true)
           echo "Resolved service: '${SVC}'"
-          deploy() { railway up --service "$1" --detach && echo "Deployed via service '$1'"; }
+          deploy() { railway up --service "$1" --ci && echo "Deployed via service '$1'"; }
           if [ -n "$SVC" ] && deploy "$SVC"; then exit 0; fi
           for guess in 20q-crm 20q-crm-production crm-backend backend web; do
             if deploy "$guess"; then exit 0; fi
