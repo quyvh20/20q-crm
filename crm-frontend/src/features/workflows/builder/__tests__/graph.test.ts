@@ -42,7 +42,36 @@ describe('stepsToGraph', () => {
     expect(endEdge?.data?.insert).toEqual({ parentId: null, branch: null, index: 3 });
   });
 
-  it('fans a condition into Yes/No branches and rejoins the next sibling', () => {
+  it('lays the Yes branch to the LEFT of the No branch', () => {
+    const { nodes } = stepsToGraph(trigger, [condition('c1', [action('y1')], [action('n1')])]);
+    const x = (id: string) => nodes.find((n) => n.id === id)!.position.x;
+    expect(x('y1')).toBeLessThan(x('n1'));
+  });
+
+  it('keeps Yes-left ordering for a nested condition', () => {
+    const steps = [condition('c1', [condition('c2', [action('yy')], [action('yn')])], [action('n1')])];
+    const { nodes } = stepsToGraph(trigger, steps);
+    const x = (id: string) => nodes.find((n) => n.id === id)!.position.x;
+    // Outer: c2 subtree (Yes) left of n1 (No).
+    expect(x('c2')).toBeLessThan(x('n1'));
+    // Inner: yy (Yes) left of yn (No).
+    expect(x('yy')).toBeLessThan(x('yn'));
+  });
+
+  it('labels both tails of a fresh (empty) If/Else so it shows Yes and No branches', () => {
+    // The core no-merge requirement: a just-added If/Else forks into two labeled
+    // "+ Add step" pills, one per branch, from the moment it exists.
+    const { nodes } = stepsToGraph(trigger, [condition('c1', [], [])]);
+    const ends = nodes.filter((n) => n.data.kind === 'end');
+    const labels = ends.map((n) => n.data.branchLabel).sort();
+    expect(ends).toHaveLength(2);
+    expect(labels).toEqual(['No', 'Yes']);
+  });
+
+  // Defensive: the transform faithfully renders whatever tree it is given, including
+  // a legacy "merge" (a step after a condition). The builder no longer PRODUCES these
+  // — inserts absorb into a branch and loads auto-split — but the render stays correct.
+  it('defensively renders a legacy merge: both branch tails reach the next sibling', () => {
     const steps = [
       condition('c1', [action('y1')], [action('n1')]),
       action('after'),
@@ -60,7 +89,7 @@ describe('stepsToGraph', () => {
     expect(hasEdge(edges, 'n1', 'after')).toBe(true);
   });
 
-  it('routes an empty branch directly from the condition to the next sibling', () => {
+  it('defensively renders a legacy merge with an empty branch (condition → next sibling)', () => {
     const steps = [condition('c1', [], [action('n1')]), action('after')];
     const { edges } = stepsToGraph(trigger, steps);
     // Empty Yes branch: the condition connects straight to the next sibling.

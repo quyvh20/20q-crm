@@ -45,6 +45,9 @@ interface BuilderState {
   isDirty: boolean;
   errors: Record<string, string[]>;
   saving: boolean;
+  /** Set when loading/AI-drafting split a merge (steps after a condition) into both
+   *  branches — drives a one-time "review & save" banner. */
+  autoSplitNotice: boolean;
 
   // AI copilot (A7.3): the pre-draft snapshot, non-null while an applied AI draft
   // is pending Keep/Undo. The canvas shows the draft; Undo restores this.
@@ -74,6 +77,7 @@ interface BuilderState {
   removeStep: (id: string) => void;
   reorderSteps: (parentId: string | null, branch: 'yes' | 'no' | null, fromIdx: number, toIdx: number) => void;
   selectNode: (id: string | null) => void;
+  dismissAutoSplitNotice: () => void;
   validate: () => boolean;
   save: () => Promise<void>;
   loadWorkflow: (id: string) => Promise<void>;
@@ -415,6 +419,139 @@ function reorderStepsInTree(
   });
 }
 
+// ── No-merge invariant (If/Else branches never rejoin) ───────────────
+// Product rule: a condition step is always the LAST step in its sibling list, so
+// its Yes/No branches fork and never merge back. These helpers enforce it across
+// the insert, reorder, load, and AI-draft paths.
+
+/** True if `list` has no condition, or its (first) condition is the last element. */
+function conditionIsTerminal(list: WorkflowStep[]): boolean {
+  const idx = list.findIndex((s) => s.type === 'condition');
+  return idx === -1 || idx === list.length - 1;
+}
+
+/** The sibling list addressed by (parentId, branch): the root list, or a condition's branch. */
+function siblingListAt(
+  steps: WorkflowStep[],
+  parentId: string | null,
+  branch: 'yes' | 'no' | null,
+): WorkflowStep[] | null {
+  if (parentId === null) return steps;
+  const parent = findStepInTree(steps, parentId);
+  if (!parent) return null;
+  if (branch === 'yes') return parent.yes_steps ?? [];
+  if (branch === 'no') return parent.no_steps ?? [];
+  return null;
+}
+
+/** Recursively map every string in a JSON-ish value, returning a new value. */
+function deepMapStrings(value: unknown, fn: (s: string) => string): unknown {
+  if (typeof value === 'string') return fn(value);
+  if (Array.isArray(value)) return value.map((v) => deepMapStrings(v, fn));
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = deepMapStrings(v, fn);
+    return out;
+  }
+  return value;
+}
+
+/**
+ * Deep-clone steps with fresh unique ids, rewriting any {{actions.<oldId>...}}
+ * template references (in action params + condition rules) to the new ids so
+ * intra-subtree references stay valid. Used to copy a merge's post-condition steps
+ * into BOTH branches without producing duplicate ids (which the backend rejects).
+ */
+function cloneStepsFreshIds(steps: WorkflowStep[]): WorkflowStep[] {
+  const idMap = new Map<string, string>();
+  const cloneOne = (step: WorkflowStep): WorkflowStep => {
+    const newId = generateActionId();
+    idMap.set(step.id, newId);
+    const cloned: WorkflowStep = { ...step, id: newId };
+    if (step.action) cloned.action = { ...step.action, id: newId, params: { ...step.action.params } };
+    if (step.delay) cloned.delay = { ...step.delay };
+    if (step.yes_steps) cloned.yes_steps = step.yes_steps.map(cloneOne);
+    if (step.no_steps) cloned.no_steps = step.no_steps.map(cloneOne);
+    return cloned;
+  };
+  const cloned = steps.map(cloneOne);
+  const remapRefs = (str: string): string =>
+    str.replace(/\{\{(\s*)actions\.([A-Za-z0-9_]+)/g, (m, ws: string, oldId: string) => {
+      const n = idMap.get(oldId);
+      return n ? `{{${ws}actions.${n}` : m;
+    });
+  const remapStep = (step: WorkflowStep) => {
+    if (step.action?.params) step.action.params = deepMapStrings(step.action.params, remapRefs) as Record<string, unknown>;
+    if (step.condition) step.condition = deepMapStrings(step.condition, remapRefs) as ConditionGroup;
+    step.yes_steps?.forEach(remapStep);
+    step.no_steps?.forEach(remapStep);
+  };
+  cloned.forEach(remapStep);
+  return cloned;
+}
+
+/**
+ * Normalize a step list so no step follows a condition ("auto-split on open" / AI
+ * draft): the post-condition siblings are copied into BOTH branches (fresh ids) to
+ * preserve the "runs on both paths" behavior the old merge gave. Returns the
+ * rewritten list and whether anything changed.
+ */
+export function normalizeMergesInList(list: WorkflowStep[]): { steps: WorkflowStep[]; changed: boolean } {
+  const idx = list.findIndex((s) => s.type === 'condition');
+  if (idx === -1) return { steps: list, changed: false };
+
+  const cond = list[idx];
+  const pre = list.slice(0, idx);
+  const post = list.slice(idx + 1);
+
+  const yesIn = post.length ? [...(cond.yes_steps ?? []), ...cloneStepsFreshIds(post)] : (cond.yes_steps ?? []);
+  const noIn = post.length ? [...(cond.no_steps ?? []), ...cloneStepsFreshIds(post)] : (cond.no_steps ?? []);
+  const yes = normalizeMergesInList(yesIn);
+  const no = normalizeMergesInList(noIn);
+
+  const newCond: WorkflowStep = { ...cond, yes_steps: yes.steps, no_steps: no.steps };
+  const changed = post.length > 0 || yes.changed || no.changed;
+  return { steps: [...pre, newCond], changed };
+}
+
+/**
+ * Insert a condition at (parentId, branch, index), absorbing any steps that would
+ * land after it into its Yes branch — so the condition stays terminal and its
+ * branches never merge (the "insert & absorb" behavior). The No branch starts empty.
+ */
+function insertConditionAbsorbing(
+  steps: WorkflowStep[],
+  parentId: string | null,
+  branch: 'yes' | 'no' | null,
+  cond: WorkflowStep,
+  index?: number,
+): WorkflowStep[] {
+  const doInsert = (list: WorkflowStep[]): WorkflowStep[] => {
+    const at = index === undefined ? list.length : Math.max(0, Math.min(index, list.length));
+    const before = list.slice(0, at);
+    const after = list.slice(at);
+    const newCond = after.length
+      ? { ...cond, yes_steps: [...(cond.yes_steps ?? []), ...after] }
+      : cond;
+    return [...before, newCond];
+  };
+
+  if (parentId === null) return doInsert(steps);
+
+  return steps.map((s) => {
+    if (s.id === parentId) {
+      const updated = { ...s };
+      if (branch === 'yes') updated.yes_steps = doInsert(s.yes_steps ?? []);
+      else if (branch === 'no') updated.no_steps = doInsert(s.no_steps ?? []);
+      return updated;
+    }
+    const next = { ...s };
+    if (s.yes_steps) next.yes_steps = insertConditionAbsorbing(s.yes_steps, parentId, branch, cond, index);
+    if (s.no_steps) next.no_steps = insertConditionAbsorbing(s.no_steps, parentId, branch, cond, index);
+    return next;
+  });
+}
+
 function flattenSteps(steps: WorkflowStep[]): ActionSpec[] {
   const result: ActionSpec[] = [];
   for (const step of steps) {
@@ -521,6 +658,7 @@ const initialState = {
   isDirty: false,
   errors: {} as Record<string, string[]>,
   saving: false,
+  autoSplitNotice: false,
   draftSnapshot: null as WorkflowDraftSnapshot | null,
   schema: null as WorkflowSchema | null,
   schemaLoading: false,
@@ -604,7 +742,11 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
           };
         }
       }
-      const steps = addStepToTree(s.steps || [], parentId, branch, step, index);
+      // A condition absorbs any steps that would land after it into its Yes branch
+      // (insert & absorb) so branches never merge; other steps insert normally.
+      const steps = step.type === 'condition'
+        ? insertConditionAbsorbing(s.steps || [], parentId, branch, step, index)
+        : addStepToTree(s.steps || [], parentId, branch, step, index);
       const actions = flattenSteps(steps);
       return { steps, actions, isDirty: true };
     }),
@@ -658,11 +800,19 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
   reorderSteps: (parentId, branch, fromIdx, toIdx) =>
     set((s) => {
       const steps = reorderStepsInTree(s.steps || [], parentId, branch, fromIdx, toIdx);
+      // No-merge invariant: a condition must stay last in its sibling list. Reject a
+      // move that would place a step after a condition — return a fresh ref of the
+      // unchanged tree so the canvas re-lays-out and the dragged node snaps home.
+      const movedList = siblingListAt(steps, parentId, branch);
+      if (movedList && !conditionIsTerminal(movedList)) {
+        return { steps: (s.steps || []).slice() };
+      }
       const actions = flattenSteps(steps);
       return { steps, actions, isDirty: true };
     }),
 
   selectNode: (id) => set({ selectedNodeId: id }),
+  dismissAutoSplitNotice: () => set({ autoSplitNotice: false }),
 
   validate: () => {
     const state = get();
@@ -833,6 +983,28 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
     }
     if (state.steps && state.steps.length > 0) {
       validateStepConditions(state.steps, 'steps.');
+    }
+
+    // No-merge invariant backstop: a condition must be the LAST step in its sibling
+    // list (its Yes/No branches never rejoin). The insert/reorder/normalize guards
+    // keep this true; this catches anything that slips through so a merge can't be saved.
+    function assertTerminalConditions(list: WorkflowStep[]) {
+      const idx = list.findIndex((s) => s.type === 'condition');
+      if (idx !== -1 && idx !== list.length - 1) {
+        const bad = list[idx];
+        errors[`step.${bad.id}`] = [
+          "An If/Else must be the last step in its path — its branches can't merge back. Move the steps after it into a branch.",
+        ];
+      }
+      for (const s of list) {
+        if (s.type === 'condition') {
+          assertTerminalConditions(s.yes_steps ?? []);
+          assertTerminalConditions(s.no_steps ?? []);
+        }
+      }
+    }
+    if (state.steps && state.steps.length > 0) {
+      assertTerminalConditions(state.steps);
     }
 
     // Validate email addresses in send_email actions
@@ -1021,7 +1193,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
   },
 
   applyLoadedWorkflow: (wf) => {
-    const loadedSteps = wf.steps && wf.steps.length > 0
+    const rawSteps = wf.steps && wf.steps.length > 0
       ? wf.steps
       : (wf.actions || []).map((a) => ({
           id: a.id,
@@ -1029,6 +1201,11 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
           action: a.type === 'delay' ? undefined : a,
           params: a.type === 'delay' ? a.params : undefined,
         } as WorkflowStep));
+    // Auto-split on open: a saved workflow may contain steps after a condition (a
+    // merge). Copy them into both branches so the branches no longer rejoin. If this
+    // changed anything, mark dirty + notice so a Save persists the cleanup; re-derive
+    // actions from the rewritten tree. Otherwise behave exactly as before.
+    const { steps, changed } = normalizeMergesInList(rawSteps);
     set({
       workflowId: wf.id,
       createdBy: wf.created_by ?? null,
@@ -1037,9 +1214,10 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       isActive: wf.is_active,
       trigger: wf.trigger,
       conditions: wf.conditions,
-      actions: wf.actions || [],
-      steps: loadedSteps,
-      isDirty: false,
+      actions: changed ? flattenSteps(steps) : (wf.actions || []),
+      steps,
+      isDirty: changed,
+      autoSplitNotice: changed,
       errors: {},
       selectedNodeId: null,
       draftSnapshot: null,
@@ -1060,7 +1238,9 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       steps: state.steps,
       isDirty: state.isDirty,
     };
-    const steps = (draft.steps || []) as WorkflowStep[];
+    // Auto-split any merge the model emitted (steps after a condition) into both
+    // branches, same as loading a saved workflow — the canvas never shows a merge.
+    const { steps, changed } = normalizeMergesInList((draft.steps || []) as WorkflowStep[]);
     set({
       draftSnapshot: snapshot,
       name: draft.name || state.name,
@@ -1072,12 +1252,13 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       steps,
       actions: flattenSteps(steps),
       isDirty: true,
+      autoSplitNotice: changed,
       errors: {},
       selectedNodeId: null,
     });
   },
 
-  keepDraft: () => set({ draftSnapshot: null }),
+  keepDraft: () => set({ draftSnapshot: null, autoSplitNotice: false }),
 
   undoDraft: () => {
     const snap = get().draftSnapshot;
@@ -1091,6 +1272,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       steps: snap.steps,
       draftSnapshot: null,
       isDirty: snap.isDirty,
+      autoSplitNotice: false,
       errors: {},
       selectedNodeId: null,
     });

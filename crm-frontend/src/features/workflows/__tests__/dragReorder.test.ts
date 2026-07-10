@@ -8,9 +8,13 @@ import type { WorkflowStep } from '../types';
 // onNodeDragStop; this covers the pure logic underneath it.
 
 const action = (id: string): WorkflowStep => ({ id, type: 'action', action: { id, type: 'create_task', params: {} } });
+// The condition is LAST — the no-merge invariant (a condition can't have siblings
+// after it). Reorders that would move a step past it, or the condition above a
+// sibling, are rejected by the store.
 const tree = (): WorkflowStep[] => [
   action('a'),
   action('b'),
+  action('c'),
   {
     id: 'cond',
     type: 'condition',
@@ -18,12 +22,11 @@ const tree = (): WorkflowStep[] => [
     yes_steps: [action('y0'), action('y1')],
     no_steps: [action('n0')],
   },
-  action('c'),
 ];
 
 describe('findStepLocation', () => {
   it('locates a top-level step with its siblings', () => {
-    expect(findStepLocation(tree(), 'b')).toEqual({ parentId: null, branch: null, index: 1, siblingIds: ['a', 'b', 'cond', 'c'] });
+    expect(findStepLocation(tree(), 'b')).toEqual({ parentId: null, branch: null, index: 1, siblingIds: ['a', 'b', 'c', 'cond'] });
   });
   it('locates a step inside a yes-branch', () => {
     expect(findStepLocation(tree(), 'y1')).toEqual({ parentId: 'cond', branch: 'yes', index: 1, siblingIds: ['y0', 'y1'] });
@@ -53,14 +56,31 @@ describe('reorderTargetIndex', () => {
 describe('drag-reorder applied through the store', () => {
   beforeEach(() => useBuilderStore.getState().reset());
 
-  it('moves a top-level step to a new position', () => {
+  it('moves a top-level step among the steps before the condition', () => {
     useBuilderStore.setState({ steps: tree() });
-    // Simulate dragging 'a' (index 0) down past 'b' and 'cond' → drops after them.
+    // Drag 'a' (index 0) down past 'b' and 'c', but it stays before the terminal condition.
     const loc = findStepLocation(useBuilderStore.getState().steps, 'a')!;
-    // siblings excluding 'a' are b, cond, c at (say) Y 100, 200, 300; drop at 250.
+    // siblings excluding 'a' are b, c, cond at Y 100, 200, 300; drop at 250.
     const toIdx = reorderTargetIndex(250, [100, 200, 300]);
     useBuilderStore.getState().reorderSteps(loc.parentId, loc.branch, loc.index, toIdx);
-    expect(useBuilderStore.getState().steps.map((s) => s.id)).toEqual(['b', 'cond', 'a', 'c']);
+    expect(useBuilderStore.getState().steps.map((s) => s.id)).toEqual(['b', 'c', 'a', 'cond']);
+  });
+
+  it('rejects moving the condition above its siblings (would create a merge)', () => {
+    useBuilderStore.setState({ steps: tree() });
+    const loc = findStepLocation(useBuilderStore.getState().steps, 'cond')!;
+    // Drag the condition (index 3) to the top → arrayMove would put a,b,c after it.
+    useBuilderStore.getState().reorderSteps(loc.parentId, loc.branch, loc.index, 0);
+    // Rejected: order unchanged (condition stays terminal).
+    expect(useBuilderStore.getState().steps.map((s) => s.id)).toEqual(['a', 'b', 'c', 'cond']);
+  });
+
+  it('rejects dragging a step below the condition (would create a merge)', () => {
+    useBuilderStore.setState({ steps: tree() });
+    const loc = findStepLocation(useBuilderStore.getState().steps, 'a')!;
+    // Drop 'a' past the condition (index 3) → would land after it.
+    useBuilderStore.getState().reorderSteps(loc.parentId, loc.branch, loc.index, 3);
+    expect(useBuilderStore.getState().steps.map((s) => s.id)).toEqual(['a', 'b', 'c', 'cond']);
   });
 
   it('reorders within a branch only, leaving siblings elsewhere untouched', () => {
@@ -73,6 +93,6 @@ describe('drag-reorder applied through the store', () => {
     const cond = useBuilderStore.getState().steps.find((s) => s.id === 'cond')!;
     expect(cond.yes_steps!.map((s) => s.id)).toEqual(['y1', 'y0']);
     // top level untouched
-    expect(useBuilderStore.getState().steps.map((s) => s.id)).toEqual(['a', 'b', 'cond', 'c']);
+    expect(useBuilderStore.getState().steps.map((s) => s.id)).toEqual(['a', 'b', 'c', 'cond']);
   });
 });

@@ -53,6 +53,8 @@ const MOCK_SCHEMA: WorkflowSchema = {
   users: [{ id: 'u1', name: 'Ada Lovelace', email: 'ada@acme.com' }],
 };
 
+// The If/Else is the LAST step in its list: branches fork and never merge back, so
+// the log-activity step lives INSIDE the Yes branch rather than after the condition.
 const sampleSteps: WorkflowStep[] = [
   { id: 's1', type: 'action', action: { id: 's1', type: 'send_email', params: { subject: 'Welcome aboard', to: '{{contact.email}}' } } },
   { id: 'd1', type: 'delay', delay: { duration_sec: 2 * 86400 } },
@@ -62,12 +64,12 @@ const sampleSteps: WorkflowStep[] = [
     condition: { op: 'AND', rules: [{ field: 'deal.value', operator: 'gte', value: 1000 }] },
     yes_steps: [
       { id: 'y1', type: 'action', action: { id: 'y1', type: 'assign_user', params: { strategy: 'round_robin', pool: ['u1'] } } },
+      { id: 's2', type: 'action', action: { id: 's2', type: 'log_activity', params: { activity_type: 'note' } } },
     ],
     no_steps: [
       { id: 'n1', type: 'action', action: { id: 'n1', type: 'create_task', params: { title: 'Follow up' } } },
     ],
   },
-  { id: 's2', type: 'action', action: { id: 's2', type: 'log_activity', params: { activity_type: 'note' } } },
 ];
 
 export function BuilderDemo() {

@@ -144,11 +144,14 @@ export function stepsToGraph(trigger: TriggerSpec | null, steps: WorkflowStep[])
           step.id,
           'no',
         );
-        // Both branch tails rejoin whatever follows this condition. The edge
-        // into the next sibling gets a parent-level insert slot at connection
-        // time (below); the tails keep their branch-local slot so a trailing
-        // "+" appends to the branch that ended.
-        pending = [...yesOut, ...noOut].map((p) => ({ ...p, label: undefined }));
+        // A condition forks into Yes/No and the branches never rejoin: the builder
+        // forbids steps after a condition (store insert-absorb + normalize-on-load),
+        // so each branch tail flows on independently and becomes its own trailing
+        // "+ Add step" pill. Keep the Yes/No label on the tail so an EMPTY branch's
+        // pill is badged — that's what makes a fresh If/Else show both branches.
+        // (A defensively-rendered legacy merge, which should not survive
+        // normalization, just yields labeled branch edges — harmless.)
+        pending = [...yesOut, ...noOut];
       } else {
         pending = [{ source: step.id, insert: { parentId, branch, index: i + 1 } }];
       }
@@ -196,12 +199,81 @@ function layout(nodes: BuilderNode[], edges: BuilderEdge[]): BuilderNode[] {
   }
   Dagre.layout(g);
 
+  // Dagre centers (mutable copy so enforceYesLeft can mirror forks in place).
+  const pos = new Map<string, { x: number; y: number }>();
+  for (const n of nodes) {
+    const p = g.node(n.id);
+    if (p) pos.set(n.id, { x: p.x, y: p.y });
+  }
+  enforceYesLeft(nodes, edges, pos);
+
   return nodes.map((n) => {
-    const pos = g.node(n.id);
+    const p = pos.get(n.id);
     const h = NODE_HEIGHTS[n.data.kind];
     return {
       ...n,
-      position: pos ? { x: pos.x - NODE_WIDTH / 2, y: pos.y - h / 2 } : n.position,
+      position: p ? { x: p.x - NODE_WIDTH / 2, y: p.y - h / 2 } : n.position,
     };
   });
+}
+
+// A condition's branches must read Yes-left / No-right. Dagre's crossing-minimizer
+// picks a side arbitrarily, so after layout we mirror any fork whose Yes subtree
+// landed on the right. Conditions are processed outer→inner: a parent mirror also
+// flips its nested forks, which are then corrected when each nested condition is
+// processed (a mirror around a subtree's own center preserves its footprint, so the
+// parent arrangement is untouched).
+function enforceYesLeft(
+  nodes: BuilderNode[],
+  edges: BuilderEdge[],
+  pos: Map<string, { x: number; y: number }>,
+): void {
+  const adj = new Map<string, string[]>();
+  for (const e of edges) {
+    const list = adj.get(e.source) ?? [];
+    list.push(e.target);
+    adj.set(e.source, list);
+  }
+  // All nodes reachable downward from a branch root (branches are disjoint trees
+  // once merges are normalized away, so a branch's set includes its own end nodes).
+  const reachable = (root: string): string[] => {
+    const seen = new Set<string>();
+    const stack = [root];
+    while (stack.length) {
+      const id = stack.pop()!;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      for (const t of adj.get(id) ?? []) stack.push(t);
+    }
+    return [...seen];
+  };
+  const meanX = (ids: string[]): number | null => {
+    const xs = ids.map((id) => pos.get(id)?.x).filter((x): x is number => x !== undefined);
+    return xs.length ? xs.reduce((s, v) => s + v, 0) / xs.length : null;
+  };
+
+  // Outer→inner: conditions higher up (smaller y) first.
+  const conds = nodes
+    .filter((n) => n.data.kind === 'condition')
+    .sort((a, b) => (pos.get(a.id)?.y ?? 0) - (pos.get(b.id)?.y ?? 0));
+
+  for (const c of conds) {
+    const out = edges.filter((e) => e.source === c.id);
+    const yesRoot = out.find((e) => e.label === 'Yes')?.target;
+    const noRoot = out.find((e) => e.label === 'No')?.target;
+    if (!yesRoot || !noRoot) continue;
+
+    const branchIds = new Set([...reachable(yesRoot), ...reachable(noRoot)]);
+    const yc = meanX(reachable(yesRoot));
+    const nc = meanX(reachable(noRoot));
+    if (yc === null || nc === null || yc <= nc) continue; // already Yes-left (or unclear)
+
+    // Mirror the whole fork around its combined horizontal center to swap the sides.
+    const xs = [...branchIds].map((id) => pos.get(id)?.x).filter((x): x is number => x !== undefined);
+    const mid = (Math.min(...xs) + Math.max(...xs)) / 2;
+    for (const id of branchIds) {
+      const p = pos.get(id);
+      if (p) p.x = 2 * mid - p.x;
+    }
+  }
 }

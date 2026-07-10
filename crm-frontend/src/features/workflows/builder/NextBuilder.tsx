@@ -106,6 +106,32 @@ export function NextBuilder() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated, isEditing, isDuplicating, wfQuery.data, dupQuery.data, targetKey]);
 
+  // Auto-migrate on open: if loading an EXISTING workflow auto-split a merge (steps
+  // after a condition), persist the fix immediately so the engine stops running the
+  // old merged version even if the user navigates away without an explicit Save.
+  // Skipped for a new/duplicate draft (no saved row to migrate) and while an AI draft
+  // is pending review (draftSnapshot set). Fires once per workflow id.
+  const autoMigratedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!hydrated || !isEditing || !store.workflowId) return;
+    if (!store.autoSplitNotice || store.draftSnapshot) return;
+    if (autoMigratedRef.current === store.workflowId) return;
+    autoMigratedRef.current = store.workflowId;
+    const targetId = store.workflowId;
+    const stepsSnapshot = store.steps; // detect a concurrent user edit during the save
+    saveMutation.mutate(
+      { id: targetId, payload: store.buildSavePayload() },
+      {
+        onSuccess: () => {
+          const s = useBuilderStore.getState();
+          const untouched = s.steps === stepsSnapshot && s.workflowId === targetId;
+          useBuilderStore.setState({ autoSplitNotice: false, ...(untouched ? { isDirty: false } : {}) });
+        },
+      },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated, isEditing, store.autoSplitNotice, store.draftSnapshot, store.workflowId]);
+
   // Deep link (A3.6): /workflows/:id?node=<action_path> selects the matching canvas
   // node — used by RunHistory to jump from a run's step log to its builder node.
   // Runs once the store is hydrated, once per distinct node param.
@@ -170,7 +196,7 @@ export function NextBuilder() {
           // persisted workflow — clear draftSnapshot (an implicit Keep) so the
           // "Keep / Undo" banner doesn't linger over already-saved content and
           // Undo can't later revert the store away from what the server holds.
-          useBuilderStore.setState({ workflowId: wf.id, createdBy: wf.created_by ?? null, isDirty: false, draftSnapshot: null });
+          useBuilderStore.setState({ workflowId: wf.id, createdBy: wf.created_by ?? null, isDirty: false, draftSnapshot: null, autoSplitNotice: false });
           // After a CREATE (vars.id null), make the URL addressable/refresh-safe —
           // parity with the legacy builder. The detail cache was just primed by the
           // mutation, so the re-hydrate reads it without a network round-trip.
@@ -285,6 +311,24 @@ export function NextBuilder() {
         <div className="flex items-center gap-2 border-b border-border bg-purple-500/10 px-4 py-2 text-xs text-foreground">
           <Sparkles className="h-3.5 w-3.5 shrink-0 text-purple-500" />
           <span>AI request received — open this workflow on a larger screen to review the draft.</span>
+        </div>
+      )}
+
+      {/* Auto-split notice: this workflow had steps after an If/Else (a merge); they
+          were copied into both branches so the branches no longer rejoin. Shown until
+          saved or dismissed. Desktop only (mobile is read-only). */}
+      {store.autoSplitNotice && !isMobile && (
+        <div className="flex items-center gap-2 border-b border-border bg-amber-500/10 px-4 py-1.5 text-xs">
+          <span className="font-medium text-foreground">If/Else updated</span>
+          <span className="text-muted-foreground">
+            · steps after an If/Else were copied into both branches so the branches no longer merge — review and Save to keep it
+          </span>
+          <button
+            onClick={() => store.dismissAutoSplitNotice()}
+            className="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <X className="h-3.5 w-3.5" /> Dismiss
+          </button>
         </div>
       )}
 

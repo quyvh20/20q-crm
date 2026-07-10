@@ -1365,29 +1365,45 @@ describe('reorderActions shim', () => {
 // reorderSteps — mixed step types
 // ═════════════════════════════════════════════════════════════════════
 describe('reorderSteps — mixed types', () => {
-  it('reorders action and delay steps at root', () => {
+  it('reorders action and delay steps before the terminal condition', () => {
     useBuilderStore.getState().addStep(mkDelay('d1', 60), null, null);
     useBuilderStore.getState().addStep(mkAction('a1'), null, null);
     useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
 
+    // Swap d1 and a1 (both sit before the condition) — allowed.
+    useBuilderStore.getState().reorderSteps(null, null, 0, 1);
+
+    const ids = useBuilderStore.getState().steps.map((s) => s.id);
+    expect(ids).toEqual(['a1', 'd1', 'c1']);
+  });
+
+  it('rejects moving a condition ahead of its siblings (no merge)', () => {
+    useBuilderStore.getState().addStep(mkDelay('d1', 60), null, null);
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+
+    // Moving c1 (index 2) to the front would strand d1,a1 after it — rejected.
     useBuilderStore.getState().reorderSteps(null, null, 2, 0);
 
     const ids = useBuilderStore.getState().steps.map((s) => s.id);
-    expect(ids).toEqual(['c1', 'd1', 'a1']);
+    expect(ids).toEqual(['d1', 'a1', 'c1']);
   });
 
-  it('reorders condition with children — subtree stays intact', () => {
+  it('reorders siblings before a condition — its subtree stays intact', () => {
     const condWithKids = mkCondition('c1', [mkAction('y1')], [mkAction('n1')]);
     useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a2'), null, null);
     useBuilderStore.getState().addStep(condWithKids, null, null);
 
-    useBuilderStore.getState().reorderSteps(null, null, 1, 0);
+    // Swap a1 and a2 (both before the terminal condition).
+    useBuilderStore.getState().reorderSteps(null, null, 0, 1);
 
     const steps = useBuilderStore.getState().steps;
-    expect(steps[0].id).toBe('c1');
-    expect(steps[0].yes_steps!.map((s) => s.id)).toEqual(['y1']);
-    expect(steps[0].no_steps!.map((s) => s.id)).toEqual(['n1']);
-    expect(steps[1].id).toBe('a1');
+    expect(steps.map((s) => s.id)).toEqual(['a2', 'a1', 'c1']);
+    // Condition carried through untouched, still last.
+    expect(steps[2].id).toBe('c1');
+    expect(steps[2].yes_steps!.map((s) => s.id)).toEqual(['y1']);
+    expect(steps[2].no_steps!.map((s) => s.id)).toEqual(['n1']);
   });
 
   it('reorders delays in a branch', () => {
@@ -2393,19 +2409,20 @@ describe('TestStore_MoveStepBetweenBranches', () => {
   });
 
   // ── move condition (subtree) ──────────────────────────────────────
-  it('moves nested condition with its subtree from yes to no', () => {
+  it('moves a nested condition into a branch, absorbing later steps so it stays terminal', () => {
     const inner = mkCondition('inner', [mkAction('deep')]);
     useBuilderStore.getState().addStep(
       mkCondition('c1', [inner], [mkAction('n1')]),
       null, null
     );
+    // inner lands at the FRONT of c1.no; n1 would otherwise follow it (a merge), so
+    // n1 is absorbed into inner's Yes branch (insert & absorb — branches never merge).
     moveBetweenBranches('inner', 'c1', 'no', 0);
 
     const root = useBuilderStore.getState().steps[0];
     expect(root.yes_steps).toHaveLength(0);
-    expect(root.no_steps![0].id).toBe('inner');
-    expect(root.no_steps![0].yes_steps![0].id).toBe('deep');
-    expect(root.no_steps![1].id).toBe('n1');
+    expect(root.no_steps!.map((s) => s.id)).toEqual(['inner']);
+    expect(root.no_steps![0].yes_steps!.map((s) => s.id)).toEqual(['deep', 'n1']);
   });
 
   // ── deep nesting ──────────────────────────────────────────────────
