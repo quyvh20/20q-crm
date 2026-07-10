@@ -99,6 +99,11 @@ func (h *Handler) DraftWorkflow(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{"draft": draft, "validation": validation}})
 }
 
+// copilotBuildTag fingerprints the running binary in the health payload. Bump it
+// alongside copilot-critical backend changes: prod once served a stale build while
+// every deploy signal was green, and nothing could say WHICH code was live.
+const copilotBuildTag = "2026-07-10.2-inline-toolcall-parser"
+
 // draftHealthResult is the health probe's verdict on the copilot's AI path.
 type draftHealthResult struct {
 	OK         bool   `json:"ok"`         // the AI path is reachable and answered
@@ -106,6 +111,7 @@ type draftHealthResult struct {
 	Model      string `json:"model,omitempty"`
 	LatencyMs  int64  `json:"latency_ms"`
 	Detail     string `json:"detail,omitempty"` // failure reason when !ok
+	Build      string `json:"build"`            // copilotBuildTag of the running binary
 }
 
 // probeDraftAI runs ONE tiny, bounded model call on the same task/model the draft
@@ -113,13 +119,13 @@ type draftHealthResult struct {
 // cost of a full draft. Pure enough to unit-test with a fake caller (no gin/DB).
 func (h *Handler) probeDraftAI(ctx context.Context, orgID, userID uuid.UUID) draftHealthResult {
 	if h.draftAI == nil {
-		return draftHealthResult{Detail: "AI copilot is not configured (SetDraftAI was not wired at boot — check CF_ACCOUNT_ID / CF_AI_GATEWAY_ID / CF_AI_TOKEN)"}
+		return draftHealthResult{Build: copilotBuildTag, Detail: "AI copilot is not configured (SetDraftAI was not wired at boot — check CF_ACCOUNT_ID / CF_AI_GATEWAY_ID / CF_AI_TOKEN)"}
 	}
 	start := time.Now()
 	resp, err := h.draftAI.Complete(ctx, orgID, userID, ai.TaskWorkflowDraft, []ai.Message{
 		{Role: "user", Content: "Reply with the single word: ok"},
 	})
-	res := draftHealthResult{Configured: true, LatencyMs: time.Since(start).Milliseconds()}
+	res := draftHealthResult{Build: copilotBuildTag, Configured: true, LatencyMs: time.Since(start).Milliseconds()}
 	if err != nil {
 		res.Detail = sanitizedProbeError(ctx, err)
 		return res

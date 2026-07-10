@@ -441,6 +441,8 @@ export interface AIHealth {
   model?: string;
   latency_ms: number;
   detail?: string;
+  /** Build fingerprint of the running backend — identifies WHICH code is live. */
+  build?: string;
 }
 
 /** Probe the copilot's AI path end-to-end (gateway + Cloudflare creds + model) via

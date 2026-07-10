@@ -106,6 +106,9 @@ func TestDraftHealth_Healthy_200(t *testing.T) {
 	require.Equal(t, http.StatusOK, code)
 	require.True(t, body.OK)
 	require.Equal(t, "@cf/qwen/qwen3-30b-a3b-fp8", body.Model)
+	// The build fingerprint identifies WHICH code is live — prod once served a
+	// stale build while every deploy signal was green.
+	require.Equal(t, copilotBuildTag, body.Build)
 }
 
 func TestDraftHealth_Unreachable_503(t *testing.T) {

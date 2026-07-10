@@ -69,11 +69,18 @@ jobs:
   # NOTE: Railway's GitHub auto-deploy may ALSO build each push (double build,
   # same code — harmless but wasteful). Disable auto-deploy in the Railway service
   # settings to make this job the single deploy path.
+  # TEMPORARILY DISABLED (if: false): the CLI-built deployment that went live at
+  # 14:35 UTC 2026-07-10 served PRE-eaeec3f behavior despite a green build from an
+  # ef9dfee checkout — it replaced the WORKING Railway GitHub auto-deploy build and
+  # regressed the copilot. Until that's explained (suspect: CLI upload context vs
+  # rootDirectory + build cache), Railway's GitHub auto-deploy is the single deploy
+  # path again. The /ai/health `build` fingerprint now identifies the running code,
+  # so a future re-enable can be verified instead of deduced.
   deploy-backend:
     name: Deploy Backend to Railway
     runs-on: ubuntu-latest
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: ${{ false }}
 
     steps:
       - uses: actions/checkout@v4
