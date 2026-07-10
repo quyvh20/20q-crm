@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"crm-backend/internal/ai"
 
@@ -32,6 +33,13 @@ func (h *Handler) SetDraftAI(g draftAICaller) { h.draftAI = g }
 // maxDraftIterations bounds the copilot tool loop: enough for a get_workflow_schema
 // round-trip then a draft_workflow call, with slack, but never unbounded.
 const maxDraftIterations = 4
+
+// draftTimeout hard-bounds the WHOLE draft (every model call + tool iteration +
+// retry inside the gateway). The copilot is interactive, so it must fail as clean
+// JSON well before any client (45s) or reverse-proxy timeout — otherwise a slow
+// model turns into an HTML gateway-timeout page the client can't parse. Kept under
+// the frontend's abort so the browser receives our error rather than aborting first.
+const draftTimeout = 28 * time.Second
 
 // WorkflowDraft is the normalized draft the copilot returns. The shapes mirror the
 // save payload (trigger/conditions/steps) so the client can apply it directly.
@@ -68,7 +76,13 @@ func (h *Handler) DraftWorkflow(c *gin.Context) {
 		return
 	}
 
-	draft, validation, err := h.generateDraft(c.Request.Context(), orgID, userID, req.Prompt, req.CurrentWorkflow)
+	// Bound the whole draft so it can never hang past the client/proxy timeout and
+	// surface as an HTML gateway-timeout page — on expiry generateDraft returns a
+	// normal error and we reply with clean JSON (the client then shows its fallback).
+	ctx, cancel := context.WithTimeout(c.Request.Context(), draftTimeout)
+	defer cancel()
+
+	draft, validation, err := h.generateDraft(ctx, orgID, userID, req.Prompt, req.CurrentWorkflow)
 	if err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
 		return

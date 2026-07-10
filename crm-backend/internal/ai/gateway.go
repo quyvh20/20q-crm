@@ -674,6 +674,13 @@ func (g *AIGateway) doRequest(ctx context.Context, url, method string, headers m
 		
 		// Handle timeout or connectivity errors
 		if err != nil {
+			// Once the caller's context is done (e.g. an interactive request hit its
+			// deadline), stop immediately — don't burn another attempt + backoff sleep.
+			// This keeps a request-level timeout prompt instead of dragging on for the
+			// full retry budget and surfacing as a gateway-timeout HTML page.
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			if isTimeoutErr(err) && attempt < maxRetries {
 				g.logger.Warn("AI API Timeout, retrying...", zap.Int("attempt", attempt+1))
 				time.Sleep(time.Duration(1<<attempt) * time.Second) // exponential backoff
@@ -697,6 +704,9 @@ func (g *AIGateway) doRequest(ctx context.Context, url, method string, headers m
 			lastStatus = res.StatusCode
 			lastData = data
 			if attempt < maxRetries {
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
 				g.logger.Warn("CF Gateway 502/504 timeout, retrying...", zap.Int("attempt", attempt+1), zap.Int("status", res.StatusCode))
 				time.Sleep(time.Duration(1<<attempt) * time.Second) // exponential backoff
 				continue
