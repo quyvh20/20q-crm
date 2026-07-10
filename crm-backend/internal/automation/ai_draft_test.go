@@ -224,6 +224,37 @@ func TestGenerateDraft_NoToolCallsIsError(t *testing.T) {
 	require.Contains(t, err.Error(), "can't help")
 }
 
+// When the model emitted an inline <tool_call> the gateway couldn't parse even after
+// repair, the loop must tell it and retry — not fail the draft with the raw block as
+// the error (the pre-fix behavior every user saw as "the AI wasn't reachable").
+func TestGenerateDraft_UnparseableInlineToolCallRetries(t *testing.T) {
+	orgID := uuid.New()
+	fake := &fakeDraftAI{responses: []ai.AIResponse{
+		{Content: "<tool_call>{this is not rescuable json</tool_call>"},
+		{ToolCalls: []ai.ToolCall{toolCall("2", "draft_workflow", validDraftArgs)}},
+	}}
+	h := handlerWithSchema(orgID, fake)
+
+	draft, _, err := h.generateDraft(context.Background(), orgID, uuid.New(), "email new contacts", nil)
+	require.NoError(t, err)
+	require.Equal(t, "Welcome email", draft.Name)
+	require.Equal(t, 2, fake.calls, "first call fails to parse, corrective retry succeeds")
+}
+
+// If every iteration returns an unparseable inline block, the error must be the
+// friendly exhaustion message — never the raw <tool_call> text.
+func TestGenerateDraft_UnparseableInlineToolCallExhaustsCleanly(t *testing.T) {
+	orgID := uuid.New()
+	bad := ai.AIResponse{Content: "<tool_call>{this is not rescuable json</tool_call>"}
+	fake := &fakeDraftAI{responses: []ai.AIResponse{bad, bad, bad, bad}}
+	h := handlerWithSchema(orgID, fake)
+
+	_, _, err := h.generateDraft(context.Background(), orgID, uuid.New(), "email new contacts", nil)
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "<tool_call>", "raw model output must not surface as the API error")
+	require.Contains(t, err.Error(), "couldn't finish a draft")
+}
+
 func TestFinalizeDraft_MalformedJSON(t *testing.T) {
 	_, _, err := finalizeDraft(json.RawMessage(`{not json`))
 	require.Error(t, err)
