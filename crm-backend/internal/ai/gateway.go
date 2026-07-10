@@ -474,12 +474,121 @@ func (g *AIGateway) callCFWorkersWithTools(ctx context.Context, task AITask, mod
 		})
 	}
 
+	// Same rescue as the OpenAI-format branch: reasoning models can emit the tool
+	// call inline in the response text instead of the structured array. Without this
+	// the legacy path silently returned the block as prose.
+	if len(result.ToolCalls) == 0 && strings.Contains(result.Content, "<tool_call>") {
+		inline, remaining := parseInlineToolCalls(result.Content, tools)
+		if len(inline) > 0 {
+			result.ToolCalls = inline
+			result.Content = remaining
+			g.logger.Info("parsed inline <tool_call> block(s) from legacy-format model content",
+				zap.String("model", model), zap.Int("count", len(inline)))
+		}
+	}
+
 	return result, nil
 }
 
 // inlineToolCallRe matches a "<tool_call>{json}</tool_call>" block that reasoning
 // models (qwen3) emit in content instead of the structured tool_calls array.
 var inlineToolCallRe = regexp.MustCompile(`(?s)<tool_call>\s*(\{.*?\})\s*</tool_call>`)
+
+// unclosedToolCallRe rescues a block whose closing </tool_call> tag never arrived
+// (output truncated, or the model just forgot the tag): grab from the first "{"
+// after the opening tag to the end of content and let the bracket repairer close it.
+var unclosedToolCallRe = regexp.MustCompile(`(?s)<tool_call>\s*(\{.*)$`)
+
+// repairJSONBrackets fixes the bracket mistakes LLMs make writing tool-call JSON by
+// hand — observed live from qwen3-30b: a draft ended "...]}}}" where "...]}]}}" was
+// meant (it lost count and closed an array with "}"), which strict json.Unmarshal
+// rejects and, without repair, downed the whole copilot draft. Scans outside string
+// literals with a bracket stack: a closer that mismatches the stack top gets the
+// expected closer(s) inserted before it, an extra closer is dropped, and any
+// still-open brackets are closed at the end. Only called AFTER strict parsing fails,
+// and the result is only used if it then parses — a wrong guess can't make anything
+// worse than the failure it started from.
+func repairJSONBrackets(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	var stack []byte
+	inString := false
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			b.WriteByte(c)
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+			b.WriteByte(c)
+		case '{', '[':
+			stack = append(stack, c)
+			b.WriteByte(c)
+		case '}', ']':
+			opener := byte('{')
+			if c == ']' {
+				opener = '['
+			}
+			// Close any inner brackets the model forgot before this closer.
+			for len(stack) > 0 && stack[len(stack)-1] != opener {
+				if stack[len(stack)-1] == '{' {
+					b.WriteByte('}')
+				} else {
+					b.WriteByte(']')
+				}
+				stack = stack[:len(stack)-1]
+			}
+			if len(stack) == 0 {
+				continue // extra closer with nothing open — drop it
+			}
+			stack = stack[:len(stack)-1]
+			b.WriteByte(c)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	// Close anything still open (truncated output). A string cut off mid-value gets
+	// its quote back first; if the result still isn't valid JSON the caller discards it.
+	if inString && !escaped {
+		b.WriteByte('"')
+	}
+	for i := len(stack) - 1; i >= 0; i-- {
+		if stack[i] == '{' {
+			b.WriteByte('}')
+		} else {
+			b.WriteByte(']')
+		}
+	}
+	return b.String()
+}
+
+// parseInlineJSONObject parses one inline block's JSON, repairing bracket mistakes
+// when strict parsing fails. Returns the (possibly repaired) raw JSON and its keys,
+// or ok=false when it can't be salvaged.
+func parseInlineJSONObject(raw string) (json.RawMessage, map[string]json.RawMessage, bool) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &obj); err == nil {
+		return json.RawMessage(raw), obj, true
+	}
+	repaired := repairJSONBrackets(raw)
+	if repaired == raw {
+		return nil, nil, false
+	}
+	if err := json.Unmarshal([]byte(repaired), &obj); err != nil {
+		return nil, nil, false
+	}
+	return json.RawMessage(repaired), obj, true
+}
 
 // parseInlineToolCalls extracts tool calls a model wrote inline in its content and
 // returns them plus the content with the blocks removed. Two inner shapes exist in
@@ -494,9 +603,16 @@ var inlineToolCallRe = regexp.MustCompile(`(?s)<tool_call>\s*(\{.*?\})\s*</tool_
 // all appear as keys (best match wins), else the single defined tool. Blocks that
 // parse to nothing usable are skipped.
 func parseInlineToolCalls(content string, tools []Tool) ([]ToolCall, string) {
+	stripRe := inlineToolCallRe
 	matches := inlineToolCallRe.FindAllStringSubmatch(content, -1)
 	if len(matches) == 0 {
-		return nil, content
+		// No closed block — rescue an unterminated one (truncated output or a
+		// forgotten closing tag) and let the bracket repairer finish it.
+		matches = unclosedToolCallRe.FindAllStringSubmatch(content, -1)
+		if len(matches) == 0 {
+			return nil, content
+		}
+		stripRe = unclosedToolCallRe
 	}
 
 	toolNames := make(map[string]bool, len(tools))
@@ -506,8 +622,8 @@ func parseInlineToolCalls(content string, tools []Tool) ([]ToolCall, string) {
 
 	var calls []ToolCall
 	for i, m := range matches {
-		var obj map[string]json.RawMessage
-		if err := json.Unmarshal([]byte(m[1]), &obj); err != nil {
+		raw, obj, ok := parseInlineJSONObject(m[1])
+		if !ok {
 			continue
 		}
 
@@ -526,13 +642,13 @@ func parseInlineToolCalls(content string, tools []Tool) ([]ToolCall, string) {
 
 		// Bare-arguments shape: infer the tool from its required params.
 		if name := inferToolByParams(obj, tools); name != "" {
-			calls = append(calls, ToolCall{ID: fmt.Sprintf("inline_%d_%s", i, name), Name: name, Params: json.RawMessage(m[1])})
+			calls = append(calls, ToolCall{ID: fmt.Sprintf("inline_%d_%s", i, name), Name: name, Params: raw})
 		}
 	}
 	if len(calls) == 0 {
 		return nil, content
 	}
-	return calls, strings.TrimSpace(inlineToolCallRe.ReplaceAllString(content, ""))
+	return calls, strings.TrimSpace(stripRe.ReplaceAllString(content, ""))
 }
 
 // inferToolByParams picks the defined tool whose required parameters all appear as

@@ -102,7 +102,7 @@ func (h *Handler) DraftWorkflow(c *gin.Context) {
 // copilotBuildTag fingerprints the running binary in the health payload. Bump it
 // alongside copilot-critical backend changes: prod once served a stale build while
 // every deploy signal was green, and nothing could say WHICH code was live.
-const copilotBuildTag = "2026-07-10.2-inline-toolcall-parser"
+const copilotBuildTag = "2026-07-10.3-inline-json-repair"
 
 // draftHealthResult is the health probe's verdict on the copilot's AI path.
 type draftHealthResult struct {
@@ -199,9 +199,19 @@ func (h *Handler) generateDraft(ctx context.Context, orgID, userID uuid.UUID, pr
 			return nil, nil, fmt.Errorf("the AI copilot is unavailable right now — please try again")
 		}
 		if len(resp.ToolCalls) == 0 {
+			msg := strings.TrimSpace(resp.Content)
+			// The model TRIED to tool-call but wrote it as text the gateway couldn't
+			// parse even after repair (seen live: bracket-miscounted JSON from qwen3).
+			// Tell it what went wrong and let it re-emit within the iteration budget —
+			// failing here surfaced the raw <tool_call> block as the API error.
+			if strings.Contains(msg, "<tool_call>") {
+				messages = append(messages,
+					ai.Message{Role: "assistant", Content: resp.Content},
+					ai.Message{Role: "user", Content: "Your draft_workflow call was not parseable (the JSON had unbalanced brackets). Call draft_workflow again with the same draft as strictly valid JSON."})
+				continue
+			}
 			// The model answered with prose instead of drafting. Surface a short hint
 			// rather than a mystery failure.
-			msg := strings.TrimSpace(resp.Content)
 			if msg == "" {
 				msg = "the assistant didn't produce a workflow — try describing the trigger and the steps"
 			}
