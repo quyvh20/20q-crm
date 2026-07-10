@@ -3026,7 +3026,7 @@ describe('TestPathUtil_IsDescendant', () => {
 // ═════════════════════════════════════════════════════════════════════
 describe('TestDnd_DragFromPaletteIntoYesBranch', () => {
   // ── Helpers: simulate palette → drop zone step construction ──────
-  // These mirror WorkflowBuilder.handleDragEnd + getDefaultParams
+  // These mirror the builder's step-insert + getDefaultParams logic
 
   function paletteDrop(
     actionType: string,
@@ -3441,7 +3441,7 @@ describe('TestDnd_BlockedDragIntoOwnDescendant', () => {
     return true;
   }
 
-  /** Local resolvePathById (mirrors WorkflowBuilder.tsx) */
+  /** Local resolvePathById (mirrors the store's path resolution) */
   function resolvePathByIdLocal(
     steps: WorkflowStep[],
     targetId: string,

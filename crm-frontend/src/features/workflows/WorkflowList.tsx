@@ -262,7 +262,7 @@ export const WorkflowList: React.FC = () => {
               key={wf.id}
               className="bg-gray-800/60 border border-gray-700 rounded-xl p-4 hover:border-gray-600 transition-all group"
             >
-              <div className="flex items-center gap-4">
+              <div className="flex flex-wrap items-center gap-4">
                 {/* Status dot */}
                 <div className="relative">
                   <div
@@ -308,8 +308,8 @@ export const WorkflowList: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Actions */}
-                <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                {/* Actions — always visible on touch/small screens, hover-revealed on desktop. */}
+                <div className="flex flex-wrap items-center gap-2 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100">
                   {/* Run Now is shown only to callers the backend would authorize
                       (owner/admin/manager, or the workflow's creator) so a forbidden
                       caller isn't offered a control that would 403. */}

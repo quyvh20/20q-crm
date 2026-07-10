@@ -1,9 +1,8 @@
 // React Query data layer for workflows (A3.4). Centralizes server-state fetching
 // + cache keys + mutation/invalidation, mirroring the reports feature's use of
-// @tanstack/react-query. The new builder (NextBuilder) and WorkflowList consume
-// these hooks; the legacy dnd-kit builder still uses the store's own fetch methods
-// until A8. Schema + object-fields deliberately stay on the zustand store — they're
-// org-level builder config the store already caches and shares with both builders'
+// @tanstack/react-query. The builder (NextBuilder) and WorkflowList consume these
+// hooks. Schema + object-fields deliberately stay on the zustand store — they're
+// org-level builder config the store already caches and shares with the builder's
 // config panels (with bespoke invalidateSchema semantics).
 
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
@@ -55,11 +54,9 @@ export function useWorkflowsList(params: WorkflowListParams) {
     queryKey: workflowKeys.list(params),
     queryFn: () => getWorkflows(params),
     placeholderData: keepPreviousData,
-    // Always refetch on mount so returning to the list reflects saves made in the
-    // builder. Required because the primary create/edit path still runs through the
-    // legacy builder (store.save), which doesn't invalidate this cache — until A3.6
-    // swaps the route to NextBuilder. keepPreviousData avoids an empty flash while
-    // the refetch is in flight.
+    // Always refetch on mount so returning to the list reflects the latest server
+    // state. The save mutation already invalidates this cache, so this is a harmless
+    // safety refetch; keepPreviousData avoids an empty flash while it's in flight.
     refetchOnMount: 'always',
   });
 }

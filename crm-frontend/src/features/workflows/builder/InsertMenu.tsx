@@ -5,7 +5,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Search } from 'lucide-react';
 import { useBuilderStore, generateActionId } from '../store';
-import { getDefaultParams } from '../nodes/AddNodeButton';
+import { getDefaultParams } from './stepDefaults';
 import type { WorkflowStep, ActionSpec } from '../types';
 import type { InsertContext } from './graph';
 import { actionMeta, conditionMeta, delayMeta } from './nodeMeta';

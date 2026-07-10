@@ -22,7 +22,6 @@ import VerifyEmailPage from './pages/VerifyEmailPage';
 import ConversationLogPage from './pages/ConversationLogPage';
 import VoicePage from './pages/VoicePage';
 import { WorkflowList } from './features/workflows/WorkflowList';
-import { WorkflowBuilder } from './features/workflows/WorkflowBuilder';
 import { NextBuilder } from './features/workflows/builder/NextBuilder';
 import { BuilderDemo } from './features/workflows/builder/__demo__/BuilderDemo';
 import { RunHistory } from './features/workflows/RunHistory';
@@ -207,14 +206,6 @@ function App() {
             <Route path="/workflows/email-templates/:id" element={
               <ProtectedRoute>
                 <AppLayout><EmailTemplateEditor /></AppLayout>
-              </ProtectedRoute>
-            } />
-            {/* A3.6: the new React Flow builder is now the default at /workflows/:id;
-                the legacy dnd-kit builder stays reachable at /workflows/:id/legacy
-                until A8. Both read/write identical steps JSON (safe since A1). */}
-            <Route path="/workflows/:id/legacy" element={
-              <ProtectedRoute>
-                <AppLayout><WorkflowBuilder /></AppLayout>
               </ProtectedRoute>
             } />
             <Route path="/workflows/:id/history" element={

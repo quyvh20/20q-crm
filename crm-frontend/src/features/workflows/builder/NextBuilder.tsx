@@ -1,7 +1,6 @@
 // The new workflow builder page (A3): a React Flow canvas with a top toolbar and
-// a right config panel. Structured editing only — no free-form wiring. As of A3.6
-// this is the default builder at /workflows/:id; the legacy dnd-kit builder remains
-// at /workflows/:id/legacy until A8.
+// a right config panel. Structured editing only — no free-form wiring. This is the
+// builder at /workflows/:id (the legacy dnd-kit builder was removed in A8).
 //
 // Data layer (A3.4): the workflow itself loads + saves through React Query
 // (../queries); the zustand store holds the working copy + schema. On load the
@@ -46,9 +45,9 @@ export function NextBuilder() {
   const sampleKind = entityKindForTrigger(store.trigger?.type);
   const canTest = Boolean(store.workflowId) && sampleKind !== null;
 
-  // Mobile guard (parity with the legacy builder): the canvas needs a wide screen.
-  // A full mobile pass is A8; until then, block below 768px rather than render a
-  // cramped, unusable canvas.
+  // Below 768px the builder is read-only (A8 mobile pass): the canvas is a pannable
+  // preview, and the config panel + editing controls (Save/Test/name) are hidden.
+  // Structured editing needs a wide screen, so it stays desktop-only.
   const [isMobile, setIsMobile] = useState(false);
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);
@@ -136,10 +135,12 @@ export function NextBuilder() {
   // Consume the handoff exactly once: once the builder has hydrated (CopilotPanel has
   // mounted + auto-drafted), clear it. Otherwise saving a created workflow re-hydrates
   // the builder under the new id, remounting CopilotPanel with the same prompt and
-  // firing a SECOND draft over the just-saved workflow.
+  // firing a SECOND draft over the just-saved workflow. Gated on !isMobile: on mobile
+  // the config aside (which holds CopilotPanel) isn't rendered, so the prompt can't be
+  // consumed yet — keep it so widening to desktop still drafts it (a notice is shown).
   useEffect(() => {
-    if (hydrated && aiHandoffPrompt) setAiHandoffPrompt('');
-  }, [hydrated, aiHandoffPrompt]);
+    if (hydrated && !isMobile && aiHandoffPrompt) setAiHandoffPrompt('');
+  }, [hydrated, isMobile, aiHandoffPrompt]);
   useEffect(() => {
     if (!hydrated || !nodeParam || handledNodeRef.current === nodeParam) return;
     handledNodeRef.current = nodeParam;
@@ -153,6 +154,7 @@ export function NextBuilder() {
   const [insertState, setInsertState] = useState<{ slot: InsertContext; anchor: { x: number; y: number } } | null>(null);
 
   const onSelect = useCallback((nodeId: string) => store.selectNode(nodeId), [store]);
+  const noopSelect = useCallback(() => {}, []); // mobile read-only: node-tap does nothing (no config panel)
   const onInsert = useCallback((slot: InsertContext, anchor?: { x: number; y: number }) => {
     setInsertState({ slot, anchor: anchor ?? { x: window.innerWidth / 2, y: window.innerHeight / 2 } });
   }, []);
@@ -219,23 +221,6 @@ export function NextBuilder() {
     );
   }
 
-  if (isMobile) {
-    return (
-      <div className="flex h-[calc(100vh-4rem)] flex-col items-center justify-center gap-3 px-6 text-center">
-        <p className="text-base font-semibold text-foreground">Desktop required</p>
-        <p className="max-w-sm text-sm text-muted-foreground">
-          The workflow builder needs a wider screen. Open it on a desktop or tablet in landscape.
-        </p>
-        <button
-          onClick={() => navigate('/workflows')}
-          className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground"
-        >
-          Back to Workflows
-        </button>
-      </div>
-    );
-  }
-
   if (!hydrated) {
     return (
       <div className="flex h-[calc(100vh-4rem)] items-center justify-center text-muted-foreground">
@@ -259,44 +244,52 @@ export function NextBuilder() {
           value={store.name}
           onChange={(e) => store.setName(e.target.value)}
           placeholder="Untitled workflow"
+          readOnly={isMobile}
           className="flex-1 bg-transparent text-sm font-semibold text-foreground outline-none placeholder:text-muted-foreground"
         />
-        {saveMutation.isError && (
-          <span role="alert" className="text-xs text-destructive">
-            {saveMutation.error instanceof Error ? saveMutation.error.message : 'Save failed'}
-          </span>
+        {isMobile ? (
+          <span className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground">View-only</span>
+        ) : (
+          <>
+            {saveMutation.isError && (
+              <span role="alert" className="text-xs text-destructive">
+                {saveMutation.error instanceof Error ? saveMutation.error.message : 'Save failed'}
+              </span>
+            )}
+            {canTest && (
+              <button
+                onClick={() => { testMutation.reset(); setTestOpen(true); }}
+                disabled={store.isDirty}
+                title={store.isDirty ? 'Save your changes to test the latest version' : 'Dry-run against a sample record'}
+                className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm text-foreground hover:bg-muted disabled:opacity-50"
+              >
+                <FlaskConical className="h-4 w-4" />
+                Test
+              </button>
+            )}
+            <button
+              onClick={handleSave}
+              disabled={saveMutation.isPending || !store.isDirty}
+              className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
+            >
+              {saveMutation.isPending ? 'Saving…' : 'Save'}
+            </button>
+          </>
         )}
-        {store.workflowId && (
-          <button
-            onClick={() => navigate(`/workflows/${store.workflowId}/legacy`)}
-            title="Open this workflow in the classic builder"
-            className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            Classic editor
-          </button>
-        )}
-        {canTest && (
-          <button
-            onClick={() => { testMutation.reset(); setTestOpen(true); }}
-            disabled={store.isDirty}
-            title={store.isDirty ? 'Save your changes to test the latest version' : 'Dry-run against a sample record'}
-            className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm text-foreground hover:bg-muted disabled:opacity-50"
-          >
-            <FlaskConical className="h-4 w-4" />
-            Test
-          </button>
-        )}
-        <button
-          onClick={handleSave}
-          disabled={saveMutation.isPending || !store.isDirty}
-          className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
-        >
-          {saveMutation.isPending ? 'Saving…' : 'Save'}
-        </button>
       </div>
 
-      {/* Dry-run banner */}
-      {dryRun && (
+      {/* On mobile, an incoming AI handoff (?ai=) can't be drafted here — the copilot
+          lives in the hidden config panel. Tell the user so the request isn't a silent
+          dead-end; the prompt is retained so widening to desktop drafts it. */}
+      {isMobile && aiHandoffPrompt && (
+        <div className="flex items-center gap-2 border-b border-border bg-purple-500/10 px-4 py-2 text-xs text-foreground">
+          <Sparkles className="h-3.5 w-3.5 shrink-0 text-purple-500" />
+          <span>AI request received — open this workflow on a larger screen to review the draft.</span>
+        </div>
+      )}
+
+      {/* Dry-run banner (desktop only — hidden on the read-only mobile canvas) */}
+      {dryRun && !isMobile && (
         <div className="flex items-center gap-2 border-b border-border bg-muted/40 px-4 py-1.5 text-xs">
           <FlaskConical className="h-3.5 w-3.5 text-primary" />
           <span className="font-medium text-foreground">Dry run</span>
@@ -314,8 +307,8 @@ export function NextBuilder() {
       )}
 
       {/* AI draft — Keep / Undo (A7.3). The canvas is the preview; Undo restores the
-          pre-draft snapshot. */}
-      {store.draftSnapshot && (
+          pre-draft snapshot. Hidden on mobile — no editing surface there. */}
+      {store.draftSnapshot && !isMobile && (
         <div className="flex items-center gap-2 border-b border-border bg-purple-500/10 px-4 py-1.5 text-xs">
           <Sparkles className="h-3.5 w-3.5 text-purple-500" />
           <span className="font-medium text-foreground">AI draft applied</span>
@@ -337,23 +330,26 @@ export function NextBuilder() {
         </div>
       )}
 
-      {/* Canvas + right panel */}
+      {/* Canvas + right panel. On mobile the canvas is read-only (no insert "+",
+          node-tap is a no-op since the config panel is hidden) — a pannable preview. */}
       <div className="flex flex-1 overflow-hidden">
         <div className="relative flex-1">
           <ReactFlowProvider>
-            <BuilderContext.Provider value={{ onSelect, onInsert, selectedId: store.selectedNodeId, readOnly: false, dryRun }}>
+            <BuilderContext.Provider value={{ onSelect: isMobile ? noopSelect : onSelect, onInsert, selectedId: store.selectedNodeId, readOnly: isMobile, dryRun }}>
               <WorkflowCanvas
                 trigger={store.trigger}
                 steps={store.steps}
                 selectedId={store.selectedNodeId}
-                onSelect={onSelect}
+                onSelect={isMobile ? noopSelect : onSelect}
               />
             </BuilderContext.Provider>
           </ReactFlowProvider>
         </div>
-        <aside className="w-[380px] shrink-0 overflow-hidden border-l border-border bg-card">
-          <BuilderSidePanel dryRun={dryRun} aiPrompt={aiHandoffPrompt || null} />
-        </aside>
+        {!isMobile && (
+          <aside className="w-[380px] shrink-0 overflow-hidden border-l border-border bg-card">
+            <BuilderSidePanel dryRun={dryRun} aiPrompt={aiHandoffPrompt || null} />
+          </aside>
+        )}
       </div>
 
       {insertState && (

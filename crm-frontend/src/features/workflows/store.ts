@@ -1159,9 +1159,9 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
 
 // The steps↔actions subscribe back-sync was removed in overhaul A1: steps are
 // the canonical format (the server derives the deprecated flat list itself).
-// The in-memory `actions` view is maintained by the tree mutations via
-// flattenSteps for the legacy config panel until the A3 builder replaces it;
-// code that seeds state directly must set `steps` (loadWorkflow maps legacy
-// actions-only workflows explicitly).
+// The in-memory `actions` view is still maintained by the tree mutations via
+// flattenSteps because the builder's ActionConfig resolves the selected action
+// from it; code that seeds state directly must set `steps` (loadWorkflow maps
+// legacy actions-only workflows explicitly).
 
 

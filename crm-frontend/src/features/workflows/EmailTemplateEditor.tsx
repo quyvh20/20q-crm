@@ -188,7 +188,7 @@ export const EmailTemplateEditor: React.FC = () => {
       )}
 
       <div className="space-y-4 rounded-2xl border border-border bg-card p-5">
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
             <label className="mb-1 block text-sm text-muted-foreground">Name</label>
             <input value={name} onChange={(e) => markDirty(setName)(e.target.value)} placeholder="Welcome email" className={inputCls} />

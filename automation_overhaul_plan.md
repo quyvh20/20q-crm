@@ -27,7 +27,7 @@ The current system's engine core is sound (durable DB-backed runs with `FOR UPDA
 | A5 | Email templates library + TipTap editor + scoped merge tags | BE + FE | **DONE** (A5.1 table+CRUD+test-send+send_email template_id; A5.2 library page; A5.3 TipTap merge-tag editor; A5.4 template dropdown + trigger-scoped picker). Uncommitted. |
 | A6 | New actions: in-app notifications + inbox, create_record, find/enroll | BE + FE | **DONE** (A6.1 notifications + A6.2 inbox UI + A6.3 notify_user + A6.4 create_record + A6.5 find/enroll). Uncommitted. Live SSE/DB E2E pending a running stack. A7 next. |
 | A7 | AI copilot (NL → draft on canvas) + `ai_generate` step action | BE + FE | **DONE** (A7.1 `ai_generate` step + A7.2 NL→draft endpoint + A7.3 Copilot builder tab + A7.4 Command Center `create_workflow`/`update_workflow` tools). Uncommitted. A8 (cutover & cleanup) next. |
-| A8 | Cutover & cleanup: drop legacy builder + flat Actions column, mobile pass | Both | planned |
+| A8 | Cutover & cleanup: remove legacy builder, mobile pass; flat-Actions teardown deferred | Both | **DONE** (A8.1 legacy builder removed + A8.2 mobile pass + A8.3 docs). Backend flat-`Actions` teardown **deferred to 2026-09-01** (date-gated); field-maps registry migration + store legacy-method cleanup also deferred. Uncommitted. |
 
 ---
 
@@ -213,8 +213,22 @@ The current system's engine core is sound (durable DB-backed runs with `FOR UPDA
 
 ## A8 — Cutover & cleanup
 
-- Remove `/legacy` builder + dnd-kit builder code + old panels.
-- Execute the scheduled flat-Actions removal: verify no steps-less workflows remain, drop the column, delete `MigrateFlatActionsToSteps`, the legacy flat execution path in `processRun`, and `DelayExecutor`.
-- Remove hardcoded builtin field maps in `handlers.go` (old builder gone).
-- Mobile pass: canvas read-only + list/history usable below 768px instead of blocked.
-- Docs.
+**Original checklist (three items proved unsafe/inaccurate on inspection — see corrections):**
+- ~~Remove `/legacy` builder + dnd-kit builder code + old panels.~~ **DONE (A8.1).**
+- Execute the scheduled flat-Actions removal (drop the column, delete `MigrateFlatActionsToSteps`, the legacy `processRun` path, `DelayExecutor`). → **DEFERRED to 2026-09-01** (date-gated; see below).
+- ~~Remove hardcoded builtin field maps in `handlers.go` (old builder gone).~~ → **not a legacy artifact — deferred** (they're load-bearing; see below).
+- ~~Mobile pass: canvas read-only + list/history usable below 768px.~~ **DONE (A8.2).**
+- ~~Docs.~~ **DONE (A8.3, this section).**
+
+### Progress (uncommitted on `main`)
+
+- **A8.1 — legacy dnd-kit builder removed (frontend). DONE.** Deleted `WorkflowBuilder.tsx`, `DragContext.ts`, all of `nodes/` and `panels/` (config panels + 11 typed inputs + ActionPalette/FieldPicker/SmartValueInput), and the 10 legacy test files that rendered them. Relocated the one shared symbol — `getDefaultParams` — out of the deleted `nodes/AddNodeButton` into new `builder/stepDefaults.ts` (the InsertMenu's only legacy import). Removed the `/workflows/:id/legacy` route + `WorkflowBuilder` import in `App.tsx` and the "Classic editor" toolbar link in `NextBuilder`. Backfilled the deleted panel round-trip coverage with `builder/config/__tests__/ActionRoundTrip.test.tsx` (send_email subject / log_activity type+title / assign_user strategy persist through the shared `store.updateAction`). **Kept** (not legacy): `RunNowModal`, `store.ts` (its legacy-only methods `insertAction`/`removeAction`/`reorderActions`/`reorderSteps`/`save`/`loadWorkflow`/`duplicateFrom` still have non-legacy tests — a separate follow-up), `StepTreeOps.test`/`actionLabels.logActivity.test`. `@dnd-kit/*` kept — it's used by the deals/objects **Kanban** boards, not just the builder.
+- **A8.2 — mobile pass (frontend). DONE.** `NextBuilder` no longer hard-blocks below 768px ("Desktop required" removed); it now renders a **read-only** builder on mobile — `readOnly:true` into `BuilderContext` (removes insert "+"), node-tap is a no-op, the 380px config aside is hidden, and the toolbar shows a "View-only" badge with Save/Test/name-edit suppressed. The canvas stays a pannable React Flow preview. `WorkflowList` + `EmailTemplatesPage` row actions are now touch-visible (always shown on small screens, hover-revealed on desktop) and wrap; `EmailTemplateEditor` name/scope grid is `grid-cols-1 sm:grid-cols-2`. `RunHistory` already degraded fine (no change).
+- **A8.3 — docs. DONE.** This section rewritten; stale "until A8" / "legacy dnd-kit builder" comments cleaned up in `NextBuilder`, `queries.ts`, `store.ts`, `api.ts`.
+- **Adversarial review (3 dims × find→verify, 11 agents) found & fixed 4 (all low):** the A7.4 `?ai=` handoff was silently dropped on mobile (aside/CopilotPanel not rendered) → the prompt is now retained (consume gated on `!isMobile`) + a "AI request received — open on a larger screen" notice shows so it isn't a dead-end; the Keep/Undo + dry-run banners weren't gated by `isMobile` (a desktop→mobile resize left them clickable on the read-only surface) → both now `!isMobile`; a stale `queries.ts refetchOnMount` comment + two `StepTreeOps.test` comments still named the deleted builder → cleaned; `EmailTemplatesPage` got `flex-wrap` for parity with the doc/WorkflowList. Verified: `tsc -b` clean; **664** FE tests (46 files) green; `/builder-demo` drive confirmed the InsertMenu → `ai_generate` default-params (relocated `getDefaultParams`) works; grep sweeps show no dangling legacy refs and `@dnd-kit` only in the Kanban files; `crm-backend` untouched. Uncommitted.
+
+### Deferred (documented, not done)
+
+- **Backend flat-`Actions` teardown — date-gated to 2026-09-01** (`models.go:23`, `repository.go:601`: *"Deadline: 2026-09-01. After this date, remove this fallback and require Steps"*). Dropping the column early breaks rollback (a prior backend version reads it) and is additionally gated on the verification SQL (zero steps-less rows). It's one coupled unit: the `Actions` column (`models.go:21,43`) ⇄ `deriveActionsFromSteps`/`FlattenStepsToActions` write bridge (`handlers.go:149`, `models.go:210`, called on every save) ⇄ the legacy `processRun` execute path (`engine.go:672-831`) + `DelayExecutor` (`executor_webhook.go:100`, registered `engine.go:225`, reachable ONLY via that path — the durable-delay step replaced it for steps) ⇄ `stepsForDryRun` fallback (`engine_dryrun.go:60`) ⇄ `MigrateFlatActionsToSteps` startup backfill (`repository.go:606`, called `repository.go:59`). Remove the whole unit together, after the date + the zero-rows check.
+- **Hardcoded field maps → registry migration.** `builtinObjectFieldDefs`/`builtinSchemaEntities` (`handlers.go:1310/1358`) are **not** a legacy-builder artifact: `buildSchema` (`handlers.go:1398`) serves `GET /api/workflows/schema` (the new builder's pickers) and is reused by the A7 AI copilot (`ai_draft.go:83`); `GetSchemaObjectFields` calls them directly. They're removable only by routing through the A2-deferred `ObjectRegistryUseCase.GetSchema` (`usecase/object_registry_usecase.go`).
+- **`store.ts` legacy-method cleanup** (the dead shims + test-coupled `save`/`loadWorkflow`/`duplicateFrom`/`reorderSteps`) — a small frontend follow-up, decoupled from the builder deletion.

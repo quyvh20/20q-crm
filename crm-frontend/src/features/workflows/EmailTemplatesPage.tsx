@@ -84,7 +84,7 @@ export const EmailTemplatesPage: React.FC = () => {
           {templates.map((t) => (
             <div
               key={t.id}
-              className="group flex items-center gap-4 rounded-xl border border-border bg-card p-4 transition-colors hover:border-ring/60"
+              className="group flex flex-wrap items-center gap-4 rounded-xl border border-border bg-card p-4 transition-colors hover:border-ring/60"
             >
               <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
                 <FileText className="h-5 w-5 text-primary" />
@@ -100,7 +100,7 @@ export const EmailTemplatesPage: React.FC = () => {
                   )}
                 </div>
               </button>
-              <div className="flex items-center gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
+              <div className="flex flex-wrap items-center gap-1.5 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100">
                 <button
                   onClick={() => handleTestSend(t)}
                   disabled={testSend.isPending}
