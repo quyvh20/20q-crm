@@ -3,14 +3,52 @@ import { getAccessToken } from '../../lib/api';
 
 const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8080' : '');
 
-async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
+async function apiFetch(path: string, options: RequestInit & { timeoutMs?: number } = {}): Promise<Response> {
+  const { timeoutMs, ...init } = options;
   const token = getAccessToken();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    ...(options.headers as Record<string, string> || {}),
+    ...(init.headers as Record<string, string> || {}),
   };
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  return fetch(`${API_URL}${path}`, { ...options, headers, credentials: 'include' });
+  // Optional client-side timeout so a hung request (e.g. a slow AI call behind a
+  // proxy) fails fast instead of spinning forever.
+  const controller = timeoutMs ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    return await fetch(`${API_URL}${path}`, {
+      ...init,
+      headers,
+      credentials: 'include',
+      signal: controller?.signal ?? init.signal,
+    });
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Read a JSON body defensively. A proxy, gateway timeout, auth wall, or 404 at the
+ * edge can return an HTML page ("<!DOCTYPE html>…") instead of JSON; calling
+ * res.json() on that throws a cryptic `Unexpected token '<'`. This reads the body
+ * once and, on a non-JSON payload, throws a clear message keyed to the HTTP status
+ * — the raw parse error never reaches the UI.
+ */
+async function parseJsonSafe(res: Response): Promise<any> {
+  const text = await res.text();
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch {
+    const hint =
+      res.status === 401 || res.status === 403
+        ? 'your session may have expired — please sign in again'
+        : res.status === 404
+          ? 'the service endpoint was not found'
+          : res.status === 0 || res.status >= 500
+            ? 'the service is temporarily unavailable — please try again'
+            : 'the server returned an unexpected response';
+    throw new Error(`Request failed (HTTP ${res.status || '000'}) — ${hint}.`);
+  }
 }
 
 // --- Workflow CRUD ---
@@ -22,14 +60,14 @@ export async function getWorkflows(params?: { active?: boolean; q?: string; page
   if (params?.page) qs.set('page', String(params.page));
   if (params?.size) qs.set('size', String(params.size));
   const res = await apiFetch(`/api/workflows?${qs.toString()}`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch workflows');
   return json.data as WorkflowListResponse;
 }
 
 export async function getWorkflow(id: string): Promise<Workflow> {
   const res = await apiFetch(`/api/workflows/${id}`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch workflow');
   return json.data as Workflow;
 }
@@ -48,7 +86,7 @@ export async function createWorkflow(data: {
     method: 'POST',
     body: JSON.stringify(data),
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) {
     const details = json.error?.details;
     if (details?.length) {
@@ -73,7 +111,7 @@ export async function updateWorkflow(id: string, data: {
     method: 'PUT',
     body: JSON.stringify(data),
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) {
     const details = json.error?.details;
     if (details?.length) {
@@ -94,7 +132,7 @@ export async function deleteWorkflow(id: string): Promise<void> {
 
 export async function toggleWorkflow(id: string): Promise<Workflow> {
   const res = await apiFetch(`/api/workflows/${id}/toggle`, { method: 'POST' });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error?.message || 'Failed to toggle workflow');
   return json.data as Workflow;
 }
@@ -110,7 +148,7 @@ export async function testRunWorkflow(
     method: 'POST',
     body: JSON.stringify(body),
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error?.message || 'Failed to run test');
   return json.data as TestRunResponse;
 }
@@ -134,7 +172,7 @@ export async function runNowWorkflow(
     method: 'POST',
     body: JSON.stringify(entity),
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error?.message || 'Failed to run workflow');
   return json.data as RunNowResult;
 }
@@ -146,14 +184,14 @@ export async function getWorkflowRuns(workflowId: string, page = 1, size = 20): 
   total: number;
 }> {
   const res = await apiFetch(`/api/workflows/${workflowId}/runs?page=${page}&size=${size}`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch runs');
   return json.data as { runs: WorkflowRun[]; total: number };
 }
 
 export async function getRunDetail(runId: string): Promise<RunDetailResponse> {
   const res = await apiFetch(`/api/workflows/runs/${runId}`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch run detail');
   return json.data as RunDetailResponse;
 }
@@ -172,7 +210,7 @@ export interface RetryRunResult {
  */
 export async function retryRun(runId: string): Promise<RetryRunResult> {
   const res = await apiFetch(`/api/workflows/runs/${runId}/retry`, { method: 'POST' });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error?.message || 'Failed to retry run');
   return json.data as RetryRunResult;
 }
@@ -204,7 +242,7 @@ export interface WebhookSecretInfo {
  */
 export async function getWebhookToken(): Promise<WebhookTokenInfo> {
   const res = await apiFetch('/api/webhooks/token');
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch webhook token');
   return json.data as WebhookTokenInfo;
 }
@@ -217,7 +255,7 @@ export async function getWebhookToken(): Promise<WebhookTokenInfo> {
  */
 export async function revealWebhookSecret(): Promise<string> {
   const res = await apiFetch('/api/webhooks/reveal-secret', { method: 'POST' });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error?.message || 'Failed to reveal webhook secret');
   return (json.data as { secret: string }).secret;
 }
@@ -229,7 +267,7 @@ export async function revealWebhookSecret(): Promise<string> {
  */
 export async function regenerateWebhookSecret(): Promise<WebhookSecretInfo> {
   const res = await apiFetch('/api/webhooks/regenerate-secret', { method: 'POST' });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error?.message || 'Failed to regenerate webhook secret');
   return json.data as WebhookSecretInfo;
 }
@@ -270,28 +308,28 @@ export interface SaveEmailTemplateInput {
 
 export async function getEmailTemplates(): Promise<EmailTemplateListResponse> {
   const res = await apiFetch('/api/workflows/email-templates');
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch email templates');
   return json.data as EmailTemplateListResponse;
 }
 
 export async function getEmailTemplate(id: string): Promise<EmailTemplate> {
   const res = await apiFetch(`/api/workflows/email-templates/${id}`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch email template');
   return json.data as EmailTemplate;
 }
 
 export async function createEmailTemplate(data: SaveEmailTemplateInput): Promise<EmailTemplate> {
   const res = await apiFetch('/api/workflows/email-templates', { method: 'POST', body: JSON.stringify(data) });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error?.message || 'Failed to create email template');
   return json.data as EmailTemplate;
 }
 
 export async function updateEmailTemplate(id: string, data: SaveEmailTemplateInput): Promise<EmailTemplate> {
   const res = await apiFetch(`/api/workflows/email-templates/${id}`, { method: 'PUT', body: JSON.stringify(data) });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error?.message || 'Failed to update email template');
   return json.data as EmailTemplate;
 }
@@ -308,7 +346,7 @@ export async function deleteEmailTemplate(id: string): Promise<void> {
  *  it to the caller. Returns the address it was sent to. */
 export async function testSendEmailTemplate(id: string): Promise<{ status: string; to: string }> {
   const res = await apiFetch(`/api/workflows/email-templates/${id}/test-send`, { method: 'POST' });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error?.message || 'Failed to send test email');
   return json.data as { status: string; to: string };
 }
@@ -363,7 +401,7 @@ export interface WorkflowSchema {
 
 export async function getWorkflowSchema(): Promise<WorkflowSchema> {
   const res = await apiFetch('/api/workflows/schema');
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch schema');
   return json.data as WorkflowSchema;
 }
@@ -407,9 +445,19 @@ export interface WorkflowEditContext {
  *  edit against it (preserving unchanged parts) rather than drafting anew. */
 export async function draftWorkflow(prompt: string, current?: WorkflowEditContext | null): Promise<AIDraftResponse> {
   const body = current ? { prompt, current_workflow: current } : { prompt };
-  const res = await apiFetch('/api/workflows/ai/draft', { method: 'POST', body: JSON.stringify(body) });
-  const json = await res.json();
-  if (!res.ok) throw new Error(json.error?.message || json.error || 'Failed to draft workflow');
+  let res: Response;
+  try {
+    // Bounded timeout: an LLM call behind a slow proxy shouldn't hang the UI — on
+    // timeout we reject so the copilot's local fallback can take over.
+    res = await apiFetch('/api/workflows/ai/draft', { method: 'POST', body: JSON.stringify(body), timeoutMs: 45000 });
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      throw new Error('The AI took too long to respond — please try again.');
+    }
+    throw new Error('Could not reach the AI service — check your connection and try again.');
+  }
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw new Error(json.error?.message || json.error || 'The AI could not draft a workflow.');
   return json.data as AIDraftResponse;
 }
 
@@ -434,7 +482,7 @@ export interface FieldItem {
  */
 export async function getSchemaObjects(): Promise<ObjectItem[]> {
   const res = await apiFetch('/api/workflows/schema/objects?permission=read');
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch objects');
   return json.data as ObjectItem[];
 }
@@ -445,7 +493,7 @@ export async function getSchemaObjects(): Promise<ObjectItem[]> {
  */
 export async function getObjectFields(slug: string): Promise<FieldItem[]> {
   const res = await apiFetch(`/api/workflows/schema/objects/${encodeURIComponent(slug)}/fields?permission=read`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch fields for ' + slug);
   return json.data as FieldItem[];
 }

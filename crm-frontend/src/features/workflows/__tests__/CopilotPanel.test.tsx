@@ -79,6 +79,29 @@ describe('CopilotPanel', () => {
     expect(screen.getByText(/AI copilot is unavailable/i)).toBeInTheDocument();
   });
 
+  it('falls back to a local draft when the AI call fails — no raw error, shows a recovery notice', () => {
+    // Make the mutation report failure (service unreachable / HTML from a proxy).
+    mockMutation.mutate = vi.fn((_vars: unknown, opts?: { onError?: (e: unknown) => void }) => {
+      opts?.onError?.(new Error('Could not reach the AI service'));
+    });
+    render(<CopilotPanel />);
+    fireEvent.change(screen.getByPlaceholderText(/When a deal moves to Won/i), {
+      target: { value: 'When a deal moves to Won, notify the owner and create a follow-up task and send him email' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /generate draft/i }));
+
+    // A usable local draft was applied to the store instead of erroring out.
+    const s = useBuilderStore.getState();
+    expect(s.trigger?.type).toBe('deal_stage_changed');
+    expect(s.draftSnapshot).not.toBeNull();
+    const types = s.steps.map((st) => (st.type === 'action' ? st.action!.type : st.type));
+    expect(types).toEqual(['notify_user', 'create_task', 'send_email']);
+
+    // Recovery notice shown; the raw JSON-parse/error text is NOT.
+    expect(screen.getByText(/AI assistant was unavailable/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Unexpected token|Could not reach/i)).not.toBeInTheDocument();
+  });
+
   it('shows the success banner while a valid draft is pending review', () => {
     // A draft is pending (draftSnapshot set) and validation passed.
     useBuilderStore.getState().applyDraft({ trigger: { type: 'contact_created' }, steps: [] });

@@ -6,6 +6,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Sparkles, Loader2, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { useDraftWorkflow } from '../../queries';
 import { useBuilderStore } from '../../store';
+import { localDraftFromPrompt } from '../localDraft';
 import type { WorkflowEditContext } from '../../api';
 
 /** Snapshot the workflow currently on the canvas so the copilot edits it in place
@@ -33,11 +34,31 @@ export function CopilotPanel({ initialPrompt = '' }: { initialPrompt?: string })
   // they'd point at a banner that's gone.
   const draftPending = useBuilderStore((s) => s.draftSnapshot !== null);
   const draft = useDraftWorkflow();
+  // True when the AI was unreachable and we applied the local heuristic draft instead
+  // — drives a distinct "used a local draft" notice (and suppresses the raw error).
+  const [usedFallback, setUsedFallback] = useState(false);
+
+  // Never leave the user at a dead end: if the AI call fails (service down, HTML from
+  // a proxy, timeout), build a starting draft from their text on the client and apply
+  // that. The Keep/Undo banner + canvas remain the review gate.
+  const runDraft = (p: string) => {
+    setUsedFallback(false);
+    draft.mutate(
+      { prompt: p, current: currentWorkflowContext() },
+      {
+        onSuccess: (res) => applyDraft(res.draft),
+        onError: () => {
+          applyDraft(localDraftFromPrompt(p, useBuilderStore.getState().schema));
+          setUsedFallback(true);
+        },
+      },
+    );
+  };
 
   const generate = () => {
     const p = prompt.trim();
     if (!p) return;
-    draft.mutate({ prompt: p, current: currentWorkflowContext() }, { onSuccess: (res) => applyDraft(res.draft) });
+    runDraft(p);
   };
 
   // Auto-draft once when handed a prompt from the Command Center (A7.4). Guarded by a
@@ -49,7 +70,7 @@ export function CopilotPanel({ initialPrompt = '' }: { initialPrompt?: string })
     const p = initialPrompt.trim();
     if (!p) return;
     autoRanRef.current = true;
-    draft.mutate({ prompt: p, current: currentWorkflowContext() }, { onSuccess: (res) => applyDraft(res.draft) });
+    runDraft(p);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialPrompt]);
 
@@ -57,6 +78,7 @@ export function CopilotPanel({ initialPrompt = '' }: { initialPrompt?: string })
     setPrompt(value);
     // Drop a stale success/error banner as soon as the user edits the prompt.
     if (draft.isError || draft.isSuccess) draft.reset();
+    if (usedFallback) setUsedFallback(false);
   };
 
   const validation = draft.data?.validation;
@@ -107,14 +129,26 @@ export function CopilotPanel({ initialPrompt = '' }: { initialPrompt?: string })
         )}
       </button>
 
-      {draft.isError && (
+      {/* AI was unreachable → we applied a local draft. Recovery, not a failure. */}
+      {usedFallback && draftPending && (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+          <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>
+            The AI assistant was unavailable, so I built a starting draft from your description. Review and tweak it on the
+            canvas, then Save — or press <span className="font-medium">Generate draft</span> to try the AI again.
+          </span>
+        </div>
+      )}
+
+      {/* Raw error only when we did NOT recover with a local draft. */}
+      {draft.isError && !usedFallback && (
         <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span>{draft.error instanceof Error ? draft.error.message : 'Could not draft a workflow.'}</span>
         </div>
       )}
 
-      {draftPending && draft.isSuccess && !hasIssues && (
+      {draftPending && !usedFallback && draft.isSuccess && !hasIssues && (
         <div className="flex items-start gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-400">
           <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span>Draft applied to the canvas. Review it, then Keep or Undo above.</span>

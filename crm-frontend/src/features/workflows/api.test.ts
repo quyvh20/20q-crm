@@ -3,11 +3,16 @@ import { runNowWorkflow } from './api';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 
-/** Build a minimal fetch Response-like object for mocking. */
+/** Build a minimal fetch Response-like object for mocking. Includes text() because
+ *  the api layer now reads the body as text and parses it defensively (so an HTML
+ *  error page can't crash callers with a raw JSON.parse error). */
 function mockResponse(body: unknown, ok: boolean): Response {
+  const text = JSON.stringify(body);
   return {
     ok,
+    status: ok ? 200 : 400,
     json: async () => body,
+    text: async () => text,
   } as unknown as Response;
 }
 
