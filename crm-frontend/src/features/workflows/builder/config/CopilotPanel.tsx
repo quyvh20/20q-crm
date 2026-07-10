@@ -34,20 +34,24 @@ export function CopilotPanel({ initialPrompt = '' }: { initialPrompt?: string })
   // they'd point at a banner that's gone.
   const draftPending = useBuilderStore((s) => s.draftSnapshot !== null);
   const draft = useDraftWorkflow();
+  // True when the AI couldn't be reached and we applied the offline heuristic draft.
+  // We DON'T hide this — the note tells the user it's an offline draft and to retry —
+  // but the real AI draft is always what we try for first (with a retry).
+  const [usedFallback, setUsedFallback] = useState(false);
 
-  // Never leave the user at a dead end: if the AI call fails (service down, HTML from
-  // a proxy, timeout), quietly build a starting draft from their text on the client
-  // and apply it the SAME way as an AI draft. The user just gets a draft to review —
-  // no "the AI failed" message (that reads as a broken product). The Keep/Undo banner
-  // + canvas remain the review gate; the failure is logged for diagnostics only.
+  // Never leave the user at a dead end. draftWorkflow already retries the real AI once
+  // on a transient failure; if it still can't be reached, build a starting draft from
+  // their text on the client so they can keep moving, and say so honestly.
   const runDraft = (p: string) => {
+    setUsedFallback(false);
     draft.mutate(
       { prompt: p, current: currentWorkflowContext() },
       {
         onSuccess: (res) => applyDraft(res.draft),
         onError: (err) => {
-          console.warn('[copilot] AI draft unavailable — applied a local fallback draft:', err);
+          console.warn('[copilot] AI draft unreachable — applied an offline fallback draft:', err);
           applyDraft(localDraftFromPrompt(p, useBuilderStore.getState().schema));
+          setUsedFallback(true);
         },
       },
     );
@@ -76,6 +80,7 @@ export function CopilotPanel({ initialPrompt = '' }: { initialPrompt?: string })
     setPrompt(value);
     // Drop a stale success/error banner as soon as the user edits the prompt.
     if (draft.isError || draft.isSuccess) draft.reset();
+    if (usedFallback) setUsedFallback(false);
   };
 
   const validation = draft.data?.validation;
@@ -126,14 +131,22 @@ export function CopilotPanel({ initialPrompt = '' }: { initialPrompt?: string })
         )}
       </button>
 
-      {/* A draft is on the canvas — from the AI, or a local fallback if the AI was
-          unreachable. Indistinguishable to the user by design: they get a draft to
-          review either way, never a "the AI failed" message. */}
-      {draftPending && !hasIssues && (
+      {/* Real AI draft applied. */}
+      {draftPending && !usedFallback && !hasIssues && (
         <div className="flex items-start gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-400">
           <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span>Draft applied to the canvas. Review it, then Keep or Undo above.</span>
         </div>
+      )}
+
+      {/* AI unreachable → offline draft. Honest but low-key (a muted line, not an alarm):
+          the user knows it's a fallback and can retry the real AI, without the copilot
+          reading as broken. */}
+      {draftPending && usedFallback && (
+        <p className="px-1 text-[11px] leading-relaxed text-muted-foreground">
+          Offline draft — the AI wasn't reachable just now. Review it on the canvas, or press{' '}
+          <span className="font-medium text-foreground">Generate draft</span> to try the AI again.
+        </p>
       )}
 
       {draftPending && hasIssues && (

@@ -3,6 +3,8 @@ import type { Workflow, WorkflowRun, WorkflowStep, RunDetailResponse, WorkflowLi
 // (the defensive body reader) are both shared from lib/api — single source of truth.
 import { apiFetch, parseJsonSafe } from '../../lib/api';
 
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
 // --- Workflow CRUD ---
 
 export async function getWorkflows(params?: { active?: boolean; q?: string; page?: number; size?: number }): Promise<WorkflowListResponse> {
@@ -397,20 +399,39 @@ export interface WorkflowEditContext {
  *  edit against it (preserving unchanged parts) rather than drafting anew. */
 export async function draftWorkflow(prompt: string, current?: WorkflowEditContext | null): Promise<AIDraftResponse> {
   const body = current ? { prompt, current_workflow: current } : { prompt };
-  let res: Response;
-  try {
-    // Bounded timeout: an LLM call behind a slow proxy shouldn't hang the UI — on
-    // timeout we reject so the copilot's local fallback can take over.
-    res = await apiFetch('/api/workflows/ai/draft', { method: 'POST', body: JSON.stringify(body), timeoutMs: 45000 });
-  } catch (e) {
-    if (e instanceof DOMException && e.name === 'AbortError') {
-      throw new Error('The AI took too long to respond — please try again.');
+  // Try twice: LLM endpoints hit transient hiccups (a cold start, a brief 5xx, a
+  // dropped connection) that a quick retry clears — so the REAL AI draft wins more
+  // often before any local fallback. Deterministic 4xx and timeouts are not retried
+  // (retrying a slow-to-timeout call just doubles the wait).
+  const MAX_ATTEMPTS = 2;
+  let lastError = new Error('The AI could not draft a workflow.');
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    let res: Response;
+    try {
+      res = await apiFetch('/api/workflows/ai/draft', { method: 'POST', body: JSON.stringify(body), timeoutMs: 45000 });
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') {
+        throw new Error('The AI took too long to respond — please try again.');
+      }
+      lastError = new Error('Could not reach the AI service — check your connection and try again.');
+      if (attempt < MAX_ATTEMPTS) { await sleep(700); continue; }
+      throw lastError;
     }
-    throw new Error('Could not reach the AI service — check your connection and try again.');
+    if (res.ok) {
+      const json = await parseJsonSafe(res);
+      return json.data as AIDraftResponse;
+    }
+    // 5xx is usually transient (gateway/timeout/cold start) — retry once. 4xx is
+    // deterministic (bad request, unauthorized) — surface it now.
+    if (res.status >= 500 && attempt < MAX_ATTEMPTS) {
+      lastError = new Error(`The AI service is temporarily unavailable (HTTP ${res.status}).`);
+      await sleep(700);
+      continue;
+    }
+    const json = await parseJsonSafe(res);
+    throw new Error(json.error?.message || json.error || `The AI could not draft a workflow (HTTP ${res.status}).`);
   }
-  const json = await parseJsonSafe(res);
-  if (!res.ok) throw new Error(json.error?.message || json.error || 'The AI could not draft a workflow.');
-  return json.data as AIDraftResponse;
+  throw lastError;
 }
 
 // --- New API contracts: Objects & Fields ---
