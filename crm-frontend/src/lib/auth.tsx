@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { switchWorkspace as apiSwitchWorkspace, setAccessToken as setApiToken, readCsrfToken, getMyPermissions, type Workspace, type MyPermissions, type DataScope } from './api';
+import { switchWorkspace as apiSwitchWorkspace, setAccessToken as setApiToken, readCsrfToken, getMyPermissions, parseJsonSafe, type Workspace, type MyPermissions, type DataScope } from './api';
 
 const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8080' : '');
 
@@ -180,7 +180,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         clearAuth(false); // keep active_workspace_id across a failed refresh
         return;
       }
-      const json: AuthResponse = await res.json();
+      const json = (await parseJsonSafe(res)) as AuthResponse;
       if (json.data) {
         saveAuth(json.data);
       } else {

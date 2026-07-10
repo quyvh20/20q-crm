@@ -54,7 +54,7 @@ export function refreshAccessToken(orgId?: string): Promise<string | null> {
           res = await postRefresh(undefined);
         }
         if (!res.ok) return null;
-        const json = await res.json();
+        const json = await parseJsonSafe(res);
         const token = (json?.data?.access_token as string) ?? null;
         setAccessToken(token);
         // Keep active_workspace_id in sync with the org the server actually bound.
@@ -96,6 +96,30 @@ async function apiFetch(path: string, options: RequestInit = {}): Promise<Respon
   }
 
   return res;
+}
+
+/**
+ * Read a JSON body defensively. A proxy, gateway timeout, auth wall, or 404 at the
+ * edge can return an HTML page ("<!DOCTYPE html>…") instead of JSON; calling
+ * res.json() on that throws a cryptic `Unexpected token '<'`. This reads the body
+ * once and, on a non-JSON payload, throws a clear message keyed to the HTTP status
+ * so the raw parse error never reaches the UI. Shared by every feature api layer.
+ */
+export async function parseJsonSafe(res: Response): Promise<any> {
+  const text = await res.text();
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch {
+    const hint =
+      res.status === 401 || res.status === 403
+        ? 'your session may have expired — please sign in again'
+        : res.status === 404
+          ? 'the service endpoint was not found'
+          : res.status === 0 || res.status >= 500
+            ? 'the service is temporarily unavailable — please try again'
+            : 'the server returned an unexpected response';
+    throw new Error(`Request failed (HTTP ${res.status || '000'}) — ${hint}.`);
+  }
 }
 
 // authStreamFetch is the streaming counterpart to apiFetch: it attaches the
@@ -176,13 +200,13 @@ export async function getContacts(filter: ContactFilter = {}) {
   if (filter.semantic) params.set('semantic', 'true');
 
   const res = await apiFetch(`/api/contacts?${params.toString()}`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   return { contacts: json.data as Contact[], meta: json.meta as CursorMeta };
 }
 
 export async function getContact(id: string) {
   const res = await apiFetch(`/api/contacts/${id}`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   return json.data as Contact;
 }
 
@@ -191,7 +215,7 @@ export async function createContact(data: Partial<Contact> & { tag_ids?: string[
     method: 'POST',
     body: JSON.stringify(data),
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to create contact');
   return json.data as Contact;
 }
@@ -201,7 +225,7 @@ export async function updateContact(id: string, data: Partial<Contact> & { tag_i
     method: 'PUT',
     body: JSON.stringify(data),
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to update contact');
   return json.data as Contact;
 }
@@ -221,7 +245,7 @@ export async function importContacts(file: File, conflictMode: 'skip' | 'overwri
     method: 'POST',
     body: formData,
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Import failed');
   return json.data as ImportResult;
 }
@@ -240,7 +264,7 @@ export async function bulkAction(
     method: 'POST',
     body: JSON.stringify({ action, contact_ids: contactIds, tag_id: tagId ?? null }),
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Bulk action failed');
   return json.data as BulkActionResult;
 }
@@ -263,13 +287,13 @@ export interface Tag {
 
 export async function getCompanies() {
   const res = await apiFetch('/api/companies');
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   return json.data as Company[];
 }
 
 export async function getTags() {
   const res = await apiFetch('/api/tags');
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   return json.data as Tag[];
 }
 
@@ -289,20 +313,20 @@ export interface PipelineStage {
 
 export async function getStages(): Promise<PipelineStage[]> {
   const res = await apiFetch('/api/pipeline/stages');
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   return json.data as PipelineStage[];
 }
 
 export async function createStage(data: Partial<PipelineStage>) {
   const res = await apiFetch('/api/pipeline/stages', { method: 'POST', body: JSON.stringify(data) });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to create stage');
   return json.data as PipelineStage;
 }
 
 export async function updateStage(id: string, data: Partial<PipelineStage>) {
   const res = await apiFetch(`/api/pipeline/stages/${id}`, { method: 'PUT', body: JSON.stringify(data) });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to update stage');
   return json.data as PipelineStage;
 }
@@ -317,7 +341,7 @@ export async function deleteStage(id: string) {
 
 export async function seedDefaultStages(): Promise<PipelineStage[]> {
   const res = await apiFetch('/api/pipeline/stages/seed-defaults', { method: 'POST' });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to seed default stages');
   return json.data as PipelineStage[];
 }
@@ -364,13 +388,13 @@ export async function getDeals(filter: DealFilter = {}) {
   if (filter.cursor) params.set('cursor', filter.cursor);
   if (filter.limit) params.set('limit', String(filter.limit));
   const res = await apiFetch(`/api/deals?${params.toString()}`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   return { deals: json.data as Deal[], meta: json.meta as CursorMeta };
 }
 
 export async function getDeal(id: string): Promise<Deal> {
   const res = await apiFetch(`/api/deals/${id}`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to fetch deal');
   return json.data as Deal;
 }
@@ -387,14 +411,14 @@ export interface CreateDealFormInput {
 
 export async function createDeal(data: CreateDealFormInput): Promise<Deal> {
   const res = await apiFetch('/api/deals', { method: 'POST', body: JSON.stringify(data) });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to create deal');
   return json.data as Deal;
 }
 
 export async function updateDeal(id: string, data: Partial<Deal>): Promise<Deal> {
   const res = await apiFetch(`/api/deals/${id}`, { method: 'PUT', body: JSON.stringify(data) });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to update deal');
   return json.data as Deal;
 }
@@ -412,7 +436,7 @@ export async function changeDealStage(dealId: string, stageId: string, lostReaso
     method: 'PATCH',
     body: JSON.stringify({ stage_id: stageId, lost_reason: lostReason }),
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to change stage');
   return json.data as Deal;
 }
@@ -429,7 +453,7 @@ export interface ForecastRow {
 
 export async function getForecast(): Promise<ForecastRow[]> {
   const res = await apiFetch('/api/pipeline/forecast');
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   return (json.data || []) as ForecastRow[];
 }
 
@@ -457,7 +481,7 @@ export async function getActivities(filter: { deal_id?: string; contact_id?: str
   if (filter.deal_id) params.set('deal_id', filter.deal_id);
   if (filter.contact_id) params.set('contact_id', filter.contact_id);
   const res = await apiFetch(`/api/activities?${params.toString()}`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   return (json.data || []) as Activity[];
 }
 
@@ -471,7 +495,7 @@ export async function createActivity(data: {
   occurred_at?: string;
 }): Promise<Activity> {
   const res = await apiFetch('/api/activities', { method: 'POST', body: JSON.stringify(data) });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to create activity');
   return json.data as Activity;
 }
@@ -508,7 +532,7 @@ export async function getTasks(filter: TaskFilter = {}): Promise<Task[]> {
   if (filter.assigned_to) params.set('assigned_to', filter.assigned_to);
   if (filter.completed !== undefined) params.set('completed', String(filter.completed));
   const res = await apiFetch(`/api/tasks?${params.toString()}`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   return (json.data || []) as Task[];
 }
 
@@ -521,7 +545,7 @@ export async function createTask(data: {
   priority?: string;
 }): Promise<Task> {
   const res = await apiFetch('/api/tasks', { method: 'POST', body: JSON.stringify(data) });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to create task');
   return json.data as Task;
 }
@@ -534,7 +558,7 @@ export async function updateTask(id: string, data: Partial<{
   completed: boolean;
 }>): Promise<Task> {
   const res = await apiFetch(`/api/tasks/${id}`, { method: 'PUT', body: JSON.stringify(data) });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to update task');
   return json.data as Task;
 }
@@ -560,7 +584,7 @@ export interface UserListItem {
 
 export async function getUsers(): Promise<UserListItem[]> {
   const res = await apiFetch('/api/users');
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   return (json.data || []) as UserListItem[];
 }
 
@@ -577,7 +601,7 @@ export interface AIUsage {
 
 export async function getAIUsage(): Promise<AIUsage> {
   const res = await apiFetch('/api/ai/usage');
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to fetch AI usage');
   return json.data as AIUsage;
 }
@@ -685,14 +709,14 @@ export interface AIJobStatus {
 
 export async function getJobStatus(jobId: string): Promise<AIJobStatus> {
   const res = await apiFetch(`/api/ai/jobs/${jobId}`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to fetch job status');
   return json.data as AIJobStatus;
 }
 
 export async function submitScoreDeal(dealId: string): Promise<{ status: string; job_id: string }> {
   const res = await apiFetch(`/api/deals/${dealId}/score`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to start scoring job');
   return json.data as { status: string; job_id: string };
 }
@@ -702,7 +726,7 @@ export async function submitSummarizeMeeting(transcript: string, dealId?: string
     method: 'POST',
     body: JSON.stringify({ transcript, deal_id: dealId, contact_id: contactId }),
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to start summary job');
   return json.data as { status: string; job_id: string };
 }
@@ -734,7 +758,7 @@ export async function getFieldDefs(entityType?: string): Promise<CustomFieldDef[
   const params = new URLSearchParams();
   if (entityType) params.set('entity_type', entityType);
   const res = await apiFetch(`/api/settings/fields?${params.toString()}`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to fetch field definitions');
   return json.data as CustomFieldDef[];
 }
@@ -755,7 +779,7 @@ export async function createFieldDef(data: {
     method: 'POST',
     body: JSON.stringify(data),
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to create field definition');
   return json.data as CustomFieldDef;
 }
@@ -774,7 +798,7 @@ export async function updateFieldDef(key: string, data: {
     method: 'PUT',
     body: JSON.stringify(data),
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to update field definition');
   return json.data as CustomFieldDef;
 }
@@ -825,14 +849,14 @@ export interface CustomObjectRecord {
 
 export async function getObjectDefs(): Promise<CustomObjectDef[]> {
   const res = await apiFetch('/api/objects');
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to fetch object definitions');
   return (json.data || []) as CustomObjectDef[];
 }
 
 export async function getObjectDef(slug: string): Promise<CustomObjectDef> {
   const res = await apiFetch(`/api/objects/${slug}`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to fetch object definition');
   return json.data as CustomObjectDef;
 }
@@ -849,7 +873,7 @@ export async function createObjectDef(data: {
     method: 'POST',
     body: JSON.stringify(data),
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to create object');
   return json.data as CustomObjectDef;
 }
@@ -865,7 +889,7 @@ export async function updateObjectDef(slug: string, data: {
     method: 'PUT',
     body: JSON.stringify(data),
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to update object');
   return json.data as CustomObjectDef;
 }
@@ -893,7 +917,7 @@ export async function getObjectRecords(slug: string, params?: {
   if (params?.q) search.set('q', params.q);
   const qs = search.toString();
   const res = await apiFetch(`/api/objects/${slug}/records${qs ? '?' + qs : ''}`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to fetch records');
   return { records: (json.data || []) as CustomObjectRecord[], total: json.total || 0 };
 }
@@ -907,7 +931,7 @@ export async function createObjectRecord(slug: string, data: {
     method: 'POST',
     body: JSON.stringify(data),
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to create record');
   return json.data as CustomObjectRecord;
 }
@@ -922,7 +946,7 @@ export async function updateObjectRecord(slug: string, id: string, data: {
     method: 'PUT',
     body: JSON.stringify(data),
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to update record');
   return json.data as CustomObjectRecord;
 }
@@ -1033,14 +1057,14 @@ export interface RecordPage {
 
 export async function listRegistryObjects(): Promise<ObjectSummary[]> {
   const res = await apiFetch('/api/registry/objects');
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to fetch objects');
   return (json.data || []) as ObjectSummary[];
 }
 
 export async function getObjectSchema(slug: string): Promise<ObjectSchema> {
   const res = await apiFetch(`/api/registry/objects/${slug}/schema`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to fetch object schema');
   return json.data as ObjectSchema;
 }
@@ -1062,7 +1086,7 @@ export async function setObjectNumberPrefix(slug: string, prefix: string): Promi
 
 export async function listObjectLayouts(slug: string): Promise<ObjectLayout[]> {
   const res = await apiFetch(`/api/registry/objects/${slug}/layouts`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to fetch layouts');
   return (json.data || []) as ObjectLayout[];
 }
@@ -1075,7 +1099,7 @@ export async function createObjectLayout(
     method: 'POST',
     body: JSON.stringify(payload),
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to create layout');
   return json.data as ObjectLayout;
 }
@@ -1089,7 +1113,7 @@ export async function updateObjectLayout(
     method: 'PATCH',
     body: JSON.stringify(payload),
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to update layout');
   return json.data as ObjectLayout;
 }
@@ -1139,7 +1163,7 @@ export async function listObjectRecordsUnified(slug: string, params?: {
   }
   const qs = search.toString();
   const res = await apiFetch(`/api/registry/objects/${slug}/records${qs ? '?' + qs : ''}`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to fetch records');
   const page = (json.data || {}) as Partial<RecordPage>;
   return { records: page.records || [], next_cursor: page.next_cursor };
@@ -1147,7 +1171,7 @@ export async function listObjectRecordsUnified(slug: string, params?: {
 
 export async function getObjectRecordUnified(slug: string, id: string): Promise<UniformRecord> {
   const res = await apiFetch(`/api/registry/objects/${slug}/records/${id}`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to fetch record');
   return json.data as UniformRecord;
 }
@@ -1170,7 +1194,7 @@ export interface RelatedList {
 
 export async function listRecordRelatedLists(slug: string, id: string): Promise<RelatedList[]> {
   const res = await apiFetch(`/api/registry/objects/${slug}/records/${id}/related-lists`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to fetch related lists');
   return (json.data || []) as RelatedList[];
 }
@@ -1191,7 +1215,7 @@ export interface RecordPageData {
 
 export async function getObjectRecordPage(slug: string, id: string): Promise<RecordPageData> {
   const res = await apiFetch(`/api/registry/objects/${slug}/records/${id}/page`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to fetch record page');
   return json.data as RecordPageData;
 }
@@ -1201,7 +1225,7 @@ export async function createObjectRecordUnified(slug: string, fields: Record<str
     method: 'POST',
     body: JSON.stringify({ fields }),
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to create record');
   return json.data as UniformRecord;
 }
@@ -1211,7 +1235,7 @@ export async function updateObjectRecordUnified(slug: string, id: string, fields
     method: 'PATCH',
     body: JSON.stringify({ fields }),
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to update record');
   return json.data as UniformRecord;
 }
@@ -1241,7 +1265,7 @@ export interface RecordLink {
 
 export async function listRecordLinks(slug: string, id: string): Promise<RecordLink[]> {
   const res = await apiFetch(`/api/registry/objects/${slug}/records/${id}/links`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to fetch links');
   return (json.data || []) as RecordLink[];
 }
@@ -1255,7 +1279,7 @@ export async function addRecordLink(
     method: 'POST',
     body: JSON.stringify(data),
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to add link');
   return json.data as RecordLink;
 }
@@ -1270,7 +1294,7 @@ export async function removeRecordLink(linkId: string): Promise<void> {
 
 export async function listRecordTags(slug: string, id: string): Promise<Tag[]> {
   const res = await apiFetch(`/api/registry/objects/${slug}/records/${id}/tags`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to fetch tags');
   return (json.data || []) as Tag[];
 }
@@ -1336,7 +1360,7 @@ export type PermissionAction = 'read' | 'create' | 'edit' | 'delete';
 
 export async function getPermissionGrid(): Promise<PermissionGrid> {
   const res = await apiFetch('/api/registry/permissions');
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to load permissions');
   const data = (json.data || {}) as Partial<PermissionGrid>;
   return { objects: data.objects || [], roles: data.roles || [], matrix: data.matrix || [] };
@@ -1449,7 +1473,7 @@ export async function getMyPermissions(): Promise<MyPermissions> {
   try {
     const res = await apiFetch('/api/auth/capabilities');
     if (!res.ok) return denied;
-    const json = await res.json();
+    const json = await parseJsonSafe(res);
     const d = json.data || {};
     return {
       capabilities: (d.capabilities || []) as string[],
@@ -1468,7 +1492,7 @@ export async function getMyPermissions(): Promise<MyPermissions> {
 // can't hit the roles.manage-gated getRoles (P6).
 export async function getRoleOptions(): Promise<RoleOption[]> {
   const res = await apiFetch('/api/roles/options');
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to load roles');
   return (json.data || []) as RoleOption[];
 }
@@ -1477,7 +1501,7 @@ export async function getRoleOptions(): Promise<RoleOption[]> {
 // sensitive flags) + group display order — any member (P6).
 export async function getRolesCatalog(): Promise<{ capabilities: CapabilityInfo[]; groups: string[] }> {
   const res = await apiFetch('/api/roles/catalog');
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to load capability catalog');
   const d = json.data || {};
   return { capabilities: (d.capabilities || []) as CapabilityInfo[], groups: (d.groups || []) as string[] };
@@ -1485,7 +1509,7 @@ export async function getRolesCatalog(): Promise<{ capabilities: CapabilityInfo[
 
 export async function getRoles(): Promise<RoleDetail[]> {
   const res = await apiFetch('/api/roles');
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to load roles');
   return (json.data || []) as RoleDetail[];
 }
@@ -1498,7 +1522,7 @@ export async function createRole(input: {
   capabilities?: string[];
 }): Promise<RoleDetail> {
   const res = await apiFetch('/api/roles', { method: 'POST', body: JSON.stringify(input) });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to create role');
   return json.data as RoleDetail;
 }
@@ -1507,7 +1531,7 @@ export async function createRole(input: {
 // optionally moving the source's members onto the copy (P6).
 export async function duplicateRole(id: string, input: { name: string; reassign_members?: boolean }): Promise<RoleDetail> {
   const res = await apiFetch(`/api/roles/${id}/duplicate`, { method: 'POST', body: JSON.stringify(input) });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to duplicate role');
   return json.data as RoleDetail;
 }
@@ -1558,7 +1582,7 @@ export interface RecordShareView {
 
 export async function getRecordShares(slug: string, id: string): Promise<RecordShareView[]> {
   const res = await apiFetch(`/api/registry/objects/${slug}/records/${id}/shares`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to load shares');
   return (json.data || []) as RecordShareView[];
 }
@@ -1614,7 +1638,7 @@ export interface FieldPermissionGrid {
 
 export async function getFieldPermissionGrid(slug: string): Promise<FieldPermissionGrid> {
   const res = await apiFetch(`/api/registry/objects/${slug}/field-permissions`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to load field permissions');
   const data = (json.data || {}) as Partial<FieldPermissionGrid>;
   return {
@@ -1655,7 +1679,7 @@ export interface AuditEntry {
 
 export async function getRecordAudit(slug: string, id: string): Promise<AuditEntry[]> {
   const res = await apiFetch(`/api/registry/objects/${slug}/records/${id}/audit`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to load audit trail');
   return (json.data || []) as AuditEntry[];
 }
@@ -1677,14 +1701,14 @@ export interface KBEntry {
 
 export async function getKBSections(): Promise<KBEntry[]> {
   const res = await apiFetch('/api/knowledge-base');
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to fetch KB sections');
   return json.data || [];
 }
 
 export async function getKBSection(section: string): Promise<KBEntry> {
   const res = await apiFetch(`/api/knowledge-base/${section}`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Section not found');
   return json.data as KBEntry;
 }
@@ -1695,14 +1719,14 @@ export async function upsertKBSection(section: string, data: { title: string; co
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to save section');
   return json.data as KBEntry;
 }
 
 export async function getKBAIPrompt(): Promise<string> {
   const res = await apiFetch('/api/knowledge-base/ai-prompt');
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to fetch AI prompt');
   return json.data?.prompt || '';
 }
@@ -1872,14 +1896,14 @@ export async function endChatSession(sessionId: string): Promise<void> {
 
 export async function listChatSessions(page = 1, limit = 50): Promise<{ data: ChatSession[]; total: number }> {
   const res = await apiFetch(`/api/ai/sessions?page=${page}&limit=${limit}`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to fetch sessions');
   return { data: json.data || [], total: json.total || 0 };
 }
 
 export async function getChatSessionMessages(sessionId: string): Promise<ChatMessageItem[]> {
   const res = await apiFetch(`/api/ai/sessions/${sessionId}/messages`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to fetch messages');
   return json.data || [];
 }
@@ -1929,21 +1953,21 @@ export async function switchWorkspace(orgId: string, setDefault = false): Promis
     method: 'POST',
     body: JSON.stringify({ org_id: orgId, set_default: setDefault }),
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to switch workspace');
   return json.data;
 }
 
 export async function getWorkspaces(): Promise<Workspace[]> {
   const res = await apiFetch('/api/workspaces');
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to fetch workspaces');
   return (json.data || []) as Workspace[];
 }
 
 export async function getWorkspaceMembers(): Promise<WorkspaceMember[]> {
   const res = await apiFetch('/api/workspaces/members');
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to fetch members');
   return (json.data || []) as WorkspaceMember[];
 }
@@ -1953,7 +1977,7 @@ export async function inviteMember(email: string, roleId: string): Promise<{ mem
     method: 'POST',
     body: JSON.stringify({ email, role_id: roleId }),
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to invite member');
   return json.data;
 }
@@ -2039,7 +2063,7 @@ export interface Invitation {
 
 export async function listInvitations(): Promise<Invitation[]> {
   const res = await apiFetch('/api/workspaces/invitations');
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to fetch invitations');
   return (json.data || []) as Invitation[];
 }
@@ -2239,14 +2263,14 @@ export async function getVoiceNotes(filter: VoiceNoteFilter = {}): Promise<Voice
   if (filter.deal_id) params.set('deal_id', filter.deal_id);
   if (filter.limit) params.set('limit', String(filter.limit));
   const res = await apiFetch(`/api/voice?${params.toString()}`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to fetch voice notes');
   return (json.data || []) as VoiceNote[];
 }
 
 export async function getVoiceNote(id: string): Promise<VoiceNote> {
   const res = await apiFetch(`/api/voice/${id}`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Voice note not found');
   return json.data as VoiceNote;
 }
@@ -2305,7 +2329,7 @@ export async function globalSearch(query: string, limit = 10): Promise<SearchRes
   const search = new URLSearchParams({ q: query });
   if (limit) search.set('limit', String(limit));
   const res = await apiFetch(`/api/registry/search?${search.toString()}`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Search failed');
   const data = (json.data || {}) as Partial<SearchResult>;
   return { query: data.query || query, groups: data.groups || [] };
@@ -2358,7 +2382,7 @@ export async function getAuditEvents(
   f: AuditEventFilters = {},
 ): Promise<{ events: AuditEvent[]; total: number }> {
   const res = await apiFetch(`/api/audit/events?${auditQuery(f)}`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to load audit log');
   return { events: (json.data || []) as AuditEvent[], total: (json.total || 0) as number };
 }
@@ -2388,7 +2412,7 @@ export interface UserSession {
 
 export async function getSessions(): Promise<UserSession[]> {
   const res = await apiFetch('/api/auth/sessions');
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to load sessions');
   return (json.data || []) as UserSession[];
 }
@@ -2499,28 +2523,28 @@ export interface ReportInput {
 
 export async function listReports(): Promise<Report[]> {
   const res = await apiFetch('/api/reports');
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to load reports');
   return (json.data || []) as Report[];
 }
 
 export async function createReport(input: ReportInput): Promise<Report> {
   const res = await apiFetch('/api/reports', { method: 'POST', body: JSON.stringify(input) });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to create report');
   return json.data as Report;
 }
 
 export async function getReport(id: string): Promise<Report> {
   const res = await apiFetch(`/api/reports/${id}`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to load report');
   return json.data as Report;
 }
 
 export async function updateReport(id: string, input: ReportInput): Promise<Report> {
   const res = await apiFetch(`/api/reports/${id}`, { method: 'PATCH', body: JSON.stringify(input) });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to update report');
   return json.data as Report;
 }
@@ -2535,7 +2559,7 @@ export async function deleteReport(id: string): Promise<void> {
 
 export async function runReport(id: string): Promise<ReportResult> {
   const res = await apiFetch(`/api/reports/${id}/run`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to run report');
   return json.data as ReportResult;
 }
@@ -2546,14 +2570,14 @@ export async function previewReport(objectSlug: string, config: ReportConfig): P
     method: 'POST',
     body: JSON.stringify({ object_slug: objectSlug, config }),
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Preview failed');
   return json.data as ReportResult;
 }
 
 export async function listReportFields(slug: string): Promise<ReportFieldDescriptor[]> {
   const res = await apiFetch(`/api/reports/objects/${slug}/fields`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to load report fields');
   return (json.data || []) as ReportFieldDescriptor[];
 }
@@ -2587,7 +2611,7 @@ export interface DashboardWidget {
 
 export async function listDashboardWidgets(): Promise<DashboardWidget[]> {
   const res = await apiFetch('/api/dashboard/widgets');
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to load dashboard');
   return (json.data || []) as DashboardWidget[];
 }
@@ -2597,7 +2621,7 @@ export async function addDashboardWidget(reportId: string, size: 'half' | 'full'
     method: 'POST',
     body: JSON.stringify({ report_id: reportId, size }),
   });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to pin report');
   return json.data as DashboardWidget;
 }
@@ -2653,14 +2677,14 @@ export interface UserGroup {
 
 export async function listGroups(): Promise<UserGroup[]> {
   const res = await apiFetch('/api/groups');
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to load groups');
   return (json.data || []) as UserGroup[];
 }
 
 export async function createGroup(name: string, description = ''): Promise<UserGroup> {
   const res = await apiFetch('/api/groups', { method: 'POST', body: JSON.stringify({ name, description }) });
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to create group');
   return json.data as UserGroup;
 }
@@ -2701,7 +2725,7 @@ export interface ReportShareView {
 
 export async function listReportShares(reportId: string): Promise<ReportShareView[]> {
   const res = await apiFetch(`/api/reports/${reportId}/shares`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to load shares');
   return (json.data || []) as ReportShareView[];
 }
@@ -2732,7 +2756,7 @@ export interface ReportCommentView {
 
 export async function listReportComments(reportId: string): Promise<ReportCommentView[]> {
   const res = await apiFetch(`/api/reports/${reportId}/comments`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to load comments');
   return (json.data || []) as ReportCommentView[];
 }

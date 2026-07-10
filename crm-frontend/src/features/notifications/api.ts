@@ -1,7 +1,7 @@
 // REST client for the in-app notification inbox (A6.2). Mirrors the workflows
 // feature's apiFetch shape (bearer token + credentials). Every endpoint is scoped
 // server-side to (org, caller), so there are no ids in these paths.
-import { getAccessToken } from '../../lib/api';
+import { getAccessToken, parseJsonSafe } from '../../lib/api';
 
 const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8080' : '');
 
@@ -41,14 +41,14 @@ export async function getNotifications(params?: { cursor?: string; limit?: numbe
   if (params?.limit) qs.set('limit', String(params.limit));
   if (params?.unreadOnly) qs.set('unread', 'true');
   const res = await apiFetch(`/api/notifications?${qs.toString()}`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error?.message || json.error || 'Failed to fetch notifications');
   return json.data as NotificationPage;
 }
 
 export async function getUnreadCount(): Promise<number> {
   const res = await apiFetch(`/api/notifications/unread-count`);
-  const json = await res.json();
+  const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error?.message || json.error || 'Failed to fetch unread count');
   return (json.data?.unread_count ?? 0) as number;
 }

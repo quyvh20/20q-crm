@@ -1,5 +1,5 @@
 import type { Workflow, WorkflowRun, WorkflowStep, RunDetailResponse, WorkflowListResponse, TestRunResponse, ActionSpec, TriggerSpec, ConditionGroup } from './types';
-import { getAccessToken } from '../../lib/api';
+import { getAccessToken, parseJsonSafe } from '../../lib/api';
 
 const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8080' : '');
 
@@ -27,29 +27,8 @@ async function apiFetch(path: string, options: RequestInit & { timeoutMs?: numbe
   }
 }
 
-/**
- * Read a JSON body defensively. A proxy, gateway timeout, auth wall, or 404 at the
- * edge can return an HTML page ("<!DOCTYPE html>…") instead of JSON; calling
- * res.json() on that throws a cryptic `Unexpected token '<'`. This reads the body
- * once and, on a non-JSON payload, throws a clear message keyed to the HTTP status
- * — the raw parse error never reaches the UI.
- */
-async function parseJsonSafe(res: Response): Promise<any> {
-  const text = await res.text();
-  try {
-    return text ? JSON.parse(text) : {};
-  } catch {
-    const hint =
-      res.status === 401 || res.status === 403
-        ? 'your session may have expired — please sign in again'
-        : res.status === 404
-          ? 'the service endpoint was not found'
-          : res.status === 0 || res.status >= 500
-            ? 'the service is temporarily unavailable — please try again'
-            : 'the server returned an unexpected response';
-    throw new Error(`Request failed (HTTP ${res.status || '000'}) — ${hint}.`);
-  }
-}
+// parseJsonSafe (the defensive body reader that keeps an HTML error page from
+// crashing callers) is shared from lib/api — see its import above.
 
 // --- Workflow CRUD ---
 
