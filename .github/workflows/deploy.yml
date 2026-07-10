@@ -55,6 +55,47 @@ jobs:
           name: server-binary
           path: crm-backend/bin/server
 
+  # The backend previously relied on Railway's GitHub auto-deploy, which stopped
+  # picking up pushes (commits sat undeployed while CI was green — the "Build
+  # Binary" artifact was never consumed by anything). Deploy explicitly with the
+  # Railway CLI instead, using the RAILWAY_TOKEN project token that already exists
+  # in the repo secrets. `railway up` uploads crm-backend/ as the build context
+  # (railway.toml + nixpacks.toml at its root, same as the dashboard builds).
+  deploy-backend:
+    name: Deploy Backend to Railway
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    defaults:
+      run:
+        working-directory: crm-backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm i -g @railway/cli
+
+      - name: Deploy via Railway CLI
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          # Show the project for the logs (non-fatal if the CLI output shape changes).
+          railway status || true
+          # Resolve the backend service name from the project, excluding datastores;
+          # fall back to likely names so a CLI JSON-shape change doesn't break deploys.
+          SVC=$(railway status --json 2>/dev/null \
+            | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const j=JSON.parse(d);const edges=(j.services&&j.services.edges)||[];const names=edges.map(e=>e.node&&e.node.name).filter(Boolean);console.log(names.find(n=>!/postgres|redis|mysql|db/i.test(n))||'')}catch(e){console.log('')}})" \
+            || true)
+          echo "Resolved service: '${SVC}'"
+          deploy() { railway up --service "$1" --detach && echo "Deployed via service '$1'"; }
+          if [ -n "$SVC" ] && deploy "$SVC"; then exit 0; fi
+          for guess in 20q-crm 20q-crm-production crm-backend backend web; do
+            if deploy "$guess"; then exit 0; fi
+          done
+          echo "::error::Could not resolve the Railway service name — deploy manually or fix the guesses above."
+          exit 1
+
   deploy-frontend:
     name: Deploy Frontend to Cloudflare Pages
     runs-on: ubuntu-latest
