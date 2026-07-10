@@ -3,11 +3,15 @@ package automation
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"crm-backend/internal/ai"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -17,6 +21,9 @@ type fakeDraftAI struct {
 	responses     []ai.AIResponse
 	calls         int
 	firstMessages []ai.Message // messages passed on the first CompleteWithTools call
+	// Complete() (health probe) canned result.
+	completeResp ai.AIResponse
+	completeErr  error
 }
 
 func (f *fakeDraftAI) CompleteWithTools(_ context.Context, _, _ uuid.UUID, _ ai.AITask, msgs []ai.Message, _ []ai.Tool) (ai.AIResponse, error) {
@@ -29,6 +36,92 @@ func (f *fakeDraftAI) CompleteWithTools(_ context.Context, _, _ uuid.UUID, _ ai.
 	r := f.responses[f.calls]
 	f.calls++
 	return r, nil
+}
+
+func (f *fakeDraftAI) Complete(_ context.Context, _, _ uuid.UUID, _ ai.AITask, _ []ai.Message) (ai.AIResponse, error) {
+	return f.completeResp, f.completeErr
+}
+
+// ── Health probe (GET /api/workflows/ai/health) ──────────────────────
+
+func TestProbeDraftAI_NotConfigured(t *testing.T) {
+	h := &Handler{} // draftAI nil → not wired at boot
+	res := h.probeDraftAI(context.Background(), uuid.New(), uuid.New())
+	require.False(t, res.OK)
+	require.False(t, res.Configured)
+	require.Contains(t, res.Detail, "not configured")
+}
+
+func TestProbeDraftAI_Healthy(t *testing.T) {
+	fake := &fakeDraftAI{completeResp: ai.AIResponse{Content: "ok", Model: "@cf/qwen/qwen3-30b-a3b-fp8"}}
+	h := &Handler{draftAI: fake}
+	res := h.probeDraftAI(context.Background(), uuid.New(), uuid.New())
+	require.True(t, res.OK)
+	require.True(t, res.Configured)
+	require.Equal(t, "@cf/qwen/qwen3-30b-a3b-fp8", res.Model)
+	require.Empty(t, res.Detail)
+}
+
+func TestProbeDraftAI_Unreachable_SanitizesDetail(t *testing.T) {
+	// A transport failure surfaces as a *url.Error whose text embeds the full gateway
+	// URL (CF account + gateway ids). The probe must NOT echo that to the client.
+	leaky := errors.New(`AI service unavailable: Post "https://gateway.ai.cloudflare.com/v1/ACCT_SECRET/GW_SECRET/workers-ai/v1/chat/completions": dial tcp: connection refused`)
+	h := &Handler{draftAI: &fakeDraftAI{completeErr: leaky}}
+	res := h.probeDraftAI(context.Background(), uuid.New(), uuid.New())
+	require.False(t, res.OK)
+	require.True(t, res.Configured) // it IS wired — it just couldn't reach the model
+	require.NotEmpty(t, res.Detail, "still gives a usable hint")
+	require.NotContains(t, res.Detail, "ACCT_SECRET", "must not leak the CF account id")
+	require.NotContains(t, res.Detail, "gateway.ai.cloudflare.com", "must not leak the gateway URL")
+}
+
+func TestProbeDraftAI_Timeout(t *testing.T) {
+	h := &Handler{draftAI: &fakeDraftAI{completeErr: context.DeadlineExceeded}}
+	res := h.probeDraftAI(context.Background(), uuid.New(), uuid.New())
+	require.False(t, res.OK)
+	require.Contains(t, res.Detail, "timed out")
+}
+
+// doDraftHealth exercises the real gin handler so the 200-vs-503 status mapping and
+// the {"data":{…}} envelope are covered (not just probeDraftAI in isolation).
+func doDraftHealth(t *testing.T, h *Handler) (int, draftHealthResult) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("org_id", uuid.New())
+	c.Set("user_id", uuid.New())
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/workflows/ai/health", nil)
+	h.DraftHealth(c)
+	var body struct {
+		Data draftHealthResult `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	return w.Code, body.Data
+}
+
+func TestDraftHealth_Healthy_200(t *testing.T) {
+	h := &Handler{draftAI: &fakeDraftAI{completeResp: ai.AIResponse{Model: "@cf/qwen/qwen3-30b-a3b-fp8"}}}
+	code, body := doDraftHealth(t, h)
+	require.Equal(t, http.StatusOK, code)
+	require.True(t, body.OK)
+	require.Equal(t, "@cf/qwen/qwen3-30b-a3b-fp8", body.Model)
+}
+
+func TestDraftHealth_Unreachable_503(t *testing.T) {
+	h := &Handler{draftAI: &fakeDraftAI{completeErr: errors.New("boom")}}
+	code, body := doDraftHealth(t, h)
+	require.Equal(t, http.StatusServiceUnavailable, code)
+	require.False(t, body.OK)
+	require.True(t, body.Configured)
+}
+
+func TestDraftHealth_NotConfigured_503(t *testing.T) {
+	h := &Handler{} // draftAI nil → not wired
+	code, body := doDraftHealth(t, h)
+	require.Equal(t, http.StatusServiceUnavailable, code)
+	require.False(t, body.OK)
+	require.False(t, body.Configured)
 }
 
 func toolCall(id, name, params string) ai.ToolCall {

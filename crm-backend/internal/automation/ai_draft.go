@@ -3,6 +3,7 @@ package automation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -24,6 +25,9 @@ import (
 // satisfies it; a fake drives the loop in unit tests.
 type draftAICaller interface {
 	CompleteWithTools(ctx context.Context, orgID, userID uuid.UUID, task ai.AITask, messages []ai.Message, tools []ai.Tool) (ai.AIResponse, error)
+	// Complete is a plain (tool-free) call — used by the health probe to verify the
+	// gateway + credentials are reachable end-to-end with one tiny model call.
+	Complete(ctx context.Context, orgID, userID uuid.UUID, task ai.AITask, messages []ai.Message) (ai.AIResponse, error)
 }
 
 // SetDraftAI wires the AI gateway for the copilot endpoint (A7). Called once at
@@ -40,6 +44,11 @@ const maxDraftIterations = 4
 // model turns into an HTML gateway-timeout page the client can't parse. Kept under
 // the frontend's abort so the browser receives our error rather than aborting first.
 const draftTimeout = 28 * time.Second
+
+// draftHealthTimeout bounds the health probe's single tiny model call. Short by
+// design: a one-word reply from the fast draft model returns in a couple of seconds
+// when healthy; longer means the path is degraded.
+const draftHealthTimeout = 12 * time.Second
 
 // WorkflowDraft is the normalized draft the copilot returns. The shapes mirror the
 // save payload (trigger/conditions/steps) so the client can apply it directly.
@@ -88,6 +97,72 @@ func (h *Handler) DraftWorkflow(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{"draft": draft, "validation": validation}})
+}
+
+// draftHealthResult is the health probe's verdict on the copilot's AI path.
+type draftHealthResult struct {
+	OK         bool   `json:"ok"`         // the AI path is reachable and answered
+	Configured bool   `json:"configured"` // SetDraftAI was wired at boot
+	Model      string `json:"model,omitempty"`
+	LatencyMs  int64  `json:"latency_ms"`
+	Detail     string `json:"detail,omitempty"` // failure reason when !ok
+}
+
+// probeDraftAI runs ONE tiny, bounded model call on the same task/model the draft
+// uses, so it verifies the gateway + Cloudflare credentials end-to-end without the
+// cost of a full draft. Pure enough to unit-test with a fake caller (no gin/DB).
+func (h *Handler) probeDraftAI(ctx context.Context, orgID, userID uuid.UUID) draftHealthResult {
+	if h.draftAI == nil {
+		return draftHealthResult{Detail: "AI copilot is not configured (SetDraftAI was not wired at boot — check CF_ACCOUNT_ID / CF_AI_GATEWAY_ID / CF_AI_TOKEN)"}
+	}
+	start := time.Now()
+	resp, err := h.draftAI.Complete(ctx, orgID, userID, ai.TaskWorkflowDraft, []ai.Message{
+		{Role: "user", Content: "Reply with the single word: ok"},
+	})
+	res := draftHealthResult{Configured: true, LatencyMs: time.Since(start).Milliseconds()}
+	if err != nil {
+		res.Detail = sanitizedProbeError(ctx, err)
+		return res
+	}
+	res.OK = true
+	res.Model = resp.Model
+	return res
+}
+
+// sanitizedProbeError maps a probe failure to a short, client-safe hint. The raw
+// gateway error is deliberately NOT returned: on a transport failure it is a
+// *url.Error whose text embeds the gateway URL — which contains CF_ACCOUNT_ID and
+// CF_AI_GATEWAY_ID — and other paths echo upstream bodies. The gateway already logs
+// the full error server-side, so this classifies without leaking infra identifiers.
+func sanitizedProbeError(ctx context.Context, err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded) || ctx.Err() == context.DeadlineExceeded:
+		return "The AI gateway didn't respond within the probe window (timed out) — the model may be cold or overloaded."
+	case errors.Is(err, context.Canceled):
+		return "The request was canceled before the AI gateway responded."
+	default:
+		return "The AI gateway is unreachable or rejected the request — check the backend AI credentials (CF_ACCOUNT_ID / CF_AI_GATEWAY_ID / CF_AI_TOKEN) and the server logs for the full error."
+	}
+}
+
+// DraftHealth handles GET /api/workflows/ai/health — a lightweight probe of the
+// copilot's AI path (gateway + credentials + model) via one tiny model call. Returns
+// 200 when healthy, 503 otherwise, both with a descriptive JSON body. Manage-gated
+// like the draft, because it costs a (tiny) model call.
+func (h *Handler) DraftHealth(c *gin.Context) {
+	orgID, userID := h.getContext(c)
+	if orgID == uuid.Nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), draftHealthTimeout)
+	defer cancel()
+
+	res := h.probeDraftAI(ctx, orgID, userID)
+	status := http.StatusOK
+	if !res.OK {
+		status = http.StatusServiceUnavailable
+	}
+	c.JSON(status, gin.H{"data": res})
 }
 
 // generateDraft runs the copilot tool loop and returns a normalized + validated

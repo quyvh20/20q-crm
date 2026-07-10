@@ -434,6 +434,24 @@ export async function draftWorkflow(prompt: string, current?: WorkflowEditContex
   throw lastError;
 }
 
+/** The copilot AI-path health verdict (GET /api/workflows/ai/health). */
+export interface AIHealth {
+  ok: boolean;
+  configured: boolean;
+  model?: string;
+  latency_ms: number;
+  detail?: string;
+}
+
+/** Probe the copilot's AI path end-to-end (gateway + Cloudflare creds + model) via
+ *  one tiny model call. The endpoint returns 200 when healthy and 503 otherwise —
+ *  both carry the same `data` body, so read `.ok`/`.detail` rather than the status. */
+export async function checkAiHealth(): Promise<AIHealth> {
+  const res = await apiFetch('/api/workflows/ai/health', { timeoutMs: 20000 });
+  const json = await parseJsonSafe(res);
+  return (json.data ?? { ok: false, configured: false, latency_ms: 0, detail: 'No response from server' }) as AIHealth;
+}
+
 // --- New API contracts: Objects & Fields ---
 
 export interface ObjectItem {

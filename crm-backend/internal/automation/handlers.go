@@ -97,6 +97,9 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerF
 		// Never saves — the client applies the returned draft through the same zod
 		// validation as a manual edit.
 		workflows.POST("/ai/draft", requireCap(domain.CapWorkflowsManage), h.DraftWorkflow)
+		// Lightweight probe of the AI path (gateway + CF creds + model) via one tiny
+		// model call — hit this to confirm the copilot works end-to-end after config.
+		workflows.GET("/ai/health", requireCap(domain.CapWorkflowsManage), h.DraftHealth)
 
 		// Email templates library (A5). All manage-gated. Registered before the
 		// "/:id" param routes' subtree is unaffected — gin allows the static
