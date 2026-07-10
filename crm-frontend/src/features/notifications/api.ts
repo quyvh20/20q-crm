@@ -1,9 +1,7 @@
-// REST client for the in-app notification inbox (A6.2). Mirrors the workflows
-// feature's apiFetch shape (bearer token + credentials). Every endpoint is scoped
-// server-side to (org, caller), so there are no ids in these paths.
-import { getAccessToken, parseJsonSafe } from '../../lib/api';
-
-const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8080' : '');
+// REST client for the in-app notification inbox (A6.2). Uses the shared apiFetch
+// (bearer token + credentials + 401→refresh) and parseJsonSafe from lib/api. Every
+// endpoint is scoped server-side to (org, caller), so there are no ids in these paths.
+import { apiFetch, parseJsonSafe } from '../../lib/api';
 
 export interface AppNotification {
   id: string;
@@ -23,16 +21,6 @@ export interface NotificationPage {
   notifications: AppNotification[];
   next_cursor?: string;
   unread_count: number;
-}
-
-async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
-  const token = getAccessToken();
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...(options.headers as Record<string, string> || {}),
-  };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-  return fetch(`${API_URL}${path}`, { ...options, headers, credentials: 'include' });
 }
 
 export async function getNotifications(params?: { cursor?: string; limit?: number; unreadOnly?: boolean }): Promise<NotificationPage> {

@@ -71,31 +71,49 @@ export function refreshAccessToken(orgId?: string): Promise<string | null> {
   return refreshInFlight;
 }
 
-async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
+// The one authenticated fetch wrapper for the whole app: attaches the in-memory
+// bearer token, sends credentials, transparently refreshes once on a 401 (and
+// bounces to /login if the session is truly gone), and skips Content-Type for
+// FormData. Exported so every feature api layer shares the SAME auth behavior.
+// `timeoutMs` optionally aborts a hung request (e.g. a slow AI call behind a proxy).
+export async function apiFetch(path: string, options: RequestInit & { timeoutMs?: number } = {}): Promise<Response> {
+  const { timeoutMs, ...init } = options;
   const buildHeaders = (): Record<string, string> => {
     const headers: Record<string, string> = {
-      ...(options.headers as Record<string, string> || {}),
+      ...(init.headers as Record<string, string> || {}),
     };
     const token = getAccessToken();
     if (token) headers['Authorization'] = `Bearer ${token}`;
     // Don't set Content-Type for FormData (browser sets the boundary itself).
-    if (!(options.body instanceof FormData)) headers['Content-Type'] = 'application/json';
+    if (!(init.body instanceof FormData)) headers['Content-Type'] = 'application/json';
     return headers;
   };
 
-  let res = await fetch(`${API_URL}${path}`, { ...options, headers: buildHeaders(), credentials: 'include' });
+  const controller = timeoutMs ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  const doFetch = () =>
+    fetch(`${API_URL}${path}`, {
+      ...init,
+      headers: buildHeaders(),
+      credentials: 'include',
+      signal: controller?.signal ?? init.signal,
+    });
 
-  if (res.status === 401) {
-    const newToken = await refreshAccessToken();
-    if (newToken) {
-      res = await fetch(`${API_URL}${path}`, { ...options, headers: buildHeaders(), credentials: 'include' });
-    } else {
-      setAccessToken(null);
-      window.location.href = '/login';
+  try {
+    let res = await doFetch();
+    if (res.status === 401) {
+      const newToken = await refreshAccessToken();
+      if (newToken) {
+        res = await doFetch();
+      } else {
+        setAccessToken(null);
+        window.location.href = '/login';
+      }
     }
+    return res;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
-
-  return res;
 }
 
 /**

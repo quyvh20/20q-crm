@@ -1,34 +1,7 @@
 import type { Workflow, WorkflowRun, WorkflowStep, RunDetailResponse, WorkflowListResponse, TestRunResponse, ActionSpec, TriggerSpec, ConditionGroup } from './types';
-import { getAccessToken, parseJsonSafe } from '../../lib/api';
-
-const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8080' : '');
-
-async function apiFetch(path: string, options: RequestInit & { timeoutMs?: number } = {}): Promise<Response> {
-  const { timeoutMs, ...init } = options;
-  const token = getAccessToken();
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...(init.headers as Record<string, string> || {}),
-  };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-  // Optional client-side timeout so a hung request (e.g. a slow AI call behind a
-  // proxy) fails fast instead of spinning forever.
-  const controller = timeoutMs ? new AbortController() : null;
-  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
-  try {
-    return await fetch(`${API_URL}${path}`, {
-      ...init,
-      headers,
-      credentials: 'include',
-      signal: controller?.signal ?? init.signal,
-    });
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
-// parseJsonSafe (the defensive body reader that keeps an HTML error page from
-// crashing callers) is shared from lib/api — see its import above.
+// apiFetch (bearer + credentials + 401→refresh + optional timeout) and parseJsonSafe
+// (the defensive body reader) are both shared from lib/api — single source of truth.
+import { apiFetch, parseJsonSafe } from '../../lib/api';
 
 // --- Workflow CRUD ---
 
