@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -297,7 +298,8 @@ func (cc *CommandCenter) Execute(
 		contactFields, _ := cc.knowledgeBuilder.settingsUC.GetFieldDefs(ctx, orgID, "contact")
 		dealFields, _ := cc.knowledgeBuilder.settingsUC.GetFieldDefs(ctx, orgID, "deal")
 		readOnly := !cc.callerCanWrite(ctx, orgID, caller)
-		tools := AllowedToolsWithSchema(readOnly, contactFields, dealFields)
+		canManageWorkflows := cc.callerHasCapability(ctx, orgID, domain.CapWorkflowsManage)
+		tools := AllowedToolsWithSchema(readOnly, canManageWorkflows, contactFields, dealFields)
 
 		// ── First AI call with tools ─────────────────────────────────────────
 		events <- CommandEvent{Type: "thinking", Message: "Thinking…"}
@@ -345,8 +347,45 @@ func (cc *CommandCenter) Execute(
 			}
 		}
 
-		// Special: navigate_to — emit navigate event immediately, then an AI text acknowledgment
+		// Special: create_workflow / update_workflow — hand off to the builder's AI
+		// copilot via a navigate. The draft is generated + reviewed on the canvas (A7.3)
+		// and never blind-saved, so this is a navigation (like navigate_to), not a DB
+		// write needing a confirm. Exposed only when the caller has workflows.manage.
+		var handedOffWorkflow, handoffNavigated bool
+		{
+			var keptReads []ToolCall
+			for _, tc := range readCalls {
+				if workflowToolNames[tc.Name] {
+					if !handedOffWorkflow {
+						handoffNavigated = cc.emitWorkflowHandoff(events, tc)
+						handedOffWorkflow = true
+					}
+					continue // drop additional workflow calls; one handoff per turn
+				}
+				keptReads = append(keptReads, tc)
+			}
+			readCalls = keptReads
+		}
+		// If the only actionable tool was a workflow handoff, we're done — the navigate
+		// + ack (or the clarification) already told the user what's happening; skip the
+		// summary AI call.
+		if handedOffWorkflow && len(readCalls) == 0 && len(writeCalls) == 0 {
+			events <- CommandEvent{Type: "done", Done: true}
+			if handoffNavigated {
+				cc.persistAssistant(req.SessionID, "Opened the workflow builder with your draft for review.")
+			} else {
+				cc.persistAssistant(req.SessionID, "Asked which workflow to update.")
+			}
+			return
+		}
+
+		// Special: navigate_to — emit navigate event immediately, then an AI text
+		// acknowledgment. Suppressed when a workflow handoff already issued a navigate,
+		// so the frontend gets exactly one navigation per turn.
 		for i, tc := range readCalls {
+			if handoffNavigated {
+				break
+			}
 			if tc.Name == "navigate_to" {
 				var p map[string]interface{}
 				json.Unmarshal(tc.Params, &p)
@@ -504,11 +543,16 @@ func (cc *CommandCenter) Execute(
 		}
 
 		// No writes — pure read flow. Ask AI to summarize tool results with rich markdown.
-		// Build final message list for AI summary
+		// Build final message list for AI summary. The assistant message must list ONLY
+		// the tool calls that produced a tool_result below (readCalls) — navigate_to,
+		// the form tools, and the workflow handoff were consumed above and have no
+		// matching tool message, which would leave their tool_call_id orphaned.
+		summaryToolCalls := make([]ToolCall, len(readCalls))
+		copy(summaryToolCalls, readCalls)
 		messages = append(messages, Message{
 			Role:      "assistant",
 			Content:   response.Content,
-			ToolCalls: response.ToolCalls,
+			ToolCalls: summaryToolCalls,
 		})
 		for i, tc := range readCalls {
 			messages = append(messages, Message{
@@ -567,6 +611,7 @@ func (cc *CommandCenter) buildRolePrompt(ctx context.Context, orgID uuid.UUID, r
 	scope := effectiveScope(caller)
 	canWrite := cc.callerCanWrite(ctx, orgID, caller)
 	canAnalytics := cc.callerHasCapability(ctx, orgID, domain.CapAnalyticsView)
+	canManageWorkflows := cc.callerHasCapability(ctx, orgID, domain.CapWorkflowsManage)
 
 	var lines []string
 	if scope == domain.DataScopeOwn {
@@ -579,14 +624,17 @@ func (cc *CommandCenter) buildRolePrompt(ctx context.Context, orgID uuid.UUID, r
 	if canWrite {
 		lines = append(lines, `You can create and update records (deals, contacts, tasks, activities). Follow the WRITE SAFETY rules below.`)
 	} else {
-		lines = append(lines, `READ-ONLY: search and view only.
-- ANY write request → respond: "You don't have permission to make changes."
+		lines = append(lines, `READ-ONLY (records): search and view only.
+- Any request to CREATE or CHANGE records/tasks/activities → respond: "You don't have permission to make changes." (This does NOT restrict workflow authoring, which is governed separately below.)
 - Do NOT call: create_task, update_deal, log_activity, create_contact, create_deal, create_object_record, update_object_record.`)
 	}
 	if canAnalytics {
 		lines = append(lines, `You can view pipeline forecasts and analytics.`)
 	} else {
 		lines = append(lines, `You cannot view org-wide forecasts — if asked, explain you don't have analytics access.`)
+	}
+	if canManageWorkflows {
+		lines = append(lines, `You can build automations: call create_workflow to start a new workflow from the user's description, or update_workflow (when you know the workflow's id) to modify an existing one. The draft opens in the builder for the user to review and Save — nothing runs until they do.`)
 	}
 	roleInstructions := strings.Join(lines, "\n")
 
@@ -665,6 +713,42 @@ FORMATTING:
 - Tables for multi-record results. Bullets for single records. One sentence for confirmations.
 - Embed UUIDs as [Title](#uuid) for follow-up reference.%s`,
 		today, req.UserRole, roleInstructions, workspaceHint, kbSection)
+}
+
+// emitWorkflowHandoff turns a create_workflow/update_workflow tool call into a
+// navigate to the builder's AI copilot: the prompt rides in the `ai` query param so
+// the builder auto-drafts it on the canvas for the user to review (A7.3 — never
+// blind-saved). It reuses the existing "navigate" event, so the chat UI routes there
+// like any other navigation. Returns true if it issued a navigate; false if it could
+// not (e.g. update_workflow with no id) and asked the user to clarify instead.
+func (cc *CommandCenter) emitWorkflowHandoff(events chan<- CommandEvent, tc ToolCall) bool {
+	var p map[string]any
+	_ = json.Unmarshal(tc.Params, &p)
+	var path, msg string
+	if tc.Name == "update_workflow" {
+		id, _ := p["workflow_id"].(string)
+		id = strings.TrimSpace(id)
+		if id == "" {
+			// A blank id would build "/workflows/" (the list), not the builder —
+			// contradicting the ack. Ask which workflow instead of mis-navigating.
+			events <- CommandEvent{Type: "response", Message: "Which workflow should I update? Tell me its name or open it so I have the link.", Done: false}
+			return false
+		}
+		instruction, _ := p["instruction"].(string)
+		// PathEscape the id (path segment) so it's handled as consistently as the
+		// QueryEscape'd instruction; a real workflow id is a UUID, so this is a no-op
+		// in practice but blocks a malformed id from mangling the path.
+		path = "/workflows/" + url.PathEscape(id) + "?ai=" + url.QueryEscape(instruction)
+		msg = "Opening that workflow in the builder with your changes drafted on the canvas — review, then Keep or Undo and Save. ✨"
+	} else {
+		description, _ := p["description"].(string)
+		path = "/workflows/new?ai=" + url.QueryEscape(description)
+		msg = "Opening the workflow builder with your automation drafted on the canvas — review it, then Save. ✨"
+	}
+	navData, _ := json.Marshal(map[string]any{"path": path, "label": "the workflow builder"})
+	events <- CommandEvent{Type: "navigate", Data: navData}
+	events <- CommandEvent{Type: "response", Message: msg, Done: false}
+	return true
 }
 
 // describeWrite returns a human-readable confirm summary for the banner.

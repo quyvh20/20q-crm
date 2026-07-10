@@ -9,6 +9,11 @@ import {
   Clock,
   PencilLine,
   Phone,
+  Bell,
+  FilePlus2,
+  Search,
+  Waypoints,
+  Sparkles,
   GitBranch,
   User,
   CircleDollarSign,
@@ -38,6 +43,11 @@ const ACTION_META: Record<ActionSpec['type'], NodeMeta> = {
   delay: { icon: Clock, accent: 'text-amber-600 dark:text-amber-400', chip: 'bg-amber-500/10' },
   update_record: { icon: PencilLine, accent: 'text-blue-600 dark:text-blue-400', chip: 'bg-blue-500/10' },
   log_activity: { icon: Phone, accent: 'text-rose-600 dark:text-rose-400', chip: 'bg-rose-500/10' },
+  notify_user: { icon: Bell, accent: 'text-fuchsia-600 dark:text-fuchsia-400', chip: 'bg-fuchsia-500/10' },
+  create_record: { icon: FilePlus2, accent: 'text-teal-600 dark:text-teal-400', chip: 'bg-teal-500/10' },
+  find_records: { icon: Search, accent: 'text-cyan-600 dark:text-cyan-400', chip: 'bg-cyan-500/10' },
+  enroll_records: { icon: Waypoints, accent: 'text-indigo-600 dark:text-indigo-400', chip: 'bg-indigo-500/10' },
+  ai_generate: { icon: Sparkles, accent: 'text-purple-600 dark:text-purple-400', chip: 'bg-purple-500/10' },
 };
 
 export const ACTION_TITLES: Record<ActionSpec['type'], string> = {
@@ -48,6 +58,11 @@ export const ACTION_TITLES: Record<ActionSpec['type'], string> = {
   delay: 'Delay',
   update_record: 'Update Record',
   log_activity: 'Log Activity',
+  notify_user: 'Notify User',
+  create_record: 'Create Record',
+  find_records: 'Find Records',
+  enroll_records: 'Enroll Records',
+  ai_generate: 'Generate with AI',
 };
 
 export function actionMeta(type: string): NodeMeta {

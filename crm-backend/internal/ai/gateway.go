@@ -39,6 +39,9 @@ const (
 	TaskSentiment          AITask = "sentiment"
 	TaskFollowup           AITask = "followup_suggest"
 	TaskCommandCenter      AITask = "command_center"
+	// TaskWorkflowAI backs the automation `ai_generate` step (A7): a bounded
+	// free-form generation whose output feeds later workflow steps.
+	TaskWorkflowAI         AITask = "workflow_ai"
 )
 
 // advancedTasks are only available to pro+ plans
@@ -73,6 +76,7 @@ var taskPrimaryProvider = map[AITask]provider{
 	TaskFollowup:          providerCFWorkers,
 	TaskVoiceIntelligence: providerCFWorkers,
 	TaskCommandCenter:     providerCFWorkers,
+	TaskWorkflowAI:        providerCFWorkers,
 }
 
 // Task → model mapping per provider
@@ -92,6 +96,7 @@ var taskModels = map[AITask]map[provider]string{
 	TaskSentiment:         {providerCFWorkers: "@cf/meta/llama-3.2-1b-instruct"},
 	TaskFollowup:          {providerCFWorkers: "@cf/meta/llama-3.2-3b-instruct"},
 	TaskVoiceIntelligence: {providerCFWorkers: "@cf/qwen/qwen3-30b-a3b-fp8"},
+	TaskWorkflowAI:        {providerCFWorkers: "@cf/qwen/qwen3-30b-a3b-fp8"},
 }
 
 // taskFallbackModels — tried when the primary model fails (timeout, error, empty response).
@@ -112,6 +117,7 @@ var taskMaxTokens = map[AITask]int{
 	TaskMeetingSummary:    1500,
 	TaskAnalytics:         1500,
 	TaskVoiceIntelligence: 2000,
+	TaskWorkflowAI:        1024,
 }
 
 func maxTokensFor(task AITask) int {
@@ -173,8 +179,27 @@ func NewAIGateway(cfAccountID, cfAIGatewayID, cfToken string, budget *BudgetGuar
 	}
 }
 
-// Complete runs a full inference call with budget check + fallback.
+// Complete runs a full inference call with budget check + fallback, bounded by the
+// task's default max-tokens.
 func (g *AIGateway) Complete(ctx context.Context, orgID, userID uuid.UUID, task AITask, messages []Message) (AIResponse, error) {
+	return g.complete(ctx, orgID, userID, task, messages, maxTokensFor(task))
+}
+
+// CompleteBounded is Complete with a per-call output cap (A7 ai_generate). The
+// override is clamped to the task's default so a caller can only shrink the
+// output, never exceed the task's budget ceiling; a non-positive value falls back
+// to the task default.
+func (g *AIGateway) CompleteBounded(ctx context.Context, orgID, userID uuid.UUID, task AITask, messages []Message, maxTokens int) (AIResponse, error) {
+	def := maxTokensFor(task)
+	if maxTokens <= 0 || maxTokens > def {
+		maxTokens = def
+	}
+	return g.complete(ctx, orgID, userID, task, messages, maxTokens)
+}
+
+// complete is the shared inference core: budget check, primary→fallback model
+// selection, retry with backoff, and usage recording. maxTokens bounds the output.
+func (g *AIGateway) complete(ctx context.Context, orgID, userID uuid.UUID, task AITask, messages []Message, maxTokens int) (AIResponse, error) {
 	estimated := estimateTokens(messages)
 
 	if g.Budget != nil {
@@ -210,7 +235,7 @@ func (g *AIGateway) Complete(ctx context.Context, orgID, userID uuid.UUID, task 
 		}
 
 		for _, model := range modelsToTry {
-			result, lastErr = g.callCFWorkers(ctx, task, model, messages)
+			result, lastErr = g.callCFWorkersBounded(ctx, task, model, messages, maxTokens)
 			if lastErr == nil && result.Content != "" {
 				goto success
 			}
@@ -466,13 +491,19 @@ func (g *AIGateway) resolveModelURL(model string) string {
 }
 
 // callCFWorkers — CF AI Gateway → Workers AI or proxied provider (OpenAI-compatible endpoint)
+// callCFWorkers issues a single model call bounded by the task's default max-tokens.
 func (g *AIGateway) callCFWorkers(ctx context.Context, task AITask, model string, messages []Message) (AIResponse, error) {
+	return g.callCFWorkersBounded(ctx, task, model, messages, taskMaxTokens[task])
+}
+
+// callCFWorkersBounded issues a single model call with an explicit output cap
+// (0 → the safe 1024 default).
+func (g *AIGateway) callCFWorkersBounded(ctx context.Context, task AITask, model string, messages []Message, maxTokens int) (AIResponse, error) {
 	url := g.resolveModelURL(model)
 
 	chatMsgs := buildOpenAIMessages(messages)
 
-	maxTokens := taskMaxTokens[task]
-	if maxTokens == 0 {
+	if maxTokens <= 0 {
 		maxTokens = 1024
 	}
 

@@ -97,6 +97,86 @@ func WithEmailExecutor(apiKey, fromEmail string) EngineOption {
 	}
 }
 
+// WithNotificationExecutor registers the notify_user executor (A6). The creator
+// is the platform NotificationUseCase, which inserts the inbox row and pushes it
+// over the recipient's per-user SSE channel. e.db is already set (NewEngine
+// assigns it before options) so the executor can enforce the per-run cap.
+func WithNotificationExecutor(nc NotificationCreator) EngineOption {
+	return func(e *Engine) {
+		e.executors[ActionNotifyUser] = NewNotifyUserExecutor(e.db, nc)
+	}
+}
+
+// WithCreateRecordExecutor registers the create_record executor (A6). The creator
+// is the platform RecordService, so the create runs through the same uniform
+// validation + OLS/FLS (as the workflow author) + audit + event path as REST/AI.
+func WithCreateRecordExecutor(rc RecordCreator) EngineOption {
+	return func(e *Engine) {
+		e.executors[ActionCreateRecord] = NewCreateRecordExecutor(rc)
+	}
+}
+
+// WithRecordActions registers the find_records + enroll_records executors (A6).
+// Both read through the platform RecordService (OLS/FLS as the workflow author);
+// enroll also creates runs in a target workflow, for which it uses the engine
+// itself (which satisfies Enroller). Called at NewEngine time, so e is available
+// to hand to the enroll executor.
+func WithRecordActions(lister RecordLister) EngineOption {
+	return func(e *Engine) {
+		e.executors[ActionFindRecords] = NewFindRecordsExecutor(lister)
+		e.executors[ActionEnrollRecords] = NewEnrollRecordsExecutor(e, lister)
+	}
+}
+
+// WithAIGenerator registers the ai_generate executor (A7). The generator is an
+// adapter over the AI gateway (bounded by TaskWorkflowAI's budget), so a workflow
+// step can produce free-form text for later steps to consume.
+func WithAIGenerator(gen AITextGenerator) EngineOption {
+	return func(e *Engine) {
+		e.executors[ActionAIGenerate] = NewAIGenerateExecutor(gen)
+	}
+}
+
+// LoadWorkflow fetches a workflow by id within an org — the enroll_records target
+// lookup. Part of the Enroller port *Engine satisfies.
+func (e *Engine) LoadWorkflow(ctx context.Context, orgID, wfID uuid.UUID) (*Workflow, error) {
+	return e.repo.GetWorkflowByID(ctx, orgID, wfID)
+}
+
+// EnrollRun creates and dispatches one run for target with the supplied trigger
+// context + idempotency key, reusing the run-creation/dispatch machinery. Returns
+// inserted=false when the idempotency key already exists (a duplicate enroll of the
+// same source-run+record is an idempotent no-op). Part of the Enroller port.
+func (e *Engine) EnrollRun(ctx context.Context, orgID uuid.UUID, target *Workflow, triggerCtx map[string]any, idempotencyKey string) (bool, error) {
+	tc, err := json.Marshal(triggerCtx)
+	if err != nil {
+		return false, fmt.Errorf("marshal enroll trigger context: %w", err)
+	}
+	run := &WorkflowRun{
+		ID:              uuid.New(),
+		WorkflowID:      target.ID,
+		WorkflowVersion: target.Version,
+		OrgID:           orgID,
+		Status:          StatusPending,
+		TriggerContext:  datatypes.JSON(tc),
+		IdempotencyKey:  idempotencyKey,
+	}
+	inserted, err := e.repo.CreateRun(ctx, run)
+	if err != nil {
+		return false, fmt.Errorf("create enrolled run: %w", err)
+	}
+	if inserted {
+		select {
+		case e.jobs <- WorkflowRunJob{RunID: run.ID}:
+		default:
+			e.logger.Warn("automation: jobs channel full, enrolled run will be picked up by scheduler",
+				"run_id", run.ID.String(),
+			)
+		}
+	}
+	return inserted, nil
+}
+
 // SendTestEmail sends a one-off email through the registered email executor,
 // bypassing a workflow run. Used by the email-template test-send endpoint (A5):
 // the caller renders subject/body against a sample record, then delivers it.

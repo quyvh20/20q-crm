@@ -4,6 +4,8 @@ import GlobalSearch from "./components/common/GlobalSearch";
 import AIUsageWidget from "./components/settings/AIUsageWidget";
 import WelcomeModal from "./components/onboarding/WelcomeModal";
 import WorkspaceSwitcher from "./components/common/WorkspaceSwitcher";
+import NotificationBell from "./features/notifications/NotificationBell";
+import { useNotificationStream } from "./features/notifications/useNotificationStream";
 import { getObjectDefs, getFieldDefs, resendVerification, type CustomObjectDef } from "./lib/api";
 
 interface AppLayoutProps {
@@ -12,6 +14,9 @@ interface AppLayoutProps {
 
 export default function AppLayout({ children }: AppLayoutProps) {
   const { user, logout, activeWorkspace } = useAuth();
+  // App-global SSE listener for the header bell — keeps the unread badge + inbox
+  // live while signed in (A6.2). No-op until a user is present.
+  useNotificationStream(!!user);
   const [customObjects, setCustomObjects] = useState<CustomObjectDef[]>([]);
   const [showWelcome, setShowWelcome] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -120,6 +125,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
                 {activeWorkspace.org_name}
               </span>
             )}
+            <NotificationBell />
             {user?.avatar_url ? (
               <img src={user.avatar_url} alt="" className="h-8 w-8 rounded-full object-cover" />
             ) : (

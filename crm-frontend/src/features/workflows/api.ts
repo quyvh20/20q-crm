@@ -368,6 +368,51 @@ export async function getWorkflowSchema(): Promise<WorkflowSchema> {
   return json.data as WorkflowSchema;
 }
 
+// --- AI copilot (A7): NL → workflow draft ---
+
+/** A drafted workflow the copilot returns. Steps are id-normalized server-side, so
+ *  it applies directly to the builder. Structurally compatible with the store's
+ *  WorkflowDraftInput. */
+export interface AIDraft {
+  name: string;
+  description?: string;
+  trigger: TriggerSpec;
+  conditions?: ConditionGroup | null;
+  steps: WorkflowStep[];
+}
+
+export interface AIDraftValidation {
+  valid: boolean;
+  errors?: { field: string; message: string }[];
+  warnings?: string[];
+}
+
+export interface AIDraftResponse {
+  draft: AIDraft;
+  validation: AIDraftValidation;
+}
+
+/** The workflow being edited, sent so the copilot edits it instead of drafting from
+ *  scratch (A7.4). Omit for a from-scratch draft. */
+export interface WorkflowEditContext {
+  name?: string;
+  trigger: TriggerSpec | null;
+  conditions?: ConditionGroup | null;
+  steps: WorkflowStep[];
+}
+
+/** POST /api/workflows/ai/draft — turn a natural-language prompt into a draft. The
+ *  server never saves; the caller applies the draft through the same validation as
+ *  a manual edit. When `current` is supplied the copilot applies the prompt as an
+ *  edit against it (preserving unchanged parts) rather than drafting anew. */
+export async function draftWorkflow(prompt: string, current?: WorkflowEditContext | null): Promise<AIDraftResponse> {
+  const body = current ? { prompt, current_workflow: current } : { prompt };
+  const res = await apiFetch('/api/workflows/ai/draft', { method: 'POST', body: JSON.stringify(body) });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error?.message || json.error || 'Failed to draft workflow');
+  return json.data as AIDraftResponse;
+}
+
 // --- New API contracts: Objects & Fields ---
 
 export interface ObjectItem {

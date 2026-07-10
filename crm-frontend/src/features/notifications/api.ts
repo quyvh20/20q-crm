@@ -1,0 +1,70 @@
+// REST client for the in-app notification inbox (A6.2). Mirrors the workflows
+// feature's apiFetch shape (bearer token + credentials). Every endpoint is scoped
+// server-side to (org, caller), so there are no ids in these paths.
+import { getAccessToken } from '../../lib/api';
+
+const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8080' : '');
+
+export interface AppNotification {
+  id: string;
+  org_id: string;
+  user_id: string;
+  type: string;
+  title: string;
+  body: string;
+  link: string;
+  entity_type?: string;
+  entity_id?: string;
+  read_at?: string | null;
+  created_at: string;
+}
+
+export interface NotificationPage {
+  notifications: AppNotification[];
+  next_cursor?: string;
+  unread_count: number;
+}
+
+async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
+  const token = getAccessToken();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(options.headers as Record<string, string> || {}),
+  };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return fetch(`${API_URL}${path}`, { ...options, headers, credentials: 'include' });
+}
+
+export async function getNotifications(params?: { cursor?: string; limit?: number; unreadOnly?: boolean }): Promise<NotificationPage> {
+  const qs = new URLSearchParams();
+  if (params?.cursor) qs.set('cursor', params.cursor);
+  if (params?.limit) qs.set('limit', String(params.limit));
+  if (params?.unreadOnly) qs.set('unread', 'true');
+  const res = await apiFetch(`/api/notifications?${qs.toString()}`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error?.message || json.error || 'Failed to fetch notifications');
+  return json.data as NotificationPage;
+}
+
+export async function getUnreadCount(): Promise<number> {
+  const res = await apiFetch(`/api/notifications/unread-count`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error?.message || json.error || 'Failed to fetch unread count');
+  return (json.data?.unread_count ?? 0) as number;
+}
+
+export async function markNotificationRead(id: string): Promise<void> {
+  const res = await apiFetch(`/api/notifications/${id}/read`, { method: 'POST' });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(json.error?.message || json.error || 'Failed to mark notification read');
+  }
+}
+
+export async function markAllNotificationsRead(): Promise<void> {
+  const res = await apiFetch(`/api/notifications/read-all`, { method: 'POST' });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(json.error?.message || json.error || 'Failed to mark all read');
+  }
+}

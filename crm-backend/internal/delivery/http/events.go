@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"time"
 
+	"crm-backend/internal/domain"
+
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 )
@@ -39,9 +41,16 @@ func (h *EventsHandler) Stream(c *gin.Context) {
 	ctx, cancel := context.WithCancel(c.Request.Context())
 	defer cancel()
 
-	// Subscribe to org's SSE channel
-	channelName := "sse:" + orgID.String()
-	pubsub := h.redis.Subscribe(ctx, channelName)
+	// Subscribe to BOTH the org-wide channel (AI/voice job events, broadcast to
+	// every member) and the caller's per-user channel (in-app notifications,
+	// A6 — private to this member so payloads never leak across the org). A
+	// missing user id (shouldn't happen behind AuthMiddleware) degrades to
+	// org-only rather than failing the stream.
+	channels := []string{domain.OrgNotificationChannel(orgID)}
+	if userID, ok := GetUserID(c); ok {
+		channels = append(channels, domain.UserNotificationChannel(orgID, userID))
+	}
+	pubsub := h.redis.Subscribe(ctx, channels...)
 	defer pubsub.Close()
 
 	ch := pubsub.Channel()

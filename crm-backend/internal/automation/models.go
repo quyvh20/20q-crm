@@ -300,6 +300,11 @@ const (
 	ActionDelay          = "delay"
 	ActionUpdateRecord   = "update_record"
 	ActionLogActivity    = "log_activity"
+	ActionNotifyUser     = "notify_user"    // A6: in-app notification to a member's inbox
+	ActionCreateRecord   = "create_record"  // A6: create any object's record via RecordService
+	ActionFindRecords    = "find_records"   // A6: query records into the action output
+	ActionEnrollRecords  = "enroll_records" // A6: enroll matching records into a target workflow
+	ActionAIGenerate     = "ai_generate"    // A7: bounded AI text generation into the action output
 	ActionUpdateContact  = "update_contact" // DEPRECATED alias: kept for backward compat with saved workflows
 )
 
@@ -427,6 +432,11 @@ var ValidActionTypes = map[string]bool{
 	ActionDelay:         true,
 	ActionUpdateRecord:  true,
 	ActionLogActivity:   true,
+	ActionNotifyUser:    true,
+	ActionCreateRecord:  true,
+	ActionFindRecords:   true,
+	ActionEnrollRecords: true,
+	ActionAIGenerate:    true,
 	ActionUpdateContact: true, // backward compat
 }
 

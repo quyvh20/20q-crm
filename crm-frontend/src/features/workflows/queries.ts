@@ -21,9 +21,12 @@ import {
   updateEmailTemplate,
   deleteEmailTemplate,
   testSendEmailTemplate,
+  draftWorkflow,
+  type WorkflowEditContext,
   type EmailTemplate,
   type EmailTemplateListResponse,
   type SaveEmailTemplateInput,
+  type AIDraftResponse,
 } from './api';
 import type { Workflow, WorkflowListResponse, SaveWorkflowPayload } from './types';
 
@@ -207,5 +210,15 @@ export function useDeleteWorkflow() {
     },
     onError: (_e, _id, ctx) => restoreLists(qc, ctx?.snapshot),
     onSettled: () => qc.invalidateQueries({ queryKey: workflowKeys.lists() }),
+  });
+}
+
+/** AI copilot (A7.3/A7.4): turn a natural-language prompt into a workflow draft,
+ *  optionally editing an existing workflow (`current`). A plain mutation — nothing is
+ *  saved server-side, so there's no cache to touch; the caller applies the returned
+ *  draft to the builder store. */
+export function useDraftWorkflow() {
+  return useMutation<AIDraftResponse, Error, { prompt: string; current?: WorkflowEditContext | null }>({
+    mutationFn: ({ prompt, current }) => draftWorkflow(prompt, current),
   });
 }

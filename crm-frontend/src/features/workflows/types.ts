@@ -21,7 +21,7 @@ export interface ConditionGroup {
 }
 
 export interface ActionSpec {
-  type: 'send_email' | 'create_task' | 'assign_user' | 'send_webhook' | 'delay' | 'update_record' | 'log_activity';
+  type: 'send_email' | 'create_task' | 'assign_user' | 'send_webhook' | 'delay' | 'update_record' | 'log_activity' | 'notify_user' | 'create_record' | 'find_records' | 'enroll_records' | 'ai_generate';
   id: string;
   params: Record<string, unknown>;
 }
@@ -164,6 +164,11 @@ export const ACTION_LABELS: Record<ActionType, string> = {
   delay: 'Delay',
   update_record: 'Update Record',
   log_activity: 'Log Activity',
+  notify_user: 'Notify User',
+  create_record: 'Create Record',
+  find_records: 'Find Records',
+  enroll_records: 'Enroll Records',
+  ai_generate: 'Generate with AI',
 };
 
 export const ACTION_ICONS: Record<ActionType, string> = {
@@ -174,6 +179,11 @@ export const ACTION_ICONS: Record<ActionType, string> = {
   delay: '⏱️',
   update_record: '📝',
   log_activity: '📞',
+  notify_user: '🔔',
+  create_record: '🆕',
+  find_records: '🔍',
+  enroll_records: '↪️',
+  ai_generate: '✨',
 };
 
 export const STATUS_COLORS: Record<string, string> = {

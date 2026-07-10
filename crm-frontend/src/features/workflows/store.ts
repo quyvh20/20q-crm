@@ -4,7 +4,30 @@ import { workflowSchema, validateActionIds, validateConditionDepth } from './sch
 import { createWorkflow, updateWorkflow, getWorkflow, getWorkflowSchema, getObjectFields, type WorkflowSchema, type FieldItem } from './api';
 import { isNoValueOperator } from './useSchema';
 import { isValidCron } from './cron';
-import { resolvableObjectsForTrigger, objectKeyOfPath } from './dateField';
+import { resolvableObjectsForTrigger, objectKeyOfPath, triggerOwnerObject } from './dateField';
+
+/** The AI-draft shape the copilot applies (A7.3). Mirrors the /ai/draft response's
+ *  `draft` object; steps are already id-normalized server-side. */
+export interface WorkflowDraftInput {
+  name?: string;
+  description?: string;
+  trigger: TriggerSpec;
+  conditions?: ConditionGroup | null;
+  steps: WorkflowStep[];
+}
+
+/** Snapshot of the fields an applied draft overwrites, for Undo. Captures isDirty
+ *  too so undoing back to a freshly-loaded (clean) workflow doesn't strand a
+ *  spurious dirty flag that re-enables Save for a no-op update. */
+interface WorkflowDraftSnapshot {
+  name: string;
+  description: string;
+  trigger: TriggerSpec | null;
+  conditions: ConditionGroup | null;
+  actions: ActionSpec[];
+  steps: WorkflowStep[];
+  isDirty: boolean;
+}
 
 interface BuilderState {
   workflowId: string | null;
@@ -22,6 +45,10 @@ interface BuilderState {
   isDirty: boolean;
   errors: Record<string, string[]>;
   saving: boolean;
+
+  // AI copilot (A7.3): the pre-draft snapshot, non-null while an applied AI draft
+  // is pending Keep/Undo. The canvas shows the draft; Undo restores this.
+  draftSnapshot: WorkflowDraftSnapshot | null;
 
   // Schema (fetched once on builder mount)
   schema: WorkflowSchema | null;
@@ -54,6 +81,14 @@ interface BuilderState {
   /** Hydrate builder state from an already-fetched workflow (no network). Shared by
    *  the store's own loadWorkflow and the React Query load path in the new builder. */
   applyLoadedWorkflow: (wf: Workflow) => void;
+  /** Apply an AI-generated draft (A7.3) into the current session: snapshots the
+   *  current name/trigger/conditions/steps for Undo, then replaces them. Keeps the
+   *  workflowId so a subsequent Save updates the same workflow. */
+  applyDraft: (draft: WorkflowDraftInput) => void;
+  /** Commit the applied draft (clear the Undo snapshot). */
+  keepDraft: () => void;
+  /** Discard the applied draft and restore the pre-draft snapshot. */
+  undoDraft: () => void;
   /** Build the canonical steps-only save payload from current state. */
   buildSavePayload: () => SaveWorkflowPayload;
   /** Detach current state into a fresh unsaved "Copy of …" draft. */
@@ -432,6 +467,19 @@ function extractObjectSlug(type: string): string {
   return '';
 }
 
+/** Coerce an untrusted conditions value into a well-formed ConditionGroup or null.
+ *  An AI draft is applied even when the backend flags it invalid (the canvas + zod
+ *  are the final gate), and the backend passes `conditions` through as raw JSON, so
+ *  a model can emit a rules-less `{op:'AND'}` (or a non-object). Left verbatim it
+ *  would crash the condition config panel and the save-time rule loop, both of which
+ *  dereference `.rules`. Null means "no conditions" (the canonical empty state). */
+function normalizeConditionGroup(c: unknown): ConditionGroup | null {
+  if (!c || typeof c !== 'object') return null;
+  const g = c as Partial<ConditionGroup>;
+  if (!Array.isArray(g.rules) || g.rules.length === 0) return null;
+  return { op: g.op === 'OR' ? 'OR' : 'AND', rules: g.rules };
+}
+
 const initialState = {
   workflowId: null as string | null,
   createdBy: null as string | null,
@@ -446,6 +494,7 @@ const initialState = {
   isDirty: false,
   errors: {} as Record<string, string[]>,
   saving: false,
+  draftSnapshot: null as WorkflowDraftSnapshot | null,
   schema: null as WorkflowSchema | null,
   schemaLoading: false,
   schemaError: null as string | null,
@@ -685,8 +734,9 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       errors.actions = [...(errors.actions || []), ...dupeErrors];
     }
 
-    // Check condition depth
-    if (state.conditions) {
+    // Check condition depth. Guard on rules being an array so a malformed group
+    // (e.g. a rules-less object from a legacy row) can't crash the rule loop below.
+    if (state.conditions && Array.isArray(state.conditions.rules)) {
       const depthErrors = validateConditionDepth(state.conditions);
       if (depthErrors.length) {
         errors.conditions = [...(errors.conditions || []), ...depthErrors];
@@ -841,6 +891,64 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
           });
         }
       }
+
+      if (action.type === 'notify_user') {
+        const title = String(action.params.title || '').trim();
+        if (!title) {
+          errors[`${key}.params.title`] = ['Title is required'];
+        }
+        const recipient = String(action.params.recipient || 'owner_field');
+        if (recipient === 'specific') {
+          if (!action.params.user_id) {
+            errors[`${key}.params.user_id`] = ['Select a user to notify'];
+          }
+        } else if (!triggerOwnerObject(state.trigger)) {
+          // owner_field mode but the trigger's record has no owner (schedule /
+          // company / custom) → the run can't resolve a recipient. Mirror the
+          // wait-until guard: reject at save so it isn't a silent runtime failure.
+          errors[`${key}.params.recipient`] = ["This trigger has no record owner — choose a specific user"];
+        }
+      }
+
+      if (action.type === 'create_record') {
+        if (!String(action.params.object || '').trim()) {
+          errors[`${key}.params.object`] = ['Choose an object to create'];
+        }
+        const rows = Array.isArray(action.params.fields)
+          ? (action.params.fields as Array<{ field?: string; value?: unknown }>)
+          : [];
+        const named = rows.filter((r) => String(r.field || '').trim());
+        if (named.length === 0) {
+          errors[`${key}.params.fields`] = ['Add at least one field'];
+        }
+      }
+
+      if (action.type === 'find_records') {
+        if (!String(action.params.object || '').trim()) {
+          errors[`${key}.params.object`] = ['Choose an object to find'];
+        }
+      }
+
+      if (action.type === 'enroll_records') {
+        if (!String(action.params.object || '').trim()) {
+          errors[`${key}.params.object`] = ['Choose an object to enroll'];
+        }
+        if (!String(action.params.workflow_id || '').trim()) {
+          errors[`${key}.params.workflow_id`] = ['Choose a workflow to enroll into'];
+        }
+      }
+
+      if (action.type === 'ai_generate') {
+        if (!String(action.params.prompt || '').trim()) {
+          errors[`${key}.params.prompt`] = ['Write a prompt for the AI'];
+        }
+        if (action.params.max_tokens !== undefined) {
+          const n = Number(action.params.max_tokens);
+          if (!Number.isFinite(n) || n < 1 || n > 1024) {
+            errors[`${key}.params.max_tokens`] = ['Max length must be between 1 and 1024'];
+          }
+        }
+      }
     }
 
     set({ errors });
@@ -905,6 +1013,57 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       actions: wf.actions || [],
       steps: loadedSteps,
       isDirty: false,
+      errors: {},
+      selectedNodeId: null,
+      draftSnapshot: null,
+    });
+  },
+
+  applyDraft: (draft) => {
+    const state = get();
+    // Preserve the true pre-draft baseline across successive regenerations: only
+    // capture a snapshot when none is pending. A second Generate before Keep/Undo
+    // must still Undo back to the user's original state, not the first AI draft.
+    const snapshot: WorkflowDraftSnapshot = state.draftSnapshot ?? {
+      name: state.name,
+      description: state.description,
+      trigger: state.trigger,
+      conditions: state.conditions,
+      actions: state.actions,
+      steps: state.steps,
+      isDirty: state.isDirty,
+    };
+    const steps = (draft.steps || []) as WorkflowStep[];
+    set({
+      draftSnapshot: snapshot,
+      name: draft.name || state.name,
+      description: draft.description ?? state.description,
+      trigger: draft.trigger ?? null,
+      // The draft is applied even when validation flagged it, and the backend
+      // relays conditions as raw JSON — coerce to a safe shape (see normalizeConditionGroup).
+      conditions: normalizeConditionGroup(draft.conditions),
+      steps,
+      actions: flattenSteps(steps),
+      isDirty: true,
+      errors: {},
+      selectedNodeId: null,
+    });
+  },
+
+  keepDraft: () => set({ draftSnapshot: null }),
+
+  undoDraft: () => {
+    const snap = get().draftSnapshot;
+    if (!snap) return;
+    set({
+      name: snap.name,
+      description: snap.description,
+      trigger: snap.trigger,
+      conditions: snap.conditions,
+      actions: snap.actions,
+      steps: snap.steps,
+      draftSnapshot: null,
+      isDirty: snap.isDirty,
       errors: {},
       selectedNodeId: null,
     });

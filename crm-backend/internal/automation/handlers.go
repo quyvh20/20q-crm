@@ -42,6 +42,9 @@ type Handler struct {
 	// authz stamps the P5a audit trail for the inbound-webhook contact upsert, which
 	// runs as the system actor (P8). nil (unit tests) simply skips the audit.
 	authz domain.RecordAuthorizer
+	// draftAI backs the AI copilot's NL→draft endpoint (A7). nil disables it (the
+	// endpoint returns 503). Set via SetDraftAI from main.go.
+	draftAI draftAICaller
 }
 
 // NewHandler creates a new automation HTTP handler. capChecker is required: Run Now
@@ -88,6 +91,12 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerF
 		workflows.DELETE("/:id", requireCap(domain.CapWorkflowsManage), h.DeleteWorkflow)
 		workflows.POST("/:id/toggle", requireCap(domain.CapWorkflowsManage), h.ToggleWorkflow)
 		workflows.POST("/:id/test-run", requireCap(domain.CapWorkflowsManage), h.TestRun)
+
+		// AI copilot (A7): natural-language → workflow draft. Manage-gated (drafting
+		// is authoring). Static "ai" segment coexists with "/:id" like "/schema".
+		// Never saves — the client applies the returned draft through the same zod
+		// validation as a manual edit.
+		workflows.POST("/ai/draft", requireCap(domain.CapWorkflowsManage), h.DraftWorkflow)
 
 		// Email templates library (A5). All manage-gated. Registered before the
 		// "/:id" param routes' subtree is unaffected — gin allows the static
@@ -1369,16 +1378,19 @@ func (h *Handler) GetWorkflowSchema(c *gin.Context) {
 	if orgID == uuid.Nil {
 		return
 	}
+	c.JSON(http.StatusOK, gin.H{"data": h.buildSchema(c.Request.Context(), orgID)})
+}
 
+// buildSchema assembles the org's full workflow schema (entities + custom objects
+// + stages + tags + users), served by GetWorkflowSchema and reused by the AI
+// copilot's get_workflow_schema tool (A7). Cached per-org (60s TTL).
+func (h *Handler) buildSchema(ctx context.Context, orgID uuid.UUID) *SchemaResponse {
 	// Check cache first
 	if h.schemaCache != nil {
 		if cached := h.schemaCache.Get(orgID); cached != nil {
-			c.JSON(http.StatusOK, gin.H{"data": cached})
-			return
+			return cached
 		}
 	}
-
-	ctx := c.Request.Context()
 
 	// 1. Built-in entity fields. Paths must match the emitted event payload keys
 	// (contactToMap/dealToMap/companyAutomationMap) so templates/conditions resolve
@@ -1483,7 +1495,7 @@ func (h *Handler) GetWorkflowSchema(c *gin.Context) {
 		h.schemaCache.Set(orgID, result)
 	}
 
-	c.JSON(http.StatusOK, gin.H{"data": result})
+	return result
 }
 
 // --- New API Contracts ---

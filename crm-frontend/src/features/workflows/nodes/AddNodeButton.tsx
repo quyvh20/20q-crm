@@ -34,6 +34,16 @@ export function getDefaultParams(type: string): Record<string, unknown> {
       return { duration_sec: 60 };
     case 'log_activity':
       return { activity_type: 'note', title: '', body: '' };
+    case 'notify_user':
+      return { recipient: 'owner_field', title: '', body: '' };
+    case 'create_record':
+      return { object: '', fields: [] };
+    case 'find_records':
+      return { object: '', filters: [], limit: 100 };
+    case 'enroll_records':
+      return { workflow_id: '', object: '', filters: [] };
+    case 'ai_generate':
+      return { prompt: '', max_tokens: 512 };
     default:
       return {};
   }

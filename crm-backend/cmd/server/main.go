@@ -743,6 +743,29 @@ func main() {
 			log.Info("report_shares: swept orphaned group-targeted shares", zap.Int64("rows", res.RowsAffected))
 		}
 
+		// In-app notifications (A6, migration 000036) — boot guard. Mirrors
+		// migrations/000036_notifications.up.sql exactly. A platform table (not
+		// automation-owned): produced by automation notify_user actions today,
+		// consumed app-wide by the header bell. No soft-delete — a 90-day sweep
+		// hard-deletes stale rows. The partial unread index keeps the bell's
+		// unread-count query cheap. Keep both files in sync.
+		db.Exec(`CREATE TABLE IF NOT EXISTS notifications (
+			id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			org_id      UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			type        VARCHAR(50) NOT NULL DEFAULT 'automation',
+			title       VARCHAR(255) NOT NULL,
+			body        TEXT NOT NULL DEFAULT '',
+			link        VARCHAR(1024) NOT NULL DEFAULT '',
+			entity_type VARCHAR(64) NOT NULL DEFAULT '',
+			entity_id   UUID,
+			read_at     TIMESTAMPTZ,
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_notifications_inbox ON notifications(user_id, org_id, created_at DESC)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(user_id, org_id) WHERE read_at IS NULL`)
+		db.Exec(`ALTER TABLE notifications ENABLE ROW LEVEL SECURITY`)
+
 		log.Info("Seeding system roles...")
 		// SeedSystemRoles is also the idempotent boot backfill for new capability
 		// codes on existing installs: it inserts any DefaultRoleCapabilities row that
@@ -1034,11 +1057,36 @@ func main() {
 
 		eventsHandler := delivery.NewEventsHandler(redisClient)
 
+		// In-app notifications (A6): the inbox usecase publishes each new
+		// notification on the recipient's per-user SSE channel (redisClient), which
+		// eventsHandler.Stream now subscribes alongside the org channel. Nil-safe
+		// without Redis (the row still lands in the inbox, just no live push).
+		notificationRepo := repository.NewNotificationRepository(db)
+		notificationUC := usecase.NewNotificationUseCase(notificationRepo, redisClient)
+		notificationHandler := delivery.NewNotificationHandler(notificationUC)
+		// 90-day retention sweep: hard-delete stale notifications daily (and once at
+		// boot). Best-effort background loop; a failed pass just retries next tick.
+		go func() {
+			sweep := func() {
+				if n, err := notificationUC.SweepOld(context.Background()); err != nil {
+					log.Warn("notifications: retention sweep failed", zap.Error(err))
+				} else if n > 0 {
+					log.Info("notifications: retention sweep", zap.Int64("deleted", n))
+				}
+			}
+			sweep()
+			ticker := time.NewTicker(24 * time.Hour)
+			defer ticker.Stop()
+			for range ticker.C {
+				sweep()
+			}
+		}()
+
 		voiceNoteRepo := repository.NewVoiceNoteRepository(db)
 		voiceNoteUC := usecase.NewVoiceNoteUseCase(voiceNoteRepo, aiJobQueue, cfg, contactRepo)
 		voiceHandler := delivery.NewVoiceHandler(voiceNoteUC)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, layoutHandler, roleHandler, auditHandler, reportHandler, reportShareHandler, reportCommentHandler, dashboardHandler, userGroupHandler, cfg, db, redisClient, authRepo, permissionUC)
+		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, layoutHandler, roleHandler, auditHandler, reportHandler, reportShareHandler, reportCommentHandler, dashboardHandler, userGroupHandler, notificationHandler, cfg, db, redisClient, authRepo, permissionUC)
 
 		// --- Workflow Automation Engine ---
 		memHandler := logger.NewMemoryHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -1052,6 +1100,20 @@ func main() {
 		autoEngine = automation.NewEngine(db, autoLogger,
 			automation.WithWorkers(5),
 			automation.WithEmailExecutor(cfg.ResendAPIKey, cfg.MailFrom),
+			// notify_user (A6): writes through the platform NotificationUseCase, which
+			// inserts the inbox row and pushes it over the recipient's per-user SSE
+			// channel so the header bell updates in real time.
+			automation.WithNotificationExecutor(notificationUC),
+			// create_record (A6): writes through RecordService, so the create gets the
+			// same uniform validation + OLS/FLS (as the workflow author) + audit +
+			// {slug}_created event as REST/AI.
+			automation.WithCreateRecordExecutor(recordService),
+			// find_records + enroll_records (A6): read through RecordService (OLS/FLS as
+			// the author); enroll creates runs in a target workflow via the engine.
+			automation.WithRecordActions(recordService),
+			// ai_generate (A7): bounded AI text generation into the action output,
+			// attributed to the workflow author under the org's AI budget.
+			automation.WithAIGenerator(usecase.NewAIWorkflowGenerator(gateway)),
 			automation.WithAuthorizer(permissionUC),
 			automation.WithCallerResolver(usecase.NewCallerResolver(authRepo)),
 		)
@@ -1060,6 +1122,10 @@ func main() {
 		// with no role-name fallback. authz (permissionUC) stamps the webhook-inbound
 		// contact upsert audit as the system actor.
 		autoHandler := automation.NewHandler(autoEngine, db, autoLogger, permissionUC, permissionUC)
+		// AI copilot (A7): the NL→draft endpoint runs a tool loop on the shared AI
+		// gateway (never saves; the client applies the draft through the same zod
+		// validation as a manual edit).
+		autoHandler.SetDraftAI(gateway)
 		autoHandler.RegisterRoutes(router,
 			delivery.AuthMiddleware(cfg.JWTSecret, authRepo, redisClient),
 			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },

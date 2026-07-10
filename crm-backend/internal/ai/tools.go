@@ -207,6 +207,38 @@ var allCRMTools = []Tool{
 			"required": []string{"object_slug", "record_id"},
 		},
 	},
+	{
+		Name: "create_workflow",
+		Desc: "Open the automation builder to create a new workflow (automation) from a plain-language description. Use whenever the user asks to build, set up, or automate something (e.g. 'when a deal is won, notify the owner and create a follow-up task'). The described automation is drafted onto the builder canvas for the user to review and Save — it is NOT saved or activated automatically. Pass the user's full request as `description`, including the trigger and the steps.",
+		Params: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"description": map[string]any{"type": "string", "description": "the automation to build, in plain language — include the trigger and the steps, e.g. 'when a deal moves to Won, wait 2 days then email the owner'"},
+			},
+			"required": []string{"description"},
+		},
+	},
+	{
+		Name: "update_workflow",
+		Desc: "Open an EXISTING workflow in the automation builder with requested changes drafted for review. Requires the workflow's id (workflow_id) — only use it when you actually know the id (the user shared a workflow link, or it appears in the conversation/session context). If you don't know the id, ask the user which workflow or use create_workflow instead. The changes are drafted on the canvas for the user to review and Save — nothing is saved automatically.",
+		Params: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"workflow_id": map[string]any{"type": "string", "description": "UUID of the workflow to edit"},
+				"instruction": map[string]any{"type": "string", "description": "the change to make, in plain language, e.g. 'also send a Slack notification when it fires'"},
+			},
+			"required": []string{"workflow_id", "instruction"},
+		},
+	},
+}
+
+// workflowToolNames — the automation-authoring tools, gated by the workflows.manage
+// capability (independent of the records read/write split, since a user can manage
+// workflows without records.write). They hand off to the builder's AI copilot via a
+// navigate event rather than writing anything directly.
+var workflowToolNames = map[string]bool{
+	"create_workflow": true,
+	"update_workflow": true,
 }
 
 // readOnlyTools — only safe read tools for viewers.
@@ -224,12 +256,22 @@ var readOnlyToolNames = map[string]bool{
 // model treats them with equal priority). readOnly drops the write tools, leaving
 // the read-only set — P7 derives readOnly from the caller's capabilities + OLS
 // (records.write / object create-edit) instead of the old role-name switch, so a
-// custom role is gated by what it can actually do.
-func AllowedToolsWithSchema(readOnly bool, contactFields []domain.CustomFieldDef, dealFields []domain.CustomFieldDef) []Tool {
-	// Deep-copy tools so we don't mutate the global slice
-	tools := make([]Tool, len(allCRMTools))
-	for i, t := range allCRMTools {
-		tools[i] = Tool{Name: t.Name, Desc: t.Desc, Params: deepCopyMap(t.Params)}
+// custom role is gated by what it can actually do. canManageWorkflows gates the
+// automation-authoring tools (create_workflow/update_workflow) on the
+// workflows.manage capability, independent of the records read/write split.
+func AllowedToolsWithSchema(readOnly, canManageWorkflows bool, contactFields []domain.CustomFieldDef, dealFields []domain.CustomFieldDef) []Tool {
+	var tools []Tool
+	for _, t := range allCRMTools {
+		switch {
+		case workflowToolNames[t.Name]:
+			if !canManageWorkflows {
+				continue // workflows.manage gates these, not the read/write split
+			}
+		case readOnly && !readOnlyToolNames[t.Name]:
+			continue // read-only caller: drop record write tools
+		}
+		// Deep-copy so we don't mutate the global slice
+		tools = append(tools, Tool{Name: t.Name, Desc: t.Desc, Params: deepCopyMap(t.Params)})
 	}
 
 	// Inject custom fields into create_contact and create_deal
@@ -240,16 +282,6 @@ func AllowedToolsWithSchema(readOnly bool, contactFields []domain.CustomFieldDef
 		case "create_deal":
 			injectCustomFieldParams(&tools[i], dealFields)
 		}
-	}
-
-	if readOnly {
-		var filtered []Tool
-		for _, t := range tools {
-			if readOnlyToolNames[t.Name] {
-				filtered = append(filtered, t)
-			}
-		}
-		return filtered
 	}
 	return tools
 }

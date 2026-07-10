@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -50,16 +51,88 @@ func toolNames(tools []Tool) map[string]bool {
 // ── Tool list derives from can-write, not role name ──────────────────────────
 
 func TestAllowedToolsWithSchema_ReadOnlyDropsWriteTools(t *testing.T) {
-	ro := toolNames(AllowedToolsWithSchema(true, nil, nil))
+	ro := toolNames(AllowedToolsWithSchema(true, false, nil, nil))
 	if ro["create_deal"] || ro["update_deal"] || ro["create_task"] {
 		t.Fatal("read-only tool set must not include write tools")
 	}
 	if !ro["search_deals"] || !ro["get_analytics"] {
 		t.Fatal("read-only tool set must keep the read tools")
 	}
-	full := toolNames(AllowedToolsWithSchema(false, nil, nil))
+	full := toolNames(AllowedToolsWithSchema(false, false, nil, nil))
 	if !full["create_deal"] || !full["update_deal"] {
 		t.Fatal("writer tool set must include the write tools")
+	}
+}
+
+// A7.4: create_workflow/update_workflow are gated by workflows.manage, independent
+// of the records read/write split.
+func TestAllowedToolsWithSchema_WorkflowToolsGatedByCapability(t *testing.T) {
+	// A writer WITHOUT workflows.manage must not see the authoring tools.
+	writerNoWf := toolNames(AllowedToolsWithSchema(false, false, nil, nil))
+	if writerNoWf["create_workflow"] || writerNoWf["update_workflow"] {
+		t.Fatal("workflow tools must be hidden without workflows.manage")
+	}
+	// With workflows.manage they appear.
+	writerWf := toolNames(AllowedToolsWithSchema(false, true, nil, nil))
+	if !writerWf["create_workflow"] || !writerWf["update_workflow"] {
+		t.Fatal("workflow tools must appear with workflows.manage")
+	}
+	// They appear even for a caller that is read-only on records (the gate is
+	// workflows.manage, not records.write), and such a caller still gets no record
+	// write tools.
+	readerWf := toolNames(AllowedToolsWithSchema(true, true, nil, nil))
+	if !readerWf["create_workflow"] || !readerWf["update_workflow"] {
+		t.Fatal("workflow tools must appear for a read-only caller that has workflows.manage")
+	}
+	if readerWf["create_deal"] || readerWf["update_deal"] {
+		t.Fatal("read-only caller must still not receive record write tools")
+	}
+}
+
+// A7.4: emitWorkflowHandoff builds the navigate to the builder's copilot with the
+// prompt in the `ai` query param (create → /workflows/new, update → /workflows/:id).
+func TestEmitWorkflowHandoff(t *testing.T) {
+	cc := &CommandCenter{}
+
+	// create_workflow → /workflows/new?ai=<description>
+	events := make(chan CommandEvent, 4)
+	cc.emitWorkflowHandoff(events, ToolCall{
+		Name:   "create_workflow",
+		Params: json.RawMessage(`{"description":"when a deal is won, notify the owner"}`),
+	})
+	nav := <-events
+	if nav.Type != "navigate" {
+		t.Fatalf("expected navigate event, got %q", nav.Type)
+	}
+	var navData struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(nav.Data, &navData); err != nil {
+		t.Fatalf("navdata: %v", err)
+	}
+	if !strings.HasPrefix(navData.Path, "/workflows/new?ai=") {
+		t.Fatalf("create should navigate to /workflows/new with the prompt, got %q", navData.Path)
+	}
+	if !strings.Contains(navData.Path, url.QueryEscape("when a deal is won, notify the owner")) {
+		t.Fatalf("create path must carry the escaped description, got %q", navData.Path)
+	}
+	if ack := <-events; ack.Type != "response" || ack.Message == "" {
+		t.Fatalf("expected a text ack after navigate, got %+v", ack)
+	}
+
+	// update_workflow → /workflows/<id>?ai=<instruction>
+	events2 := make(chan CommandEvent, 4)
+	cc.emitWorkflowHandoff(events2, ToolCall{
+		Name:   "update_workflow",
+		Params: json.RawMessage(`{"workflow_id":"wf-123","instruction":"also send a Slack message"}`),
+	})
+	nav2 := <-events2
+	var navData2 struct {
+		Path string `json:"path"`
+	}
+	_ = json.Unmarshal(nav2.Data, &navData2)
+	if !strings.HasPrefix(navData2.Path, "/workflows/wf-123?ai=") {
+		t.Fatalf("update should navigate to the workflow's builder, got %q", navData2.Path)
 	}
 }
 

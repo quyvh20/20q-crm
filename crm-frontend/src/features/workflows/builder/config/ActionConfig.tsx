@@ -1,9 +1,9 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import { User, Target, Phone, Users, FileText, Mail, Plus, X } from 'lucide-react';
+import { User, Target, Phone, Users, FileText, Mail, Plus, X, Bell } from 'lucide-react';
 import type { ActionSpec } from '../../types';
 import { useBuilderStore } from '../../store';
 import { TemplateInput } from './inputs';
-import { useEmailTemplates } from '../../queries';
+import { useEmailTemplates, useWorkflowsList } from '../../queries';
 import { FieldPicker, type FieldMeta } from './FieldPicker';
 import { SmartValueInput } from './SmartValueInput';
 import type { SchemaField, WorkflowSchema, SchemaEntity } from '../../api';
@@ -15,6 +15,8 @@ import {
   directionToOffset,
   describeWaitUntil,
   resolvableObjectsForTrigger,
+  triggerOwnerObject,
+  triggerPrimaryObject,
   DEFAULT_AT_TIME,
 } from '../../dateField';
 
@@ -38,7 +40,12 @@ export const ActionConfig: React.FC = () => {
       {action.type === 'send_webhook' && <WebhookParams action={action} setParam={setParam} />}
       {action.type === 'delay' && <DelayParams action={action} setParam={setParam} />}
       {action.type === 'update_record' && <UpdateRecordParams action={action} setParam={setParam} />}
+      {action.type === 'create_record' && <CreateRecordParams action={action} setParam={setParam} />}
+      {action.type === 'find_records' && <FindRecordsParams action={action} setParam={setParam} />}
+      {action.type === 'enroll_records' && <EnrollRecordsParams action={action} setParam={setParam} />}
+      {action.type === 'ai_generate' && <AIGenerateParams action={action} setParam={setParam} />}
       {action.type === 'log_activity' && <ActivityParams action={action} setParam={setParam} />}
+      {action.type === 'notify_user' && <NotifyParams action={action} setParam={setParam} />}
       {/* backward compat for saved workflows */}
       {(action.type as string) === 'update_contact' && <UpdateRecordParams action={action} setParam={setParam} />}
 
@@ -164,6 +171,107 @@ const ActivityParams: React.FC<ParamProps> = ({ action, setParam }) => {
         placeholder="Notes — click {x} to insert variables"
         multiline
         rows={4}
+      />
+    </div>
+  );
+};
+
+// --- Notify User params (A6) ---
+
+const NotifyParams: React.FC<ParamProps> = ({ action, setParam }) => {
+  const schema = useBuilderStore((s) => s.schema);
+  const trigger = useBuilderStore((s) => s.trigger);
+  const updateAction = useBuilderStore((s) => s.updateAction);
+  const users = schema?.users || [];
+
+  // "Record owner" is only meaningful when the trigger's primary record has an
+  // owner (contact/deal). For schedule/company/custom triggers there's no owner to
+  // resolve, so the form offers only "Specific user".
+  const ownerObject = triggerOwnerObject(trigger);
+  const recipient = String(action.params.recipient || 'owner_field');
+  const isOwner = recipient !== 'specific';
+
+  const selectOwner = () => {
+    updateAction(action.id, {
+      params: { recipient: 'owner_field', owner_field: ownerObject ? `${ownerObject}.owner_user_id` : '' },
+    });
+  };
+  const selectSpecific = () => {
+    updateAction(action.id, { params: { recipient: 'specific' } });
+  };
+
+  const userId = String(action.params.user_id || '');
+
+  return (
+    <div className="space-y-3">
+      <TemplateInput label="Title" value={String(action.params.title || '')} onChange={(v) => setParam('title', v)} placeholder="Deal {{deal.title}} needs attention" />
+      <TemplateInput
+        label="Message"
+        value={String(action.params.body || '')}
+        onChange={(v) => setParam('body', v)}
+        placeholder="Details — click {x} to insert variables"
+        multiline
+        rows={3}
+      />
+
+      {/* Recipient — segmented: Record Owner vs Specific User */}
+      <div>
+        <label className="block text-sm text-muted-foreground mb-1">Notify</label>
+        <div className="flex rounded-lg overflow-hidden border border-border mb-2">
+          <button
+            type="button"
+            onClick={selectOwner}
+            disabled={!ownerObject}
+            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+              isOwner
+                ? 'bg-primary/10 text-primary border-r border-primary/40'
+                : 'bg-background text-muted-foreground hover:text-foreground border-r border-border'
+            }`}
+          >
+            <Bell className="h-3.5 w-3.5" /> <span>Record Owner</span>
+          </button>
+          <button
+            type="button"
+            onClick={selectSpecific}
+            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors ${
+              !isOwner
+                ? 'bg-primary/10 text-primary'
+                : 'bg-background text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <Target className="h-3.5 w-3.5" /> <span>Specific User</span>
+          </button>
+        </div>
+
+        {isOwner ? (
+          ownerObject ? (
+            <p className="text-xs text-muted-foreground italic">
+              Notifies the {ownerObject}'s current owner.
+            </p>
+          ) : (
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              ⚠ This trigger has no record owner — choose a specific user.
+            </p>
+          )
+        ) : (
+          <select
+            value={users.some((u) => u.id === userId) ? userId : ''}
+            onChange={(e) => setParam('user_id', e.target.value)}
+            className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+          >
+            <option value="">Select a user…</option>
+            {users.map((u) => (
+              <option key={u.id} value={u.id}>{u.name} ({u.email})</option>
+            ))}
+          </select>
+        )}
+      </div>
+
+      <TemplateInput
+        label="Link (optional)"
+        value={String(action.params.link || '')}
+        onChange={(v) => setParam('link', v)}
+        placeholder="/deals/{{deal.id}} — defaults to the record"
       />
     </div>
   );
@@ -689,6 +797,343 @@ const UpdateRow: React.FC<{
           </span>
         </div>
       )}
+    </div>
+  );
+};
+
+// --- Create Record params (A6) ---
+
+interface CreateFieldEntry {
+  field: string;
+  value?: unknown;
+}
+
+const CreateRecordParams: React.FC<ParamProps> = ({ action }) => {
+  const schema = useBuilderStore((s) => s.schema);
+  const updateAction = useBuilderStore((s) => s.updateAction);
+  const trigger = useBuilderStore((s) => s.trigger);
+
+  // Every object the caller can create a record of — system entities + custom.
+  const objects = useMemo(() => {
+    if (!schema) return [] as { key: string; label: string }[];
+    return [...schema.entities, ...(schema.custom_objects || [])].map((e) => ({ key: e.key, label: e.label || e.key }));
+  }, [schema]);
+
+  const object = String(action.params.object || '');
+  const objectLabel = objects.find((o) => o.key === object)?.label || object;
+  const fields: CreateFieldEntry[] = Array.isArray(action.params.fields) ? (action.params.fields as CreateFieldEntry[]) : [];
+
+  // Nudge: creating a record of the same object the workflow triggers on can loop
+  // (the new record fires its own _created event). Non-blocking — a condition can
+  // guard it, and cross-object loops aren't caught here anyway.
+  const selfLoop = !!object && object === triggerPrimaryObject(trigger);
+
+  const setFields = (next: CreateFieldEntry[]) => updateAction(action.id, { params: { fields: next } });
+  const handleObjectChange = (slug: string) => {
+    // Fields are object-scoped, so switching object clears the prior rows.
+    updateAction(action.id, { params: { object: slug, fields: [] } });
+  };
+  const patchField = (idx: number, patch: Partial<CreateFieldEntry>) => {
+    const next = [...fields];
+    next[idx] = { ...next[idx], ...patch };
+    setFields(next);
+  };
+  const addField = () => setFields([...fields, { field: '', value: '' }]);
+  const removeField = (idx: number) => setFields(fields.filter((_, i) => i !== idx));
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <label className="block text-sm text-muted-foreground mb-1">Object</label>
+        <select
+          value={objects.some((o) => o.key === object) ? object : ''}
+          onChange={(e) => handleObjectChange(e.target.value)}
+          className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+        >
+          <option value="">Select an object…</option>
+          {objects.map((o) => (
+            <option key={o.key} value={o.key}>{o.label}</option>
+          ))}
+        </select>
+      </div>
+
+      {selfLoop && (
+        <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30">
+          <span className="text-[11px]">⚠️</span>
+          <span className="text-[11px] text-amber-600 dark:text-amber-400">
+            Creating a {objectLabel} from a {objectLabel} trigger can loop — guard it with a condition.
+          </span>
+        </div>
+      )}
+
+      {object &&
+        fields.map((f, idx) => (
+          <CreateFieldRow
+            key={idx}
+            entry={f}
+            index={idx}
+            schema={schema}
+            object={object}
+            totalCount={fields.length}
+            onPatch={(patch) => patchField(idx, patch)}
+            onRemove={() => removeField(idx)}
+          />
+        ))}
+
+      {object && (
+        <button
+          type="button"
+          onClick={addField}
+          className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-dashed border-border text-xs text-muted-foreground hover:border-primary/40 hover:text-primary transition-all"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          <span>{fields.length === 0 ? 'Add a field' : 'Add another field'}</span>
+        </button>
+      )}
+
+      <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-muted/40 border border-border/60">
+        <span className="text-sm">💡</span>
+        <span className="text-xs text-muted-foreground">
+          {object
+            ? `Set one or more field values for the new ${objectLabel}. Values can use {{variables}} from the trigger.`
+            : 'Choose an object to create, then set its field values.'}
+        </span>
+      </div>
+    </div>
+  );
+};
+
+/** Single field-value row within CreateRecordParams (set-only — no operations). */
+const CreateFieldRow: React.FC<{
+  entry: CreateFieldEntry;
+  index: number;
+  schema: WorkflowSchema | null;
+  object: string;
+  totalCount: number;
+  onPatch: (patch: Partial<CreateFieldEntry>) => void;
+  onRemove: () => void;
+}> = ({ entry, index, schema, object, totalCount, onPatch, onRemove }) => {
+  const selectedField: SchemaField | null = useMemo(
+    () => findFieldInSchema(schema, entry.field),
+    [schema, entry.field],
+  );
+
+  return (
+    <div className="relative border border-border/60 rounded-xl p-3 space-y-2.5 bg-muted/40">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] uppercase tracking-wider text-muted-foreground/70 font-medium">Field {index + 1}</span>
+        {totalCount > 1 && (
+          <button
+            type="button"
+            onClick={onRemove}
+            title="Remove this field"
+            className="text-muted-foreground/70 hover:text-destructive transition-colors p-0.5"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+
+      <FieldPicker
+        value={entry.field || null}
+        onChange={(path) => onPatch({ field: path, value: undefined })}
+        entities={[object]}
+        placeholder="Select a field…"
+      />
+
+      {entry.field && (
+        <div>
+          <label className="block text-[11px] text-muted-foreground mb-0.5">Value</label>
+          {selectedField ? (
+            <SmartValueInput
+              field={selectedField}
+              operator="eq"
+              value={entry.value}
+              onChange={(v) => onPatch({ value: v })}
+            />
+          ) : (
+            <input
+              type="text"
+              value={String(entry.value || '')}
+              onChange={(e) => onPatch({ value: e.target.value })}
+              placeholder="Enter value…"
+              className="w-full bg-background border border-border rounded-lg px-3 py-1.5 text-sm text-foreground focus:outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// --- Find / Enroll Records params (A6) ---
+
+/** Object dropdown + optional filter rows, shared by Find and Enroll. Reuses
+ *  CreateFieldRow (a FieldPicker + value input scoped to the object) for filters. */
+const ObjectFilterSection: React.FC<{ action: ActionSpec; verb: string }> = ({ action, verb }) => {
+  const schema = useBuilderStore((s) => s.schema);
+  const updateAction = useBuilderStore((s) => s.updateAction);
+
+  const objects = useMemo(() => {
+    if (!schema) return [] as { key: string; label: string }[];
+    return [...schema.entities, ...(schema.custom_objects || [])].map((e) => ({ key: e.key, label: e.label || e.key }));
+  }, [schema]);
+
+  const object = String(action.params.object || '');
+  const objectLabel = objects.find((o) => o.key === object)?.label || object;
+  const filters: CreateFieldEntry[] = Array.isArray(action.params.filters) ? (action.params.filters as CreateFieldEntry[]) : [];
+
+  const handleObjectChange = (slug: string) => updateAction(action.id, { params: { object: slug, filters: [] } });
+  const setFilters = (next: CreateFieldEntry[]) => updateAction(action.id, { params: { filters: next } });
+  const patchFilter = (idx: number, patch: Partial<CreateFieldEntry>) => {
+    const next = [...filters];
+    next[idx] = { ...next[idx], ...patch };
+    setFilters(next);
+  };
+  const addFilter = () => setFilters([...filters, { field: '', value: '' }]);
+  const removeFilter = (idx: number) => setFilters(filters.filter((_, i) => i !== idx));
+
+  return (
+    <>
+      <div>
+        <label className="block text-sm text-muted-foreground mb-1">Object</label>
+        <select
+          value={objects.some((o) => o.key === object) ? object : ''}
+          onChange={(e) => handleObjectChange(e.target.value)}
+          className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+        >
+          <option value="">Select an object…</option>
+          {objects.map((o) => (
+            <option key={o.key} value={o.key}>{o.label}</option>
+          ))}
+        </select>
+      </div>
+
+      {object && (
+        <>
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground/70 font-medium">Filters (optional)</div>
+          {filters.map((f, idx) => (
+            <CreateFieldRow
+              key={idx}
+              entry={f}
+              index={idx}
+              schema={schema}
+              object={object}
+              totalCount={filters.length}
+              onPatch={(patch) => patchFilter(idx, patch)}
+              onRemove={() => removeFilter(idx)}
+            />
+          ))}
+          <button
+            type="button"
+            onClick={addFilter}
+            className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-dashed border-border text-xs text-muted-foreground hover:border-primary/40 hover:text-primary transition-all"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            <span>{filters.length === 0 ? 'Add a filter' : 'Add another filter'}</span>
+          </button>
+          <p className="text-xs text-muted-foreground">
+            {filters.length === 0
+              ? `No filters — ${verb} every ${objectLabel} (up to the limit).`
+              : `${verb[0].toUpperCase()}${verb.slice(1)} ${objectLabel} records matching all filters.`}
+          </p>
+        </>
+      )}
+    </>
+  );
+};
+
+const FindRecordsParams: React.FC<ParamProps> = ({ action, setParam }) => {
+  const limit = Number(action.params.limit) || 100;
+  return (
+    <div className="space-y-3">
+      <ObjectFilterSection action={action} verb="find" />
+      <div>
+        <label className="block text-sm text-muted-foreground mb-1">Limit</label>
+        <input
+          type="number"
+          min={1}
+          max={100}
+          value={limit}
+          onChange={(e) => setParam('limit', Math.max(1, Math.min(100, parseInt(e.target.value) || 100)))}
+          className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-ring focus:ring-1 focus:ring-ring [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+        />
+        <p className="text-xs text-muted-foreground mt-1">
+          Up to 100. The match count is available to later steps as <code className="text-[11px]">{'{{actions.' + action.id + '.count}}'}</code>.
+        </p>
+      </div>
+    </div>
+  );
+};
+
+const EnrollRecordsParams: React.FC<ParamProps> = ({ action, setParam }) => {
+  const { data } = useWorkflowsList({});
+  const currentId = useBuilderStore((s) => s.workflowId);
+  const workflows = (data?.workflows || []).filter((w) => w.id !== currentId);
+  const workflowId = String(action.params.workflow_id || '');
+  const missing = workflowId !== '' && !workflows.some((w) => w.id === workflowId);
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <label className="block text-sm text-muted-foreground mb-1">Enroll into workflow</label>
+        <select
+          value={workflows.some((w) => w.id === workflowId) ? workflowId : ''}
+          onChange={(e) => setParam('workflow_id', e.target.value)}
+          className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+        >
+          <option value="">Select a workflow…</option>
+          {missing && <option value={workflowId}>(workflow not found)</option>}
+          {workflows.map((w) => (
+            <option key={w.id} value={w.id}>{w.name}{w.is_active ? '' : ' (inactive)'}</option>
+          ))}
+        </select>
+        <p className="text-xs text-muted-foreground mt-1">Each matching record starts one run of this workflow.</p>
+      </div>
+
+      <ObjectFilterSection action={action} verb="enroll" />
+
+      <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-muted/40 border border-border/60">
+        <span className="text-sm">💡</span>
+        <span className="text-xs text-muted-foreground">
+          The target must be active. Enrollment chains are capped (max depth 2) so workflows can't enroll each other endlessly.
+        </span>
+      </div>
+    </div>
+  );
+};
+
+// --- Generate with AI params (A7) ---
+
+const AIGenerateParams: React.FC<ParamProps> = ({ action, setParam }) => {
+  const maxTokens = Number(action.params.max_tokens) || 512;
+  return (
+    <div className="space-y-3">
+      <TemplateInput
+        label="Prompt"
+        value={String(action.params.prompt || '')}
+        onChange={(v) => setParam('prompt', v)}
+        placeholder="Draft a friendly follow-up email to {{contact.first_name}} about {{deal.title}}…"
+        multiline
+        rows={5}
+      />
+      <div>
+        <label className="block text-sm text-muted-foreground mb-1">Max length (tokens)</label>
+        <input
+          type="number"
+          min={1}
+          max={1024}
+          value={maxTokens}
+          onChange={(e) => setParam('max_tokens', Math.max(1, Math.min(1024, parseInt(e.target.value) || 512)))}
+          className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-ring focus:ring-1 focus:ring-ring [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+        />
+      </div>
+      <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-muted/40 border border-border/60">
+        <span className="text-sm">✨</span>
+        <span className="text-xs text-muted-foreground">
+          The generated text is available to later steps as <code className="text-[11px]">{'{{actions.' + action.id + '.text}}'}</code>. Runs against your organization's AI budget.
+        </span>
+      </div>
     </div>
   );
 };

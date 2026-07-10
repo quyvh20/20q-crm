@@ -625,6 +625,104 @@ func mockAIServer(t *testing.T, handler func(w http.ResponseWriter, r *http.Requ
 	return httptest.NewServer(http.HandlerFunc(handler))
 }
 
+// toolSpec / toolCallOf / mockToolResponse build an OpenAI-compatible tool_calls
+// response so tests can exercise Execute()'s tool-dispatch path.
+type toolSpec struct {
+	name string
+	args map[string]any
+}
+
+func toolCallOf(name string, args map[string]any) toolSpec { return toolSpec{name: name, args: args} }
+
+func mockToolResponse(specs ...toolSpec) func(w http.ResponseWriter, r *http.Request) {
+	tcs := make([]map[string]interface{}, len(specs))
+	for i, s := range specs {
+		argsJSON, _ := json.Marshal(s.args)
+		tcs[i] = map[string]interface{}{
+			"id":       fmt.Sprintf("call_%d", i),
+			"type":     "function",
+			"function": map[string]interface{}{"name": s.name, "arguments": string(argsJSON)},
+		}
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{
+					"message":       map[string]interface{}{"role": "assistant", "content": "", "tool_calls": tcs},
+					"finish_reason": "tool_calls",
+				},
+			},
+			"usage": map[string]interface{}{"prompt_tokens": 100, "completion_tokens": 20},
+		})
+	}
+}
+
+// A7.4: a create_workflow tool call hands off to the builder via exactly one navigate
+// (to /workflows/new?ai=...), then done — the early-return skips the summary AI call.
+func TestExecute_CreateWorkflowHandoff(t *testing.T) {
+	ts := mockAIServer(t, mockToolResponse(toolCallOf("create_workflow", map[string]any{"description": "notify me on new deal wins"})))
+	defer ts.Close()
+
+	cc := newTestCC(ts)
+	events, err := cc.Execute(context.Background(), uuid.New(), uuid.New(), CommandRequest{
+		UserMessage: "please build an automation that pings me whenever we close a win",
+		UserRole:    "admin",
+		SessionID:   uuid.New(),
+	})
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	var navPaths, types []string
+	for ev := range events {
+		types = append(types, ev.Type)
+		if ev.Type == "navigate" {
+			var d struct {
+				Path string `json:"path"`
+			}
+			json.Unmarshal(ev.Data, &d)
+			navPaths = append(navPaths, d.Path)
+		}
+	}
+	if len(navPaths) != 1 {
+		t.Fatalf("expected exactly one navigate, got %d: %v", len(navPaths), navPaths)
+	}
+	if !strings.HasPrefix(navPaths[0], "/workflows/new?ai=") {
+		t.Errorf("handoff should navigate to the new-workflow builder, got %q", navPaths[0])
+	}
+	assertContains(t, types, "done", "handoff must emit done")
+}
+
+// A7.4: two workflow calls in one turn produce exactly one handoff navigate.
+func TestExecute_TwoWorkflowCalls_SingleHandoff(t *testing.T) {
+	ts := mockAIServer(t, mockToolResponse(
+		toolCallOf("create_workflow", map[string]any{"description": "flow A"}),
+		toolCallOf("create_workflow", map[string]any{"description": "flow B"}),
+	))
+	defer ts.Close()
+
+	cc := newTestCC(ts)
+	events, err := cc.Execute(context.Background(), uuid.New(), uuid.New(), CommandRequest{
+		UserMessage: "set up a couple of automations for onboarding",
+		UserRole:    "admin",
+		SessionID:   uuid.New(),
+	})
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	navs := 0
+	for ev := range events {
+		if ev.Type == "navigate" {
+			navs++
+		}
+	}
+	if navs != 1 {
+		t.Fatalf("two workflow calls must yield exactly one handoff navigate, got %d", navs)
+	}
+}
+
 // ── Mock implementations ─────────────────────────────────────────────────────
 
 type mockKBRepo struct{}

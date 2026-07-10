@@ -158,6 +158,43 @@ export function resolvableObjectsForTrigger(trigger?: TriggerLike | null): Set<s
   return set;
 }
 
+/**
+ * The trigger's PRIMARY record object slug (the object the run fires on), or null
+ * for record-less triggers (schedule). Distinct from resolvableObjectsForTrigger,
+ * which also includes hydrated relations — here we want only the object the run is
+ * actually about.
+ */
+export function triggerPrimaryObject(trigger?: TriggerLike | null): string | null {
+  const type = trigger?.type;
+  if (!type) return 'contact'; // safe default before a trigger is chosen
+  if (type === 'schedule') return null;
+  if (type === 'webhook_inbound') return 'contact';
+  if (type === 'no_activity_days') {
+    const entity = trigger?.params?.entity;
+    return (typeof entity === 'string' && entity) || 'contact';
+  }
+  if (type === 'date_field') {
+    const object = trigger?.params?.object;
+    return (typeof object === 'string' && object) || null;
+  }
+  if (type === 'deal_stage_changed') return 'deal';
+  for (const suffix of ['_created', '_updated', '_deleted', '_any']) {
+    if (type.endsWith(suffix)) return type.slice(0, -suffix.length);
+  }
+  return null;
+}
+
+/**
+ * The trigger record's owner object for notify_user "record owner" mode — only
+ * contact/deal carry owner_user_id, so company/custom/schedule triggers return
+ * null (their runs can't resolve a record owner, and the form falls back to
+ * choosing a specific user).
+ */
+export function triggerOwnerObject(trigger?: TriggerLike | null): 'contact' | 'deal' | null {
+  const primary = triggerPrimaryObject(trigger);
+  return primary === 'deal' || primary === 'contact' ? primary : null;
+}
+
 /** Extract the object key from a field path ("deal.expected_close_at" → "deal"). */
 export function objectKeyOfPath(path: string): string {
   const i = path.indexOf('.');

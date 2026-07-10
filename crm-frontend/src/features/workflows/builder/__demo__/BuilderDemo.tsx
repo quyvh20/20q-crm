@@ -9,7 +9,7 @@ import { BuilderContext } from '../BuilderContext';
 import type { InsertContext } from '../graph';
 import { WorkflowCanvas } from '../WorkflowCanvas';
 import { InsertMenu } from '../InsertMenu';
-import { ConfigPanel } from '../config/ConfigPanel';
+import { BuilderSidePanel } from '../config/BuilderSidePanel';
 import type { TriggerSpec, WorkflowStep } from '../../types';
 import type { WorkflowSchema } from '../../api';
 import { useBuilderStore } from '../../store';
@@ -109,8 +109,9 @@ export function BuilderDemo() {
             </BuilderContext.Provider>
           </ReactFlowProvider>
         </div>
-        <aside className="w-[380px] shrink-0 overflow-y-auto border-l border-border bg-card">
-          <ConfigPanel />
+        <aside className="w-[380px] shrink-0 overflow-hidden border-l border-border bg-card">
+          {/* A7.4: mirror NextBuilder's ?ai= handoff so the copilot auto-draft chain is verifiable here. */}
+          <BuilderSidePanel aiPrompt={new URLSearchParams(window.location.search).get('ai')} />
         </aside>
       </div>
       {insertState && (

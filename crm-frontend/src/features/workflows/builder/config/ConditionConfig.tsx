@@ -90,11 +90,13 @@ export const ConditionConfig: React.FC = () => {
   }, [selectedNodeId, findStep, isGlobalConditions, steps]);
 
   const group: ConditionGroup = useMemo(() => {
+    // Fall back to an empty group when the stored value is missing OR malformed
+    // (a rules-less object — e.g. from an AI draft — would crash the rows below).
     if (isGlobalConditions) {
-      return conditions || { op: 'AND', rules: [] };
+      return conditions && Array.isArray(conditions.rules) ? conditions : { op: 'AND', rules: [] };
     }
     if (step && step.type === 'condition') {
-      return step.condition || { op: 'AND', rules: [] };
+      return step.condition && Array.isArray(step.condition.rules) ? step.condition : { op: 'AND', rules: [] };
     }
     return { op: 'AND', rules: [] };
   }, [isGlobalConditions, conditions, step]);

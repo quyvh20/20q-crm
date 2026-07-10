@@ -12,7 +12,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { ReactFlowProvider } from '@xyflow/react';
-import { ArrowLeft, Loader2, FlaskConical, X } from 'lucide-react';
+import { ArrowLeft, Loader2, FlaskConical, X, Sparkles, Undo2 } from 'lucide-react';
 import { useBuilderStore, getStepAtPath, parseStepPath } from '../store';
 import { useWorkflow, useSaveWorkflow, useTestRun } from '../queries';
 import { entityKindForTrigger } from '../RunNowModal';
@@ -20,7 +20,7 @@ import { BuilderContext, type DryRunState } from './BuilderContext';
 import type { InsertContext } from './graph';
 import { WorkflowCanvas } from './WorkflowCanvas';
 import { InsertMenu } from './InsertMenu';
-import { ConfigPanel } from './config/ConfigPanel';
+import { BuilderSidePanel } from './config/BuilderSidePanel';
 import { DryRunDialog } from './DryRunDialog';
 import type { EntityCandidate } from '../EntityPicker';
 
@@ -110,9 +110,36 @@ export function NextBuilder() {
   // Deep link (A3.6): /workflows/:id?node=<action_path> selects the matching canvas
   // node — used by RunHistory to jump from a run's step log to its builder node.
   // Runs once the store is hydrated, once per distinct node param.
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const nodeParam = searchParams.get('node');
   const handledNodeRef = useRef<string | null>(null);
+
+  // A7.4: the Command Center's create_workflow/update_workflow tools navigate here with
+  // the natural-language prompt in ?ai=. Capture it once (immune to the strip below),
+  // hand it to the Copilot panel to auto-draft, then remove it from the URL so a
+  // refresh doesn't re-draft over the user's edits.
+  const [aiHandoffPrompt, setAiHandoffPrompt] = useState<string>(() => {
+    try {
+      return new URLSearchParams(window.location.search).get('ai') ?? '';
+    } catch {
+      return '';
+    }
+  });
+  useEffect(() => {
+    if (aiHandoffPrompt && searchParams.has('ai')) {
+      const next = new URLSearchParams(searchParams);
+      next.delete('ai');
+      setSearchParams(next, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Consume the handoff exactly once: once the builder has hydrated (CopilotPanel has
+  // mounted + auto-drafted), clear it. Otherwise saving a created workflow re-hydrates
+  // the builder under the new id, remounting CopilotPanel with the same prompt and
+  // firing a SECOND draft over the just-saved workflow.
+  useEffect(() => {
+    if (hydrated && aiHandoffPrompt) setAiHandoffPrompt('');
+  }, [hydrated, aiHandoffPrompt]);
   useEffect(() => {
     if (!hydrated || !nodeParam || handledNodeRef.current === nodeParam) return;
     handledNodeRef.current = nodeParam;
@@ -137,7 +164,11 @@ export function NextBuilder() {
       { id: store.workflowId, payload: store.buildSavePayload() },
       {
         onSuccess: (wf, vars) => {
-          useBuilderStore.setState({ workflowId: wf.id, createdBy: wf.created_by ?? null, isDirty: false });
+          // Saving commits the working copy, so a pending AI draft is now the
+          // persisted workflow — clear draftSnapshot (an implicit Keep) so the
+          // "Keep / Undo" banner doesn't linger over already-saved content and
+          // Undo can't later revert the store away from what the server holds.
+          useBuilderStore.setState({ workflowId: wf.id, createdBy: wf.created_by ?? null, isDirty: false, draftSnapshot: null });
           // After a CREATE (vars.id null), make the URL addressable/refresh-safe —
           // parity with the legacy builder. The detail cache was just primed by the
           // mutation, so the re-hydrate reads it without a network round-trip.
@@ -282,6 +313,30 @@ export function NextBuilder() {
         </div>
       )}
 
+      {/* AI draft — Keep / Undo (A7.3). The canvas is the preview; Undo restores the
+          pre-draft snapshot. */}
+      {store.draftSnapshot && (
+        <div className="flex items-center gap-2 border-b border-border bg-purple-500/10 px-4 py-1.5 text-xs">
+          <Sparkles className="h-3.5 w-3.5 text-purple-500" />
+          <span className="font-medium text-foreground">AI draft applied</span>
+          <span className="text-muted-foreground">· review it on the canvas, then keep or undo</span>
+          <div className="ml-auto flex items-center gap-1.5">
+            <button
+              onClick={() => store.keepDraft()}
+              className="rounded bg-primary px-2 py-0.5 font-medium text-primary-foreground hover:opacity-90"
+            >
+              Keep
+            </button>
+            <button
+              onClick={() => store.undoDraft()}
+              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              <Undo2 className="h-3.5 w-3.5" /> Undo
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Canvas + right panel */}
       <div className="flex flex-1 overflow-hidden">
         <div className="relative flex-1">
@@ -296,8 +351,8 @@ export function NextBuilder() {
             </BuilderContext.Provider>
           </ReactFlowProvider>
         </div>
-        <aside className="w-[380px] shrink-0 overflow-y-auto border-l border-border bg-card">
-          <ConfigPanel dryRun={dryRun} />
+        <aside className="w-[380px] shrink-0 overflow-hidden border-l border-border bg-card">
+          <BuilderSidePanel dryRun={dryRun} aiPrompt={aiHandoffPrompt || null} />
         </aside>
       </div>
 

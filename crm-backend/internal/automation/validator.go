@@ -805,6 +805,116 @@ func validateActionParams(action ActionSpec, path string, result *ValidationResu
 				}
 			}
 		}
+	case ActionNotifyUser:
+		// title is required (the notification headline). recipient defaults to
+		// owner_field (notify the trigger record's owner); a "specific" recipient
+		// needs a user_id. owner_field mode needs no explicit path — the executor
+		// falls back to the trigger record's owner_user_id.
+		if titleRaw, ok := action.Params["title"]; !ok {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   path + ".params.title",
+				Message: "notify_user requires a 'title' parameter",
+			})
+		} else if titleStr, _ := titleRaw.(string); strings.TrimSpace(titleStr) == "" {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   path + ".params.title",
+				Message: "notify_user 'title' must not be empty",
+			})
+		}
+		if recipient, _ := action.Params["recipient"].(string); recipient == "specific" {
+			if uid, ok := action.Params["user_id"]; !ok {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   path + ".params.user_id",
+					Message: "notify_user with a specific recipient requires 'user_id'",
+				})
+			} else if uidStr, _ := uid.(string); strings.TrimSpace(uidStr) == "" {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   path + ".params.user_id",
+					Message: "notify_user 'user_id' must not be empty",
+				})
+			}
+		}
+	case ActionCreateRecord:
+		// object is required; fields must be a non-empty array of { field, value }
+		// with at least one non-empty field key. Value types are validated against
+		// the object's schema at execution time by RecordService.
+		if obj, _ := action.Params["object"].(string); strings.TrimSpace(obj) == "" {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   path + ".params.object",
+				Message: "create_record requires an 'object'",
+			})
+		}
+		fieldsRaw, hasFields := action.Params["fields"]
+		fieldsSlice, isSlice := fieldsRaw.([]any)
+		if !hasFields || !isSlice || len(fieldsSlice) == 0 {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   path + ".params.fields",
+				Message: "create_record requires at least one field",
+			})
+		} else {
+			anyField := false
+			for _, entry := range fieldsSlice {
+				if m, ok := entry.(map[string]any); ok {
+					if f, _ := m["field"].(string); strings.TrimSpace(f) != "" {
+						anyField = true
+						break
+					}
+				}
+			}
+			if !anyField {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   path + ".params.fields",
+					Message: "each create_record field needs a target field",
+				})
+			}
+		}
+	case ActionFindRecords:
+		if obj, _ := action.Params["object"].(string); strings.TrimSpace(obj) == "" {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   path + ".params.object",
+				Message: "find_records requires an 'object'",
+			})
+		}
+	case ActionEnrollRecords:
+		if obj, _ := action.Params["object"].(string); strings.TrimSpace(obj) == "" {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   path + ".params.object",
+				Message: "enroll_records requires an 'object'",
+			})
+		}
+		if wf, _ := action.Params["workflow_id"].(string); strings.TrimSpace(wf) == "" {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   path + ".params.workflow_id",
+				Message: "enroll_records requires a target 'workflow_id'",
+			})
+		}
+	case ActionAIGenerate:
+		if p, _ := action.Params["prompt"].(string); strings.TrimSpace(p) == "" {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   path + ".params.prompt",
+				Message: "ai_generate requires a 'prompt'",
+			})
+		}
+		if mt, ok := action.Params["max_tokens"]; ok {
+			if n, isNum := toFloat64(mt); !isNum || n < 1 || n > 1024 {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   path + ".params.max_tokens",
+					Message: "max_tokens must be a number between 1 and 1024",
+				})
+			}
+		}
 	case ActionLogActivity:
 		// activity_type: required, must be one of call/meeting/note/email
 		atRaw, ok := action.Params["activity_type"]
