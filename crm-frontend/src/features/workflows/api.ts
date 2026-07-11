@@ -408,7 +408,10 @@ export async function draftWorkflow(prompt: string, current?: WorkflowEditContex
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     let res: Response;
     try {
-      res = await apiFetch('/api/workflows/ai/draft', { method: 'POST', body: JSON.stringify(body), timeoutMs: 45000 });
+      // 75s abort, in step with the backend's 60s draftTimeout (ai_draft.go — keep
+      // BOTH in step): qwen3 legitimately needs 30-45s on complex prompts, so the
+      // server must own the deadline and answer clean JSON before we'd ever abort.
+      res = await apiFetch('/api/workflows/ai/draft', { method: 'POST', body: JSON.stringify(body), timeoutMs: 75000 });
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') {
         throw new Error('The AI took too long to respond — please try again.');

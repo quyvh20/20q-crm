@@ -40,13 +40,13 @@ const maxDraftIterations = 4
 
 // draftTimeout hard-bounds the WHOLE draft (every model call + tool iteration +
 // retry inside the gateway). The copilot is interactive, so it must fail as clean
-// JSON well before any client (45s) or reverse-proxy timeout — otherwise a slow
-// model turns into an HTML gateway-timeout page the client can't parse. Kept under
-// the frontend's abort so the browser receives our error rather than aborting first.
-// 40s, not less: complex prompts legitimately need TWO ~15s model calls (a schema
-// round-trip or one corrective re-emit after unparseable inline JSON) — at 28s those
-// always died at the deadline (observed live: 422 at 28.4s) and fell back offline.
-const draftTimeout = 40 * time.Second
+// JSON well before the client abort (75s in workflows/api.ts — keep BOTH in step)
+// and the ~100s Cloudflare proxy cap — otherwise a slow model turns into an HTML
+// gateway-timeout page the client can't parse. 60s, not less: qwen3 single calls
+// run 15-23s on complex prompts (unbounded <think>), so a schema round-trip or a
+// corrective re-emit needs two of those — at 40s complex drafts still died at the
+// deadline 4/5 times (observed live 2026-07-10); a long wait beats a fallback.
+const draftTimeout = 60 * time.Second
 
 // draftHealthTimeout bounds the health probe's single tiny model call. Short by
 // design: a one-word reply from the fast draft model returns in a couple of seconds
@@ -105,7 +105,7 @@ func (h *Handler) DraftWorkflow(c *gin.Context) {
 // copilotBuildTag fingerprints the running binary in the health payload. Bump it
 // alongside copilot-critical backend changes: prod once served a stale build while
 // every deploy signal was green, and nothing could say WHICH code was live.
-const copilotBuildTag = "2026-07-10.4-draft-timeout-40s"
+const copilotBuildTag = "2026-07-10.5-draft-timeout-60s"
 
 // draftHealthResult is the health probe's verdict on the copilot's AI path.
 type draftHealthResult struct {
