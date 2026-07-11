@@ -105,7 +105,7 @@ func (h *Handler) DraftWorkflow(c *gin.Context) {
 // copilotBuildTag fingerprints the running binary in the health payload. Bump it
 // alongside copilot-critical backend changes: prod once served a stale build while
 // every deploy signal was green, and nothing could say WHICH code was live.
-const copilotBuildTag = "2026-07-11.1-nothink-maxtokens"
+const copilotBuildTag = "2026-07-11.2-assign-strategy-vocab"
 
 // draftHealthResult is the health probe's verdict on the copilot's AI path.
 type draftHealthResult struct {
@@ -360,7 +360,7 @@ func buildDraftSystemPrompt(schema *SchemaResponse) string {
 	b.WriteString("You may omit step ids; they are assigned for you.\n\n")
 
 	b.WriteString("TRIGGER TYPES: contact_created, contact_updated, deal_stage_changed (params.to_stage = a stage id), company_updated, <custom_slug>_created/_updated, schedule (params.cron + params.timezone), date_field (params.object, params.field, params.offset_days, params.at_time).\n")
-	b.WriteString("ACTION TYPES: send_email {to, subject, body_html}, create_task {title, priority, due_in_days, assignee_field}, assign_user {entity, strategy, user_id}, update_record {updates:[{field,op,value}]}, create_record {object, fields:[{field,value}]}, notify_user {recipient:'owner_field'|'specific', title, body}, find_records {object, filters}, enroll_records {workflow_id, object}, ai_generate {prompt, max_tokens}, send_webhook {url, method}, log_activity {activity_type, title}.\n")
+	b.WriteString("ACTION TYPES: send_email {to, subject, body_html}, create_task {title, priority, due_in_days, assignee_field}, assign_user {entity, strategy: 'specific'|'round_robin'|'least_loaded', user_id (when specific)}, update_record {updates:[{field,op,value}]}, create_record {object, fields:[{field,value}]}, notify_user {recipient:'owner_field'|'specific', title, body}, find_records {object, filters}, enroll_records {workflow_id, object}, ai_generate {prompt, max_tokens}, send_webhook {url, method}, log_activity {activity_type, title}.\n")
 	b.WriteString("CONDITION OPERATORS: eq, neq, gt, gte, lt, lte, contains, not_contains, in, not_in, is_empty, is_not_empty, starts_with, ends_with.\n")
 	b.WriteString("Field paths look like \"contact.email\", \"deal.value\", \"deal.stage_id\". Use interpolation like {{contact.first_name}} in text params.\n\n")
 
