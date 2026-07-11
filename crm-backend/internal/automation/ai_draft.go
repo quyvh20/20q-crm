@@ -43,7 +43,10 @@ const maxDraftIterations = 4
 // JSON well before any client (45s) or reverse-proxy timeout — otherwise a slow
 // model turns into an HTML gateway-timeout page the client can't parse. Kept under
 // the frontend's abort so the browser receives our error rather than aborting first.
-const draftTimeout = 28 * time.Second
+// 40s, not less: complex prompts legitimately need TWO ~15s model calls (a schema
+// round-trip or one corrective re-emit after unparseable inline JSON) — at 28s those
+// always died at the deadline (observed live: 422 at 28.4s) and fell back offline.
+const draftTimeout = 40 * time.Second
 
 // draftHealthTimeout bounds the health probe's single tiny model call. Short by
 // design: a one-word reply from the fast draft model returns in a couple of seconds
@@ -102,7 +105,7 @@ func (h *Handler) DraftWorkflow(c *gin.Context) {
 // copilotBuildTag fingerprints the running binary in the health payload. Bump it
 // alongside copilot-critical backend changes: prod once served a stale build while
 // every deploy signal was green, and nothing could say WHICH code was live.
-const copilotBuildTag = "2026-07-10.3-inline-json-repair"
+const copilotBuildTag = "2026-07-10.4-draft-timeout-40s"
 
 // draftHealthResult is the health probe's verdict on the copilot's AI path.
 type draftHealthResult struct {
