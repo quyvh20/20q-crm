@@ -105,7 +105,7 @@ func (h *Handler) DraftWorkflow(c *gin.Context) {
 // copilotBuildTag fingerprints the running binary in the health payload. Bump it
 // alongside copilot-critical backend changes: prod once served a stale build while
 // every deploy signal was green, and nothing could say WHICH code was live.
-const copilotBuildTag = "2026-07-10.5-draft-timeout-60s"
+const copilotBuildTag = "2026-07-11.1-nothink-maxtokens"
 
 // draftHealthResult is the health probe's verdict on the copilot's AI path.
 type draftHealthResult struct {
@@ -343,6 +343,12 @@ func draftTools() []ai.Tool {
 // field paths, stage names, and user ids.
 func buildDraftSystemPrompt(schema *SchemaResponse) string {
 	var b strings.Builder
+	// /no_think is Qwen3's documented soft switch to skip its <think> block. With
+	// thinking on and no output cap, complex prompts ran 60s+ of reasoning tokens
+	// per call and every draft died at the deadline (observed live 2026-07-11);
+	// the draft is structured tool JSON, which qwen emits fine without the preamble.
+	// Other models ignore the token, so the fallback (kimi) is unaffected.
+	b.WriteString("/no_think\n")
 	b.WriteString("You are a workflow builder for a CRM. Turn the user's request into ONE automation workflow and return it by calling the draft_workflow tool. Do not save anything; the user reviews the draft.\n\n")
 
 	b.WriteString("WORKFLOW SHAPE:\n")

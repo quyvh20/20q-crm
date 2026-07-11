@@ -354,6 +354,11 @@ func (g *AIGateway) callCFWorkersWithTools(ctx context.Context, task AITask, mod
 		"model":    model,
 		"messages": chatMsgs,
 		"tools":    buildCFTools(tools),
+		// Without an explicit cap the provider default applies and a reasoning model
+		// (qwen3) can burn 60s+ of <think> tokens on one call — observed live killing
+		// every complex copilot draft. taskMaxTokens is the per-task p99 budget the
+		// non-tool paths already enforce.
+		"max_tokens": maxTokensFor(task),
 	}
 
 	resp, err := g.doRequest(ctx, url, "POST", map[string]string{
@@ -372,7 +377,8 @@ func (g *AIGateway) callCFWorkersWithTools(ctx context.Context, task AITask, mod
 	// Try OpenAI-compatible format first
 	var oaiResp struct {
 		Choices []struct {
-			Message struct {
+			FinishReason string `json:"finish_reason"`
+			Message      struct {
 				Content   string `json:"content"`
 				ToolCalls []struct {
 					ID       string `json:"id"`
@@ -397,6 +403,9 @@ func (g *AIGateway) callCFWorkersWithTools(ctx context.Context, task AITask, mod
 			Provider:     string(providerCFWorkers),
 			InputTokens:  oaiResp.Usage.PromptTokens,
 			OutputTokens: oaiResp.Usage.CompletionTokens,
+			// Surfaced so Budget.Record's max_tokens-hit stat sees tool-path
+			// truncation now that the cap above is enforced.
+			StopReason: oaiResp.Choices[0].FinishReason,
 		}
 		for _, tc := range msg.ToolCalls {
 			params := json.RawMessage(tc.Function.Arguments)
