@@ -420,3 +420,225 @@ func TestPitfall_WireFormat_CommaStringSplitCorrectly(t *testing.T) {
 		"Comma-separated CC string must be split into individual email array entries")
 	assert.Len(t, capturedPayload.Cc, 3, "Must be 3 separate CC recipients, not 1 string with commas")
 }
+
+// =============================================================================
+// Resend response classification (retryable vs permanent) + idempotency
+// =============================================================================
+
+// resendStatusExecutor spins up a mock Resend that always answers with the
+// given status and returns an executor pointed at it.
+func resendStatusExecutor(t *testing.T, status int, respBody string) *EmailExecutor {
+	t.Helper()
+	mockResend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(status)
+		w.Write([]byte(respBody))
+	}))
+	t.Cleanup(mockResend.Close)
+	return &EmailExecutor{
+		apiKey:    "test-key",
+		fromEmail: "noreply@20q.io",
+		baseURL:   mockResend.URL,
+	}
+}
+
+// TestEmailAction_RateLimit429_IsRetryable — a Resend 429 is transient by
+// definition, so it must surface as a RetryableError (engine backs off and
+// retries) instead of failing the run permanently. Mirrors the webhook executor.
+func TestEmailAction_RateLimit429_IsRetryable(t *testing.T) {
+	exec := resendStatusExecutor(t, http.StatusTooManyRequests, `{"message":"rate limit exceeded"}`)
+
+	run := &WorkflowRun{ID: uuid.New()}
+	action := ActionSpec{
+		ID:   "email_429",
+		Type: ActionSendEmail,
+		Params: map[string]any{
+			"to":      "user@example.com",
+			"subject": "Test",
+		},
+	}
+
+	_, err := exec.Execute(context.Background(), run, action, EvalContext{})
+	require.Error(t, err)
+	assert.True(t, isRetryable(err), "429 must be retryable, not a permanent client error")
+	assert.Contains(t, err.Error(), "429")
+}
+
+// TestEmailAction_ServerError5xx_IsRetryable pins the existing 5xx classification.
+func TestEmailAction_ServerError5xx_IsRetryable(t *testing.T) {
+	exec := resendStatusExecutor(t, http.StatusBadGateway, `{"message":"upstream error"}`)
+
+	run := &WorkflowRun{ID: uuid.New()}
+	action := ActionSpec{
+		ID:   "email_502",
+		Type: ActionSendEmail,
+		Params: map[string]any{
+			"to":      "user@example.com",
+			"subject": "Test",
+		},
+	}
+
+	_, err := exec.Execute(context.Background(), run, action, EvalContext{})
+	require.Error(t, err)
+	assert.True(t, isRetryable(err), "5xx must be retryable")
+}
+
+// TestEmailAction_OtherClientError_IsPermanent — a non-429 4xx (e.g. 422 bad
+// payload) can never succeed on retry, so it must stay a permanent failure.
+func TestEmailAction_OtherClientError_IsPermanent(t *testing.T) {
+	exec := resendStatusExecutor(t, http.StatusUnprocessableEntity, `{"message":"invalid from address"}`)
+
+	run := &WorkflowRun{ID: uuid.New()}
+	action := ActionSpec{
+		ID:   "email_422",
+		Type: ActionSendEmail,
+		Params: map[string]any{
+			"to":      "user@example.com",
+			"subject": "Test",
+		},
+	}
+
+	_, err := exec.Execute(context.Background(), run, action, EvalContext{})
+	require.Error(t, err)
+	assert.False(t, isRetryable(err), "non-429 4xx must remain a permanent failure")
+	assert.Contains(t, err.Error(), "422")
+}
+
+// TestEmailAction_IdempotencyKey_StableAcrossRetries — every attempt of the same
+// run+step must send the same Idempotency-Key, so an engine retry after a
+// timeout/5xx doesn't double-send an email Resend already accepted.
+func TestEmailAction_IdempotencyKey_StableAcrossRetries(t *testing.T) {
+	var keys []string
+	mockResend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		keys = append(keys, r.Header.Get("Idempotency-Key"))
+		if len(keys) == 1 {
+			// First attempt dies with a transient 5xx → engine will retry.
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"msg_retry"}`))
+	}))
+	defer mockResend.Close()
+
+	exec := &EmailExecutor{
+		apiKey:    "test-key",
+		fromEmail: "noreply@20q.io",
+		baseURL:   mockResend.URL,
+	}
+
+	run := &WorkflowRun{ID: uuid.New()}
+	action := ActionSpec{
+		ID:   "email_idem",
+		Type: ActionSendEmail,
+		Params: map[string]any{
+			"to":      "user@example.com",
+			"subject": "Test",
+		},
+	}
+
+	_, err := exec.Execute(context.Background(), run, action, EvalContext{})
+	require.Error(t, err)
+	require.True(t, isRetryable(err))
+
+	// The engine re-executes the same step of the same run on retry.
+	result, err := exec.Execute(context.Background(), run, action, EvalContext{})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	require.Len(t, keys, 2)
+	assert.NotEmpty(t, keys[0], "Idempotency-Key must be sent on the first attempt")
+	assert.Equal(t, keys[0], keys[1], "retry must reuse the first attempt's key")
+	assert.Equal(t, run.ID.String()+"/"+action.ID, keys[0],
+		"key must be derived from run id + step id")
+}
+
+// TestEmailAction_IdempotencyKey_DistinctPerRunAndStep — different runs, and
+// different steps within one run, must not share a key or Resend would dedupe
+// legitimately distinct emails.
+func TestEmailAction_IdempotencyKey_DistinctPerRunAndStep(t *testing.T) {
+	var keys []string
+	mockResend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		keys = append(keys, r.Header.Get("Idempotency-Key"))
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"msg_distinct"}`))
+	}))
+	defer mockResend.Close()
+
+	exec := &EmailExecutor{
+		apiKey:    "test-key",
+		fromEmail: "noreply@20q.io",
+		baseURL:   mockResend.URL,
+	}
+
+	params := map[string]any{"to": "user@example.com", "subject": "Test"}
+	runA := &WorkflowRun{ID: uuid.New()}
+	runB := &WorkflowRun{ID: uuid.New()}
+	step1 := ActionSpec{ID: "email_step_1", Type: ActionSendEmail, Params: params}
+	step2 := ActionSpec{ID: "email_step_2", Type: ActionSendEmail, Params: params}
+
+	for _, c := range []struct {
+		run    *WorkflowRun
+		action ActionSpec
+	}{{runA, step1}, {runA, step2}, {runB, step1}} {
+		_, err := exec.Execute(context.Background(), c.run, c.action, EvalContext{})
+		require.NoError(t, err)
+	}
+
+	require.Len(t, keys, 3)
+	assert.NotEqual(t, keys[0], keys[1], "two steps in the same run must get distinct keys")
+	assert.NotEqual(t, keys[0], keys[2], "the same step in two runs must get distinct keys")
+}
+
+// TestEmailAction_IdempotencyKey_OmittedWithoutStepID — a step with no id sends
+// NO key at all: two id-less steps sharing one key would make Resend silently
+// swallow the second email.
+func TestEmailAction_IdempotencyKey_OmittedWithoutStepID(t *testing.T) {
+	var headerValues []string
+	mockResend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		headerValues = r.Header.Values("Idempotency-Key")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"msg_no_step_id"}`))
+	}))
+	defer mockResend.Close()
+
+	exec := &EmailExecutor{
+		apiKey:    "test-key",
+		fromEmail: "noreply@20q.io",
+		baseURL:   mockResend.URL,
+	}
+
+	run := &WorkflowRun{ID: uuid.New()}
+	action := ActionSpec{
+		Type: ActionSendEmail, // no ID
+		Params: map[string]any{
+			"to":      "user@example.com",
+			"subject": "Test",
+		},
+	}
+
+	_, err := exec.Execute(context.Background(), run, action, EvalContext{})
+	require.NoError(t, err)
+	assert.Empty(t, headerValues, "no step id → the Idempotency-Key header must be absent")
+}
+
+// TestSendTestEmail_NoIdempotencyKey — the test-send path deliberately sends no
+// key: every click of "send test email" should actually deliver, never dedupe.
+func TestSendTestEmail_NoIdempotencyKey(t *testing.T) {
+	var headerValues []string
+	mockResend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		headerValues = r.Header.Values("Idempotency-Key")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"msg_test_send"}`))
+	}))
+	defer mockResend.Close()
+
+	exec := &EmailExecutor{
+		apiKey:    "test-key",
+		fromEmail: "noreply@20q.io",
+		baseURL:   mockResend.URL,
+	}
+
+	_, err := exec.sendEmail(context.Background(), "test-send", "", "user@example.com", "Test", "<p>Hi</p>", "", nil)
+	require.NoError(t, err)
+	assert.Empty(t, headerValues, "test-send must not carry an Idempotency-Key header")
+}
