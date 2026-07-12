@@ -30,16 +30,16 @@ export default function SettingsPage() {
   // (members.manage). Server enforces every gate.
   const canManageRoles = hasCapability('roles.manage');
   const canViewAudit = hasCapability('audit.view');
+  // AI Logs must match the capability ConversationLogPage actually enforces
+  // (members.manage) — gating it on roles.manage showed some roles a tab that
+  // dead-ended on an access-denied page (U0.8).
+  const canManageMembers = hasCapability('members.manage');
 
   const TABS: Tab[] = [
     ...BASE_TABS,
     ...(canViewAudit ? [{ id: 'audit', label: 'Audit Log', icon: '📋' }] : []),
-    ...(canManageRoles
-      ? [
-          { id: 'permissions', label: 'Permissions', icon: '🔐' },
-          { id: 'ai-logs', label: 'AI Logs', icon: '💬' },
-        ]
-      : []),
+    ...(canManageRoles ? [{ id: 'permissions', label: 'Permissions', icon: '🔐' }] : []),
+    ...(canManageMembers ? [{ id: 'ai-logs', label: 'AI Logs', icon: '💬' }] : []),
   ];
 
   const [activeTab, setActiveTab] = useState<string>('pipeline');

@@ -1,6 +1,9 @@
 package domain
 
-import "net/http"
+import (
+	"fmt"
+	"net/http"
+)
 
 type APIResponse struct {
 	Data  interface{} `json:"data"`
@@ -56,6 +59,24 @@ type OrgUnavailableError struct {
 
 func (e *OrgUnavailableError) Error() string { return "workspace no longer available" }
 
+// CodeReassignmentRequired is the machine-readable code the RemoveMember 409
+// carries so the SPA opens the reassignment dialog off the code, never a
+// message substring.
+const CodeReassignmentRequired = "REASSIGNMENT_REQUIRED"
+
+// ReassignmentRequiredError is returned by RemoveMember when the target still
+// owns records and the caller supplied no strategy. The handler renders it as
+// 409 {code:"REASSIGNMENT_REQUIRED", owned:{contacts,deals}} so the admin
+// decides with real counts in front of them (U0.2).
+type ReassignmentRequiredError struct {
+	Contacts int64
+	Deals    int64
+}
+
+func (e *ReassignmentRequiredError) Error() string {
+	return fmt.Sprintf("this member still owns %d contact(s) and %d deal(s) — transfer them to another member or leave them unassigned", e.Contacts, e.Deals)
+}
+
 var (
 	ErrInvalidCredentials    = NewAppError(http.StatusUnauthorized, "invalid email or password")
 	ErrEmailAlreadyExists    = NewAppError(http.StatusConflict, "email already registered")
@@ -71,6 +92,10 @@ var (
 	ErrInvalidFile           = NewAppError(http.StatusBadRequest, "invalid file format, expected CSV or XLSX")
 	ErrOrgNotFound           = NewAppError(http.StatusNotFound, "organization not found")
 	ErrNotMember             = NewAppError(http.StatusForbidden, "you are not a member of this workspace")
+	// ErrRecordNotWritable: the record is visible to the caller only through a
+	// view-level share, so writes are rejected (U0.4 — share levels are enforced,
+	// not decorative).
+	ErrRecordNotWritable     = NewAppError(http.StatusForbidden, "this record is shared with you as view-only — ask the owner for edit access")
 	ErrAlreadyMember         = NewAppError(http.StatusConflict, "user is already a member of this workspace")
 	ErrCannotRemoveSuperAdmin = NewAppError(http.StatusForbidden, "cannot remove or demote the workspace creator")
 

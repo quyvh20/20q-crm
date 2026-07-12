@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"crm-backend/internal/domain"
@@ -31,6 +32,17 @@ type roleCapReader interface {
 	GetCapabilities(ctx context.Context, roleID uuid.UUID) ([]string, error)
 }
 
+// offboardStore executes the data side of removing a member (U0.2): count,
+// transfer, or release the records they own, and revoke their org-scoped
+// grants. repository.OffboardRepository satisfies it. Nil in unit tests →
+// RemoveMember behaves as if the member owns nothing; main.go always wires it.
+type offboardStore interface {
+	CountOwnedRecords(ctx context.Context, orgID, userID uuid.UUID) (contacts, deals int64, err error)
+	ReassignOwnedRecords(ctx context.Context, orgID, fromUserID, toUserID uuid.UUID) error
+	UnassignOwnedRecords(ctx context.Context, orgID, userID uuid.UUID) error
+	RevokeUserGrants(ctx context.Context, orgID, userID uuid.UUID) error
+}
+
 type workspaceUseCase struct {
 	authRepo    domain.AuthRepository
 	mailer      domain.Mailer
@@ -48,9 +60,12 @@ type workspaceUseCase struct {
 	// always wires them.
 	caps     domain.CapabilityChecker
 	roleCaps roleCapReader
+	// offboard reassigns/releases a departing member's owned records and revokes
+	// their grants (U0.2). Nil in unit tests; main.go always wires it.
+	offboard offboardStore
 }
 
-func NewWorkspaceUseCase(authRepo domain.AuthRepository, mailer domain.Mailer, appEnv string, frontendURL string, sessions SessionEvictor, caps domain.CapabilityChecker, roleCaps roleCapReader) domain.WorkspaceUseCase {
+func NewWorkspaceUseCase(authRepo domain.AuthRepository, mailer domain.Mailer, appEnv string, frontendURL string, sessions SessionEvictor, caps domain.CapabilityChecker, roleCaps roleCapReader, offboard offboardStore) domain.WorkspaceUseCase {
 	return &workspaceUseCase{
 		authRepo:    authRepo,
 		mailer:      mailer,
@@ -59,6 +74,7 @@ func NewWorkspaceUseCase(authRepo domain.AuthRepository, mailer domain.Mailer, a
 		sessions:    sessions,
 		caps:        caps,
 		roleCaps:    roleCaps,
+		offboard:    offboard,
 	}
 }
 
@@ -194,7 +210,7 @@ func (uc *workspaceUseCase) InviteMember(ctx context.Context, orgID uuid.UUID, i
 		return nil, nil, domain.NewAppError(500, "CreateOrgInvitation error: "+err.Error())
 	}
 
-	uc.sendInviteEmail(input.Email, rawToken, orgID)
+	uc.sendInviteEmail(ctx, input.Email, rawToken, orgID)
 
 	var debugToken *string
 	if debugTokensEnabled(uc.appEnv) {
@@ -214,17 +230,39 @@ func (uc *workspaceUseCase) InviteMember(ctx context.Context, orgID uuid.UUID, i
 
 // sendInviteEmail fires the invitation email off the request path on a detached
 // context (the fire-and-forget lesson): the invitation row is committed, so a
-// slow or failed send must not 500 the invite — resend is the retry path.
-func (uc *workspaceUseCase) sendInviteEmail(email, rawToken string, orgID uuid.UUID) {
+// slow or failed send must not 500 the invite — resend is the retry path. The
+// workspace/inviter names are resolved synchronously on the request context
+// (U0.7 — the subject used to greet invitees with the org's raw UUID); the send
+// itself stays fire-and-forget.
+func (uc *workspaceUseCase) sendInviteEmail(ctx context.Context, email, rawToken string, orgID uuid.UUID) {
 	link := fmt.Sprintf("%s/accept-invite?token=%s", uc.frontendURL, rawToken)
-	orgName := orgID.String()
+	orgName, inviterName := uc.inviteEmailNames(ctx, orgID)
 	go func() {
 		bg, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if err := uc.mailer.SendInvite(bg, email, link, orgName); err != nil {
+		if err := uc.mailer.SendInvite(bg, email, link, orgName, inviterName); err != nil {
 			log.Printf("invite: failed to send invitation email to %s: %v", email, err)
 		}
 	}()
+}
+
+// inviteEmailNames resolves the workspace display name and the inviter's name
+// for the invite email. Failures degrade to a generic phrase / empty inviter —
+// never to a UUID.
+func (uc *workspaceUseCase) inviteEmailNames(ctx context.Context, orgID uuid.UUID) (orgName, inviterName string) {
+	orgName = "your team's workspace"
+	if org, err := uc.authRepo.GetOrganizationByID(ctx, orgID); err == nil && org != nil && strings.TrimSpace(org.Name) != "" {
+		orgName = org.Name
+	}
+	if caller, ok := domain.CallerFromContext(ctx); ok {
+		if u, err := uc.authRepo.GetUserByID(ctx, caller.UserID); err == nil && u != nil {
+			inviterName = strings.TrimSpace(u.FullName)
+			if inviterName == "" {
+				inviterName = strings.TrimSpace(u.FirstName + " " + u.LastName)
+			}
+		}
+	}
+	return orgName, inviterName
 }
 
 // AcceptInvite joins the invitee to the org in ONE transaction (P2): it UPSERTs
@@ -351,7 +389,7 @@ func (uc *workspaceUseCase) ResendInvitation(ctx context.Context, orgID, invitat
 		return nil, domain.ErrInternal
 	}
 
-	uc.sendInviteEmail(inv.Email, rawToken, orgID)
+	uc.sendInviteEmail(ctx, inv.Email, rawToken, orgID)
 	recordAdminEvent(ctx, uc.authRepo, orgID, "member.invite_resent", nil,
 		map[string]interface{}{"email": inv.Email})
 
@@ -618,10 +656,54 @@ func (uc *workspaceUseCase) RemoveMember(ctx context.Context, orgID uuid.UUID, t
 		}
 	}
 
-	// Wait, we need to enforce reassignment if resources exist!
-	// We'll trust the input for now for the mock, a full SQL implementation would run COUNT(*) on contacts, deals.
-	if input.Strategy != "unassign" && input.ReassignToUserID == nil {
-		return domain.NewAppError(409, "Must provide reassign_to_user_id or unassign strategy")
+	// The member's owned records decide whether a strategy is required: removing
+	// someone who owns nothing needs no ceremony, while owned data must be
+	// explicitly transferred or released — and the transfer now actually runs
+	// (U0.2; this replaced the mock that validated the input then ignored it).
+	var ownedContacts, ownedDeals int64
+	if uc.offboard != nil {
+		var err error
+		ownedContacts, ownedDeals, err = uc.offboard.CountOwnedRecords(ctx, orgID, targetUserID)
+		if err != nil {
+			return domain.ErrInternal
+		}
+	}
+	if ownedContacts+ownedDeals > 0 {
+		switch input.Strategy {
+		case "transfer":
+			if input.ReassignToUserID == nil {
+				return &domain.ReassignmentRequiredError{Contacts: ownedContacts, Deals: ownedDeals}
+			}
+			newOwner := *input.ReassignToUserID
+			if newOwner == targetUserID {
+				return domain.NewAppError(400, "records cannot be reassigned to the member being removed")
+			}
+			recipient, err := uc.authRepo.GetOrgUser(ctx, newOwner, orgID)
+			if err != nil {
+				return domain.ErrInternal
+			}
+			if recipient == nil || recipient.Status != domain.StatusActive {
+				return domain.NewAppError(400, "records can only be reassigned to an active member of this workspace")
+			}
+			if err := uc.offboard.ReassignOwnedRecords(ctx, orgID, targetUserID, newOwner); err != nil {
+				return domain.ErrInternal
+			}
+		case "unassign":
+			if err := uc.offboard.UnassignOwnedRecords(ctx, orgID, targetUserID); err != nil {
+				return domain.ErrInternal
+			}
+		default:
+			return &domain.ReassignmentRequiredError{Contacts: ownedContacts, Deals: ownedDeals}
+		}
+	}
+
+	// Revoke the member's org-scoped grants (record shares to them, report
+	// shares targeting them, group memberships) so a later re-invite starts
+	// clean instead of silently restoring old access.
+	if uc.offboard != nil {
+		if err := uc.offboard.RevokeUserGrants(ctx, orgID, targetUserID); err != nil {
+			return domain.ErrInternal
+		}
 	}
 
 	if err := uc.authRepo.DeleteOrgUser(ctx, targetUserID, orgID); err != nil {
@@ -629,6 +711,10 @@ func (uc *workspaceUseCase) RemoveMember(ctx context.Context, orgID uuid.UUID, t
 	}
 	uc.evictSession(ctx, targetUserID, orgID)
 	recordAdminEvent(ctx, uc.authRepo, orgID, "member.removed", &targetUserID,
-		map[string]interface{}{"strategy": input.Strategy})
+		map[string]interface{}{
+			"strategy":       input.Strategy,
+			"owned_contacts": ownedContacts,
+			"owned_deals":    ownedDeals,
+		})
 	return nil
 }

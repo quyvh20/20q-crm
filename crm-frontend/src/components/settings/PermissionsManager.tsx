@@ -82,6 +82,17 @@ export default function PermissionsManager() {
     if (!selectedRole || selectedRole.is_owner) return; // owner bypasses OLS — not editable
     const current = cellFor(selectedRole.id, slug);
     const next = { ...current, [action]: !current[action] };
+    // Read is implied (U0.9): you can't create/edit/delete records you can't
+    // see, so granting any of those grants Read, and revoking Read revokes the
+    // rest — the grid can no longer express an incoherent combination.
+    if (action !== 'read' && next[action]) {
+      next.read = true;
+    }
+    if (action === 'read' && !next.read) {
+      next.create = false;
+      next.edit = false;
+      next.delete = false;
+    }
     const key = `${slug}:${action}`;
     setSavingKey(key);
     setError('');
@@ -116,7 +127,8 @@ export default function PermissionsManager() {
         <h3 className="text-lg font-semibold">Object Permissions</h3>
         <p className="text-sm text-muted-foreground mt-1">
           Control what each role can do with each object. Changes apply immediately.
-          A role with no grant has no access (default-deny); the <strong>owner</strong> role always has full access.
+          A role with no grant has no access; the <strong>owner</strong> role always has full access.
+          Granting Create, Edit, or Delete also grants Read — you can't work with records you can't see.
         </p>
       </div>
 

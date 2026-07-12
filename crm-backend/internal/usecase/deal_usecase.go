@@ -107,6 +107,9 @@ func (uc *dealUseCase) Update(ctx context.Context, orgID, id uuid.UUID, input do
 	}
 
 	if err := uc.dealRepo.Update(ctx, deal); err != nil {
+		if appErr, ok := err.(*domain.AppError); ok {
+			return nil, appErr // e.g. view-only share → 403, not a masked 500
+		}
 		return nil, domain.ErrInternal
 	}
 	return uc.dealRepo.GetByID(ctx, orgID, deal.ID)
@@ -176,6 +179,9 @@ func (uc *dealUseCase) ChangeStage(ctx context.Context, orgID, dealID uuid.UUID,
 	}
 
 	if err := uc.dealRepo.Update(ctx, deal); err != nil {
+		if appErr, ok := err.(*domain.AppError); ok {
+			return nil, appErr // e.g. view-only share → 403, not a masked 500
+		}
 		return nil, domain.ErrInternal
 	}
 

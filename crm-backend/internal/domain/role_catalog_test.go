@@ -50,7 +50,6 @@ func TestCapabilityCatalogCoversAllCapabilities(t *testing.T) {
 		CapWorkflowsRunAny: true,
 		CapOrgSettings:     true,
 		CapDataExport:      true,
-		CapBillingManage:   true,
 	}
 	for _, ci := range CapabilityCatalog {
 		if ci.Sensitive != wantSensitive[ci.Code] {

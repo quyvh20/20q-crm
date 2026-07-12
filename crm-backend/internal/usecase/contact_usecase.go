@@ -143,6 +143,9 @@ func (uc *contactUseCase) Update(ctx context.Context, orgID, id uuid.UUID, input
 	}
 
 	if err := uc.contactRepo.Update(ctx, contact); err != nil {
+		if appErr, ok := err.(*domain.AppError); ok {
+			return nil, appErr // e.g. view-only share → 403, not a masked 500
+		}
 		return nil, domain.ErrInternal
 	}
 

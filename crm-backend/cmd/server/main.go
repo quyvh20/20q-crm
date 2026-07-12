@@ -994,7 +994,8 @@ func main() {
 		// it can enforce escalation guard #2 (P6): permissionUC checks the caller's
 		// capabilities and roleRepo reads the target role's, so assigning/inviting
 		// into a role that can manage roles/members requires the caller's roles.manage.
-		workspaceUseCase := usecase.NewWorkspaceUseCase(authRepo, mailerSvc, appEnv, cfg.FrontendURL, sessionEvictor, permissionUC, roleRepo)
+		workspaceUseCase := usecase.NewWorkspaceUseCase(authRepo, mailerSvc, appEnv, cfg.FrontendURL, sessionEvictor, permissionUC, roleRepo,
+			repository.NewOffboardRepository(db))
 		workspaceHandler := delivery.NewWorkspaceHandler(workspaceUseCase)
 
 		// Admin + auth audit log (P4): read-only view over the append-only

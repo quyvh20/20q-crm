@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { getWorkspaceMembers, updateMemberRole, removeMember, suspendMember, reinstateMember, transferOwnership, sendMemberResetLink, listInvitations, resendInvitation, revokeInvitation, getRoleOptions, type WorkspaceMember, type Invitation, type RoleOption } from '../../lib/api';
+import { getWorkspaceMembers, updateMemberRole, removeMember, suspendMember, reinstateMember, transferOwnership, sendMemberResetLink, listInvitations, resendInvitation, revokeInvitation, getRoleOptions, ReassignmentRequiredError, type WorkspaceMember, type Invitation, type RoleOption } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { ShieldAlert, PauseCircle, PlayCircle, UserMinus, Crown, Shield, KeyRound, CheckCircle2, RotateCw, X } from 'lucide-react';
 
@@ -16,6 +16,8 @@ export default function MembersList() {
   // States for reassign modal
   const [reassignModalUser, setReassignModalUser] = useState<WorkspaceMember | null>(null);
   const [targetOwnerId, setTargetOwnerId] = useState<string>('');
+  const [ownedCounts, setOwnedCounts] = useState<{ contacts: number; deals: number } | null>(null);
+  const [removeStrategy, setRemoveStrategy] = useState<'transfer' | 'unassign'>('transfer');
   const [errorMsg, setErrorMsg] = useState('');
   const [noticeMsg, setNoticeMsg] = useState('');
   const [invitations, setInvitations] = useState<Invitation[]>([]);
@@ -98,11 +100,19 @@ export default function MembersList() {
     try {
       await removeMember(userId, input);
       setReassignModalUser(null);
+      setOwnedCounts(null);
       fetchMembers();
     } catch (err: any) {
-      if (err.message.includes('reassign_to_user_id')) {
+      // Keyed off the typed 409 code, not a message substring: the member still
+      // owns records, so open the dialog with the real counts (U0.2).
+      if (err instanceof ReassignmentRequiredError) {
         const mem = members.find(m => m.user_id === userId);
-        if (mem) setReassignModalUser(mem);
+        if (mem) {
+          setOwnedCounts(err.owned);
+          setRemoveStrategy('transfer');
+          setTargetOwnerId('');
+          setReassignModalUser(mem);
+        }
       } else {
         setErrorMsg(err.message || 'Failed to remove member');
       }
@@ -328,36 +338,67 @@ export default function MembersList() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setReassignModalUser(null)} />
           <div className="relative bg-card border border-border rounded-2xl shadow-xl w-full max-w-sm p-6">
-            <h3 className="text-lg font-bold text-foreground mb-2">Reassign Data</h3>
+            <h3 className="text-lg font-bold text-foreground mb-2">Remove {reassignModalUser.first_name || reassignModalUser.email}</h3>
             <p className="text-sm text-muted-foreground mb-4">
-              <strong>{reassignModalUser.first_name}</strong> owns active accounts or contacts. Select a member to take ownership before deletion.
+              This member still owns{' '}
+              <strong className="text-foreground">
+                {ownedCounts ? `${ownedCounts.contacts} contact${ownedCounts.contacts === 1 ? '' : 's'} and ${ownedCounts.deals} deal${ownedCounts.deals === 1 ? '' : 's'}` : 'records'}
+              </strong>
+              . Choose what happens to them:
             </p>
-            <div className="mb-6">
-              <label className="block text-xs font-semibold uppercase tracking-wider mb-2 text-muted-foreground">New Owner</label>
-              <select
-                className="w-full px-3 py-2 bg-background border border-border rounded-lg text-foreground focus:outline-none focus:border-primary"
-                value={targetOwnerId}
-                onChange={e => setTargetOwnerId(e.target.value)}
-              >
-                <option value="">-- Select Member --</option>
-                {members.filter(m => m.user_id !== reassignModalUser.user_id && m.status === 'active').map(m => (
-                  <option key={m.user_id} value={m.user_id}>{m.full_name || m.email}</option>
-                ))}
-              </select>
+            <div className="mb-6 space-y-3">
+              <label className="flex items-start gap-2 text-sm text-foreground cursor-pointer">
+                <input
+                  type="radio"
+                  name="remove-strategy"
+                  className="mt-0.5"
+                  checked={removeStrategy === 'transfer'}
+                  onChange={() => setRemoveStrategy('transfer')}
+                />
+                <span>Transfer them to another member</span>
+              </label>
+              {removeStrategy === 'transfer' && (
+                <select
+                  className="w-full px-3 py-2 bg-background border border-border rounded-lg text-foreground focus:outline-none focus:border-primary"
+                  value={targetOwnerId}
+                  onChange={e => setTargetOwnerId(e.target.value)}
+                >
+                  <option value="">-- Select member --</option>
+                  {members.filter(m => m.user_id !== reassignModalUser.user_id && m.status === 'active').map(m => (
+                    <option key={m.user_id} value={m.user_id}>{m.full_name || m.email}</option>
+                  ))}
+                </select>
+              )}
+              <label className="flex items-start gap-2 text-sm text-foreground cursor-pointer">
+                <input
+                  type="radio"
+                  name="remove-strategy"
+                  className="mt-0.5"
+                  checked={removeStrategy === 'unassign'}
+                  onChange={() => setRemoveStrategy('unassign')}
+                />
+                <span>
+                  Leave them unassigned
+                  <span className="block text-xs text-muted-foreground">The records stay in the workspace with no owner until someone picks them up.</span>
+                </span>
+              </label>
             </div>
             <div className="flex gap-2">
-              <button 
-                onClick={() => setReassignModalUser(null)} 
+              <button
+                onClick={() => setReassignModalUser(null)}
                 className="flex-1 px-4 py-2 border border-border rounded-xl text-sm font-medium hover:bg-accent transition"
               >
                 Cancel
               </button>
-              <button 
-                disabled={!targetOwnerId}
-                onClick={() => handleRemove(reassignModalUser.user_id, { strategy: 'transfer', reassign_to_user_id: targetOwnerId })}
+              <button
+                disabled={removeStrategy === 'transfer' && !targetOwnerId}
+                onClick={() => handleRemove(reassignModalUser.user_id,
+                  removeStrategy === 'transfer'
+                    ? { strategy: 'transfer', reassign_to_user_id: targetOwnerId }
+                    : { strategy: 'unassign' })}
                 className="flex-1 px-4 py-2 bg-red-500/20 text-red-500 border border-red-500/50 rounded-xl text-sm font-bold hover:bg-red-500/30 transition disabled:opacity-50"
               >
-                Reassign & Delete
+                {removeStrategy === 'transfer' ? 'Transfer & remove' : 'Remove member'}
               </button>
             </div>
           </div>

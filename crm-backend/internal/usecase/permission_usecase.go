@@ -93,6 +93,18 @@ func callerIsOwner(caller domain.Caller) bool {
 	return caller.IsOwner
 }
 
+// warnCallerlessHTTP makes the designed callerless fail-open observable
+// (U0.10): a context with no caller is trusted by design for in-process calls
+// (automation, AI, seed), but an HTTP-originated request should ALWAYS carry a
+// caller — reaching authorization without one means a route is mounted outside
+// AuthMiddleware and is silently passing every check. Logged, not denied, so a
+// wiring bug surfaces in ops without changing behavior for legitimate callers.
+func warnCallerlessHTTP(ctx context.Context, what string) {
+	if domain.IsHTTPTransport(ctx) {
+		log.Printf("authz: callerless HTTP request passed %s — fail-open invariant violated (route mounted outside AuthMiddleware?)", what)
+	}
+}
+
 // resolveRoleID returns the role identity authorization keys off (R1 re-key). A
 // caller with a RoleID uses it directly — present or not in the grant maps,
 // absence default-denies. Since the P9 bridge removal there is no name fallback:
@@ -108,6 +120,7 @@ func (uc *permissionUseCase) resolveRoleID(caller domain.Caller) (uuid.UUID, boo
 func (uc *permissionUseCase) Authorize(ctx context.Context, orgID uuid.UUID, slug string, action domain.RecordAction) error {
 	caller, ok := domain.CallerFromContext(ctx)
 	if !ok {
+		warnCallerlessHTTP(ctx, "Authorize "+string(action)+" "+slug)
 		return nil // trusted in-process call — middleware always sets a caller for user traffic
 	}
 	if callerIsOwner(caller) {
@@ -207,6 +220,7 @@ func (uc *permissionUseCase) FieldMask(ctx context.Context, orgID uuid.UUID, slu
 func (uc *permissionUseCase) HasCapability(ctx context.Context, orgID uuid.UUID, capability string) error {
 	caller, ok := domain.CallerFromContext(ctx)
 	if !ok {
+		warnCallerlessHTTP(ctx, "HasCapability "+capability)
 		return nil // trusted in-process call
 	}
 	if callerIsOwner(caller) {

@@ -21,6 +21,7 @@ type ContactEventEmitter func(ctx context.Context, orgID uuid.UUID, eventType st
 type ContactHandler struct {
 	contactUC    domain.ContactUseCase
 	emitEvent    ContactEventEmitter
+	masker       fieldMasker
 }
 
 func NewContactHandler(contactUC domain.ContactUseCase) *ContactHandler {
@@ -31,6 +32,10 @@ func NewContactHandler(contactUC domain.ContactUseCase) *ContactHandler {
 func (h *ContactHandler) SetEventEmitter(fn ContactEventEmitter) {
 	h.emitEvent = fn
 }
+
+// SetFieldMasker wires Field-Level Security onto the legacy contact routes
+// (called from RegisterRoutes; nil in unit tests → empty mask).
+func (h *ContactHandler) SetFieldMasker(m fieldMasker) { h.masker = m }
 
 // countWords returns the number of whitespace-separated tokens.
 func countWords(s string) int {
@@ -80,7 +85,8 @@ func (h *ContactHandler) List(c *gin.Context) {
 			handleAppError(c, err)
 			return
 		}
-		c.JSON(http.StatusOK, domain.SuccessWithMeta(contacts, domain.CursorMeta{
+		mask := legacyMask(h.masker, c.Request.Context(), orgID, "contact")
+		c.JSON(http.StatusOK, domain.SuccessWithMeta(maskLegacy(mask, "contact", contacts), domain.CursorMeta{
 			Total: int64(len(contacts)),
 		}))
 		return
@@ -142,7 +148,8 @@ func (h *ContactHandler) List(c *gin.Context) {
 		Total:      total,
 	}
 
-	c.JSON(http.StatusOK, domain.SuccessWithMeta(contacts, meta))
+	mask := legacyMask(h.masker, c.Request.Context(), orgID, "contact")
+	c.JSON(http.StatusOK, domain.SuccessWithMeta(maskLegacy(mask, "contact", contacts), meta))
 }
 
 // GET /api/contacts/:id
@@ -165,7 +172,8 @@ func (h *ContactHandler) GetByID(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, domain.Success(contact))
+	mask := legacyMask(h.masker, c.Request.Context(), orgID, "contact")
+	c.JSON(http.StatusOK, domain.Success(maskLegacy(mask, "contact", contact)))
 }
 
 // POST /api/contacts
@@ -179,6 +187,12 @@ func (h *ContactHandler) Create(c *gin.Context) {
 	var input domain.CreateContactInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, domain.Err(err.Error()))
+		return
+	}
+
+	mask := legacyMask(h.masker, c.Request.Context(), orgID, "contact")
+	if err := guardLegacyWrite(mask, contactCreateKeys(input)); err != nil {
+		handleAppError(c, err)
 		return
 	}
 
@@ -201,7 +215,7 @@ func (h *ContactHandler) Create(c *gin.Context) {
 		go h.emitEvent(context.Background(), orgID, "contact_created", payload)
 	}
 
-	c.JSON(http.StatusCreated, domain.Success(contact))
+	c.JSON(http.StatusCreated, domain.Success(maskLegacy(mask, "contact", contact)))
 }
 
 // PUT /api/contacts/:id
@@ -221,6 +235,12 @@ func (h *ContactHandler) Update(c *gin.Context) {
 	var input domain.UpdateContactInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, domain.Err(err.Error()))
+		return
+	}
+
+	mask := legacyMask(h.masker, c.Request.Context(), orgID, "contact")
+	if err := guardLegacyWrite(mask, contactUpdateKeys(input)); err != nil {
+		handleAppError(c, err)
 		return
 	}
 
@@ -255,7 +275,7 @@ func (h *ContactHandler) Update(c *gin.Context) {
 		go h.emitEvent(context.Background(), orgID, "contact_updated", payload)
 	}
 
-	c.JSON(http.StatusOK, domain.Success(contact))
+	c.JSON(http.StatusOK, domain.Success(maskLegacy(mask, "contact", contact)))
 }
 
 // DELETE /api/contacts/:id

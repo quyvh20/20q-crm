@@ -31,11 +31,12 @@ func redactLink(link string) string {
 	return link[:i] + "token=" + token + "…[redacted]"
 }
 
-func (m *LogMailer) SendInvite(ctx context.Context, to, inviteLink, orgName string) error {
+func (m *LogMailer) SendInvite(ctx context.Context, to, inviteLink, orgName, inviterName string) error {
 	logger.Log.Info("📧 [EMAIL SENT_LOG_ONLY]",
 		zap.String("type", "Workspace_Invite"),
 		zap.String("to", to),
 		zap.String("org_name", orgName),
+		zap.String("inviter", inviterName),
 		zap.String("invite_link", redactLink(inviteLink)),
 	)
 	return nil

@@ -422,6 +422,25 @@ func (uc *roleUseCase) SetCapabilities(ctx context.Context, orgID, id uuid.UUID,
 	if err != nil {
 		return err
 	}
+
+	// Self-lockout guard (U0.5): an admin editing THEIR OWN role must not strip
+	// roles.manage from it — one click would lock everyone but the owner out of
+	// the entire permissions surface, with no one left able to undo it. The
+	// escalation guard covers assignment; this covers self-mutation. Owner
+	// bypasses (god-mode never depends on capability rows).
+	if caller, ok := domain.CallerFromContext(ctx); ok && !caller.IsOwner && caller.RoleID == id {
+		keeps := false
+		for _, c := range caps {
+			if c == domain.CapRolesManage {
+				keeps = true
+				break
+			}
+		}
+		if !keeps {
+			return domain.NewAppError(http.StatusConflict, "you can't remove 'Manage roles & permissions' from your own role — you would lock yourself out of this page. Have another admin change it, or edit a different role.")
+		}
+	}
+
 	oldCaps, _ := uc.repo.GetCapabilities(ctx, id) // best-effort, for the audit diff
 	if err := uc.repo.SetCapabilities(ctx, orgID, id, caps); err != nil {
 		return domain.ErrInternal

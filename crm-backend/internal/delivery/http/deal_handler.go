@@ -17,6 +17,7 @@ type DealEventEmitter func(ctx context.Context, orgID uuid.UUID, eventType strin
 type DealHandler struct {
 	dealUC    domain.DealUseCase
 	emitEvent DealEventEmitter
+	masker    fieldMasker
 }
 
 func NewDealHandler(dealUC domain.DealUseCase) *DealHandler {
@@ -26,6 +27,10 @@ func NewDealHandler(dealUC domain.DealUseCase) *DealHandler {
 func (h *DealHandler) SetEventEmitter(fn DealEventEmitter) {
 	h.emitEvent = fn
 }
+
+// SetFieldMasker wires Field-Level Security onto the legacy deal routes
+// (called from RegisterRoutes; nil in unit tests → empty mask).
+func (h *DealHandler) SetFieldMasker(m fieldMasker) { h.masker = m }
 
 // GET /api/deals
 func (h *DealHandler) List(c *gin.Context) {
@@ -69,7 +74,8 @@ func (h *DealHandler) List(c *gin.Context) {
 		HasMore:    nextCursor != "",
 		Total:      total,
 	}
-	c.JSON(http.StatusOK, domain.SuccessWithMeta(deals, meta))
+	mask := legacyMask(h.masker, c.Request.Context(), orgID, "deal")
+	c.JSON(http.StatusOK, domain.SuccessWithMeta(maskLegacy(mask, "deal", deals), meta))
 }
 
 // GET /api/deals/:id
@@ -89,7 +95,8 @@ func (h *DealHandler) GetByID(c *gin.Context) {
 		handleAppError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, domain.Success(deal))
+	mask := legacyMask(h.masker, c.Request.Context(), orgID, "deal")
+	c.JSON(http.StatusOK, domain.Success(maskLegacy(mask, "deal", deal)))
 }
 
 // POST /api/deals
@@ -104,12 +111,17 @@ func (h *DealHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, domain.Err(err.Error()))
 		return
 	}
+	mask := legacyMask(h.masker, c.Request.Context(), orgID, "deal")
+	if err := guardLegacyWrite(mask, dealCreateKeys(input)); err != nil {
+		handleAppError(c, err)
+		return
+	}
 	deal, err := h.dealUC.Create(c.Request.Context(), orgID, input)
 	if err != nil {
 		handleAppError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, domain.Success(deal))
+	c.JSON(http.StatusCreated, domain.Success(maskLegacy(mask, "deal", deal)))
 }
 
 // PUT /api/deals/:id
@@ -127,6 +139,12 @@ func (h *DealHandler) Update(c *gin.Context) {
 	var input domain.UpdateDealInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, domain.Err(err.Error()))
+		return
+	}
+
+	mask := legacyMask(h.masker, c.Request.Context(), orgID, "deal")
+	if err := guardLegacyWrite(mask, dealUpdateKeys(input)); err != nil {
+		handleAppError(c, err)
 		return
 	}
 
@@ -177,7 +195,7 @@ func (h *DealHandler) Update(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, domain.Success(deal))
+	c.JSON(http.StatusOK, domain.Success(maskLegacy(mask, "deal", deal)))
 }
 
 // DELETE /api/deals/:id
@@ -214,6 +232,12 @@ func (h *DealHandler) ChangeStage(c *gin.Context) {
 	var input domain.UpdateDealStageInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, domain.Err(err.Error()))
+		return
+	}
+
+	mask := legacyMask(h.masker, c.Request.Context(), orgID, "deal")
+	if err := guardLegacyWrite(mask, []string{"stage"}); err != nil {
+		handleAppError(c, err)
 		return
 	}
 
@@ -264,7 +288,7 @@ func (h *DealHandler) ChangeStage(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, domain.Success(deal))
+	c.JSON(http.StatusOK, domain.Success(maskLegacy(mask, "deal", deal)))
 }
 
 // GET /api/pipeline/forecast

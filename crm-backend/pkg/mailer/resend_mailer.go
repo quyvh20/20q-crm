@@ -61,13 +61,14 @@ func (m *ResendMailer) send(ctx context.Context, to, subject, htmlBody string) e
 	return nil
 }
 
-func (m *ResendMailer) SendInvite(ctx context.Context, to, inviteLink, orgName string) error {
+func (m *ResendMailer) SendInvite(ctx context.Context, to, inviteLink, orgName, inviterName string) error {
 	subject := fmt.Sprintf("You've been invited to join %s", orgName)
-	body := ctaEmail(
-		"You've been invited",
-		fmt.Sprintf("You have been invited to join <strong>%s</strong> in the CRM.", html.EscapeString(orgName)),
-		"Accept invitation", inviteLink,
-	)
+	intro := fmt.Sprintf("You have been invited to join <strong>%s</strong> in the CRM.", html.EscapeString(orgName))
+	if inviterName != "" {
+		intro = fmt.Sprintf("<strong>%s</strong> has invited you to join <strong>%s</strong> in the CRM.",
+			html.EscapeString(inviterName), html.EscapeString(orgName))
+	}
+	body := ctaEmail("You've been invited", intro, "Accept invitation", inviteLink)
 	return m.send(ctx, to, subject, body)
 }
 

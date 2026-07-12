@@ -10,6 +10,15 @@ import (
 )
 
 func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, objectRegistryHandler *ObjectRegistryHandler, recordHandler *RecordHandler, permissionHandler *PermissionHandler, searchHandler *SearchHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, voiceHandler *VoiceHandler, layoutHandler *ObjectLayoutHandler, roleHandler *RoleHandler, auditHandler *AuditHandler, reportHandler *ReportHandler, reportShareHandler *ReportShareHandler, reportCommentHandler *ReportCommentHandler, dashboardHandler *DashboardHandler, groupHandler *UserGroupHandler, notificationHandler *NotificationHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository, permissionUC domain.PermissionUseCase) {
+	// Mark every request context as HTTP-originated so the permission engine can
+	// flag a callerless HTTP call reaching Authorize (a route mounted outside
+	// AuthMiddleware) instead of silently treating it as a trusted in-process
+	// call (U0.10). Must be registered before any route below.
+	router.Use(func(c *gin.Context) {
+		c.Request = c.Request.WithContext(domain.MarkHTTPTransport(c.Request.Context()))
+		c.Next()
+	})
+
 	api := router.Group("/api")
 
 	// Per-IP rate limit on the credential endpoints (P2). Reused across the auth
@@ -32,6 +41,14 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 	// grid of their own, so they're gated by the admin-configurable records.write
 	// capability rather than any hardcoded role rule.
 	recordsWrite := cap(domain.CapRecordsWrite)
+
+	// Field-Level Security on the legacy per-object routes (U0.1): the registry
+	// path strips hidden fields inside RecordService; these handlers strip at the
+	// delivery boundary using the same engine, so the admin Field Security grid
+	// is honest on both surfaces.
+	contactHandler.SetFieldMasker(permissionUC)
+	companyHandler.SetFieldMasker(permissionUC)
+	dealHandler.SetFieldMasker(permissionUC)
 
 	auth := api.Group("/auth")
 	{
@@ -183,8 +200,10 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 		// custom roles' OLS grid governs these routes too.
 		contacts := protected.Group("/contacts")
 		{
-			contacts.GET("", contactHandler.List)
-			contacts.GET("/:id", contactHandler.GetByID)
+			// Read routes carry the same OLS gate as the writes (U0.1) — without
+			// it, revoking 'read' in the permissions grid only bit on /registry.
+			contacts.GET("", olsOn("contact", domain.ActionRead), contactHandler.List)
+			contacts.GET("/:id", olsOn("contact", domain.ActionRead), contactHandler.GetByID)
 			contacts.POST("", olsOn("contact", domain.ActionCreate), contactHandler.Create)
 			contacts.PUT("/:id", olsOn("contact", domain.ActionEdit), contactHandler.Update)
 			contacts.DELETE("/:id", olsOn("contact", domain.ActionDelete), contactHandler.Delete)
@@ -194,8 +213,8 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 
 		companies := protected.Group("/companies")
 		{
-			companies.GET("", companyHandler.List)
-			companies.GET("/:id", companyHandler.GetByID)
+			companies.GET("", olsOn("company", domain.ActionRead), companyHandler.List)
+			companies.GET("/:id", olsOn("company", domain.ActionRead), companyHandler.GetByID)
 			companies.POST("", olsOn("company", domain.ActionCreate), companyHandler.Create)
 			companies.PUT("/:id", olsOn("company", domain.ActionEdit), companyHandler.Update)
 			companies.DELETE("/:id", olsOn("company", domain.ActionDelete), companyHandler.Delete)
@@ -212,8 +231,8 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 
 		deals := protected.Group("/deals")
 		{
-			deals.GET("", dealHandler.List)
-			deals.GET("/:id", dealHandler.GetByID)
+			deals.GET("", olsOn("deal", domain.ActionRead), dealHandler.List)
+			deals.GET("/:id", olsOn("deal", domain.ActionRead), dealHandler.GetByID)
 			deals.POST("", olsOn("deal", domain.ActionCreate), dealHandler.Create)
 			deals.PUT("/:id", olsOn("deal", domain.ActionEdit), dealHandler.Update)
 			deals.DELETE("/:id", olsOn("deal", domain.ActionDelete), dealHandler.Delete)
@@ -228,7 +247,9 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			pipeline.PUT("/stages/:id", cap(domain.CapPipelineManage), pipelineHandler.UpdateStage)
 			pipeline.DELETE("/stages/:id", cap(domain.CapPipelineManage), pipelineHandler.DeleteStage)
 			pipeline.POST("/stages/seed-defaults", cap(domain.CapPipelineManage), pipelineHandler.SeedDefaultStages)
-			pipeline.GET("/forecast", dealHandler.Forecast)
+			// Forecast is org-wide analytics — same analytics.view gate the AI
+		// forecast tool enforces (U0.6), so REST and AI agree on who sees it.
+		pipeline.GET("/forecast", cap(domain.CapAnalyticsView), dealHandler.Forecast)
 		}
 
 		activities := protected.Group("/activities")
@@ -269,7 +290,7 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			aiRoutes.DELETE("/sessions/:id", cap(domain.CapMembersManage), sessionHandler.DeleteSession)
 		}
 
-		deals.GET("/:id/score", aiHandler.ScoreDeal)
+		deals.GET("/:id/score", olsOn("deal", domain.ActionRead), aiHandler.ScoreDeal)
 		protected.GET("/events", eventsHandler.Stream)
 
 		// In-app notifications (A6): the caller's own inbox behind the header bell.

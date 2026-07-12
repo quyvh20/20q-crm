@@ -48,6 +48,8 @@ func applyScopeFromCtx(db *gorm.DB, ctx context.Context, orgID uuid.UUID, table 
 	scope, userID, ok := extractDataScope(ctx)
 	if ok && scope == domain.DataScopeOwn {
 		// Enforce 'own' scope + the record_shares fallback (owned OR shared to me).
+		// ANY share level grants read visibility; writes go through
+		// applyWriteScopeFromCtx / requireWriteVisible, which demand level 'edit'.
 		recordType := "contact"
 		if table == "deals" {
 			recordType = "deal"
@@ -55,4 +57,41 @@ func applyScopeFromCtx(db *gorm.DB, ctx context.Context, orgID uuid.UUID, table 
 		return db.Where(table+".org_id = ? AND ("+table+".owner_user_id = ? OR EXISTS (SELECT 1 FROM record_shares rs WHERE rs.record_id = "+table+".id AND rs.record_type = ? AND rs.grantee_user_id = ?))", orgID, userID, recordType, userID)
 	}
 	return db.Where(table+".org_id = ?", orgID)
+}
+
+// applyWriteScopeFromCtx is applyScopeFromCtx for MUTATIONS: an 'own'-scoped
+// caller may write records they own or records shared to them at level 'edit'.
+// A 'read' share used to be silently writable (U0.4).
+func applyWriteScopeFromCtx(db *gorm.DB, ctx context.Context, orgID uuid.UUID, table string) *gorm.DB {
+	scope, userID, ok := extractDataScope(ctx)
+	if ok && scope == domain.DataScopeOwn {
+		recordType := "contact"
+		if table == "deals" {
+			recordType = "deal"
+		}
+		return db.Where(table+".org_id = ? AND ("+table+".owner_user_id = ? OR EXISTS (SELECT 1 FROM record_shares rs WHERE rs.record_id = "+table+".id AND rs.record_type = ? AND rs.grantee_user_id = ? AND rs.permission_level = 'edit'))", orgID, userID, recordType, userID)
+	}
+	return db.Where(table+".org_id = ?", orgID)
+}
+
+// requireWriteVisible enforces write-level row scope for one record before an
+// unscoped Save/Updates: an 'own'-scoped caller may write a record they own or
+// one shared to them at level 'edit' — read visibility alone is NOT write
+// access (U0.4). No-op for 'all'-scoped callers and trusted contexts.
+func requireWriteVisible(db *gorm.DB, ctx context.Context, orgID uuid.UUID, table, recordType string, id uuid.UUID) error {
+	scope, _, ok := extractDataScope(ctx)
+	if !ok || scope != domain.DataScopeOwn {
+		return nil
+	}
+	var n int64
+	err := applyWriteScopeFromCtx(db.WithContext(ctx).Table(table), ctx, orgID, table).
+		Where(table+".id = ? AND "+table+".deleted_at IS NULL", id).
+		Count(&n).Error
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return domain.ErrRecordNotWritable
+	}
+	return nil
 }

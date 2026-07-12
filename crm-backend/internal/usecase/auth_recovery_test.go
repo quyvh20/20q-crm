@@ -252,6 +252,9 @@ func (r *fakeAuthRepo) RevokeRefreshTokenForUser(_ context.Context, id, userID u
 // --- unused stubs to satisfy domain.AuthRepository ---
 
 func (r *fakeAuthRepo) CreateOrganization(context.Context, *domain.Organization) error { return nil }
+func (r *fakeAuthRepo) GetOrganizationByID(context.Context, uuid.UUID) (*domain.Organization, error) {
+	return nil, nil
+}
 func (r *fakeAuthRepo) CreateUser(context.Context, *domain.User) error                 { return nil }
 func (r *fakeAuthRepo) GetUserByGoogleID(context.Context, string) (*domain.User, error) {
 	return nil, nil
@@ -412,7 +415,7 @@ type fakeMailer struct {
 	invites []string
 }
 
-func (m *fakeMailer) SendInvite(_ context.Context, to, _, _ string) error {
+func (m *fakeMailer) SendInvite(_ context.Context, to, _, _, _ string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.invites = append(m.invites, to)

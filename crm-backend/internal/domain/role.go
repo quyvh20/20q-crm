@@ -166,7 +166,11 @@ const (
 	// pipeline forecast surface (P7). Seeded to admin+manager; an 'own'-scoped role
 	// (sales_rep) is intentionally without it.
 	CapAnalyticsView = "analytics.view"
-	CapBillingManage = "billing.manage"
+	// CapOrgSettings will gate the workspace-general settings surface (rename,
+	// branding, org defaults) when it ships (plan U4). billing.manage was DELETED
+	// from the vocabulary (U0.3): it gated zero routes, so the roles grid showed
+	// admins a sensitive toggle that did nothing. Re-add it together with a real
+	// billing surface, never before.
 	CapOrgSettings     = "org.settings"     // org-level settings/templates
 	CapDataExport      = "data.export"
 	CapPipelineManage  = "pipeline.manage"  // create/edit pipeline stages
@@ -188,7 +192,7 @@ const (
 // AllCapabilities is the canonical list, used for validation and the roles UI.
 var AllCapabilities = []string{
 	CapMembersInvite, CapMembersManage, CapRolesManage, CapObjectsManage,
-	CapWorkflowsManage, CapWorkflowsRunAny, CapAuditView, CapAnalyticsView, CapBillingManage,
+	CapWorkflowsManage, CapWorkflowsRunAny, CapAuditView, CapAnalyticsView,
 	CapOrgSettings, CapDataExport, CapPipelineManage, CapKnowledgeManage, CapRecordsWrite,
 	CapReportsManage, CapGroupsManage,
 }
@@ -243,8 +247,7 @@ var CapabilityCatalog = []CapabilityInfo{
 	{CapRolesManage, "Manage roles & permissions", "Create custom roles and edit the object/field permission grids. Effectively admin-equivalent.", CapGroupSetup, true},
 	{CapObjectsManage, "Manage objects & fields", "Create and edit objects, fields, and detail layouts.", CapGroupSetup, false},
 	{CapPipelineManage, "Manage pipeline stages", "Create and edit the deal pipeline stages.", CapGroupSetup, false},
-	{CapOrgSettings, "Manage workspace settings", "Edit organization-level settings and templates.", CapGroupSetup, true},
-	{CapBillingManage, "Manage billing", "View and change the workspace's billing and plan.", CapGroupSetup, true},
+	{CapOrgSettings, "Manage workspace settings", "Edit organization-level settings and templates. (Not yet enforced — the workspace settings surface ships in an upcoming update.)", CapGroupSetup, true},
 	{CapRecordsWrite, "Edit collaboration records", "Create and edit tasks, activities, voice notes, tags, and record links.", CapGroupRecords, false},
 	{CapWorkflowsManage, "Manage workflows", "Create and edit automation workflows (org-wide write + email + outbound HTTP).", CapGroupAutomation, true},
 	{CapWorkflowsRunAny, "Run any workflow", "Manually run any workflow, not just the ones you created.", CapGroupAutomation, true},
@@ -252,7 +255,7 @@ var CapabilityCatalog = []CapabilityInfo{
 	{CapAuditView, "View audit log", "See the who-did-what admin and security audit trail.", CapGroupOversight, false},
 	{CapAnalyticsView, "View analytics & forecasts", "See pipeline forecasts and analytics, including from the AI assistant.", CapGroupOversight, false},
 	{CapReportsManage, "Manage all reports", "Edit and delete reports created by other people.", CapGroupOversight, false},
-	{CapDataExport, "Export data", "Export records in bulk out of the workspace.", CapGroupOversight, true},
+	{CapDataExport, "Export report results", "Download report results as CSV files.", CapGroupOversight, true},
 }
 
 // DefaultRoleCapabilities is the DEFAULT capability matrix seeded for the system

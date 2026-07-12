@@ -44,9 +44,15 @@ func (uc *shareUseCase) Share(ctx context.Context, orgID, actorID uuid.UUID, slu
 		return nil, domain.NewAppError(http.StatusBadRequest, "grantee is not an active member of this workspace")
 	}
 
+	// The level is ENFORCED (U0.4): 'read' grants visibility only, 'edit' also
+	// grants writes (applyWriteScopeFromCtx / requireWriteVisible). Anything else
+	// is rejected rather than stored as a decorative string.
 	level := in.PermissionLevel
 	if level == "" {
 		level = "read"
+	}
+	if level != "read" && level != "edit" {
+		return nil, domain.NewAppError(http.StatusBadRequest, "permission_level must be 'read' or 'edit'")
 	}
 
 	exists, err := uc.shares.ExistsForGrantee(ctx, slug, recordID, in.GranteeUserID)

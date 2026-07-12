@@ -1410,7 +1410,7 @@ export async function setObjectPermission(input: {
 // checkboxes in the Roles manager.
 export const ALL_CAPABILITIES = [
   'members.invite', 'members.manage', 'roles.manage', 'objects.manage',
-  'workflows.manage', 'workflows.run_any', 'audit.view', 'analytics.view', 'billing.manage',
+  'workflows.manage', 'workflows.run_any', 'audit.view', 'analytics.view',
   'org.settings', 'data.export', 'pipeline.manage', 'knowledge.manage', 'records.write',
   'reports.manage', 'groups.manage',
 ] as const;
@@ -1425,9 +1425,8 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   'workflows.run_any': 'Run any workflow',
   'audit.view': 'View audit log',
   'analytics.view': 'View analytics & forecasts',
-  'billing.manage': 'Manage billing',
   'org.settings': 'Edit org settings & templates',
-  'data.export': 'Export data',
+  'data.export': 'Export report results (CSV)',
   'pipeline.manage': 'Manage pipeline stages',
   'knowledge.manage': 'Edit the knowledge base',
   'records.write': 'Create/edit tasks, activities, notes & tags',
@@ -2011,13 +2010,33 @@ export async function updateMemberRole(userId: string, roleId: string): Promise<
   }
 }
 
+// Thrown when the backend answers the remove with 409 REASSIGNMENT_REQUIRED:
+// the member still owns records and a strategy must be chosen. Carries the real
+// owned-record counts; the modal keys off this class, never an error-message
+// substring (U0.2).
+export class ReassignmentRequiredError extends Error {
+  code = 'REASSIGNMENT_REQUIRED' as const;
+  owned: { contacts: number; deals: number };
+  constructor(message: string, owned: { contacts: number; deals: number }) {
+    super(message);
+    this.name = 'ReassignmentRequiredError';
+    this.owned = owned;
+  }
+}
+
 export async function removeMember(userId: string, input?: { strategy?: 'transfer' | 'unassign'; reassign_to_user_id?: string }): Promise<void> {
-  const res = await apiFetch(`/api/workspaces/members/${userId}`, { 
+  const res = await apiFetch(`/api/workspaces/members/${userId}`, {
     method: 'DELETE',
     body: input ? JSON.stringify(input) : undefined
   });
   if (!res.ok) {
     const json = await res.json().catch(() => ({}));
+    if (json.code === 'REASSIGNMENT_REQUIRED') {
+      throw new ReassignmentRequiredError(json.error || 'This member still owns records.', {
+        contacts: json.owned?.contacts ?? 0,
+        deals: json.owned?.deals ?? 0,
+      });
+    }
     throw new Error(json.error || 'Failed to remove member');
   }
 }

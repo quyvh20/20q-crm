@@ -170,6 +170,11 @@ func (r *contactRepository) Create(ctx context.Context, c *domain.Contact) error
 // ============================================================
 
 func (r *contactRepository) Update(ctx context.Context, c *domain.Contact) error {
+	// Save writes by primary key with no scope, so enforce write-level row scope
+	// first: read visibility (which loaded c) is not write access (U0.4).
+	if err := requireWriteVisible(r.db, ctx, c.OrgID, "contacts", "contact", c.ID); err != nil {
+		return err
+	}
 	return r.db.WithContext(ctx).Save(c).Error
 }
 
@@ -178,7 +183,7 @@ func (r *contactRepository) Update(ctx context.Context, c *domain.Contact) error
 // ============================================================
 
 func (r *contactRepository) SoftDelete(ctx context.Context, orgID, id uuid.UUID) error {
-	result := applyScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "contacts").
+	result := applyWriteScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "contacts").
 		Where("contacts.id = ?", id).
 		Delete(&domain.Contact{})
 	if result.Error != nil {
@@ -342,7 +347,7 @@ func (r *contactRepository) BulkDeleteByIDs(ctx context.Context, orgID uuid.UUID
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	result := applyScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "contacts").
+	result := applyWriteScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "contacts").
 		Where("contacts.id IN ?", ids).
 		Delete(&domain.Contact{})
 	return result.RowsAffected, result.Error

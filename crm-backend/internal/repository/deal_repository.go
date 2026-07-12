@@ -138,6 +138,11 @@ func (r *dealRepository) Create(ctx context.Context, d *domain.Deal) error {
 // ============================================================
 
 func (r *dealRepository) Update(ctx context.Context, d *domain.Deal) error {
+	// Updates writes by primary key with no scope, so enforce write-level row
+	// scope first: read visibility is not write access (U0.4).
+	if err := requireWriteVisible(r.db, ctx, d.OrgID, "deals", "deal", d.ID); err != nil {
+		return err
+	}
 	return r.db.WithContext(ctx).
 		Model(d).
 		Select(
@@ -154,7 +159,7 @@ func (r *dealRepository) Update(ctx context.Context, d *domain.Deal) error {
 // ============================================================
 
 func (r *dealRepository) SoftDelete(ctx context.Context, orgID, id uuid.UUID) error {
-	result := applyScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "deals").
+	result := applyWriteScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "deals").
 		Where("deals.id = ?", id).
 		Delete(&domain.Deal{})
 	if result.Error != nil {

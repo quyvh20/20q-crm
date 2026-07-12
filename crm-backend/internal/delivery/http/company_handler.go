@@ -11,11 +11,16 @@ import (
 
 type CompanyHandler struct {
 	companyUC domain.CompanyUseCase
+	masker    fieldMasker
 }
 
 func NewCompanyHandler(uc domain.CompanyUseCase) *CompanyHandler {
 	return &CompanyHandler{companyUC: uc}
 }
+
+// SetFieldMasker wires Field-Level Security onto the legacy company routes
+// (called from RegisterRoutes; nil in unit tests → empty mask).
+func (h *CompanyHandler) SetFieldMasker(m fieldMasker) { h.masker = m }
 
 // GET /api/companies
 func (h *CompanyHandler) List(c *gin.Context) {
@@ -38,7 +43,8 @@ func (h *CompanyHandler) List(c *gin.Context) {
 	}
 
 	count, _ := h.companyUC.Count(c.Request.Context(), orgID)
-	c.JSON(http.StatusOK, domain.SuccessWithMeta(companies, domain.CursorMeta{
+	mask := legacyMask(h.masker, c.Request.Context(), orgID, "company")
+	c.JSON(http.StatusOK, domain.SuccessWithMeta(maskLegacy(mask, "company", companies), domain.CursorMeta{
 		NextCursor: nextCursor,
 		HasMore:    nextCursor != "",
 		Total:      count,
@@ -65,7 +71,8 @@ func (h *CompanyHandler) GetByID(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, domain.Success(company))
+	mask := legacyMask(h.masker, c.Request.Context(), orgID, "company")
+	c.JSON(http.StatusOK, domain.Success(maskLegacy(mask, "company", company)))
 }
 
 // POST /api/companies
@@ -82,13 +89,19 @@ func (h *CompanyHandler) Create(c *gin.Context) {
 		return
 	}
 
+	mask := legacyMask(h.masker, c.Request.Context(), orgID, "company")
+	if err := guardLegacyWrite(mask, companyCreateKeys(input)); err != nil {
+		handleAppError(c, err)
+		return
+	}
+
 	company, err := h.companyUC.Create(c.Request.Context(), orgID, input)
 	if err != nil {
 		handleAppError(c, err)
 		return
 	}
 
-	c.JSON(http.StatusCreated, domain.Success(company))
+	c.JSON(http.StatusCreated, domain.Success(maskLegacy(mask, "company", company)))
 }
 
 // PUT /api/companies/:id
@@ -111,13 +124,19 @@ func (h *CompanyHandler) Update(c *gin.Context) {
 		return
 	}
 
+	mask := legacyMask(h.masker, c.Request.Context(), orgID, "company")
+	if err := guardLegacyWrite(mask, companyUpdateKeys(input)); err != nil {
+		handleAppError(c, err)
+		return
+	}
+
 	company, err := h.companyUC.Update(c.Request.Context(), orgID, id, input)
 	if err != nil {
 		handleAppError(c, err)
 		return
 	}
 
-	c.JSON(http.StatusOK, domain.Success(company))
+	c.JSON(http.StatusOK, domain.Success(maskLegacy(mask, "company", company)))
 }
 
 // DELETE /api/companies/:id

@@ -71,3 +71,21 @@ func RequestMetaFromContext(ctx context.Context) (RequestMeta, bool) {
 	m, ok := ctx.Value(requestMetaCtxKey{}).(RequestMeta)
 	return m, ok
 }
+
+type httpTransportCtxKey struct{}
+
+// MarkHTTPTransport tags a context as HTTP-originated. Set by a root gin
+// middleware on EVERY request — including ones on routes mounted outside
+// AuthMiddleware — so the permission engine can distinguish "trusted in-process
+// call" (no caller, no mark) from "HTTP request that somehow reached
+// authorization without a caller" (no caller, marked), which is a wiring bug
+// worth logging rather than a silent god-mode pass (U0.10).
+func MarkHTTPTransport(ctx context.Context) context.Context {
+	return context.WithValue(ctx, httpTransportCtxKey{}, true)
+}
+
+// IsHTTPTransport reports whether the context originated from an HTTP request.
+func IsHTTPTransport(ctx context.Context) bool {
+	v, _ := ctx.Value(httpTransportCtxKey{}).(bool)
+	return v
+}

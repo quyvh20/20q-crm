@@ -1,6 +1,7 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 
 	"crm-backend/internal/domain"
@@ -207,6 +208,18 @@ func (h *WorkspaceHandler) RemoveMember(c *gin.Context) {
 	}
 
 	if err := h.workspaceUC.RemoveMember(c.Request.Context(), orgID, targetUserID, input); err != nil {
+		// The target still owns records and no strategy was chosen: answer with a
+		// machine-readable code + real counts so the SPA opens the reassignment
+		// dialog off the CODE, never a message substring (U0.2).
+		var reassign *domain.ReassignmentRequiredError
+		if errors.As(err, &reassign) {
+			c.JSON(http.StatusConflict, gin.H{
+				"code":  domain.CodeReassignmentRequired,
+				"error": reassign.Error(),
+				"owned": gin.H{"contacts": reassign.Contacts, "deals": reassign.Deals},
+			})
+			return
+		}
 		handleAppError(c, err)
 		return
 	}

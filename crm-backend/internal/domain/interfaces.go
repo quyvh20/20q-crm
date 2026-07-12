@@ -125,6 +125,7 @@ type GoogleUserInfo struct {
 
 type AuthRepository interface {
 	CreateOrganization(ctx context.Context, org *Organization) error
+	GetOrganizationByID(ctx context.Context, id uuid.UUID) (*Organization, error)
 	CreateUser(ctx context.Context, user *User) error
 	GetUserByEmail(ctx context.Context, email string) (*User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (*User, error)
@@ -317,7 +318,10 @@ type RemoveMemberInput struct {
 }
 
 type Mailer interface {
-	SendInvite(ctx context.Context, to, inviteLink, orgName string) error
+	// SendInvite emails a workspace invitation. orgName is the workspace's real
+	// display name (U0.7 — it used to render the org UUID); inviterName may be
+	// empty when the inviter couldn't be resolved.
+	SendInvite(ctx context.Context, to, inviteLink, orgName, inviterName string) error
 	// SendPasswordReset / SendVerification email a one-time action link (P1).
 	SendPasswordReset(ctx context.Context, to, resetLink string) error
 	SendVerification(ctx context.Context, to, verifyLink string) error

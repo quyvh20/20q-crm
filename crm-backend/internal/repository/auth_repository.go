@@ -23,6 +23,18 @@ func (r *authRepository) CreateOrganization(ctx context.Context, org *domain.Org
 	return r.db.WithContext(ctx).Create(org).Error
 }
 
+func (r *authRepository) GetOrganizationByID(ctx context.Context, id uuid.UUID) (*domain.Organization, error) {
+	var org domain.Organization
+	err := r.db.WithContext(ctx).Where("id = ?", id).First(&org).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &org, nil
+}
+
 func (r *authRepository) CreateUser(ctx context.Context, user *domain.User) error {
 	return r.db.WithContext(ctx).Create(user).Error
 }

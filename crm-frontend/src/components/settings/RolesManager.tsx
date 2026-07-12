@@ -94,6 +94,13 @@ export default function RolesManager() {
   const toggleCapability = async (role: RoleDetail, cap: string) => {
     if (role.is_system) return; // system roles are read-only defaults — clone to customize
     const has = role.capabilities.includes(cap);
+    // Removing roles.manage is a big deal: everyone holding this role loses the
+    // whole Permissions surface. Name the consequence before saving; the server
+    // additionally refuses to let you strip it from your OWN role (U0.5).
+    if (has && cap === 'roles.manage') {
+      const holders = role.member_count === 1 ? '1 member' : `${role.member_count} members`;
+      if (!confirm(`Remove "Manage roles & permissions" from ${role.name}? ${role.member_count > 0 ? `${holders} holding this role` : 'Members with this role'} will no longer be able to open the Permissions settings.`)) return;
+    }
     const next = has ? role.capabilities.filter((c) => c !== cap) : [...role.capabilities, cap];
     setBusyId(role.id);
     setError('');

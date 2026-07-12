@@ -48,6 +48,9 @@ func (r *roleRepository) ListDetailed(ctx context.Context, orgID uuid.UUID) ([]d
 	}
 	capsByRole := make(map[uuid.UUID][]string, len(roles))
 	for _, cp := range caps {
+		if !domain.IsCapability(cp.PermissionCode) {
+			continue // retired code — never surface it (see GetCapabilities below)
+		}
 		capsByRole[cp.RoleID] = append(capsByRole[cp.RoleID], cp.PermissionCode)
 	}
 
@@ -197,6 +200,18 @@ func (r *roleRepository) GetCapabilities(ctx context.Context, roleID uuid.UUID) 
 		Model(&domain.RolePermission{}).
 		Where("role_id = ?", roleID).
 		Pluck("permission_code", &codes).Error
+	// Drop codes retired from the vocabulary (e.g. billing.manage, deleted in
+	// U0.3): a stored row for a retired code must not round-trip into the roles
+	// UI, or the next SetCapabilities save would re-submit it and be rejected by
+	// sanitizeCapabilities — leaving the role permanently uneditable. The stale
+	// row itself disappears on the role's next capability save (replace-set).
+	valid := codes[:0]
+	for _, c := range codes {
+		if domain.IsCapability(c) {
+			valid = append(valid, c)
+		}
+	}
+	codes = valid
 	if codes == nil {
 		codes = []string{}
 	}
