@@ -328,8 +328,8 @@ func (r *Repository) UpdateRunStandalone(ctx context.Context, run *WorkflowRun) 
 //
 // A manual retry deliberately BYPASSES the exponential backoff (30s/2m/10m) that paces
 // automatic retries: the user has chosen to retry now, so next_retry_at is cleared and the
-// run is eligible immediately (the retry sweeper only looks at runs with a non-null timer;
-// the worker channel / startup recovery pick this one up). Resetting retry_count to 0 also
+// run is eligible immediately (the worker channel picks it up; if that push is dropped,
+// the sweeper's stranded-run clause re-dispatches it). Resetting retry_count to 0 also
 // restores a full automatic-retry budget for the step that resumes — so a run that keeps
 // failing can be retried by the user any number of times without getting backoff-throttled.
 // A map update (not Save) writes the zero values as 0/NULL rather than skipping them, and
@@ -424,13 +424,29 @@ func (r *Repository) GetRunningRuns(ctx context.Context) ([]WorkflowRun, error) 
 	return runs, err
 }
 
-// SweepRetries finds pending runs whose retry time has arrived.
+// strandedPendingSweepGrace is how old a pending run with a NULL next_retry_at
+// must be before SweepRetries re-dispatches it. A run whose creation-time jobs-
+// channel push was dropped (channel full in EnrollRun / triggerEventInternal /
+// RunWorkflowNow / RetryRun) is left in exactly that state, and without the
+// stranded clause it stays invisible to the sweep until the next engine restart
+// (RequeueInFlight, itself capped at 500 runs). The grace keeps the sweep from
+// re-pushing runs that are merely queued in the channel backlog; a duplicate
+// push is harmless anyway (LockAndGetRun's FOR UPDATE SKIP LOCKED), so this is
+// a load valve, not a correctness gate.
+const strandedPendingSweepGrace = time.Minute
+
+// SweepRetries finds pending runs whose retry time has arrived, plus stranded
+// pending runs: created at least strandedPendingSweepGrace ago with
+// next_retry_at still NULL, meaning their creation-time channel push was
+// dropped and no retry has been scheduled since.
 func (r *Repository) SweepRetries(ctx context.Context) ([]uuid.UUID, error) {
 	var ids []uuid.UUID
+	now := time.Now()
 	err := r.db.WithContext(ctx).
 		Model(&WorkflowRun{}).
 		Select("id").
-		Where("status = ? AND next_retry_at IS NOT NULL AND next_retry_at <= ?", StatusPending, time.Now()).
+		Where("status = ? AND ((next_retry_at IS NOT NULL AND next_retry_at <= ?) OR (next_retry_at IS NULL AND created_at <= ?))",
+			StatusPending, now, now.Add(-strandedPendingSweepGrace)).
 		Find(&ids).Error
 	return ids, err
 }

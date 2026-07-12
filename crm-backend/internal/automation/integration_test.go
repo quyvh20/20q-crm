@@ -495,6 +495,76 @@ func TestIntegration_RetrySweeper(t *testing.T) {
 }
 
 // ============================================================
+// Integration Test 3b: Retry Sweeper Recovers Stranded Runs
+// ============================================================
+
+// TestIntegration_RetrySweeper_StrandedNullRetryRun covers the dropped
+// channel-push path: when the jobs channel is full at run creation (EnrollRun /
+// triggerEventInternal / RunWorkflowNow / RetryRun), the run is left pending
+// with next_retry_at NULL. The sweep must pick such a run up once it is older
+// than strandedPendingSweepGrace — before the stranded clause, it stayed
+// invisible until the next engine restart. A freshly created NULL-retry run
+// must NOT be swept: it is presumed still queued in the channel.
+func TestIntegration_RetrySweeper_StrandedNullRetryRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	orgID := uuid.New()
+	wf := createTestWorkflow(t, db, orgID, 2)
+	repo := NewRepository(db)
+
+	newPendingRun := func(key string) *WorkflowRun {
+		triggerCtx, _ := json.Marshal(map[string]any{"type": "test"})
+		run := &WorkflowRun{
+			ID:              uuid.New(),
+			WorkflowID:      wf.ID,
+			WorkflowVersion: 1,
+			OrgID:           orgID,
+			Status:          StatusPending,
+			TriggerContext:  datatypes.JSON(triggerCtx),
+			IdempotencyKey:  fmt.Sprintf("%s-%s", key, uuid.New().String()),
+		}
+		inserted, err := repo.CreateRun(context.Background(), run)
+		require.NoError(t, err)
+		require.True(t, inserted)
+		return run
+	}
+
+	// Stranded: creation-time push dropped, no retry ever scheduled, older than
+	// the grace. Backdate created_at with a Go-side timestamp so the comparison
+	// is immune to any host/container clock skew.
+	stranded := newPendingRun("stranded")
+	require.NoError(t, db.Exec(
+		"UPDATE automation_workflow_runs SET created_at = ? WHERE id = ?",
+		time.Now().Add(-2*time.Minute), stranded.ID,
+	).Error)
+
+	// Fresh: just created, presumed still queued in the channel.
+	fresh := newPendingRun("fresh")
+
+	ids, err := repo.SweepRetries(context.Background())
+	require.NoError(t, err)
+	assert.Contains(t, ids, stranded.ID, "sweeper must recover a stale pending run with NULL next_retry_at")
+	assert.NotContains(t, ids, fresh.ID, "sweeper must leave fresh NULL-retry runs to the worker channel")
+
+	// The recovered run processes to completion like any other dispatch.
+	executor := &countingExecutor{}
+	engine := makeEngine(db, map[string]ActionExecutor{"test_action": executor})
+	defer engine.cancel()
+
+	engine.processRun(stranded.ID)
+
+	finalRun, err := repo.GetRunByID(context.Background(), stranded.ID)
+	require.NoError(t, err)
+	assert.Equal(t, StatusCompleted, finalRun.Status, "stranded run should complete once the sweep re-dispatches it")
+	assert.Equal(t, int64(2), executor.getCallCount(), "both actions executed")
+}
+
+// ============================================================
 // Integration Test 4: Retryable Action Fails 3x Then Permanent Failure
 // ============================================================
 

@@ -522,14 +522,15 @@ func (e *Engine) RetryRun(ctx context.Context, runID uuid.UUID) error {
 		return ErrRunNotRetryable
 	}
 
-	// Non-blocking dispatch with startup recovery as the fallback if the buffered jobs
-	// channel is momentarily full — identical to RunWorkflowNow/triggerEventInternal. A
-	// pending run with a null next_retry_at is re-queued by RequeueInFlight on the next
-	// engine start, so a dropped push is recovered rather than lost.
+	// Non-blocking dispatch with the retry sweeper as the fallback if the buffered jobs
+	// channel is momentarily full — identical to RunWorkflowNow/triggerEventInternal.
+	// SweepRetries re-dispatches stranded pending runs with a null next_retry_at once
+	// they are strandedPendingSweepGrace old (a retried run's created_at is long past
+	// that), so a dropped push is recovered on the next sweep tick rather than lost.
 	select {
 	case e.jobs <- WorkflowRunJob{RunID: runID}:
 	default:
-		e.logger.Warn("automation: jobs channel full, retried run will be picked up by recovery",
+		e.logger.Warn("automation: jobs channel full, retried run will be picked up by scheduler",
 			"run_id", runID.String(),
 		)
 	}
