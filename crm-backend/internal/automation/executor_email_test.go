@@ -86,6 +86,54 @@ func TestEmailAction_CCFieldRoundTrip_ActualRun(t *testing.T) {
 	assert.Equal(t, "<h1>Hi Jane</h1>", capturedPayload.HTML)
 }
 
+// TestEmailAction_BodyHTMLEscapesRecordData verifies that record field values
+// merged into body_html are HTML-escaped in the Resend payload (content-injection
+// guard), while the template's own markup and the plain-text subject stay raw.
+func TestEmailAction_BodyHTMLEscapesRecordData(t *testing.T) {
+	var capturedPayload resendEmailPayload
+
+	mockResend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &capturedPayload)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"msg_789"}`))
+	}))
+	defer mockResend.Close()
+
+	exec := &EmailExecutor{
+		apiKey:    "test-key",
+		fromEmail: "noreply@20q.io",
+		baseURL:   mockResend.URL,
+	}
+
+	run := &WorkflowRun{ID: uuid.New()}
+
+	action := ActionSpec{
+		ID:   "email_escape_test",
+		Type: ActionSendEmail,
+		Params: map[string]any{
+			"to":        "{{contact.email}}",
+			"subject":   "Update for {{contact.first_name}}",
+			"body_html": "<h1>Hi {{contact.first_name}}</h1>",
+		},
+	}
+
+	evalCtx := EvalContext{
+		Contact: map[string]any{
+			"email":      "jane@acme.com",
+			"first_name": `<img src=x onerror="alert(1)">`,
+		},
+	}
+
+	_, err := exec.Execute(context.Background(), run, action, evalCtx)
+	require.NoError(t, err)
+
+	assert.Equal(t, `<h1>Hi &lt;img src=x onerror=&#34;alert(1)&#34;&gt;</h1>`, capturedPayload.HTML,
+		"merged record data must be escaped; the template's own <h1> markup must not be")
+	assert.Equal(t, `Update for <img src=x onerror="alert(1)">`, capturedPayload.Subject,
+		"subject is a plain-text header, not HTML — it must not be entity-escaped")
+}
+
 // TestEmailAction_NoCCField — email sent without CC, CC array must be nil/omitted.
 func TestEmailAction_NoCCField(t *testing.T) {
 	var capturedPayload resendEmailPayload

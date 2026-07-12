@@ -34,6 +34,20 @@ func getStringParam(params map[string]any, key string, evalCtx EvalContext) stri
 	return InterpolateTemplate(str, evalCtx)
 }
 
+// getStringParamHTML is getStringParam for params rendered as HTML (send_email
+// body_html): merged values are HTML-escaped so record data cannot inject markup.
+func getStringParamHTML(params map[string]any, key string, evalCtx EvalContext) string {
+	val, ok := params[key]
+	if !ok {
+		return ""
+	}
+	str, ok := val.(string)
+	if !ok {
+		return fmt.Sprintf("%v", val)
+	}
+	return InterpolateTemplateHTML(str, evalCtx)
+}
+
 // getStringSliceParam extracts a []string param with template interpolation.
 // Accepts []string, []any, or a comma-separated string (e.g. "a@x.com, b@x.com").
 func getStringSliceParam(params map[string]any, key string, evalCtx EvalContext) []string {

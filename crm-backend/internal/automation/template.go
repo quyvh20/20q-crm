@@ -2,6 +2,7 @@ package automation
 
 import (
 	"fmt"
+	"html"
 	"log/slog"
 	"regexp"
 	"strconv"
@@ -19,6 +20,21 @@ var escapedPattern = regexp.MustCompile(`\\\{\\\{(.+?)\\\}\\\}`)
 // - Missing paths render as empty string (logged as warning, never error).
 // - \{\{literal\}\} renders as {{literal}}.
 func InterpolateTemplate(template string, ctx EvalContext) string {
+	return interpolateTemplate(template, ctx, false)
+}
+
+// InterpolateTemplateHTML is InterpolateTemplate for HTML output contexts (the
+// send_email body paths): resolved values are HTML-escaped before substitution so
+// record data (e.g. a first_name of "<img onerror=...>") cannot inject markup into
+// the surrounding HTML. Only merged values are escaped — the template text itself,
+// including restored \{\{literal\}\} braces, is authored content and passes through
+// verbatim. Non-HTML consumers (webhook payloads, conditions, to/cc addresses,
+// subjects) must keep using InterpolateTemplate.
+func InterpolateTemplateHTML(template string, ctx EvalContext) string {
+	return interpolateTemplate(template, ctx, true)
+}
+
+func interpolateTemplate(template string, ctx EvalContext, escapeHTML bool) string {
 	// First, replace escaped patterns with a placeholder
 	const escapePlaceholder = "\x00ESCAPED_BRACE\x00"
 	escaped := make(map[string]string)
@@ -45,7 +61,11 @@ func InterpolateTemplate(template string, ctx EvalContext) string {
 			slog.Warn("template: unresolved path", "path", path)
 			return ""
 		}
-		return formatValue(val)
+		formatted := formatValue(val)
+		if escapeHTML {
+			formatted = html.EscapeString(formatted)
+		}
+		return formatted
 	})
 
 	// Restore escaped braces
