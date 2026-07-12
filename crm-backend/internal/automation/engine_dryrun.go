@@ -161,6 +161,14 @@ func resolveDryParams(step StepSpec, evalCtx EvalContext) map[string]any {
 	}
 	resolved := make(map[string]any, len(step.Action.Params))
 	for k, v := range step.Action.Params {
+		// Mirror the executor: send_email's body_html is an HTML context, so the
+		// preview shows the same escaped output the send would produce.
+		if step.Action.Type == "send_email" && k == "body_html" {
+			if s, ok := v.(string); ok {
+				resolved[k] = InterpolateTemplateHTML(s, evalCtx)
+				continue
+			}
+		}
 		resolved[k] = interpolateValue(v, evalCtx)
 	}
 	return resolved

@@ -166,3 +166,53 @@ func TestInterpolateTemplate_MixedEscapedAndReal(t *testing.T) {
 	result := InterpolateTemplate(`\{\{raw\}\} and {{contact.first_name}}`, ctx)
 	assert.Equal(t, "{{raw}} and John", result)
 }
+
+func TestInterpolateTemplateHTML_EscapesMergedValues(t *testing.T) {
+	ctx := EvalContext{
+		Contact: map[string]any{"first_name": `<img src=x onerror="alert(1)">`},
+	}
+	result := InterpolateTemplateHTML("<p>Hi {{contact.first_name}}</p>", ctx)
+	assert.Equal(t, "<p>Hi &lt;img src=x onerror=&#34;alert(1)&#34;&gt;</p>", result)
+}
+
+func TestInterpolateTemplateHTML_TemplateMarkupPreserved(t *testing.T) {
+	ctx := testContext()
+	result := InterpolateTemplateHTML("<h1>Hello {{contact.first_name}}</h1><br/>", ctx)
+	assert.Equal(t, "<h1>Hello John</h1><br/>", result, "the template's own markup is authored content and must pass through verbatim")
+}
+
+func TestInterpolateTemplateHTML_EscapesAllSpecialChars(t *testing.T) {
+	ctx := EvalContext{
+		Deal: map[string]any{"title": `Tom & Jerry's <"Big"> Deal`},
+	}
+	result := InterpolateTemplateHTML("Deal: {{deal.title}}", ctx)
+	assert.Equal(t, "Deal: Tom &amp; Jerry&#39;s &lt;&#34;Big&#34;&gt; Deal", result)
+}
+
+func TestInterpolateTemplateHTML_EscapedBracesStayLiteral(t *testing.T) {
+	ctx := EvalContext{
+		Contact: map[string]any{"first_name": "<b>Eve</b>"},
+	}
+	result := InterpolateTemplateHTML(`Use \{\{merge_tag\}\} like {{contact.first_name}} does`, ctx)
+	assert.Equal(t, "Use {{merge_tag}} like &lt;b&gt;Eve&lt;/b&gt; does", result)
+}
+
+func TestInterpolateTemplateHTML_MissingPathStillEmpty(t *testing.T) {
+	ctx := testContext()
+	result := InterpolateTemplateHTML("<p>{{contact.nonexistent}}</p>", ctx)
+	assert.Equal(t, "<p></p>", result)
+}
+
+func TestInterpolateTemplateHTML_NonStringValues(t *testing.T) {
+	ctx := testContext()
+	result := InterpolateTemplateHTML("Amount: {{deal.amount}}, Score: {{contact.custom_fields.score}}", ctx)
+	assert.Equal(t, "Amount: 50000, Score: 85", result, "numeric values have nothing to escape and format as before")
+}
+
+func TestInterpolateTemplate_PlainVariantDoesNotEscape(t *testing.T) {
+	ctx := EvalContext{
+		Contact: map[string]any{"first_name": "<b>Eve</b> & co"},
+	}
+	result := InterpolateTemplate("Hi {{contact.first_name}}", ctx)
+	assert.Equal(t, "Hi <b>Eve</b> & co", result, "non-HTML consumers (webhooks, conditions, addresses, subjects) must receive raw values")
+}

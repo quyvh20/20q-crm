@@ -194,7 +194,7 @@ func (h *Handler) TestSendEmailTemplate(c *gin.Context) {
 
 	evalCtx := h.buildTestSendContext(ctx, orgID, t.ObjectSlug)
 	subject := InterpolateTemplate(t.Subject, evalCtx)
-	body := InterpolateTemplate(t.BodyHTML, evalCtx)
+	body := InterpolateTemplateHTML(t.BodyHTML, evalCtx)
 
 	if err := h.engine.SendTestEmail(ctx, toEmail, subject, body); err != nil {
 		h.logger.Error("test-send: send failed", "error", err, "template_id", id.String())

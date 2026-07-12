@@ -68,7 +68,9 @@ func (e *EmailExecutor) Execute(ctx context.Context, run *WorkflowRun, action Ac
 	}
 
 	subject := getStringParam(action.Params, "subject", evalCtx)
-	bodyHTML := getStringParam(action.Params, "body_html", evalCtx)
+	// body_html is an HTML context: merged record values are escaped (subject and
+	// to/cc are plain text and stay on the unescaped interpolator).
+	bodyHTML := getStringParamHTML(action.Params, "body_html", evalCtx)
 	fromName := getStringParam(action.Params, "from_name", evalCtx)
 	cc := getStringSliceParam(action.Params, "cc", evalCtx)
 
@@ -97,7 +99,7 @@ func (e *EmailExecutor) Execute(ctx context.Context, run *WorkflowRun, action Ac
 			subject = InterpolateTemplate(tmpl.Subject, evalCtx)
 		}
 		if bodyHTML == "" {
-			bodyHTML = InterpolateTemplate(tmpl.BodyHTML, evalCtx)
+			bodyHTML = InterpolateTemplateHTML(tmpl.BodyHTML, evalCtx)
 		}
 	}
 
