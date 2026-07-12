@@ -186,7 +186,7 @@ func (e *Engine) SendTestEmail(ctx context.Context, to, subject, bodyHTML string
 	if !ok || ex == nil {
 		return fmt.Errorf("email executor is not configured")
 	}
-	_, err := ex.sendEmail(ctx, "test-send", to, subject, bodyHTML, "", nil)
+	_, err := ex.sendEmail(ctx, "test-send", "", to, subject, bodyHTML, "", nil)
 	return err
 }
 

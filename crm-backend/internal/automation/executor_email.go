@@ -123,13 +123,24 @@ func (e *EmailExecutor) Execute(ctx context.Context, run *WorkflowRun, action Ac
 		}
 	}
 
-	return e.sendEmail(ctx, run.ID.String(), to, subject, bodyHTML, fromName, cc)
+	// Engine retries of this step must not double-send an email Resend already
+	// accepted (timeout/5xx after acceptance), so the key is stable per run+step.
+	// A step with no id gets no key — two id-less steps sharing one key would
+	// make Resend silently swallow the second email.
+	idempotencyKey := ""
+	if action.ID != "" {
+		idempotencyKey = run.ID.String() + "/" + action.ID
+	}
+
+	return e.sendEmail(ctx, run.ID.String(), idempotencyKey, to, subject, bodyHTML, fromName, cc)
 }
 
 // sendEmail performs the actual Resend POST for already-resolved fields. It is
 // shared by the workflow send_email action and the email-template test-send
 // (Engine.SendTestEmail). logID labels the log lines (a run id, or "test-send").
-func (e *EmailExecutor) sendEmail(ctx context.Context, logID, to, subject, bodyHTML, fromName string, cc []string) (any, error) {
+// A non-empty idempotencyKey is forwarded as Resend's Idempotency-Key header;
+// test-send passes "" so every manual test click actually delivers.
+func (e *EmailExecutor) sendEmail(ctx context.Context, logID, idempotencyKey, to, subject, bodyHTML, fromName string, cc []string) (any, error) {
 	from := e.fromEmail
 	if fromName != "" {
 		from = fmt.Sprintf("%s <%s>", fromName, e.fromEmail)
@@ -167,6 +178,9 @@ func (e *EmailExecutor) sendEmail(ctx context.Context, logID, to, subject, bodyH
 
 	req.Header.Set("Authorization", "Bearer "+e.apiKey)
 	req.Header.Set("Content-Type", "application/json")
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
@@ -180,6 +194,9 @@ func (e *EmailExecutor) sendEmail(ctx context.Context, logID, to, subject, bodyH
 
 	if resp.StatusCode >= 500 {
 		return nil, NewRetryableError(fmt.Errorf("send_email: server error %d", resp.StatusCode))
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil, NewRetryableError(fmt.Errorf("send_email: rate limited (429)"))
 	}
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("send_email: client error %d: %v", resp.StatusCode, respBody)
