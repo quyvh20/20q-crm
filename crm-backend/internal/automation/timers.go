@@ -147,6 +147,23 @@ func (r *Repository) PruneFiredTimers(ctx context.Context, olderThan time.Durati
 		Delete(&AutomationTimer{}).Error
 }
 
+// UserTimezone returns a user's IANA timezone preference, or "" when unset,
+// invalid, or the lookup fails — callers fall back to UTC exactly as before
+// (U2: triggers without an explicit timezone inherit the author's).
+func (r *Repository) UserTimezone(ctx context.Context, userID uuid.UUID) string {
+	var tz string
+	if err := r.db.WithContext(ctx).Table("users").Where("id = ?", userID).Limit(1).Pluck("timezone", &tz).Error; err != nil {
+		return ""
+	}
+	if tz == "" {
+		return ""
+	}
+	if _, err := time.LoadLocation(tz); err != nil {
+		return ""
+	}
+	return tz
+}
+
 // ActiveScheduleWorkflows lists active schedule-triggered workflows across all orgs
 // (reconciliation self-heal).
 func (r *Repository) ActiveScheduleWorkflows(ctx context.Context) ([]Workflow, error) {
@@ -167,6 +184,11 @@ func (r *Repository) ArmScheduleTimer(ctx context.Context, wf *Workflow, now tim
 	var trig TriggerSpec
 	_ = json.Unmarshal(wf.Trigger, &trig)
 	cronExpr, tz, ok := scheduleParamsFromTrigger(trig)
+	// No explicit timezone on the trigger → inherit the author's preference
+	// (U2): "every day at 9:00" means 9:00 where the author lives, not UTC.
+	if tz == "" {
+		tz = r.UserTimezone(ctx, wf.CreatedBy)
+	}
 
 	// Clear the currently-armed occurrence first so a re-arm converges to exactly one
 	// pending timer for the CURRENT schedule: a cron/timezone edit drops the stale

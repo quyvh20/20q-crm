@@ -70,6 +70,16 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 		auth.GET("/google/callback", authHandler.GoogleCallback)
 
 		auth.GET("/me", AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), authHandler.Me)
+		// My Account self-service (U2): profile/preferences + in-app password
+		// management + Google unlink. All bearer-authenticated.
+		auth.PATCH("/me", AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), authHandler.UpdateMe)
+		// The credential-changing routes carry the per-IP auth limiter like every
+		// other password path — change-password verifies the current password with
+		// a distinct 403, so without it a stolen access token could brute-force the
+		// password as an unthrottled oracle (U2 review).
+		auth.POST("/change-password", authRateLimit, AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), authHandler.ChangePassword)
+		auth.POST("/set-password", authRateLimit, AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), authHandler.SetPassword)
+		auth.POST("/unlink-google", authRateLimit, AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), authHandler.UnlinkGoogle)
 		// Session / device management (P4). Bearer-authenticated (AuthMiddleware),
 		// so these aren't cookie-CSRF vectors. A user manages only their own
 		// sessions; sign-out-everywhere re-mints this device's session.

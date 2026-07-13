@@ -39,6 +39,19 @@ func (r *authRepository) CreateUser(ctx context.Context, user *domain.User) erro
 	return r.db.WithContext(ctx).Create(user).Error
 }
 
+// UpdateUserProfile writes ONLY the self-serve profile columns (U2). The full
+// UpdateUser is a whole-row gorm Save, so a profile PATCH racing a concurrent
+// security write (password reset / sign-out-everywhere bumping token_version)
+// would write the stale password_hash + token_version back and silently revert
+// the security change. Scoping the UPDATE to profile columns removes that
+// lost-update window entirely.
+func (r *authRepository) UpdateUserProfile(ctx context.Context, user *domain.User) error {
+	return r.db.WithContext(ctx).Model(&domain.User{}).
+		Where("id = ?", user.ID).
+		Select("first_name", "last_name", "full_name", "avatar_url", "timezone", "locale", "onboarding_completed", "updated_at").
+		Updates(user).Error
+}
+
 // GetUserByEmail matches case-insensitively (LOWER(email)) so a user who signs
 // up as "Sam@x.com" is found by "sam@x.com" — the #1 real-world "reset email
 // never arrived" cause (P2). Backed by the idx_users_email_lower functional

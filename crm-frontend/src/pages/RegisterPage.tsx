@@ -83,6 +83,7 @@ export default function RegisterPage() {
                 id="reg-orgname"
                 name="org_name"
                 type="text"
+                autoComplete="organization"
                 value={form.org_name}
                 onChange={handleChange}
                 required
@@ -130,6 +131,7 @@ export default function RegisterPage() {
                   id="reg-firstname"
                   name="first_name"
                   type="text"
+                  autoComplete="given-name"
                   value={form.first_name}
                   onChange={handleChange}
                   required
@@ -145,6 +147,7 @@ export default function RegisterPage() {
                   id="reg-lastname"
                   name="last_name"
                   type="text"
+                  autoComplete="family-name"
                   value={form.last_name}
                   onChange={handleChange}
                   className="w-full px-4 py-3 bg-slate-900/50 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all"
@@ -161,6 +164,7 @@ export default function RegisterPage() {
                 id="reg-email"
                 name="email"
                 type="email"
+                autoComplete="email"
                 value={form.email}
                 onChange={handleChange}
                 required
@@ -177,6 +181,7 @@ export default function RegisterPage() {
                 id="reg-password"
                 name="password"
                 type="password"
+                autoComplete="new-password"
                 value={form.password}
                 onChange={handleChange}
                 required

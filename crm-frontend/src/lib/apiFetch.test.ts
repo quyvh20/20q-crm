@@ -58,8 +58,10 @@ describe('apiFetch — 401 refresh', () => {
     expect(getAccessToken()).toBe('old-token');
   });
 
-  it('clears the token and redirects to /login when the refresh fails', async () => {
-    const loc = { href: '' } as Location;
+  it('clears the token and redirects to /login with expired + return-to params when the refresh fails', async () => {
+    // U2: the bounce carries ?expired=1 (LoginPage shows a notice) and the
+    // current path as ?next= so a re-login lands back where the session died.
+    const loc = { href: '', pathname: '/deals/abc', search: '?tab=1' } as Location;
     const original = window.location;
     Object.defineProperty(window, 'location', { configurable: true, value: loc });
     try {
@@ -73,7 +75,7 @@ describe('apiFetch — 401 refresh', () => {
       await apiFetch('/api/thing');
 
       expect(getAccessToken()).toBeNull();
-      expect(loc.href).toBe('/login');
+      expect(loc.href).toBe('/login?expired=1&next=%2Fdeals%2Fabc%3Ftab%3D1');
       // original (401) + refresh (failed) — no retry
       expect(fetchMock).toHaveBeenCalledTimes(2);
     } finally {

@@ -52,7 +52,10 @@ Sequenced so trust comes first, the structural container second, then the two au
 5. Mobile: settings reachable and usable below md (nav collapses; wide grids scroll in overflow-x containers).
 6. Settings destinations in GlobalSearch/command palette.
 
-### U2 — My Account (the missing audience)
+### U2 — My Account (the missing audience) — ✅ DONE (2026-07-13, uncommitted)
+
+**Review (3 lenses, 19 agents) confirmed 14 findings (dedup ≈10), all material ones fixed:** change-password/set-password/unlink-google now carry the per-IP auth rate limiter (were an unthrottled current-password oracle); profile saves use a column-scoped UpdateUserProfile (full-row Save could revert a concurrent token_version bump / password change); password alert+audit now fire before the sign-out re-mint; unlink-google sends a security alert + set-password uses correct copy; open-redirect `next=` guard also rejects backslashes; onboarding PATCH is awaited before the welcome-modal reload; theme pills re-sync on menu open; Security section waits for auth_methods before showing the password form. **Accepted/deferred:** timezone inheritance takes effect only at next re-arm (an already-armed schedule fires once at its old UTC time until the workflow is re-saved — eventual consistency, documented); the users.deleted_at soft-delete column is vestigial (nothing soft-deletes a user), so UserTimezone's unscoped read is fine.
+
 1. `PATCH /api/auth/me`: first/last name, avatar_url; Profile section with avatar upload + initials fallback. (New user columns → **main.go boot guard**, not a numbered migration — prod constraint.)
 2. In-app change-password (current-password verified, reuses bcrypt + TokenVersion machinery) beside the existing sessions list; email-change with re-verification.
 3. Connected accounts: show Google-linked status, set-a-password for OAuth-only accounts, unlink.
@@ -109,7 +112,7 @@ Sequenced so trust comes first, the structural container second, then the two au
 |-------|-------|--------|
 | U0 | Honesty/security fixes | **DONE** (uncommitted; BE build/vet/tests + FE tsc + 713 FE tests green) |
 | U1 | Unified settings shell | **DONE** (uncommitted; tsc + 713 FE tests green) |
-| U2 | My Account | NOT STARTED |
+| U2 | My Account | **DONE** (uncommitted; BE build/vet/tests + FE tsc + 713 tests green) |
 | U3 | Understandable permissions | NOT STARTED |
 | U4 | Members & lifecycle | NOT STARTED |
 | U5 | Notification preferences | NOT STARTED |

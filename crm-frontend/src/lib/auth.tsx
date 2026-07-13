@@ -13,6 +13,10 @@ interface User {
   avatar_url?: string;
   // null/absent until the user verifies their email (P1). Drives the verify banner.
   email_verified_at?: string | null;
+  // Personal preferences (U2 My Account).
+  timezone?: string;
+  locale?: string;
+  onboarding_completed?: boolean;
 }
 
 interface AuthContextType {
@@ -50,6 +54,9 @@ interface AuthContextType {
   logout: () => Promise<void>;
   refreshAuth: () => Promise<void>;
   switchWorkspace: (orgId: string, setDefault?: boolean) => Promise<void>;
+  // Merge a profile edit into the in-memory user so the header/sidebar update
+  // immediately after a PATCH /me, without a full token refresh (U2).
+  setUserProfile: (patch: Partial<User>) => void;
 }
 
 interface RegisterData {
@@ -301,6 +308,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         logout,
         refreshAuth,
         switchWorkspace: doSwitchWorkspace,
+        setUserProfile: (patch) => setUser((cur) => (cur ? { ...cur, ...patch } : cur)),
       }}
     >
       {children}

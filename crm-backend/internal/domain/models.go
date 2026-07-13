@@ -72,6 +72,14 @@ type User struct {
 	FullName     string         `gorm:"size:255" json:"full_name"`
 	AvatarURL    *string        `gorm:"type:text" json:"avatar_url,omitempty"`
 	GoogleID     *string        `gorm:"size:255" json:"-"`
+	// Personal preferences (U2 My Account). Timezone is an IANA name ('' = none
+	// set; consumers fall back to org default → UTC); Locale is a BCP-47 tag.
+	// Columns added by main.go boot guards (golang-migrate is dead on prod).
+	Timezone string `gorm:"size:64;not null;default:''" json:"timezone"`
+	Locale   string `gorm:"size:16;not null;default:''" json:"locale"`
+	// OnboardingCompleted moved the welcome-wizard flag server-side (it was a
+	// per-browser localStorage key, so it re-fired on every new device).
+	OnboardingCompleted bool `gorm:"not null;default:false" json:"onboarding_completed"`
 	// EmailVerifiedAt is nil until the user confirms their email (P1). It is
 	// serialized (not json:"-") so the SPA can drive the "verify your email"
 	// banner. Existing users are grandfathered as verified by migration 000026.

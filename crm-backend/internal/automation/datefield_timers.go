@@ -222,6 +222,7 @@ func (e *Engine) materializeDateFieldTimers(ctx context.Context, orgID uuid.UUID
 	}
 
 	now := time.Now()
+	tzCache := map[uuid.UUID]string{} // memoize the author-timezone lookup within this call
 	for i := range wfs {
 		wf := &wfs[i]
 		var trig TriggerSpec
@@ -233,12 +234,25 @@ func (e *Engine) materializeDateFieldTimers(ctx context.Context, orgID uuid.UUID
 			continue
 		}
 
-		// A delete removes the record → cancel its pending occurrence.
+		// A delete removes the record → cancel its pending occurrence. Handled
+		// BEFORE resolving the timezone since the delete path never uses it.
 		if event == "deleted" {
 			if err := e.repo.CancelDateFieldTimersForRecord(ctx, wf.ID, recordID); err != nil {
 				e.logger.Warn("automation: cancel date_field timer (delete) failed", "error", err, "workflow_id", wf.ID.String())
 			}
 			continue
+		}
+
+		// No explicit timezone on the trigger → inherit the author's preference
+		// (U2); empty stays UTC as before. Cached so N no-tz workflows for the
+		// same author cost one lookup, not N.
+		if p.Timezone == "" {
+			tz, seen := tzCache[wf.CreatedBy]
+			if !seen {
+				tz = e.repo.UserTimezone(ctx, wf.CreatedBy)
+				tzCache[wf.CreatedBy] = tz
+			}
+			p.Timezone = tz
 		}
 
 		fireAt, ok := computeDateFieldFireAt(getNestedValue(payload, p.Field), p, now)

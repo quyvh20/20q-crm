@@ -76,6 +76,16 @@ export function refreshAccessToken(orgId?: string): Promise<string | null> {
 // bounces to /login if the session is truly gone), and skips Content-Type for
 // FormData. Exported so every feature api layer shares the SAME auth behavior.
 // `timeoutMs` optionally aborts a hung request (e.g. a slow AI call behind a proxy).
+// redirectToLoginExpired sends the user to /login with a "session expired"
+// notice and a return-to path, instead of a silent hard boot that loses their
+// place (U2). LoginPage reads both params.
+function redirectToLoginExpired() {
+  const next = window.location.pathname + window.location.search;
+  const params = new URLSearchParams({ expired: '1' });
+  if (next && next !== '/' && !next.startsWith('/login')) params.set('next', next);
+  window.location.href = `/login?${params.toString()}`;
+}
+
 export async function apiFetch(path: string, options: RequestInit & { timeoutMs?: number } = {}): Promise<Response> {
   const { timeoutMs, ...init } = options;
   const buildHeaders = (): Record<string, string> => {
@@ -107,7 +117,7 @@ export async function apiFetch(path: string, options: RequestInit & { timeoutMs?
         res = await doFetch();
       } else {
         setAccessToken(null);
-        window.location.href = '/login';
+        redirectToLoginExpired();
       }
     }
     return res;
@@ -1823,7 +1833,7 @@ export async function sendCommand(
       } else {
         setAccessToken(null);
         onError?.('Session expired. Please log in again.');
-        window.location.href = '/login';
+        redirectToLoginExpired();
         return;
       }
     }
@@ -2471,6 +2481,87 @@ export async function signOutEverywhere(): Promise<void> {
   if (!res.ok) throw new Error((json as { error?: string }).error || 'Failed to sign out other sessions');
   const token = (json?.data?.access_token as string) ?? null;
   if (token) setAccessToken(token);
+}
+
+// ============================================================
+// My Account (U2) — self-serve profile, password, connected accounts
+// ============================================================
+
+export interface AuthMethods {
+  password: boolean;
+  google: boolean;
+}
+
+export interface ProfileUser {
+  id: string;
+  email: string;
+  first_name: string;
+  last_name: string;
+  full_name?: string;
+  avatar_url?: string;
+  timezone: string;
+  locale: string;
+  onboarding_completed: boolean;
+  email_verified_at?: string | null;
+}
+
+export interface MeResponse {
+  user: ProfileUser;
+  auth_methods: AuthMethods;
+}
+
+export async function getMe(): Promise<MeResponse> {
+  const res = await apiFetch('/api/auth/me');
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw new Error(json.error || 'Failed to load your account');
+  return json.data as MeResponse;
+}
+
+export interface UpdateProfileInput {
+  first_name?: string;
+  last_name?: string;
+  avatar_url?: string;
+  timezone?: string;
+  locale?: string;
+  onboarding_completed?: boolean;
+}
+
+export async function updateProfile(input: UpdateProfileInput): Promise<ProfileUser> {
+  const res = await apiFetch('/api/auth/me', { method: 'PATCH', body: JSON.stringify(input) });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw new Error(json.error || 'Failed to save your profile');
+  return json.data.user as ProfileUser;
+}
+
+// changePassword / setPassword: the server signs out every other device and
+// re-mints THIS one — adopt the fresh access token or the current tab dies on
+// its next request (token_version bump).
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  const res = await apiFetch('/api/auth/change-password', {
+    method: 'POST',
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw new Error(json.error || 'Failed to change password');
+  const token = (json?.data?.access_token as string) ?? null;
+  if (token) setAccessToken(token);
+}
+
+export async function setPassword(newPassword: string): Promise<void> {
+  const res = await apiFetch('/api/auth/set-password', {
+    method: 'POST',
+    body: JSON.stringify({ new_password: newPassword }),
+  });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw new Error(json.error || 'Failed to set password');
+  const token = (json?.data?.access_token as string) ?? null;
+  if (token) setAccessToken(token);
+}
+
+export async function unlinkGoogle(): Promise<void> {
+  const res = await apiFetch('/api/auth/unlink-google', { method: 'POST' });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw new Error(json.error || 'Failed to disconnect Google');
 }
 
 // ============================================================

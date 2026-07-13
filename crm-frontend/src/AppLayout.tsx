@@ -1,21 +1,22 @@
 import React, { useEffect, useState } from "react";
-import { NavLink, useLocation } from "react-router-dom";
-import { Menu, X } from "lucide-react";
+import { NavLink, Link, useLocation } from "react-router-dom";
+import { Menu, X, UserRound, Shield, LogOut } from "lucide-react";
 import { useAuth } from "./lib/auth";
+import { getThemePreference, setThemePreference, type ThemePreference } from "./lib/theme";
 import GlobalSearch from "./components/common/GlobalSearch";
 import AIUsageWidget from "./components/settings/AIUsageWidget";
 import WelcomeModal from "./components/onboarding/WelcomeModal";
 import WorkspaceSwitcher from "./components/common/WorkspaceSwitcher";
 import NotificationBell from "./features/notifications/NotificationBell";
 import { useNotificationStream } from "./features/notifications/useNotificationStream";
-import { getObjectDefs, getFieldDefs, resendVerification, type CustomObjectDef } from "./lib/api";
+import { getObjectDefs, getFieldDefs, resendVerification, updateProfile, type CustomObjectDef } from "./lib/api";
 
 interface AppLayoutProps {
   children?: React.ReactNode;
 }
 
 export default function AppLayout({ children }: AppLayoutProps) {
-  const { user, logout, activeWorkspace } = useAuth();
+  const { user, logout, activeWorkspace, hasCapability, permsLoaded, setUserProfile } = useAuth();
   // App-global SSE listener for the header bell — keeps the unread badge + inbox
   // live while signed in (A6.2). No-op until a user is present.
   useNotificationStream(!!user);
@@ -23,10 +24,17 @@ export default function AppLayout({ children }: AppLayoutProps) {
   const [showWelcome, setShowWelcome] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [theme, setTheme] = useState<ThemePreference>(() => getThemePreference());
   const location = useLocation();
 
-  // Close the mobile drawer on navigation (NavLinks no longer full-reload).
-  useEffect(() => { setMobileNavOpen(false); }, [location.pathname]);
+  // Close the mobile drawer + user menu on navigation.
+  useEffect(() => { setMobileNavOpen(false); setUserMenuOpen(false); }, [location.pathname]);
+
+  const changeTheme = (t: ThemePreference) => {
+    setTheme(t);
+    setThemePreference(t);
+  };
 
   // Soft-gate email verification (P1): show a persistent banner with a resend
   // action until the user confirms their email.
@@ -46,6 +54,8 @@ export default function AppLayout({ children }: AppLayoutProps) {
     }
   };
 
+  const [fieldsCount, setFieldsCount] = useState<number | null>(null);
+
   useEffect(() => {
     Promise.all([
       getObjectDefs().catch(() => []),
@@ -53,14 +63,35 @@ export default function AppLayout({ children }: AppLayoutProps) {
     ])
       .then(([objects, fields]) => {
         setCustomObjects(objects);
-        
-        const hasCompletedOnboarding = localStorage.getItem('onboarding_completed') === 'true';
-        if (objects.length === 0 && fields.length === 0 && !hasCompletedOnboarding) {
-          setShowWelcome(true);
-        }
+        setFieldsCount(fields.length);
       })
       .finally(() => setIsLoading(false));
   }, []);
+
+  // Welcome wizard (U2): only for members who can actually create objects
+  // (a viewer used to get a template-deploy wizard whose every call 403'd),
+  // and keyed off the SERVER flag so it follows the user across devices. The
+  // old localStorage key is honored as a legacy suppressor.
+  useEffect(() => {
+    if (isLoading || !permsLoaded || !user || fieldsCount === null) return;
+    const legacyDone = localStorage.getItem('onboarding_completed') === 'true';
+    setShowWelcome(
+      customObjects.length === 0 &&
+      fieldsCount === 0 &&
+      !user.onboarding_completed &&
+      !legacyDone &&
+      hasCapability('objects.manage')
+    );
+  }, [isLoading, permsLoaded, user, customObjects, fieldsCount, hasCapability]);
+
+  const completeOnboarding = () => {
+    setShowWelcome(false);
+    // Return the promise so WelcomeModal awaits it before reloading — otherwise
+    // the reload cancels this PATCH and the server flag never sticks.
+    return updateProfile({ onboarding_completed: true })
+      .then(() => setUserProfile({ onboarding_completed: true }))
+      .catch(() => { /* best-effort — the legacy localStorage key still suppresses */ });
+  };
 
   // Client-side NavLinks with real active state (the old sidebar used raw <a>
   // anchors — full page reload per click, 'Dashboard' hardcoded active). One
@@ -170,10 +201,72 @@ export default function AppLayout({ children }: AppLayoutProps) {
               </span>
             )}
             <NotificationBell />
-            {user?.avatar_url ? (
-              <img src={user.avatar_url} alt="" className="h-8 w-8 rounded-full object-cover" />
-            ) : (
-              <div className="h-8 w-8 rounded-full bg-primary/10"></div>
+            {/* User menu (U2): the avatar was a decorative blank circle — now
+                it's the account entry point (profile, security, theme, sign out). */}
+            {user && (
+              <div className="relative">
+                <button
+                  onClick={() => {
+                    // Re-read the stored preference on open so the pills reflect
+                    // a theme changed elsewhere (e.g. the Profile page) — the two
+                    // controls hold independent state (U2 review).
+                    if (!userMenuOpen) setTheme(getThemePreference());
+                    setUserMenuOpen((v) => !v);
+                  }}
+                  aria-label="Account menu"
+                  aria-expanded={userMenuOpen}
+                  className="block rounded-full focus:outline-none focus:ring-2 focus:ring-primary"
+                >
+                  {user.avatar_url ? (
+                    <img src={user.avatar_url} alt="" className="h-8 w-8 rounded-full object-cover" />
+                  ) : (
+                    <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-xs font-semibold text-primary">
+                      {user.first_name?.[0]}{user.last_name?.[0]}
+                    </div>
+                  )}
+                </button>
+                {userMenuOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setUserMenuOpen(false)} />
+                    <div className="absolute right-0 top-10 z-50 w-64 rounded-xl border border-border bg-card shadow-xl overflow-hidden">
+                      <div className="px-4 py-3 border-b border-border">
+                        <p className="text-sm font-medium text-foreground truncate">{user.first_name} {user.last_name}</p>
+                        <p className="text-xs text-muted-foreground truncate">{user.email}</p>
+                      </div>
+                      <div className="py-1">
+                        <Link to="/settings/profile" onClick={() => setUserMenuOpen(false)} className="flex items-center gap-2 px-4 py-2 text-sm text-foreground hover:bg-accent">
+                          <UserRound className="w-4 h-4 text-muted-foreground" /> My profile
+                        </Link>
+                        <Link to="/settings/security" onClick={() => setUserMenuOpen(false)} className="flex items-center gap-2 px-4 py-2 text-sm text-foreground hover:bg-accent">
+                          <Shield className="w-4 h-4 text-muted-foreground" /> Security
+                        </Link>
+                      </div>
+                      <div className="px-4 py-2.5 border-t border-border">
+                        <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">Theme</p>
+                        <div className="inline-flex rounded-lg border border-border overflow-hidden">
+                          {(['light', 'system', 'dark'] as const).map((t) => (
+                            <button
+                              key={t}
+                              onClick={() => changeTheme(t)}
+                              className={`px-3 py-1 text-xs capitalize transition-colors ${theme === t ? 'bg-accent text-accent-foreground font-medium' : 'text-muted-foreground hover:bg-accent/50'}`}
+                            >
+                              {t}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="border-t border-border py-1">
+                        <button
+                          onClick={logout}
+                          className="w-full flex items-center gap-2 px-4 py-2 text-sm text-foreground hover:bg-accent text-left"
+                        >
+                          <LogOut className="w-4 h-4 text-muted-foreground" /> Sign out
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
             )}
           </div>
         </header>
@@ -209,7 +302,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
         </main>
       </div>
       {showWelcome && !isLoading && (
-        <WelcomeModal onComplete={() => setShowWelcome(false)} />
+        <WelcomeModal onComplete={completeOnboarding} />
       )}
     </div>
   );

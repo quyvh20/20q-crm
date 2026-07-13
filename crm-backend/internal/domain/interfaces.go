@@ -131,6 +131,11 @@ type AuthRepository interface {
 	GetUserByID(ctx context.Context, id uuid.UUID) (*User, error)
 	GetUserByGoogleID(ctx context.Context, googleID string) (*User, error)
 	UpdateUser(ctx context.Context, user *User) error
+	// UpdateUserProfile writes only the self-serve profile columns (U2) — a
+	// column-scoped UPDATE, so a profile save can't clobber a concurrent
+	// security write (token_version bump / password reset) the way the full-row
+	// UpdateUser would.
+	UpdateUserProfile(ctx context.Context, user *User) error
 
 	CreateRefreshToken(ctx context.Context, token *RefreshToken) error
 	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (*RefreshToken, error)
@@ -283,6 +288,38 @@ type AuthUseCase interface {
 	ListSessions(ctx context.Context, userID uuid.UUID, currentRefreshToken string) ([]SessionInfo, error)
 	RevokeSession(ctx context.Context, userID, orgID, sessionID uuid.UUID) error
 	SignOutEverywhere(ctx context.Context, userID, orgID uuid.UUID, currentRefreshToken string) (*AuthResponse, error)
+
+	// My Account (U2). UpdateProfile edits the caller's own identity/preferences.
+	// ChangePassword requires the CURRENT password, then signs out every other
+	// device (re-minting this one, like SignOutEverywhere). SetPassword is the
+	// OAuth-only variant: allowed only while no password exists, so a Google-only
+	// account can survive losing Google access. UnlinkGoogle requires a password
+	// to exist (never strand an account with zero sign-in methods).
+	UpdateProfile(ctx context.Context, userID uuid.UUID, input UpdateProfileInput) (*User, error)
+	ChangePassword(ctx context.Context, userID, orgID uuid.UUID, input ChangePasswordInput, meta RequestMeta) (*AuthResponse, error)
+	SetPassword(ctx context.Context, userID, orgID uuid.UUID, input SetPasswordInput, meta RequestMeta) (*AuthResponse, error)
+	UnlinkGoogle(ctx context.Context, userID uuid.UUID, meta RequestMeta) error
+}
+
+// UpdateProfileInput carries the self-serve profile fields (U2). Pointer
+// fields: nil = unchanged. Email is deliberately absent — changing it needs a
+// re-verification flow (planned; see user_system_improvement_plan.md).
+type UpdateProfileInput struct {
+	FirstName           *string `json:"first_name"`
+	LastName            *string `json:"last_name"`
+	AvatarURL           *string `json:"avatar_url"`
+	Timezone            *string `json:"timezone"`
+	Locale              *string `json:"locale"`
+	OnboardingCompleted *bool   `json:"onboarding_completed"`
+}
+
+type ChangePasswordInput struct {
+	CurrentPassword string `json:"current_password" binding:"required"`
+	NewPassword     string `json:"new_password" binding:"required"`
+}
+
+type SetPasswordInput struct {
+	NewPassword string `json:"new_password" binding:"required"`
 }
 
 type WorkspaceUseCase interface {

@@ -93,6 +93,12 @@ func (r *fakeAuthRepo) UpdateUser(_ context.Context, user *domain.User) error {
 	return nil
 }
 
+func (r *fakeAuthRepo) UpdateUserProfile(_ context.Context, user *domain.User) error {
+	r.users[user.ID] = user
+	r.usersByEmail[user.Email] = user
+	return nil
+}
+
 func (r *fakeAuthRepo) CreatePasswordResetToken(_ context.Context, t *domain.PasswordResetToken) error {
 	if t.ID == uuid.Nil {
 		t.ID = uuid.New()

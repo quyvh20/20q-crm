@@ -12,7 +12,8 @@ import DealDetailPage from './pages/DealDetailPage';
 import SettingsLayout, { SettingsIndexRedirect } from './pages/settings/SettingsLayout';
 import MembersSection from './pages/settings/MembersSection';
 import GroupsSection from './pages/settings/GroupsSection';
-import SecuritySessions from './components/settings/SecuritySessions';
+import ProfileSection from './pages/settings/ProfileSection';
+import SecuritySection from './pages/settings/SecuritySection';
 import PipelineStagesManager from './components/settings/PipelineStagesManager';
 import ObjectsManager from './components/settings/ObjectsManager';
 import KnowledgeBase from './components/settings/KnowledgeBase';
@@ -103,7 +104,14 @@ function PublicRoute({ children }: { children: React.ReactNode }) {
   }
 
   if (isAuthenticated) {
-    return <Navigate to="/" replace />;
+    // Honor a session-expiry return-to path (?next=/deals/123) so a re-login
+    // lands back where the session died (U2). Same-origin paths only: must start
+    // with a single '/' and contain no backslash — browsers normalize '\' to '/'
+    // so '/\evil.com' would resolve cross-origin (open-redirect guard).
+    const next = new URLSearchParams(window.location.search).get('next');
+    const safeNext =
+      next && next.startsWith('/') && !next.startsWith('//') && !next.includes('\\') ? next : '/';
+    return <Navigate to={safeNext} replace />;
   }
 
   return <>{children}</>;
@@ -169,7 +177,8 @@ function App() {
               </ProtectedRoute>
             }>
               <Route index element={<SettingsIndexRedirect />} />
-              <Route path="security" element={<SecuritySessions />} />
+              <Route path="profile" element={<ProfileSection />} />
+              <Route path="security" element={<SecuritySection />} />
               <Route path="members" element={<MembersSection />} />
               <Route path="groups" element={<GroupsSection />} />
               <Route path="roles" element={<RolesManager />} />

@@ -2,7 +2,7 @@ import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../../lib/auth';
 import {
   Shield, Users, UsersRound, KeyRound, Boxes, Table2, EyeOff,
-  Target, Mail, Brain, ScrollText, MessageSquare, type LucideIcon,
+  Target, Mail, Brain, ScrollText, MessageSquare, UserRound, type LucideIcon,
 } from 'lucide-react';
 
 // The unified settings shell (U1): ONE routed area, grouped into Personal vs
@@ -24,6 +24,7 @@ export interface SettingsSection {
 
 export const SETTINGS_SECTIONS: SettingsSection[] = [
   // Personal — available to every member.
+  { path: 'profile', label: 'Profile', icon: UserRound, group: 'personal', visible: () => true },
   { path: 'security', label: 'Security', icon: Shield, group: 'personal', visible: () => true },
 
   // Workspace — admin/config surfaces, each behind the capability its API checks.
@@ -46,11 +47,11 @@ export function visibleSections(can: Can): SettingsSection[] {
 }
 
 // defaultSectionPath: where /settings lands. Admins go to their first workspace
-// section; a member with no admin capabilities lands on their personal Security
+// section; a member with no admin capabilities lands on their personal Profile
 // page instead of a config screen they can't use.
 export function defaultSectionPath(can: Can): string {
   const workspace = visibleSections(can).find((s) => s.group === 'workspace' && !s.externalTo);
-  return workspace ? workspace.path : 'security';
+  return workspace ? workspace.path : 'profile';
 }
 
 // SettingsIndexRedirect sends a bare /settings to the member's default section

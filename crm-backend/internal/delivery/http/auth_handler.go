@@ -334,7 +334,93 @@ func (h *AuthHandler) Me(c *gin.Context) {
 	c.JSON(http.StatusOK, domain.Success(gin.H{
 		"user":       user,
 		"workspaces": workspaces,
+		// Which sign-in methods exist (U2 Connected accounts) — the raw hash and
+		// google_id are json:"-", so the SPA needs these computed flags.
+		"auth_methods": gin.H{
+			"password": user.PasswordHash != nil,
+			"google":   user.GoogleID != nil,
+		},
 	}))
+}
+
+// PATCH /api/auth/me — self-serve profile + preferences (U2).
+func (h *AuthHandler) UpdateMe(c *gin.Context) {
+	userID, ok := GetUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	var input domain.UpdateProfileInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, domain.Err(err.Error()))
+		return
+	}
+	user, err := h.authUC.UpdateProfile(c.Request.Context(), userID, input)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, domain.Success(gin.H{"user": user}))
+}
+
+// POST /api/auth/change-password — in-app rotation; requires the current
+// password, signs out every other device, re-mints this one (U2).
+func (h *AuthHandler) ChangePassword(c *gin.Context) {
+	userID, ok := GetUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	orgID, _ := GetOrgID(c)
+	var input domain.ChangePasswordInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, domain.Err(err.Error()))
+		return
+	}
+	resp, err := h.authUC.ChangePassword(c.Request.Context(), userID, orgID, input, requestMeta(c))
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	setAuthCookies(c, h.cfg, resp.RefreshToken)
+	c.JSON(http.StatusOK, domain.Success(resp))
+}
+
+// POST /api/auth/set-password — OAuth-only accounts add a password (U2).
+func (h *AuthHandler) SetPassword(c *gin.Context) {
+	userID, ok := GetUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	orgID, _ := GetOrgID(c)
+	var input domain.SetPasswordInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, domain.Err(err.Error()))
+		return
+	}
+	resp, err := h.authUC.SetPassword(c.Request.Context(), userID, orgID, input, requestMeta(c))
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	setAuthCookies(c, h.cfg, resp.RefreshToken)
+	c.JSON(http.StatusOK, domain.Success(resp))
+}
+
+// POST /api/auth/unlink-google — disconnect Google sign-in (U2; refused while
+// no password exists).
+func (h *AuthHandler) UnlinkGoogle(c *gin.Context) {
+	userID, ok := GetUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	if err := h.authUC.UnlinkGoogle(c.Request.Context(), userID, requestMeta(c)); err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, domain.Success(gin.H{"message": "Google sign-in disconnected"}))
 }
 
 func (h *AuthHandler) SwitchWorkspace(c *gin.Context) {

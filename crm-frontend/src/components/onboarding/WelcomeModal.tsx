@@ -3,7 +3,9 @@ import { createObjectDef, createFieldDef } from '../../lib/api';
 import KBQuickFillStep from './KBQuickFillStep';
 
 interface WelcomeModalProps {
-  onComplete: () => void;
+  // May persist the completion server-side; awaited before the page reloads so
+  // the PATCH isn't cancelled by navigation (U2 review).
+  onComplete: () => void | Promise<void>;
 }
 
 type Step = 'templates' | 'kb-fill';
@@ -14,9 +16,16 @@ export default function WelcomeModal({ onComplete }: WelcomeModalProps) {
   const [isDeploying, setIsDeploying] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const completeOnboarding = () => {
+  // Persist the flag, WAIT for it, then reload — a synchronous reload here used
+  // to abort the in-flight PATCH, so the server flag never stuck and the wizard
+  // re-fired on other devices.
+  const completeAndReload = async () => {
     localStorage.setItem('onboarding_completed', 'true');
-    onComplete();
+    try {
+      await onComplete();
+    } finally {
+      window.location.reload();
+    }
   };
 
   const advanceToKBFill = () => setStep('kb-fill');
@@ -90,14 +99,8 @@ export default function WelcomeModal({ onComplete }: WelcomeModalProps) {
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
         <KBQuickFillStep
           templateId={selectedTemplate}
-          onComplete={() => {
-            completeOnboarding();
-            window.location.reload();
-          }}
-          onSkip={() => {
-            completeOnboarding();
-            window.location.reload();
-          }}
+          onComplete={completeAndReload}
+          onSkip={completeAndReload}
         />
       </div>
     );

@@ -37,6 +37,11 @@ export default function LoginPage() {
     if (msg) {
       setNotice(NOTICE_MESSAGES[msg] || '');
     }
+    // Session-expiry notice (U2): the app redirects here with ?expired=1&next=…
+    // instead of a silent boot; PublicRoute honors next after sign-in.
+    if (searchParams.get('expired')) {
+      setNotice('Your session expired — sign in to pick up where you left off.');
+    }
   }, [searchParams]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -122,6 +127,7 @@ export default function LoginPage() {
               <input
                 id="login-email"
                 type="email"
+                autoComplete="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
@@ -142,6 +148,7 @@ export default function LoginPage() {
               <input
                 id="login-password"
                 type="password"
+                autoComplete="current-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
