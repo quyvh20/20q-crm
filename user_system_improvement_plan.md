@@ -78,6 +78,9 @@ Sequenced so trust comes first, the structural container second, then the two au
 7. Adopt `usePermissions` app-wide: gate record edit/delete/export buttons and remaining settings surfaces so users stop discovering permissions via errors; friendly denied states ("You need *Manage roles* — ask an admin").
 
 ### U4 — Members & workspace lifecycle
+
+**Being landed in 3 slices. Slice 1 (invites & accept) — ✅ DONE + verified live, committed (uncommitted push).** Remaining: Slice 2 (members table + member drawer + sessions/force-sign-out), Slice 3 (workspace general + `POST /workspaces` + NoWorkspacePage fix + leave/transfer). Item 1 shipped: `GET /api/auth/invitations/:token` preview (org/role/email/validity/has_account), rich accept page with dead-state handling, auto-login for brand-NEW accounts only (existing accounts add the workspace + sign in normally — a leaked invite link must not mint a session over a whole multi-workspace account), invite dedupe (re-mint the open row via `GetPendingInvitationByEmail` instead of stacking), expired invites surfaced with a Resend badge (`ListOpenInvitations` + computed "expired" status). Deferred within item 1: multi-email invite; copyable link exists in InviteMemberModal already. Item 6 (Google-first invitee) not yet started.
+
 1. Invites: `GET /auth/invitations/:token` metadata → accept page shows "Join **Acme** as **Sales Rep**"; auto-login after accept; dedupe (resend instead of double-insert); expired invites shown with a Resend badge instead of vanishing; multi-email invite; copyable invite link (prod-safe).
 2. Members table: search, role/status filter, Joined / Last active / Verified columns, pagination; labeled actions.
 3. Member detail drawer: role, groups, owned-record counts, sessions with admin force-sign-out (repo methods exist), audit trail link.
@@ -117,7 +120,7 @@ Sequenced so trust comes first, the structural container second, then the two au
 | U1 | Unified settings shell | **DONE** (uncommitted; tsc + 713 FE tests green) |
 | U2 | My Account | **DONE** (uncommitted; BE build/vet/tests + FE tsc + 713 tests green) |
 | U3 | Understandable permissions | **DONE** (uncommitted; BE build/vet/tests + FE tsc + 756 tests green; verified live) |
-| U4 | Members & lifecycle | NOT STARTED |
+| U4 | Members & lifecycle | **IN PROGRESS** — slice 1 (invites/accept) DONE + verified, committed c5bb834 (not pushed); slices 2–3 remaining |
 | U5 | Notification preferences | NOT STARTED |
 | U6 | Team scope / sharing / 2FA | NOT STARTED |
 | U7 | Fit & finish | NOT STARTED |
