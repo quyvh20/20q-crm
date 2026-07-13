@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../lib/auth';
+import { useConfirm } from '../components/common/ConfirmDialog';
 import {
   listChatSessions,
   getChatSessionMessages,
@@ -29,6 +30,7 @@ export default function ConversationLogPage() {
 
   const limit = 20;
   const canAccess = hasCapability('members.manage');
+  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
 
   useEffect(() => {
     if (!canAccess) return;
@@ -61,7 +63,11 @@ export default function ConversationLogPage() {
   };
 
   const remove = async (sessionId: string) => {
-    if (!confirm('Delete this conversation? This cannot be undone.')) return;
+    if (!(await confirmDialog({
+      title: 'Delete conversation',
+      body: 'Delete this conversation and its transcript? This cannot be undone.',
+      confirmLabel: 'Delete',
+    }))) return;
     try {
       await deleteChatSession(sessionId);
       setSessions(prev => prev.filter(s => s.id !== sessionId));
@@ -71,8 +77,7 @@ export default function ConversationLogPage() {
         setTranscript([]);
       }
     } catch (e: unknown) {
-      const err = e instanceof Error ? e.message : 'Delete failed';
-      alert(err);
+      setError(e instanceof Error ? e.message : 'Delete failed');
     }
   };
 
@@ -92,7 +97,7 @@ export default function ConversationLogPage() {
     <div style={styles.page}>
       <div style={styles.header}>
         <div>
-          <h1 style={styles.title}>Conversation Logs</h1>
+          <h2 style={styles.title}>AI Conversation Logs</h2>
           <p style={styles.subtitle}>{total} total sessions · Page {page} of {Math.max(1, totalPages)}</p>
         </div>
       </div>
@@ -201,16 +206,19 @@ export default function ConversationLogPage() {
           <button style={styles.pageBtn} disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>Next →</button>
         </div>
       )}
+      {confirmDialogEl}
     </div>
   );
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  page: { padding: '24px', maxWidth: '100%' },
-  header: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 24 },
-  title: { fontSize: 24, fontWeight: 700, margin: '0 0 4px' },
+  // Section-level chrome: this renders INSIDE the settings shell (U1), which
+  // already owns the page header and padding.
+  page: { maxWidth: '100%' },
+  header: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 16 },
+  title: { fontSize: 18, fontWeight: 600, margin: '0 0 4px' },
   subtitle: { fontSize: 13, color: 'var(--muted-foreground)', margin: 0 },
-  errorBanner: { background: '#fef2f2', border: '1px solid #fecaca', color: '#dc2626', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 13 },
+  errorBanner: { background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.4)', color: '#ef4444', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 13 },
   loading: { textAlign: 'center', padding: 40, color: 'var(--muted-foreground)' },
   empty: { textAlign: 'center', padding: 60 },
   tableWrapper: { overflowX: 'auto', borderRadius: 12, border: '1px solid var(--border)' },

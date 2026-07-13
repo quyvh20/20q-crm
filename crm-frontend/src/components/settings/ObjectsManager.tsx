@@ -8,6 +8,7 @@ import {
   type ObjectSummary, type CustomFieldDef, type FieldType, type ObjectFieldDescriptor,
   type ObjectLayout, type LayoutSection, type LayoutField, type PermRoleInfo,
 } from '../../lib/api';
+import { useConfirm } from '../common/ConfirmDialog';
 
 // ObjectsManager is the single admin surface for every object's schema (P7 — it
 // replaces the separate CustomFieldManager + ObjectDefManager now that object_defs/
@@ -24,7 +25,7 @@ const FIELD_TYPES: FieldType[] = ['text', 'number', 'date', 'select', 'boolean',
 const typeLabel = (t: string) => ({ text: 'Aa Text', number: '# Number', date: '📅 Date', select: '▼ Select', boolean: '✓ Yes/No', url: '🔗 URL', relation: '↗ Relation', mirror: '⇄ Mirror' }[t] || t);
 const autoSlug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 50);
 
-const inputStyle = { width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 14, boxSizing: 'border-box' as const };
+const inputStyle = { width: '100%', padding: '8px 10px', border: '1px solid hsl(var(--input))', borderRadius: 6, fontSize: 14, boxSizing: 'border-box' as const };
 const btn = (bg: string) => ({ padding: '8px 16px', background: bg, color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 500 });
 
 type Mode = { kind: 'list' } | { kind: 'new' } | { kind: 'edit'; slug: string; isSystem: boolean };
@@ -40,8 +41,11 @@ export default function ObjectsManager() {
     setLoading(true);
     try {
       setObjects(await listRegistryObjects());
-    } catch {
+      setError('');
+    } catch (e) {
+      // A load failure used to render as an empty object list — say what happened.
       setObjects([]);
+      setError(e instanceof Error ? e.message : 'Failed to load objects');
     } finally {
       setLoading(false);
     }
@@ -60,7 +64,7 @@ export default function ObjectsManager() {
     }
   };
 
-  if (loading) return <p style={{ color: '#94a3b8', padding: 20 }}>Loading...</p>;
+  if (loading) return <p style={{ color: 'hsl(var(--muted-foreground))', padding: 20 }}>Loading...</p>;
 
   if (mode.kind === 'new') {
     return <CustomObjectForm onDone={() => { setMode({ kind: 'list' }); fetchObjects(); }} onCancel={() => setMode({ kind: 'list' })} />;
@@ -73,36 +77,36 @@ export default function ObjectsManager() {
 
   return (
     <div>
-      <p style={{ color: '#64748b', fontSize: 13, marginTop: 0 }}>
+      <p style={{ color: 'hsl(var(--muted-foreground))', fontSize: 13, marginTop: 0 }}>
         Every object — built-in or custom — and its fields, in one place.
       </p>
-      {error && <div style={{ background: '#fef2f2', color: '#dc2626', padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>{error}</div>}
+      {error && <div style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>{error}</div>}
 
       <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 16 }}>
         <thead>
-          <tr style={{ borderBottom: '1px solid #e2e8f0', textAlign: 'left' }}>
+          <tr style={{ borderBottom: '1px solid hsl(var(--border))', textAlign: 'left' }}>
             {['', 'Label', 'Slug', 'Type', 'Fields', ''].map((h, i) => (
-              <th key={i} style={{ padding: '8px 12px', fontSize: 13, color: '#64748b', textAlign: i === 5 ? 'right' : 'left' }}>{h}</th>
+              <th key={i} style={{ padding: '8px 12px', fontSize: 13, color: 'hsl(var(--muted-foreground))', textAlign: i === 5 ? 'right' : 'left' }}>{h}</th>
             ))}
           </tr>
         </thead>
         <tbody>
           {objects.map(o => (
-            <tr key={o.slug} style={{ borderBottom: '1px solid #f1f5f9' }}>
+            <tr key={o.slug} style={{ borderBottom: '1px solid hsl(var(--muted))' }}>
               <td style={{ padding: '10px 12px', fontSize: 20 }}>{o.icon}</td>
-              <td style={{ padding: '10px 12px', fontWeight: 500 }}>{o.label} <span style={{ color: '#94a3b8', fontWeight: 400 }}>/ {o.label_plural}</span></td>
-              <td style={{ padding: '10px 12px' }}><code style={{ background: '#f1f5f9', padding: '2px 6px', borderRadius: 4, fontSize: 13 }}>{o.slug}</code></td>
+              <td style={{ padding: '10px 12px', fontWeight: 500 }}>{o.label} <span style={{ color: 'hsl(var(--muted-foreground))', fontWeight: 400 }}>/ {o.label_plural}</span></td>
+              <td style={{ padding: '10px 12px' }}><code style={{ background: 'hsl(var(--muted))', padding: '2px 6px', borderRadius: 4, fontSize: 13 }}>{o.slug}</code></td>
               <td style={{ padding: '10px 12px' }}>
-                <span style={{ fontSize: 12, padding: '2px 8px', borderRadius: 12, background: o.is_system ? '#eff6ff' : '#f0fdf4', color: o.is_system ? '#3b82f6' : '#16a34a' }}>
+                <span style={{ fontSize: 12, padding: '2px 8px', borderRadius: 12, background: o.is_system ? 'rgba(59,130,246,0.12)' : 'rgba(34,197,94,0.12)', color: o.is_system ? '#3b82f6' : '#22c55e' }}>
                   {o.is_system ? 'Built-in' : 'Custom'}
                 </span>
               </td>
-              <td style={{ padding: '10px 12px', color: '#64748b' }}>{o.field_count}</td>
+              <td style={{ padding: '10px 12px', color: 'hsl(var(--muted-foreground))' }}>{o.field_count}</td>
               <td style={{ padding: '10px 12px', textAlign: 'right' }}>
                 {confirmDelete === o.slug ? (
                   <>
                     <button onClick={() => handleDelete(o.slug)} style={{ ...btn('#ef4444'), padding: '4px 12px', marginRight: 4, fontSize: 13 }}>Confirm</button>
-                    <button onClick={() => setConfirmDelete(null)} style={{ background: '#e2e8f0', border: 'none', padding: '4px 12px', borderRadius: 4, cursor: 'pointer', fontSize: 13 }}>Cancel</button>
+                    <button onClick={() => setConfirmDelete(null)} style={{ background: 'hsl(var(--border))', border: 'none', padding: '4px 12px', borderRadius: 4, cursor: 'pointer', fontSize: 13 }}>Cancel</button>
                   </>
                 ) : (
                   <>
@@ -131,12 +135,12 @@ export default function ObjectsManager() {
 
 function TabBar({ active, onSelect, tabs }: { active: string; onSelect: (t: string) => void; tabs: string[] }) {
   return (
-    <div style={{ display: 'flex', gap: 2, borderBottom: '1px solid #e2e8f0', marginBottom: 20 }}>
+    <div style={{ display: 'flex', gap: 2, borderBottom: '1px solid hsl(var(--border))', marginBottom: 20 }}>
       {tabs.map(t => (
         <button key={t} onClick={() => onSelect(t)} style={{
           padding: '8px 16px', border: 'none', borderBottom: active === t ? '2px solid #3b82f6' : '2px solid transparent',
           background: 'none', cursor: 'pointer', fontWeight: active === t ? 600 : 400,
-          color: active === t ? '#3b82f6' : '#64748b', fontSize: 13,
+          color: active === t ? '#3b82f6' : 'hsl(var(--muted-foreground))', fontSize: 13,
         }}>{t}</button>
       ))}
     </div>
@@ -170,7 +174,7 @@ function NumberPrefixEditor({ slug }: { slug: string }) {
 
   const sample = `${(prefix.trim() || slug).toUpperCase()}-0001`;
   return (
-    <div style={{ border: '1px solid #e2e8f0', borderRadius: 6, padding: 12, background: '#fafbfc', marginBottom: 12 }}>
+    <div style={{ border: '1px solid hsl(var(--border))', borderRadius: 6, padding: 12, background: 'hsl(var(--muted))', marginBottom: 12 }}>
       <label style={{ fontSize: 13, fontWeight: 500, display: 'block', marginBottom: 4 }}>Record number prefix</label>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <input
@@ -179,12 +183,12 @@ function NumberPrefixEditor({ slug }: { slug: string }) {
           placeholder={slug.toUpperCase()}
           style={{ ...inputStyle, width: 160, padding: '6px 8px', fontSize: 13 }}
         />
-        <span style={{ fontSize: 12, color: '#64748b' }}>e.g. <code>{sample}</code></span>
-        <button onClick={save} disabled={saving} style={{ ...btn(saving ? '#94a3b8' : '#3b82f6'), padding: '6px 12px', fontSize: 13 }}>{saving ? 'Saving…' : 'Save'}</button>
-        {saved && <span style={{ color: '#16a34a', fontSize: 12 }}>Saved ✓</span>}
+        <span style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))' }}>e.g. <code>{sample}</code></span>
+        <button onClick={save} disabled={saving} style={{ ...btn(saving ? 'hsl(var(--muted-foreground))' : '#3b82f6'), padding: '6px 12px', fontSize: 13 }}>{saving ? 'Saving…' : 'Save'}</button>
+        {saved && <span style={{ color: '#22c55e', fontSize: 12 }}>Saved ✓</span>}
       </div>
-      {err && <p style={{ color: '#dc2626', fontSize: 12, margin: '4px 0 0' }}>{err}</p>}
-      <p style={{ fontSize: 11, color: '#94a3b8', margin: '4px 0 0' }}>A friendly identifier shown on each record instead of its database id. Blank uses the object name.</p>
+      {err && <p style={{ color: '#ef4444', fontSize: 12, margin: '4px 0 0' }}>{err}</p>}
+      <p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', margin: '4px 0 0' }}>A friendly identifier shown on each record instead of its database id. Blank uses the object name.</p>
     </div>
   );
 }
@@ -249,26 +253,26 @@ function FieldBuilder({ draft, setDraft, onAdd, editing, currentSlug, relations 
     && (!isMirror || (!!draft.via_field && !!draft.source_field));
 
   return (
-    <div style={{ border: '1px solid #e2e8f0', borderRadius: 6, padding: 12, background: '#fafbfc' }}>
+    <div style={{ border: '1px solid hsl(var(--border))', borderRadius: 6, padding: 12, background: 'hsl(var(--muted))' }}>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto auto', gap: 8, alignItems: 'end' }}>
         <div>
-          <label style={{ fontSize: 12, color: '#64748b' }}>Field Label</label>
+          <label style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))' }}>Field Label</label>
           <input value={draft.label} onChange={e => setDraft({ ...draft, label: e.target.value, key: editing ? draft.key : autoSlug(e.target.value) })} placeholder="e.g. Priority" style={{ ...inputStyle, padding: '6px 8px', fontSize: 13 }} />
         </div>
         <div>
-          <label style={{ fontSize: 12, color: '#64748b' }}>Type</label>
+          <label style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))' }}>Type</label>
           <select value={draft.type} onChange={e => setDraft({ ...draft, type: e.target.value })} style={{ ...inputStyle, padding: '6px 8px', fontSize: 13 }}>
             {FIELD_TYPES.map(t => <option key={t} value={t}>{typeLabel(t)}</option>)}
           </select>
         </div>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: '#64748b', cursor: 'pointer' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'hsl(var(--muted-foreground))', cursor: 'pointer' }}>
           <input type="checkbox" checked={draft.required} onChange={e => setDraft({ ...draft, required: e.target.checked })} /> Req
         </label>
-        <button onClick={onAdd} disabled={!canSubmit} style={{ ...btn(canSubmit ? '#3b82f6' : '#94a3b8'), padding: '6px 14px', fontSize: 13 }}>{editing ? 'Save' : '+ Add'}</button>
+        <button onClick={onAdd} disabled={!canSubmit} style={{ ...btn(canSubmit ? '#3b82f6' : 'hsl(var(--muted-foreground))'), padding: '6px 14px', fontSize: 13 }}>{editing ? 'Save' : '+ Add'}</button>
       </div>
       {isRelation && (
         <div style={{ marginTop: 8 }}>
-          <label style={{ fontSize: 12, color: '#64748b' }}>Related object</label>
+          <label style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))' }}>Related object</label>
           <select
             value={draft.target_slug || ''}
             onChange={e => setDraft({ ...draft, target_slug: e.target.value })}
@@ -279,7 +283,7 @@ function FieldBuilder({ draft, setDraft, onAdd, editing, currentSlug, relations 
               <option key={o.slug} value={o.slug}>{o.icon} {o.label}</option>
             ))}
           </select>
-          <p style={{ fontSize: 11, color: '#94a3b8', margin: '4px 0 0' }}>
+          <p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', margin: '4px 0 0' }}>
             This field links each record to one {draft.target_slug ? objects.find(o => o.slug === draft.target_slug)?.label || 'record' : 'record'}; the related object will show these in a related list.
           </p>
         </div>
@@ -287,7 +291,7 @@ function FieldBuilder({ draft, setDraft, onAdd, editing, currentSlug, relations 
       {isMirror && (
         <div style={{ marginTop: 8, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
           <div>
-            <label style={{ fontSize: 12, color: '#64748b' }}>Via relation</label>
+            <label style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))' }}>Via relation</label>
             <select
               value={draft.via_field || ''}
               onChange={e => setDraft({ ...draft, via_field: e.target.value, source_field: '' })}
@@ -298,7 +302,7 @@ function FieldBuilder({ draft, setDraft, onAdd, editing, currentSlug, relations 
             </select>
           </div>
           <div>
-            <label style={{ fontSize: 12, color: '#64748b' }}>Show which field</label>
+            <label style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))' }}>Show which field</label>
             <select
               value={draft.source_field || ''}
               onChange={e => setDraft({ ...draft, source_field: e.target.value })}
@@ -309,7 +313,7 @@ function FieldBuilder({ draft, setDraft, onAdd, editing, currentSlug, relations 
               {sourceFields.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
             </select>
           </div>
-          <p style={{ gridColumn: '1 / -1', fontSize: 11, color: '#94a3b8', margin: 0 }}>
+          <p style={{ gridColumn: '1 / -1', fontSize: 11, color: 'hsl(var(--muted-foreground))', margin: 0 }}>
             {relations.length === 0
               ? 'Add a Relation field to this object first — a mirror displays a field from the record it links to.'
               : viaCandidates.length === 0
@@ -320,10 +324,10 @@ function FieldBuilder({ draft, setDraft, onAdd, editing, currentSlug, relations 
       )}
       {draft.type === 'select' && (
         <div style={{ marginTop: 8 }}>
-          <label style={{ fontSize: 12, color: '#64748b' }}>Options (press Enter)</label>
+          <label style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))' }}>Options (press Enter)</label>
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 4 }}>
             {draft.options.map(opt => (
-              <span key={opt} style={{ background: '#eff6ff', color: '#3b82f6', padding: '2px 8px', borderRadius: 12, fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span key={opt} style={{ background: 'rgba(59,130,246,0.12)', color: '#3b82f6', padding: '2px 8px', borderRadius: 12, fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
                 {opt} <button onClick={() => setDraft({ ...draft, options: draft.options.filter(o => o !== opt) })} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#3b82f6', fontSize: 12, padding: 0 }}>✕</button>
               </span>
             ))}
@@ -390,12 +394,12 @@ function CustomObjectForm({ editSlug, onDone, onCancel }: { editSlug?: string; o
     }
   };
 
-  if (loading) return <p style={{ color: '#94a3b8', padding: 20 }}>Loading...</p>;
+  if (loading) return <p style={{ color: 'hsl(var(--muted-foreground))', padding: 20 }}>Loading...</p>;
 
   return (
     <div>
       <h4 style={{ margin: '0 0 16px' }}>{editSlug ? `Edit ${label}` : 'New Custom Object'}</h4>
-      {error && <div style={{ background: '#fef2f2', color: '#dc2626', padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>{error}</div>}
+      {error && <div style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>{error}</div>}
 
       {/* Layout tab is only available once the object exists */}
       {editSlug && <TabBar active={tab} onSelect={t => setTab(t as 'fields' | 'layouts')} tabs={['fields', 'layouts']} />}
@@ -404,7 +408,7 @@ function CustomObjectForm({ editSlug, onDone, onCancel }: { editSlug?: string; o
         <>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 16 }}>
             <div><label style={{ fontSize: 13, fontWeight: 500, display: 'block', marginBottom: 4 }}>Label *</label><input value={label} onChange={e => onLabel(e.target.value)} placeholder="e.g. Project" style={inputStyle} /></div>
-            <div><label style={{ fontSize: 13, fontWeight: 500, display: 'block', marginBottom: 4 }}>Slug</label><input value={slug} onChange={e => setSlug(e.target.value)} disabled={!!editSlug} style={{ ...inputStyle, background: editSlug ? '#f1f5f9' : '#fff' }} /></div>
+            <div><label style={{ fontSize: 13, fontWeight: 500, display: 'block', marginBottom: 4 }}>Slug</label><input value={slug} onChange={e => setSlug(e.target.value)} disabled={!!editSlug} style={{ ...inputStyle, background: editSlug ? 'hsl(var(--muted))' : 'hsl(var(--card))' }} /></div>
             <div><label style={{ fontSize: 13, fontWeight: 500, display: 'block', marginBottom: 4 }}>Plural Label</label><input value={labelPlural} onChange={e => setLabelPlural(e.target.value)} placeholder="e.g. Projects" style={inputStyle} /></div>
           </div>
 
@@ -412,7 +416,7 @@ function CustomObjectForm({ editSlug, onDone, onCancel }: { editSlug?: string; o
             <label style={{ fontSize: 13, fontWeight: 500, display: 'block', marginBottom: 4 }}>Icon</label>
             <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
               {ICONS.map(ic => (
-                <button key={ic} onClick={() => setIcon(ic)} style={{ fontSize: 20, padding: '4px 8px', border: icon === ic ? '2px solid #3b82f6' : '1px solid #e2e8f0', borderRadius: 6, background: icon === ic ? '#eff6ff' : '#fff', cursor: 'pointer' }}>{ic}</button>
+                <button key={ic} onClick={() => setIcon(ic)} style={{ fontSize: 20, padding: '4px 8px', border: icon === ic ? '2px solid #3b82f6' : '1px solid hsl(var(--border))', borderRadius: 6, background: icon === ic ? 'rgba(59,130,246,0.12)' : 'hsl(var(--card))', cursor: 'pointer' }}>{ic}</button>
               ))}
             </div>
           </div>
@@ -421,7 +425,7 @@ function CustomObjectForm({ editSlug, onDone, onCancel }: { editSlug?: string; o
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 500, cursor: 'pointer' }}>
               <input type="checkbox" checked={searchable} onChange={e => setSearchable(e.target.checked)} /> 🔍 Searchable
             </label>
-            <p style={{ fontSize: 12, color: '#94a3b8', margin: '4px 0 0 24px' }}>Index records for semantic + full-text global search and AI.</p>
+            <p style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', margin: '4px 0 0 24px' }}>Index records for semantic + full-text global search and AI.</p>
           </div>
 
           {/* Record-number prefix is editable once the object exists (has a slug). */}
@@ -430,11 +434,11 @@ function CustomObjectForm({ editSlug, onDone, onCancel }: { editSlug?: string; o
           <div style={{ marginBottom: 16 }}>
             <label style={{ fontSize: 13, fontWeight: 500, display: 'block', marginBottom: 8 }}>Fields ({fields.length})</label>
             {fields.length > 0 && (
-              <div style={{ border: '1px solid #e2e8f0', borderRadius: 6, overflow: 'hidden', marginBottom: 8 }}>
+              <div style={{ border: '1px solid hsl(var(--border))', borderRadius: 6, overflow: 'hidden', marginBottom: 8 }}>
                 {fields.map((f, i) => (
-                  <div key={f.key} style={{ display: 'flex', alignItems: 'center', padding: '6px 10px', borderBottom: i < fields.length - 1 ? '1px solid #f1f5f9' : 'none' }}>
+                  <div key={f.key} style={{ display: 'flex', alignItems: 'center', padding: '6px 10px', borderBottom: i < fields.length - 1 ? '1px solid hsl(var(--muted))' : 'none' }}>
                     <span style={{ flex: 1, fontWeight: 500, fontSize: 13 }}>{f.label}</span>
-                    <code style={{ fontSize: 12, color: '#64748b', marginRight: 8 }}>{f.key}</code>
+                    <code style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', marginRight: 8 }}>{f.key}</code>
                     <span style={{ fontSize: 12, color: '#3b82f6', marginRight: 8 }}>{typeLabel(f.type)}</span>
                     {f.required && <span style={{ fontSize: 11, color: '#ef4444', marginRight: 8 }}>Required</span>}
                     <button onClick={() => setFields(fields.filter(x => x.key !== f.key))} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', fontSize: 14 }}>✕</button>
@@ -450,7 +454,7 @@ function CustomObjectForm({ editSlug, onDone, onCancel }: { editSlug?: string; o
 
           <div style={{ display: 'flex', gap: 8 }}>
             <button onClick={save} style={btn('#3b82f6')}>{editSlug ? 'Update Object' : 'Create Object'}</button>
-            <button onClick={onCancel} style={{ padding: '8px 16px', background: '#e2e8f0', border: 'none', borderRadius: 6, cursor: 'pointer' }}>Cancel</button>
+            <button onClick={onCancel} style={{ padding: '8px 16px', background: 'hsl(var(--border))', border: 'none', borderRadius: 6, cursor: 'pointer' }}>Cancel</button>
           </div>
         </>
       ) : (
@@ -476,6 +480,7 @@ function SystemFieldsEditor({ slug, onBack }: { slug: string; onBack: () => void
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -525,11 +530,17 @@ function SystemFieldsEditor({ slug, onBack }: { slug: string; onBack: () => void
   };
 
   const removeField = async (key: string) => {
+    // Deleting a field deletes its DATA on every record — never one-click.
+    if (!(await confirmDialog({
+      title: `Delete the "${key}" field`,
+      body: 'This removes the field and its values from every record of this object. This cannot be undone.',
+      confirmLabel: 'Delete field',
+    }))) return;
     setError('');
     try { await deleteFieldDef(key); load(); } catch (e) { setError(e instanceof Error ? e.message : 'Delete failed'); }
   };
 
-  if (loading) return <p style={{ color: '#94a3b8', padding: 20 }}>Loading...</p>;
+  if (loading) return <p style={{ color: 'hsl(var(--muted-foreground))', padding: 20 }}>Loading...</p>;
 
   // Deals use a Kanban layout — no point offering a custom section builder for them.
   const showLayouts = slug !== 'deal';
@@ -540,26 +551,26 @@ function SystemFieldsEditor({ slug, onBack }: { slug: string; onBack: () => void
 
       {showLayouts
         ? <TabBar active={tab} onSelect={t => setTab(t as 'fields' | 'layouts')} tabs={['fields', 'layouts']} />
-        : <p style={{ color: '#64748b', fontSize: 13, marginTop: 0 }}>Built-in fields are fixed; add or edit your own custom fields below.</p>
+        : <p style={{ color: 'hsl(var(--muted-foreground))', fontSize: 13, marginTop: 0 }}>Built-in fields are fixed; add or edit your own custom fields below.</p>
       }
 
       {tab === 'fields' ? (
         <>
           {showLayouts || (
-            <p style={{ color: '#64748b', fontSize: 13, marginTop: 0 }}>Built-in fields are fixed; add or edit your own custom fields below.</p>
+            <p style={{ color: 'hsl(var(--muted-foreground))', fontSize: 13, marginTop: 0 }}>Built-in fields are fixed; add or edit your own custom fields below.</p>
           )}
-          {error && <div style={{ background: '#fef2f2', color: '#dc2626', padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>{error}</div>}
+          {error && <div style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>{error}</div>}
 
           <NumberPrefixEditor slug={slug} />
 
-          <div style={{ border: '1px solid #e2e8f0', borderRadius: 6, overflow: 'hidden', marginBottom: 12 }}>
+          <div style={{ border: '1px solid hsl(var(--border))', borderRadius: 6, overflow: 'hidden', marginBottom: 12 }}>
             {rows.map((r, i) => (
-              <div key={r.key} style={{ display: 'flex', alignItems: 'center', padding: '8px 10px', borderBottom: i < rows.length - 1 ? '1px solid #f1f5f9' : 'none', background: r.is_system ? '#fafbfc' : '#fff' }}>
+              <div key={r.key} style={{ display: 'flex', alignItems: 'center', padding: '8px 10px', borderBottom: i < rows.length - 1 ? '1px solid hsl(var(--muted))' : 'none', background: r.is_system ? 'hsl(var(--muted))' : 'hsl(var(--card))' }}>
                 <span style={{ flex: 1, fontWeight: 500, fontSize: 13 }}>{r.label}</span>
-                <code style={{ fontSize: 12, color: '#64748b', marginRight: 8 }}>{r.key}</code>
+                <code style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', marginRight: 8 }}>{r.key}</code>
                 <span style={{ fontSize: 12, color: '#3b82f6', marginRight: 8 }}>{typeLabel(r.type)}</span>
                 {r.is_system ? (
-                  <span style={{ fontSize: 11, color: '#94a3b8' }}>Built-in</span>
+                  <span style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))' }}>Built-in</span>
                 ) : (
                   <>
                     <button onClick={() => editField(r)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, padding: 2 }} title="Edit">✏️</button>
@@ -577,8 +588,8 @@ function SystemFieldsEditor({ slug, onBack }: { slug: string; onBack: () => void
           />
 
           <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
-            <button onClick={onBack} style={{ padding: '8px 16px', background: '#e2e8f0', border: 'none', borderRadius: 6, cursor: 'pointer' }}>← Back to objects</button>
-            {editingKey && <button onClick={() => { setEditingKey(null); setDraft({ ...emptyDraft }); }} style={{ padding: '8px 16px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, cursor: 'pointer' }}>Cancel edit</button>}
+            <button onClick={onBack} style={{ padding: '8px 16px', background: 'hsl(var(--border))', border: 'none', borderRadius: 6, cursor: 'pointer' }}>← Back to objects</button>
+            {editingKey && <button onClick={() => { setEditingKey(null); setDraft({ ...emptyDraft }); }} style={{ padding: '8px 16px', background: 'hsl(var(--card))', border: '1px solid hsl(var(--input))', borderRadius: 6, cursor: 'pointer' }}>Cancel edit</button>}
           </div>
         </>
       ) : (
@@ -590,9 +601,10 @@ function SystemFieldsEditor({ slug, onBack }: { slug: string; onBack: () => void
 
       {tab === 'layouts' && (
         <div style={{ marginTop: 20 }}>
-          <button onClick={onBack} style={{ padding: '8px 16px', background: '#e2e8f0', border: 'none', borderRadius: 6, cursor: 'pointer' }}>← Back to objects</button>
+          <button onClick={onBack} style={{ padding: '8px 16px', background: 'hsl(var(--border))', border: 'none', borderRadius: 6, cursor: 'pointer' }}>← Back to objects</button>
         </div>
       )}
+      {confirmDialogEl}
     </div>
   );
 }
@@ -610,6 +622,7 @@ function LayoutsEditor({ slug, fieldKeys }: { slug: string; fieldKeys: FieldEntr
   const [creating, setCreating] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -629,10 +642,15 @@ function LayoutsEditor({ slug, fieldKeys }: { slug: string; fieldKeys: FieldEntr
   useEffect(() => { load(); }, [load]);
 
   const handleDelete = async (id: string) => {
+    if (!(await confirmDialog({
+      title: 'Delete layout',
+      body: 'Roles assigned to this layout fall back to the default layout (or a flat field list). This cannot be undone.',
+      confirmLabel: 'Delete layout',
+    }))) return;
     try { await deleteObjectLayout(slug, id); load(); } catch (e) { setError(e instanceof Error ? e.message : 'Delete failed'); }
   };
 
-  if (loading) return <p style={{ color: '#94a3b8' }}>Loading layouts…</p>;
+  if (loading) return <p style={{ color: 'hsl(var(--muted-foreground))' }}>Loading layouts…</p>;
 
   if (creating || editing) {
     return (
@@ -651,38 +669,39 @@ function LayoutsEditor({ slug, fieldKeys }: { slug: string; fieldKeys: FieldEntr
 
   return (
     <div>
-      <p style={{ fontSize: 13, color: '#64748b', marginTop: 0 }}>
-        Layouts control how fields are arranged on the detail page — by role. The effective layout
-        is served via the schema API: role-assigned → default → flat field order.
+      <p style={{ fontSize: 13, color: 'hsl(var(--muted-foreground))', marginTop: 0 }}>
+        Layouts control how fields are arranged on a record's detail page, per role. A role sees
+        the layout assigned to it; roles without one see the default layout, or a simple field
+        list if no default exists.
       </p>
-      {error && <div style={{ background: '#fef2f2', color: '#dc2626', padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>{error}</div>}
+      {error && <div style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>{error}</div>}
 
       {layouts.length === 0 ? (
-        <div style={{ padding: '32px 0', textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>
+        <div style={{ padding: '32px 0', textAlign: 'center', color: 'hsl(var(--muted-foreground))', fontSize: 13 }}>
           No layouts yet. All roles see a flat list of fields ordered by position.
         </div>
       ) : (
-        <div style={{ border: '1px solid #e2e8f0', borderRadius: 6, overflow: 'hidden', marginBottom: 12 }}>
+        <div style={{ border: '1px solid hsl(var(--border))', borderRadius: 6, overflow: 'hidden', marginBottom: 12 }}>
           {layouts.map((l, i) => (
-            <div key={l.id} style={{ display: 'flex', alignItems: 'center', padding: '10px 12px', borderBottom: i < layouts.length - 1 ? '1px solid #f1f5f9' : 'none' }}>
+            <div key={l.id} style={{ display: 'flex', alignItems: 'center', padding: '10px 12px', borderBottom: i < layouts.length - 1 ? '1px solid hsl(var(--muted))' : 'none' }}>
               <div style={{ flex: 1 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span style={{ fontWeight: 500, fontSize: 13 }}>{l.name}</span>
                   {l.is_default && (
-                    <span style={{ fontSize: 11, padding: '1px 7px', background: '#f0fdf4', color: '#16a34a', borderRadius: 10, fontWeight: 600 }}>default</span>
+                    <span style={{ fontSize: 11, padding: '1px 7px', background: 'rgba(34,197,94,0.12)', color: '#22c55e', borderRadius: 10, fontWeight: 600 }}>default</span>
                   )}
                 </div>
                 {l.role_ids.length > 0 && (
                   <div style={{ marginTop: 3, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                     {l.role_ids.map(rid => (
-                      <span key={rid} style={{ fontSize: 11, padding: '1px 7px', background: '#eff6ff', color: '#3b82f6', borderRadius: 10 }}>
+                      <span key={rid} style={{ fontSize: 11, padding: '1px 7px', background: 'rgba(59,130,246,0.12)', color: '#3b82f6', borderRadius: 10 }}>
                         {roleMap[rid] ?? rid}
                       </span>
                     ))}
                   </div>
                 )}
               </div>
-              <span style={{ fontSize: 12, color: '#94a3b8', marginRight: 12 }}>{(l.layout ?? []).length} sections</span>
+              <span style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', marginRight: 12 }}>{(l.layout ?? []).length} sections</span>
               <button onClick={() => setEditing(l)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, padding: 4 }} title="Edit">✏️</button>
               <button onClick={() => handleDelete(l.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', fontSize: 14, padding: 4 }} title="Delete">🗑️</button>
             </div>
@@ -691,6 +710,7 @@ function LayoutsEditor({ slug, fieldKeys }: { slug: string; fieldKeys: FieldEntr
       )}
 
       <button onClick={() => setCreating(true)} style={{ ...btn('#3b82f6'), fontSize: 13 }}>+ New Layout</button>
+      {confirmDialogEl}
     </div>
   );
 }
@@ -791,7 +811,7 @@ function LayoutForm({
   return (
     <div>
       <h4 style={{ margin: '0 0 16px' }}>{initial ? `Edit layout: ${initial.name}` : 'New layout'}</h4>
-      {error && <div style={{ background: '#fef2f2', color: '#dc2626', padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>{error}</div>}
+      {error && <div style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>{error}</div>}
 
       {/* Name + options row */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 16, alignItems: 'end', marginBottom: 16 }}>
@@ -815,8 +835,8 @@ function LayoutForm({
               return (
                 <button key={r.id} onClick={() => toggleRole(r.id)} style={{
                   padding: '5px 12px', borderRadius: 20, fontSize: 12, fontWeight: 500,
-                  border: active ? '1px solid #3b82f6' : '1px solid #d1d5db',
-                  background: active ? '#eff6ff' : '#fff', color: active ? '#3b82f6' : '#64748b',
+                  border: active ? '1px solid #3b82f6' : '1px solid hsl(var(--input))',
+                  background: active ? 'rgba(59,130,246,0.12)' : 'hsl(var(--card))', color: active ? '#3b82f6' : 'hsl(var(--muted-foreground))',
                   cursor: 'pointer',
                 }}>
                   {r.name}
@@ -824,7 +844,7 @@ function LayoutForm({
               );
             })}
           </div>
-          <p style={{ fontSize: 11, color: '#94a3b8', margin: '4px 0 0' }}>
+          <p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', margin: '4px 0 0' }}>
             Roles without an assignment fall back to the default layout, then flat field order.
           </p>
         </div>
@@ -832,7 +852,7 @@ function LayoutForm({
 
       {/* Unplaced fields hint */}
       {unplacedFields.length > 0 && (
-        <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '8px 12px', marginBottom: 12, fontSize: 12, color: '#92400e' }}>
+        <div style={{ background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.4)', borderRadius: 6, padding: '8px 12px', marginBottom: 12, fontSize: 12, color: '#d97706' }}>
           {unplacedFields.length} field{unplacedFields.length > 1 ? 's' : ''} not in any section ({unplacedFields.map(f => f.label).join(', ')}) — they will appear in an "Other" section on the detail page.
         </div>
       )}
@@ -845,7 +865,7 @@ function LayoutForm({
         </div>
 
         {sections.length === 0 && (
-          <div style={{ padding: '24px', textAlign: 'center', border: '1px dashed #d1d5db', borderRadius: 6, color: '#94a3b8', fontSize: 13 }}>
+          <div style={{ padding: '24px', textAlign: 'center', border: '1px dashed hsl(var(--input))', borderRadius: 6, color: 'hsl(var(--muted-foreground))', fontSize: 13 }}>
             Add sections to group fields. Without sections, all fields render in the "Other" fallback.
           </div>
         )}
@@ -868,10 +888,10 @@ function LayoutForm({
       </div>
 
       <div style={{ display: 'flex', gap: 8 }}>
-        <button onClick={save} disabled={saving} style={btn(saving ? '#94a3b8' : '#3b82f6')}>
+        <button onClick={save} disabled={saving} style={btn(saving ? 'hsl(var(--muted-foreground))' : '#3b82f6')}>
           {saving ? 'Saving…' : initial ? 'Update Layout' : 'Create Layout'}
         </button>
-        <button onClick={onCancel} style={{ padding: '8px 16px', background: '#e2e8f0', border: 'none', borderRadius: 6, cursor: 'pointer' }}>Cancel</button>
+        <button onClick={onCancel} style={{ padding: '8px 16px', background: 'hsl(var(--border))', border: 'none', borderRadius: 6, cursor: 'pointer' }}>Cancel</button>
       </div>
     </div>
   );
@@ -907,7 +927,7 @@ function SectionEditor({
   const [fieldPick, setFieldPick] = useState('');
 
   return (
-    <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, marginBottom: 8, background: '#fff' }}>
+    <div style={{ border: '1px solid hsl(var(--border))', borderRadius: 8, padding: 12, marginBottom: 8, background: 'hsl(var(--card))' }}>
       {/* Section header controls */}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
         <input
@@ -919,32 +939,32 @@ function SectionEditor({
         <select
           value={section.columns}
           onChange={e => onUpdate({ columns: Number(e.target.value) as 1 | 2 })}
-          style={{ padding: '5px 8px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, cursor: 'pointer' }}
+          style={{ padding: '5px 8px', border: '1px solid hsl(var(--input))', borderRadius: 6, fontSize: 13, cursor: 'pointer' }}
         >
           <option value={1}>1 column</option>
           <option value={2}>2 columns</option>
         </select>
         <div style={{ display: 'flex', gap: 2 }}>
-          <button onClick={onMoveUp} disabled={!onMoveUp} style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 4, cursor: onMoveUp ? 'pointer' : 'default', padding: '3px 7px', opacity: onMoveUp ? 1 : 0.3 }}>↑</button>
-          <button onClick={onMoveDown} disabled={!onMoveDown} style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 4, cursor: onMoveDown ? 'pointer' : 'default', padding: '3px 7px', opacity: onMoveDown ? 1 : 0.3 }}>↓</button>
+          <button onClick={onMoveUp} disabled={!onMoveUp} style={{ background: 'none', border: '1px solid hsl(var(--border))', borderRadius: 4, cursor: onMoveUp ? 'pointer' : 'default', padding: '3px 7px', opacity: onMoveUp ? 1 : 0.3 }}>↑</button>
+          <button onClick={onMoveDown} disabled={!onMoveDown} style={{ background: 'none', border: '1px solid hsl(var(--border))', borderRadius: 4, cursor: onMoveDown ? 'pointer' : 'default', padding: '3px 7px', opacity: onMoveDown ? 1 : 0.3 }}>↓</button>
         </div>
         <button onClick={onRemove} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', fontSize: 16, padding: '0 4px' }} title="Remove section">✕</button>
       </div>
 
       {/* Field list */}
       {section.fields.length === 0 ? (
-        <p style={{ color: '#94a3b8', fontSize: 12, margin: '0 0 8px' }}>No fields yet — add from the list below.</p>
+        <p style={{ color: 'hsl(var(--muted-foreground))', fontSize: 12, margin: '0 0 8px' }}>No fields yet — add from the list below.</p>
       ) : (
-        <div style={{ border: '1px solid #e2e8f0', borderRadius: 6, overflow: 'hidden', marginBottom: 8 }}>
+        <div style={{ border: '1px solid hsl(var(--border))', borderRadius: 6, overflow: 'hidden', marginBottom: 8 }}>
           {section.fields.map((f, fi) => (
-            <div key={f.key} style={{ display: 'flex', alignItems: 'center', padding: '5px 8px', borderBottom: fi < section.fields.length - 1 ? '1px solid #f1f5f9' : 'none', fontSize: 13 }}>
-              <span style={{ flex: 1, color: '#0f172a' }}>{fieldLabelMap[f.key] ?? f.key}</span>
-              <code style={{ fontSize: 11, color: '#94a3b8', marginRight: 8 }}>{f.key}</code>
+            <div key={f.key} style={{ display: 'flex', alignItems: 'center', padding: '5px 8px', borderBottom: fi < section.fields.length - 1 ? '1px solid hsl(var(--muted))' : 'none', fontSize: 13 }}>
+              <span style={{ flex: 1, color: 'hsl(var(--foreground))' }}>{fieldLabelMap[f.key] ?? f.key}</span>
+              <code style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', marginRight: 8 }}>{f.key}</code>
               {section.columns === 2 && (
                 <select
                   value={f.width ?? 'half'}
                   onChange={e => onSetFieldWidth(f.key, e.target.value as LayoutField['width'])}
-                  style={{ fontSize: 11, padding: '2px 5px', border: '1px solid #e2e8f0', borderRadius: 4, marginRight: 6, cursor: 'pointer' }}
+                  style={{ fontSize: 11, padding: '2px 5px', border: '1px solid hsl(var(--border))', borderRadius: 4, marginRight: 6, cursor: 'pointer' }}
                 >
                   <option value="half">½ col</option>
                   <option value="full">full</option>
@@ -962,7 +982,7 @@ function SectionEditor({
           <select
             value={fieldPick}
             onChange={e => setFieldPick(e.target.value)}
-            style={{ flex: 1, padding: '5px 8px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 12, cursor: 'pointer' }}
+            style={{ flex: 1, padding: '5px 8px', border: '1px solid hsl(var(--input))', borderRadius: 6, fontSize: 12, cursor: 'pointer' }}
           >
             <option value="">— add a field —</option>
             {availableFields.map(f => <option key={f.key} value={f.key}>{f.label} ({f.key})</option>)}
@@ -970,7 +990,7 @@ function SectionEditor({
           <button
             onClick={() => { if (fieldPick) { onAddField(fieldPick); setFieldPick(''); } }}
             disabled={!fieldPick}
-            style={{ ...btn(fieldPick ? '#3b82f6' : '#94a3b8'), padding: '5px 12px', fontSize: 12 }}
+            style={{ ...btn(fieldPick ? '#3b82f6' : 'hsl(var(--muted-foreground))'), padding: '5px 12px', fontSize: 12 }}
           >Add</button>
         </div>
       )}

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { getSessions, revokeSession, signOutEverywhere, type UserSession } from '../../lib/api';
+import { useConfirm } from '../common/ConfirmDialog';
 
 function relativeTime(iso?: string): string {
   if (!iso) return '—';
@@ -20,6 +21,10 @@ export default function SecuritySessions() {
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
+  // Load failures replace the list (nothing to show); ACTION failures render
+  // above it so the list stays visible and retryable.
+  const [actionError, setActionError] = useState<string | null>(null);
+  const { confirm, dialog } = useConfirm();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -38,26 +43,30 @@ export default function SecuritySessions() {
   }, [load]);
 
   const handleRevoke = async (id: string) => {
-    if (!confirm('Sign this device out? It will need to sign in again.')) return;
+    if (!(await confirm({ title: 'Revoke session', body: 'Sign this device out? It will need to sign in again.', confirmLabel: 'Sign it out' }))) return;
     setBusyId(id);
+    setActionError(null);
     try {
       await revokeSession(id);
       setSessions((prev) => prev.filter((s) => s.id !== id));
     } catch (e) {
-      alert(e instanceof Error ? e.message : 'Failed to revoke session');
+      // Action failures go to their own banner — routing them into `error`
+      // replaced the whole session list with the message, killing retry.
+      setActionError(e instanceof Error ? e.message : 'Failed to revoke session');
     } finally {
       setBusyId(null);
     }
   };
 
   const handleSignOutAll = async () => {
-    if (!confirm('Sign out of every other device? This keeps you signed in here.')) return;
+    if (!(await confirm({ title: 'Sign out other devices', body: 'Sign out of every other device? This keeps you signed in here.', confirmLabel: 'Sign them out' }))) return;
     setSigningOut(true);
+    setActionError(null);
     try {
       await signOutEverywhere();
       await load();
     } catch (e) {
-      alert(e instanceof Error ? e.message : 'Failed to sign out other devices');
+      setActionError(e instanceof Error ? e.message : 'Failed to sign out other devices');
     } finally {
       setSigningOut(false);
     }
@@ -73,6 +82,10 @@ export default function SecuritySessions() {
           Devices currently signed in to your account. Revoke any you don't recognize.
         </p>
       </div>
+
+      {actionError && (
+        <div className="rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-400">{actionError}</div>
+      )}
 
       {error ? (
         <div className="rounded-md border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-400">{error}</div>
@@ -132,6 +145,7 @@ export default function SecuritySessions() {
           </p>
         </div>
       )}
+      {dialog}
     </div>
   );
 }

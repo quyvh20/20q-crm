@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { getWorkspaceMembers, updateMemberRole, removeMember, suspendMember, reinstateMember, transferOwnership, sendMemberResetLink, listInvitations, resendInvitation, revokeInvitation, getRoleOptions, ReassignmentRequiredError, type WorkspaceMember, type Invitation, type RoleOption } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
+import { useConfirm } from '../common/ConfirmDialog';
 import { ShieldAlert, PauseCircle, PlayCircle, UserMinus, Crown, Shield, KeyRound, CheckCircle2, RotateCw, X } from 'lucide-react';
 
 // prettyRole title-cases a role name for display ("sales_rep" → "Sales Rep").
@@ -21,6 +22,7 @@ export default function MembersList() {
   const [errorMsg, setErrorMsg] = useState('');
   const [noticeMsg, setNoticeMsg] = useState('');
   const [invitations, setInvitations] = useState<Invitation[]>([]);
+  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
 
   const canManage = hasCapability('members.manage');
   // Owner role ids (resolved from the dynamic options, P6) so the owner member is
@@ -31,6 +33,7 @@ export default function MembersList() {
     setLoading(true);
     getWorkspaceMembers()
       .then(setMembers)
+      .catch((e) => setErrorMsg(e instanceof Error ? e.message : 'Failed to load members')) // a load failure used to render as "No members found"
       .finally(() => setLoading(false));
   };
 
@@ -47,7 +50,11 @@ export default function MembersList() {
   }, []);
 
   const handleSendReset = async (m: WorkspaceMember) => {
-    if (!confirm(`Email ${m.full_name || m.email} a password reset link? You won't see or set their password — their account may span workspaces.`)) return;
+    if (!(await confirmDialog({
+      title: 'Send password reset link',
+      body: `Email ${m.full_name || m.email} a password reset link? You won't see or set their password — their account may span workspaces.`,
+      confirmLabel: 'Send link', tone: 'default',
+    }))) return;
     setErrorMsg(''); setNoticeMsg('');
     try {
       await sendMemberResetLink(m.user_id);
@@ -69,7 +76,11 @@ export default function MembersList() {
   };
 
   const handleRevokeInvite = async (inv: Invitation) => {
-    if (!confirm(`Revoke the invitation for ${inv.email}? Their link will stop working.`)) return;
+    if (!(await confirmDialog({
+      title: 'Revoke invitation',
+      body: `Revoke the invitation for ${inv.email}? Their link will stop working.`,
+      confirmLabel: 'Revoke',
+    }))) return;
     setErrorMsg(''); setNoticeMsg('');
     try {
       await revokeInvitation(inv.id);
@@ -95,7 +106,11 @@ export default function MembersList() {
   };
 
   const handleRemove = async (userId: string, input?: { strategy: 'transfer' | 'unassign'; reassign_to_user_id?: string }) => {
-    if (!input && !confirm('Remove this member from the workspace?')) return;
+    if (!input && !(await confirmDialog({
+      title: 'Remove member',
+      body: 'Remove this member from the workspace? They lose access immediately; their account is untouched and they can be re-invited later.',
+      confirmLabel: 'Remove',
+    }))) return;
     setErrorMsg('');
     try {
       await removeMember(userId, input);
@@ -120,7 +135,11 @@ export default function MembersList() {
   };
 
   const handleSuspend = async (userId: string) => {
-    if (!confirm('Suspend this member? They will lose access immediately.')) return;
+    if (!(await confirmDialog({
+      title: 'Suspend member',
+      body: 'Suspend this member? They lose access immediately. You can reinstate them at any time.',
+      confirmLabel: 'Suspend',
+    }))) return;
     // Optimistic update
     setMembers(prev => prev.map(m => m.user_id === userId ? { ...m, status: 'suspended' } : m));
     try {
@@ -145,7 +164,11 @@ export default function MembersList() {
   };
 
   const handleTransfer = async (userId: string) => {
-    if (!confirm('Transfer ownership? You will lose Owner privileges.')) return;
+    if (!(await confirmDialog({
+      title: 'Transfer ownership',
+      body: 'Transfer ownership of this workspace? You will lose Owner privileges and become an Admin — only the new owner can transfer it back.',
+      confirmLabel: 'Transfer ownership',
+    }))) return;
     try {
       await transferOwnership(userId);
       window.location.reload(); // Hard reload to update auth context completely
@@ -223,7 +246,7 @@ export default function MembersList() {
                       ))}
                     </select>
                   ) : (
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-neutral-800 text-neutral-300 capitalize border border-neutral-700">
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-muted text-muted-foreground capitalize border border-border">
                       {m.role === 'owner' && <Crown className="w-3 h-3 text-yellow-500" />}
                       {m.role === 'admin' && <Shield className="w-3 h-3 text-blue-400" />}
                       {m.role?.replace('_', ' ')}
@@ -245,9 +268,6 @@ export default function MembersList() {
                 </td>
                 {canManage && (
                   <td className="py-3 text-right">
-                    <div className="flex items-center justify-end gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
-                      {/* We make it visible always for simplicity on touch, or use visibility tricks. Using visible here. */}
-                    </div>
                     <div className="flex items-center justify-end gap-3">
                       {m.user_id !== user?.id && m.status !== 'invited' && m.status !== 'deleted' && (
                         <button onClick={() => handleSendReset(m)} title="Send password reset link" className="text-muted-foreground hover:text-blue-400 transition-colors">
@@ -309,7 +329,7 @@ export default function MembersList() {
                   <tr key={inv.id} className="border-b border-border/50 hover:bg-accent/30 transition-colors">
                     <td className="py-3 pr-4 text-sm text-foreground">{inv.email}</td>
                     <td className="py-3 pr-4">
-                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-neutral-800 text-neutral-300 capitalize border border-neutral-700">
+                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-muted text-muted-foreground capitalize border border-border">
                         {inv.role?.replace('_', ' ')}
                       </span>
                     </td>
@@ -404,6 +424,7 @@ export default function MembersList() {
           </div>
         </div>
       )}
+      {confirmDialogEl}
     </>
   );
 }

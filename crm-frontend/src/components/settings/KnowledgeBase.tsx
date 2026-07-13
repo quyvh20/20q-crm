@@ -19,10 +19,13 @@ export default function KnowledgeBase() {
   const [showPrompt, setShowPrompt] = useState(false);
   const [aiPrompt, setAIPrompt] = useState('');
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Load all sections
-  useEffect(() => {
+  const loadSections = useCallback(() => {
+    setLoading(true);
+    setLoadError('');
     getKBSections()
       .then((data) => {
         const map: Record<string, KBEntry> = {};
@@ -30,15 +33,14 @@ export default function KnowledgeBase() {
           map[entry.section] = entry;
         }
         setEntries(map);
-        // Load first available section
-        if (map[activeSection]) {
-          setContent(map[activeSection].content);
-          setTitle(map[activeSection].title);
-        }
+        setContent(map[activeSection]?.content ?? '');
+        setTitle(map[activeSection]?.title ?? (SECTIONS.find(s => s.key === activeSection)?.label || activeSection));
       })
-      .catch(() => {})
+      .catch((e) => setLoadError(e instanceof Error ? e.message : 'Failed to load the knowledge base'))
       .finally(() => setLoading(false));
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeSection]);
+
+  useEffect(() => { loadSections(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Switch section
   useEffect(() => {
@@ -55,7 +57,10 @@ export default function KnowledgeBase() {
   }, [activeSection, entries]);
 
   const doSave = useCallback(async (section: string, t: string, c: string) => {
-    if (!c.trim()) return;
+    // Saving empty content is only skipped for a section that never had any —
+    // CLEARING an existing section must save, or deleted text silently comes
+    // back on reload (the old early-return swallowed it).
+    if (!c.trim() && !entries[section]) return;
     setSaveStatus('saving');
     try {
       const saved = await upsertKBSection(section, { title: t, content: c });
@@ -65,7 +70,7 @@ export default function KnowledgeBase() {
     } catch {
       setSaveStatus('error');
     }
-  }, []);
+  }, [entries]);
 
   const handleContentChange = (val: string | undefined) => {
     const newContent = val || '';
@@ -109,6 +114,28 @@ export default function KnowledgeBase() {
     );
   }
 
+  // A failed load must DISABLE editing, not just warn: the editor would render
+  // blank over real server content, and one autosaved keystroke would then
+  // overwrite the whole section (the A5.2 template-editor data-loss class).
+  if (loadError) {
+    return (
+      <div className="space-y-4">
+        <div>
+          <h2 className="text-lg font-semibold">Business Knowledge Base</h2>
+        </div>
+        <div className="rounded-md border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-400">
+          {loadError} — editing is disabled so your existing content isn't overwritten.
+        </div>
+        <button
+          onClick={loadSections}
+          className="px-4 py-2 text-sm font-medium rounded-lg border border-border hover:bg-accent transition-colors"
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       {/* Header */}
@@ -137,7 +164,7 @@ export default function KnowledgeBase() {
               onClick={() => setActiveSection(s.key)}
               className={`w-full text-left px-3 py-2.5 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${
                 activeSection === s.key
-                  ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                  ? 'bg-blue-500/10 text-blue-500 border border-blue-500/30'
                   : 'text-muted-foreground hover:bg-accent hover:text-foreground'
               }`}
             >
@@ -177,8 +204,8 @@ export default function KnowledgeBase() {
             </div>
           </div>
 
-          {/* Markdown editor */}
-          <div data-color-mode="light">
+          {/* Markdown editor — follow the app theme instead of forcing light */}
+          <div data-color-mode={typeof document !== 'undefined' && document.documentElement.classList.contains('dark') ? 'dark' : 'light'}>
             <MDEditor
               value={content}
               onChange={handleContentChange}

@@ -62,6 +62,7 @@ export default function AuditLogViewer() {
   const [to, setTo] = useState('');
   const [page, setPage] = useState(0);
   const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState('');
 
   // Convert the date inputs (yyyy-mm-dd) to RFC3339 bounds.
   const filters: AuditEventFilters = {
@@ -89,6 +90,7 @@ export default function AuditLogViewer() {
 
   const handleExport = async () => {
     setExporting(true);
+    setExportError('');
     try {
       const blob = await exportAuditCsv({ category: filters.category, from: filters.from, to: filters.to });
       const url = URL.createObjectURL(blob);
@@ -100,7 +102,7 @@ export default function AuditLogViewer() {
       a.remove();
       URL.revokeObjectURL(url);
     } catch (e) {
-      alert(e instanceof Error ? e.message : 'Export failed');
+      setExportError(e instanceof Error ? e.message : 'Export failed');
     } finally {
       setExporting(false);
     }
@@ -114,6 +116,10 @@ export default function AuditLogViewer() {
           Every sign-in, member change, role edit, and permission change — who did it and when.
         </p>
       </div>
+
+      {exportError && (
+        <div className="rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-400">{exportError}</div>
+      )}
 
       {/* Filters */}
       <div className="flex flex-wrap items-end gap-3">

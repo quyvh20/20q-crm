@@ -46,7 +46,9 @@ export default function InviteMemberModal({ onClose, onInvited }: Props) {
     try {
       const { debug_token } = await inviteMember(email, roleId);
       onInvited();
-      if (debug_token) {
+      // The debug accept-link is a dev convenience; even if a misconfigured
+      // backend returns the token, a production build never renders it.
+      if (debug_token && import.meta.env.DEV) {
         setSuccessLink(`${window.location.origin}/accept-invite?token=${debug_token}`);
       } else {
         onClose();

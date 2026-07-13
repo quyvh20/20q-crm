@@ -13,6 +13,7 @@ import {
   type CapabilityInfo,
   type DataScope,
 } from '../../lib/api';
+import { useConfirm } from '../common/ConfirmDialog';
 
 // RolesManager is the admin surface for custom roles (P3/P6). Every authorization
 // layer keys off role_id, so a role created here works everywhere: its
@@ -41,6 +42,7 @@ export default function RolesManager() {
   const [dupReassign, setDupReassign] = useState(false);
   const [delTarget, setDelTarget] = useState<RoleDetail | null>(null);
   const [reassignTo, setReassignTo] = useState('');
+  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
 
   const load = useCallback(async () => {
     try {
@@ -99,7 +101,11 @@ export default function RolesManager() {
     // additionally refuses to let you strip it from your OWN role (U0.5).
     if (has && cap === 'roles.manage') {
       const holders = role.member_count === 1 ? '1 member' : `${role.member_count} members`;
-      if (!confirm(`Remove "Manage roles & permissions" from ${role.name}? ${role.member_count > 0 ? `${holders} holding this role` : 'Members with this role'} will no longer be able to open the Permissions settings.`)) return;
+      if (!(await confirmDialog({
+        title: 'Remove permission management?',
+        body: `${role.member_count > 0 ? `${holders} holding the "${role.name}" role` : `Members with the "${role.name}" role`} will no longer be able to open the Roles, Object Access, or Field Access settings.`,
+        confirmLabel: 'Remove it',
+      }))) return;
     }
     const next = has ? role.capabilities.filter((c) => c !== cap) : [...role.capabilities, cap];
     setBusyId(role.id);
@@ -130,13 +136,17 @@ export default function RolesManager() {
 
   // Delete: a role nobody holds is deleted directly; a role with members opens the
   // reassign picker (the backend also enforces this with a 409).
-  const startDelete = (role: RoleDetail) => {
+  const startDelete = async (role: RoleDetail) => {
     if (role.member_count > 0) {
       setReassignTo('');
       setDelTarget(role);
       return;
     }
-    if (!confirm(`Delete the "${role.name}" role? This cannot be undone.`)) return;
+    if (!(await confirmDialog({
+      title: `Delete the "${role.name}" role`,
+      body: 'This cannot be undone. Nobody currently holds this role.',
+      confirmLabel: 'Delete role',
+    }))) return;
     runDelete(role, undefined);
   };
 
@@ -402,6 +412,7 @@ export default function RolesManager() {
           </div>
         </div>
       )}
+      {confirmDialogEl}
     </div>
   );
 }

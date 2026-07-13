@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
 import { globalSearch, type SearchGroup } from '../../lib/api';
 import { recordPath } from '../../features/objects/recordRoutes';
+import { useAuth } from '../../lib/auth';
+import { visibleSections } from '../../pages/settings/SettingsLayout';
 
 // GlobalSearch is the P6 cross-object search palette: one Ctrl+K box that spans
 // every searchable object (custom objects + contacts), grouped by object, backed
@@ -15,6 +17,14 @@ function hrefFor(object: string, id: string): string {
 }
 
 export default function GlobalSearch() {
+  // Tolerate mounting outside an AuthProvider (unit tests render the palette
+  // bare): without auth context there are simply no settings destinations.
+  let hasCapability: (cap: string) => boolean = () => false;
+  try {
+    hasCapability = useAuth().hasCapability; // eslint-disable-line react-hooks/rules-of-hooks
+  } catch {
+    /* no provider — records search still works */
+  }
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [groups, setGroups] = useState<SearchGroup[]>([]);
@@ -65,6 +75,17 @@ export default function GlobalSearch() {
 
   const totalHits = groups.reduce((n, g) => n + g.hits.length, 0);
 
+  // Settings destinations (U1.5): the palette also jumps to any settings
+  // section the member can see — matched by label, or all of them when the
+  // query is "set…"/"settings".
+  const q = query.trim().toLowerCase();
+  const showAllSettings = q.length >= 3 && 'settings'.startsWith(q);
+  const settingsHits = q
+    ? visibleSections(hasCapability).filter(
+        (s) => showAllSettings || s.label.toLowerCase().includes(q)
+      )
+    : [];
+
   if (!isOpen) {
     return (
       <button id="global-search-trigger" onClick={() => setIsOpen(true)} className="gsearch-trigger" aria-label="Open search">
@@ -98,8 +119,27 @@ export default function GlobalSearch() {
           <span>Semantic + full-text search across all searchable objects</span>
         </div>
 
-        {totalHits > 0 && (
+        {(totalHits > 0 || settingsHits.length > 0) && (
           <div className="gsearch-results">
+            {settingsHits.length > 0 && (
+              <div className="gsearch-group">
+                <div className="gsearch-group-header">
+                  <span>⚙️</span>
+                  <span>Settings</span>
+                  <span className="gsearch-group-count">{settingsHits.length}</span>
+                </div>
+                <ul>
+                  {settingsHits.map((s) => (
+                    <li key={s.path}>
+                      <a className="gsearch-item" href={s.externalTo ?? `/settings/${s.path}`}>
+                        <span className="gsearch-icon">⚙️</span>
+                        <span className="gsearch-item-name">{s.label}</span>
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {groups.map((g) => (
               <div key={g.object} className="gsearch-group">
                 <div className="gsearch-group-header">
@@ -127,7 +167,7 @@ export default function GlobalSearch() {
           </div>
         )}
 
-        {searched && !loading && totalHits === 0 && (
+        {searched && !loading && totalHits === 0 && settingsHits.length === 0 && (
           <div className="gsearch-empty">No results for "{query}"</div>
         )}
       </div>

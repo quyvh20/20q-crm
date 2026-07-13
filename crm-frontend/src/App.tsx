@@ -9,8 +9,17 @@ import AuthCallbackPage from './pages/AuthCallbackPage';
 import ContactsPage from './pages/ContactsPage';
 import DealsPage from './pages/DealsPage';
 import DealDetailPage from './pages/DealDetailPage';
-import SettingsPage from './pages/SettingsPage';
-import WorkspaceSettingsPage from './pages/WorkspaceSettingsPage';
+import SettingsLayout, { SettingsIndexRedirect } from './pages/settings/SettingsLayout';
+import MembersSection from './pages/settings/MembersSection';
+import GroupsSection from './pages/settings/GroupsSection';
+import SecuritySessions from './components/settings/SecuritySessions';
+import PipelineStagesManager from './components/settings/PipelineStagesManager';
+import ObjectsManager from './components/settings/ObjectsManager';
+import KnowledgeBase from './components/settings/KnowledgeBase';
+import RolesManager from './components/settings/RolesManager';
+import PermissionsManager from './components/settings/PermissionsManager';
+import FieldSecurityManager from './components/settings/FieldSecurityManager';
+import AuditLogViewer from './components/settings/AuditLogViewer';
 import CustomObjectPage from './pages/CustomObjectPage';
 import ObjectRecordPage from './pages/ObjectRecordPage';
 import AcceptInvitePage from './pages/AcceptInvitePage';
@@ -151,16 +160,30 @@ function App() {
                 <AppLayout><DealDetailPage /></AppLayout>
               </ProtectedRoute>
             } />
+            {/* Unified settings shell (U1): one routed area, grouped nav,
+                every section deep-linkable. Old destinations redirect:
+                /settings → default section, /settings/workspace → members. */}
             <Route path="/settings" element={
               <ProtectedRoute>
-                <AppLayout><SettingsPage /></AppLayout>
+                <AppLayout><SettingsLayout /></AppLayout>
               </ProtectedRoute>
-            } />
-            <Route path="/settings/workspace" element={
-              <ProtectedRoute>
-                <AppLayout><WorkspaceSettingsPage /></AppLayout>
-              </ProtectedRoute>
-            } />
+            }>
+              <Route index element={<SettingsIndexRedirect />} />
+              <Route path="security" element={<SecuritySessions />} />
+              <Route path="members" element={<MembersSection />} />
+              <Route path="groups" element={<GroupsSection />} />
+              <Route path="roles" element={<RolesManager />} />
+              <Route path="object-access" element={<PermissionsManager />} />
+              <Route path="field-access" element={<FieldSecurityManager />} />
+              <Route path="objects" element={<ObjectsManager />} />
+              <Route path="pipeline" element={<PipelineStagesManager />} />
+              <Route path="knowledge" element={<KnowledgeBase />} />
+              <Route path="audit" element={<AuditLogViewer />} />
+              <Route path="ai-logs" element={<ConversationLogPage />} />
+              {/* Old /settings/workspace links: SettingsLayout's guard redirects
+                  any unknown segment to the member's default section, which for
+                  anyone who could use the old page IS Members. */}
+            </Route>
             <Route path="/objects/:slug" element={
               <ProtectedRoute>
                 <AppLayout><CustomObjectPage /></AppLayout>
@@ -169,11 +192,6 @@ function App() {
             <Route path="/objects/:slug/records/:id" element={
               <ProtectedRoute>
                 <AppLayout><ObjectRecordPage /></AppLayout>
-              </ProtectedRoute>
-            } />
-            <Route path="/settings/ai-logs" element={
-              <ProtectedRoute>
-                <AppLayout><ConversationLogPage /></AppLayout>
               </ProtectedRoute>
             } />
             <Route path="/voice" element={

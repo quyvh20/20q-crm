@@ -3,10 +3,11 @@ import {
   listGroups, createGroup, deleteGroup, addGroupMember, removeGroupMember,
   getWorkspaceMembers, type UserGroup, type WorkspaceMember,
 } from '../../lib/api';
+import { useConfirm } from '../common/ConfirmDialog';
 
 // GroupsManager: create named member groups and manage their membership. Groups
 // are a sharing target for reports. Gated by the groups.manage capability at the
-// call site (WorkspaceSettingsPage).
+// call site (the settings shell's Groups section).
 export default function GroupsManager() {
   const [groups, setGroups] = useState<UserGroup[]>([]);
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
@@ -15,6 +16,7 @@ export default function GroupsManager() {
   const [newName, setNewName] = useState('');
   const [expanded, setExpanded] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const { confirm, dialog } = useConfirm();
 
   const load = useCallback(async () => {
     try {
@@ -44,7 +46,7 @@ export default function GroupsManager() {
   };
 
   const remove = async (id: string, name: string) => {
-    if (!window.confirm(`Delete group "${name}"? Reports shared with it lose that share.`)) return;
+    if (!(await confirm({ title: `Delete "${name}"`, body: 'Reports shared with this group lose that share. Members themselves are not affected.', confirmLabel: 'Delete group' }))) return;
     setBusy(true); setError('');
     try { await deleteGroup(id); await load(); }
     catch (e) { setError(e instanceof Error ? e.message : 'Failed to delete group'); }
@@ -137,6 +139,7 @@ export default function GroupsManager() {
           })}
         </div>
       )}
+      {dialog}
     </div>
   );
 }

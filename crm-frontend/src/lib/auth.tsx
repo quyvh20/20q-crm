@@ -34,6 +34,11 @@ interface AuthContextType {
   // permission-aware UI.
   capabilities: string[];
   hasCapability: (code: string) => boolean;
+  // True once the capability fetch has settled (success OR failure). Until
+  // then hasCapability returns false for everything, so capability-driven
+  // navigation (the settings shell guard) must wait instead of redirecting a
+  // deep-linked admin off a page they're actually allowed on (U1).
+  permsLoaded: boolean;
   // Role identity + row scope for the active workspace (P6). dataScope 'own' means
   // the caller only sees records they own/were shared; roleId is the authoritative
   // role identity; isOwner marks god-mode.
@@ -84,6 +89,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [defaultOrgId, setDefaultOrgId] = useState<string | null>(null);
   const [perms, setPerms] = useState<MyPermissions | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [permsLoaded, setPermsLoaded] = useState(false);
 
   const currentRole = activeWorkspace?.role || '';
   const capabilities = perms?.capabilities ?? [];
@@ -97,7 +103,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // perms stay null (UI fails closed — no capabilities, 'all' scope is inert
   // without them).
   const loadCapabilities = useCallback(() => {
-    getMyPermissions().then(setPerms).catch(() => setPerms(null));
+    getMyPermissions()
+      .then(setPerms)
+      .catch(() => setPerms(null))
+      .finally(() => setPermsLoaded(true));
   }, []);
 
   // clearAuth splits (P4): a hard logout (full=true) forgets everything, but a
@@ -112,6 +121,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setNeedsChooser(false);
     setDefaultOrgId(null);
     setPerms(null);
+    setPermsLoaded(false);
     if (full) localStorage.removeItem('active_workspace_id');
     // One-release shim: purge any tokens the pre-P2 build left in localStorage.
     localStorage.removeItem('access_token');
@@ -282,6 +292,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         hasActiveWorkspace: !!activeWorkspace,
         capabilities,
         hasCapability,
+        permsLoaded,
         dataScope,
         roleId,
         isOwner,

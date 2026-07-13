@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useConfirm } from '../common/ConfirmDialog';
 import {
   getStages,
   createStage,
@@ -119,6 +120,7 @@ export default function PipelineStagesManager() {
   const [newIsWon, setNewIsWon] = useState(false);
   const [newIsLost, setNewIsLost] = useState(false);
   const [error, setError] = useState('');
+  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
 
   const { data: stages = [], isLoading } = useQuery<PipelineStage[]>({
     queryKey: ['stages'],
@@ -138,11 +140,13 @@ export default function PipelineStagesManager() {
   const updateMut = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Partial<PipelineStage> }) => updateStage(id, data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['stages'] }),
+    onError: (e: Error) => setError(e.message), // failures used to vanish silently
   });
 
   const deleteMut = useMutation({
     mutationFn: (id: string) => deleteStage(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['stages'] }),
+    onError: (e: Error) => setError(e.message),
   });
 
   const seedMut = useMutation({
@@ -200,7 +204,15 @@ export default function PipelineStagesManager() {
             key={stage.id}
             stage={stage}
             onSave={(id, data) => updateMut.mutate({ id, data })}
-            onDelete={(id) => deleteMut.mutate(id)}
+            onDelete={async (id) => {
+              const stg = stages.find(s => s.id === id);
+              if (!(await confirmDialog({
+                title: `Delete "${stg?.name ?? 'this stage'}"`,
+                body: 'Deals currently in this stage keep their data but lose their stage until you move them. This cannot be undone.',
+                confirmLabel: 'Delete stage',
+              }))) return;
+              deleteMut.mutate(id);
+            }}
           />
         ))}
       </div>
@@ -252,6 +264,7 @@ export default function PipelineStagesManager() {
           </div>
         </div>
       )}
+      {confirmDialogEl}
     </div>
   );
 }

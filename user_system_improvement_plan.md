@@ -41,7 +41,10 @@ Sequenced so trust comes first, the structural container second, then the two au
 9. OLS grid: auto-imply Read when Create/Edit/Delete is checked (FE rule + one-line explanation).
 10. Log/count any HTTP-originated callerless request reaching Authorize (turns the designed fail-open into an observable invariant).
 
-### U1 — One settings shell
+### U1 — One settings shell — ✅ DONE (2026-07-13, uncommitted)
+
+**Deviations/leftovers:** ObjectsManager's sub-editors remain component state (back buttons exist; full route-ification deferred to the objects work). Its emoji ✏️/🗑️ action buttons remain (the shell nav is lucide). Ownership-transfer still hard-reloads (U4.8 owns that). The dark palette is now safe to enable across settings but stays dormant until U2 ships the theme toggle. Review pass (3 lenses, 14 agents) confirmed 7 findings, all fixed — including a KnowledgeBase silent-data-loss path (failed load + armed autosave overwrote real content) and a ConfirmDialog re-entrancy/Escape/focus-trap gap.
+
 1. Single routed settings area `/settings/*` with a grouped left nav: **Personal** (Profile, Security, Notifications) / **Workspace** (General, Members & Groups, Roles & Permissions, Objects & Fields, Pipeline, Email Templates, Knowledge Base, Audit Log, AI Logs). Every section URL-addressable; refresh/Back/deep-links work; breadcrumbs in nested editors (ObjectsManager sub-editors become routes).
 2. Capability-gated *visibility*: sections a member can't use don't render (kills the viewer-edits-then-403 pattern); sidebar entries collapse to one "Settings" link.
 3. Consistency pass: one dialog component (replace all ten `window.confirm`/`alert`), one icon set (lucide), Tailwind tokens in ObjectsManager/KnowledgeBase/MembersList (fixes their dark-mode breakage), one skeleton/error pattern, confirmations on every destructive action (field delete, layout delete, stage delete — say what happens to affected data), errors shown instead of swallowed (MembersList/ObjectsManager/KnowledgeBase fetches).
@@ -105,7 +108,7 @@ Sequenced so trust comes first, the structural container second, then the two au
 | Phase | Scope | Status |
 |-------|-------|--------|
 | U0 | Honesty/security fixes | **DONE** (uncommitted; BE build/vet/tests + FE tsc + 713 FE tests green) |
-| U1 | Unified settings shell | NOT STARTED |
+| U1 | Unified settings shell | **DONE** (uncommitted; tsc + 713 FE tests green) |
 | U2 | My Account | NOT STARTED |
 | U3 | Understandable permissions | NOT STARTED |
 | U4 | Members & lifecycle | NOT STARTED |

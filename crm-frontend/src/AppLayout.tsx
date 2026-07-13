@@ -1,4 +1,6 @@
 import React, { useEffect, useState } from "react";
+import { NavLink, useLocation } from "react-router-dom";
+import { Menu, X } from "lucide-react";
 import { useAuth } from "./lib/auth";
 import GlobalSearch from "./components/common/GlobalSearch";
 import AIUsageWidget from "./components/settings/AIUsageWidget";
@@ -20,6 +22,11 @@ export default function AppLayout({ children }: AppLayoutProps) {
   const [customObjects, setCustomObjects] = useState<CustomObjectDef[]>([]);
   const [showWelcome, setShowWelcome] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const location = useLocation();
+
+  // Close the mobile drawer on navigation (NavLinks no longer full-reload).
+  useEffect(() => { setMobileNavOpen(false); }, [location.pathname]);
 
   // Soft-gate email verification (P1): show a persistent banner with a resend
   // action until the user confirms their email.
@@ -55,63 +62,100 @@ export default function AppLayout({ children }: AppLayoutProps) {
       .finally(() => setIsLoading(false));
   }, []);
 
+  // Client-side NavLinks with real active state (the old sidebar used raw <a>
+  // anchors — full page reload per click, 'Dashboard' hardcoded active). One
+  // 'Settings' entry replaces the Settings/Members pair (U1 unified shell).
+  const navItemClass = ({ isActive }: { isActive: boolean }) =>
+    `block px-3 py-2 rounded-md font-medium transition-colors ${
+      isActive ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+    }`;
+
+  const sidebarContent = (
+    <>
+      <div className="h-16 border-b flex items-center px-4">
+        <WorkspaceSwitcher />
+      </div>
+      <div className="flex-1 p-4 overflow-y-auto">
+        <nav className="space-y-2">
+          <NavLink to="/" end className={navItemClass}>Dashboard</NavLink>
+          <NavLink to="/contacts" className={navItemClass}>Contacts</NavLink>
+          <NavLink to="/deals" className={navItemClass}>Deals</NavLink>
+          <NavLink to="/voice" className={navItemClass}>🎙 Voice Notes</NavLink>
+          <NavLink to="/ai" className={navItemClass}>✦ AI Assistant</NavLink>
+          <NavLink to="/workflows" className={navItemClass}>⚡ Automations</NavLink>
+          <NavLink to="/reports" className={navItemClass}>📊 Reports</NavLink>
+          {customObjects.map(obj => (
+            <NavLink key={obj.slug} to={`/objects/${obj.slug}`} className={navItemClass}>
+              <span style={{ marginRight: 6 }}>{obj.icon}</span>{obj.label_plural}
+            </NavLink>
+          ))}
+          <NavLink to="/settings" className={navItemClass}>Settings</NavLink>
+        </nav>
+        <div className="mt-4">
+          <AIUsageWidget />
+        </div>
+      </div>
+
+      {user && (
+        <div className="p-4 border-t">
+          <div className="flex items-center gap-3 mb-3">
+            {user.avatar_url ? (
+              <img src={user.avatar_url} alt="" className="h-8 w-8 rounded-full object-cover" />
+            ) : (
+              <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-sm font-medium">
+                {user.first_name?.[0]}{user.last_name?.[0]}
+              </div>
+            )}
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium truncate">{user.first_name} {user.last_name}</p>
+              <p className="text-xs text-muted-foreground truncate">{user.email}</p>
+            </div>
+          </div>
+          <button
+            onClick={logout}
+            className="w-full px-3 py-2 text-sm rounded-md border border-border hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
+          >
+            Sign out
+          </button>
+        </div>
+      )}
+    </>
+  );
+
   return (
     <div className="flex h-screen w-full bg-background overflow-hidden">
       <aside className="w-64 border-r bg-card text-card-foreground hidden md:flex flex-col">
-        <div className="h-16 border-b flex items-center px-4">
-          <WorkspaceSwitcher />
-        </div>
-        <div className="flex-1 p-4">
-          <nav className="space-y-2">
-            <a href="/" className="block px-3 py-2 rounded-md bg-accent text-accent-foreground font-medium">Dashboard</a>
-            <a href="/contacts" className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">Contacts</a>
-            <a href="/deals" className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">Deals</a>
-            <a href="/voice" className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">🎙 Voice Notes</a>
-            <a href="/ai" className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">✦ AI Assistant</a>
-            <a href="/workflows" className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">⚡ Automations</a>
-            <a href="/reports" className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">📊 Reports</a>
-            {customObjects.map(obj => (
-              <a key={obj.slug} href={`/objects/${obj.slug}`}
-                className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">
-                <span style={{ marginRight: 6 }}>{obj.icon}</span>{obj.label_plural}
-              </a>
-            ))}
-            <a href="/settings" className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">Settings</a>
-            <a href="/settings/workspace" className="block px-3 py-2 rounded-md hover:bg-accent hover:text-accent-foreground font-medium text-muted-foreground transition-colors">Members</a>
-          </nav>
-          <div className="mt-4">
-            <AIUsageWidget />
-          </div>
-        </div>
-
-        {user && (
-          <div className="p-4 border-t">
-            <div className="flex items-center gap-3 mb-3">
-              {user.avatar_url ? (
-                <img src={user.avatar_url} alt="" className="h-8 w-8 rounded-full object-cover" />
-              ) : (
-                <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-sm font-medium">
-                  {user.first_name?.[0]}{user.last_name?.[0]}
-                </div>
-              )}
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium truncate">{user.first_name} {user.last_name}</p>
-                <p className="text-xs text-muted-foreground truncate">{user.email}</p>
-              </div>
-            </div>
-            <button
-              onClick={logout}
-              className="w-full px-3 py-2 text-sm rounded-md border border-border hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
-            >
-              Sign out
-            </button>
-          </div>
-        )}
+        {sidebarContent}
       </aside>
 
+      {/* Mobile drawer (U1.5): below md the sidebar was simply gone — no way to
+          reach Settings or even sign out on a phone. */}
+      {mobileNavOpen && (
+        <div className="fixed inset-0 z-50 md:hidden">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setMobileNavOpen(false)} />
+          <aside className="absolute inset-y-0 left-0 w-72 max-w-[85vw] bg-card text-card-foreground border-r flex flex-col shadow-xl">
+            <button
+              onClick={() => setMobileNavOpen(false)}
+              aria-label="Close menu"
+              className="absolute top-4 right-3 p-1.5 rounded-md text-muted-foreground hover:bg-accent"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            {sidebarContent}
+          </aside>
+        </div>
+      )}
+
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-16 border-b bg-card flex items-center justify-between px-6">
-          <div className="md:hidden">
+        <header className="h-16 border-b bg-card flex items-center justify-between px-4 sm:px-6">
+          <div className="md:hidden flex items-center gap-3">
+            <button
+              onClick={() => setMobileNavOpen(true)}
+              aria-label="Open menu"
+              className="p-2 -ml-1 rounded-md text-muted-foreground hover:bg-accent"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
             <h1 className="text-xl font-bold tracking-tight">Guerrilla CRM</h1>
           </div>
           <div className="flex flex-1 items-center gap-4">
