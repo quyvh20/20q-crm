@@ -16,6 +16,9 @@ vi.mock('../../../lib/api', () => ({
 }));
 vi.mock('../../../lib/auth', () => ({
   useAuth: () => ({ user: { id: 'me' }, hasCapability: () => false }),
+  // U3.7: the page gates Export CSV on can('data.export'). Grant it here so the
+  // pre-existing header assertions keep seeing the button.
+  usePermissions: () => ({ can: () => true, canAccess: () => true, loaded: true }),
 }));
 
 import {

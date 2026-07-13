@@ -389,3 +389,63 @@ func (r *permissionRepository) DeleteFieldPermission(ctx context.Context, orgID,
 		Where("org_id = ? AND role_id = ? AND object_slug = ? AND field_key = ?", orgID, roleID, slug, fieldKey).
 		Delete(&domain.FieldPermission{}).Error
 }
+
+// BulkSetFieldPermissions applies one level to many fields of one (role, object)
+// in a single transaction with batch statements (U3): level 'edit' — the
+// default, stored as the absence of a row — deletes the rows in one DELETE;
+// any other level batch-upserts them in one INSERT ... ON CONFLICT.
+func (r *permissionRepository) BulkSetFieldPermissions(ctx context.Context, orgID, roleID uuid.UUID, slug string, fieldKeys []string, level string) error {
+	if len(fieldKeys) == 0 {
+		return nil
+	}
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if domain.FieldLevel(level) == domain.FieldLevelEdit {
+			return tx.
+				Where("org_id = ? AND role_id = ? AND object_slug = ? AND field_key IN ?", orgID, roleID, slug, fieldKeys).
+				Delete(&domain.FieldPermission{}).Error
+		}
+		now := time.Now()
+		rows := make([]domain.FieldPermission, 0, len(fieldKeys))
+		for _, key := range fieldKeys {
+			rows = append(rows, domain.FieldPermission{
+				OrgID:      orgID,
+				RoleID:     roleID,
+				ObjectSlug: slug,
+				FieldKey:   key,
+				Level:      level,
+				CreatedAt:  now,
+				UpdatedAt:  now,
+			})
+		}
+		return tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "org_id"}, {Name: "role_id"}, {Name: "object_slug"}, {Name: "field_key"}},
+			DoUpdates: clause.AssignmentColumns([]string{"level", "updated_at"}),
+		}).Create(&rows).Error
+	})
+}
+
+// CountFieldRestrictionsByObject returns object_slug → FLS restriction-row count
+// for the org in one GROUP BY query. Rows belonging to the owner role are
+// excluded (JOIN roles, is_owner = FALSE): the owner bypasses FLS entirely, so
+// any owner rows are phantoms that must never inflate the admin badges (U3).
+func (r *permissionRepository) CountFieldRestrictionsByObject(ctx context.Context, orgID uuid.UUID) (map[string]int, error) {
+	type row struct {
+		ObjectSlug string
+		Cnt        int
+	}
+	var rows []row
+	if err := r.db.WithContext(ctx).
+		Table("field_permissions AS fp").
+		Select("fp.object_slug, COUNT(*) AS cnt").
+		Joins("JOIN roles ro ON ro.id = fp.role_id").
+		Where("fp.org_id = ? AND ro.is_owner = FALSE", orgID).
+		Group("fp.object_slug").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[string]int, len(rows))
+	for _, r := range rows {
+		out[r.ObjectSlug] = r.Cnt
+	}
+	return out, nil
+}

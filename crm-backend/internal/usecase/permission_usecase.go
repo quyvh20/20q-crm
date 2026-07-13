@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -133,7 +134,7 @@ func (uc *permissionUseCase) Authorize(ctx context.Context, orgID uuid.UUID, slu
 			return nil
 		}
 	}
-	return domain.NewAppError(http.StatusForbidden, "you do not have permission to "+string(action)+" "+slug+" records")
+	return domain.NewAppError(http.StatusForbidden, "your role can't "+string(action)+" "+slug+" records — ask an admin for access")
 }
 
 // Audit appends one audit row. Best-effort: a failure is logged but never
@@ -233,7 +234,7 @@ func (uc *permissionUseCase) HasCapability(ctx context.Context, orgID uuid.UUID,
 			return nil
 		}
 	}
-	return domain.NewAppError(http.StatusForbidden, "you do not have the '"+capability+"' capability")
+	return domain.NewAppError(http.StatusForbidden, "you need the \""+domain.CapabilityLabel(capability)+"\" permission to do this — ask an admin")
 }
 
 // CallerCapabilities returns the caller's effective capability codes for the org
@@ -259,6 +260,40 @@ func (uc *permissionUseCase) CallerCapabilities(ctx context.Context, orgID uuid.
 		if granted {
 			out = append(out, code)
 		}
+	}
+	return out
+}
+
+// CallerObjectAccess returns the caller's effective OLS bits per object slug —
+// every registry object all-true for the owner (god-mode), otherwise the
+// caller's role rows from the shared cached entry (same freshness class as
+// HasCapability, so this is cheap enough to serve on every login). An object
+// with no row is simply absent; the SPA treats a missing slug as denied. Empty
+// for a callerless (trusted in-process) context.
+func (uc *permissionUseCase) CallerObjectAccess(ctx context.Context, orgID uuid.UUID) map[string]domain.ObjectAccess {
+	out := map[string]domain.ObjectAccess{}
+	caller, ok := domain.CallerFromContext(ctx)
+	if !ok {
+		return out
+	}
+	if callerIsOwner(caller) {
+		objects, err := uc.registryUC.ListObjects(ctx, orgID)
+		if err != nil {
+			log.Printf("object_permissions: list objects for owner access map, org %s: %v", orgID, err)
+			return out
+		}
+		for _, o := range objects {
+			out[o.Slug] = domain.ObjectAccess{Read: true, Create: true, Edit: true, Delete: true}
+		}
+		return out
+	}
+	roleID, ok := uc.resolveRoleID(caller)
+	if !ok {
+		return out
+	}
+	// Copy rather than alias the cached map so a caller can't mutate the cache.
+	for slug, access := range uc.loadEntry(ctx, orgID).access[roleID] {
+		out[slug] = access
 	}
 	return out
 }
@@ -479,7 +514,18 @@ func (uc *permissionUseCase) SetFieldPermission(ctx context.Context, orgID uuid.
 		return domain.NewAppError(http.StatusBadRequest, "level must be one of: hidden, read, edit")
 	}
 
-	var err error
+	// The owner always has full access — rows for it would be pure phantoms
+	// (FieldMask bypasses on IsOwner), so reject it like the bulk path does.
+	roles, err := uc.repo.ListRoles(ctx, orgID)
+	if err != nil {
+		return err
+	}
+	for i := range roles {
+		if roles[i].ID == in.RoleID && domain.IsOwnerRole(&roles[i]) {
+			return domain.NewAppError(http.StatusBadRequest, "the workspace owner always has full access")
+		}
+	}
+
 	if level == domain.FieldLevelEdit {
 		err = uc.repo.DeleteFieldPermission(ctx, orgID, in.RoleID, in.ObjectSlug, in.FieldKey)
 	} else {
@@ -505,6 +551,179 @@ func (uc *permissionUseCase) SetFieldPermission(ctx context.Context, orgID uuid.
 			"level":       in.Level,
 		})
 	return nil
+}
+
+// EffectiveAccess renders one role's merged access over every registry object
+// (U3): the OLS bits per object (an absent row renders all-false, making the
+// default-deny visible) plus the role's FLS restrictions joined to field labels
+// via the registry schema. Like GetGrid it reads repo-direct after
+// EnsureDefaults — an admin-facing read must see a just-made edit, never a
+// stale cached entry.
+//
+// OWNER TRAP: the owner role has no rows in any table by design (Authorize /
+// FieldMask / HasCapability bypass on IsOwner), so it is synthesized here as
+// full access on every object with no field restrictions.
+func (uc *permissionUseCase) EffectiveAccess(ctx context.Context, orgID, roleID uuid.UUID) ([]domain.RoleObjectAccess, error) {
+	if err := uc.repo.EnsureDefaults(ctx, orgID); err != nil {
+		return nil, err
+	}
+	objects, err := uc.registryUC.ListObjects(ctx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	roles, err := uc.repo.ListRoles(ctx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	var role *domain.Role
+	for i := range roles {
+		if roles[i].ID == roleID {
+			role = &roles[i]
+			break
+		}
+	}
+	if role == nil {
+		return nil, domain.NewAppError(http.StatusNotFound, "role not found")
+	}
+
+	if domain.IsOwnerRole(role) {
+		out := make([]domain.RoleObjectAccess, 0, len(objects))
+		for _, o := range objects {
+			out = append(out, domain.RoleObjectAccess{
+				Slug: o.Slug, Label: o.Label, Icon: o.Icon, IsSystem: o.IsSystem,
+				ObjectAccess:     domain.ObjectAccess{Read: true, Create: true, Edit: true, Delete: true},
+				RestrictedFields: []domain.RoleRestrictedField{},
+			})
+		}
+		return out, nil
+	}
+
+	// OLS bits for this role, by object.
+	perms, err := uc.repo.ListPermissions(ctx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	accessBySlug := make(map[string]domain.ObjectAccess)
+	for _, p := range perms {
+		if p.RoleID != roleID {
+			continue
+		}
+		accessBySlug[p.ObjectSlug] = domain.ObjectAccess{
+			Read: p.CanRead, Create: p.CanCreate, Edit: p.CanEdit, Delete: p.CanDelete,
+		}
+	}
+
+	// FLS restrictions for this role, by object (org-wide in one query).
+	fieldAccess, err := uc.repo.LoadOrgFieldAccess(ctx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	levelsBySlug := fieldAccess[roleID]
+
+	out := make([]domain.RoleObjectAccess, 0, len(objects))
+	for _, o := range objects {
+		entry := domain.RoleObjectAccess{
+			Slug: o.Slug, Label: o.Label, Icon: o.Icon, IsSystem: o.IsSystem,
+			ObjectAccess:     accessBySlug[o.Slug], // absent row → zero value = all-false
+			RestrictedFields: []domain.RoleRestrictedField{},
+		}
+		if levels := levelsBySlug[o.Slug]; len(levels) > 0 {
+			// Join keys to display labels via the registry schema (the GetFieldGrid
+			// pattern). A restriction whose key no longer exists in the schema is a
+			// stale leftover — skipped, never surfaced.
+			schema, err := uc.registryUC.GetSchema(ctx, orgID, o.Slug)
+			if err != nil {
+				return nil, err
+			}
+			labelByKey := make(map[string]string, len(schema.Fields))
+			for _, f := range schema.Fields {
+				labelByKey[f.Key] = f.Label
+			}
+			for key, level := range levels {
+				label, ok := labelByKey[key]
+				if !ok {
+					continue // stale key — the field was deleted after the restriction
+				}
+				entry.RestrictedFields = append(entry.RestrictedFields, domain.RoleRestrictedField{
+					Key: key, Label: label, Level: level,
+				})
+			}
+			sort.Slice(entry.RestrictedFields, func(i, j int) bool {
+				return entry.RestrictedFields[i].Key < entry.RestrictedFields[j].Key
+			})
+		}
+		out = append(out, entry)
+	}
+	return out, nil
+}
+
+// maxBulkFieldKeys caps one bulk FLS write — enough for any real object, small
+// enough that a malicious payload can't turn one request into a huge statement.
+const maxBulkFieldKeys = 200
+
+// SetFieldPermissionsBulk applies one level to many fields of one (role, object)
+// in a single transaction, with ONE cache invalidation and ONE audit event —
+// the "restrict these 12 fields" path that would otherwise be 12 requests, 12
+// invalidations, and 12 audit rows (U3). Level 'edit' deletes the rows; the
+// owner role is rejected outright (it always has full access; storing rows for
+// it would only create phantom grid state).
+func (uc *permissionUseCase) SetFieldPermissionsBulk(ctx context.Context, orgID uuid.UUID, in domain.SetFieldPermissionsBulkInput) error {
+	if in.RoleID == uuid.Nil || in.ObjectSlug == "" {
+		return domain.NewAppError(http.StatusBadRequest, "role_id and object_slug are required")
+	}
+	level := domain.FieldLevel(in.Level)
+	if !level.Valid() {
+		return domain.NewAppError(http.StatusBadRequest, "level must be one of: hidden, read, edit")
+	}
+	if len(in.FieldKeys) > maxBulkFieldKeys {
+		return domain.NewAppError(http.StatusBadRequest, "too many field_keys — at most 200 per request")
+	}
+	// Normalize: drop blanks and duplicates so the batch statement is clean.
+	seen := make(map[string]bool, len(in.FieldKeys))
+	keys := make([]string, 0, len(in.FieldKeys))
+	for _, k := range in.FieldKeys {
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		keys = append(keys, k)
+	}
+	if len(keys) == 0 {
+		return domain.NewAppError(http.StatusBadRequest, "field_keys must not be empty")
+	}
+
+	// The owner always has full access — rows for it would be pure phantoms.
+	roles, err := uc.repo.ListRoles(ctx, orgID)
+	if err != nil {
+		return err
+	}
+	for i := range roles {
+		if roles[i].ID == in.RoleID && domain.IsOwnerRole(&roles[i]) {
+			return domain.NewAppError(http.StatusBadRequest, "the workspace owner always has full access")
+		}
+	}
+
+	if err := uc.repo.BulkSetFieldPermissions(ctx, orgID, in.RoleID, in.ObjectSlug, keys, in.Level); err != nil {
+		return err
+	}
+	uc.Invalidate(orgID)
+
+	roleID := in.RoleID
+	recordAdminEvent(ctx, uc.audit, orgID, "permission.fls_bulk_changed", &roleID,
+		map[string]interface{}{
+			"role_id":     in.RoleID.String(),
+			"object_slug": in.ObjectSlug,
+			"level":       in.Level,
+			"field_count": len(keys),
+		})
+	return nil
+}
+
+// FieldRestrictionSummary returns object_slug → FLS restriction-row count for
+// the org's objects page badges (U3). Owner-role rows are excluded in the query
+// so phantom rows (seeded or leftover) never inflate the numbers.
+func (uc *permissionUseCase) FieldRestrictionSummary(ctx context.Context, orgID uuid.UUID) (map[string]int, error) {
+	return uc.repo.CountFieldRestrictionsByObject(ctx, orgID)
 }
 
 // ListRecordAudit returns a record's change history. Viewing the trail requires

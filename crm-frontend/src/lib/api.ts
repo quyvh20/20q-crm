@@ -139,9 +139,11 @@ export async function parseJsonSafe(res: Response): Promise<any> {
     return text ? JSON.parse(text) : {};
   } catch {
     const hint =
-      res.status === 401 || res.status === 403
+      res.status === 401
         ? 'your session may have expired — please sign in again'
-        : res.status === 404
+        : res.status === 403
+          ? "you don't have permission for this action"
+          : res.status === 404
           ? 'the service endpoint was not found'
           : res.status === 0 || res.status >= 500
             ? 'the service is temporarily unavailable — please try again'
@@ -1471,8 +1473,8 @@ export interface RoleOption {
 }
 
 // CapabilityInfo is the human-facing metadata for one capability (P6), served by
-// GET /api/roles/catalog: label/description + the group it renders under + the ⚠
-// sensitive flag.
+// GET /api/roles/catalog: label/description + the group it renders under + the
+// sensitive flag (rendered as the "Sensitive" chip).
 export interface CapabilityInfo {
   code: string;
   label: string;
@@ -1481,15 +1483,28 @@ export interface CapabilityInfo {
   sensitive: boolean;
 }
 
+// ObjectAccessBits are the caller's OLS bits for one object (U3.7) — same
+// flattened shape as PermissionCell minus the identifying keys.
+export interface ObjectAccessBits {
+  read: boolean;
+  create: boolean;
+  edit: boolean;
+  delete: boolean;
+}
+
 // MyPermissions is the caller's full authorization context for the active org
 // (P6): effective capability codes plus role identity + row scope. Drives the
 // usePermissions() hook; the server still enforces every action independently.
+// `objects` (U3.7) maps object slug → the caller's OLS bits so record-level
+// Edit/Delete/Add buttons can hide instead of 403ing. It is undefined when the
+// server predates U3 — treat "unknown" as visible (server still enforces).
 export interface MyPermissions {
   capabilities: string[];
   data_scope: DataScope;
   role_id: string;
   role_name: string;
   is_owner: boolean;
+  objects?: Record<string, ObjectAccessBits>;
 }
 
 // getMyPermissions returns the caller's effective capabilities + role identity for
@@ -1508,6 +1523,9 @@ export async function getMyPermissions(): Promise<MyPermissions> {
       role_id: (d.role_id || '') as string,
       role_name: (d.role_name || '') as string,
       is_owner: !!d.is_owner,
+      // Keep undefined (≠ {}) when the server doesn't send it: undefined means
+      // "unknown, don't hide buttons"; {} means "known: no object access at all".
+      objects: d.objects ? (d.objects as Record<string, ObjectAccessBits>) : undefined,
     };
   } catch {
     return denied;
@@ -1592,6 +1610,45 @@ export async function setRoleCapabilities(id: string, capabilities: string[]): P
     const json = await res.json().catch(() => ({}));
     throw new Error(json.error || 'Failed to save capabilities');
   }
+}
+
+// ============================================================
+// Effective access per role (U3.2) — one merged payload answering "what can
+// this role actually see?": identity + capabilities + per-object OLS bits +
+// field restrictions + layout assignments. Owner is served synthesized full
+// access (the permission tables hold no owner rows). roles.manage gated.
+// ============================================================
+
+export interface RoleAccessObject extends ObjectAccessBits {
+  slug: string;
+  label: string;
+  icon: string;
+  is_system: boolean;
+  restricted_fields: Array<{ key: string; label: string; level: 'hidden' | 'read' }>;
+}
+
+export interface RoleAccessLayout {
+  object_slug: string;
+  layout_id: string;
+  layout_name: string;
+}
+
+export interface RoleAccess {
+  role: RoleDetail;
+  objects: RoleAccessObject[];
+  layouts: RoleAccessLayout[];
+}
+
+export async function getRoleAccess(id: string): Promise<RoleAccess> {
+  const res = await apiFetch(`/api/roles/${id}/access`);
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw new Error(json.error || 'Failed to load role access');
+  const d = (json.data || {}) as Partial<RoleAccess>;
+  return {
+    role: (d.role || {}) as RoleDetail,
+    objects: (d.objects || []).map((o) => ({ ...o, restricted_fields: o.restricted_fields || [] })),
+    layouts: d.layouts || [],
+  };
 }
 
 // ============================================================
@@ -1691,6 +1748,34 @@ export async function setFieldPermission(input: {
     const json = await res.json().catch(() => ({}));
     throw new Error(json.error || 'Failed to save field permission');
   }
+}
+
+// bulkSetFieldPermissions sets one level for many fields of one role in a single
+// request/transaction (U3.4 "set column") — one cache bust + one audit event
+// server-side, instead of N of each from a PUT-per-cell loop.
+export async function bulkSetFieldPermissions(input: {
+  object_slug: string;
+  role_id: string;
+  field_keys: string[];
+  level: FieldLevel;
+}): Promise<void> {
+  const res = await apiFetch(`/api/registry/objects/${input.object_slug}/field-permissions/bulk`, {
+    method: 'PUT',
+    body: JSON.stringify({ role_id: input.role_id, field_keys: input.field_keys, level: input.level }),
+  });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(json.error || 'Failed to save field permissions');
+  }
+}
+
+// getFieldPermissionSummary returns restriction counts per object slug (owner
+// rows excluded) for the badges on the Field security object pills (U3.4).
+export async function getFieldPermissionSummary(): Promise<Record<string, number>> {
+  const res = await apiFetch('/api/registry/permissions/field-summary');
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw new Error(json.error || 'Failed to load field security summary');
+  return ((json.data || {}).counts || {}) as Record<string, number>;
 }
 
 export interface AuditEntry {

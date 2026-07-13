@@ -116,7 +116,7 @@ func (uc *workspaceUseCase) guardRoleAssignment(ctx context.Context, orgID uuid.
 		return nil
 	}
 	if err := uc.caps.HasCapability(ctx, orgID, domain.CapRolesManage); err != nil {
-		return domain.NewAppError(403, "assigning a role that can manage roles or members requires the 'roles.manage' capability")
+		return domain.NewAppError(403, "assigning a role that can manage roles or members requires the \""+domain.CapabilityLabel(domain.CapRolesManage)+"\" permission")
 	}
 	return nil
 }

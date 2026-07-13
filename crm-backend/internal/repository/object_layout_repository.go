@@ -218,6 +218,23 @@ func (r *objectLayoutRepository) SetLayoutRoles(ctx context.Context, orgID uuid.
 	})
 }
 
+// ListOrgRoleLayoutAssignments returns every (object, layout) row one role is
+// assigned to, with layout names resolved, ordered by object slug for a stable
+// payload. Soft-deleted layouts are excluded — an assignment row surviving a
+// layout delete must not surface a dead layout (U3).
+func (r *objectLayoutRepository) ListOrgRoleLayoutAssignments(ctx context.Context, orgID, roleID uuid.UUID) ([]domain.RoleLayoutAssignment, error) {
+	var rows []domain.RoleLayoutAssignment
+	if err := r.db.WithContext(ctx).Raw(`
+		SELECT olr.object_slug, olr.layout_id, ol.name AS layout_name
+		FROM object_layout_roles olr
+		JOIN object_layouts ol ON ol.id = olr.layout_id
+		WHERE olr.org_id = ? AND olr.role_id = ? AND ol.deleted_at IS NULL
+		ORDER BY olr.object_slug ASC`, orgID, roleID).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
 // ListLayoutRoleIDs returns the role UUIDs currently assigned to a layout.
 func (r *objectLayoutRepository) ListLayoutRoleIDs(ctx context.Context, orgID, layoutID uuid.UUID) ([]uuid.UUID, error) {
 	var rows []domain.ObjectLayoutRole

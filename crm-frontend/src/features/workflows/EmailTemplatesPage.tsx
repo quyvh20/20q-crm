@@ -3,11 +3,45 @@ import { useNavigate } from 'react-router-dom';
 import { Mail, Plus, Pencil, Trash2, Send, FileText } from 'lucide-react';
 import { useEmailTemplates, useDeleteEmailTemplate, useTestSendEmailTemplate } from './queries';
 import { WorkflowsTabs } from './WorkflowsTabs';
+import { usePermissions } from '../../lib/auth';
+import AccessDeniedPanel from '../../components/common/AccessDeniedPanel';
 import type { EmailTemplate } from './api';
 
 /** Email templates library (A5). Token-styled (consistent with the new builder),
- *  reached from the Workflows tab bar at /workflows/email-templates. */
+ *  reached from the Workflows tab bar at /workflows/email-templates.
+ *
+ *  Every /api/workflows/email-templates* route — including the list GET —
+ *  requires workflows.manage, so the whole page is gated (U3): a member
+ *  without the capability gets the friendly denied panel instead of a surface
+ *  that 403s. The gate wraps the content component so the denied path never
+ *  fires the list query. Wait for the capability fetch to settle before
+ *  deciding, so a deep-linked manager doesn't flash the denied panel (the
+ *  SettingsLayout trap). */
 export const EmailTemplatesPage: React.FC = () => {
+  const { can, loaded } = usePermissions();
+
+  if (!loaded) {
+    return (
+      <div className="mx-auto max-w-5xl px-4 py-8">
+        <div className="flex justify-center py-16">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        </div>
+      </div>
+    );
+  }
+
+  if (!can('workflows.manage')) {
+    return (
+      <div className="mx-auto max-w-5xl px-4 py-8">
+        <AccessDeniedPanel capability="workflows.manage" what="email templates" />
+      </div>
+    );
+  }
+
+  return <EmailTemplatesContent />;
+};
+
+const EmailTemplatesContent: React.FC = () => {
   const navigate = useNavigate();
   const { data, isLoading } = useEmailTemplates();
   const deleteMutation = useDeleteEmailTemplate();

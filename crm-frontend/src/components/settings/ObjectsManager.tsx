@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import {
   listRegistryObjects, getObjectSchema, getObjectDef,
   createObjectDef, updateObjectDef, deleteObjectDef,
@@ -9,6 +10,7 @@ import {
   type ObjectLayout, type LayoutSection, type LayoutField, type PermRoleInfo,
 } from '../../lib/api';
 import { useConfirm } from '../common/ConfirmDialog';
+import { prettyRole } from '../../lib/roles';
 
 // ObjectsManager is the single admin surface for every object's schema (P7 — it
 // replaces the separate CustomFieldManager + ObjectDefManager now that object_defs/
@@ -36,6 +38,10 @@ export default function ObjectsManager() {
   const [mode, setMode] = useState<Mode>({ kind: 'list' });
   const [error, setError] = useState('');
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  // Label of an object created this visit — drives the access-review nudge
+  // (U3.6): a new object is invisible to any role without an access grant, and
+  // creation is the moment the admin can still remember to fix that.
+  const [justCreated, setJustCreated] = useState('');
 
   const fetchObjects = useCallback(async () => {
     setLoading(true);
@@ -67,7 +73,16 @@ export default function ObjectsManager() {
   if (loading) return <p style={{ color: 'hsl(var(--muted-foreground))', padding: 20 }}>Loading...</p>;
 
   if (mode.kind === 'new') {
-    return <CustomObjectForm onDone={() => { setMode({ kind: 'list' }); fetchObjects(); }} onCancel={() => setMode({ kind: 'list' })} />;
+    return (
+      <CustomObjectForm
+        onDone={(createdLabel) => {
+          setMode({ kind: 'list' });
+          fetchObjects();
+          if (createdLabel) setJustCreated(createdLabel);
+        }}
+        onCancel={() => setMode({ kind: 'list' })}
+      />
+    );
   }
   if (mode.kind === 'edit') {
     return mode.isSystem
@@ -81,6 +96,27 @@ export default function ObjectsManager() {
         Every object — built-in or custom — and its fields, in one place.
       </p>
       {error && <div style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>{error}</div>}
+
+      {/* Post-creation access nudge (U3.6): roles without an access grant can't
+          see the new object anywhere — say so while the admin is still here. */}
+      {justCreated && (
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.4)', color: '#d97706', padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>
+          <span style={{ flex: 1 }}>
+            <strong>{justCreated}</strong> was created. Roles without an access grant won't see
+            it anywhere — review who can use it in{' '}
+            <Link to="/settings/object-access" style={{ color: '#d97706', fontWeight: 600, textDecoration: 'underline' }}>
+              Object Access
+            </Link>.
+          </span>
+          <button
+            onClick={() => setJustCreated('')}
+            aria-label="Dismiss access reminder"
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#d97706', fontSize: 14, padding: 0, lineHeight: 1 }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 16 }}>
         <thead>
@@ -345,7 +381,9 @@ function FieldBuilder({ draft, setDraft, onAdd, editing, currentSlug, relations 
 // Custom object create/edit (label/icon/searchable + fields array)
 // ============================================================
 
-function CustomObjectForm({ editSlug, onDone, onCancel }: { editSlug?: string; onDone: () => void; onCancel: () => void }) {
+// onDone receives the created object's label on the CREATE path (undefined on
+// edit) so the list view can show the access-review nudge (U3.6).
+function CustomObjectForm({ editSlug, onDone, onCancel }: { editSlug?: string; onDone: (createdLabel?: string) => void; onCancel: () => void }) {
   const [tab, setTab] = useState<'fields' | 'layouts'>('fields');
   const [label, setLabel] = useState('');
   const [slug, setSlug] = useState('');
@@ -386,9 +424,13 @@ function CustomObjectForm({ editSlug, onDone, onCancel }: { editSlug?: string; o
   const save = async () => {
     setError('');
     try {
-      if (editSlug) await updateObjectDef(editSlug, { label, label_plural: labelPlural, icon, fields, searchable });
-      else await createObjectDef({ slug, label, label_plural: labelPlural, icon, fields, searchable });
-      onDone();
+      if (editSlug) {
+        await updateObjectDef(editSlug, { label, label_plural: labelPlural, icon, fields, searchable });
+        onDone();
+      } else {
+        await createObjectDef({ slug, label, label_plural: labelPlural, icon, fields, searchable });
+        onDone(label);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Save failed');
     }
@@ -839,7 +881,7 @@ function LayoutForm({
                   background: active ? 'rgba(59,130,246,0.12)' : 'hsl(var(--card))', color: active ? '#3b82f6' : 'hsl(var(--muted-foreground))',
                   cursor: 'pointer',
                 }}>
-                  {r.name}
+                  {prettyRole(r.name)}
                 </button>
               );
             })}

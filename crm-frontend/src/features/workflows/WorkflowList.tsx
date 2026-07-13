@@ -4,7 +4,7 @@ import { useWorkflowsList, useToggleWorkflow, useDeleteWorkflow } from './querie
 import { RunNowModal, canRunWorkflowNow } from './RunNowModal';
 import type { Workflow } from './types';
 import { TRIGGER_LABELS, STATUS_COLORS } from './types';
-import { useAuth } from '../../lib/auth';
+import { useAuth, usePermissions } from '../../lib/auth';
 
 /** Optional actionable link rendered inside a toast (e.g. "View run"). */
 interface ToastAction {
@@ -18,6 +18,14 @@ export const WorkflowList: React.FC = () => {
   const navigate = useNavigate();
   const { user, hasCapability } = useAuth();
   const canRunAny = hasCapability('workflows.run_any');
+  // Workflow writes (create/toggle/delete, and Duplicate — it opens the builder
+  // on a create) plus every email-templates route (even the list GET) require
+  // workflows.manage server-side; the list/detail/history GETs are open to any
+  // member. Hide the affordances a non-manager would only 403 on. `can` is
+  // false until the capability fetch settles, so the controls appear once it
+  // loads rather than flashing for members who lack the grant.
+  const { can } = usePermissions();
+  const canManage = can('workflows.manage');
 
   // Search term, active/inactive filter, and page all live in the URL query string,
   // so they survive reload + back/forward and a narrowed list can be deep-linked.
@@ -171,12 +179,14 @@ export const WorkflowList: React.FC = () => {
           <h1 className="text-2xl font-bold text-white">Workflow Automations</h1>
           <p className="text-sm text-gray-400 mt-1">Automate repetitive tasks with triggers and actions</p>
         </div>
-        <button
-          onClick={() => navigate('/workflows/new')}
-          className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 to-purple-500 text-white text-sm font-medium hover:from-indigo-600 hover:to-purple-600 transition-all shadow-lg shadow-indigo-500/20"
-        >
-          + New Workflow
-        </button>
+        {canManage && (
+          <button
+            onClick={() => navigate('/workflows/new')}
+            className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 to-purple-500 text-white text-sm font-medium hover:from-indigo-600 hover:to-purple-600 transition-all shadow-lg shadow-indigo-500/20"
+          >
+            + New Workflow
+          </button>
+        )}
       </div>
 
       {/* Tab nav (A5): switch to the email-templates library. Dark-styled to match
@@ -185,12 +195,16 @@ export const WorkflowList: React.FC = () => {
         <span className="inline-flex items-center gap-1.5 border-b-2 border-indigo-500 px-1 pb-2.5 text-sm font-medium text-white">
           Workflows
         </span>
-        <button
-          onClick={() => navigate('/workflows/email-templates')}
-          className="inline-flex items-center gap-1.5 border-b-2 border-transparent px-1 pb-2.5 text-sm font-medium text-gray-400 transition-colors hover:text-white"
-        >
-          Email Templates
-        </button>
+        {/* Templates routes 403 even on GET without workflows.manage, so don't
+            offer the tab to members who can't open it. */}
+        {canManage && (
+          <button
+            onClick={() => navigate('/workflows/email-templates')}
+            className="inline-flex items-center gap-1.5 border-b-2 border-transparent px-1 pb-2.5 text-sm font-medium text-gray-400 transition-colors hover:text-white"
+          >
+            Email Templates
+          </button>
+        )}
       </div>
 
       {/* Search */}
@@ -251,7 +265,12 @@ export const WorkflowList: React.FC = () => {
           ) : (
             <>
               <p className="text-lg mb-2">No workflows yet</p>
-              <p className="text-sm">Create your first automation to get started</p>
+              {/* Don't invite a create the caller has no button (or permission) for. */}
+              <p className="text-sm">
+                {canManage
+                  ? 'Create your first automation to get started'
+                  : 'No automations have been set up in this workspace yet'}
+              </p>
             </>
           )}
         </div>
@@ -329,32 +348,38 @@ export const WorkflowList: React.FC = () => {
                   >
                     📊 History
                   </button>
-                  {/* Duplicate (P23): open the builder on a fresh, unsaved "Copy of …"
-                      draft cloned from this workflow. The source id rides in router
-                      state; the builder clones it on mount (see duplicateFrom). */}
-                  <button
-                    onClick={() => navigate('/workflows/new', { state: { duplicateFromId: wf.id } })}
-                    className="px-3 py-1.5 rounded-lg text-xs bg-gray-700 text-gray-300 hover:text-white hover:bg-gray-600 transition-colors"
-                    title="Duplicate this workflow"
-                  >
-                    ⧉ Duplicate
-                  </button>
-                  <button
-                    onClick={() => handleToggle(wf)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                      wf.is_active
-                        ? 'bg-amber-500/10 text-amber-400 hover:bg-amber-500/20'
-                        : 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
-                    }`}
-                  >
-                    {wf.is_active ? 'Deactivate' : 'Activate'}
-                  </button>
-                  <button
-                    onClick={() => handleDelete(wf)}
-                    className="px-3 py-1.5 rounded-lg text-xs bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
-                  >
-                    Delete
-                  </button>
+                  {/* Duplicate/toggle/delete are all workflow writes (Duplicate
+                      opens the builder on a create) — workflows.manage only. */}
+                  {canManage && (
+                    <>
+                      {/* Duplicate (P23): open the builder on a fresh, unsaved "Copy of …"
+                          draft cloned from this workflow. The source id rides in router
+                          state; the builder clones it on mount (see duplicateFrom). */}
+                      <button
+                        onClick={() => navigate('/workflows/new', { state: { duplicateFromId: wf.id } })}
+                        className="px-3 py-1.5 rounded-lg text-xs bg-gray-700 text-gray-300 hover:text-white hover:bg-gray-600 transition-colors"
+                        title="Duplicate this workflow"
+                      >
+                        ⧉ Duplicate
+                      </button>
+                      <button
+                        onClick={() => handleToggle(wf)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                          wf.is_active
+                            ? 'bg-amber-500/10 text-amber-400 hover:bg-amber-500/20'
+                            : 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
+                        }`}
+                      >
+                        {wf.is_active ? 'Deactivate' : 'Activate'}
+                      </button>
+                      <button
+                        onClick={() => handleDelete(wf)}
+                        className="px-3 py-1.5 rounded-lg text-xs bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
+                      >
+                        Delete
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             </div>

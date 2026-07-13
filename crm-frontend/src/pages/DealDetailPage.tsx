@@ -6,6 +6,7 @@ import EmailComposer from '../components/ai/EmailComposer';
 import MeetingSummary from '../components/ai/MeetingSummary';
 import VoiceUploader from '../components/voice/VoiceUploader';
 import VoiceLibrary from '../components/voice/VoiceLibrary';
+import { usePermissions } from '../lib/auth';
 import { useState, useEffect } from 'react';
 
 const ACTIVITY_ICONS: Record<string, string> = {
@@ -138,6 +139,12 @@ export default function DealDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  // OLS-aware buttons (U3.7): Edit/Won/Lost/Delete hide for roles whose deal
+  // access lacks edit/delete, instead of 403ing on click. Fails open while
+  // permissions load; the server enforces every action regardless.
+  const { canAccess } = usePermissions();
+  const canEditDeal = canAccess('deal', 'edit');
+  const canDeleteDeal = canAccess('deal', 'delete');
   const [showDelete, setShowDelete] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
   const [showAddTask, setShowAddTask] = useState(false);
@@ -387,15 +394,17 @@ export default function DealDetailPage() {
               <div>
                 <div className="flex flex-wrap items-center gap-3">
                   <h1 className="text-2xl font-bold">{deal.title}</h1>
-                  <button
-                    id="edit-deal-btn"
-                    onClick={() => setShowEdit(true)}
-                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-blue-600/10 text-blue-600 text-xs font-semibold hover:bg-blue-600 hover:text-white transition-all border border-blue-600/20"
-                    title="Edit deal"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
-                    Edit
-                  </button>
+                  {canEditDeal && (
+                    <button
+                      id="edit-deal-btn"
+                      onClick={() => setShowEdit(true)}
+                      className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-blue-600/10 text-blue-600 text-xs font-semibold hover:bg-blue-600 hover:text-white transition-all border border-blue-600/20"
+                      title="Edit deal"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+                      Edit
+                    </button>
+                  )}
                 </div>
                 {deal.contact && (
                   <p className="text-sm text-muted-foreground mt-1">
@@ -513,33 +522,46 @@ export default function DealDetailPage() {
               </p>
             )}
 
-            {/* Stage Selector */}
+            {/* Stage Selector — a stage move IS a deal edit, so it's gated on the
+                same OLS bit as Mark Won/Lost below. Read-only roles keep the
+                information (current stage as a static pill), not the buttons. */}
             {!deal.is_won && !deal.is_lost && (
               <div className="mb-4">
-                <label className="text-xs font-medium text-muted-foreground mb-2 block">Move to stage</label>
-                <div className="flex flex-wrap gap-1.5">
-                  {stages.filter(s => !s.is_won && !s.is_lost).map(s => (
-                    <button
-                      key={s.id}
-                      onClick={() => stageChangeMutation.mutate({ stageId: s.id })}
-                      disabled={deal.stage_id === s.id || stageChangeMutation.isPending}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                        deal.stage_id === s.id
-                          ? 'bg-blue-600 text-white'
-                          : 'bg-muted/50 hover:bg-muted text-muted-foreground hover:text-foreground'
-                      } disabled:opacity-50`}
-                    >
-                      {s.name}
-                    </button>
-                  ))}
-                </div>
+                <label className="text-xs font-medium text-muted-foreground mb-2 block">
+                  {canEditDeal ? 'Move to stage' : 'Stage'}
+                </label>
+                {canEditDeal ? (
+                  <div className="flex flex-wrap gap-1.5">
+                    {stages.filter(s => !s.is_won && !s.is_lost).map(s => (
+                      <button
+                        key={s.id}
+                        onClick={() => stageChangeMutation.mutate({ stageId: s.id })}
+                        disabled={deal.stage_id === s.id || stageChangeMutation.isPending}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                          deal.stage_id === s.id
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-muted/50 hover:bg-muted text-muted-foreground hover:text-foreground'
+                        } disabled:opacity-50`}
+                      >
+                        {s.name}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <span
+                    className="inline-block px-3 py-1.5 rounded-lg text-xs font-medium text-white"
+                    style={{ backgroundColor: deal.stage?.color || '#64748b' }}
+                  >
+                    {deal.stage?.name || '—'}
+                  </span>
+                )}
               </div>
             )}
 
             {/* Won / Lost / Delete Actions */}
-            {!deal.is_won && !deal.is_lost && (
+            {!deal.is_won && !deal.is_lost && (canEditDeal || canDeleteDeal) && (
               <div className="flex gap-2 pt-4 border-t">
-                {wonStage && (
+                {wonStage && canEditDeal && (
                   <button
                     onClick={() => stageChangeMutation.mutate({ stageId: wonStage.id })}
                     disabled={stageChangeMutation.isPending}
@@ -548,7 +570,7 @@ export default function DealDetailPage() {
                     🏆 Mark Won
                   </button>
                 )}
-                {lostStage && (
+                {lostStage && canEditDeal && (
                   <button
                     onClick={() => stageChangeMutation.mutate({ stageId: lostStage.id })}
                     disabled={stageChangeMutation.isPending}
@@ -558,12 +580,14 @@ export default function DealDetailPage() {
                   </button>
                 )}
                 <div className="flex-1" />
-                <button
-                  onClick={() => setShowDelete(true)}
-                  className="px-3 py-2 rounded-lg text-sm text-red-500 hover:bg-red-500/10 transition-colors"
-                >
-                  Delete
-                </button>
+                {canDeleteDeal && (
+                  <button
+                    onClick={() => setShowDelete(true)}
+                    className="px-3 py-2 rounded-lg text-sm text-red-500 hover:bg-red-500/10 transition-colors"
+                  >
+                    Delete
+                  </button>
+                )}
               </div>
             )}
           </div>

@@ -1,16 +1,16 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { inviteMember, getRoleOptions, type RoleOption } from '../../lib/api';
+import { useAuth } from '../../lib/auth';
+import { prettyRole } from '../../lib/roles';
 
 interface Props {
   onClose: () => void;
   onInvited: () => void;
 }
 
-// prettyRole turns a role name into a title-cased label ("sales_rep" → "Sales Rep").
-const prettyRole = (name: string) =>
-  name.split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-
 export default function InviteMemberModal({ onClose, onInvited }: Props) {
+  const { hasCapability } = useAuth();
   const [email, setEmail] = useState('');
   const [roles, setRoles] = useState<RoleOption[]>([]);
   const [roleId, setRoleId] = useState('');
@@ -80,7 +80,8 @@ export default function InviteMemberModal({ onClose, onInvited }: Props) {
               {successLink}
             </div>
             <p className="text-sm text-muted-foreground">
-              (Development only) Copy this link or click below to simulate the accepted email invite.
+              You're running a local build, so no email went out — share this link directly, or
+              open it to walk through the accept flow yourself.
             </p>
             <div className="flex gap-3 pt-2">
               <button
@@ -133,6 +134,23 @@ export default function InviteMemberModal({ onClose, onInvited }: Props) {
                   </option>
                 ))}
               </select>
+              {/* What the picked role means, right where it's being assigned
+                  (U3.3) — description from the catalog, plus a jump into the
+                  role's detail page for admins who can open it. */}
+              {(() => {
+                const selected = roles.find((r) => r.id === roleId);
+                if (!selected) return null;
+                return (
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    {selected.description || 'No description for this role yet.'}{' '}
+                    {hasCapability('roles.manage') && (
+                      <Link to={`/settings/roles/${selected.id}`} className="text-blue-500 hover:underline whitespace-nowrap">
+                        What does this grant?
+                      </Link>
+                    )}
+                  </p>
+                );
+              })()}
             </div>
 
             <div className="flex gap-3 pt-2">

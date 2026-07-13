@@ -258,6 +258,19 @@ var CapabilityCatalog = []CapabilityInfo{
 	{CapDataExport, "Export report results", "Download report results as CSV files.", CapGroupOversight, true},
 }
 
+// CapabilityLabel returns the human-facing label for a capability code (from
+// CapabilityCatalog), falling back to the raw code for anything unknown — so
+// user-facing permission errors can name the capability the way the roles UI
+// does ("Manage roles & permissions"), never the internal code (U3.5).
+func CapabilityLabel(code string) string {
+	for _, ci := range CapabilityCatalog {
+		if ci.Code == code {
+			return ci.Label
+		}
+	}
+	return code
+}
+
 // DefaultRoleCapabilities is the DEFAULT capability matrix seeded for the system
 // roles. It is only a starting point — capabilities are data, and an admin can
 // grant or revoke any of them per role (owner excepted). owner is intentionally
@@ -405,6 +418,11 @@ type RoleRepository interface {
 // roles.manage-gated; Options is any-member (feeds the pickers, P6).
 type RoleUseCase interface {
 	List(ctx context.Context, orgID uuid.UUID) ([]RoleDetail, error)
+	// GetDetail returns one role's identity + capabilities + active member count
+	// for the role detail page (U3). The owner role synthesizes AllCapabilities
+	// (it bypasses capability checks, so its table rows — none — aren't the truth).
+	// 404 AppError when the role isn't visible to the org.
+	GetDetail(ctx context.Context, orgID, id uuid.UUID) (*RoleDetail, error)
 	// Options returns the minimal role list any member may read for pickers (P6).
 	Options(ctx context.Context, orgID uuid.UUID) ([]RoleOption, error)
 	Create(ctx context.Context, orgID uuid.UUID, in CreateRoleInput) (*Role, error)

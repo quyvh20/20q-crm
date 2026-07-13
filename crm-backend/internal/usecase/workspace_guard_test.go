@@ -399,6 +399,9 @@ func (f *fakeCapChecker) HasCapability(_ context.Context, _ uuid.UUID, capabilit
 	return domain.NewAppError(403, "missing "+capability)
 }
 func (f *fakeCapChecker) CallerCapabilities(_ context.Context, _ uuid.UUID) []string { return nil }
+func (f *fakeCapChecker) CallerObjectAccess(_ context.Context, _ uuid.UUID) map[string]domain.ObjectAccess {
+	return nil
+}
 
 func TestUpdateMemberRole_EscalationGuardBlocksPrivilegedAssignment(t *testing.T) {
 	repo := newFakeWorkspaceRepo()

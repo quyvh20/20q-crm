@@ -86,8 +86,10 @@ function NavGroup({ title, sections }: { title: string; sections: SettingsSectio
                 ? 'bg-accent text-accent-foreground font-medium'
                 : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
             }`;
+          // No `end`: nested pages (e.g. /settings/roles/:id) keep their parent
+          // section highlighted. Section paths never prefix each other.
           return (
-            <NavLink key={s.path} to={s.externalTo ?? `/settings/${s.path}`} className={cls} end>
+            <NavLink key={s.path} to={s.externalTo ?? `/settings/${s.path}`} className={cls}>
               <Icon className="w-4 h-4 shrink-0" />
               {s.label}
             </NavLink>

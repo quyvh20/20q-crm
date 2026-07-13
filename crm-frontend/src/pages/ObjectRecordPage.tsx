@@ -16,6 +16,8 @@ import {
 import { ObjectDetailView, ObjectForm } from '../features/objects';
 import { listPath } from '../features/objects/recordRoutes';
 import ShareRecordModal from '../components/records/ShareRecordModal';
+import AccessDeniedPanel from '../components/common/AccessDeniedPanel';
+import { usePermissions } from '../lib/auth';
 
 // ObjectRecordPage is the Salesforce-style, URL-addressable detail page for any
 // object — /objects/:slug/records/:id. Every list row, kanban card, and global
@@ -37,6 +39,10 @@ import ShareRecordModal from '../components/records/ShareRecordModal';
 export default function ObjectRecordPage() {
   const { slug, id } = useParams<{ slug: string; id: string }>();
   const navigate = useNavigate();
+  // OLS-aware buttons (U3.7): Edit/Delete hide for roles whose object access
+  // lacks them, instead of 403ing on click. Fails open while permissions load;
+  // the server enforces every action regardless.
+  const { canAccess } = usePermissions();
 
   const [schema, setSchema] = useState<ObjectSchema | null>(null);
   const [record, setRecord] = useState<UniformRecord | null>(null);
@@ -146,13 +152,23 @@ export default function ObjectRecordPage() {
   }
 
   if (error || !schema || !record) {
+    // A denied read has two message flavors: the backend's OLS deny ("your
+    // role can't read … records — ask an admin for access", verb varies by
+    // action) and parseJsonSafe's non-JSON 403 hint ("you don't have permission
+    // for this action"). Either means "denied", not "broken" — show the
+    // friendly panel, not a red error.
+    const accessDenied = /your role can't|you don't have permission/i.test(error);
     return (
       <div className="max-w-6xl mx-auto">
         <button onClick={() => navigate(slug ? listPath(slug) : '/')} style={backLinkStyle}>← Back</button>
-        <div style={{ padding: 40, textAlign: 'center', color: '#64748b', border: '2px dashed #e2e8f0', borderRadius: 12 }}>
-          <div style={{ fontSize: 32, marginBottom: 8 }}>🔍</div>
-          {error || 'Record not found.'}
-        </div>
+        {accessDenied ? (
+          <AccessDeniedPanel message={`Your role can't view ${slug ?? 'these'} records — ask an admin for access.`} />
+        ) : (
+          <div style={{ padding: 40, textAlign: 'center', color: '#64748b', border: '2px dashed #e2e8f0', borderRadius: 12 }}>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>🔍</div>
+            {error || 'Record not found.'}
+          </div>
+        )}
       </div>
     );
   }
@@ -197,9 +213,15 @@ export default function ObjectRecordPage() {
         </div>
         {!editing && (
           <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-            <button id="record-edit-btn" onClick={() => setEditing(true)} style={primaryBtnStyle}>Edit</button>
+            {slug && canAccess(slug, 'edit') && (
+              <button id="record-edit-btn" onClick={() => setEditing(true)} style={primaryBtnStyle}>Edit</button>
+            )}
+            {/* Share is deliberately ungated: the server allows sharing any
+                record you can see, so there is no OLS bit to mirror here. */}
             <button id="record-share-btn" onClick={() => setSharing(true)} style={secondaryBtnStyle}>Share</button>
-            <button id="record-delete-btn" onClick={() => setConfirmingDelete(true)} style={dangerBtnStyle}>Delete</button>
+            {slug && canAccess(slug, 'delete') && (
+              <button id="record-delete-btn" onClick={() => setConfirmingDelete(true)} style={dangerBtnStyle}>Delete</button>
+            )}
           </div>
         )}
       </div>

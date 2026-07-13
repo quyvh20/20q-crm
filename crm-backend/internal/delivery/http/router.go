@@ -9,7 +9,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, objectRegistryHandler *ObjectRegistryHandler, recordHandler *RecordHandler, permissionHandler *PermissionHandler, searchHandler *SearchHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, voiceHandler *VoiceHandler, layoutHandler *ObjectLayoutHandler, roleHandler *RoleHandler, auditHandler *AuditHandler, reportHandler *ReportHandler, reportShareHandler *ReportShareHandler, reportCommentHandler *ReportCommentHandler, dashboardHandler *DashboardHandler, groupHandler *UserGroupHandler, notificationHandler *NotificationHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository, permissionUC domain.PermissionUseCase) {
+func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, objectRegistryHandler *ObjectRegistryHandler, recordHandler *RecordHandler, permissionHandler *PermissionHandler, searchHandler *SearchHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, voiceHandler *VoiceHandler, layoutHandler *ObjectLayoutHandler, roleHandler *RoleHandler, roleAccessHandler *RoleAccessHandler, auditHandler *AuditHandler, reportHandler *ReportHandler, reportShareHandler *ReportShareHandler, reportCommentHandler *ReportCommentHandler, dashboardHandler *DashboardHandler, groupHandler *UserGroupHandler, notificationHandler *NotificationHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository, permissionUC domain.PermissionUseCase) {
 	// Mark every request context as HTTP-originated so the permission engine can
 	// flag a callerless HTTP call reaching Authorize (a route mounted outside
 	// AuthMiddleware) instead of silently treating it as a trusted in-process
@@ -138,6 +138,11 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			roles.DELETE("/:id", cap(domain.CapRolesManage), roleHandler.Delete)
 			roles.GET("/:id/capabilities", cap(domain.CapRolesManage), roleHandler.GetCapabilities)
 			roles.PUT("/:id/capabilities", cap(domain.CapRolesManage), roleHandler.SetCapabilities)
+			// The role detail page's merged effective-access payload (U3): identity +
+			// capabilities + OLS/FLS per object + layout assignments in one response.
+			// Static /options and /catalog coexist with /:id/* — gin static-beats-param,
+			// same pattern as above (P6).
+			roles.GET("/:id/access", cap(domain.CapRolesManage), roleAccessHandler.Get)
 		}
 
 		// Admin + auth audit log (P4) — the append-only who-did-what over
@@ -419,11 +424,16 @@ func registerObjectRegistryRoutes(parent *gin.RouterGroup, objectRegistryHandler
 	// Field-Level Security grid — managing role×field visibility is roles.manage.
 	registry.GET("/:slug/field-permissions", cap(domain.CapRolesManage), permissionHandler.GetFieldGrid)
 	registry.PUT("/:slug/field-permissions", cap(domain.CapRolesManage), permissionHandler.SetFieldPermission)
+	// Bulk variant (U3): one level across many fields of one role — one
+	// transaction, one cache bust, one audit event.
+	registry.PUT("/:slug/field-permissions/bulk", cap(domain.CapRolesManage), permissionHandler.SetFieldPermissionsBulk)
 
 	// Object-Level Security grid — the role × object access matrix is roles.manage.
 	perms := parent.Group("/registry/permissions", cap(domain.CapRolesManage))
 	perms.GET("", permissionHandler.GetGrid)
 	perms.PUT("", permissionHandler.SetPermission)
+	// Per-object FLS restriction counts for the objects-page badges (U3).
+	perms.GET("/field-summary", permissionHandler.GetFieldSummary)
 
 	// Per-role detail layouts (P8) — object-model config → objects.manage.
 	registry.GET("/:slug/layouts", cap(domain.CapObjectsManage), layoutHandler.ListLayouts)

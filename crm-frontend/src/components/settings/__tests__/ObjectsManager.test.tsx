@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import type { ObjectSummary, ObjectSchema, CustomObjectDef } from '../../../lib/api';
 
 vi.mock('../../../lib/api', () => ({
@@ -14,7 +15,7 @@ vi.mock('../../../lib/api', () => ({
   deleteFieldDef: vi.fn(),
 }));
 
-import { listRegistryObjects, getObjectSchema, getObjectDef } from '../../../lib/api';
+import { listRegistryObjects, getObjectSchema, getObjectDef, createObjectDef, updateObjectDef } from '../../../lib/api';
 import ObjectsManager from '../ObjectsManager';
 
 const summaries: ObjectSummary[] = [
@@ -82,5 +83,57 @@ describe('ObjectsManager — one manager for every object', () => {
     render(<ObjectsManager />);
     fireEvent.click(await screen.findByText('+ New Object'));
     await waitFor(() => expect(screen.getByText('New Custom Object')).toBeInTheDocument());
+  });
+});
+
+// U3.6: a freshly created object is invisible to any role without an access
+// grant — the list view must nudge the admin toward Object Access right then.
+// The banner's Link needs a Router, so these tests wrap in MemoryRouter.
+describe('ObjectsManager — creation-time access nudge (U3.6)', () => {
+  it('shows the access-review banner after creating an object, with a link and a dismiss', async () => {
+    vi.mocked(createObjectDef).mockResolvedValue({} as CustomObjectDef);
+
+    render(<MemoryRouter><ObjectsManager /></MemoryRouter>);
+    fireEvent.click(await screen.findByText('+ New Object'));
+    await waitFor(() => expect(screen.getByText('New Custom Object')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByPlaceholderText('e.g. Project'), { target: { value: 'Invoice' } });
+    fireEvent.click(screen.getByText('Create Object'));
+
+    // Back on the list, the amber banner names the new object and links out.
+    expect(await screen.findByText(/was created\. Roles without an access grant won't see it anywhere/)).toBeInTheDocument();
+    expect(screen.getByText('Invoice')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Object Access' })).toHaveAttribute('href', '/settings/object-access');
+
+    fireEvent.click(screen.getByLabelText('Dismiss access reminder'));
+    expect(screen.queryByText(/was created/)).toBeNull();
+  });
+
+  it('does not show the banner after editing an existing object', async () => {
+    const projectDef: CustomObjectDef = {
+      id: 'p1', org_id: 'o1', slug: 'project', label: 'Project', label_plural: 'Projects',
+      icon: '📁', searchable: false, created_at: '', updated_at: '',
+      fields: [{ key: 'name', label: 'Name', type: 'text', required: true, position: 0 }],
+    } as CustomObjectDef;
+    vi.mocked(getObjectDef).mockResolvedValue(projectDef);
+    // NumberPrefixEditor loads the schema for the current prefix on mount.
+    const projectSchema: ObjectSchema = {
+      slug: 'project', label: 'Project', label_plural: 'Projects', icon: '📁', color: '#6B7280',
+      is_system: false, searchable: false, display_field: 'name', fields: [],
+    };
+    vi.mocked(getObjectSchema).mockResolvedValue(projectSchema);
+    vi.mocked(updateObjectDef).mockResolvedValue({} as CustomObjectDef);
+
+    render(<MemoryRouter><ObjectsManager /></MemoryRouter>);
+    await screen.findByText('Project');
+    fireEvent.click(screen.getAllByTitle('Edit fields')[1]);
+    await waitFor(() => expect(screen.getByText('Edit Project')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Update Object'));
+
+    // Saving an edit returns to the list without the nudge.
+    expect(await screen.findByText('+ New Object')).toBeInTheDocument();
+    expect(screen.queryByText(/was created/)).toBeNull();
+    expect(screen.queryByLabelText('Dismiss access reminder')).toBeNull();
   });
 });

@@ -105,7 +105,7 @@ func guardLegacyWrite(mask domain.FieldMask, keys []string) error {
 	}
 	for _, key := range keys {
 		if !mask.CanWrite(key) {
-			return domain.NewAppError(http.StatusForbidden, "you do not have permission to edit the '"+key+"' field")
+			return domain.NewAppError(http.StatusForbidden, "the \""+key+"\" field is read-only for your role")
 		}
 	}
 	return nil

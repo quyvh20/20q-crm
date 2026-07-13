@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { useAuth } from '../lib/auth';
+import { useAuth, usePermissions } from '../lib/auth';
+import { prettyRole } from '../lib/roles';
 import { useConfirm } from '../components/common/ConfirmDialog';
+import AccessDeniedPanel from '../components/common/AccessDeniedPanel';
 import {
   listChatSessions,
   getChatSessionMessages,
@@ -19,6 +21,7 @@ const ROLE_COLORS: Record<string, string> = {
 
 export default function ConversationLogPage() {
   const { hasCapability } = useAuth();
+  const { loaded: permsLoaded } = usePermissions();
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -81,14 +84,19 @@ export default function ConversationLogPage() {
     }
   };
 
-  if (!canAccess) {
+  // Wait for the capability fetch to settle before deciding, so a deep-linked
+  // admin doesn't flash the denied panel (the SettingsLayout trap; matches
+  // EmailTemplatesPage). hasCapability is false while perms are still loading.
+  if (!permsLoaded) {
     return (
-      <div style={styles.forbidden}>
-        <div style={styles.forbiddenIcon}>🔒</div>
-        <h2 style={styles.forbiddenTitle}>Access Restricted</h2>
-        <p style={styles.forbiddenText}>Only admins and owners can view conversation logs.</p>
+      <div style={{ display: 'flex', justifyContent: 'center', padding: 64 }}>
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
       </div>
     );
+  }
+
+  if (!canAccess) {
+    return <AccessDeniedPanel capability="members.manage" what="AI conversation logs" />;
   }
 
   const totalPages = Math.ceil(total / limit);
@@ -141,7 +149,7 @@ export default function ConversationLogPage() {
                           color: ROLE_COLORS[session.role] || '#6b7280',
                           border: `1px solid ${(ROLE_COLORS[session.role] || '#6b7280')}44`,
                         }}>
-                          {session.role}
+                          {prettyRole(session.role)}
                         </span>
                       </td>
                       <td style={{ ...styles.td, maxWidth: 220 }}>
@@ -246,8 +254,4 @@ const styles: Record<string, React.CSSProperties> = {
   pagination: { display: 'flex', alignItems: 'center', gap: 12, justifyContent: 'center', marginTop: 20 },
   pageBtn: { padding: '6px 16px', borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', fontSize: 13, fontWeight: 600 },
   pageInfo: { fontSize: 13, color: 'var(--muted-foreground)' },
-  forbidden: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 12, padding: 40 },
-  forbiddenIcon: { fontSize: 48 },
-  forbiddenTitle: { fontSize: 22, fontWeight: 700, margin: 0 },
-  forbiddenText: { fontSize: 14, color: 'var(--muted-foreground)', margin: 0 },
 };

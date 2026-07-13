@@ -346,3 +346,44 @@ func TestRoleDuplicate_ClonesAndRecordsLineage(t *testing.T) {
 		t.Fatalf("expected 2 evictions for reassigned members, got %d", len(ev.evicted))
 	}
 }
+
+// TestRoleGetDetail_OwnerReportsFullVocabulary: the owner bypasses capability
+// checks entirely, so its (nonexistent) role_permissions rows aren't the truth —
+// GetDetail synthesizes the full vocabulary for the role detail page (U3).
+func TestRoleGetDetail_OwnerReportsFullVocabulary(t *testing.T) {
+	repo := newFakeRoleRepo()
+	owner := repo.add(&domain.Role{ID: uuid.New(), Name: domain.RoleOwner, IsSystem: true, IsOwner: true, DataScope: domain.DataScopeAll})
+	repo.memberCounts[owner.ID] = 1
+	uc, _ := newRoleUC(repo)
+
+	d, err := uc.GetDetail(context.Background(), uuid.New(), owner.ID)
+	if err != nil {
+		t.Fatalf("GetDetail(owner): %v", err)
+	}
+	if !d.IsOwner {
+		t.Fatal("owner detail must carry IsOwner")
+	}
+	if len(d.Capabilities) != len(domain.AllCapabilities) {
+		t.Fatalf("owner must report the full capability vocabulary (%d), got %d: %v",
+			len(domain.AllCapabilities), len(d.Capabilities), d.Capabilities)
+	}
+	if d.MemberCount != 1 {
+		t.Fatalf("expected member count 1, got %d", d.MemberCount)
+	}
+}
+
+// TestRoleGetDetail_NilCapabilitiesNormalizeToEmpty: a custom role with no
+// capability rows returns [] (not null), so the SPA can map without guards.
+func TestRoleGetDetail_NilCapabilitiesNormalizeToEmpty(t *testing.T) {
+	repo := newFakeRoleRepo()
+	custom := repo.add(&domain.Role{ID: uuid.New(), Name: "Support Agent", IsSystem: false, DataScope: domain.DataScopeOwn})
+	uc, _ := newRoleUC(repo)
+
+	d, err := uc.GetDetail(context.Background(), uuid.New(), custom.ID)
+	if err != nil {
+		t.Fatalf("GetDetail(custom): %v", err)
+	}
+	if d.Capabilities == nil || len(d.Capabilities) != 0 {
+		t.Fatalf("nil repo capabilities must normalize to an empty slice, got %#v", d.Capabilities)
+	}
+}

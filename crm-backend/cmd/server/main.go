@@ -780,6 +780,15 @@ func main() {
 			log.Error("Failed to seed system roles", zap.Error(err))
 		}
 
+		// Built-in role descriptions (U3) — boot guard. The seeder stamps them on
+		// create; this backfills installs whose system roles predate descriptions,
+		// touching ONLY still-empty rows so it stays idempotent.
+		for name, desc := range repository.SystemRoleDescriptions {
+			if err := db.Exec(`UPDATE roles SET description = ? WHERE is_system = TRUE AND name = ? AND description = ''`, desc, name).Error; err != nil {
+				log.Error("Failed to backfill system role description", zap.String("role", name), zap.Error(err))
+			}
+		}
+
 		// P7 convergence — make object_fields the single field-def store: copy each
 		// org's admin-defined custom fields out of the legacy
 		// org_settings.custom_field_defs blob into object_fields. Idempotent and
@@ -993,6 +1002,10 @@ func main() {
 			&usecase.PermissionCacheFanout{Perm: permissionUC, Layouts: layoutUC},
 			authRepo, sessionEvictor)
 		roleHandler := delivery.NewRoleHandler(roleUC)
+		// Role detail "effective access" (U3): merges role identity (roleUC), the
+		// OLS/FLS view (permissionUC), and layout assignments (layoutRepo) into the
+		// GET /api/roles/:id/access payload.
+		roleAccessHandler := delivery.NewRoleAccessHandler(roleUC, permissionUC, layoutRepo)
 
 		// Workspace/member management. Built here (after permissionUC + roleRepo) so
 		// it can enforce escalation guard #2 (P6): permissionUC checks the caller's
@@ -1091,7 +1104,7 @@ func main() {
 		voiceNoteUC := usecase.NewVoiceNoteUseCase(voiceNoteRepo, aiJobQueue, cfg, contactRepo)
 		voiceHandler := delivery.NewVoiceHandler(voiceNoteUC)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, layoutHandler, roleHandler, auditHandler, reportHandler, reportShareHandler, reportCommentHandler, dashboardHandler, userGroupHandler, notificationHandler, cfg, db, redisClient, authRepo, permissionUC)
+		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, layoutHandler, roleHandler, roleAccessHandler, auditHandler, reportHandler, reportShareHandler, reportCommentHandler, dashboardHandler, userGroupHandler, notificationHandler, cfg, db, redisClient, authRepo, permissionUC)
 
 		// --- Workflow Automation Engine ---
 		memHandler := logger.NewMemoryHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))

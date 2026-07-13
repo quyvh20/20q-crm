@@ -15,6 +15,7 @@ import ObjectForm from './ObjectForm';
 import ObjectKanban from './ObjectKanban';
 import ImportModal from '../../components/contacts/ImportModal';
 import { recordPath } from './recordRoutes';
+import { usePermissions } from '../../lib/auth';
 
 interface ObjectListViewProps {
   slug: string;
@@ -44,6 +45,11 @@ const MAX_COLUMNS = 4;
 // driven by the schema, with zero per-object code.
 export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps) {
   const navigate = useNavigate();
+  // OLS-aware buttons (U3.7): a role without create access doesn't get an Add
+  // button that would only 403. Fails open while permissions are still loading —
+  // the server enforces regardless.
+  const { canAccess } = usePermissions();
+  const canCreate = canAccess(slug, 'create');
   const openRecord = useCallback(
     (rec: UniformRecord) => navigate(recordPath(slug, rec.id)),
     [navigate, slug],
@@ -289,7 +295,7 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
               ))}
             </div>
           )}
-          {supportsImport && (
+          {supportsImport && canCreate && (
             <button
               onClick={() => setShowImport(true)}
               style={{ padding: '10px 16px', background: '#fff', color: '#334155', border: '1px solid #d1d5db', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 14 }}
@@ -297,12 +303,14 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
               Import
             </button>
           )}
-          <button
-            onClick={() => setPanel({ mode: 'create' })}
-            style={{ padding: '10px 20px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 14 }}
-          >
-            + Add {schema.label}
-          </button>
+          {canCreate && (
+            <button
+              onClick={() => setPanel({ mode: 'create' })}
+              style={{ padding: '10px 20px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 14 }}
+            >
+              + Add {schema.label}
+            </button>
+          )}
         </div>
       </div>
 
@@ -417,7 +425,9 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
                 <div style={{ fontSize: 32, marginBottom: 8 }}>{schema.icon}</div>
                 {hasActiveFilters
                   ? `No ${schema.label_plural.toLowerCase()} match your filters.`
-                  : `No ${schema.label_plural.toLowerCase()} yet. Click "+ Add ${schema.label}" to create one.`}
+                  : canCreate
+                    ? `No ${schema.label_plural.toLowerCase()} yet. Click "+ Add ${schema.label}" to create one.`
+                    : `No ${schema.label_plural.toLowerCase()} to show.`}
               </td></tr>
             ) : (
               records.map((rec) => (

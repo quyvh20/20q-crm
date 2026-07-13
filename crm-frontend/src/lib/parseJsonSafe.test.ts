@@ -31,9 +31,14 @@ describe('parseJsonSafe', () => {
     );
   });
 
-  it('maps 401/403 HTML (auth wall) to a session hint', async () => {
+  it('maps 401 HTML (auth wall) to a session hint', async () => {
     await expect(parseJsonSafe(new Response('<html>login</html>', { status: 401 }))).rejects.toThrow(
       /sign in again|session/i,
     );
+  });
+
+  it('maps 403 HTML to a permission hint, not a session hint (U3)', async () => {
+    const p = parseJsonSafe(new Response('<html>forbidden</html>', { status: 403 }));
+    await expect(p).rejects.toThrow(/permission/i);
   });
 });

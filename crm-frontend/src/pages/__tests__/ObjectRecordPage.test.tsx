@@ -28,6 +28,18 @@ vi.mock('../../lib/api', () => ({
   removeRecordTag: vi.fn(),
 }));
 
+// U3.7: the page gates Edit/Delete on the caller's OLS bits. Tests flip
+// individual bits through this map; anything unset stays allowed, so the
+// pre-existing tests (which click both buttons) run unchanged.
+let objectAccess: Record<string, boolean> = {};
+vi.mock('../../lib/auth', () => ({
+  usePermissions: () => ({
+    can: () => true,
+    canAccess: (slug: string, action: string) => objectAccess[`${slug}.${action}`] ?? true,
+    loaded: true,
+  }),
+}));
+
 import {
   getObjectRecordPage,
   getObjectSchema,
@@ -72,6 +84,7 @@ function renderPage() {
 beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
+  objectAccess = {};
 });
 
 describe('ObjectRecordPage', () => {
@@ -145,6 +158,47 @@ describe('ObjectRecordPage', () => {
     renderPage();
 
     expect(await screen.findByText('forbidden')).toBeInTheDocument();
+  });
+
+  it('hides Edit and Delete but keeps Share when the OLS bits are denied', async () => {
+    objectAccess['contact.edit'] = false;
+    objectAccess['contact.delete'] = false;
+    vi.mocked(getObjectSchema).mockResolvedValue(contactSchema);
+    vi.mocked(getObjectRecordUnified).mockResolvedValue(contactRecord);
+
+    renderPage();
+
+    // Share stays: the server allows sharing any record you can see.
+    expect(await screen.findByText('Share')).toBeInTheDocument();
+    expect(screen.queryByText('Edit')).not.toBeInTheDocument();
+    expect(screen.queryByText('Delete')).not.toBeInTheDocument();
+  });
+
+  it('renders the friendly denied panel when the record read 403s', async () => {
+    vi.mocked(getObjectSchema).mockResolvedValue(contactSchema);
+    // The backend's OLS deny message verbatim (permission_usecase.go Authorize
+    // uses the action verb, "read" for a GET) as surfaced by the api layer.
+    vi.mocked(getObjectRecordUnified).mockRejectedValue(
+      new Error("your role can't read contact records — ask an admin for access"),
+    );
+
+    renderPage();
+
+    expect(await screen.findByText("You don't have access to this")).toBeInTheDocument();
+    expect(screen.getByText(/Your role can't view contact records/)).toBeInTheDocument();
+    // The generic broken-load state did not render.
+    expect(screen.queryByText('Record not found.')).not.toBeInTheDocument();
+  });
+
+  it('renders the friendly denied panel on a non-JSON 403 (parseJsonSafe hint)', async () => {
+    vi.mocked(getObjectSchema).mockResolvedValue(contactSchema);
+    vi.mocked(getObjectRecordUnified).mockRejectedValue(
+      new Error("Request failed (HTTP 403) — you don't have permission for this action."),
+    );
+
+    renderPage();
+
+    expect(await screen.findByText("You don't have access to this")).toBeInTheDocument();
   });
 
   it('updates the record in place after an edit is saved', async () => {

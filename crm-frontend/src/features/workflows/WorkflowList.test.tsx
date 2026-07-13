@@ -39,11 +39,21 @@ const mockAuth = vi.hoisted(() => ({
   // canRunAny stands in for holding the workflows.run_any capability (P6) — the
   // old owner/admin/manager "privileged" set.
   canRunAny: true,
+  // canManage stands in for workflows.manage (U3) — gates the write affordances
+  // (New Workflow, Duplicate, toggle, Delete, Email Templates tab). Defaults on
+  // so the existing rendering tests still see every control.
+  canManage: true,
 }));
 vi.mock('../../lib/auth', () => ({
   useAuth: () => ({
     user: mockAuth.user,
     hasCapability: (code: string) => code === 'workflows.run_any' && mockAuth.canRunAny,
+  }),
+  usePermissions: () => ({
+    loaded: true,
+    can: (code: string) =>
+      (code === 'workflows.manage' && mockAuth.canManage) ||
+      (code === 'workflows.run_any' && mockAuth.canRunAny),
   }),
 }));
 
@@ -148,6 +158,7 @@ beforeEach(() => {
   // Default to a privileged caller so the Run Now control renders on every row.
   mockAuth.user = { id: 'user-1' };
   mockAuth.canRunAny = true;
+  mockAuth.canManage = true;
 });
 
 // ── Req 8.1: a Run Now control is displayed for EACH workflow row ──────

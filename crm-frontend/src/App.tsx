@@ -12,6 +12,7 @@ import DealDetailPage from './pages/DealDetailPage';
 import SettingsLayout, { SettingsIndexRedirect } from './pages/settings/SettingsLayout';
 import MembersSection from './pages/settings/MembersSection';
 import GroupsSection from './pages/settings/GroupsSection';
+import RoleDetailSection from './pages/settings/RoleDetailSection';
 import ProfileSection from './pages/settings/ProfileSection';
 import SecuritySection from './pages/settings/SecuritySection';
 import PipelineStagesManager from './components/settings/PipelineStagesManager';
@@ -182,6 +183,9 @@ function App() {
               <Route path="members" element={<MembersSection />} />
               <Route path="groups" element={<GroupsSection />} />
               <Route path="roles" element={<RolesManager />} />
+              {/* One role's whole story — capabilities, effective object/field
+                  access, scope, members — on a single page (U3.1). */}
+              <Route path="roles/:id" element={<RoleDetailSection />} />
               <Route path="object-access" element={<PermissionsManager />} />
               <Route path="field-access" element={<FieldSecurityManager />} />
               <Route path="objects" element={<ObjectsManager />} />

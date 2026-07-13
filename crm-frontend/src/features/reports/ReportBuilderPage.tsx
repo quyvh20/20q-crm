@@ -7,6 +7,7 @@ import {
   type ReportDateBucket, type ReportFieldDescriptor, type ReportVisibility,
 } from '../../lib/api';
 import { useReportPreview, isRunnableConfig } from './useReportPreview';
+import { usePermissions } from '../../lib/auth';
 import { REPORT_TEMPLATES } from './templates';
 import ReportChart from './charts/ReportChart';
 import FilterEditor from './builder/FilterEditor';
@@ -94,6 +95,10 @@ export default function ReportBuilderPage() {
   const canManage = !existing || level === 'edit' || level === 'manage';
   const canShare = level === 'manage';
   const canDelete = level === 'manage';
+  // CSV export is capability-gated server-side (data.export) — hide the button
+  // instead of letting it 403 (U3.7).
+  const { can } = usePermissions();
+  const canExport = can('data.export');
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -176,7 +181,7 @@ export default function ReportBuilderPage() {
             <button onClick={() => setShowShare(true)} className="rounded-md border px-3 py-2 text-sm hover:bg-accent">Share</button>
           </>
         )}
-        {existing && (
+        {existing && canExport && (
           <button onClick={handleExport} className="rounded-md border px-3 py-2 text-sm hover:bg-accent">Export CSV</button>
         )}
         {canManage && (

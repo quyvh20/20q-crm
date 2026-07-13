@@ -142,6 +142,29 @@ type PermissionMatrixCell struct {
 	ObjectAccess
 }
 
+// RoleRestrictedField is one FLS-restricted field on an object, rendered for the
+// per-role effective-access view (U3): the field's key + display label and the
+// non-default level in force (hidden|read). Fields at the default 'edit' level
+// never appear here.
+type RoleRestrictedField struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+	Level string `json:"level"`
+}
+
+// RoleObjectAccess is one object's effective access for one role (U3): the
+// registry identity, the four OLS bits flattened top-level (the same convention
+// as PermissionMatrixCell), and any FLS restrictions joined to field labels.
+// An object with no OLS row renders all-false (default-deny made visible).
+type RoleObjectAccess struct {
+	Slug     string `json:"slug"`
+	Label    string `json:"label"`
+	Icon     string `json:"icon"`
+	IsSystem bool   `json:"is_system"`
+	ObjectAccess
+	RestrictedFields []RoleRestrictedField `json:"restricted_fields"`
+}
+
 // SetPermissionInput upserts one (role, object) cell.
 type SetPermissionInput struct {
 	RoleID     uuid.UUID `json:"role_id" binding:"required"`
@@ -212,6 +235,15 @@ type PermissionRepository interface {
 	// DeleteFieldPermission removes one (role, field) restriction, returning the
 	// field to its default (fully accessible) — used when a level is set to 'edit'.
 	DeleteFieldPermission(ctx context.Context, orgID, roleID uuid.UUID, slug, fieldKey string) error
+	// BulkSetFieldPermissions applies one level to many fields of one (role,
+	// object) in a single transaction (U3): level 'edit' deletes the rows (back
+	// to default), any other level batch-upserts them.
+	BulkSetFieldPermissions(ctx context.Context, orgID, roleID uuid.UUID, slug string, fieldKeys []string, level string) error
+	// CountFieldRestrictionsByObject returns object_slug → number of FLS
+	// restriction rows for the org, EXCLUDING rows belonging to the owner role
+	// (phantom owner rows must never inflate the admin badges — owner bypasses
+	// FLS entirely). One GROUP BY query (U3).
+	CountFieldRestrictionsByObject(ctx context.Context, orgID uuid.UUID) (map[string]int, error)
 }
 
 // PermissionUseCase is the admin-facing surface for the role × object grid and
@@ -232,6 +264,13 @@ type CapabilityChecker interface {
 	// the org (all of them for owner). Drives permission-aware UI. Empty when there
 	// is no caller.
 	CallerCapabilities(ctx context.Context, orgID uuid.UUID) []string
+	// CallerObjectAccess returns the context caller's OLS bits per object slug
+	// (U3): the caller's role rows for a member (an object with no row is simply
+	// absent — the FE treats a missing slug as denied), every registry object
+	// all-true for the owner. Empty for a callerless (trusted in-process) context.
+	// Served from the same cached entry as HasCapability, so it's cheap enough to
+	// run on every login.
+	CallerObjectAccess(ctx context.Context, orgID uuid.UUID) map[string]ObjectAccess
 }
 
 type PermissionUseCase interface {
@@ -246,6 +285,19 @@ type PermissionUseCase interface {
 	// SetFieldPermission sets one (role, field) level; level 'edit' clears the
 	// restriction. Busts the cache so the change applies on the next request.
 	SetFieldPermission(ctx context.Context, orgID uuid.UUID, in SetFieldPermissionInput) error
+	// SetFieldPermissionsBulk applies one level to many fields of one (role,
+	// object) in a single transaction, with ONE cache invalidation and ONE audit
+	// event (U3). Rejects the owner role — it always has full access.
+	SetFieldPermissionsBulk(ctx context.Context, orgID uuid.UUID, in SetFieldPermissionsBulkInput) error
+	// EffectiveAccess renders one role's merged access over every registry object
+	// (U3): OLS bits (absent row = all-false) + FLS restrictions joined to field
+	// labels. The owner role synthesizes full access (it has no rows by design —
+	// Authorize/FieldMask bypass on IsOwner). 404 AppError for a role not visible
+	// to the org.
+	EffectiveAccess(ctx context.Context, orgID, roleID uuid.UUID) ([]RoleObjectAccess, error)
+	// FieldRestrictionSummary returns object_slug → FLS restriction-row count for
+	// the org (owner-role rows excluded), for the objects-page badges (U3).
+	FieldRestrictionSummary(ctx context.Context, orgID uuid.UUID) (map[string]int, error)
 	// Invalidate drops the cached OLS + FLS maps for an org (called when permissions
 	// or the object set change, so live edits apply without a restart).
 	Invalidate(orgID uuid.UUID)

@@ -1,15 +1,14 @@
 import { useState, useEffect } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { getWorkspaceMembers, updateMemberRole, removeMember, suspendMember, reinstateMember, transferOwnership, sendMemberResetLink, listInvitations, resendInvitation, revokeInvitation, getRoleOptions, ReassignmentRequiredError, type WorkspaceMember, type Invitation, type RoleOption } from '../../lib/api';
-import { useAuth } from '../../lib/auth';
+import { useAuth, usePermissions } from '../../lib/auth';
+import { prettyRole } from '../../lib/roles';
 import { useConfirm } from '../common/ConfirmDialog';
-import { ShieldAlert, PauseCircle, PlayCircle, UserMinus, Crown, Shield, KeyRound, CheckCircle2, RotateCw, X } from 'lucide-react';
-
-// prettyRole title-cases a role name for display ("sales_rep" → "Sales Rep").
-const prettyRole = (name: string) =>
-  name.split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+import { ShieldAlert, PauseCircle, PlayCircle, UserMinus, Crown, Shield, KeyRound, CheckCircle2, RotateCw, X, HelpCircle } from 'lucide-react';
 
 export default function MembersList() {
   const { user, hasCapability, isOwner } = useAuth();
+  const { can } = usePermissions();
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
   const [roles, setRoles] = useState<RoleOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -24,10 +23,27 @@ export default function MembersList() {
   const [invitations, setInvitations] = useState<Invitation[]>([]);
   const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
 
+  // Role filter lives in the URL (?role=<id>), not component state: MembersSection
+  // remounts MembersList after an invite (key bump), and URL state survives that.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const roleFilter = searchParams.get('role') ?? '';
+  const setRoleFilter = (id: string) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (id) next.set('role', id);
+      else next.delete('role');
+      return next;
+    }, { replace: true });
+  };
+
   const canManage = hasCapability('members.manage');
   // Owner role ids (resolved from the dynamic options, P6) so the owner member is
   // shown as a locked badge — you transfer ownership, you don't re-assign it.
   const ownerRoleIds = new Set(roles.filter((r) => r.is_owner).map((r) => r.id));
+
+  // Client-side filter keyed by role_id. An unknown id (stale link) simply matches
+  // nothing — the zero-result state below offers the "All roles" reset.
+  const visibleMembers = roleFilter ? members.filter((m) => m.role_id === roleFilter) : members;
 
   const fetchMembers = () => {
     setLoading(true);
@@ -45,7 +61,9 @@ export default function MembersList() {
   useEffect(() => {
     fetchMembers();
     fetchInvitations();
-    if (canManage) getRoleOptions().then(setRoles).catch(() => setRoles([]));
+    // Role options are an any-member read (P6) — always fetched, since the role
+    // filter above the table needs the labels even without members.manage.
+    getRoleOptions().then(setRoles).catch(() => setRoles([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -200,6 +218,51 @@ export default function MembersList() {
             {noticeMsg}
           </div>
         )}
+        {/* Role filter (U3.3) — the landing target for "N members" links on role
+            cards/detail. URL-backed, so those deep links arrive pre-filtered. */}
+        {roles.length > 0 && (
+          <div className="mb-4 flex items-center gap-2 flex-wrap">
+            <label htmlFor="member-role-filter" className="text-xs text-muted-foreground">
+              Filter by role
+            </label>
+            <select
+              id="member-role-filter"
+              value={roleFilter}
+              onChange={(e) => setRoleFilter(e.target.value)}
+              className="px-2 py-1 text-sm bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+            >
+              <option value="">All roles</option>
+              {roles.map((r) => (
+                <option key={r.id} value={r.id}>{prettyRole(r.name)}</option>
+              ))}
+            </select>
+            {hasCapability('roles.manage') && (
+              <Link
+                to={roleFilter ? `/settings/roles/${roleFilter}` : '/settings/roles'}
+                className="text-xs text-blue-500 hover:underline"
+              >
+                What does {roleFilter ? 'this role' : 'each role'} grant?
+              </Link>
+            )}
+          </div>
+        )}
+        {/* Options failed/empty but a ?role= deep link is still filtering the
+            table — keyed off the param itself so the filter stays visible and
+            escapable even without the select above. */}
+        {roles.length === 0 && roleFilter && (
+          <div className="mb-4">
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-muted text-muted-foreground border border-border">
+              Filtered by role
+              <button
+                onClick={() => setRoleFilter('')}
+                aria-label="Clear role filter"
+                className="hover:text-foreground transition-colors"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </span>
+          </div>
+        )}
         <table className="w-full text-left">
           <thead>
             <tr className="border-b border-border">
@@ -212,7 +275,7 @@ export default function MembersList() {
             </tr>
           </thead>
           <tbody>
-            {members.map(m => (
+            {visibleMembers.map(m => (
               <tr key={m.user_id} className={`border-b border-border/50 hover:bg-accent/30 transition-colors ${m.status === 'suspended' ? 'opacity-60' : ''}`}>
                 <td className="py-3 pr-4">
                   <div className="flex items-center gap-3">
@@ -234,22 +297,36 @@ export default function MembersList() {
                 </td>
                 <td className="py-3 pr-4">
                   {canManage && !ownerRoleIds.has(m.role_id) && m.user_id !== user?.id && m.status !== 'deleted' ? (
-                    <select
-                      value={m.role_id}
-                      onChange={e => handleRoleChange(m.user_id, e.target.value)}
-                      className="px-2 py-1 flex items-center text-sm bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                    >
-                      {roles.map(r => (
-                        <option key={r.id} value={r.id} disabled={r.is_owner}>
-                          {prettyRole(r.name)}{r.is_owner ? ' — transfer instead' : ''}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="flex items-center gap-1.5">
+                      <select
+                        value={m.role_id}
+                        onChange={e => handleRoleChange(m.user_id, e.target.value)}
+                        className="px-2 py-1 flex items-center text-sm bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                      >
+                        {roles.map(r => (
+                          <option key={r.id} value={r.id} disabled={r.is_owner}>
+                            {prettyRole(r.name)}{r.is_owner ? ' — transfer instead' : ''}
+                          </option>
+                        ))}
+                      </select>
+                      {/* Jump into the assigned role's capability list right where
+                          it's assigned (U3.3) — replaces the near-invisible
+                          title-tooltips on the options (U3.5). */}
+                      {can('roles.manage') && (
+                        <Link
+                          to={`/settings/roles/${m.role_id}`}
+                          aria-label="What does this role grant?"
+                          className="text-muted-foreground hover:text-blue-500 transition-colors"
+                        >
+                          <HelpCircle className="w-3.5 h-3.5" />
+                        </Link>
+                      )}
+                    </div>
                   ) : (
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-muted text-muted-foreground capitalize border border-border">
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-muted text-muted-foreground border border-border">
                       {m.role === 'owner' && <Crown className="w-3 h-3 text-yellow-500" />}
                       {m.role === 'admin' && <Shield className="w-3 h-3 text-blue-400" />}
-                      {m.role?.replace('_', ' ')}
+                      {prettyRole(m.role)}
                     </span>
                   )}
                 </td>
@@ -303,9 +380,16 @@ export default function MembersList() {
             ))}
           </tbody>
         </table>
-        {members.length === 0 && (
+        {members.length === 0 ? (
           <p className="text-center text-muted-foreground py-8 text-sm">No members found.</p>
-        )}
+        ) : visibleMembers.length === 0 ? (
+          <p className="text-center text-muted-foreground py-8 text-sm">
+            No members hold this role.{' '}
+            <button onClick={() => setRoleFilter('')} className="text-blue-500 hover:underline">
+              Show all roles
+            </button>
+          </p>
+        ) : null}
       </div>
 
       {canManage && invitations.length > 0 && (
@@ -329,8 +413,8 @@ export default function MembersList() {
                   <tr key={inv.id} className="border-b border-border/50 hover:bg-accent/30 transition-colors">
                     <td className="py-3 pr-4 text-sm text-foreground">{inv.email}</td>
                     <td className="py-3 pr-4">
-                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-muted text-muted-foreground capitalize border border-border">
-                        {inv.role?.replace('_', ' ')}
+                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-muted text-muted-foreground border border-border">
+                        {prettyRole(inv.role)}
                       </span>
                     </td>
                     <td className="py-3 pr-4 text-xs text-muted-foreground">

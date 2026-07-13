@@ -65,7 +65,10 @@ Sequenced so trust comes first, the structural container second, then the two au
 7. Session-expiry UX: "session expired" notice + return-to URL instead of a silent hard redirect; `autocomplete` attributes on all auth forms.
 8. Move `onboarding_completed` from localStorage to the user row; show the welcome wizard only to users who can actually create objects.
 
-### U3 — Permissions people can understand
+### U3 — Permissions people can understand — ✅ DONE (2026-07-13, uncommitted)
+
+**All 7 items shipped.** Role list → cards → **role detail page** (RoleDetailSection) with a single pivot: identity + data scope + a merged **effective-access table** (new `GET /api/roles/:id/access` → EffectiveAccess joins OLS bits + FLS restrictions to field labels + layout routing; owner synthesized full-access) + grouped capabilities with visible descriptions and "Sensitive" chips. Cross-links both ways (role member-count ↔ `/settings/members?role=`, role dropdowns → "What does this grant?"). FLS at scale: field search, "restricted only" filter, bulk "Set all…" per column (`PUT …/field-permissions/bulk`, ≤200-key chunks, one txn/audit each), restriction-count badges (`GET …/permissions/field-summary`). Language pass: prettyRole + capability labels shared in `lib/roles.ts`, killed God-mode/default-deny/Row scope/(Development only) from user copy, friendlier FLS/capability error strings (CapabilityLabel). Precise dismissable zero-access banner (who can't see what) + object-creation nudge. `usePermissions` adopted app-wide: `canAccess(slug, action)` (from a new `objects` OLS map on `/me`, fails open while unknown) hides record Edit/Delete/Add/Import/stage-move/kanban-drag/tag buttons; capability gates hide New-Workflow/Email-Templates/CSV-export; AccessDeniedPanel replaces raw 403s. **Verified live** (full stack up): role detail effective-access table shows correct Sales Rep bits (RCE ✓, Delete ✗), members cross-link lands pre-filtered, AI Logs loads for admin (no denied-flash), FLS controls render; no console errors. Review fixed one finding: ConversationLogPage lacked EmailTemplatesPage's `loaded` guard (flashed the denied panel for authorized deep-linkers) — now guarded. BE build/vet/tests + FE tsc + 756 FE tests green.
+
 1. **Role detail page**: one role's capabilities, object access, field restrictions, data scope, layouts, and members in a single view with a single pivot. The roles list becomes cards → detail, not a checkbox wall.
 2. **Effective-access endpoint + "What can this role see?" panel**: merged capabilities + OLS + FLS + scope (data already sits in one cache entry, orgAccessEntry) — the poor-man's "view as", answering "what can Jane actually see?" without a test account.
 3. Cross-links: role member-count → members filtered to that role; role dropdowns in MembersList/InviteMemberModal show a description + "what does this grant?" link.
@@ -113,7 +116,7 @@ Sequenced so trust comes first, the structural container second, then the two au
 | U0 | Honesty/security fixes | **DONE** (uncommitted; BE build/vet/tests + FE tsc + 713 FE tests green) |
 | U1 | Unified settings shell | **DONE** (uncommitted; tsc + 713 FE tests green) |
 | U2 | My Account | **DONE** (uncommitted; BE build/vet/tests + FE tsc + 713 tests green) |
-| U3 | Understandable permissions | NOT STARTED |
+| U3 | Understandable permissions | **DONE** (uncommitted; BE build/vet/tests + FE tsc + 756 tests green; verified live) |
 | U4 | Members & lifecycle | NOT STARTED |
 | U5 | Notification preferences | NOT STARTED |
 | U6 | Team scope / sharing / 2FA | NOT STARTED |

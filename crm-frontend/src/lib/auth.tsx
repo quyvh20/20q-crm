@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { switchWorkspace as apiSwitchWorkspace, setAccessToken as setApiToken, readCsrfToken, getMyPermissions, parseJsonSafe, type Workspace, type MyPermissions, type DataScope } from './api';
+import { switchWorkspace as apiSwitchWorkspace, setAccessToken as setApiToken, readCsrfToken, getMyPermissions, parseJsonSafe, type Workspace, type MyPermissions, type DataScope, type ObjectAccessBits } from './api';
 
 const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8080' : '');
 
@@ -49,6 +49,12 @@ interface AuthContextType {
   dataScope: DataScope;
   roleId: string;
   isOwner: boolean;
+  // Caller's per-object OLS bits (U3.7): slug → {read,create,edit,delete}.
+  // null means UNKNOWN (perms not loaded yet, or an older server that doesn't
+  // send the map) — canAccessObject fails OPEN on unknown so buttons don't
+  // flash hidden for allowed users; the server still enforces every action.
+  objectAccess: Record<string, ObjectAccessBits> | null;
+  canAccessObject: (slug: string, action: 'read' | 'create' | 'edit' | 'delete') => boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (data: RegisterData) => Promise<void>;
   logout: () => Promise<void>;
@@ -104,6 +110,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const roleId = perms?.role_id ?? '';
   const isOwner = perms?.is_owner ?? false;
   const hasCapability = useCallback((code: string) => (perms?.capabilities ?? []).includes(code), [perms]);
+  const objectAccess = perms?.objects ?? null;
+  // Unknown (null map) → visible: capability gates fail closed, but record
+  // buttons fail open until the OLS map arrives so allowed users never see
+  // their Edit button flash away. Known map + missing slug → denied.
+  const canAccessObject = useCallback(
+    (slug: string, action: 'read' | 'create' | 'edit' | 'delete') => {
+      if (perms?.is_owner) return true;
+      const objects = perms?.objects;
+      if (!objects) return true;
+      return !!objects[slug]?.[action];
+    },
+    [perms],
+  );
 
   // Fetch the caller's effective permissions (capabilities + role identity + row
   // scope) for the active org after auth changes. Fire-and-forget: on failure
@@ -303,6 +322,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         dataScope,
         roleId,
         isOwner,
+        objectAccess,
+        canAccessObject,
         login,
         register,
         logout,
@@ -328,8 +349,12 @@ export function useAuth() {
 // caller's capabilities + role identity + row scope, plus can(code) for gating.
 // It's a thin projection over the auth context so gates read
 // `usePermissions().can('members.manage')` instead of hardcoded role-name checks.
+// U3.7 adds: `loaded` (capability fetch settled — gate skeletons on it, the
+// SettingsLayout trap), `canAccess(slug, action)` for record-level buttons
+// (fails open while unknown; the server always enforces), and the raw
+// `objects` OLS map for callers that need to enumerate.
 export function usePermissions() {
-  const { capabilities, dataScope, roleId, currentRole, isOwner, hasCapability } = useAuth();
+  const { capabilities, dataScope, roleId, currentRole, isOwner, hasCapability, permsLoaded, objectAccess, canAccessObject } = useAuth();
   return {
     capabilities,
     dataScope,
@@ -337,5 +362,8 @@ export function usePermissions() {
     roleName: currentRole,
     isOwner,
     can: hasCapability,
+    loaded: permsLoaded,
+    objects: objectAccess,
+    canAccess: canAccessObject,
   };
 }

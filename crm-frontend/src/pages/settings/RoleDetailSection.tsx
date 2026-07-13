@@ -1,0 +1,425 @@
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import { Link, useParams } from 'react-router-dom';
+import { ArrowLeft, Check, Minus, Lock, AlertTriangle, Users, Pencil } from 'lucide-react';
+import {
+  getRoleAccess,
+  getRolesCatalog,
+  setRoleCapabilities,
+  updateRole,
+  ALL_CAPABILITIES,
+  CAPABILITY_LABELS,
+  type RoleAccess,
+  type CapabilityInfo,
+  type DataScope,
+} from '../../lib/api';
+import { useAuth } from '../../lib/auth';
+import { prettyRole, SENSITIVE_CAPABILITIES } from '../../lib/roles';
+import { useConfirm } from '../../components/common/ConfirmDialog';
+
+// RoleDetailSection is one role's whole story on a single page with a single
+// pivot (U3.1): identity + capabilities + effective object/field access + data
+// scope + layout routing + member count. The "What can this role see?" table is
+// the U3.2 effective-access view — merged OLS bits (an object with no grant
+// shows all-off, so the default of no access is visible, not implied) and field
+// restrictions joined to display labels, answering "what would Jane actually
+// see?" without a test account.
+export default function RoleDetailSection() {
+  const { id = '' } = useParams();
+  const { hasCapability } = useAuth();
+  const [data, setData] = useState<RoleAccess | null>(null);
+  const [catalog, setCatalog] = useState<CapabilityInfo[]>([]);
+  const [groups, setGroups] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [saveError, setSaveError] = useState('');
+  const [busy, setBusy] = useState(false);
+  // Edit-in-place for a custom role's name/description (built-ins stay fixed).
+  const [editingIdentity, setEditingIdentity] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editDesc, setEditDesc] = useState('');
+  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const [access, cat] = await Promise.all([
+        getRoleAccess(id),
+        getRolesCatalog().catch(() => ({ capabilities: [], groups: [] })),
+      ]);
+      setData(access);
+      setCatalog(cat.capabilities);
+      setGroups(cat.groups);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load role');
+    } finally {
+      setLoading(false);
+    }
+  }, [id]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Capabilities grouped for display; falls back to one flat group when the
+  // catalog endpoint is unavailable.
+  const grouped = useMemo(() => {
+    if (catalog.length === 0) {
+      return [{ group: 'Capabilities', caps: ALL_CAPABILITIES.map((code) => ({ code, label: CAPABILITY_LABELS[code] || code, description: '', group: '', sensitive: SENSITIVE_CAPABILITIES.has(code) })) }];
+    }
+    return groups
+      .map((g) => ({ group: g, caps: catalog.filter((c) => c.group === g) }))
+      .filter((s) => s.caps.length > 0);
+  }, [catalog, groups]);
+
+  const role = data?.role;
+  // Layout routing per object, for the Layout column ("Default" when unset).
+  const layoutBySlug = useMemo(() => {
+    const m = new Map<string, string>();
+    data?.layouts.forEach((l) => m.set(l.object_slug, l.layout_name));
+    return m;
+  }, [data]);
+
+  const zeroRead = !!role && !role.is_owner && data!.objects.length > 0 && data!.objects.every((o) => !o.read);
+
+  const toggleCapability = async (cap: string) => {
+    if (!role || role.is_system) return;
+    const has = role.capabilities.includes(cap);
+    // Removing roles.manage is a big deal: everyone holding this role loses the
+    // whole permissions surface. Name the consequence before saving; the server
+    // additionally refuses to let you strip it from your OWN role (U0.5).
+    if (has && cap === 'roles.manage') {
+      const holders = role.member_count === 1 ? '1 member' : `${role.member_count} members`;
+      if (!(await confirmDialog({
+        title: 'Remove permission management?',
+        body: `${role.member_count > 0 ? `${holders} holding the "${prettyRole(role.name)}" role` : `Members with the "${prettyRole(role.name)}" role`} will no longer be able to open the Roles, Object Access, or Field Access settings.`,
+        confirmLabel: 'Remove it',
+      }))) return;
+    }
+    const next = has ? role.capabilities.filter((c) => c !== cap) : [...role.capabilities, cap];
+    setBusy(true);
+    setSaveError('');
+    try {
+      await setRoleCapabilities(role.id, next);
+      setData((d) => (d ? { ...d, role: { ...d.role, capabilities: next } } : d));
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : 'Failed to save capability');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const startEditIdentity = () => {
+    if (!role || role.is_system) return;
+    setEditName(role.name);
+    setEditDesc(role.description || '');
+    setEditingIdentity(true);
+  };
+
+  const saveIdentity = async () => {
+    if (!role || !editName.trim()) return;
+    const name = editName.trim();
+    const description = editDesc.trim();
+    setBusy(true);
+    setSaveError('');
+    try {
+      await updateRole(role.id, { name, description });
+      setData((d) => (d ? { ...d, role: { ...d.role, name, description } } : d));
+      setEditingIdentity(false);
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : 'Failed to rename role');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const changeScope = async (scope: DataScope) => {
+    if (!role || role.is_system) return;
+    setBusy(true);
+    setSaveError('');
+    try {
+      await updateRole(role.id, { data_scope: scope });
+      setData((d) => (d ? { ...d, role: { ...d.role, data_scope: scope } } : d));
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : 'Failed to change data access');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (loading) return <div className="text-sm text-muted-foreground py-8">Loading role…</div>;
+
+  if (error || !role) {
+    return (
+      <div className="space-y-3">
+        <Link to="/settings/roles" className="inline-flex items-center gap-1.5 text-sm text-blue-600 hover:underline">
+          <ArrowLeft className="w-4 h-4" /> All roles
+        </Link>
+        <div className="bg-red-50 text-red-700 text-sm rounded-md px-3 py-2">{error || 'Role not found.'}</div>
+      </div>
+    );
+  }
+
+  const memberCountText = `${role.member_count} member${role.member_count === 1 ? '' : 's'}`;
+  const canSeeMembers = hasCapability('members.manage') || hasCapability('members.invite');
+
+  return (
+    <div className="space-y-5">
+      {/* Breadcrumb + identity */}
+      <div>
+        <Link to="/settings/roles" className="inline-flex items-center gap-1.5 text-sm text-blue-600 hover:underline">
+          <ArrowLeft className="w-4 h-4" /> All roles
+        </Link>
+        {editingIdentity ? (
+          <div className="mt-2 space-y-2 max-w-md">
+            <input
+              value={editName}
+              onChange={(e) => setEditName(e.target.value)}
+              aria-label="Role name"
+              className="w-full border rounded-md px-2.5 py-1.5 text-sm bg-background font-semibold"
+            />
+            <input
+              value={editDesc}
+              onChange={(e) => setEditDesc(e.target.value)}
+              aria-label="Role description"
+              placeholder="What this role is for (optional)"
+              className="w-full border rounded-md px-2.5 py-1.5 text-sm bg-background"
+            />
+            <div className="flex gap-2">
+              <button
+                onClick={saveIdentity}
+                disabled={busy || !editName.trim()}
+                className="px-3 py-1.5 text-sm rounded-md bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50"
+              >
+                Save
+              </button>
+              <button
+                onClick={() => setEditingIdentity(false)}
+                disabled={busy}
+                className="px-3 py-1.5 text-sm rounded-md border hover:bg-accent disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
+              <h2 className="text-lg font-semibold">{prettyRole(role.name)}</h2>
+              {!role.is_system && (
+                <button
+                  onClick={startEditIdentity}
+                  aria-label="Edit role name and description"
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  <Pencil className="w-3.5 h-3.5" aria-hidden="true" />
+                </button>
+              )}
+              {role.is_owner && (
+                <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+                  <Lock className="w-3 h-3" aria-hidden="true" /> Full access
+                </span>
+              )}
+              <span className="text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+                {role.is_system ? 'Built-in role' : 'Custom role'}
+              </span>
+              {canSeeMembers ? (
+                <Link
+                  to={`/settings/members?role=${role.id}`}
+                  className="inline-flex items-center gap-1 text-xs text-blue-600 hover:underline"
+                >
+                  <Users className="w-3.5 h-3.5" aria-hidden="true" /> {memberCountText}
+                </Link>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                  <Users className="w-3.5 h-3.5" aria-hidden="true" /> {memberCountText}
+                </span>
+              )}
+            </div>
+            {role.description && <p className="text-sm text-muted-foreground mt-1">{role.description}</p>}
+          </>
+        )}
+        {role.is_system && !role.is_owner && (
+          <p className="text-xs text-muted-foreground mt-1">
+            Built-in roles can't be edited — duplicate this role from the roles list to customize a copy.
+          </p>
+        )}
+        {role.is_owner && (
+          <p className="text-xs text-muted-foreground mt-1">
+            The owner always has every permission and full access to all records and fields. To hand it over,
+            transfer ownership from the Members page.
+          </p>
+        )}
+      </div>
+
+      {saveError && <div className="bg-red-50 text-red-700 text-sm rounded-md px-3 py-2">{saveError}</div>}
+
+      {/* Data access (row scope, in plain words) */}
+      <section className="border rounded-lg p-4">
+        <h3 className="text-sm font-semibold">Which records can they see?</h3>
+        <p className="text-xs text-muted-foreground mt-0.5 mb-2">
+          Applies on top of the object access below, per record.
+        </p>
+        {role.is_owner || role.is_system ? (
+          <p className="text-sm">
+            {role.data_scope === 'own' ? 'Only records they own, plus records shared with them.' : 'All records.'}
+          </p>
+        ) : (
+          <select
+            value={role.data_scope}
+            disabled={busy}
+            onChange={(e) => changeScope(e.target.value as DataScope)}
+            aria-label="Which records members with this role can see"
+            className="border rounded-md px-2.5 py-1.5 text-sm bg-background disabled:opacity-60"
+          >
+            <option value="all">All records</option>
+            <option value="own">Only their own + shared records</option>
+          </select>
+        )}
+      </section>
+
+      {/* Effective access: the merged "what can this role see?" table (U3.2) */}
+      <section className="border rounded-lg p-4 space-y-3">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <h3 className="text-sm font-semibold">What can this role see and do?</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Access per object, with any field limits. An object with no checkmarks is invisible to this role.
+            </p>
+          </div>
+          {!role.is_owner && (
+            <div className="flex gap-3 text-xs">
+              <Link to={`/settings/object-access?role=${role.id}`} className="text-blue-600 hover:underline">
+                Edit object access
+              </Link>
+              <Link to={`/settings/field-access?role=${role.id}`} className="text-blue-600 hover:underline">
+                Edit field access
+              </Link>
+              {/* Layout assignments live on the ObjectsManager's Layouts tab. */}
+              <Link to="/settings/objects" className="text-blue-600 hover:underline">
+                Edit layouts
+              </Link>
+            </div>
+          )}
+        </div>
+
+        {zeroRead && (
+          <div className="flex items-start gap-2 bg-amber-50 text-amber-800 text-sm rounded-md px-3 py-2 border border-amber-200">
+            <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" aria-hidden="true" />
+            <span>
+              This role can't see any objects yet — members with it will find every page empty.{' '}
+              <Link to={`/settings/object-access?role=${role.id}`} className="font-medium underline">
+                Grant access
+              </Link>
+            </span>
+          </div>
+        )}
+
+        <div className="border rounded-lg overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/40">
+              <tr>
+                <th className="text-left font-medium px-3 py-2">Object</th>
+                <th className="font-medium px-3 py-2 text-center">Read</th>
+                <th className="font-medium px-3 py-2 text-center">Create</th>
+                <th className="font-medium px-3 py-2 text-center">Edit</th>
+                <th className="font-medium px-3 py-2 text-center">Delete</th>
+                <th className="text-left font-medium px-3 py-2">Field limits</th>
+                <th className="text-left font-medium px-3 py-2">Layout</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data!.objects.map((o) => (
+                <tr key={o.slug} className="border-t">
+                  <td className="px-3 py-2 whitespace-nowrap">
+                    <span className="mr-1.5">{o.icon}</span>{o.label}
+                    {!o.is_system && <span className="ml-1.5 text-xs text-muted-foreground">(custom)</span>}
+                  </td>
+                  {(['read', 'create', 'edit', 'delete'] as const).map((action) => (
+                    <td key={action} className="px-3 py-2 text-center">
+                      {o[action] ? (
+                        <Check className="w-4 h-4 text-green-600 inline" role="img" aria-label={`Can ${action} ${o.label}`} />
+                      ) : (
+                        <Minus className="w-4 h-4 text-muted-foreground/50 inline" role="img" aria-label={`Cannot ${action} ${o.label}`} />
+                      )}
+                    </td>
+                  ))}
+                  <td className="px-3 py-2">
+                    {o.restricted_fields.length === 0 ? (
+                      <span className="text-xs text-muted-foreground">All fields</span>
+                    ) : (
+                      <div className="flex flex-wrap gap-1">
+                        {o.restricted_fields.map((f) => (
+                          <span
+                            key={f.key}
+                            className={`text-[11px] px-1.5 py-0.5 rounded border ${
+                              f.level === 'hidden'
+                                ? 'bg-amber-500/10 text-amber-700 border-amber-500/30'
+                                : 'bg-muted text-muted-foreground border-border'
+                            }`}
+                          >
+                            {f.label} · {f.level === 'hidden' ? 'Hidden' : 'Read-only'}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap">
+                    {layoutBySlug.get(o.slug) ?? 'Default'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* Capabilities — grouped, descriptions visible, editable for custom roles */}
+      <section className="border rounded-lg p-4 space-y-3">
+        <div>
+          <h3 className="text-sm font-semibold">What can they manage?</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Permissions for workspace features and settings, separate from record access above.
+          </p>
+        </div>
+        <div className="space-y-4">
+          {grouped.map((section) => (
+            <div key={section.group}>
+              {section.group && catalog.length > 0 && (
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1.5">{section.group}</div>
+              )}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2">
+                {section.caps.map((cap) => {
+                  const checked = role.is_owner || role.capabilities.includes(cap.code);
+                  return (
+                    <label key={cap.code} className="flex items-start gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={role.is_system || busy}
+                        onChange={() => toggleCapability(cap.code)}
+                        className="h-4 w-4 mt-0.5 cursor-pointer disabled:cursor-not-allowed"
+                      />
+                      <span className={role.is_system ? 'text-muted-foreground' : ''}>
+                        <span className="inline-flex items-center gap-1.5">
+                          {cap.label}
+                          {cap.sensitive && (
+                            <span className="text-[10px] font-medium px-1.5 py-px rounded-full bg-amber-500/15 text-amber-700">
+                              Sensitive
+                            </span>
+                          )}
+                        </span>
+                        {cap.description && (
+                          <span className="block text-xs text-muted-foreground">{cap.description}</span>
+                        )}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+      {confirmDialogEl}
+    </div>
+  );
+}

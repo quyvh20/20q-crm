@@ -29,6 +29,14 @@ type fakePermRepo struct {
 	fieldUpserts   []domain.FieldPermission
 	fieldDeletes   []string // "slug:key"
 
+	// Bulk FLS (U3)
+	bulkCalls   int
+	bulkKeys    []string
+	bulkLevel   string
+	bulkSlug    string
+	bulkRoleID  uuid.UUID
+	fieldCounts map[string]int // CountFieldRestrictionsByObject result
+
 	// Capabilities (P3)
 	capabilities  map[uuid.UUID]map[string]bool // roleID → capability → true
 	loadCapCalls  int
@@ -84,6 +92,20 @@ func (f *fakePermRepo) UpsertFieldPermission(_ context.Context, p domain.FieldPe
 func (f *fakePermRepo) DeleteFieldPermission(_ context.Context, _, _ uuid.UUID, slug, fieldKey string) error {
 	f.fieldDeletes = append(f.fieldDeletes, slug+":"+fieldKey)
 	return nil
+}
+func (f *fakePermRepo) BulkSetFieldPermissions(_ context.Context, _, roleID uuid.UUID, slug string, keys []string, level string) error {
+	f.bulkCalls++
+	f.bulkRoleID = roleID
+	f.bulkSlug = slug
+	f.bulkKeys = append([]string{}, keys...)
+	f.bulkLevel = level
+	return nil
+}
+func (f *fakePermRepo) CountFieldRestrictionsByObject(context.Context, uuid.UUID) (map[string]int, error) {
+	if f.fieldCounts == nil {
+		return map[string]int{}, nil
+	}
+	return f.fieldCounts, nil
 }
 
 type fakeRegistryUC struct {
@@ -501,6 +523,24 @@ func TestSetFieldPermission_RejectsBadInput(t *testing.T) {
 	assertStatus(t, err, 400, "invalid level")
 }
 
+// The owner role always has full access, so storing FLS rows for it would only
+// create phantom grid state — the single-cell path rejects it like the bulk one.
+func TestSetFieldPermission_OwnerRoleRejected(t *testing.T) {
+	ownerID := uuid.New()
+	repo := &fakePermRepo{roles: []domain.Role{
+		{ID: ownerID, Name: domain.RoleOwner, IsSystem: true, IsOwner: true},
+	}}
+	uc := NewPermissionUseCase(repo, &fakeRegistryUC{})
+
+	err := uc.SetFieldPermission(context.Background(), uuid.New(), domain.SetFieldPermissionInput{
+		RoleID: ownerID, ObjectSlug: "deal", FieldKey: "value", Level: "hidden",
+	})
+	assertStatus(t, err, 400, "restricting the owner role")
+	if len(repo.fieldUpserts) != 0 || len(repo.fieldDeletes) != 0 {
+		t.Fatalf("owner rejection must not touch the repo, got upserts=%+v deletes=%+v", repo.fieldUpserts, repo.fieldDeletes)
+	}
+}
+
 func TestGetFieldGrid_AssemblesFieldsRolesMatrix(t *testing.T) {
 	org := uuid.New()
 	roleID := uuid.New()
@@ -541,6 +581,109 @@ func TestGetFieldGrid_AssemblesFieldsRolesMatrix(t *testing.T) {
 	if !sawOwner {
 		t.Fatal("expected owner role flagged IsOwner so the UI can lock its column")
 	}
+}
+
+// ============================================================
+// EffectiveAccess — the role detail page's per-object view (U3)
+// ============================================================
+
+// The owner role has no rows in any table by design (it bypasses OLS/FLS), so
+// EffectiveAccess synthesizes full access on every object for it.
+func TestEffectiveAccess_OwnerSynthesizesFullAccess(t *testing.T) {
+	ownerID := uuid.New()
+	repo := &fakePermRepo{roles: []domain.Role{
+		{ID: ownerID, Name: domain.RoleOwner, IsSystem: true, IsOwner: true},
+	}}
+	reg := &fakeRegistryUC{objects: []domain.ObjectSummary{
+		{Slug: "deal", Label: "Deal", IsSystem: true},
+		{Slug: "project", Label: "Project"},
+	}}
+	uc := NewPermissionUseCase(repo, reg)
+
+	out, err := uc.EffectiveAccess(context.Background(), uuid.New(), ownerID)
+	if err != nil {
+		t.Fatalf("EffectiveAccess: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("expected one entry per registry object, got %d", len(out))
+	}
+	for _, o := range out {
+		if !o.Read || !o.Create || !o.Edit || !o.Delete {
+			t.Errorf("%s: owner must show full access, got %+v", o.Slug, o.ObjectAccess)
+		}
+		if o.RestrictedFields == nil || len(o.RestrictedFields) != 0 {
+			t.Errorf("%s: owner must show no field restrictions, got %+v", o.Slug, o.RestrictedFields)
+		}
+	}
+}
+
+// An object with no OLS row for the role renders all-false — the default-deny
+// made visible instead of the object silently missing from the list.
+func TestEffectiveAccess_AbsentRowShowsDefaultDeny(t *testing.T) {
+	roleID, otherRole := uuid.New(), uuid.New()
+	repo := &fakePermRepo{
+		roles: []domain.Role{{ID: roleID, Name: "Support Agent"}},
+		// Another role's row must not bleed into this role's view.
+		perms: []domain.ObjectPermission{
+			{RoleID: otherRole, ObjectSlug: "deal", CanRead: true, CanCreate: true, CanEdit: true, CanDelete: true},
+		},
+	}
+	reg := &fakeRegistryUC{objects: []domain.ObjectSummary{{Slug: "deal", Label: "Deal", IsSystem: true}}}
+	uc := NewPermissionUseCase(repo, reg)
+
+	out, err := uc.EffectiveAccess(context.Background(), uuid.New(), roleID)
+	if err != nil {
+		t.Fatalf("EffectiveAccess: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("expected the object listed despite no row, got %d entries", len(out))
+	}
+	if out[0].Read || out[0].Create || out[0].Edit || out[0].Delete {
+		t.Fatalf("absent OLS row must render all-false, got %+v", out[0].ObjectAccess)
+	}
+}
+
+// An FLS restriction whose key no longer exists in the object schema is a stale
+// leftover (the field was deleted after the restriction) — skipped, never shown.
+func TestEffectiveAccess_SkipsStaleFieldKeys(t *testing.T) {
+	roleID := uuid.New()
+	repo := &fakePermRepo{
+		roles: []domain.Role{{ID: roleID, Name: domain.RoleViewer, IsSystem: true}},
+		perms: []domain.ObjectPermission{{RoleID: roleID, ObjectSlug: "deal", CanRead: true}},
+		fieldAccess: map[uuid.UUID]map[string]map[string]string{
+			roleID: {"deal": {"value": "hidden", "ghost": "read"}}, // "ghost" was deleted from the schema
+		},
+	}
+	reg := &fakeRegistryUC{
+		objects: []domain.ObjectSummary{{Slug: "deal", Label: "Deal", IsSystem: true}},
+		schema: &domain.ObjectDescriptor{
+			Slug: "deal", Label: "Deal",
+			Fields: []domain.FieldDescriptor{
+				{Key: "title", Label: "Title", Type: "text"},
+				{Key: "value", Label: "Amount", Type: "number"},
+			},
+		},
+	}
+	uc := NewPermissionUseCase(repo, reg)
+
+	out, err := uc.EffectiveAccess(context.Background(), uuid.New(), roleID)
+	if err != nil {
+		t.Fatalf("EffectiveAccess: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("expected one object, got %d", len(out))
+	}
+	rf := out[0].RestrictedFields
+	if len(rf) != 1 || rf[0].Key != "value" || rf[0].Label != "Amount" || rf[0].Level != "hidden" {
+		t.Fatalf("expected only the live 'value' restriction with its label, got %+v", rf)
+	}
+}
+
+func TestEffectiveAccess_UnknownRoleIs404(t *testing.T) {
+	repo := &fakePermRepo{roles: []domain.Role{{ID: uuid.New(), Name: domain.RoleViewer, IsSystem: true}}}
+	uc := NewPermissionUseCase(repo, &fakeRegistryUC{})
+	_, err := uc.EffectiveAccess(context.Background(), uuid.New(), uuid.New())
+	assertStatus(t, err, 404, "effective access for a role the org can't see")
 }
 
 // ============================================================

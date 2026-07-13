@@ -7,6 +7,7 @@ import {
   type ReportVisibility, type WorkspaceMember, type RoleOption, type UserGroup,
 } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
+import { prettyRole } from '../../lib/roles';
 
 // ReportShareDialog manages a report's granular share list: grant a user, role,
 // or group access at view/comment/edit. Shown only to a caller who can 'manage'
@@ -81,7 +82,7 @@ export default function ReportShareDialog({ report, onClose }: { report: Report;
   const sharedIds = useMemo(() => new Set(shares.map((s) => s.target_id)), [shares]);
   const candidates = useMemo(() => {
     if (tab === 'user') return members.filter((m) => !sharedIds.has(m.user_id) && m.user_id !== user?.id).map((m) => ({ id: m.user_id, name: m.full_name || m.email }));
-    if (tab === 'role') return roles.filter((r) => !sharedIds.has(r.id)).map((r) => ({ id: r.id, name: r.name }));
+    if (tab === 'role') return roles.filter((r) => !sharedIds.has(r.id)).map((r) => ({ id: r.id, name: prettyRole(r.name) }));
     return groups.filter((g) => !sharedIds.has(g.id)).map((g) => ({ id: g.id, name: g.name }));
   }, [tab, members, roles, groups, sharedIds, user?.id]);
 

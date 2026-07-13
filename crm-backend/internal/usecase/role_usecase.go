@@ -68,6 +68,48 @@ func (uc *roleUseCase) List(ctx context.Context, orgID uuid.UUID) ([]domain.Role
 	return uc.repo.ListDetailed(ctx, orgID)
 }
 
+// GetDetail returns one role's identity + capabilities + active member count for
+// the role detail page (U3). The owner role synthesizes the full capability
+// vocabulary — it bypasses capability checks entirely, so its (nonexistent)
+// role_permissions rows are not the truth about what it can do.
+func (uc *roleUseCase) GetDetail(ctx context.Context, orgID, id uuid.UUID) (*domain.RoleDetail, error) {
+	role, err := uc.repo.GetInOrg(ctx, orgID, id)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+	if role == nil {
+		return nil, domain.NewAppError(http.StatusNotFound, "role not found")
+	}
+	count, err := uc.repo.CountActiveMembers(ctx, orgID, id)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+	var caps []string
+	if domain.IsOwnerRole(role) {
+		caps = append([]string{}, domain.AllCapabilities...)
+	} else {
+		caps, err = uc.repo.GetCapabilities(ctx, id)
+		if err != nil {
+			return nil, domain.ErrInternal
+		}
+	}
+	if caps == nil {
+		caps = []string{}
+	}
+	return &domain.RoleDetail{
+		ID:           role.ID,
+		Name:         role.Name,
+		Description:  role.Description,
+		IsSystem:     role.IsSystem,
+		IsOwner:      domain.IsOwnerRole(role),
+		DataScope:    role.DataScope,
+		TemplateKey:  role.TemplateKey,
+		SeededFrom:   role.SeededFromRoleID,
+		Capabilities: caps,
+		MemberCount:  count,
+	}, nil
+}
+
 // Create makes a custom role, optionally cloning another role's OLS/FLS grids,
 // capabilities, and data_scope. The name must be unique in the org and must not
 // shadow a system role. Capabilities are validated against the fixed vocabulary.

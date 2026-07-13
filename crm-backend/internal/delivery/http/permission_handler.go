@@ -46,6 +46,9 @@ func (h *PermissionHandler) GetMyCapabilities(c *gin.Context) {
 		"role_id":      roleID,
 		"role_name":    roleName,
 		"is_owner":     isOwner,
+		// The caller's own OLS bits per object (U3): all registry objects for the
+		// owner, the role's rows otherwise. A slug absent from the map is denied.
+		"objects": h.uc.CallerObjectAccess(c.Request.Context(), orgID),
 	}, "error": nil})
 }
 
@@ -104,6 +107,41 @@ func (h *PermissionHandler) SetFieldPermission(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": "saved", "error": nil})
+}
+
+// SetFieldPermissionsBulk handles PUT /api/registry/objects/:slug/field-permissions/bulk
+// — apply one level to many fields of one role in a single transaction (U3).
+// The path slug is authoritative over any object_slug in the body, matching
+// SetFieldPermission.
+func (h *PermissionHandler) SetFieldPermissionsBulk(c *gin.Context) {
+	orgID := c.MustGet("org_id").(uuid.UUID)
+	var input domain.SetFieldPermissionsBulkInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": err.Error()})
+		return
+	}
+	input.ObjectSlug = c.Param("slug")
+	if err := h.uc.SetFieldPermissionsBulk(c.Request.Context(), orgID, input); err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": "saved", "error": nil})
+}
+
+// GetFieldSummary handles GET /api/registry/permissions/field-summary — the
+// per-object FLS restriction counts behind the objects-page badges (U3).
+// Owner-role rows are excluded in the query.
+func (h *PermissionHandler) GetFieldSummary(c *gin.Context) {
+	orgID := c.MustGet("org_id").(uuid.UUID)
+	counts, err := h.uc.FieldRestrictionSummary(c.Request.Context(), orgID)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	if counts == nil {
+		counts = map[string]int{}
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"counts": counts}, "error": nil})
 }
 
 // ListAudit handles GET /api/registry/objects/:slug/records/:id/audit — the

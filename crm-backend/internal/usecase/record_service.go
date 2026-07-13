@@ -507,7 +507,7 @@ func guardFieldWrites(mask domain.FieldMask, fields map[string]interface{}) erro
 	}
 	for key := range fields {
 		if !mask.CanWrite(key) {
-			return domain.NewAppError(http.StatusForbidden, "you do not have permission to edit the '"+key+"' field")
+			return domain.NewAppError(http.StatusForbidden, "the \""+key+"\" field is read-only for your role")
 		}
 	}
 	return nil

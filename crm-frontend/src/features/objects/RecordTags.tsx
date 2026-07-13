@@ -6,6 +6,7 @@ import {
   getTags,
   type Tag,
 } from '../../lib/api';
+import { usePermissions } from '../../lib/auth';
 
 interface RecordTagsProps {
   slug: string;
@@ -20,6 +21,19 @@ interface RecordTagsProps {
   prefetchedAllTags?: Tag[] | null;
 }
 
+// Tag add/remove are record writes: gate them on the caller's OLS edit bit so
+// edit-denied viewers aren't offered controls that only 403 (U3). usePermissions
+// throws outside an AuthProvider (ObjectDetailView mounts bare in unit tests) —
+// fall open there, matching canAccess while the OLS map is unknown; the server
+// enforces the write regardless.
+function useCanEditRecord(slug: string): boolean {
+  try {
+    return usePermissions().canAccess(slug, 'edit');
+  } catch {
+    return true;
+  }
+}
+
 // RecordTags renders a record's tags for ANY object, from the uniform tag API
 // (the backend hides the contact_tags vs object_links split). It is the tag half
 // of the former RecordRelations panel — the free-text "link any record" half was
@@ -29,6 +43,7 @@ export default function RecordTags({ slug, recordId, prefetchedTags, prefetchedA
   const [tags, setTags] = useState<Tag[]>(prefetchedTags ?? []);
   const [allTags, setAllTags] = useState<Tag[]>(prefetchedAllTags ?? []);
   const [error, setError] = useState('');
+  const canEdit = useCanEditRecord(slug);
 
   const refresh = useCallback(async () => {
     try {
@@ -91,14 +106,16 @@ export default function RecordTags({ slug, recordId, prefetchedTags, prefetchedA
         {tags.map((t) => (
           <span key={t.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: t.color || '#e2e8f0', color: '#fff', borderRadius: 12, padding: '2px 10px', fontSize: 12, fontWeight: 500 }}>
             {t.name}
-            <button
-              onClick={() => handleRemoveTag(t.id)}
-              aria-label={`Remove tag ${t.name}`}
-              style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: 0 }}
-            >×</button>
+            {canEdit && (
+              <button
+                onClick={() => handleRemoveTag(t.id)}
+                aria-label={`Remove tag ${t.name}`}
+                style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: 0 }}
+              >×</button>
+            )}
           </span>
         ))}
-        {availableTags.length > 0 && (
+        {canEdit && availableTags.length > 0 && (
           <select
             value=""
             onChange={(e) => e.target.value && handleAddTag(e.target.value)}

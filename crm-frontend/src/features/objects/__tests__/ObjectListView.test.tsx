@@ -16,6 +16,18 @@ vi.mock('../../../lib/api', () => ({
   getTags: vi.fn().mockResolvedValue([]),
 }));
 
+// U3.7: the list gates "+ Add"/Import on the caller's OLS create bit. Tests
+// flip individual bits through this map; anything unset stays allowed, so the
+// pre-existing rendering tests run unchanged.
+let objectAccess: Record<string, boolean> = {};
+vi.mock('../../../lib/auth', () => ({
+  usePermissions: () => ({
+    can: () => true,
+    canAccess: (slug: string, action: string) => objectAccess[`${slug}.${action}`] ?? true,
+    loaded: true,
+  }),
+}));
+
 import {
   getObjectSchema,
   listObjectRecordsUnified,
@@ -28,6 +40,14 @@ const dealSchema: ObjectSchema = {
   fields: [
     { key: 'title', label: 'Title', type: 'text', is_system: true, required: true },
     { key: 'value', label: 'Value', type: 'number', is_system: true, required: false },
+  ],
+};
+
+const contactSchema: ObjectSchema = {
+  slug: 'contact', label: 'Contact', label_plural: 'Contacts', icon: '👤', color: '#6366f1',
+  is_system: true, searchable: false, display_field: 'name',
+  fields: [
+    { key: 'name', label: 'Name', type: 'text', is_system: true, required: true },
   ],
 };
 
@@ -66,6 +86,7 @@ function renderView(slug: string) {
 beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
+  objectAccess = {};
 });
 
 describe('ObjectListView renders any object from its schema', () => {
@@ -127,6 +148,32 @@ describe('ObjectListView renders any object from its schema', () => {
     await waitFor(() =>
       expect(screen.getByTestId('loc').textContent).toBe('/objects/project/records/r9'),
     );
+  });
+
+  it('hides + Add and Import and shows the denied empty-state when create is denied', async () => {
+    objectAccess['contact.create'] = false;
+    vi.mocked(getObjectSchema).mockResolvedValue(contactSchema);
+    vi.mocked(listObjectRecordsUnified).mockResolvedValue({ records: [], next_cursor: undefined });
+
+    renderView('contact');
+
+    expect(await screen.findByText('👤 Contacts')).toBeInTheDocument();
+    expect(screen.queryByText('+ Add Contact')).not.toBeInTheDocument();
+    // Import is a contact affordance, so its absence here is the create gate.
+    expect(screen.queryByText('Import')).not.toBeInTheDocument();
+    // The empty state doesn't tell a create-denied role to click a button it doesn't have.
+    expect(await screen.findByText('No contacts to show.')).toBeInTheDocument();
+    expect(screen.queryByText(/Click "\+ Add/)).not.toBeInTheDocument();
+  });
+
+  it('keeps + Add and Import for a role with create access (contact)', async () => {
+    vi.mocked(getObjectSchema).mockResolvedValue(contactSchema);
+    vi.mocked(listObjectRecordsUnified).mockResolvedValue({ records: [], next_cursor: undefined });
+
+    renderView('contact');
+
+    expect(await screen.findByText('+ Add Contact')).toBeInTheDocument();
+    expect(screen.getByText('Import')).toBeInTheDocument();
   });
 
   it('navigates a deal row to the bespoke /deals/:id page', async () => {

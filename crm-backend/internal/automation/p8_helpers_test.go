@@ -24,6 +24,9 @@ type capAllow struct{}
 
 func (capAllow) HasCapability(context.Context, uuid.UUID, string) error { return nil }
 func (capAllow) CallerCapabilities(context.Context, uuid.UUID) []string { return nil }
+func (capAllow) CallerObjectAccess(context.Context, uuid.UUID) map[string]domain.ObjectAccess {
+	return nil
+}
 
 // capDeny grants nothing — used to prove (a) the creator allowance authorizes a run
 // with NO capability, and (b) a non-creator without workflows.run_any is forbidden.
@@ -33,6 +36,9 @@ func (capDeny) HasCapability(context.Context, uuid.UUID, string) error {
 	return domain.NewAppError(http.StatusForbidden, "denied")
 }
 func (capDeny) CallerCapabilities(context.Context, uuid.UUID) []string { return nil }
+func (capDeny) CallerObjectAccess(context.Context, uuid.UUID) map[string]domain.ObjectAccess {
+	return nil
+}
 
 // TestAuthorizeRunNowCtx verifies the capability-driven Run Now / Retry gate that
 // replaced the deleted role-name matrix (P8): the creator allowance authorizes a

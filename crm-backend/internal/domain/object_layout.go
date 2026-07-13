@@ -114,6 +114,14 @@ type LayoutWithRoles struct {
 	RoleIDs []uuid.UUID `json:"role_ids"`
 }
 
+// RoleLayoutAssignment is one (object, layout) row a role is routed to — the
+// role detail page's "which layout does this role see per object" list (U3).
+type RoleLayoutAssignment struct {
+	ObjectSlug string    `json:"object_slug"`
+	LayoutID   uuid.UUID `json:"layout_id"`
+	LayoutName string    `json:"layout_name"`
+}
+
 // CreateLayoutInput is the payload for POST /api/registry/objects/:slug/layouts.
 type CreateLayoutInput struct {
 	Name      string          `json:"name"      binding:"required"`
@@ -170,6 +178,10 @@ type ObjectLayoutRepository interface {
 	SetLayoutRoles(ctx context.Context, orgID uuid.UUID, layoutID uuid.UUID, slug string, roleIDs []uuid.UUID) error
 	// ListLayoutRoleIDs returns the role UUIDs currently assigned to a layout.
 	ListLayoutRoleIDs(ctx context.Context, orgID, layoutID uuid.UUID) ([]uuid.UUID, error)
+	// ListOrgRoleLayoutAssignments returns every (object, layout) row one role is
+	// assigned to (non-deleted layouts only), with layout names resolved — the
+	// role detail page's layouts list (U3).
+	ListOrgRoleLayoutAssignments(ctx context.Context, orgID, roleID uuid.UUID) ([]RoleLayoutAssignment, error)
 }
 
 // ObjectLayoutUseCase is the per-request resolver and the admin CRUD surface.

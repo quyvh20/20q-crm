@@ -12,6 +12,19 @@ var systemRoleOrder = []string{
 	domain.RoleOwner, domain.RoleAdmin, domain.RoleManager, domain.RoleSales, domain.RoleViewer,
 }
 
+// SystemRoleDescriptions is the plain-language blurb each built-in role ships
+// with (roles list, role detail page, pickers — U3). Descriptions must match the
+// role's DEFAULT capabilities + OLS + data_scope; system roles aren't
+// admin-editable, so this seeder and the main.go empty-only backfill are the
+// sole writers.
+var SystemRoleDescriptions = map[string]string{
+	domain.RoleOwner:   "Full access to everything in the workspace, including transferring ownership. Every workspace has exactly one owner.",
+	domain.RoleAdmin:   "Runs the workspace: manages members, roles, objects, and workflows, with full access to every record.",
+	domain.RoleManager: "Sees and edits every record and runs day-to-day operations — pipelines, workflows, and reports — but can't change roles or permissions.",
+	domain.RoleSales:   "Creates and works their own records — plus anything shared with them — and can't delete records or see other people's.",
+	domain.RoleViewer:  "Read-only: can browse every record but can't create, edit, or delete anything.",
+}
+
 // SeedSystemRoles ensures the five built-in roles exist with their capability
 // grants (role_permissions as the system-capability store, plan D5) and row scope
 // (roles.data_scope). System roles are global singletons (org_id NULL) shared by
@@ -42,6 +55,7 @@ func SeedSystemRoles(db *gorm.DB) error {
 				templateKey := name
 				role = domain.Role{
 					Name:        name,
+					Description: SystemRoleDescriptions[name],
 					IsSystem:    true,
 					IsOwner:     name == domain.RoleOwner,
 					TemplateKey: &templateKey,

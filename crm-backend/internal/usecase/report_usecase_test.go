@@ -112,6 +112,9 @@ func (f *fakeCaps) HasCapability(context.Context, uuid.UUID, string) error {
 	return domain.ErrForbidden
 }
 func (f *fakeCaps) CallerCapabilities(context.Context, uuid.UUID) []string { return nil }
+func (f *fakeCaps) CallerObjectAccess(context.Context, uuid.UUID) map[string]domain.ObjectAccess {
+	return nil
+}
 
 // ============================================================
 // Test scaffolding

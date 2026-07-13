@@ -68,6 +68,25 @@ func (s *stubLayoutRepo) LoadOrgLayoutRoleMap(_ context.Context, orgID uuid.UUID
 	return result, nil
 }
 
+// ListOrgRoleLayoutAssignments mirrors the real repo's JOIN: assignments for one
+// role, layout names resolved, deleted layouts excluded (U3).
+func (s *stubLayoutRepo) ListOrgRoleLayoutAssignments(_ context.Context, orgID, roleID uuid.UUID) ([]domain.RoleLayoutAssignment, error) {
+	out := []domain.RoleLayoutAssignment{}
+	for _, r := range s.roles {
+		if r.OrgID != orgID || r.RoleID != roleID {
+			continue
+		}
+		for _, l := range s.layouts {
+			if l.ID == r.LayoutID && l.DeletedAt.Time.IsZero() {
+				out = append(out, domain.RoleLayoutAssignment{
+					ObjectSlug: r.ObjectSlug, LayoutID: l.ID, LayoutName: l.Name,
+				})
+			}
+		}
+	}
+	return out, nil
+}
+
 func (s *stubLayoutRepo) GetLayout(_ context.Context, orgID, id uuid.UUID) (*domain.ObjectLayout, error) {
 	for i := range s.layouts {
 		if s.layouts[i].OrgID == orgID && s.layouts[i].ID == id && s.layouts[i].DeletedAt.Time.IsZero() {

@@ -1,36 +1,37 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { Lock, Users, AlertTriangle, ChevronRight } from 'lucide-react';
 import {
   getRoles,
   getRolesCatalog,
   createRole,
   duplicateRole,
   deleteRole,
-  updateRole,
-  setRoleCapabilities,
   ALL_CAPABILITIES,
-  CAPABILITY_LABELS,
   type RoleDetail,
-  type CapabilityInfo,
-  type DataScope,
 } from '../../lib/api';
+import { useAuth } from '../../lib/auth';
+import { prettyRole } from '../../lib/roles';
 import { useConfirm } from '../common/ConfirmDialog';
 
-// RolesManager is the admin surface for custom roles (P3/P6). Every authorization
-// layer keys off role_id, so a role created here works everywhere: its
-// capabilities gate admin actions, its OLS/FLS grids (Permissions tab) gate data,
-// and its data_scope controls row visibility. Start a role from a template (which
-// copies its capabilities + object/field access, avoiding the zero-access trap),
-// then tune it. Sensitive ⚠ capabilities are flagged. The owner role is locked.
+// RolesManager is the roles LIST (U3.1): create/duplicate/delete plus a card per
+// role that links into the role detail page, where everything about one role —
+// capabilities, object/field access, data scope, members — lives on a single
+// pivot. Every authorization layer keys off role_id, so a role created here
+// works everywhere. Start a role from a template (which copies its capabilities
+// + object/field access, avoiding the invisible no-access trap), then tune it
+// on its detail page.
 export default function RolesManager() {
+  const navigate = useNavigate();
+  const { hasCapability } = useAuth();
   const [roles, setRoles] = useState<RoleDetail[]>([]);
-  const [catalog, setCatalog] = useState<CapabilityInfo[]>([]);
-  const [groups, setGroups] = useState<string[]>([]);
+  const [totalCaps, setTotalCaps] = useState<number>(ALL_CAPABILITIES.length);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [busyId, setBusyId] = useState('');
 
   // New-role form state. cloneFrom defaults to the viewer template so a new role
-  // starts with safe read-only access rather than the invisible zero-OLS trap.
+  // starts with safe read-only access rather than no access at all.
   const [newName, setNewName] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [cloneFrom, setCloneFrom] = useState('');
@@ -44,13 +45,14 @@ export default function RolesManager() {
   const [reassignTo, setReassignTo] = useState('');
   const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
 
+  const canSeeMembers = hasCapability('members.manage') || hasCapability('members.invite');
+
   const load = useCallback(async () => {
     try {
       setLoading(true);
       const [rs, cat] = await Promise.all([getRoles(), getRolesCatalog().catch(() => ({ capabilities: [], groups: [] }))]);
       setRoles(rs);
-      setCatalog(cat.capabilities);
-      setGroups(cat.groups);
+      if (cat.capabilities.length > 0) setTotalCaps(cat.capabilities.length);
       // Default the create form's template to viewer (safe read-only start).
       setCloneFrom((cur) => cur || rs.find((r) => r.name === 'viewer')?.id || '');
     } catch (e) {
@@ -62,75 +64,24 @@ export default function RolesManager() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Capabilities grouped for display: catalog order (grouped, with ⚠ chips) when
-  // the catalog loaded, else a single "Capabilities" group over the flat fallback.
-  const grouped = useMemo(() => {
-    if (catalog.length === 0) {
-      return [{ group: 'Capabilities', caps: ALL_CAPABILITIES.map((code) => ({ code, label: CAPABILITY_LABELS[code] || code, description: '', group: '', sensitive: false })) }];
-    }
-    return groups
-      .map((g) => ({ group: g, caps: catalog.filter((c) => c.group === g) }))
-      .filter((s) => s.caps.length > 0);
-  }, [catalog, groups]);
-
   const handleCreate = async () => {
     if (!newName.trim()) return;
     setCreating(true);
     setError('');
     try {
-      await createRole({
+      const created = await createRole({
         name: newName.trim(),
         description: newDesc.trim() || undefined,
         clone_from_id: cloneFrom || undefined,
       });
       setNewName('');
       setNewDesc('');
-      await load();
+      // Land on the new role's detail page — that's where it gets tuned.
+      navigate(`/settings/roles/${created.id}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to create role');
     } finally {
       setCreating(false);
-    }
-  };
-
-  const toggleCapability = async (role: RoleDetail, cap: string) => {
-    if (role.is_system) return; // system roles are read-only defaults — clone to customize
-    const has = role.capabilities.includes(cap);
-    // Removing roles.manage is a big deal: everyone holding this role loses the
-    // whole Permissions surface. Name the consequence before saving; the server
-    // additionally refuses to let you strip it from your OWN role (U0.5).
-    if (has && cap === 'roles.manage') {
-      const holders = role.member_count === 1 ? '1 member' : `${role.member_count} members`;
-      if (!(await confirmDialog({
-        title: 'Remove permission management?',
-        body: `${role.member_count > 0 ? `${holders} holding the "${role.name}" role` : `Members with the "${role.name}" role`} will no longer be able to open the Roles, Object Access, or Field Access settings.`,
-        confirmLabel: 'Remove it',
-      }))) return;
-    }
-    const next = has ? role.capabilities.filter((c) => c !== cap) : [...role.capabilities, cap];
-    setBusyId(role.id);
-    setError('');
-    try {
-      await setRoleCapabilities(role.id, next);
-      setRoles((rs) => rs.map((r) => (r.id === role.id ? { ...r, capabilities: next } : r)));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to save capability');
-    } finally {
-      setBusyId('');
-    }
-  };
-
-  const changeScope = async (role: RoleDetail, scope: DataScope) => {
-    if (role.is_system) return;
-    setBusyId(role.id);
-    setError('');
-    try {
-      await updateRole(role.id, { data_scope: scope });
-      setRoles((rs) => rs.map((r) => (r.id === role.id ? { ...r, data_scope: scope } : r)));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to change scope');
-    } finally {
-      setBusyId('');
     }
   };
 
@@ -143,7 +94,7 @@ export default function RolesManager() {
       return;
     }
     if (!(await confirmDialog({
-      title: `Delete the "${role.name}" role`,
+      title: `Delete the "${prettyRole(role.name)}" role`,
       body: 'This cannot be undone. Nobody currently holds this role.',
       confirmLabel: 'Delete role',
     }))) return;
@@ -175,9 +126,9 @@ export default function RolesManager() {
     setBusyId(dupTarget.id);
     setError('');
     try {
-      await duplicateRole(dupTarget.id, { name: dupName.trim(), reassign_members: dupReassign });
+      const copy = await duplicateRole(dupTarget.id, { name: dupName.trim(), reassign_members: dupReassign });
       setDupTarget(null);
-      await load();
+      navigate(`/settings/roles/${copy.id}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to duplicate role');
     } finally {
@@ -192,10 +143,8 @@ export default function RolesManager() {
       <div>
         <h3 className="text-lg font-semibold">Roles</h3>
         <p className="text-sm text-muted-foreground mt-1">
-          Create a role from a template (it copies that template's capabilities and object
-          access, so a new role isn't invisibly locked out), then tune its capabilities and
-          data scope. Object and field access are set in the <strong>Object Permissions</strong>{' '}
-          grid below. The <strong>owner</strong> role always has full access.
+          A role decides what its members can see and do. Open a role to review or change its
+          access; create new roles from a template so they start with sensible access.
         </p>
       </div>
 
@@ -231,7 +180,7 @@ export default function RolesManager() {
             >
               <option value="">Blank (no access)</option>
               {roles.map((r) => (
-                <option key={r.id} value={r.id}>{r.name}</option>
+                <option key={r.id} value={r.id}>{prettyRole(r.name)}</option>
               ))}
             </select>
           </div>
@@ -244,53 +193,87 @@ export default function RolesManager() {
           </button>
         </div>
         {!cloneFrom && (
-          <p className="text-xs text-amber-600">
-            ⚠ A blank role starts with no access to any object — members will see nothing until
-            you grant access in the Object Permissions grid.
+          <p className="flex items-start gap-1.5 text-xs text-amber-600">
+            <AlertTriangle className="h-3.5 w-3.5 mt-px shrink-0" aria-hidden="true" />
+            A blank role starts with no access to any object — members will see nothing until
+            you grant access on the role's page.
           </p>
         )}
       </div>
 
-      {/* Role cards */}
-      <div className="space-y-3">
-        {roles.map((role) => (
-          <div key={role.id} className="border rounded-lg p-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-medium">{role.name}</span>
-                {role.is_owner && <span title="God-mode — bypasses all checks">🔒</span>}
-                <span className="text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
-                  {role.is_system ? 'system' : 'custom'}
-                </span>
-                <span className="text-xs text-muted-foreground">
-                  {role.member_count} member{role.member_count === 1 ? '' : 's'}
-                </span>
-                {!role.is_system && role.template_key && (
-                  <span className="text-xs text-muted-foreground italic">from {role.template_key} template</span>
-                )}
-                {role.is_system && !role.is_owner && (
-                  <span className="text-xs text-muted-foreground italic">read-only · duplicate to customize</span>
-                )}
-              </div>
-              <div className="flex items-center gap-3">
-                {/* Data scope */}
-                <label className="flex items-center gap-1.5 text-xs">
-                  <span className="text-muted-foreground">Row scope</span>
-                  <select
-                    value={role.data_scope}
-                    disabled={role.is_system || role.is_owner || busyId === role.id}
-                    onChange={(e) => changeScope(role, e.target.value as DataScope)}
-                    className="border rounded-md px-1.5 py-1 text-xs bg-background disabled:opacity-60"
+      {/* Role cards → detail */}
+      <div className="grid gap-3 sm:grid-cols-2">
+        {roles.map((role) => {
+          const scopeText = role.is_owner
+            ? 'Sees everything'
+            : role.data_scope === 'own'
+              ? 'Sees own + shared records'
+              : 'Sees all records';
+          const capsText = role.is_owner
+            ? 'All permissions'
+            : `${role.capabilities.length} of ${totalCaps} permissions`;
+          return (
+            <div
+              key={role.id}
+              className="relative border rounded-lg p-4 hover:border-blue-400 transition-colors"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <Link
+                    to={`/settings/roles/${role.id}`}
+                    className="font-medium hover:underline after:absolute after:inset-0 after:content-['']"
                   >
-                    <option value="all">All records</option>
-                    <option value="own">Own + shared</option>
-                  </select>
-                </label>
+                    {prettyRole(role.name)}
+                  </Link>
+                  <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                    {role.is_owner && (
+                      <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+                        <Lock className="w-3 h-3" aria-hidden="true" /> Full access
+                      </span>
+                    )}
+                    <span className="text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+                      {role.is_system ? 'Built-in' : 'Custom'}
+                    </span>
+                    {!role.is_system && role.template_key && (
+                      <span className="text-xs text-muted-foreground italic">from {role.template_key} template</span>
+                    )}
+                  </div>
+                </div>
+                <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0 mt-1" aria-hidden="true" />
+              </div>
+
+              {role.description && (
+                <p className="text-xs text-muted-foreground mt-2 line-clamp-2">{role.description}</p>
+              )}
+
+              <div className="mt-3 flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
+                {/* Member count cross-links into Members filtered to this role
+                    (U3.3), even at 0 — matching the role detail page; z-elevated
+                    above the card's stretched link overlay. */}
+                {canSeeMembers ? (
+                  <Link
+                    to={`/settings/members?role=${role.id}`}
+                    className="relative z-10 inline-flex items-center gap-1 text-blue-600 hover:underline"
+                  >
+                    <Users className="w-3.5 h-3.5" aria-hidden="true" />
+                    {role.member_count} member{role.member_count === 1 ? '' : 's'}
+                  </Link>
+                ) : (
+                  <span className="inline-flex items-center gap-1">
+                    <Users className="w-3.5 h-3.5" aria-hidden="true" />
+                    {role.member_count} member{role.member_count === 1 ? '' : 's'}
+                  </span>
+                )}
+                <span>{capsText}</span>
+                <span>{scopeText}</span>
+              </div>
+
+              <div className="mt-3 flex items-center gap-3 text-xs">
                 {!role.is_owner && (
                   <button
                     onClick={() => openDuplicate(role)}
                     disabled={busyId === role.id}
-                    className="text-xs text-blue-600 hover:underline disabled:opacity-50"
+                    className="relative z-10 text-blue-600 hover:underline disabled:opacity-50"
                   >
                     Duplicate
                   </button>
@@ -299,48 +282,15 @@ export default function RolesManager() {
                   <button
                     onClick={() => startDelete(role)}
                     disabled={busyId === role.id}
-                    className="text-xs text-red-600 hover:underline disabled:opacity-50"
+                    className="relative z-10 text-red-600 hover:underline disabled:opacity-50"
                   >
                     Delete
                   </button>
                 )}
               </div>
             </div>
-
-            {role.description && <p className="text-xs text-muted-foreground mt-1">{role.description}</p>}
-
-            {/* Capabilities, grouped with ⚠ chips on sensitive ones */}
-            <div className="mt-3 space-y-3">
-              {grouped.map((section) => (
-                <div key={section.group}>
-                  {section.group && catalog.length > 0 && (
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">{section.group}</div>
-                  )}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5">
-                    {section.caps.map((cap) => {
-                      const checked = role.is_owner || role.capabilities.includes(cap.code);
-                      return (
-                        <label key={cap.code} className="flex items-center gap-2 text-sm" title={cap.description}>
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            disabled={role.is_system || busyId === role.id}
-                            onChange={() => toggleCapability(role, cap.code)}
-                            className="h-4 w-4 cursor-pointer disabled:cursor-not-allowed"
-                          />
-                          <span className={role.is_system ? 'text-muted-foreground' : ''}>
-                            {cap.label}
-                            {cap.sensitive && <span title="Sensitive — high blast radius" className="ml-1 text-amber-600">⚠</span>}
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* Duplicate modal */}
@@ -348,7 +298,7 @@ export default function RolesManager() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/50" onClick={() => setDupTarget(null)} />
           <div className="relative bg-card border rounded-2xl shadow-xl w-full max-w-sm p-5">
-            <h3 className="text-base font-semibold mb-1">Duplicate “{dupTarget.name}”</h3>
+            <h3 className="text-base font-semibold mb-1">Duplicate “{prettyRole(dupTarget.name)}”</h3>
             <p className="text-xs text-muted-foreground mb-3">
               Creates a new custom role with the same capabilities and object/field access, which you can then tune.
             </p>
@@ -383,10 +333,10 @@ export default function RolesManager() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/50" onClick={() => setDelTarget(null)} />
           <div className="relative bg-card border rounded-2xl shadow-xl w-full max-w-sm p-5">
-            <h3 className="text-base font-semibold mb-1">Delete “{delTarget.name}”</h3>
+            <h3 className="text-base font-semibold mb-1">Delete “{prettyRole(delTarget.name)}”</h3>
             <p className="text-sm text-muted-foreground mb-3">
               {delTarget.member_count} member{delTarget.member_count === 1 ? '' : 's'} still {delTarget.member_count === 1 ? 'holds' : 'hold'} this role.
-              Move {delTarget.member_count === 1 ? 'them' : 'them'} to another role, then it will be deleted.
+              Move them to another role, then it will be deleted.
             </p>
             <label className="block text-xs font-medium mb-1">Move members to</label>
             <select
@@ -396,7 +346,7 @@ export default function RolesManager() {
             >
               <option value="">-- Select a role --</option>
               {roles.filter((r) => r.id !== delTarget.id && !r.is_owner).map((r) => (
-                <option key={r.id} value={r.id}>{r.name}</option>
+                <option key={r.id} value={r.id}>{prettyRole(r.name)}</option>
               ))}
             </select>
             <div className="flex gap-2">

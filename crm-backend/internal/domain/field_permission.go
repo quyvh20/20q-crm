@@ -122,3 +122,14 @@ type SetFieldPermissionInput struct {
 	FieldKey   string    `json:"field_key" binding:"required"`
 	Level      string    `json:"level" binding:"required"`
 }
+
+// SetFieldPermissionsBulkInput sets one level for MANY fields of one (role,
+// object) at once (U3) — one transaction, one cache bust, one audit event.
+// Level 'edit' clears the restrictions (deletes the rows). ObjectSlug is filled
+// authoritatively from the route path, like SetFieldPermissionInput.
+type SetFieldPermissionsBulkInput struct {
+	RoleID     uuid.UUID `json:"role_id" binding:"required"`
+	ObjectSlug string    `json:"object_slug"`
+	FieldKeys  []string  `json:"field_keys" binding:"required"`
+	Level      string    `json:"level" binding:"required"`
+}

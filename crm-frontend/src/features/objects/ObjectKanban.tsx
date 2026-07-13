@@ -18,6 +18,7 @@ import {
   type PipelineStage,
   type UniformRecord,
 } from '../../lib/api';
+import { usePermissions } from '../../lib/auth';
 
 interface ObjectKanbanProps {
   schema: ObjectSchema;
@@ -36,6 +37,12 @@ export default function ObjectKanban({ schema, stageKey, onCardClick }: ObjectKa
   const [records, setRecords] = useState<UniformRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [moveError, setMoveError] = useState('');
+  // A card drag is a record edit: roles without the OLS edit bit get a
+  // read-only board instead of drags that only 403-and-snap-back (U3). Fails
+  // open while permissions load; the server enforces the write regardless.
+  const { canAccess } = usePermissions();
+  const canEdit = canAccess(schema.slug, 'edit');
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
 
@@ -80,10 +87,15 @@ export default function ObjectKanban({ schema, stageKey, onCardClick }: ObjectKa
     if (!rec || String(rec.fields[stageKey] ?? '') === targetStage) return;
     if (!stages.some((s) => s.id === targetStage)) return;
 
-    // Optimistic move; revert on failure.
+    // Optimistic move; revert on failure — and say so, a silent snap-back
+    // reads as a broken board.
     const prev = records;
+    setMoveError('');
     setRecords((rs) => rs.map((r) => (r.id === rec.id ? { ...r, fields: { ...r.fields, [stageKey]: targetStage } } : r)));
-    updateObjectRecordUnified(schema.slug, rec.id, { [stageKey]: targetStage }).catch(() => setRecords(prev));
+    updateObjectRecordUnified(schema.slug, rec.id, { [stageKey]: targetStage }).catch((err) => {
+      setRecords(prev);
+      setMoveError(err instanceof Error ? err.message : 'Failed to move record');
+    });
   };
 
   if (loading) {
@@ -99,11 +111,14 @@ export default function ObjectKanban({ schema, stageKey, onCardClick }: ObjectKa
 
   return (
     <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+      {moveError && (
+        <div style={{ background: '#fef2f2', color: '#dc2626', padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>{moveError}</div>
+      )}
       <div style={{ display: 'flex', gap: 16, overflowX: 'auto', paddingBottom: 8 }}>
         {stages.map((stage) => (
           <KanbanColumn key={stage.id} stage={stage} count={(byStage[stage.id] || []).length}>
             {(byStage[stage.id] || []).map((rec) => (
-              <KanbanCard key={rec.id} record={rec} schema={schema} stageKey={stageKey} onClick={() => onCardClick(rec)} />
+              <KanbanCard key={rec.id} record={rec} schema={schema} stageKey={stageKey} disabled={!canEdit} onClick={() => onCardClick(rec)} />
             ))}
           </KanbanColumn>
         ))}
@@ -143,15 +158,17 @@ function KanbanColumn({ stage, count, children }: { stage: PipelineStage; count:
   );
 }
 
-function KanbanCard({ record, schema, stageKey, onClick }: { record: UniformRecord; schema: ObjectSchema; stageKey: string; onClick: () => void }) {
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: record.id });
+function KanbanCard({ record, schema, stageKey, disabled, onClick }: { record: UniformRecord; schema: ObjectSchema; stageKey: string; disabled: boolean; onClick: () => void }) {
+  // dnd-kit's own disable: no listeners are attached and aria-disabled is set,
+  // so the card stays a plain clickable link to the record page.
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: record.id, disabled });
   return (
     <div
       ref={setNodeRef}
       {...listeners}
       {...attributes}
       onClick={onClick}
-      style={{ opacity: isDragging ? 0.4 : 1, cursor: 'grab' }}
+      style={{ opacity: isDragging ? 0.4 : 1, cursor: disabled ? 'pointer' : 'grab' }}
     >
       <KanbanCardBody record={record} schema={schema} stageKey={stageKey} />
     </div>
