@@ -409,16 +409,27 @@ export default function MembersList() {
                 </tr>
               </thead>
               <tbody>
-                {invitations.map(inv => (
+                {invitations.map(inv => {
+                  const expired = inv.status === 'expired';
+                  return (
                   <tr key={inv.id} className="border-b border-border/50 hover:bg-accent/30 transition-colors">
-                    <td className="py-3 pr-4 text-sm text-foreground">{inv.email}</td>
+                    <td className="py-3 pr-4 text-sm text-foreground">
+                      <span className="inline-flex items-center gap-2">
+                        {inv.email}
+                        {expired && (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/15 text-amber-600 border border-amber-500/30">
+                            Expired
+                          </span>
+                        )}
+                      </span>
+                    </td>
                     <td className="py-3 pr-4">
                       <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-muted text-muted-foreground border border-border">
                         {prettyRole(inv.role)}
                       </span>
                     </td>
-                    <td className="py-3 pr-4 text-xs text-muted-foreground">
-                      {new Date(inv.expires_at).toLocaleDateString()}
+                    <td className={`py-3 pr-4 text-xs ${expired ? 'text-amber-600 font-medium' : 'text-muted-foreground'}`}>
+                      {expired ? 'Expired — resend to renew' : new Date(inv.expires_at).toLocaleDateString()}
                     </td>
                     <td className="py-3 text-right">
                       <div className="flex items-center justify-end gap-3">
@@ -431,7 +442,8 @@ export default function MembersList() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

@@ -401,6 +401,12 @@ func (r *fakeAuthRepo) GetOrgInvitationByID(context.Context, uuid.UUID, uuid.UUI
 func (r *fakeAuthRepo) ListPendingInvitations(context.Context, uuid.UUID) ([]domain.OrgInvitation, error) {
 	return nil, nil
 }
+func (r *fakeAuthRepo) ListOpenInvitations(context.Context, uuid.UUID) ([]domain.OrgInvitation, error) {
+	return nil, nil
+}
+func (r *fakeAuthRepo) GetPendingInvitationByEmail(context.Context, uuid.UUID, string) (*domain.OrgInvitation, error) {
+	return nil, nil
+}
 func (r *fakeAuthRepo) AcceptInvitation(context.Context, *domain.OrgInvitation, *domain.User, bool, *string) error {
 	return nil
 }

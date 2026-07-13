@@ -196,18 +196,32 @@ func (uc *workspaceUseCase) InviteMember(ctx context.Context, orgID uuid.UUID, i
 		return nil, nil, domain.ErrInternal
 	}
 	tokenHash := hashInviteToken(rawToken)
+	now := time.Now()
 
-	inv := &domain.OrgInvitation{
-		Email:     input.Email,
-		OrgID:     orgID,
-		RoleID:    role.ID,
-		TokenHash: tokenHash,
-		ExpiresAt: time.Now().Add(inviteTokenDuration),
-		Status:    "pending",
-	}
-
-	if err := uc.authRepo.CreateOrgInvitation(ctx, inv); err != nil {
-		return nil, nil, domain.NewAppError(500, "CreateOrgInvitation error: "+err.Error())
+	// Dedupe (U4): a still-open invite for this email — expired or not — is
+	// re-minted in place (fresh token, extended expiry, possibly a new role)
+	// rather than stacked as a second row, so the invitee has exactly one live
+	// link and the panel shows one entry. A brand-new email inserts as before.
+	if existingInv, err := uc.authRepo.GetPendingInvitationByEmail(ctx, orgID, input.Email); err == nil && existingInv != nil {
+		existingInv.RoleID = role.ID
+		existingInv.TokenHash = tokenHash
+		existingInv.ExpiresAt = now.Add(inviteTokenDuration)
+		existingInv.ResentAt = &now
+		if err := uc.authRepo.UpdateOrgInvitation(ctx, existingInv); err != nil {
+			return nil, nil, domain.NewAppError(500, "UpdateOrgInvitation error: "+err.Error())
+		}
+	} else {
+		inv := &domain.OrgInvitation{
+			Email:     input.Email,
+			OrgID:     orgID,
+			RoleID:    role.ID,
+			TokenHash: tokenHash,
+			ExpiresAt: now.Add(inviteTokenDuration),
+			Status:    "pending",
+		}
+		if err := uc.authRepo.CreateOrgInvitation(ctx, inv); err != nil {
+			return nil, nil, domain.NewAppError(500, "CreateOrgInvitation error: "+err.Error())
+		}
 	}
 
 	uc.sendInviteEmail(ctx, input.Email, rawToken, orgID)
@@ -271,14 +285,14 @@ func (uc *workspaceUseCase) inviteEmailNames(ctx context.Context, orgID uuid.UUI
 // invitee, sets the password they chose on the accept page — so an invited user
 // is no longer created PASSWORDLESS with no way in. An existing account (or one
 // that will "Continue with Google") accepts without a password.
-func (uc *workspaceUseCase) AcceptInvite(ctx context.Context, input domain.AcceptInviteInput) error {
+func (uc *workspaceUseCase) AcceptInvite(ctx context.Context, input domain.AcceptInviteInput) (*domain.AcceptInviteResult, error) {
 	tokenHash := hashInviteToken(input.Token)
 	inv, err := uc.authRepo.GetOrgInvitationByTokenHash(ctx, tokenHash)
 	if err != nil || inv == nil {
-		return domain.NewAppError(400, "this invitation link is invalid or has expired")
+		return nil, domain.NewAppError(400, "this invitation link is invalid or has expired")
 	}
 	if inv.Status != "pending" || inv.RevokedAt != nil || time.Now().After(inv.ExpiresAt) {
-		return domain.NewAppError(400, "this invitation link is no longer valid")
+		return nil, domain.NewAppError(400, "this invitation link is no longer valid")
 	}
 
 	// A supplied password must pass policy BEFORE any write, so a weak password
@@ -286,11 +300,11 @@ func (uc *workspaceUseCase) AcceptInvite(ctx context.Context, input domain.Accep
 	var newPasswordHash *string
 	if input.Password != "" {
 		if err := validatePassword(input.Password); err != nil {
-			return err
+			return nil, err
 		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcryptCost)
 		if err != nil {
-			return domain.ErrInternal
+			return nil, domain.ErrInternal
 		}
 		s := string(hash)
 		newPasswordHash = &s
@@ -298,7 +312,7 @@ func (uc *workspaceUseCase) AcceptInvite(ctx context.Context, input domain.Accep
 
 	user, err := uc.authRepo.GetUserByEmail(ctx, inv.Email)
 	if err != nil {
-		return domain.ErrInternal
+		return nil, domain.ErrInternal
 	}
 
 	createUser := user == nil
@@ -327,21 +341,71 @@ func (uc *workspaceUseCase) AcceptInvite(ctx context.Context, input domain.Accep
 	}
 
 	if err := uc.authRepo.AcceptInvitation(ctx, inv, user, createUser, newPasswordHash); err != nil {
-		return domain.ErrInternal
+		return nil, domain.ErrInternal
 	}
 
 	recordAdminEvent(ctx, uc.authRepo, inv.OrgID, "member.invite_accepted", &user.ID,
 		map[string]interface{}{"email": inv.Email})
-	return nil
+	// Auto-login only a brand-new account (createUser): an existing account is
+	// re-authenticated normally, so a leaked invite link can't mint a session over
+	// a whole pre-existing multi-workspace account (U4 review).
+	return &domain.AcceptInviteResult{UserID: user.ID, OrgID: inv.OrgID, AutoLogin: createUser}, nil
+}
+
+// GetInvitationPreview resolves a raw invite token to the public accept-page
+// metadata without consuming it (U4). A bad/unknown token is not an error — it
+// returns Status "invalid" so the page shows a clean "link is invalid" state
+// rather than a 500. Expired/revoked/accepted are distinguished so the page can
+// tailor its copy (and offer a Resend hint for expired).
+func (uc *workspaceUseCase) GetInvitationPreview(ctx context.Context, token string) (*domain.InvitationPreview, error) {
+	if strings.TrimSpace(token) == "" {
+		return &domain.InvitationPreview{Status: "invalid"}, nil
+	}
+	inv, err := uc.authRepo.GetOrgInvitationByTokenHash(ctx, hashInviteToken(token))
+	if err != nil || inv == nil {
+		return &domain.InvitationPreview{Status: "invalid"}, nil
+	}
+
+	status := "valid"
+	switch {
+	case inv.RevokedAt != nil || inv.Status == "revoked":
+		status = "revoked"
+	case inv.Status == "accepted":
+		status = "accepted"
+	case inv.Status != "pending":
+		status = "invalid"
+	case time.Now().After(inv.ExpiresAt):
+		status = "expired"
+	}
+
+	preview := &domain.InvitationPreview{
+		Email:   inv.Email,
+		OrgName: "your team's workspace",
+		Status:  status,
+	}
+	if org, err := uc.authRepo.GetOrganizationByID(ctx, inv.OrgID); err == nil && org != nil && strings.TrimSpace(org.Name) != "" {
+		preview.OrgName = org.Name
+	}
+	if role, err := uc.authRepo.GetRoleByID(ctx, inv.RoleID); err == nil && role != nil {
+		preview.RoleName = role.Name
+	}
+	if user, err := uc.authRepo.GetUserByEmail(ctx, inv.Email); err == nil && user != nil {
+		preview.HasAccount = true
+	}
+	return preview, nil
 }
 
 // ListInvitations returns the org's still-actionable (pending) invitations for
 // the members panel (P2).
 func (uc *workspaceUseCase) ListInvitations(ctx context.Context, orgID uuid.UUID) ([]domain.InvitationInfo, error) {
-	invites, err := uc.authRepo.ListPendingInvitations(ctx, orgID)
+	// Open (not just unexpired) invitations, so an expired invite is shown with a
+	// Resend badge instead of vanishing (U4). Status is computed to "expired" when
+	// past its window; the row stays 'pending' in the DB until resent or revoked.
+	invites, err := uc.authRepo.ListOpenInvitations(ctx, orgID)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
+	now := time.Now()
 	out := make([]domain.InvitationInfo, 0, len(invites))
 	for i := range invites {
 		inv := invites[i]
@@ -349,12 +413,16 @@ func (uc *workspaceUseCase) ListInvitations(ctx context.Context, orgID uuid.UUID
 		if role, err := uc.authRepo.GetRoleByID(ctx, inv.RoleID); err == nil && role != nil {
 			roleName = role.Name
 		}
+		status := inv.Status
+		if status == "pending" && now.After(inv.ExpiresAt) {
+			status = "expired"
+		}
 		out = append(out, domain.InvitationInfo{
 			ID:        inv.ID,
 			Email:     inv.Email,
 			RoleID:    inv.RoleID,
 			Role:      roleName,
-			Status:    inv.Status,
+			Status:    status,
 			ExpiresAt: inv.ExpiresAt,
 			CreatedAt: inv.CreatedAt,
 			ResentAt:  inv.ResentAt,

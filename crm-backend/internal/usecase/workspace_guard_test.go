@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -152,6 +153,25 @@ func (f *fakeWorkspaceRepo) ListPendingInvitations(_ context.Context, orgID uuid
 		}
 	}
 	return out, nil
+}
+
+func (f *fakeWorkspaceRepo) ListOpenInvitations(_ context.Context, orgID uuid.UUID) ([]domain.OrgInvitation, error) {
+	var out []domain.OrgInvitation
+	for _, inv := range f.invites {
+		if inv.OrgID == orgID && inv.Status == "pending" && inv.RevokedAt == nil {
+			out = append(out, *inv)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeWorkspaceRepo) GetPendingInvitationByEmail(_ context.Context, orgID uuid.UUID, email string) (*domain.OrgInvitation, error) {
+	for _, inv := range f.invites {
+		if inv.OrgID == orgID && strings.EqualFold(inv.Email, email) && inv.Status == "pending" && inv.RevokedAt == nil {
+			return inv, nil
+		}
+	}
+	return nil, nil
 }
 
 func (f *fakeWorkspaceRepo) UpdateOrgInvitation(_ context.Context, _ *domain.OrgInvitation) error {

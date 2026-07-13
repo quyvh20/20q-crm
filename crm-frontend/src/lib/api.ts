@@ -2160,26 +2160,29 @@ export async function transferOwnership(userId: string): Promise<void> {
   }
 }
 
-export interface AcceptInviteInput {
-  token: string;
-  // For a brand-new (non-Google) invitee, the password + name they set on the
-  // accept page (P2). Omitted for an existing account or "Continue with Google".
-  password?: string;
-  first_name?: string;
-  last_name?: string;
+// InvitationPreview is the public accept-page metadata (U4): who invited you to
+// what, whether the link is still good, and whether your email already has an
+// account. Read by raw token before committing to the invite.
+export interface InvitationPreview {
+  email: string;
+  org_name: string;
+  role_name: string;
+  // valid | expired | revoked | accepted | invalid
+  status: 'valid' | 'expired' | 'revoked' | 'accepted' | 'invalid';
+  has_account: boolean;
 }
 
-export async function acceptInvite(input: AcceptInviteInput): Promise<void> {
-  const res = await fetch(`${API_URL}/api/auth/accept-invite`, {
-    method: 'POST',
+export async function getInvitationPreview(token: string): Promise<InvitationPreview> {
+  const res = await fetch(`${API_URL}/api/auth/invitations/${encodeURIComponent(token)}`, {
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
   });
-  if (!res.ok) {
-    const json = await res.json().catch(() => ({}));
-    throw new Error(json.error || 'Failed to accept invitation');
-  }
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw new Error(json.error || 'Failed to load invitation');
+  return (json.data || { status: 'invalid' }) as InvitationPreview;
 }
+
+// Invite-accept happens through useAuth().acceptInvitation (U4), which ingests
+// the server's auto-login session — there is no standalone acceptInvite() fetch.
 
 // Pending-invitation lifecycle (P2) — powers the members-settings panel.
 export interface Invitation {

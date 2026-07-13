@@ -1013,7 +1013,7 @@ func main() {
 		// into a role that can manage roles/members requires the caller's roles.manage.
 		workspaceUseCase := usecase.NewWorkspaceUseCase(authRepo, mailerSvc, appEnv, cfg.FrontendURL, sessionEvictor, permissionUC, roleRepo,
 			repository.NewOffboardRepository(db))
-		workspaceHandler := delivery.NewWorkspaceHandler(workspaceUseCase)
+		workspaceHandler := delivery.NewWorkspaceHandler(workspaceUseCase, authUseCase, cfg)
 
 		// Admin + auth audit log (P4): read-only view over the append-only
 		// auth_events written by the auth/admin usecases.

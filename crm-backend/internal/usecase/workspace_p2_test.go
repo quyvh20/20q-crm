@@ -65,7 +65,7 @@ func TestAcceptInvite_CreatesInviteeWithPassword(t *testing.T) {
 	seedInvite(repo, orgID, "invitee@x.com", viewer.ID, raw)
 
 	uc := newWorkspaceUC(repo, "test", nil)
-	err := uc.AcceptInvite(context.Background(), domain.AcceptInviteInput{
+	_, err := uc.AcceptInvite(context.Background(), domain.AcceptInviteInput{
 		Token: raw, Password: "Sup3r-Secret!", FirstName: "In", LastName: "Vitee",
 	})
 	if err != nil {
@@ -96,7 +96,7 @@ func TestAcceptInvite_RejectsWeakPasswordWithoutWriting(t *testing.T) {
 	seedInvite(repo, orgID, "invitee@x.com", viewer.ID, raw)
 
 	uc := newWorkspaceUC(repo, "test", nil)
-	err := uc.AcceptInvite(context.Background(), domain.AcceptInviteInput{Token: raw, Password: "short"})
+	_, err := uc.AcceptInvite(context.Background(), domain.AcceptInviteInput{Token: raw, Password: "short"})
 	assertWorkspaceErr(t, err, 400, "weak password on accept")
 	if repo.usersByEmail["invitee@x.com"] != nil {
 		t.Error("a rejected weak password must not leave a half-created account")
@@ -114,7 +114,7 @@ func TestAcceptInvite_ExistingUserPasswordNotOverwritten(t *testing.T) {
 	uc := newWorkspaceUC(repo, "test", nil)
 	// An attacker-supplied password on the accept form must NOT replace the
 	// existing account's password — that would be account takeover.
-	err := uc.AcceptInvite(context.Background(), domain.AcceptInviteInput{Token: raw, Password: "Attacker-Set1!"})
+	_, err := uc.AcceptInvite(context.Background(), domain.AcceptInviteInput{Token: raw, Password: "Attacker-Set1!"})
 	if err != nil {
 		t.Fatalf("accept: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestAcceptInvite_ReinstatesRemovedMember(t *testing.T) {
 	seedInvite(repo, orgID, "back@x.com", viewer.ID, raw)
 
 	uc := newWorkspaceUC(repo, "test", nil)
-	if err := uc.AcceptInvite(context.Background(), domain.AcceptInviteInput{Token: raw}); err != nil {
+	if _, err := uc.AcceptInvite(context.Background(), domain.AcceptInviteInput{Token: raw}); err != nil {
 		t.Fatalf("accept: %v", err)
 	}
 	if ou := repo.orgUsers[wkey(u.ID, orgID)]; ou == nil || ou.Status != domain.StatusActive {
@@ -161,10 +161,10 @@ func TestAcceptInvite_RejectsRevokedAndExpired(t *testing.T) {
 	expired := seedInvite(repo, orgID, "b@x.com", viewer.ID, expiredRaw)
 	expired.ExpiresAt = time.Now().Add(-time.Minute)
 
-	if err := uc.AcceptInvite(context.Background(), domain.AcceptInviteInput{Token: revokedRaw}); err == nil {
+	if _, err := uc.AcceptInvite(context.Background(), domain.AcceptInviteInput{Token: revokedRaw}); err == nil {
 		t.Error("a revoked invite must not be acceptable")
 	}
-	if err := uc.AcceptInvite(context.Background(), domain.AcceptInviteInput{Token: expiredRaw}); err == nil {
+	if _, err := uc.AcceptInvite(context.Background(), domain.AcceptInviteInput{Token: expiredRaw}); err == nil {
 		t.Error("an expired invite must not be acceptable")
 	}
 }
@@ -215,7 +215,7 @@ func TestRevokeInvitation_BlocksSubsequentAccept(t *testing.T) {
 	if inv.Status != "revoked" || inv.RevokedAt == nil {
 		t.Fatal("revoke must flip status to revoked and stamp revoked_at")
 	}
-	if err := uc.AcceptInvite(context.Background(), domain.AcceptInviteInput{Token: raw}); err == nil {
+	if _, err := uc.AcceptInvite(context.Background(), domain.AcceptInviteInput{Token: raw}); err == nil {
 		t.Error("a revoked invitation must not be acceptable")
 	}
 }
@@ -239,6 +239,108 @@ func TestListInvitations_OnlyPending(t *testing.T) {
 	}
 	if list[0].Role != domain.RoleViewer {
 		t.Errorf("invitation should resolve its role name, got %q", list[0].Role)
+	}
+}
+
+// TestInviteMember_DedupesExistingInvite re-invites the same email and asserts
+// the open invite is re-minted in place (U4) rather than stacked as a second row.
+func TestInviteMember_DedupesExistingInvite(t *testing.T) {
+	repo := newFakeWorkspaceRepo()
+	orgID := uuid.New()
+	viewer := repo.addRole(domain.RoleViewer, false)
+	manager := repo.addRole(domain.RoleManager, false)
+	uc := newWorkspaceUC(repo, "test", nil)
+
+	if _, _, err := uc.InviteMember(context.Background(), orgID, domain.InviteMemberInput{Email: "dup@x.com", RoleID: viewer.ID}); err != nil {
+		t.Fatalf("first invite: %v", err)
+	}
+	firstHash := repo.invites[0].TokenHash
+	// Re-invite the same email with a different role.
+	if _, _, err := uc.InviteMember(context.Background(), orgID, domain.InviteMemberInput{Email: "dup@x.com", RoleID: manager.ID}); err != nil {
+		t.Fatalf("second invite: %v", err)
+	}
+	if len(repo.invites) != 1 {
+		t.Fatalf("re-invite must not stack a second row, got %d", len(repo.invites))
+	}
+	if repo.invites[0].TokenHash == firstHash {
+		t.Error("re-invite must re-mint a fresh token on the existing row")
+	}
+	if repo.invites[0].RoleID != manager.ID {
+		t.Error("re-invite must update the role on the existing row")
+	}
+	if repo.invites[0].ResentAt == nil {
+		t.Error("re-invite must stamp resent_at")
+	}
+}
+
+// TestListInvitations_IncludesExpiredWithStatus asserts an expired-but-open
+// invite is surfaced with a computed "expired" status (U4) instead of vanishing.
+func TestListInvitations_IncludesExpiredWithStatus(t *testing.T) {
+	repo := newFakeWorkspaceRepo()
+	orgID := uuid.New()
+	viewer := repo.addRole(domain.RoleViewer, false)
+	exp := seedInvite(repo, orgID, "expired@x.com", viewer.ID, uuid.NewString())
+	exp.ExpiresAt = time.Now().Add(-time.Hour)
+
+	uc := newWorkspaceUC(repo, "test", nil)
+	list, err := uc.ListInvitations(context.Background(), orgID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 1 || list[0].Status != "expired" {
+		t.Fatalf("expired invite should list with status 'expired', got %+v", list)
+	}
+}
+
+// TestGetInvitationPreview_Statuses covers the accept-page metadata (U4): a bad
+// token is a clean "invalid", validity is distinguished, and HasAccount flips
+// when the email already exists.
+func TestGetInvitationPreview_Statuses(t *testing.T) {
+	repo := newFakeWorkspaceRepo()
+	orgID := uuid.New()
+	viewer := repo.addRole(domain.RoleViewer, false)
+	uc := newWorkspaceUC(repo, "test", nil)
+
+	// Unknown token → invalid, never an error.
+	if p, err := uc.GetInvitationPreview(context.Background(), "no-such-token"); err != nil || p.Status != "invalid" {
+		t.Fatalf("unknown token: status=%q err=%v", p.Status, err)
+	}
+
+	// Valid pending invite for a brand-new email.
+	raw := uuid.NewString()
+	seedInvite(repo, orgID, "preview@x.com", viewer.ID, raw)
+	p, err := uc.GetInvitationPreview(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("valid preview: %v", err)
+	}
+	if p.Status != "valid" || p.RoleName != domain.RoleViewer || p.Email != "preview@x.com" {
+		t.Fatalf("valid preview mismatch: %+v", p)
+	}
+	if p.HasAccount {
+		t.Error("HasAccount should be false for a brand-new invitee email")
+	}
+
+	// Same email now has an account → HasAccount true.
+	repo.addUser(&domain.User{Email: "preview@x.com", OrgID: uuid.New()})
+	if p, _ := uc.GetInvitationPreview(context.Background(), raw); !p.HasAccount {
+		t.Error("HasAccount should be true once the email has an account")
+	}
+
+	// Expired.
+	expRaw := uuid.NewString()
+	exp := seedInvite(repo, orgID, "exp@x.com", viewer.ID, expRaw)
+	exp.ExpiresAt = time.Now().Add(-time.Minute)
+	if p, _ := uc.GetInvitationPreview(context.Background(), expRaw); p.Status != "expired" {
+		t.Errorf("expired preview: got %q", p.Status)
+	}
+
+	// Revoked.
+	revRaw := uuid.NewString()
+	rev := seedInvite(repo, orgID, "rev@x.com", viewer.ID, revRaw)
+	now := time.Now()
+	rev.Status, rev.RevokedAt = "revoked", &now
+	if p, _ := uc.GetInvitationPreview(context.Background(), revRaw); p.Status != "revoked" {
+		t.Errorf("revoked preview: got %q", p.Status)
 	}
 }
 

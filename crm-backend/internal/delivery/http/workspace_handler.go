@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"crm-backend/internal/domain"
+	"crm-backend/pkg/config"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -12,10 +13,15 @@ import (
 
 type WorkspaceHandler struct {
 	workspaceUC domain.WorkspaceUseCase
+	// authUC + cfg back invite-accept auto-login (U4): after a successful accept
+	// the handler mints a session for the invitee and sets the auth cookies, so
+	// they land in the app signed in instead of being bounced to /login.
+	authUC domain.AuthUseCase
+	cfg    *config.Config
 }
 
-func NewWorkspaceHandler(workspaceUC domain.WorkspaceUseCase) *WorkspaceHandler {
-	return &WorkspaceHandler{workspaceUC: workspaceUC}
+func NewWorkspaceHandler(workspaceUC domain.WorkspaceUseCase, authUC domain.AuthUseCase, cfg *config.Config) *WorkspaceHandler {
+	return &WorkspaceHandler{workspaceUC: workspaceUC, authUC: authUC, cfg: cfg}
 }
 
 func (h *WorkspaceHandler) ListMembers(c *gin.Context) {
@@ -61,6 +67,19 @@ func (h *WorkspaceHandler) InviteMember(c *gin.Context) {
 	c.JSON(http.StatusCreated, domain.Success(response))
 }
 
+// GetInvitationPreview handles GET /api/auth/invitations/:token — the public
+// accept-page metadata (org/role/email + validity + whether the account exists)
+// so the invitee sees "Join Acme as Sales Rep" before committing (U4). The raw
+// token is the credential; a bad token yields a clean Status "invalid", not a 404.
+func (h *WorkspaceHandler) GetInvitationPreview(c *gin.Context) {
+	preview, err := h.workspaceUC.GetInvitationPreview(c.Request.Context(), c.Param("token"))
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, domain.Success(preview))
+}
+
 func (h *WorkspaceHandler) AcceptInvite(c *gin.Context) {
 	var input domain.AcceptInviteInput
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -68,9 +87,24 @@ func (h *WorkspaceHandler) AcceptInvite(c *gin.Context) {
 		return
 	}
 
-	if err := h.workspaceUC.AcceptInvite(c.Request.Context(), input); err != nil {
+	result, err := h.workspaceUC.AcceptInvite(c.Request.Context(), input)
+	if err != nil {
 		handleAppError(c, err)
 		return
+	}
+
+	// Auto-login (U4): mint a session ONLY for a brand-new account (result.AutoLogin)
+	// so they land in the app signed in. An EXISTING account is never auto-logged-in
+	// from an invite link — it adds the workspace and signs in normally, so a leaked
+	// link can't silently take over a whole multi-workspace account. If the mint
+	// fails (e.g. a suspended membership), fall back to the plain "accepted"
+	// response so the accept itself still succeeds and they can sign in manually.
+	if result.AutoLogin {
+		if resp, sErr := h.authUC.IssueSessionForUser(c.Request.Context(), result.UserID, result.OrgID, requestMeta(c)); sErr == nil {
+			setAuthCookies(c, h.cfg, resp.RefreshToken)
+			c.JSON(http.StatusOK, domain.Success(resp))
+			return
+		}
 	}
 
 	c.JSON(http.StatusOK, domain.Success(gin.H{"message": "invitation accepted"}))

@@ -100,6 +100,34 @@ type AcceptInviteInput struct {
 	LastName  string `json:"last_name"`
 }
 
+// AcceptInviteResult identifies who joined which org, so the handler can mint a
+// session and log the invitee straight in after a successful accept (U4).
+// AutoLogin is true ONLY for a brand-new account created during this accept —
+// an EXISTING account is not auto-logged-in, so an intercepted invite link can't
+// be turned into a silent session over that user's whole multi-workspace account
+// (they add the workspace and then sign in normally).
+type AcceptInviteResult struct {
+	UserID    uuid.UUID
+	OrgID     uuid.UUID
+	AutoLogin bool
+}
+
+// InvitationPreview is the public metadata the accept page reads BEFORE the
+// invitee commits (U4): who invited them to what, whether the link is still good,
+// and whether the email already has an account (so the page can offer "set a
+// password" vs "sign in to accept"). Served token-authenticated (the raw token is
+// the credential); never leaks anything an invite-link holder shouldn't see.
+type InvitationPreview struct {
+	Email    string `json:"email"`
+	OrgName  string `json:"org_name"`
+	RoleName string `json:"role_name"`
+	// Status is one of: valid | expired | revoked | accepted | invalid.
+	Status string `json:"status"`
+	// HasAccount is true when an account already exists for Email — the accept
+	// page hides the password fields and prompts a sign-in instead.
+	HasAccount bool `json:"has_account"`
+}
+
 // InvitationInfo is one pending invitation rendered for the members panel (P2):
 // enough to show who was invited, as what, and whether it can still be accepted.
 type InvitationInfo struct {
@@ -193,6 +221,16 @@ type AuthRepository interface {
 	// ListPendingInvitations returns an org's still-actionable invitations
 	// (pending, unexpired, not revoked), newest first, for the members panel (P2).
 	ListPendingInvitations(ctx context.Context, orgID uuid.UUID) ([]OrgInvitation, error)
+	// ListOpenInvitations returns an org's outstanding invitations INCLUDING
+	// expired ones (status 'pending', not revoked/accepted, any expiry), newest
+	// first — so the members panel can show an expired invite with a Resend badge
+	// instead of letting it silently vanish (U4). Revoked/accepted invites stay out.
+	ListOpenInvitations(ctx context.Context, orgID uuid.UUID) ([]OrgInvitation, error)
+	// GetPendingInvitationByEmail returns the org's outstanding (status 'pending',
+	// not revoked) invitation for an email, expired or not, or nil — the dedupe
+	// lookup so a re-invite resends the existing row instead of stacking a second
+	// one (U4). Email is matched case-insensitively.
+	GetPendingInvitationByEmail(ctx context.Context, orgID uuid.UUID, email string) (*OrgInvitation, error)
 	// AcceptInvitation runs the whole accept in ONE transaction (P2): create the
 	// invitee (createUser) or set a password on the existing account
 	// (newPasswordHash), UPSERT the org_users membership to active (reinstating a
@@ -259,6 +297,12 @@ type AuditUseCase interface {
 type AuthUseCase interface {
 	Register(ctx context.Context, input RegisterInput) (*AuthResponse, error)
 	Login(ctx context.Context, input LoginInput, meta RequestMeta) (*AuthResponse, error)
+	// IssueSessionForUser mints a fresh session (access + refresh) for an already
+	// identity-proven user into a specific org, WITHOUT a password check — the
+	// invite-accept auto-login path (U4). The caller must have proven identity by
+	// another means (here, control of the invite link); it verifies the user has
+	// an ACTIVE membership in orgID before issuing, and 403s otherwise.
+	IssueSessionForUser(ctx context.Context, userID, orgID uuid.UUID, meta RequestMeta) (*AuthResponse, error)
 	RefreshToken(ctx context.Context, input RefreshInput, meta RequestMeta) (*AuthResponse, error)
 	Logout(ctx context.Context, refreshToken string) error
 	GetMe(ctx context.Context, userID uuid.UUID) (*User, error)
@@ -326,8 +370,13 @@ type WorkspaceUseCase interface {
 	ListMembers(ctx context.Context, orgID uuid.UUID) ([]MemberInfo, error)
 	InviteMember(ctx context.Context, orgID uuid.UUID, input InviteMemberInput) (*MemberInfo, *string, error)
 	// AcceptInvite joins the invitee to the org transactionally, optionally setting
-	// the password/name they chose on the accept page (P2).
-	AcceptInvite(ctx context.Context, input AcceptInviteInput) error
+	// the password/name they chose on the accept page (P2). Returns who joined
+	// which org so the handler can auto-login the invitee (U4).
+	AcceptInvite(ctx context.Context, input AcceptInviteInput) (*AcceptInviteResult, error)
+	// GetInvitationPreview resolves an invite token to its public accept-page
+	// metadata (org/role/email + validity + whether the account exists) without
+	// consuming it (U4). Never errors on a bad token — returns Status "invalid".
+	GetInvitationPreview(ctx context.Context, token string) (*InvitationPreview, error)
 	// ListInvitations / ResendInvitation / RevokeInvitation drive the pending-
 	// invitations panel (P2). Resend re-mints a fresh 256-bit token; revoke kills
 	// the pending token so it can no longer be accepted.

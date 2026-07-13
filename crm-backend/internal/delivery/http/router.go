@@ -91,6 +91,10 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 		auth.GET("/capabilities", AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), permissionHandler.GetMyCapabilities)
 		auth.POST("/switch-workspace", AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), authHandler.SwitchWorkspace)
 		auth.POST("/accept-invite", workspaceHandler.AcceptInvite)
+		// Public invite-preview (U4): the accept page reads org/role/email + validity
+		// by raw token before the invitee commits. Token-authenticated, so no auth
+		// middleware; a bad token returns Status "invalid", never a 404.
+		auth.GET("/invitations/:token", workspaceHandler.GetInvitationPreview)
 	}
 
 	protected := api.Group("/")

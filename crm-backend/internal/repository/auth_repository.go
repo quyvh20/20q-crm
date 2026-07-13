@@ -380,6 +380,37 @@ func (r *authRepository) ListPendingInvitations(ctx context.Context, orgID uuid.
 	return invites, err
 }
 
+// ListOpenInvitations returns every outstanding invitation (status 'pending',
+// not revoked) regardless of expiry, newest first — so the panel can surface an
+// expired invite with a Resend badge instead of dropping it (U4).
+func (r *authRepository) ListOpenInvitations(ctx context.Context, orgID uuid.UUID) ([]domain.OrgInvitation, error) {
+	var invites []domain.OrgInvitation
+	err := r.db.WithContext(ctx).
+		Where("org_id = ? AND status = 'pending' AND revoked_at IS NULL", orgID).
+		Order("created_at DESC").
+		Find(&invites).Error
+	return invites, err
+}
+
+// GetPendingInvitationByEmail returns the org's outstanding (pending, not
+// revoked) invite for an email — expired or not — or nil, for the re-invite
+// dedupe (U4). Email is normalized+matched case-insensitively; newest wins if
+// somehow more than one exists.
+func (r *authRepository) GetPendingInvitationByEmail(ctx context.Context, orgID uuid.UUID, email string) (*domain.OrgInvitation, error) {
+	var inv domain.OrgInvitation
+	err := r.db.WithContext(ctx).
+		Where("org_id = ? AND LOWER(email) = LOWER(?) AND status = 'pending' AND revoked_at IS NULL", orgID, email).
+		Order("created_at DESC").
+		First(&inv).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &inv, nil
+}
+
 func (r *authRepository) UpdateOrgInvitation(ctx context.Context, inv *domain.OrgInvitation) error {
 	return r.db.WithContext(ctx).Save(inv).Error
 }

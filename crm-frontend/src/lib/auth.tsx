@@ -57,6 +57,10 @@ interface AuthContextType {
   canAccessObject: (slug: string, action: 'read' | 'create' | 'edit' | 'delete') => boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (data: RegisterData) => Promise<void>;
+  // Accept an invite and, when the server auto-logs-in the invitee (U4), ingest
+  // the returned session so they land in the app signed in. Resolves to whether
+  // a session was established (false ⇒ the caller should route to /login).
+  acceptInvitation: (input: { token: string; password?: string; first_name?: string; last_name?: string }) => Promise<boolean>;
   logout: () => Promise<void>;
   refreshAuth: () => Promise<void>;
   switchWorkspace: (orgId: string, setDefault?: boolean) => Promise<void>;
@@ -278,6 +282,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     saveAuth(json.data);
   };
 
+  const acceptInvitation = async (input: { token: string; password?: string; first_name?: string; last_name?: string }): Promise<boolean> => {
+    const res = await fetch(`${API_URL}/api/auth/accept-invite`, {
+      method: 'POST',
+      credentials: 'include', // receive the auto-login refresh + csrf cookies
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    const json = await parseJsonSafe(res);
+    if (!res.ok || json.error) {
+      throw new Error(json.error || 'Failed to accept invitation');
+    }
+    // The server returns a full session on auto-login (U4); if a mint edge case
+    // fell back to just {message}, there's no token — the caller routes to /login.
+    if (json.data?.access_token) {
+      saveAuth(json.data);
+      return true;
+    }
+    return false;
+  };
+
   const logout = async () => {
     try {
       await fetch(`${API_URL}/api/auth/logout`, {
@@ -326,6 +350,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         canAccessObject,
         login,
         register,
+        acceptInvitation,
         logout,
         refreshAuth,
         switchWorkspace: doSwitchWorkspace,

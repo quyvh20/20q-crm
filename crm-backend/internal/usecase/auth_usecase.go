@@ -380,6 +380,50 @@ func (uc *authUseCase) SwitchWorkspace(ctx context.Context, userID uuid.UUID, in
 	}, nil
 }
 
+// IssueSessionForUser mints a session for an already identity-proven user into a
+// specific org WITHOUT a password check — the invite-accept auto-login path (U4).
+// Identity is proven upstream (control of the single-use invite link); this only
+// confirms the membership is ACTIVE before issuing, so a suspended/absent row can
+// never be minted into a token. It issues a brand-new refresh token (the invitee
+// held none) and never touches the default-org.
+func (uc *authUseCase) IssueSessionForUser(ctx context.Context, userID, orgID uuid.UUID, meta domain.RequestMeta) (*domain.AuthResponse, error) {
+	ou, err := uc.authRepo.GetOrgUser(ctx, userID, orgID)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+	if ou == nil || ou.Status != domain.StatusActive {
+		return nil, domain.ErrNotMember
+	}
+
+	user, err := uc.authRepo.GetUserByID(ctx, userID)
+	if err != nil || user == nil {
+		return nil, domain.ErrUserNotFound
+	}
+
+	accessToken, err := uc.generateAccessToken(userID, orgID, ou.Role, user.TokenVersion)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+	refreshToken, err := uc.createRefreshToken(ctx, userID, meta, nil)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+
+	uc.recordAuthEvent(ctx, "auth", "login.success", orgPtr(orgID), &user.ID, &user.ID, meta,
+		map[string]interface{}{"method": "invite_accept"})
+
+	orgUsers, _ := uc.authRepo.ListOrgsByUserID(ctx, userID)
+	return &domain.AuthResponse{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		User:         *user,
+		Workspaces:   uc.buildWorkspaces(ctx, orgUsers),
+		ActiveOrgID:  orgID,
+		DefaultOrgID: user.DefaultOrgID,
+		NeedsChooser: false,
+	}, nil
+}
+
 // ListWorkspaces returns ALL of a user's memberships (active + suspended) for
 // display — the workspace chooser shows suspended ones as disabled cards. This is
 // the ONLY membership path that surfaces suspended rows; org selection
