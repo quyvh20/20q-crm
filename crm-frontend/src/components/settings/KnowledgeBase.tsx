@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import MDEditor from '@uiw/react-md-editor';
 import { getKBSections, upsertKBSection, getKBAIPrompt, type KBEntry } from '../../lib/api';
+import Modal from '../common/Modal';
 
 const SECTIONS = [
   { key: 'company', label: 'Company', icon: '🏢' },
@@ -217,25 +218,26 @@ export default function KnowledgeBase() {
         </div>
       </div>
 
-      {/* AI Prompt Preview Modal */}
-      {showPrompt && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
-          <div className="w-full max-w-3xl max-h-[80vh] overflow-hidden rounded-2xl bg-card border shadow-2xl flex flex-col">
-            <div className="flex items-center justify-between px-6 py-4 border-b bg-gradient-to-r from-indigo-500 to-purple-600 text-white">
-              <h3 className="font-semibold">🤖 AI System Prompt Preview</h3>
-              <button onClick={() => setShowPrompt(false)} className="text-white/80 hover:text-white text-lg">✕</button>
-            </div>
-            <div className="flex-1 overflow-auto p-6">
-              <pre className="whitespace-pre-wrap text-sm font-mono text-foreground leading-relaxed">
-                {aiPrompt}
-              </pre>
-            </div>
-            <div className="px-6 py-3 border-t text-sm text-muted-foreground">
-              This is exactly what the AI sees when it helps your team.
-            </div>
+      {/* AI Prompt Preview — shared Radix modal (U7). The prompt is fetched
+          before the modal opens, so there's no in-flight state to guard. */}
+      <Modal
+        open={showPrompt}
+        onClose={() => setShowPrompt(false)}
+        title="🤖 AI System Prompt Preview"
+        size="3xl"
+        padded={false}
+      >
+        <>
+          <div className="p-6">
+            <pre className="whitespace-pre-wrap text-sm font-mono text-foreground leading-relaxed">
+              {aiPrompt}
+            </pre>
           </div>
-        </div>
-      )}
+          <div className="px-6 py-3 border-t text-sm text-muted-foreground">
+            This is exactly what the AI sees when it helps your team.
+          </div>
+        </>
+      </Modal>
     </div>
   );
 }

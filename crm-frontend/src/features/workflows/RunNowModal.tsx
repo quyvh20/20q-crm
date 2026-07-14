@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { EntityPicker, type EntityCandidate } from './EntityPicker';
+import Modal from '../../components/common/Modal';
 import { runNowWorkflow } from './api';
 import type { Workflow } from './types';
 import { TRIGGER_LABELS } from './types';
@@ -145,40 +146,23 @@ export const RunNowModal: React.FC<RunNowModalProps> = ({ workflow, onClose, onS
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      {/* Backdrop — clicking it dismisses without running. */}
-      <div
-        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
-        onClick={handleDismiss}
-        aria-hidden="true"
-      />
-
-      {/* Dialog */}
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Run workflow ${workflow.name} now`}
-        className="relative bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden animate-in zoom-in-95 duration-200"
-      >
-        {/* Header */}
-        <div className="flex items-start justify-between px-6 py-4 border-b border-gray-800">
-          <div className="min-w-0">
-            <h3 className="text-lg font-semibold text-white truncate">▶ Run Now</h3>
-            <p className="text-sm text-gray-400 mt-0.5 truncate">
-              {workflow.name} · ⚡ {triggerLabel}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={handleDismiss}
-            disabled={submitting}
-            aria-label="Close"
-            className="ml-4 text-gray-500 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            ✕
-          </button>
-        </div>
-
+    // Shared Radix modal (U7): Escape, focus trap/restore and aria for free.
+    // handleDismiss (not onClose) so every exit path — X, Escape, outside click —
+    // keeps the existing "no dismissal mid-submit" guard.
+    //
+    // The panel used to be hardcoded dark (bg-gray-900); it's now the themed
+    // bg-card, so the body's dark-only grays had to become semantic tokens or
+    // they'd render light-on-light for anyone using the light theme.
+    <Modal
+      open
+      onClose={handleDismiss}
+      title="▶ Run Now"
+      description={`${workflow.name} · ⚡ ${triggerLabel}`}
+      size="lg"
+      padded={false}
+      dismissable={!submitting}
+    >
+      <>
         {/* Body */}
         <div className="px-6 py-5 space-y-4">
           {/* Real-side-effect warning banner (Req 8.3) */}
@@ -186,8 +170,8 @@ export const RunNowModal: React.FC<RunNowModalProps> = ({ workflow, onClose, onS
             role="alert"
             className="flex items-start gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3"
           >
-            <span className="text-amber-400 text-base leading-none mt-0.5" aria-hidden="true">⚠️</span>
-            <p className="text-sm text-amber-200">
+            <span className="text-amber-500 text-base leading-none mt-0.5" aria-hidden="true">⚠️</span>
+            <p className="text-sm text-amber-700 dark:text-amber-200">
               This executes the workflow <strong>for real</strong> against the selected record.
               All side effects happen — emails are sent, tasks are created, fields are updated, and
               webhooks fire. A run will appear in this workflow&apos;s history.
@@ -196,39 +180,39 @@ export const RunNowModal: React.FC<RunNowModalProps> = ({ workflow, onClose, onS
 
           {kind ? (
             <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">
+              <label className="block text-sm font-medium text-foreground mb-2">
                 Select a {kind} to run against
               </label>
               <EntityPicker kind={kind} onSelect={setSelected} />
             </div>
           ) : (
-            <p className="text-sm text-gray-400 py-2">
-              Run Now isn&apos;t available for the <span className="text-gray-200">{triggerLabel}</span>{' '}
+            <p className="text-sm text-muted-foreground py-2">
+              Run Now isn&apos;t available for the <span className="text-foreground">{triggerLabel}</span>{' '}
               trigger. It supports contact- and deal-triggered workflows only.
             </p>
           )}
 
           {selected && (
-            <p className="text-xs text-gray-400">
-              Selected: <span className="text-gray-200 font-medium">{selected.label}</span>
+            <p className="text-xs text-muted-foreground">
+              Selected: <span className="text-foreground font-medium">{selected.label}</span>
             </p>
           )}
 
           {/* Failure message (Req 10.4) — selection is retained for retry. */}
           {error && (
-            <p role="alert" className="text-sm text-red-400">
+            <p role="alert" className="text-sm text-red-600 dark:text-red-400">
               {error}
             </p>
           )}
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 bg-gray-800/40 border-t border-gray-800 flex justify-end gap-3">
+        <div className="px-6 py-4 bg-muted/30 border-t border-border flex justify-end gap-3">
           <button
             type="button"
             onClick={handleDismiss}
             disabled={submitting}
-            className="px-4 py-2 text-sm font-medium rounded-lg text-gray-300 hover:text-white hover:bg-gray-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            className="px-4 py-2 text-sm font-medium rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             Cancel
           </button>
@@ -244,8 +228,8 @@ export const RunNowModal: React.FC<RunNowModalProps> = ({ workflow, onClose, onS
             {submitting ? 'Running…' : 'Run Now'}
           </button>
         </div>
-      </div>
-    </div>
+      </>
+    </Modal>
   );
 };
 

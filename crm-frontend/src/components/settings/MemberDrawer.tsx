@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { X, Monitor, LogOut, Users2, FileText, Loader2, ShieldCheck, ShieldAlert, ShieldOff } from 'lucide-react';
+import { Monitor, LogOut, Users2, FileText, Loader2, ShieldCheck, ShieldAlert, ShieldOff } from 'lucide-react';
 import { getMemberDetail, forceSignOutMember, resetMemberTwoFactor, type MemberDetail } from '../../lib/api';
 import { prettyRole } from '../../lib/roles';
 import { useConfirm } from '../common/ConfirmDialog';
+import Modal from '../common/Modal';
 
 // MemberDrawer is the per-member detail slide-over (U4): role, groups, the
 // records they own (the offboarding preview), and their live sessions with an
@@ -43,13 +44,6 @@ export default function MemberDrawer({
   }, [userId]);
 
   useEffect(() => { load(); }, [load]);
-
-  // Close on Escape — matches the rest of the settings dialogs.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
 
   const handleForceSignOut = async () => {
     if (!detail) return;
@@ -104,20 +98,20 @@ export default function MemberDrawer({
   const m = detail?.member;
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end">
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
-      <div
-        role="dialog"
-        aria-label="Member details"
-        className="relative w-full max-w-md bg-card border-l border-border shadow-2xl h-full overflow-y-auto animate-in slide-in-from-right duration-200"
+    // Shared Radix modal (U7), drawer variant: Escape, focus trap/restore and
+    // aria for free. The body owns its own p-5/m-5 spacing, hence padded={false}.
+    // Dismissal is blocked mid-mutation, but NOT during the initial load — you
+    // could always close a loading drawer, and taking that away is a regression.
+    <>
+      <Modal
+        open
+        onClose={onClose}
+        title="Member details"
+        variant="drawer"
+        size="md"
+        padded={false}
+        dismissable={!signingOut && !resetting2FA}
       >
-        <div className="sticky top-0 bg-card border-b border-border px-5 py-4 flex items-center justify-between z-10">
-          <h2 className="text-base font-semibold text-foreground">Member details</h2>
-          <button onClick={onClose} aria-label="Close" className="text-muted-foreground hover:text-foreground transition-colors">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
         {loading ? (
           <div className="flex justify-center py-20"><Loader2 className="w-7 h-7 animate-spin text-muted-foreground" /></div>
         ) : error && !detail ? (
@@ -266,8 +260,10 @@ export default function MemberDrawer({
             </Link>
           </div>
         ) : null}
-      </div>
+      </Modal>
+      {/* Sibling, not a child: the confirm is its own Radix layer, and Radix's
+          layer stack keeps Escape/outside-click aimed at whichever is on top. */}
       {dialog}
-    </div>
+    </>
   );
 }

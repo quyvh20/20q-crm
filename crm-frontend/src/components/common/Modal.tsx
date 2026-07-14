@@ -38,8 +38,19 @@ export interface ModalProps {
   description?: ReactNode;
   children?: ReactNode;
   size?: ModalSize;
-  /** 'center' = centered card; 'drawer' = full-height panel on the right edge. */
+  /** 'center' = centered card; 'drawer' = full-height panel on a screen edge. */
   variant?: 'center' | 'drawer';
+  /** Which edge a drawer is anchored to. Ignored when variant='center'. */
+  side?: 'left' | 'right';
+  /** Width override for panels whose width is a fixed design constant rather
+   *  than a step on the size scale (the mobile nav is w-72, capped at 85vw so a
+   *  strip of scrim stays tappable on a narrow phone). Replaces `size`. */
+  widthClass?: string;
+  /** Drop the built-in header row — no visible title, no X — and expose the title
+   *  to screen readers only. For surfaces that own their chrome: the mobile nav
+   *  already carries its own brand block and close button. The title is still
+   *  REQUIRED; it's what names the dialog for assistive tech. */
+  hideHeader?: boolean;
   /** Wrap children in the standard body padding. Turn off when the content owns
    *  its own edge-to-edge layout (a form with a full-bleed footer bar). */
   padded?: boolean;
@@ -59,6 +70,9 @@ export default function Modal({
   children,
   size = 'md',
   variant = 'center',
+  side = 'right',
+  widthClass,
+  hideHeader = false,
   padded = true,
   hideClose = false,
   dismissable = true,
@@ -72,9 +86,10 @@ export default function Modal({
   // still whatever opened us.
   const restoreTo = useRef<HTMLElement | null>(null);
 
+  const edge = side === 'left' ? 'left-0 border-r' : 'right-0 border-l';
   const panel = isDrawer
-    ? `fixed right-0 top-0 z-50 flex h-full w-full ${SIZE[size]} flex-col overflow-y-auto border-l border-border bg-card text-card-foreground shadow-2xl focus:outline-none`
-    : `fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] ${SIZE[size]} max-h-[90vh] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-border bg-card text-card-foreground shadow-xl focus:outline-none`;
+    ? `fixed ${edge} top-0 z-50 flex h-full ${widthClass ?? `w-full ${SIZE[size]}`} flex-col overflow-y-auto border-border bg-card text-card-foreground shadow-2xl focus:outline-none`
+    : `fixed left-1/2 top-1/2 z-50 ${widthClass ?? `w-[calc(100%-2rem)] ${SIZE[size]}`} max-h-[90vh] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-border bg-card text-card-foreground shadow-xl focus:outline-none`;
 
   const header = isDrawer
     ? 'sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-border bg-card px-6 py-4'
@@ -115,27 +130,40 @@ export default function Modal({
           // (rather than shipping an empty one) keeps the console clean.
           {...(description === undefined ? { 'aria-describedby': undefined } : {})}
         >
-          <div className={header}>
-            <div className="min-w-0">
-              {/* wrap, never truncate: a clipped title is a lost question. */}
-              <Dialog.Title className="break-words text-lg font-semibold text-foreground">{title}</Dialog.Title>
+          {/* hideHeader still emits Title/Description — Radix needs them to name
+              and describe the dialog — just visually hidden. */}
+          {hideHeader ? (
+            <>
+              <Dialog.Title className="sr-only">{title}</Dialog.Title>
               {description !== undefined && (
-                // asChild + div: callers pass rich ReactNode bodies, which are
-                // illegal inside the <p> Radix renders by default.
                 <Dialog.Description asChild>
-                  <div className="mt-1.5 text-sm text-muted-foreground">{description}</div>
+                  <div className="sr-only">{description}</div>
                 </Dialog.Description>
               )}
+            </>
+          ) : (
+            <div className={header}>
+              <div className="min-w-0">
+                {/* wrap, never truncate: a clipped title is a lost question. */}
+                <Dialog.Title className="break-words text-lg font-semibold text-foreground">{title}</Dialog.Title>
+                {description !== undefined && (
+                  // asChild + div: callers pass rich ReactNode bodies, which are
+                  // illegal inside the <p> Radix renders by default.
+                  <Dialog.Description asChild>
+                    <div className="mt-1.5 text-sm text-muted-foreground">{description}</div>
+                  </Dialog.Description>
+                )}
+              </div>
+              {!hideClose && (
+                <Dialog.Close
+                  aria-label="Close"
+                  className="-mr-1.5 -mt-1 shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <X className="h-[18px] w-[18px]" />
+                </Dialog.Close>
+              )}
             </div>
-            {!hideClose && (
-              <Dialog.Close
-                aria-label="Close"
-                className="-mr-1.5 -mt-1 shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <X className="h-[18px] w-[18px]" />
-              </Dialog.Close>
-            )}
-          </div>
+          )}
 
           {padded ? <div className="px-6 pb-6">{children}</div> : children}
         </Dialog.Content>

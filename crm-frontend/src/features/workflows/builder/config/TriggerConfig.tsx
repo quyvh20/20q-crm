@@ -10,6 +10,7 @@ import { ScheduleConfig } from './ScheduleConfig';
 import { DateFieldConfig } from './DateFieldConfig';
 import { DEFAULT_CRON, browserTimeZone } from '../../cron';
 import { DEFAULT_AT_TIME } from '../../dateField';
+import Modal from '../../../../components/common/Modal';
 
 // ============================================================
 // Source Panel — Step 1
@@ -400,45 +401,41 @@ const RegenerateConfirmDialog: React.FC<{
   onConfirm: () => void;
   onCancel: () => void;
 }> = ({ busy, error, onConfirm, onCancel }) => (
-  <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-    <div
-      className="absolute inset-0 bg-black/50 backdrop-blur-sm"
-      onClick={busy ? undefined : onCancel}
-      aria-hidden="true"
-    />
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="Regenerate signing secret"
-      className="relative bg-card border border-border rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200"
-    >
-      <div className="p-5 space-y-3">
-        <h4 className="text-sm font-semibold text-foreground">Regenerate signing secret?</h4>
-        <p className="text-[12px] text-muted-foreground leading-relaxed">
-          Existing webhook integrations will break until updated with the new secret. Confirm?
-        </p>
-        {error && <p role="alert" className="text-[12px] text-destructive">⚠ {error}</p>}
-        <div className="flex justify-end gap-2 pt-1">
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={busy}
-            className="px-3 py-1.5 rounded-lg bg-muted text-xs text-foreground hover:bg-accent hover:text-accent-foreground transition-colors disabled:opacity-60"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            disabled={busy}
-            className="px-3 py-1.5 rounded-lg bg-destructive text-xs text-destructive-foreground font-medium hover:bg-destructive/90 transition-colors disabled:opacity-60"
-          >
-            {busy ? 'Rotating…' : 'Regenerate secret'}
-          </button>
-        </div>
+  // Shared Radix modal (U7) — this destructive confirm previously had no Escape,
+  // no focus trap and no close affordance at all. onCancel already no-ops while
+  // busy, so every dismissal path inherits that guard.
+  <Modal
+    open
+    onClose={onCancel}
+    title="Regenerate signing secret?"
+    size="md"
+    dismissable={!busy}
+  >
+    <div className="space-y-3">
+      <p className="text-[12px] text-muted-foreground leading-relaxed">
+        Existing webhook integrations will break until updated with the new secret. Confirm?
+      </p>
+      {error && <p role="alert" className="text-[12px] text-destructive">⚠ {error}</p>}
+      <div className="flex justify-end gap-2 pt-1">
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={busy}
+          className="px-3 py-1.5 rounded-lg bg-muted text-xs text-foreground hover:bg-accent hover:text-accent-foreground transition-colors disabled:opacity-60"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={onConfirm}
+          disabled={busy}
+          className="px-3 py-1.5 rounded-lg bg-destructive text-xs text-destructive-foreground font-medium hover:bg-destructive/90 transition-colors disabled:opacity-60"
+        >
+          {busy ? 'Rotating…' : 'Regenerate secret'}
+        </button>
       </div>
     </div>
-  </div>
+  </Modal>
 );
 
 const WebhookSetup: React.FC = () => {

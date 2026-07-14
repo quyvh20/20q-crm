@@ -7,6 +7,7 @@ import { getThemePreference, setThemePreference, type ThemePreference } from "./
 import GlobalSearch from "./components/common/GlobalSearch";
 import AIUsageWidget from "./components/settings/AIUsageWidget";
 import WorkspaceSwitcher from "./components/common/WorkspaceSwitcher";
+import Modal from "./components/common/Modal";
 import NotificationBell from "./features/notifications/NotificationBell";
 import { useNotificationStream } from "./features/notifications/useNotificationStream";
 import { openSetupChecklist } from "./features/onboarding/checklistState";
@@ -40,6 +41,19 @@ export default function AppLayout({ children, title }: AppLayoutProps) {
 
   // Close the mobile drawer + user menu on navigation.
   useEffect(() => { setMobileNavOpen(false); setUserMenuOpen(false); }, [location.pathname]);
+
+  // The drawer only exists below md. If the viewport grows past the breakpoint
+  // while it's open, close it: Radix ties the scroll lock and the aria-hidden on
+  // the rest of the app to `open`, not to CSS, so a drawer merely hidden by a
+  // md:hidden class would still freeze the page behind it.
+  useEffect(() => {
+    const mq = window.matchMedia?.('(min-width: 768px)');
+    if (!mq) return;
+    const sync = () => { if (mq.matches) setMobileNavOpen(false); };
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, []);
 
   const changeTheme = (t: ThemePreference) => {
     setTheme(t);
@@ -158,22 +172,29 @@ export default function AppLayout({ children, title }: AppLayoutProps) {
       </aside>
 
       {/* Mobile drawer (U1.5): below md the sidebar was simply gone — no way to
-          reach Settings or even sign out on a phone. */}
-      {mobileNavOpen && (
-        <div className="fixed inset-0 z-50 md:hidden">
-          <div className="absolute inset-0 bg-black/60" onClick={() => setMobileNavOpen(false)} />
-          <aside className="absolute inset-y-0 left-0 w-72 max-w-[85vw] bg-card text-card-foreground border-r flex flex-col shadow-xl">
-            <button
-              onClick={() => setMobileNavOpen(false)}
-              aria-label="Close menu"
-              className="absolute top-4 right-3 p-1.5 rounded-md text-muted-foreground hover:bg-accent"
-            >
-              <X className="w-5 h-5" />
-            </button>
-            {sidebarContent}
-          </aside>
-        </div>
-      )}
+          reach Settings or even sign out on a phone. U7: now the shared Radix
+          modal, so it traps focus and closes on Escape like every other dialog.
+          hideHeader because the sidebar carries its own brand block and close X;
+          the title below exists only to name the dialog for screen readers. */}
+      <Modal
+        open={mobileNavOpen}
+        onClose={() => setMobileNavOpen(false)}
+        title="Navigation"
+        variant="drawer"
+        side="left"
+        widthClass="w-72 max-w-[85vw]"
+        hideHeader
+        padded={false}
+      >
+        <button
+          onClick={() => setMobileNavOpen(false)}
+          aria-label="Close menu"
+          className="absolute top-4 right-3 p-1.5 rounded-md text-muted-foreground hover:bg-accent"
+        >
+          <X className="w-5 h-5" />
+        </button>
+        {sidebarContent}
+      </Modal>
 
       <div className="flex-1 flex flex-col min-w-0">
         <header className="h-16 border-b bg-card flex items-center justify-between px-4 sm:px-6">

@@ -18,6 +18,7 @@ import { ObjectDetailView, ObjectForm } from '../features/objects';
 import { listPath } from '../features/objects/recordRoutes';
 import ShareRecordModal from '../components/records/ShareRecordModal';
 import AccessDeniedPanel from '../components/common/AccessDeniedPanel';
+import Modal from '../components/common/Modal';
 import { usePermissions } from '../lib/auth';
 
 // ObjectRecordPage is the Salesforce-style, URL-addressable detail page for any
@@ -136,6 +137,11 @@ export default function ObjectRecordPage() {
   }, [load]);
 
   const backToList = () => navigate(slug ? listPath(slug) : '/');
+
+  const closeDelete = () => {
+    setConfirmingDelete(false);
+    setDeleteError('');
+  };
 
   const handleDelete = async () => {
     if (!slug || !id) return;
@@ -295,38 +301,43 @@ export default function ObjectRecordPage() {
         />
       )}
 
-      {/* Delete confirmation */}
-      {confirmingDelete && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4">
-          <div className="w-full max-w-md overflow-hidden rounded-xl border bg-card text-card-foreground shadow-xl">
-            <div className="border-b px-6 py-5">
-              <h3 className="text-base font-semibold">Delete {schema.label}?</h3>
-            </div>
-            <div className="px-6 py-5 text-sm">
-              {deleteError && (
-                <div className="mb-4 rounded-md bg-red-500/10 px-3 py-2 text-[13px] text-red-600 dark:text-red-400">{deleteError}</div>
-              )}
-              This permanently removes <strong>{record.display || 'this record'}</strong>. This cannot be undone.
-            </div>
-            <div className="flex gap-2 border-t px-6 py-4">
-              <button
-                onClick={() => { setConfirmingDelete(false); setDeleteError(''); }}
-                className="flex-1 rounded-md border border-border bg-muted px-3 py-2.5 text-sm font-medium hover:bg-accent"
-              >
-                Cancel
-              </button>
-              <button
-                id="record-delete-confirm-btn"
-                onClick={handleDelete}
-                disabled={deleting}
-                className="flex-1 rounded-md bg-red-600 px-3 py-2.5 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60"
-              >
-                {deleting ? 'Deleting…' : 'Delete'}
-              </button>
-            </div>
+      {/* Delete confirmation — shared Radix modal (U7). hideClose because the two
+          buttons ARE the exits, and every dismissal path clears the stale error
+          (only Cancel used to, so Escape/outside-click would re-open showing it). */}
+      <Modal
+        open={confirmingDelete}
+        onClose={closeDelete}
+        title={`Delete ${schema.label}?`}
+        size="md"
+        padded={false}
+        hideClose
+        dismissable={!deleting}
+      >
+        <>
+          <div className="px-6 py-5 text-sm">
+            {deleteError && (
+              <div className="mb-4 rounded-md bg-red-500/10 px-3 py-2 text-[13px] text-red-600 dark:text-red-400">{deleteError}</div>
+            )}
+            This permanently removes <strong>{record.display || 'this record'}</strong>. This cannot be undone.
           </div>
-        </div>
-      )}
+          <div className="flex gap-2 border-t px-6 py-4">
+            <button
+              onClick={closeDelete}
+              className="flex-1 rounded-md border border-border bg-muted px-3 py-2.5 text-sm font-medium hover:bg-accent"
+            >
+              Cancel
+            </button>
+            <button
+              id="record-delete-confirm-btn"
+              onClick={handleDelete}
+              disabled={deleting}
+              className="flex-1 rounded-md bg-red-600 px-3 py-2.5 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60"
+            >
+              {deleting ? 'Deleting…' : 'Delete'}
+            </button>
+          </div>
+        </>
+      </Modal>
     </div>
   );
 }
