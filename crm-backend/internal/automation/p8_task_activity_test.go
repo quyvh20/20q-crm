@@ -59,13 +59,8 @@ func TestCreateTask_OwnScope_DB(t *testing.T) {
 	defer cleanup()
 
 	require.NoError(t, db.Exec(`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS owner_user_id UUID`).Error)
-	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS record_shares (
-		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-		record_type TEXT NOT NULL,
-		record_id UUID NOT NULL,
-		grantee_user_id UUID,
-		created_at TIMESTAMPTZ DEFAULT NOW()
-	)`).Error)
+	// record_shares (in its real U6 shape) is created by setupTestDB — a local
+	// pre-U6 copy here would just lose the race and mislead the next reader.
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS tasks (
 		id UUID PRIMARY KEY,
 		org_id UUID NOT NULL,
@@ -123,13 +118,8 @@ func TestLogActivity_OwnScope_DB(t *testing.T) {
 	defer cleanup()
 
 	require.NoError(t, db.Exec(`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS owner_user_id UUID`).Error)
-	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS record_shares (
-		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-		record_type TEXT NOT NULL,
-		record_id UUID NOT NULL,
-		grantee_user_id UUID,
-		created_at TIMESTAMPTZ DEFAULT NOW()
-	)`).Error)
+	// record_shares (in its real U6 shape) is created by setupTestDB — a local
+	// pre-U6 copy here would just lose the race and mislead the next reader.
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS activities (
 		id UUID PRIMARY KEY,
 		org_id UUID NOT NULL,
@@ -151,8 +141,10 @@ func TestLogActivity_OwnScope_DB(t *testing.T) {
 	cid := uuid.New()
 	require.NoError(t, db.Exec(
 		`INSERT INTO contacts (id, org_id, owner_user_id) VALUES (?, ?, ?)`, cid, orgID, owner).Error)
+	// A share now names a TARGET (user|role|group) and carries its org (U6.2).
 	require.NoError(t, db.Exec(
-		`INSERT INTO record_shares (record_type, record_id, grantee_user_id) VALUES ('contact', ?, ?)`, cid, sharedUser).Error)
+		`INSERT INTO record_shares (org_id, record_type, record_id, target_type, target_id, permission_level)
+		 VALUES (?, 'contact', ?, 'user', ?, 'view')`, orgID, cid, sharedUser).Error)
 
 	az := &fakeAuthz{}
 	exec := NewActivityExecutor(db, az)

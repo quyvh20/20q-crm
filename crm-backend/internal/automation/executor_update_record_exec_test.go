@@ -89,20 +89,36 @@ func TestUpdateRecord_CustomObjectUpdate_JSONBData(t *testing.T) {
 
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
+	// A custom record BELONGS to an object definition (U6.3): every custom object
+	// multiplexes into this one table, so the executor pairs the record with the
+	// object_defs row for the trigger's slug. Without that pairing a workflow on
+	// `ticket` could address an `invoice` row by id.
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS custom_object_records (
 		id UUID PRIMARY KEY,
 		org_id UUID NOT NULL,
+		object_def_id UUID,
+		owner_user_id UUID,
 		data JSONB DEFAULT '{}',
 		deleted_at TIMESTAMPTZ,
 		created_at TIMESTAMPTZ DEFAULT NOW(),
 		updated_at TIMESTAMPTZ DEFAULT NOW()
 	)`).Error)
 
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS object_defs (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		org_id UUID NOT NULL,
+		slug TEXT NOT NULL,
+		deleted_at TIMESTAMPTZ
+	)`).Error)
+
 	orgID := uuid.New()
 	recordID := uuid.New()
+	defID := uuid.New()
 	require.NoError(t, db.Exec(
-		`INSERT INTO custom_object_records (id, org_id, data) VALUES (?, ?, '{"status": "open", "count": 3}'::jsonb)`,
-		recordID, orgID,
+		`INSERT INTO object_defs (id, org_id, slug) VALUES (?, ?, 'ticket')`, defID, orgID).Error)
+	require.NoError(t, db.Exec(
+		`INSERT INTO custom_object_records (id, org_id, object_def_id, data) VALUES (?, ?, ?, '{"status": "open", "count": 3}'::jsonb)`,
+		recordID, orgID, defID,
 	).Error)
 
 	exec := NewUpdateRecordExecutor(db, nil)

@@ -120,11 +120,47 @@ func setupTestDB(t *testing.T) (*gorm.DB, func()) {
 		last_name TEXT DEFAULT '',
 		email TEXT,
 		phone TEXT DEFAULT '',
+		owner_user_id UUID,
 		custom_fields JSONB DEFAULT '{}',
 		deleted_at TIMESTAMPTZ,
 		created_at TIMESTAMPTZ DEFAULT NOW(),
 		updated_at TIMESTAMPTZ DEFAULT NOW()
 	)`)
+
+	// The tables the U6 row predicate reads (repository.RecordAccessPredicate). They
+	// are created HERE, once, in their real shape — several tests used to hand-roll a
+	// pre-U6 record_shares (grantee_user_id, no org_id, no target), and since
+	// CREATE TABLE IF NOT EXISTS never ADDS columns to an existing table, whichever
+	// test ran first decided the schema for all of them. A fixture that disagrees with
+	// production is worse than no fixture: it green-lights authorization SQL that
+	// cannot run.
+	db.Exec(`CREATE TABLE IF NOT EXISTS record_shares (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		org_id UUID NOT NULL,
+		record_type TEXT NOT NULL,
+		record_id UUID NOT NULL,
+		target_type TEXT NOT NULL DEFAULT 'user',
+		target_id UUID NOT NULL,
+		grantee_user_id UUID,
+		permission_level TEXT NOT NULL DEFAULT 'view',
+		created_at TIMESTAMPTZ DEFAULT NOW()
+	)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS user_groups (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		org_id UUID NOT NULL,
+		name TEXT NOT NULL DEFAULT '',
+		deleted_at TIMESTAMPTZ
+	)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS user_group_members (
+		group_id UUID NOT NULL,
+		user_id UUID NOT NULL,
+		org_id UUID NOT NULL,
+		created_at TIMESTAMPTZ DEFAULT NOW()
+	)`)
+	// NOTE: object_defs is deliberately NOT created here. The workflow-schema tests
+	// read the field catalog through a path that falls back when the registry table is
+	// absent, so materializing an EMPTY object_defs for every test would silently
+	// change what they see. The tests that need it create it themselves.
 
 	cleanup := func() {
 		if err := pgContainer.Terminate(ctx); err != nil {
