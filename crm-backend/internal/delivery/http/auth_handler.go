@@ -570,13 +570,34 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 	c.Redirect(http.StatusTemporaryRedirect, redirectURL)
 }
 
+// handleAppError renders an error to the client. It is the chokepoint ~190 handlers
+// funnel through, so the correlation id is attached HERE rather than at each of them
+// (U7.4): the reference the user reads off the error banner is the same one on the
+// X-Request-ID header and the zap access-log line.
 func handleAppError(c *gin.Context, err error) {
+	ref := RequestIDOf(c)
 	if appErr, ok := err.(*domain.AppError); ok {
 		if appErr.RetryAfter > 0 {
 			c.Header("Retry-After", strconv.Itoa(appErr.RetryAfter))
 		}
-		c.JSON(appErr.Code, domain.Err(appErr.Message))
+		c.JSON(appErr.Code, domain.ErrWithRef(appErr.Message, ref))
 		return
 	}
-	c.JSON(http.StatusInternalServerError, domain.Err(fmt.Sprintf("internal server error: %v", err)))
+	// An unexpected error: LOG the detail, never ship it. The old line interpolated
+	// the raw error straight into the response body, handing the caller whatever a
+	// failing driver or usecase happened to say — table names, constraint names,
+	// occasionally a value. The user gets the reference instead, which is the part
+	// that actually helps them (and us).
+	log.Printf("request %s: unhandled error on %s %s: %v", ref, c.Request.Method, c.Request.URL.Path, err)
+	c.JSON(http.StatusInternalServerError, domain.ErrWithRef("internal server error", ref))
+}
+
+// RequestIDOf returns the correlation id the router stamped on this request.
+func RequestIDOf(c *gin.Context) string {
+	if v, ok := c.Get("request_id"); ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
 }

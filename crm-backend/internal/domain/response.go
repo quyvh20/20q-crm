@@ -9,6 +9,13 @@ type APIResponse struct {
 	Data  interface{} `json:"data"`
 	Error *string     `json:"error"`
 	Meta  interface{} `json:"meta,omitempty"`
+	// RequestID is the server's correlation id for a FAILED request (U7.4). The same
+	// id is on the X-Request-ID response header and on the zap access-log line, so a
+	// user who quotes it from the error banner leads straight to the log entry. It
+	// rides in the body as well as the header because a header can be stripped by a
+	// proxy on the way to the browser, and the one moment it matters is the one
+	// moment the request already went wrong.
+	RequestID string `json:"request_id,omitempty"`
 }
 
 type PaginationMeta struct {
@@ -28,6 +35,12 @@ func SuccessWithMeta(data interface{}, meta interface{}) APIResponse {
 
 func Err(message string) APIResponse {
 	return APIResponse{Data: nil, Error: &message}
+}
+
+// ErrWithRef is Err plus the request's correlation id, so the failure the user sees
+// carries the same reference the server logged it under.
+func ErrWithRef(message, requestID string) APIResponse {
+	return APIResponse{Data: nil, Error: &message, RequestID: requestID}
 }
 
 type AppError struct {

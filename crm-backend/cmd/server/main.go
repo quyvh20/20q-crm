@@ -82,13 +82,19 @@ func main() {
 	}
 
 	router.Use(func(c *gin.Context) {
-		reqID := c.GetHeader("X-Request-ID")
+		// An inbound X-Request-ID is honored so a request can be traced across a proxy
+		// or a caller's own tracing — but it is client-controlled and gets reflected
+		// into the response header AND every log line, so it is validated rather than
+		// trusted: anything that is not a short, plain [A-Za-z0-9._-] token is replaced
+		// with one we generate. Unbounded, arbitrary bytes here is how you get log
+		// injection and a header-splitting attempt for free.
+		reqID := sanitizeRequestID(c.GetHeader("X-Request-ID"))
 		if reqID == "" {
 			reqID = uuid.NewString()
 		}
 		c.Set("request_id", reqID)
 		c.Header("X-Request-ID", reqID)
-		
+
 		ctx := context.WithValue(c.Request.Context(), "request_id", reqID)
 		c.Request = c.Request.WithContext(ctx)
 
@@ -108,10 +114,16 @@ func main() {
 	})
 
 	router.Use(cors.New(cors.Config{
-		AllowOrigins:     delivery.AllowedOrigins(cfg.FrontendURL),
-		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "X-CSRF-Token"},
-		ExposeHeaders:    []string{"Content-Length"},
+		AllowOrigins: delivery.AllowedOrigins(cfg.FrontendURL),
+		AllowMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowHeaders: []string{"Origin", "Content-Type", "Accept", "Authorization", "X-CSRF-Token", "X-Request-ID"},
+		// X-Request-ID is EXPOSED (U7.4). The middleware above has always stamped it on
+		// every response and logged it with zap — but a browser can only read a response
+		// header the server explicitly exposes, so until now the id existed on both ends
+		// of a failed request and was invisible to the one person who could quote it.
+		// The SPA reads it off failures and prints it in the error banner, which is what
+		// turns "I can't save" into a line the logs can actually be grepped for.
+		ExposeHeaders:    []string{"Content-Length", "X-Request-ID"},
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
 	}))
@@ -1406,4 +1418,24 @@ func main() {
 	}
 
 	log.Info("Server exiting")
+}
+
+// sanitizeRequestID validates a client-supplied correlation id. It returns "" for
+// anything that is not a short, plain token, so the caller falls back to a
+// server-generated uuid. The id is echoed on a response header and written into
+// every log line for the request, so accepting arbitrary bytes here would let a
+// caller forge log entries (newlines) or attempt header splitting (CR/LF).
+func sanitizeRequestID(s string) string {
+	const maxLen = 64
+	if len(s) == 0 || len(s) > maxLen {
+		return ""
+	}
+	for _, r := range s {
+		ok := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+			r == '-' || r == '_' || r == '.'
+		if !ok {
+			return ""
+		}
+	}
+	return s
 }
