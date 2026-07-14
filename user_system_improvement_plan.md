@@ -142,6 +142,8 @@ Sequenced so trust comes first, the structural container second, then the two au
 | U4 | Members & lifecycle | **DONE** (all 8 items) — slices 1 (c5bb834) + 2 (48471e6) + 3 (cbf0921) + 4 (item 6, consent-based Google-first invitee + zero-org-session infra) verified live; BE+FE tests green |
 | U5 | Notification preferences | **DONE** (2026-07-14) — prefs table + preference center + email channel + daily digest + bell unread toggle; 13-agent review fixed a HIGH silent-drop + digest robustness; verified live; BE+FE tests green |
 | U6 | Team scope / sharing / custom ownership / 2FA / API tokens | **DONE** (2026-07-14) — all 5 items + the S0 predicate unification; 3 fail-open scope coercions killed; BE build/vet/tests + FE tsc/tests green |
-| U7 | Fit & finish | **DONE** (2026-07-14) — a11y/Radix, page titles, settings on react-query, request ids, setup checklist, legal; tsc + 838 FE tests green |
+| U7 | Fit & finish | **DONE** (2026-07-14) — a11y/Radix modals, per-page titles, settings on react-query, request ids, returnable setup checklist, Terms/Privacy; **verified live on Docker** (PG+Redis+server, driven in a browser); FE tsc + 841 tests, BE build/vet/tests green |
+
+**The U0–U7 user-system overhaul is COMPLETE.**
 
 **Constraints to respect throughout** (from prior overhauls): new tables/columns need main.go IF-NOT-EXISTS boot guards (golang-migrate is dead on prod); backend isn't gofmt-clean (build + vet are the gates); FE tests via `npx vitest run` (not rtk), types via `rtk npx tsc -b`; never share-to-self (enforced both layers); adding capabilities/actions means updating both the TS union and the zod enum where applicable.
