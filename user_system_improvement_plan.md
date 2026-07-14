@@ -112,7 +112,16 @@ Sequenced so trust comes first, the structural container second, then the two au
 
 **Constraints honored:** 5 new migrations (000038–000042), each mirrored by a `main.go` IF-NOT-EXISTS boot guard (golang-migrate is dead on prod). New Go dep: `github.com/pquerna/otp` (renders the QR server-side, so the frontend needed no new dependency).
 
-### U7 — Fit & finish sweep
+### U7 — Fit & finish sweep — ✅ DONE (2026-07-14)
+
+**All 6 items shipped** (75f0f1f + c8f186e). Each turned out to have a real bug behind the stated task:
+- **a11y**: Radix was already a dependency and used in exactly ONE file. Added a shared `Modal`, rebuilt `ConfirmDialog` on it (the `useConfirm()` API unchanged, so all ~14 call sites untouched), converted the 5 form-bearing modals. Two finds: Radix restores focus to `Dialog.Trigger`, but these dialogs are controlled by an `open` prop with **no trigger** — so focus restore was a silent no-op; and 5 row-action clusters were `opacity-0 group-hover:opacity-100` with `focus-visible:` used **zero** times in the codebase, so keyboard users tabbed into invisible Edit/Delete buttons.
+- **titles**: `document.title` appeared nowhere; all ~35 routes shared one static tab. `<DocumentTitle>` renders before `{children}` so a page's title beats its layout's (a parent's effects run *after* its children's).
+- **settings on react-query**: the 6 admin screens never re-read after a save — two admins on the same grid overwrote each other silently. Some existing tests **asserted the bug** (a literal `// no refetch`); the mocks became stateful instead, plus a regression test staging a concurrent admin's grant.
+- **request ids**: the id already existed end-to-end (stamped + logged) but CORS exposed only `Content-Length`, so the browser could never read it. Also fixed: the 500 path interpolated the raw internal error into the response body, and the inbound `X-Request-ID` was trusted verbatim (log injection / header splitting).
+- **setup checklist**: replaced the one-shot blocking WelcomeModal with a returnable checklist derived from live data (no new endpoint). The obvious "pipeline done = stages exist" is **wrong** — the backend seeds 5 stages per org, so it would read as done on day zero.
+- **legal**: Terms/Privacy on all THREE account-creation surfaces (register, login — its Google button creates accounts — and invite-accept). Pages are honest operator-replaceable placeholders (`VITE_TERMS_URL`/`VITE_PRIVACY_URL`), not invented legal text.
+
 1. Accessibility: Radix dialogs (already a dependency) for hand-rolled modals, focus traps, aria labels on icon-only buttons, keyboard nav through grids.
 2. `document.title` per page (the tab currently says "crm-frontend" everywhere).
 3. Settings screens onto react-query with refetch (two admins editing the same grid currently last-write-wins invisibly).
@@ -133,6 +142,6 @@ Sequenced so trust comes first, the structural container second, then the two au
 | U4 | Members & lifecycle | **DONE** (all 8 items) — slices 1 (c5bb834) + 2 (48471e6) + 3 (cbf0921) + 4 (item 6, consent-based Google-first invitee + zero-org-session infra) verified live; BE+FE tests green |
 | U5 | Notification preferences | **DONE** (2026-07-14) — prefs table + preference center + email channel + daily digest + bell unread toggle; 13-agent review fixed a HIGH silent-drop + digest robustness; verified live; BE+FE tests green |
 | U6 | Team scope / sharing / custom ownership / 2FA / API tokens | **DONE** (2026-07-14) — all 5 items + the S0 predicate unification; 3 fail-open scope coercions killed; BE build/vet/tests + FE tsc/tests green |
-| U7 | Fit & finish | NOT STARTED |
+| U7 | Fit & finish | **DONE** (2026-07-14) — a11y/Radix, page titles, settings on react-query, request ids, setup checklist, legal; tsc + 838 FE tests green |
 
 **Constraints to respect throughout** (from prior overhauls): new tables/columns need main.go IF-NOT-EXISTS boot guards (golang-migrate is dead on prod); backend isn't gofmt-clean (build + vet are the gates); FE tests via `npx vitest run` (not rtk), types via `rtk npx tsc -b`; never share-to-self (enforced both layers); adding capabilities/actions means updating both the TS union and the zod enum where applicable.
