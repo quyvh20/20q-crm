@@ -114,6 +114,10 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			workspaces.GET("/invitations", cap(domain.CapMembersInvite), workspaceHandler.ListInvitations)
 			workspaces.POST("/invitations/:id/resend", cap(domain.CapMembersInvite), RequireVerifiedEmail(authRepo), workspaceHandler.ResendInvitation)
 			workspaces.DELETE("/invitations/:id", cap(domain.CapMembersInvite), workspaceHandler.RevokeInvitation)
+			// Member detail drawer + admin force-sign-out (U4). Static /invitations
+			// etc. are separate paths, so /:user_id params don't collide.
+			workspaces.GET("/members/:user_id", cap(domain.CapMembersManage), workspaceHandler.GetMemberDetail)
+			workspaces.DELETE("/members/:user_id/sessions", cap(domain.CapMembersManage), workspaceHandler.ForceSignOutMember)
 			workspaces.PATCH("/members/:user_id/role", cap(domain.CapMembersManage), workspaceHandler.UpdateMemberRole)
 			workspaces.POST("/members/:user_id/suspend", cap(domain.CapMembersManage), workspaceHandler.SuspendMember)
 			workspaces.POST("/members/:user_id/reinstate", cap(domain.CapMembersManage), workspaceHandler.ReinstateMember)

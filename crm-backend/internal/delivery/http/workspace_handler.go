@@ -325,3 +325,49 @@ func (h *WorkspaceHandler) TransferOwnership(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, domain.Success(gin.H{"message": "ownership transferred"}))
 }
+
+// GetMemberDetail handles GET /api/workspaces/members/:user_id — the member
+// drawer payload (identity + groups + owned counts + sessions) (U4).
+func (h *WorkspaceHandler) GetMemberDetail(c *gin.Context) {
+	orgID, ok := GetOrgID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	targetUserID, err := uuid.Parse(c.Param("user_id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, domain.Err("invalid user id"))
+		return
+	}
+	detail, err := h.workspaceUC.GetMemberDetail(c.Request.Context(), orgID, targetUserID)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, domain.Success(detail))
+}
+
+// ForceSignOutMember handles DELETE /api/workspaces/members/:user_id/sessions —
+// the admin "sign this person out everywhere" action (U4).
+func (h *WorkspaceHandler) ForceSignOutMember(c *gin.Context) {
+	orgID, ok := GetOrgID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	callerID, ok := GetUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	targetUserID, err := uuid.Parse(c.Param("user_id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, domain.Err("invalid user id"))
+		return
+	}
+	if err := h.workspaceUC.ForceSignOutMember(c.Request.Context(), orgID, callerID, targetUserID); err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, domain.Success(gin.H{"message": "member signed out of all sessions"}))
+}

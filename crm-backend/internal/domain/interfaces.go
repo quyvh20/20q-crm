@@ -87,6 +87,30 @@ type MemberInfo struct {
 	RoleID uuid.UUID `json:"role_id"`
 	Role   string    `json:"role"`
 	Status string    `json:"status"`
+	// Members-table columns (U4): when they joined, whether they've confirmed
+	// their email, and their most recent session activity (nil = never signed in
+	// / no live session).
+	JoinedAt      time.Time  `json:"joined_at"`
+	EmailVerified bool       `json:"email_verified"`
+	LastActiveAt  *time.Time `json:"last_active_at,omitempty"`
+}
+
+// MemberGroup is one user-group a member belongs to, for the member detail
+// drawer (U4).
+type MemberGroup struct {
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+}
+
+// MemberDetail is the member drawer's full payload (U4): identity + the groups
+// they're in, the records they own (the offboarding preview), and their live
+// sessions for admin force-sign-out.
+type MemberDetail struct {
+	Member        MemberInfo    `json:"member"`
+	Groups        []MemberGroup `json:"groups"`
+	OwnedContacts int64         `json:"owned_contacts"`
+	OwnedDeals    int64         `json:"owned_deals"`
+	Sessions      []SessionInfo `json:"sessions"`
 }
 
 // AcceptInviteInput carries the invite token and, for a brand-new non-OAuth
@@ -218,6 +242,11 @@ type AuthRepository interface {
 	GetOrgInvitationByTokenHash(ctx context.Context, tokenHash string) (*OrgInvitation, error)
 	GetOrgInvitationByID(ctx context.Context, id, orgID uuid.UUID) (*OrgInvitation, error)
 	UpdateOrgInvitation(ctx context.Context, inv *OrgInvitation) error
+	// LatestSessionActivityByUsers returns userID → most recent live-session
+	// activity (max of last_used_at/created_at over non-revoked, unexpired refresh
+	// tokens) for the given users, for the members-table "Last active" column (U4).
+	// Users with no live session are simply absent from the map.
+	LatestSessionActivityByUsers(ctx context.Context, userIDs []uuid.UUID) (map[uuid.UUID]time.Time, error)
 	// ListPendingInvitations returns an org's still-actionable invitations
 	// (pending, unexpired, not revoked), newest first, for the members panel (P2).
 	ListPendingInvitations(ctx context.Context, orgID uuid.UUID) ([]OrgInvitation, error)
@@ -396,6 +425,14 @@ type WorkspaceUseCase interface {
 	// owner is demoted in the same transaction the target is promoted.
 	TransferOwnership(ctx context.Context, orgID uuid.UUID, callerUserID, targetUserID uuid.UUID) error
 	RemoveMember(ctx context.Context, orgID uuid.UUID, targetUserID uuid.UUID, input RemoveMemberInput) error
+	// GetMemberDetail returns one member's drawer payload (U4): identity + groups
+	// + owned-record counts + live sessions. 404s a non-member.
+	GetMemberDetail(ctx context.Context, orgID, targetUserID uuid.UUID) (*MemberDetail, error)
+	// ForceSignOutMember revokes ALL of a member's sessions and bumps their token
+	// version so their access tokens die immediately (U4) — the admin "sign this
+	// person out everywhere" button. Refuses to target the caller (use your own
+	// sessions UI) and the owner.
+	ForceSignOutMember(ctx context.Context, orgID, callerUserID, targetUserID uuid.UUID) error
 }
 
 type RemoveMemberInput struct {

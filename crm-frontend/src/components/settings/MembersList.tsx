@@ -4,7 +4,8 @@ import { getWorkspaceMembers, updateMemberRole, removeMember, suspendMember, rei
 import { useAuth, usePermissions } from '../../lib/auth';
 import { prettyRole } from '../../lib/roles';
 import { useConfirm } from '../common/ConfirmDialog';
-import { ShieldAlert, PauseCircle, PlayCircle, UserMinus, Crown, Shield, KeyRound, CheckCircle2, RotateCw, X, HelpCircle } from 'lucide-react';
+import MemberDrawer from './MemberDrawer';
+import { ShieldAlert, PauseCircle, PlayCircle, UserMinus, Crown, Shield, KeyRound, CheckCircle2, RotateCw, X, HelpCircle, Search, Check } from 'lucide-react';
 
 export default function MembersList() {
   const { user, hasCapability, isOwner } = useAuth();
@@ -36,14 +37,28 @@ export default function MembersList() {
     }, { replace: true });
   };
 
+  // Free-text search (name/email) + status filter are local component state
+  // (transient, unlike the deep-linkable role filter). Drawer target is a
+  // user_id or null.
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'suspended' | 'invited'>('all');
+  const [drawerUserId, setDrawerUserId] = useState<string | null>(null);
+
   const canManage = hasCapability('members.manage');
   // Owner role ids (resolved from the dynamic options, P6) so the owner member is
   // shown as a locked badge — you transfer ownership, you don't re-assign it.
   const ownerRoleIds = new Set(roles.filter((r) => r.is_owner).map((r) => r.id));
 
-  // Client-side filter keyed by role_id. An unknown id (stale link) simply matches
-  // nothing — the zero-result state below offers the "All roles" reset.
-  const visibleMembers = roleFilter ? members.filter((m) => m.role_id === roleFilter) : members;
+  // Client-side filters: role (deep-linkable), status, and free-text over name +
+  // email. An unknown role id (stale link) simply matches nothing — the
+  // zero-result state below offers the "All roles" reset.
+  const query = search.trim().toLowerCase();
+  const visibleMembers = members.filter((m) => {
+    if (roleFilter && m.role_id !== roleFilter) return false;
+    if (statusFilter !== 'all' && m.status !== statusFilter) return false;
+    if (query && !(m.full_name || '').toLowerCase().includes(query) && !m.email.toLowerCase().includes(query)) return false;
+    return true;
+  });
 
   const fetchMembers = () => {
     setLoading(true);
@@ -218,6 +233,32 @@ export default function MembersList() {
             {noticeMsg}
           </div>
         )}
+        {/* Search + status filter (U4) — free-text over name/email and a status
+            pill filter, alongside the deep-linkable role filter below. */}
+        <div className="mb-3 flex items-center gap-2 flex-wrap">
+          <div className="relative flex-1 min-w-[180px] max-w-xs">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search name or email"
+              aria-label="Search members"
+              className="w-full pl-8 pr-2 py-1.5 text-sm bg-background border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+          </div>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
+            aria-label="Filter by status"
+            className="px-2 py-1.5 text-sm bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+          >
+            <option value="all">All statuses</option>
+            <option value="active">Active</option>
+            <option value="suspended">Suspended</option>
+            <option value="invited">Invited</option>
+          </select>
+        </div>
         {/* Role filter (U3.3) — the landing target for "N members" links on role
             cards/detail. URL-backed, so those deep links arrive pre-filtered. */}
         {roles.length > 0 && (
@@ -269,6 +310,9 @@ export default function MembersList() {
               <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">Member</th>
               <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">Role</th>
               <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">Status</th>
+              <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider hidden md:table-cell">Joined</th>
+              <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider hidden lg:table-cell">Last active</th>
+              <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider hidden sm:table-cell">Verified</th>
               {canManage && (
                 <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider text-right">Actions</th>
               )}
@@ -288,7 +332,13 @@ export default function MembersList() {
                     )}
                     <div>
                       <p className="text-sm font-medium text-foreground flex items-center gap-2">
-                        {m.full_name || `${m.first_name} ${m.last_name}`}
+                        {canManage ? (
+                          <button onClick={() => setDrawerUserId(m.user_id)} className="hover:underline text-left">
+                            {m.full_name || `${m.first_name} ${m.last_name}`}
+                          </button>
+                        ) : (
+                          <span>{m.full_name || `${m.first_name} ${m.last_name}`}</span>
+                        )}
                         {m.user_id === user?.id && <span className="text-[10px] bg-primary/20 text-primary px-1.5 py-0.5 rounded-sm">You</span>}
                       </p>
                       <p className="text-xs text-muted-foreground">{m.email}</p>
@@ -342,6 +392,19 @@ export default function MembersList() {
                   }`}>
                     {m.status}
                   </span>
+                </td>
+                <td className="py-3 pr-4 text-xs text-muted-foreground hidden md:table-cell whitespace-nowrap">
+                  {m.joined_at ? new Date(m.joined_at).toLocaleDateString() : '—'}
+                </td>
+                <td className="py-3 pr-4 text-xs text-muted-foreground hidden lg:table-cell whitespace-nowrap">
+                  {m.last_active_at ? new Date(m.last_active_at).toLocaleDateString() : '—'}
+                </td>
+                <td className="py-3 pr-4 hidden sm:table-cell">
+                  {m.email_verified ? (
+                    <Check className="w-4 h-4 text-green-500" aria-label="Email verified" />
+                  ) : (
+                    <span className="text-xs text-amber-500" title="Email not verified">Pending</span>
+                  )}
                 </td>
                 {canManage && (
                   <td className="py-3 text-right">
@@ -519,6 +582,15 @@ export default function MembersList() {
             </div>
           </div>
         </div>
+      )}
+      {drawerUserId && (
+        <MemberDrawer
+          userId={drawerUserId}
+          isSelf={drawerUserId === user?.id}
+          canManage={canManage}
+          onClose={() => setDrawerUserId(null)}
+          onChanged={fetchMembers}
+        />
       )}
       {confirmDialogEl}
     </>

@@ -43,6 +43,14 @@ type offboardStore interface {
 	RevokeUserGrants(ctx context.Context, orgID, userID uuid.UUID) error
 }
 
+// groupMembershipReader resolves which groups a member belongs to, for the
+// member detail drawer (U4). userGroupRepository satisfies it. Nil in unit tests
+// → GetMemberDetail returns no groups; main.go always wires it.
+type groupMembershipReader interface {
+	GroupIDsForUser(ctx context.Context, orgID, userID uuid.UUID) ([]uuid.UUID, error)
+	List(ctx context.Context, orgID uuid.UUID) ([]domain.UserGroupView, error)
+}
+
 type workspaceUseCase struct {
 	authRepo    domain.AuthRepository
 	mailer      domain.Mailer
@@ -63,9 +71,12 @@ type workspaceUseCase struct {
 	// offboard reassigns/releases a departing member's owned records and revokes
 	// their grants (U0.2). Nil in unit tests; main.go always wires it.
 	offboard offboardStore
+	// groups resolves a member's group membership for the detail drawer (U4).
+	// Nil in unit tests; main.go always wires it.
+	groups groupMembershipReader
 }
 
-func NewWorkspaceUseCase(authRepo domain.AuthRepository, mailer domain.Mailer, appEnv string, frontendURL string, sessions SessionEvictor, caps domain.CapabilityChecker, roleCaps roleCapReader, offboard offboardStore) domain.WorkspaceUseCase {
+func NewWorkspaceUseCase(authRepo domain.AuthRepository, mailer domain.Mailer, appEnv string, frontendURL string, sessions SessionEvictor, caps domain.CapabilityChecker, roleCaps roleCapReader, offboard offboardStore, groups groupMembershipReader) domain.WorkspaceUseCase {
 	return &workspaceUseCase{
 		authRepo:    authRepo,
 		mailer:      mailer,
@@ -75,6 +86,7 @@ func NewWorkspaceUseCase(authRepo domain.AuthRepository, mailer domain.Mailer, a
 		caps:        caps,
 		roleCaps:    roleCaps,
 		offboard:    offboard,
+		groups:      groups,
 	}
 }
 
@@ -134,6 +146,17 @@ func (uc *workspaceUseCase) ListMembers(ctx context.Context, orgID uuid.UUID) ([
 		return nil, domain.ErrInternal
 	}
 
+	// Batch the "last active" lookup for the whole member set — one GROUP BY, not
+	// a query per row (U4). Absent = no live session.
+	userIDs := make([]uuid.UUID, 0, len(orgUsers))
+	for _, ou := range orgUsers {
+		userIDs = append(userIDs, ou.UserID)
+	}
+	lastActive, err := uc.authRepo.LatestSessionActivityByUsers(ctx, userIDs)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+
 	members := make([]domain.MemberInfo, 0, len(orgUsers))
 	for _, ou := range orgUsers {
 		roleName := "viewer"
@@ -141,10 +164,11 @@ func (uc *workspaceUseCase) ListMembers(ctx context.Context, orgID uuid.UUID) ([
 			roleName = ou.Role.Name
 		}
 		m := domain.MemberInfo{
-			UserID: ou.UserID,
-			RoleID: ou.RoleID,
-			Role:   roleName,
-			Status: ou.Status,
+			UserID:   ou.UserID,
+			RoleID:   ou.RoleID,
+			Role:     roleName,
+			Status:   ou.Status,
+			JoinedAt: ou.JoinedAt,
 		}
 		if ou.User != nil {
 			m.Email = ou.User.Email
@@ -152,10 +176,118 @@ func (uc *workspaceUseCase) ListMembers(ctx context.Context, orgID uuid.UUID) ([
 			m.LastName = ou.User.LastName
 			m.FullName = ou.User.FullName
 			m.AvatarURL = ou.User.AvatarURL
+			m.EmailVerified = ou.User.EmailVerifiedAt != nil
+		}
+		if t, ok := lastActive[ou.UserID]; ok {
+			tt := t
+			m.LastActiveAt = &tt
 		}
 		members = append(members, m)
 	}
 	return members, nil
+}
+
+// GetMemberDetail assembles the member drawer payload (U4): identity + groups +
+// owned-record counts + live sessions. 404s a non-member of this org.
+func (uc *workspaceUseCase) GetMemberDetail(ctx context.Context, orgID, targetUserID uuid.UUID) (*domain.MemberDetail, error) {
+	ou, err := uc.authRepo.GetOrgUser(ctx, targetUserID, orgID)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+	if ou == nil {
+		return nil, domain.ErrNotMember
+	}
+	user, err := uc.authRepo.GetUserByID(ctx, targetUserID)
+	if err != nil || user == nil {
+		return nil, domain.ErrUserNotFound
+	}
+
+	roleName := "viewer"
+	if ou.Role != nil {
+		roleName = ou.Role.Name
+	}
+	member := domain.MemberInfo{
+		UserID: user.ID, Email: user.Email, FirstName: user.FirstName, LastName: user.LastName,
+		FullName: user.FullName, AvatarURL: user.AvatarURL,
+		RoleID: ou.RoleID, Role: roleName, Status: ou.Status, JoinedAt: ou.JoinedAt,
+		EmailVerified: user.EmailVerifiedAt != nil,
+	}
+
+	detail := &domain.MemberDetail{Member: member, Groups: []domain.MemberGroup{}, Sessions: []domain.SessionInfo{}}
+
+	// Owned-record counts (the offboarding preview). Best-effort — a counting
+	// failure shouldn't blank the whole drawer.
+	if uc.offboard != nil {
+		if contacts, deals, err := uc.offboard.CountOwnedRecords(ctx, orgID, targetUserID); err == nil {
+			detail.OwnedContacts, detail.OwnedDeals = contacts, deals
+		}
+	}
+
+	// Groups the member belongs to (names resolved from the org's group list).
+	if uc.groups != nil {
+		if ids, err := uc.groups.GroupIDsForUser(ctx, orgID, targetUserID); err == nil && len(ids) > 0 {
+			if all, err := uc.groups.List(ctx, orgID); err == nil {
+				nameByID := make(map[uuid.UUID]string, len(all))
+				for _, g := range all {
+					nameByID[g.ID] = g.Name
+				}
+				for _, id := range ids {
+					if name, ok := nameByID[id]; ok {
+						detail.Groups = append(detail.Groups, domain.MemberGroup{ID: id, Name: name})
+					}
+				}
+			}
+		}
+	}
+
+	// Live sessions for the force-sign-out list.
+	if tokens, err := uc.authRepo.ListActiveRefreshTokens(ctx, targetUserID); err == nil {
+		for _, t := range tokens {
+			s := domain.SessionInfo{ID: t.ID, CreatedAt: t.CreatedAt, LastUsedAt: t.LastUsedAt}
+			if t.DeviceLabel != nil {
+				s.DeviceLabel = *t.DeviceLabel
+			}
+			if t.IP != nil {
+				s.IP = *t.IP
+			}
+			detail.Sessions = append(detail.Sessions, s)
+		}
+	}
+	return detail, nil
+}
+
+// ForceSignOutMember is the admin "sign this person out everywhere" action (U4):
+// revoke all their refresh tokens AND bump their token version so outstanding
+// access tokens die immediately, then evict this org's cached session. Refuses
+// to target the caller (self-service lives in the personal sessions UI) or the
+// owner (protected like every other admin action against the owner).
+func (uc *workspaceUseCase) ForceSignOutMember(ctx context.Context, orgID, callerUserID, targetUserID uuid.UUID) error {
+	if callerUserID == targetUserID {
+		return domain.NewAppError(400, "use your own device list to sign yourself out")
+	}
+	ou, err := uc.authRepo.GetOrgUser(ctx, targetUserID, orgID)
+	if err != nil {
+		return domain.ErrInternal
+	}
+	if ou == nil {
+		return domain.ErrNotMember
+	}
+	if ou.Role != nil && domain.IsOwnerRole(ou.Role) {
+		return domain.NewAppError(403, "the workspace owner can't be force–signed-out")
+	}
+
+	if err := uc.authRepo.RevokeAllUserRefreshTokens(ctx, targetUserID); err != nil {
+		return domain.ErrInternal
+	}
+	if err := uc.authRepo.IncrementUserTokenVersion(ctx, targetUserID); err != nil {
+		return domain.ErrInternal
+	}
+	uc.evictSession(ctx, targetUserID, orgID)
+
+	actor := callerUserID
+	recordAdminEvent(ctx, uc.authRepo, orgID, "member.force_signed_out", &actor,
+		map[string]interface{}{"target_user_id": targetUserID.String()})
+	return nil
 }
 
 func hashInviteToken(token string) string {

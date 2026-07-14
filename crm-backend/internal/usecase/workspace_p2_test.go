@@ -345,6 +345,41 @@ func TestGetInvitationPreview_Statuses(t *testing.T) {
 }
 
 // ============================================================
+// Force-sign-out a member (U4)
+// ============================================================
+
+func TestForceSignOutMember(t *testing.T) {
+	repo := newFakeWorkspaceRepo()
+	orgID := uuid.New()
+	owner := repo.addRole(domain.RoleOwner, true)
+	viewer := repo.addRole(domain.RoleViewer, false)
+	uc := newWorkspaceUC(repo, "test", &fakeEvictor{})
+
+	admin := repo.addUser(&domain.User{Email: "admin@x.com", OrgID: uuid.New()})
+	repo.addMember(admin.ID, orgID, viewer, domain.StatusActive)
+	target := repo.addUser(&domain.User{Email: "target@x.com", OrgID: uuid.New()})
+	repo.addMember(target.ID, orgID, viewer, domain.StatusActive)
+	ownerUser := repo.addUser(&domain.User{Email: "owner@x.com", OrgID: uuid.New()})
+	repo.addMember(ownerUser.ID, orgID, owner, domain.StatusActive)
+
+	// Self-target is rejected — use the personal device list instead.
+	if err := uc.ForceSignOutMember(context.Background(), orgID, admin.ID, admin.ID); err == nil {
+		t.Error("force-sign-out of yourself must be rejected")
+	}
+	// The owner is protected.
+	if err := uc.ForceSignOutMember(context.Background(), orgID, admin.ID, ownerUser.ID); err == nil {
+		t.Error("force-sign-out of the owner must be rejected")
+	}
+	// A normal member is signed out: tokens revoked + version bumped.
+	if err := uc.ForceSignOutMember(context.Background(), orgID, admin.ID, target.ID); err != nil {
+		t.Fatalf("force-sign-out a member: %v", err)
+	}
+	if repo.revokedAll[target.ID] == 0 {
+		t.Error("force-sign-out must revoke all the member's refresh tokens")
+	}
+}
+
+// ============================================================
 // Admin "send reset link" — membership, cooldown, daily cap (P2)
 // ============================================================
 

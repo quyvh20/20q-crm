@@ -1011,8 +1011,10 @@ func main() {
 		// it can enforce escalation guard #2 (P6): permissionUC checks the caller's
 		// capabilities and roleRepo reads the target role's, so assigning/inviting
 		// into a role that can manage roles/members requires the caller's roles.manage.
+		// userGroupRepo doubles as the member-drawer group reader (U4).
+		userGroupRepo := repository.NewUserGroupRepository(db)
 		workspaceUseCase := usecase.NewWorkspaceUseCase(authRepo, mailerSvc, appEnv, cfg.FrontendURL, sessionEvictor, permissionUC, roleRepo,
-			repository.NewOffboardRepository(db))
+			repository.NewOffboardRepository(db), userGroupRepo)
 		workspaceHandler := delivery.NewWorkspaceHandler(workspaceUseCase, authUseCase, cfg)
 
 		// Admin + auth audit log (P4): read-only view over the append-only
@@ -1042,7 +1044,7 @@ func main() {
 		dashboardHandler := delivery.NewDashboardHandler(dashboardUC)
 
 		// User groups: named member groups, first used as a report-sharing target.
-		userGroupRepo := repository.NewUserGroupRepository(db)
+		// (userGroupRepo is constructed above for the member-drawer group reader.)
 		userGroupUC := usecase.NewUserGroupUseCase(userGroupRepo)
 		userGroupHandler := delivery.NewUserGroupHandler(userGroupUC)
 

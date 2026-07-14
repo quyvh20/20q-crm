@@ -602,6 +602,34 @@ func (r *authRepository) ListAuthEvents(ctx context.Context, orgID uuid.UUID, f 
 	return rows, total, nil
 }
 
+// LatestSessionActivityByUsers returns userID → most recent live-session
+// activity for the members-table "Last active" column (U4): one GROUP BY over
+// non-revoked, unexpired refresh tokens, using last_used_at when present and
+// falling back to created_at. Users with no live session are absent.
+func (r *authRepository) LatestSessionActivityByUsers(ctx context.Context, userIDs []uuid.UUID) (map[uuid.UUID]time.Time, error) {
+	out := map[uuid.UUID]time.Time{}
+	if len(userIDs) == 0 {
+		return out, nil
+	}
+	type row struct {
+		UserID   uuid.UUID
+		LastSeen time.Time
+	}
+	var rows []row
+	if err := r.db.WithContext(ctx).
+		Model(&domain.RefreshToken{}).
+		Select("user_id, MAX(COALESCE(last_used_at, created_at)) AS last_seen").
+		Where("user_id IN ? AND revoked_at IS NULL AND expires_at > ?", userIDs, time.Now()).
+		Group("user_id").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		out[r.UserID] = r.LastSeen
+	}
+	return out, nil
+}
+
 func (r *authRepository) ListActiveRefreshTokens(ctx context.Context, userID uuid.UUID) ([]domain.RefreshToken, error) {
 	var tokens []domain.RefreshToken
 	err := r.db.WithContext(ctx).

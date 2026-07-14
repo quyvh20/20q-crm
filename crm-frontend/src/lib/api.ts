@@ -2050,6 +2050,58 @@ export interface WorkspaceMember {
   role_id: string;
   role: string;
   status: string;
+  // Members-table columns (U4). Optional on the type (the server always sends
+  // joined_at/email_verified; older callers and test fixtures may omit them) —
+  // every consumer guards for undefined.
+  joined_at?: string;
+  email_verified?: boolean;
+  last_active_at?: string;
+}
+
+// MemberGroup / MemberDetail back the member detail drawer (U4).
+export interface MemberGroup {
+  id: string;
+  name: string;
+}
+
+export interface MemberSession {
+  id: string;
+  device_label: string;
+  ip: string;
+  last_used_at?: string;
+  created_at: string;
+}
+
+export interface MemberDetail {
+  member: WorkspaceMember;
+  groups: MemberGroup[];
+  owned_contacts: number;
+  owned_deals: number;
+  sessions: MemberSession[];
+}
+
+export async function getMemberDetail(userId: string): Promise<MemberDetail> {
+  const res = await apiFetch(`/api/workspaces/members/${userId}`);
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw new Error(json.error || 'Failed to load member');
+  const d = (json.data || {}) as Partial<MemberDetail>;
+  return {
+    member: d.member as WorkspaceMember,
+    groups: d.groups || [],
+    owned_contacts: d.owned_contacts || 0,
+    owned_deals: d.owned_deals || 0,
+    sessions: d.sessions || [],
+  };
+}
+
+// forceSignOutMember revokes all the member's sessions + bumps their token
+// version so their access dies immediately (U4).
+export async function forceSignOutMember(userId: string): Promise<void> {
+  const res = await apiFetch(`/api/workspaces/members/${userId}/sessions`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await parseJsonSafe(res);
+    throw new Error(json.error || 'Failed to sign out member');
+  }
 }
 
 export async function switchWorkspace(orgId: string, setDefault = false): Promise<{

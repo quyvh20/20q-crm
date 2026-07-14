@@ -213,14 +213,14 @@ func (f *fakeWorkspaceRepo) TransferOrgOwnership(_ context.Context, orgID, fromU
 func newWorkspaceUC(repo *fakeWorkspaceRepo, appEnv string, evictor SessionEvictor) domain.WorkspaceUseCase {
 	// caps + roleCaps nil → escalation guard #2 no-ops (these tests exercise the
 	// owner/transfer guards, not guard #2, which has its own tests below).
-	return NewWorkspaceUseCase(repo, &fakeMailer{}, appEnv, "http://localhost:5173", evictor, nil, nil, nil)
+	return NewWorkspaceUseCase(repo, &fakeMailer{}, appEnv, "http://localhost:5173", evictor, nil, nil, nil, nil)
 }
 
 // newWorkspaceUCWithGuard wires escalation guard #2 (P6): caps checks the caller,
 // roleCaps reads the target role's capabilities. fakeWorkspaceRepo satisfies
 // roleCapReader via its GetRoleCapabilities-backed GetCapabilities.
 func newWorkspaceUCWithGuard(repo *fakeWorkspaceRepo, caps domain.CapabilityChecker) domain.WorkspaceUseCase {
-	return NewWorkspaceUseCase(repo, &fakeMailer{}, "test", "http://localhost:5173", &fakeEvictor{}, caps, repo, nil)
+	return NewWorkspaceUseCase(repo, &fakeMailer{}, "test", "http://localhost:5173", &fakeEvictor{}, caps, repo, nil, nil)
 }
 
 func assertWorkspaceErr(t *testing.T, err error, want int, ctx string) {
