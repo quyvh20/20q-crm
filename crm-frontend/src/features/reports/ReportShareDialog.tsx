@@ -8,6 +8,7 @@ import {
 } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { prettyRole } from '../../lib/roles';
+import Modal from '../../components/common/Modal';
 
 // ReportShareDialog manages a report's granular share list: grant a user, role,
 // or group access at view/comment/edit. Shown only to a caller who can 'manage'
@@ -113,13 +114,18 @@ export default function ReportShareDialog({ report, onClose }: { report: Report;
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
-      <div className="w-full max-w-lg rounded-2xl border bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Share report</h2>
-          <button onClick={onClose} className="rounded p-1 text-muted-foreground hover:bg-accent" aria-label="Close">✕</button>
-        </div>
-
+    // Shared Radix modal (U7). The old overlay dismissed on any outside click via
+    // a backdrop handler + a stopPropagation on the panel; Radix owns
+    // outside-dismissal, Escape, the focus trap and focus restore instead.
+    // Dismissal is blocked while a share/visibility write is in flight.
+    <Modal
+      open
+      onClose={onClose}
+      title="Share report"
+      size="lg"
+      dismissable={!busy}
+    >
+      <>
         {error && <div className="mb-3 text-sm text-red-600">{error}</div>}
 
         {/* General access */}
@@ -190,7 +196,7 @@ export default function ReportShareDialog({ report, onClose }: { report: Report;
             </div>
           )}
         </div>
-      </div>
-    </div>
+      </>
+    </Modal>
   );
 }

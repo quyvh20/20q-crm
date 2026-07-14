@@ -1,7 +1,7 @@
 import type { Workflow, WorkflowRun, WorkflowStep, RunDetailResponse, WorkflowListResponse, TestRunResponse, ActionSpec, TriggerSpec, ConditionGroup } from './types';
 // apiFetch (bearer + credentials + 401→refresh + optional timeout) and parseJsonSafe
 // (the defensive body reader) are both shared from lib/api — single source of truth.
-import { apiFetch, parseJsonSafe } from '../../lib/api';
+import { apiFetch, parseJsonSafe, apiError } from '../../lib/api';
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -15,14 +15,14 @@ export async function getWorkflows(params?: { active?: boolean; q?: string; page
   if (params?.size) qs.set('size', String(params.size));
   const res = await apiFetch(`/api/workflows?${qs.toString()}`);
   const json = await parseJsonSafe(res);
-  if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch workflows');
+  if (!res.ok) throw apiError(res, json, 'Failed to fetch workflows');
   return json.data as WorkflowListResponse;
 }
 
 export async function getWorkflow(id: string): Promise<Workflow> {
   const res = await apiFetch(`/api/workflows/${id}`);
   const json = await parseJsonSafe(res);
-  if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch workflow');
+  if (!res.ok) throw apiError(res, json, 'Failed to fetch workflow');
   return json.data as Workflow;
 }
 
@@ -46,7 +46,7 @@ export async function createWorkflow(data: {
     if (details?.length) {
       throw new Error(details.map((d: { message: string }) => d.message).join('; '));
     }
-    throw new Error(json.error?.message || 'Failed to create workflow');
+    throw apiError(res, json, 'Failed to create workflow');
   }
   return json.data as Workflow;
 }
@@ -71,7 +71,7 @@ export async function updateWorkflow(id: string, data: {
     if (details?.length) {
       throw new Error(details.map((d: { message: string }) => d.message).join('; '));
     }
-    throw new Error(json.error?.message || 'Failed to update workflow');
+    throw apiError(res, json, 'Failed to update workflow');
   }
   return json.data as Workflow;
 }
@@ -80,14 +80,14 @@ export async function deleteWorkflow(id: string): Promise<void> {
   const res = await apiFetch(`/api/workflows/${id}`, { method: 'DELETE' });
   if (!res.ok) {
     const json = await res.json().catch(() => ({}));
-    throw new Error(json.error?.message || 'Failed to delete workflow');
+    throw apiError(res, json, 'Failed to delete workflow');
   }
 }
 
 export async function toggleWorkflow(id: string): Promise<Workflow> {
   const res = await apiFetch(`/api/workflows/${id}/toggle`, { method: 'POST' });
   const json = await parseJsonSafe(res);
-  if (!res.ok) throw new Error(json.error?.message || 'Failed to toggle workflow');
+  if (!res.ok) throw apiError(res, json, 'Failed to toggle workflow');
   return json.data as Workflow;
 }
 
@@ -103,7 +103,7 @@ export async function testRunWorkflow(
     body: JSON.stringify(body),
   });
   const json = await parseJsonSafe(res);
-  if (!res.ok) throw new Error(json.error?.message || 'Failed to run test');
+  if (!res.ok) throw apiError(res, json, 'Failed to run test');
   return json.data as TestRunResponse;
 }
 
@@ -127,7 +127,7 @@ export async function runNowWorkflow(
     body: JSON.stringify(entity),
   });
   const json = await parseJsonSafe(res);
-  if (!res.ok) throw new Error(json.error?.message || 'Failed to run workflow');
+  if (!res.ok) throw apiError(res, json, 'Failed to run workflow');
   return json.data as RunNowResult;
 }
 
@@ -139,14 +139,14 @@ export async function getWorkflowRuns(workflowId: string, page = 1, size = 20): 
 }> {
   const res = await apiFetch(`/api/workflows/${workflowId}/runs?page=${page}&size=${size}`);
   const json = await parseJsonSafe(res);
-  if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch runs');
+  if (!res.ok) throw apiError(res, json, 'Failed to fetch runs');
   return json.data as { runs: WorkflowRun[]; total: number };
 }
 
 export async function getRunDetail(runId: string): Promise<RunDetailResponse> {
   const res = await apiFetch(`/api/workflows/runs/${runId}`);
   const json = await parseJsonSafe(res);
-  if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch run detail');
+  if (!res.ok) throw apiError(res, json, 'Failed to fetch run detail');
   return json.data as RunDetailResponse;
 }
 
@@ -165,7 +165,7 @@ export interface RetryRunResult {
 export async function retryRun(runId: string): Promise<RetryRunResult> {
   const res = await apiFetch(`/api/workflows/runs/${runId}/retry`, { method: 'POST' });
   const json = await parseJsonSafe(res);
-  if (!res.ok) throw new Error(json.error?.message || 'Failed to retry run');
+  if (!res.ok) throw apiError(res, json, 'Failed to retry run');
   return json.data as RetryRunResult;
 }
 
@@ -197,7 +197,7 @@ export interface WebhookSecretInfo {
 export async function getWebhookToken(): Promise<WebhookTokenInfo> {
   const res = await apiFetch('/api/webhooks/token');
   const json = await parseJsonSafe(res);
-  if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch webhook token');
+  if (!res.ok) throw apiError(res, json, 'Failed to fetch webhook token');
   return json.data as WebhookTokenInfo;
 }
 
@@ -210,7 +210,7 @@ export async function getWebhookToken(): Promise<WebhookTokenInfo> {
 export async function revealWebhookSecret(): Promise<string> {
   const res = await apiFetch('/api/webhooks/reveal-secret', { method: 'POST' });
   const json = await parseJsonSafe(res);
-  if (!res.ok) throw new Error(json.error?.message || 'Failed to reveal webhook secret');
+  if (!res.ok) throw apiError(res, json, 'Failed to reveal webhook secret');
   return (json.data as { secret: string }).secret;
 }
 
@@ -222,7 +222,7 @@ export async function revealWebhookSecret(): Promise<string> {
 export async function regenerateWebhookSecret(): Promise<WebhookSecretInfo> {
   const res = await apiFetch('/api/webhooks/regenerate-secret', { method: 'POST' });
   const json = await parseJsonSafe(res);
-  if (!res.ok) throw new Error(json.error?.message || 'Failed to regenerate webhook secret');
+  if (!res.ok) throw apiError(res, json, 'Failed to regenerate webhook secret');
   return json.data as WebhookSecretInfo;
 }
 
@@ -263,28 +263,28 @@ export interface SaveEmailTemplateInput {
 export async function getEmailTemplates(): Promise<EmailTemplateListResponse> {
   const res = await apiFetch('/api/workflows/email-templates');
   const json = await parseJsonSafe(res);
-  if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch email templates');
+  if (!res.ok) throw apiError(res, json, 'Failed to fetch email templates');
   return json.data as EmailTemplateListResponse;
 }
 
 export async function getEmailTemplate(id: string): Promise<EmailTemplate> {
   const res = await apiFetch(`/api/workflows/email-templates/${id}`);
   const json = await parseJsonSafe(res);
-  if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch email template');
+  if (!res.ok) throw apiError(res, json, 'Failed to fetch email template');
   return json.data as EmailTemplate;
 }
 
 export async function createEmailTemplate(data: SaveEmailTemplateInput): Promise<EmailTemplate> {
   const res = await apiFetch('/api/workflows/email-templates', { method: 'POST', body: JSON.stringify(data) });
   const json = await parseJsonSafe(res);
-  if (!res.ok) throw new Error(json.error?.message || 'Failed to create email template');
+  if (!res.ok) throw apiError(res, json, 'Failed to create email template');
   return json.data as EmailTemplate;
 }
 
 export async function updateEmailTemplate(id: string, data: SaveEmailTemplateInput): Promise<EmailTemplate> {
   const res = await apiFetch(`/api/workflows/email-templates/${id}`, { method: 'PUT', body: JSON.stringify(data) });
   const json = await parseJsonSafe(res);
-  if (!res.ok) throw new Error(json.error?.message || 'Failed to update email template');
+  if (!res.ok) throw apiError(res, json, 'Failed to update email template');
   return json.data as EmailTemplate;
 }
 
@@ -292,7 +292,7 @@ export async function deleteEmailTemplate(id: string): Promise<void> {
   const res = await apiFetch(`/api/workflows/email-templates/${id}`, { method: 'DELETE' });
   if (!res.ok) {
     const json = await res.json().catch(() => ({}));
-    throw new Error(json.error?.message || 'Failed to delete email template');
+    throw apiError(res, json, 'Failed to delete email template');
   }
 }
 
@@ -301,7 +301,7 @@ export async function deleteEmailTemplate(id: string): Promise<void> {
 export async function testSendEmailTemplate(id: string): Promise<{ status: string; to: string }> {
   const res = await apiFetch(`/api/workflows/email-templates/${id}/test-send`, { method: 'POST' });
   const json = await parseJsonSafe(res);
-  if (!res.ok) throw new Error(json.error?.message || 'Failed to send test email');
+  if (!res.ok) throw apiError(res, json, 'Failed to send test email');
   return json.data as { status: string; to: string };
 }
 
@@ -356,7 +356,7 @@ export interface WorkflowSchema {
 export async function getWorkflowSchema(): Promise<WorkflowSchema> {
   const res = await apiFetch('/api/workflows/schema');
   const json = await parseJsonSafe(res);
-  if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch schema');
+  if (!res.ok) throw apiError(res, json, 'Failed to fetch schema');
   return json.data as WorkflowSchema;
 }
 
@@ -479,7 +479,7 @@ export interface FieldItem {
 export async function getSchemaObjects(): Promise<ObjectItem[]> {
   const res = await apiFetch('/api/workflows/schema/objects?permission=read');
   const json = await parseJsonSafe(res);
-  if (!res.ok) throw new Error(json.error?.message || 'Failed to fetch objects');
+  if (!res.ok) throw apiError(res, json, 'Failed to fetch objects');
   return json.data as ObjectItem[];
 }
 

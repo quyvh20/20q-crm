@@ -1,20 +1,13 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { ArrowLeft, Check, Minus, Lock, AlertTriangle, Users, Pencil } from 'lucide-react';
-import {
-  getRoleAccess,
-  getRolesCatalog,
-  setRoleCapabilities,
-  updateRole,
-  ALL_CAPABILITIES,
-  CAPABILITY_LABELS,
-  type RoleAccess,
-  type CapabilityInfo,
-  type DataScope,
-} from '../../lib/api';
+import { ALL_CAPABILITIES, CAPABILITY_LABELS, type DataScope } from '../../lib/api';
+import { useRoleAccess, useRolesCatalog, useSetRoleCapabilities, useUpdateRole } from '../../features/settings/queries';
 import { useAuth } from '../../lib/auth';
 import { prettyRole, SENSITIVE_CAPABILITIES } from '../../lib/roles';
+import { useDocumentTitle } from '../../lib/useDocumentTitle';
 import { useConfirm } from '../../components/common/ConfirmDialog';
+import HelpTip from '../../components/common/HelpTip';
 
 // Row scope in plain words (U6). 'team' is the third value: a team IS a user
 // group, so a team-scoped member sees the records owned by everyone they share
@@ -38,41 +31,29 @@ const SCOPE_HELP: Record<DataScope, string> = {
 // shows all-off, so the default of no access is visible, not implied) and field
 // restrictions joined to display labels, answering "what would Jane actually
 // see?" without a test account.
+//
+// Reads through react-query (U7.3): the page shares the roles cache with
+// RolesManager, and every save invalidates BOTH this role's access payload and
+// the roles list — so a rename here shows in the list, and an object grant saved
+// on the OLS grid refreshes the effective-access table below.
 export default function RoleDetailSection() {
   const { id = '' } = useParams();
   const { hasCapability } = useAuth();
-  const [data, setData] = useState<RoleAccess | null>(null);
-  const [catalog, setCatalog] = useState<CapabilityInfo[]>([]);
-  const [groups, setGroups] = useState<string[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
   const [saveError, setSaveError] = useState('');
-  const [busy, setBusy] = useState(false);
   // Edit-in-place for a custom role's name/description (built-ins stay fixed).
   const [editingIdentity, setEditingIdentity] = useState(false);
   const [editName, setEditName] = useState('');
   const [editDesc, setEditDesc] = useState('');
   const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const [access, cat] = await Promise.all([
-        getRoleAccess(id),
-        getRolesCatalog().catch(() => ({ capabilities: [], groups: [] })),
-      ]);
-      setData(access);
-      setCatalog(cat.capabilities);
-      setGroups(cat.groups);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load role');
-    } finally {
-      setLoading(false);
-    }
-  }, [id]);
+  const { data, isLoading, error: loadError } = useRoleAccess(id);
+  const { data: rolesCatalog } = useRolesCatalog();
+  const catalog = useMemo(() => rolesCatalog?.capabilities ?? [], [rolesCatalog]);
+  const groups = useMemo(() => rolesCatalog?.groups ?? [], [rolesCatalog]);
 
-  useEffect(() => { load(); }, [load]);
+  const capsMut = useSetRoleCapabilities();
+  const updateMut = useUpdateRole();
+  const busy = capsMut.isPending || updateMut.isPending;
 
   // Capabilities grouped for display; falls back to one flat group when the
   // catalog endpoint is unavailable.
@@ -86,6 +67,14 @@ export default function RoleDetailSection() {
   }, [catalog, groups]);
 
   const role = data?.role;
+
+  // /settings/roles/:id isn't a SETTINGS_SECTIONS entry, so SettingsLayout leaves
+  // the tab title to us (U7.2). Titled from the LOADED role name — never from
+  // `editName`, the bound rename input, which would retitle the tab on every
+  // keystroke. Null until it loads: the hook then shows the bare app name rather
+  // than "undefined".
+  useDocumentTitle(role?.name ? `${prettyRole(role.name)} · Roles · Settings` : null);
+
   // Layout routing per object, for the Layout column ("Default" when unset).
   const layoutBySlug = useMemo(() => {
     const m = new Map<string, string>();
@@ -93,7 +82,7 @@ export default function RoleDetailSection() {
     return m;
   }, [data]);
 
-  const zeroRead = !!role && !role.is_owner && data!.objects.length > 0 && data!.objects.every((o) => !o.read);
+  const zeroRead = !!role && !role.is_owner && !!data && data.objects.length > 0 && data.objects.every((o) => !o.read);
 
   const toggleCapability = async (cap: string) => {
     if (!role || role.is_system) return;
@@ -110,16 +99,11 @@ export default function RoleDetailSection() {
       }))) return;
     }
     const next = has ? role.capabilities.filter((c) => c !== cap) : [...role.capabilities, cap];
-    setBusy(true);
     setSaveError('');
-    try {
-      await setRoleCapabilities(role.id, next);
-      setData((d) => (d ? { ...d, role: { ...d.role, capabilities: next } } : d));
-    } catch (e) {
-      setSaveError(e instanceof Error ? e.message : 'Failed to save capability');
-    } finally {
-      setBusy(false);
-    }
+    capsMut.mutate(
+      { id: role.id, capabilities: next },
+      { onError: (e) => setSaveError(e instanceof Error ? e.message : 'Failed to save capability') },
+    );
   };
 
   const startEditIdentity = () => {
@@ -129,46 +113,41 @@ export default function RoleDetailSection() {
     setEditingIdentity(true);
   };
 
-  const saveIdentity = async () => {
+  const saveIdentity = () => {
     if (!role || !editName.trim()) return;
-    const name = editName.trim();
-    const description = editDesc.trim();
-    setBusy(true);
     setSaveError('');
-    try {
-      await updateRole(role.id, { name, description });
-      setData((d) => (d ? { ...d, role: { ...d.role, name, description } } : d));
-      setEditingIdentity(false);
-    } catch (e) {
-      setSaveError(e instanceof Error ? e.message : 'Failed to rename role');
-    } finally {
-      setBusy(false);
-    }
+    updateMut.mutate(
+      {
+        id: role.id,
+        patch: { name: editName.trim(), description: editDesc.trim() },
+      },
+      {
+        onSuccess: () => setEditingIdentity(false),
+        onError: (e) => setSaveError(e instanceof Error ? e.message : 'Failed to rename role'),
+      },
+    );
   };
 
-  const changeScope = async (scope: DataScope) => {
+  const changeScope = (scope: DataScope) => {
     if (!role || role.is_system) return;
-    setBusy(true);
     setSaveError('');
-    try {
-      await updateRole(role.id, { data_scope: scope });
-      setData((d) => (d ? { ...d, role: { ...d.role, data_scope: scope } } : d));
-    } catch (e) {
-      setSaveError(e instanceof Error ? e.message : 'Failed to change data access');
-    } finally {
-      setBusy(false);
-    }
+    updateMut.mutate(
+      { id: role.id, patch: { data_scope: scope } },
+      { onError: (e) => setSaveError(e instanceof Error ? e.message : 'Failed to change data access') },
+    );
   };
 
-  if (loading) return <div className="text-sm text-muted-foreground py-8">Loading role…</div>;
+  if (isLoading) return <div className="text-sm text-muted-foreground py-8">Loading role…</div>;
 
-  if (error || !role) {
+  if (loadError || !role || !data) {
     return (
       <div className="space-y-3">
         <Link to="/settings/roles" className="inline-flex items-center gap-1.5 text-sm text-blue-600 hover:underline">
           <ArrowLeft className="w-4 h-4" /> All roles
         </Link>
-        <div className="bg-red-50 text-red-700 text-sm rounded-md px-3 py-2">{error || 'Role not found.'}</div>
+        <div className="bg-red-50 text-red-700 text-sm rounded-md px-3 py-2">
+          {loadError instanceof Error ? loadError.message : 'Role not found.'}
+        </div>
       </div>
     );
   }
@@ -219,6 +198,22 @@ export default function RoleDetailSection() {
           <>
             <div className="mt-2 flex items-center gap-2 flex-wrap">
               <h2 className="text-lg font-semibold">{prettyRole(role.name)}</h2>
+              {/* The four layers on this page look independent but multiply
+                  together, and nothing said so (U7.5). Plain words on purpose — an
+                  earlier phase deliberately took the jargon out of this screen. */}
+              <HelpTip label="How the permission settings on this page fit together" title="How these settings fit together">
+                <p>Four things decide what someone with this role actually sees:</p>
+                <ul className="ml-4 list-disc space-y-1">
+                  <li><span className="font-medium text-foreground">What they can manage</span> — actions like inviting people or editing workflows.</li>
+                  <li><span className="font-medium text-foreground">Which objects</span> — can they open contacts? deals? properties?</li>
+                  <li><span className="font-medium text-foreground">Which fields</span> — some fields inside an object can be hidden or read-only.</li>
+                  <li><span className="font-medium text-foreground">Which records</span> — only the ones they own, their teams', or all of them.</li>
+                </ul>
+                <p>
+                  All four have to line up. Someone can have full access to contacts and still see an empty page if
+                  no contacts are theirs — and a field they can't see stays hidden even on a record they own.
+                </p>
+              </HelpTip>
               {!role.is_system && (
                 <button
                   onClick={startEditIdentity}
@@ -346,7 +341,7 @@ export default function RoleDetailSection() {
               </tr>
             </thead>
             <tbody>
-              {data!.objects.map((o) => (
+              {data.objects.map((o) => (
                 <tr key={o.slug} className="border-t">
                   <td className="px-3 py-2 whitespace-nowrap">
                     <span className="mr-1.5">{o.icon}</span>{o.label}

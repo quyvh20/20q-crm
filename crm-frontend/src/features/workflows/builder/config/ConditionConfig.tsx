@@ -425,9 +425,13 @@ export const ConditionConfig: React.FC = () => {
                       entities={[objectSlug]}
                     />
                   </div>
+                  {/* focus-visible: the hover-only reveal left this button
+                      invisible (but focusable) for keyboard users (U7 a11y). */}
                   <button
                     onClick={() => removeRule(idx)}
-                    className="mt-0.5 w-7 h-7 rounded-full flex items-center justify-center text-muted-foreground/70 hover:text-destructive hover:bg-destructive/10 transition-colors opacity-0 group-hover/rule:opacity-100"
+                    aria-label={`Remove condition ${idx + 1}`}
+                    title="Remove condition"
+                    className="mt-0.5 w-7 h-7 rounded-full flex items-center justify-center text-muted-foreground/70 hover:text-destructive hover:bg-destructive/10 transition-colors opacity-0 group-hover/rule:opacity-100 focus-visible:opacity-100"
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>

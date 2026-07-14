@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { inviteMember, getRoleOptions, type RoleOption } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { prettyRole } from '../../lib/roles';
+import Modal from '../common/Modal';
 
 interface Props {
   onClose: () => void;
@@ -61,13 +62,16 @@ export default function InviteMemberModal({ onClose, onInvited }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-card border border-border rounded-2xl shadow-2xl w-full max-w-md p-6 mx-4">
-        <h2 className="text-lg font-semibold text-foreground mb-4">
-          {successLink ? 'Invite Sent' : 'Invite Team Member'}
-        </h2>
-
+    // Shared Radix modal (U7): Escape, focus trap/restore and aria for free.
+    // Dismissal is blocked while the invite is being sent.
+    <Modal
+      open
+      onClose={onClose}
+      title={successLink ? 'Invite Sent' : 'Invite Team Member'}
+      size="md"
+      dismissable={!loading}
+    >
+      <>
         {error && (
           <div className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
             {error}
@@ -171,7 +175,7 @@ export default function InviteMemberModal({ onClose, onInvited }: Props) {
             </div>
           </form>
         )}
-      </div>
-    </div>
+      </>
+    </Modal>
   );
 }

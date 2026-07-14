@@ -1,32 +1,42 @@
 import React, { useEffect, useState } from "react";
-import { NavLink, Link, useLocation } from "react-router-dom";
-import { Menu, X, UserRound, Shield, LogOut } from "lucide-react";
+import { NavLink, Link, useLocation, useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { Menu, X, UserRound, Shield, LogOut, ListChecks, BookOpen } from "lucide-react";
 import { useAuth } from "./lib/auth";
 import { getThemePreference, setThemePreference, type ThemePreference } from "./lib/theme";
 import GlobalSearch from "./components/common/GlobalSearch";
 import AIUsageWidget from "./components/settings/AIUsageWidget";
-import WelcomeModal from "./components/onboarding/WelcomeModal";
 import WorkspaceSwitcher from "./components/common/WorkspaceSwitcher";
 import NotificationBell from "./features/notifications/NotificationBell";
 import { useNotificationStream } from "./features/notifications/useNotificationStream";
-import { getObjectDefs, getFieldDefs, resendVerification, updateProfile, type CustomObjectDef } from "./lib/api";
+import { openSetupChecklist } from "./features/onboarding/checklistState";
+import { getObjectDefs, resendVerification, type CustomObjectDef } from "./lib/api";
+import { DOCS_ENABLED, DOCS_IS_EXTERNAL, DOCS_URL } from "./lib/docs";
+import { DocumentTitle } from "./lib/useDocumentTitle";
 
 interface AppLayoutProps {
   children?: React.ReactNode;
+  /**
+   * Tab title for this route (U7.2) — set from App.tsx for the STATIC pages.
+   * Omitted on purpose for pages that own a DYNAMIC title (a deal, a record, a
+   * workflow, a report): they call useDocumentTitle themselves with their loaded
+   * name. Hence <DocumentTitle> below is rendered only when a title is actually
+   * passed — a hook here would run unconditionally and, because a parent's effect
+   * fires after its children's, would overwrite the name the page just set.
+   */
+  title?: string;
 }
 
-export default function AppLayout({ children }: AppLayoutProps) {
-  const { user, logout, activeWorkspace, hasCapability, permsLoaded, setUserProfile } = useAuth();
+export default function AppLayout({ children, title }: AppLayoutProps) {
+  const { user, logout, activeWorkspace, hasCapability, canAccessObject } = useAuth();
   // App-global SSE listener for the header bell — keeps the unread badge + inbox
   // live while signed in (A6.2). No-op until a user is present.
   useNotificationStream(!!user);
-  const [customObjects, setCustomObjects] = useState<CustomObjectDef[]>([]);
-  const [showWelcome, setShowWelcome] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [theme, setTheme] = useState<ThemePreference>(() => getThemePreference());
   const location = useLocation();
+  const navigate = useNavigate();
 
   // Close the mobile drawer + user menu on navigation.
   useEffect(() => { setMobileNavOpen(false); setUserMenuOpen(false); }, [location.pathname]);
@@ -54,43 +64,29 @@ export default function AppLayout({ children }: AppLayoutProps) {
     }
   };
 
-  const [fieldsCount, setFieldsCount] = useState<number | null>(null);
+  // The sidebar's custom-object list. React Query (not a one-shot useEffect) so
+  // deploying a starter template can invalidate ['object-defs'] and have the new
+  // object appear in the nav — the retired welcome wizard did that with a full
+  // window.location.reload() (U7.5). A failure resolves to [] rather than erroring:
+  // a custom-object fetch must never take the whole app shell down.
+  const { data: customObjects = [] } = useQuery<CustomObjectDef[]>({
+    queryKey: ['object-defs'],
+    queryFn: () => getObjectDefs().catch(() => []),
+  });
 
-  useEffect(() => {
-    Promise.all([
-      getObjectDefs().catch(() => []),
-      getFieldDefs().catch(() => [])
-    ])
-      .then(([objects, fields]) => {
-        setCustomObjects(objects);
-        setFieldsCount(fields.length);
-      })
-      .finally(() => setIsLoading(false));
-  }, []);
+  // "Setup guide" in the account menu is what makes the checklist RETURNABLE — the
+  // wizard it replaced could never be reopened. Shown only to someone who has at
+  // least one step they're allowed to do, so it's never a dead entry.
+  const hasSetupSteps =
+    hasCapability('members.invite') ||
+    hasCapability('roles.manage') ||
+    hasCapability('pipeline.manage') ||
+    canAccessObject('contact', 'create');
 
-  // Welcome wizard (U2): only for members who can actually create objects
-  // (a viewer used to get a template-deploy wizard whose every call 403'd),
-  // and keyed off the SERVER flag so it follows the user across devices. The
-  // old localStorage key is honored as a legacy suppressor.
-  useEffect(() => {
-    if (isLoading || !permsLoaded || !user || fieldsCount === null) return;
-    const legacyDone = localStorage.getItem('onboarding_completed') === 'true';
-    setShowWelcome(
-      customObjects.length === 0 &&
-      fieldsCount === 0 &&
-      !user.onboarding_completed &&
-      !legacyDone &&
-      hasCapability('objects.manage')
-    );
-  }, [isLoading, permsLoaded, user, customObjects, fieldsCount, hasCapability]);
-
-  const completeOnboarding = () => {
-    setShowWelcome(false);
-    // Return the promise so WelcomeModal awaits it before reloading — otherwise
-    // the reload cancels this PATCH and the server flag never sticks.
-    return updateProfile({ onboarding_completed: true })
-      .then(() => setUserProfile({ onboarding_completed: true }))
-      .catch(() => { /* best-effort — the legacy localStorage key still suppresses */ });
+  const openSetupGuide = () => {
+    setUserMenuOpen(false);
+    openSetupChecklist();
+    navigate('/');
   };
 
   // Client-side NavLinks with real active state (the old sidebar used raw <a>
@@ -156,6 +152,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
 
   return (
     <div className="flex h-screen w-full bg-background overflow-hidden">
+      {title && <DocumentTitle title={title} />}
       <aside className="w-64 border-r bg-card text-card-foreground hidden md:flex flex-col">
         {sidebarContent}
       </aside>
@@ -241,6 +238,29 @@ export default function AppLayout({ children }: AppLayoutProps) {
                         <Link to="/settings/security" onClick={() => setUserMenuOpen(false)} className="flex items-center gap-2 px-4 py-2 text-sm text-foreground hover:bg-accent">
                           <Shield className="w-4 h-4 text-muted-foreground" /> Security
                         </Link>
+                        {hasSetupSteps && (
+                          <button
+                            onClick={openSetupGuide}
+                            className="w-full flex items-center gap-2 px-4 py-2 text-sm text-foreground hover:bg-accent text-left"
+                          >
+                            <ListChecks className="w-4 h-4 text-muted-foreground" /> Setup guide
+                          </button>
+                        )}
+                        {/* Help & docs (U7.5): the product had no route to
+                            documentation or support at all. The destination is
+                            operator-configured (VITE_DOCS_URL) and the entry is
+                            omitted entirely when it isn't set — an entry that
+                            opens a 404 is worse than no entry. */}
+                        {DOCS_ENABLED && (
+                          <a
+                            href={DOCS_URL}
+                            onClick={() => setUserMenuOpen(false)}
+                            {...(DOCS_IS_EXTERNAL ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
+                            className="flex items-center gap-2 px-4 py-2 text-sm text-foreground hover:bg-accent"
+                          >
+                            <BookOpen className="w-4 h-4 text-muted-foreground" /> Help &amp; docs
+                          </a>
+                        )}
                       </div>
                       <div className="px-4 py-2.5 border-t border-border">
                         <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">Theme</p>
@@ -302,9 +322,6 @@ export default function AppLayout({ children }: AppLayoutProps) {
           )}
         </main>
       </div>
-      {showWelcome && !isLoading && (
-        <WelcomeModal onComplete={completeOnboarding} />
-      )}
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { composeEmail } from '../../lib/api';
+import Modal from '../common/Modal';
 
 interface EmailComposerProps {
   contactId?: string;
@@ -54,21 +55,20 @@ export default function EmailComposer({ contactId, dealId, contactName, onClose 
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in duration-200 p-4">
-      <div className="bg-card w-full max-w-3xl rounded-2xl shadow-xl overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
-        <div className="p-6 border-b bg-muted/10">
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-10 shrink-0 bg-blue-600/10 text-blue-600 rounded-xl flex items-center justify-center">
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
-            </div>
-            <div>
-              <h2 className="text-lg font-bold">AI Email Composer</h2>
-              {contactName && <p className="text-sm text-muted-foreground">Drafting for {contactName}</p>}
-            </div>
-          </div>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+    // Shared Radix modal (U7): Escape, focus trap/restore and aria for free.
+    // Dismissal is blocked while a draft is streaming — Escape mid-stream would
+    // orphan the SSE connection.
+    <Modal
+      open
+      onClose={onClose}
+      title="AI Email Composer"
+      description={contactName ? `Drafting for ${contactName}` : undefined}
+      size="3xl"
+      padded={false}
+      dismissable={!isGenerating}
+    >
+      <>
+        <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* Left: Inputs */}
           <div className="space-y-4">
             <div className="space-y-1.5">
@@ -154,7 +154,7 @@ export default function EmailComposer({ contactId, dealId, contactName, onClose 
             Close
           </button>
         </div>
-      </div>
-    </div>
+      </>
+    </Modal>
   );
 }

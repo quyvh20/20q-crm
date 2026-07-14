@@ -1,5 +1,6 @@
 import { ShieldAlert } from 'lucide-react';
 import { useAuth } from '../lib/auth';
+import { useDocumentTitle } from '../lib/useDocumentTitle';
 import TwoFactorSetup from '../components/settings/TwoFactorSetup';
 
 // The forced-enrollment dead-end (U6.4). A workspace can require 2FA of everyone;
@@ -14,6 +15,7 @@ import TwoFactorSetup from '../components/settings/TwoFactorSetup';
 // access token in memory still carries the "2fa pending" claim, and only a fresh
 // page load (→ refresh from the cookie) mints one without it.
 export default function EnrollTwoFactorPage() {
+  useDocumentTitle('Set Up Two-Factor Authentication');
   const { user, logout } = useAuth();
 
   return (

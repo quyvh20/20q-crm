@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { createContact, updateContact, type Contact } from '../../lib/api';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import DynamicCustomFields from '../common/DynamicCustomFields';
+import Modal from '../common/Modal';
 import VoiceUploader from '../voice/VoiceUploader';
 import VoiceLibrary from '../voice/VoiceLibrary';
 
@@ -95,24 +96,18 @@ export default function ContactForm({ contact, onClose }: ContactFormProps) {
   const error = createMutation.error || updateMutation.error;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-end">
-      {/* Backdrop */}
-      <div className="fixed inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
-
-      {/* Panel */}
-      <div className="relative w-full max-w-lg h-full bg-card border-l shadow-2xl overflow-y-auto animate-in slide-in-from-right duration-300">
-        <div className="sticky top-0 bg-card border-b z-10 px-6 py-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold">
-            {isEditing ? 'Edit Contact' : 'New Contact'}
-          </h2>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-          </button>
-        </div>
-
+    // A drawer is a modal dialog too (U7): same Escape / focus-trap / focus-restore
+    // rules. The shared Modal renders the panel, its sticky header and the close X.
+    <Modal
+      open
+      onClose={onClose}
+      title={isEditing ? 'Edit Contact' : 'New Contact'}
+      variant="drawer"
+      size="lg"
+      padded={false}
+      dismissable={!createMutation.isPending && !updateMutation.isPending}
+    >
+      <>
         {/* Tabs — only shown for existing contacts */}
         {isEditing && (
           <div className="flex border-b px-6">
@@ -268,7 +263,7 @@ export default function ContactForm({ contact, onClose }: ContactFormProps) {
             </div>
           </div>
         )}
-      </div>
-    </div>
+      </>
+    </Modal>
   );
 }

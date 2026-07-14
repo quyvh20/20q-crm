@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from '../lib/auth';
 import { getWorkspaces, type Workspace } from '../lib/api';
+import { useDocumentTitle } from '../lib/useDocumentTitle';
 import { Building2, Users, Check, Star, Loader2, LogOut, Ban, AlertTriangle, Plus } from 'lucide-react';
 
 /**
@@ -15,6 +16,7 @@ import { Building2, Users, Check, Star, Loader2, LogOut, Ban, AlertTriangle, Plu
  * bounced them here off an org they just lost.
  */
 export default function ChooseWorkspacePage() {
+  useDocumentTitle('Choose Workspace');
   const { workspaces, switchWorkspace, defaultOrgId, logout, createWorkspace } = useAuth();
   const [makeDefault, setMakeDefault] = useState(true);
   const [busyOrg, setBusyOrg] = useState<string | null>(null);

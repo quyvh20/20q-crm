@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { setAccessToken } from '../lib/api';
+import { useDocumentTitle } from '../lib/useDocumentTitle';
 
 const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8080' : '');
 
@@ -22,6 +23,7 @@ const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://l
  * 403s with `two_factor_required`, and apiFetch parks them on the enrollment page.
  */
 export default function AuthCallbackPage() {
+  useDocumentTitle('Signing In');
   const [searchParams] = useSearchParams();
   const processed = useRef(false);
   const [status, setStatus] = useState('Completing sign in...');

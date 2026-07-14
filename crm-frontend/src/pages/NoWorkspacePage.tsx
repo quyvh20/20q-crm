@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useAuth } from '../lib/auth';
 import { getMyInvitations, type IncomingInvitation } from '../lib/api';
 import { prettyRole } from '../lib/roles';
+import { useDocumentTitle } from '../lib/useDocumentTitle';
 import { Inbox, LogOut, Loader2, ArrowRight, Building2 } from 'lucide-react';
 
 /**
@@ -15,6 +16,7 @@ import { Inbox, LogOut, Loader2, ArrowRight, Building2 } from 'lucide-react';
  * path. Accepting joins that workspace and lands them in it.
  */
 export default function NoWorkspacePage() {
+  useDocumentTitle('No Workspace');
   const { user, logout, createWorkspace, acceptMyInvitation } = useAuth();
 
   // Pending invitations addressed to this user's email (U4 item 6).

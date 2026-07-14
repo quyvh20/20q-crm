@@ -4,6 +4,7 @@ import { getWorkflowRuns, getRunDetail, getWorkflow, retryRun } from './api';
 import type { WorkflowRun, ActionLog, Workflow } from './types';
 import { STATUS_COLORS, ACTION_LABELS } from './types';
 import { useAuth } from '../../lib/auth';
+import { useDocumentTitle } from '../../lib/useDocumentTitle';
 import { canRunWorkflowNow } from './RunNowModal';
 
 export const RunHistory: React.FC = () => {
@@ -28,6 +29,10 @@ export const RunHistory: React.FC = () => {
   // The failed run currently being re-queued (P21) — disables its button while in flight.
   const [retryingRunId, setRetryingRunId] = useState<string | null>(null);
   const [retryError, setRetryError] = useState<string | null>(null);
+
+  // Tab title from the loaded workflow (U7.2), matching the page heading. Null
+  // until it lands ⇒ the bare app name rather than "undefined".
+  useDocumentTitle(workflow?.name ? `Run History · ${workflow.name}` : null);
 
   // Full fetch — shows the loading spinner (used on initial mount + page changes).
   const fetchRuns = useCallback(async () => {

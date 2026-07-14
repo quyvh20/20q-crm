@@ -8,6 +8,7 @@ import {
 } from '../../lib/api';
 import { useReportPreview, isRunnableConfig } from './useReportPreview';
 import { usePermissions } from '../../lib/auth';
+import { useDocumentTitle } from '../../lib/useDocumentTitle';
 import { REPORT_TEMPLATES } from './templates';
 import ReportChart from './charts/ReportChart';
 import FilterEditor from './builder/FilterEditor';
@@ -58,6 +59,11 @@ export default function ReportBuilderPage() {
     queryFn: () => getReport(id!),
     enabled: Boolean(id),
   });
+
+  // Tab title from the SAVED report (U7.2) — `existing.name` from react-query,
+  // never the `name` useState above, which is bound to the name input and would
+  // retitle the tab on every keystroke while the report is being named.
+  useDocumentTitle(id ? existing?.name : 'New Report');
 
   // Populate once from the saved definition (not on every refetch).
   useEffect(() => {

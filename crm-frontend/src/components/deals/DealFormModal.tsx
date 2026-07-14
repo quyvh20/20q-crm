@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createDeal, getContacts, getCompanies, type PipelineStage, type Contact, type Company } from '../../lib/api';
 import DynamicCustomFields from '../common/DynamicCustomFields';
+import Modal from '../common/Modal';
 
 interface DealFormModalProps {
   isOpen: boolean;
@@ -69,15 +70,21 @@ export default function DealFormModal({ isOpen, onClose, stages, defaultStageId 
     });
   };
 
-  if (!isOpen) return null;
+  const close = () => { resetForm(); onClose(); };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="bg-card w-full max-w-lg rounded-2xl shadow-xl overflow-hidden animate-in zoom-in-95 duration-200">
+    // Shared Radix modal (U7): Escape, focus trap + restore and aria come with it.
+    // Dismissal is blocked mid-create so a stray Escape can't orphan the request.
+    <Modal
+      open={isOpen}
+      onClose={close}
+      title="New Deal"
+      size="lg"
+      padded={false}
+      dismissable={!mutation.isPending}
+    >
         <form onSubmit={handleSubmit}>
-          <div className="p-6">
-            <h3 className="text-lg font-semibold mb-4">New Deal</h3>
-
+          <div className="px-6 pb-6">
             <div className="space-y-4">
               {/* Title */}
               <div>
@@ -186,7 +193,7 @@ export default function DealFormModal({ isOpen, onClose, stages, defaultStageId 
           <div className="px-6 py-4 bg-muted/30 flex justify-end gap-3 border-t">
             <button
               type="button"
-              onClick={() => { resetForm(); onClose(); }}
+              onClick={close}
               className="px-4 py-2 text-sm font-medium rounded-lg hover:bg-muted transition-colors"
             >
               Cancel
@@ -201,7 +208,6 @@ export default function DealFormModal({ isOpen, onClose, stages, defaultStageId 
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </Modal>
   );
 }

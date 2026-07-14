@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 // Mock the API so the grid is exercised without a backend. This is the admin
 // surface that configures the OLS RecordService enforces (P5a).
@@ -11,10 +12,10 @@ vi.mock('../../../lib/api', () => ({
   CAPABILITY_LABELS: {},
 }));
 
-import { getPermissionGrid, setObjectPermission } from '../../../lib/api';
+import { getPermissionGrid, setObjectPermission, type PermissionGrid } from '../../../lib/api';
 import PermissionsManager from '../PermissionsManager';
 
-const GRID = {
+const GRID: PermissionGrid = {
   roles: [
     { id: 'r-owner', name: 'owner', is_system: true, is_owner: true },
     { id: 'r-sales', name: 'sales_rep', is_system: true, is_owner: false },
@@ -28,20 +29,45 @@ const GRID = {
   ],
 };
 
-// The component reads/writes ?role= via useSearchParams, so it needs a router.
-const renderPage = () =>
-  render(
-    <MemoryRouter initialEntries={['/settings/object-access']}>
-      <PermissionsManager />
-    </MemoryRouter>,
+// A stand-in for the server's copy of the grid. The screen is react-query-backed
+// (U7.3): a toggle no longer patches a local matrix, it saves and RE-READS — so the
+// fake server has to actually apply the writes for the UI assertions to mean
+// anything (and so a concurrent change can be staged mid-test).
+let server: PermissionGrid;
+
+// The component reads/writes ?role= via useSearchParams (router) and reads the grid
+// through react-query (QueryClientProvider).
+const renderPage = (initialEntry = '/settings/object-access', extra?: React.ReactNode) => {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <PermissionsManager />
+        {extra}
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
+};
 
 beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
   localStorage.clear(); // zero-access dismissals persist per browser
-  vi.mocked(getPermissionGrid).mockResolvedValue(structuredClone(GRID));
-  vi.mocked(setObjectPermission).mockResolvedValue(undefined);
+  server = structuredClone(GRID);
+  vi.mocked(getPermissionGrid).mockImplementation(async () => structuredClone(server));
+  vi.mocked(setObjectPermission).mockImplementation(async (input) => {
+    server.matrix = [
+      ...server.matrix.filter((c) => !(c.role_id === input.role_id && c.object_slug === input.object_slug)),
+      {
+        role_id: input.role_id,
+        object_slug: input.object_slug,
+        read: input.can_read,
+        create: input.can_create,
+        edit: input.can_edit,
+        delete: input.can_delete,
+      },
+    ];
+  });
 });
 
 describe('PermissionsManager — role × object grid', () => {
@@ -103,11 +129,7 @@ describe('PermissionsManager — role × object grid', () => {
   });
 
   it('deep link ?role= preselects that role tab', async () => {
-    render(
-      <MemoryRouter initialEntries={['/settings/object-access?role=r-owner']}>
-        <PermissionsManager />
-      </MemoryRouter>,
-    );
+    renderPage('/settings/object-access?role=r-owner');
     await screen.findByText('Deal');
 
     // The preselect runs in an effect after the grid lands — wait for it.
@@ -120,12 +142,7 @@ describe('PermissionsManager — role × object grid', () => {
     // Probe the router state so the deep-link write is observable.
     const LocationProbe = () => <div data-testid="location-search">{useLocation().search}</div>;
     // Start on the owner tab so the jump actually changes the selection.
-    render(
-      <MemoryRouter initialEntries={['/settings/object-access?role=r-owner']}>
-        <PermissionsManager />
-        <LocationProbe />
-      </MemoryRouter>,
-    );
+    renderPage('/settings/object-access?role=r-owner', <LocationProbe />);
     await screen.findByText('Deal');
     await waitFor(() =>
       expect(screen.getByRole('tab', { name: /Owner/ })).toHaveAttribute('aria-selected', 'true'),
@@ -135,5 +152,32 @@ describe('PermissionsManager — role × object grid', () => {
 
     expect(screen.getByRole('tab', { name: 'Sales Rep' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByTestId('location-search').textContent).toContain('role=r-sales');
+  });
+
+  // The U7.3 fix: the grid is server state. A save re-reads it, so a change another
+  // admin made in the meantime becomes visible instead of being silently clobbered
+  // by the next local write. Before this, the toggle patched a local matrix that
+  // was never re-read.
+  it('re-reads the grid after a save, surfacing a concurrent admin\'s change', async () => {
+    renderPage();
+    await screen.findByLabelText('Sales Rep Read Project');
+
+    // Another admin grants sales_rep read on Project while this page is open.
+    server.matrix = [
+      ...server.matrix,
+      { role_id: 'r-sales', object_slug: 'project', read: true, create: false, edit: false, delete: false },
+    ];
+
+    // This admin toggles an unrelated cell (Delete on Deal).
+    fireEvent.click(screen.getByLabelText('Sales Rep Delete Deal'));
+
+    await waitFor(() => expect(setObjectPermission).toHaveBeenCalledTimes(1));
+    // Both changes are now on screen: the save landed AND the re-read picked up the
+    // other admin's grant, rather than the stale local matrix overwriting it.
+    await waitFor(() =>
+      expect((screen.getByLabelText('Sales Rep Read Project') as HTMLInputElement).checked).toBe(true),
+    );
+    expect((screen.getByLabelText('Sales Rep Delete Deal') as HTMLInputElement).checked).toBe(true);
+    expect(getPermissionGrid).toHaveBeenCalledTimes(2); // initial load + post-save re-read
   });
 });

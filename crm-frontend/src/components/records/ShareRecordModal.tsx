@@ -8,6 +8,7 @@ import {
 } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { prettyRole } from '../../lib/roles';
+import Modal from '../common/Modal';
 
 // ShareRecordModal grants ONE record to a user, role or group at view/edit (U6)
 // — record sharing at parity with report sharing (ReportShareDialog), minus the
@@ -120,16 +121,17 @@ export default function ShareRecordModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
-      <div className="w-full max-w-lg rounded-2xl border bg-card p-5 text-card-foreground shadow-xl" onClick={(e) => e.stopPropagation()}>
-        <div className="mb-1 flex items-center justify-between gap-3">
-          <h2 className="truncate text-lg font-semibold">Share “{recordName}”</h2>
-          <button onClick={onClose} className="rounded p-1 text-muted-foreground hover:bg-accent" aria-label="Close">✕</button>
-        </div>
-        <p className="mb-4 text-sm text-muted-foreground">
-          Give specific people, roles or groups access to this record — even when their role only sees their own.
-        </p>
-
+    // Shared Radix modal (U7). The old overlay closed on any outside click and
+    // relied on a stopPropagation on the panel; Radix handles outside-dismissal,
+    // Escape, the focus trap and focus restore instead.
+    <Modal
+      open
+      onClose={onClose}
+      title={`Share “${recordName}”`}
+      description="Give specific people, roles or groups access to this record — even when their role only sees their own."
+      size="lg"
+    >
+      <>
         {error && <div className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</div>}
 
         {/* Add a share */}
@@ -213,7 +215,7 @@ export default function ShareRecordModal({
         <div className="mt-4 flex justify-end">
           <button onClick={onClose} className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-accent">Done</button>
         </div>
-      </div>
-    </div>
+      </>
+    </Modal>
   );
 }

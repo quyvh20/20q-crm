@@ -1,9 +1,21 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
+import { Building2, User } from 'lucide-react';
 import { useAuth } from '../lib/auth';
+import { useDocumentTitle } from '../lib/useDocumentTitle';
+import LegalConsent from '../components/auth/LegalConsent';
 
 const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8080' : '');
 
+// Repo convention is lucide icons, not raw emoji (which render inconsistently
+// across platforms and are announced as "office building" by screen readers).
+const ORG_TYPES = [
+  { value: 'company', label: 'Company', Icon: Building2 },
+  { value: 'personal', label: 'Personal', Icon: User },
+] as const;
+
 export default function RegisterPage() {
+  useDocumentTitle('Create Account');
   const { register } = useAuth();
   const [form, setForm] = useState({
     org_name: '',
@@ -68,8 +80,11 @@ export default function RegisterPage() {
             <div className="flex-1 h-px bg-slate-700"></div>
           </div>
 
+          {/* role="alert" so a failed signup is ANNOUNCED — this banner replaces a
+              plain div that a screen-reader user never heard, leaving them staring
+              at a form that silently refused to submit. */}
           {error && (
-            <div className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
+            <div role="alert" className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
               {error}
             </div>
           )}
@@ -92,33 +107,37 @@ export default function RegisterPage() {
               />
             </div>
 
-            <div>
-              <label htmlFor="reg-orgtype" className="block text-sm font-medium text-slate-300 mb-1.5">
+            {/* Workspace Type is a two-option radio group, not a text field: the
+                old <label htmlFor="reg-orgtype"> pointed at an id that never
+                existed (the controls are <button>s), so a screen reader announced
+                two unlabelled buttons and clicking the label did nothing. A real
+                radiogroup + aria-labelledby names the group and reports which
+                option is selected. */}
+            <div role="radiogroup" aria-labelledby="reg-orgtype-label">
+              <span id="reg-orgtype-label" className="block text-sm font-medium text-slate-300 mb-1.5">
                 Workspace Type
-              </label>
+              </span>
               <div className="grid grid-cols-2 gap-3">
-                <button
-                  type="button"
-                  onClick={() => setForm(f => ({ ...f, org_type: 'company' }))}
-                  className={`px-4 py-3 rounded-xl border text-sm font-medium transition-all ${
-                    form.org_type === 'company'
-                      ? 'border-blue-500 bg-blue-500/10 text-blue-400'
-                      : 'border-slate-700 text-slate-400 hover:border-slate-600'
-                  }`}
-                >
-                  🏢 Company
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setForm(f => ({ ...f, org_type: 'personal' }))}
-                  className={`px-4 py-3 rounded-xl border text-sm font-medium transition-all ${
-                    form.org_type === 'personal'
-                      ? 'border-blue-500 bg-blue-500/10 text-blue-400'
-                      : 'border-slate-700 text-slate-400 hover:border-slate-600'
-                  }`}
-                >
-                  👤 Personal
-                </button>
+                {ORG_TYPES.map(({ value, label, Icon }) => {
+                  const selected = form.org_type === value;
+                  return (
+                    <button
+                      key={value}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      onClick={() => setForm(f => ({ ...f, org_type: value }))}
+                      className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl border text-sm font-medium transition-all ${
+                        selected
+                          ? 'border-blue-500 bg-blue-500/10 text-blue-400'
+                          : 'border-slate-700 text-slate-400 hover:border-slate-600'
+                      }`}
+                    >
+                      <Icon className="w-4 h-4" aria-hidden="true" />
+                      {label}
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
@@ -160,11 +179,16 @@ export default function RegisterPage() {
               <label htmlFor="reg-email" className="block text-sm font-medium text-slate-300 mb-1.5">
                 Email
               </label>
+              {/* autoComplete="username", not "email": this is the account
+                  IDENTIFIER on a credential-creating form, and it's the token a
+                  password manager looks for to bind the new-password below to an
+                  account. With "email" the manager has no username to associate,
+                  so it offers to save a password against nothing. */}
               <input
                 id="reg-email"
                 name="email"
                 type="email"
-                autoComplete="email"
+                autoComplete="username"
                 value={form.email}
                 onChange={handleChange}
                 required
@@ -200,11 +224,18 @@ export default function RegisterPage() {
             </button>
           </form>
 
-          <p className="text-center text-sm text-slate-400 mt-6">
+          {/* Consent (U7.6). Placed below the whole card body because BOTH paths
+              above it create an account — the email form and, for a new Google
+              user, "Continue with Google". */}
+          <LegalConsent className="mt-6" />
+
+          <p className="text-center text-sm text-slate-400 mt-4">
             Already have an account?{' '}
-            <a href="/login" className="text-blue-400 hover:text-blue-300 font-medium transition-colors">
+            {/* <Link>, not <a href>: a raw anchor full-reloads the document and
+                throws away the SPA's in-memory auth state. */}
+            <Link to="/login" className="text-blue-400 hover:text-blue-300 font-medium transition-colors">
               Sign in
-            </a>
+            </Link>
           </p>
         </div>
 

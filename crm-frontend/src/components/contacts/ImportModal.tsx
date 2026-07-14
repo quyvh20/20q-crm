@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { importContacts, type ImportResult } from '../../lib/api';
+import Modal from '../common/Modal';
 
 interface ImportModalProps {
   onClose: () => void;
@@ -56,22 +57,17 @@ export default function ImportModal({ onClose, onSuccess }: ImportModalProps) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* Backdrop */}
-      <div className="fixed inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
-
-      {/* Dialog */}
-      <div className="relative w-full max-w-xl bg-card rounded-2xl border shadow-2xl p-6 mx-4 animate-in zoom-in-95 duration-200">
-        <div className="flex items-center justify-between mb-6">
-          <h2 className="text-lg font-semibold">Import Contacts</h2>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-          </button>
-        </div>
-
+    // Shared Radix modal (U7): the close X, Escape, focus trap/restore and aria
+    // are the primitive's job now. Dismissal is blocked while the upload is in
+    // flight so a stray Escape can't hide a running import.
+    <Modal
+      open
+      onClose={onClose}
+      title="Import Contacts"
+      size="xl"
+      dismissable={!isUploading}
+    >
+      <>
         {!result ? (
           <>
             {/* Dropzone */}
@@ -231,7 +227,7 @@ export default function ImportModal({ onClose, onSuccess }: ImportModalProps) {
             </button>
           </div>
         )}
-      </div>
-    </div>
+      </>
+    </Modal>
   );
 }

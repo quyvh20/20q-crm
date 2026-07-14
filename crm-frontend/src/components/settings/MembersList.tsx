@@ -4,6 +4,7 @@ import { getWorkspaceMembers, updateMemberRole, removeMember, suspendMember, rei
 import { useAuth, usePermissions } from '../../lib/auth';
 import { prettyRole } from '../../lib/roles';
 import { useConfirm } from '../common/ConfirmDialog';
+import Modal from '../common/Modal';
 import MemberDrawer from './MemberDrawer';
 import { ShieldAlert, ShieldCheck, PauseCircle, PlayCircle, UserMinus, Crown, Shield, KeyRound, CheckCircle2, RotateCw, X, HelpCircle, Search, Check } from 'lucide-react';
 
@@ -532,11 +533,15 @@ export default function MembersList() {
         </div>
       )}
 
+      {/* Shared Radix modal (U7): Escape, focus trap/restore and aria for free. */}
       {reassignModalUser && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setReassignModalUser(null)} />
-          <div className="relative bg-card border border-border rounded-2xl shadow-xl w-full max-w-sm p-6">
-            <h3 className="text-lg font-bold text-foreground mb-2">Remove {reassignModalUser.first_name || reassignModalUser.email}</h3>
+        <Modal
+          open
+          onClose={() => setReassignModalUser(null)}
+          title={`Remove ${reassignModalUser.first_name || reassignModalUser.email}`}
+          size="sm"
+        >
+          <>
             <p className="text-sm text-muted-foreground mb-4">
               This member still owns{' '}
               <strong className="text-foreground">
@@ -599,8 +604,8 @@ export default function MembersList() {
                 {removeStrategy === 'transfer' ? 'Transfer & remove' : 'Remove member'}
               </button>
             </div>
-          </div>
-        </div>
+          </>
+        </Modal>
       )}
       {drawerUserId && (
         <MemberDrawer
@@ -612,16 +617,18 @@ export default function MembersList() {
         />
       )}
 
-      {/* Transfer ownership — type-to-confirm (U4). */}
+      {/* Transfer ownership — type-to-confirm (U4). Dismissal is blocked mid-transfer. */}
       {transferTarget && (() => {
         const targetName = transferTarget.full_name || transferTarget.email;
         return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => !transferBusy && setTransferTarget(null)} />
-            <div className="relative bg-card border border-border rounded-2xl shadow-xl w-full max-w-md p-6">
-              <h3 className="text-lg font-bold text-foreground mb-2 flex items-center gap-2">
-                <Crown className="w-5 h-5 text-yellow-500" /> Transfer ownership
-              </h3>
+          <Modal
+            open
+            onClose={() => setTransferTarget(null)}
+            title={<span className="flex items-center gap-2"><Crown className="w-5 h-5 text-yellow-500" /> Transfer ownership</span>}
+            size="md"
+            dismissable={!transferBusy}
+          >
+            <>
               <p className="text-sm text-muted-foreground mb-4">
                 <strong className="text-foreground">{targetName}</strong> will become the workspace <strong>Owner</strong> with full control.
                 You'll be demoted to <strong>Admin</strong>, and only the new owner can transfer it back.
@@ -629,11 +636,12 @@ export default function MembersList() {
               <label className="block text-xs font-medium mb-1.5">
                 Type <strong className="text-foreground">{targetName}</strong> to confirm
               </label>
+              {/* No autoFocus: it lands before Modal captures the element to
+                  restore focus to on close, which breaks the restore. */}
               <input
                 value={transferConfirm}
                 onChange={(e) => setTransferConfirm(e.target.value)}
                 aria-label="Type the new owner's name to confirm"
-                autoFocus
                 className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary mb-4"
               />
               <div className="flex gap-2 justify-end">
@@ -644,8 +652,8 @@ export default function MembersList() {
                   {transferBusy ? 'Transferring…' : 'Transfer ownership'}
                 </button>
               </div>
-            </div>
-          </div>
+            </>
+          </Modal>
         );
       })()}
       {confirmDialogEl}

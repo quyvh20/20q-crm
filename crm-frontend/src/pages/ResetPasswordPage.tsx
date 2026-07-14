@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { resetPassword } from '../lib/api';
 import { useAuth } from '../lib/auth';
+import { useDocumentTitle } from '../lib/useDocumentTitle';
 
 export default function ResetPasswordPage() {
+  useDocumentTitle('Reset Password');
   const [searchParams] = useSearchParams();
   // Capture the token once, then scrub it from the address bar so the raw reset
   // token can't be shoulder-surfed, bookmarked, or leaked via the Referer header

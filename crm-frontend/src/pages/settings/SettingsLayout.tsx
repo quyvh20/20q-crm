@@ -1,5 +1,6 @@
 import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../../lib/auth';
+import { DocumentTitle } from '../../lib/useDocumentTitle';
 import {
   Shield, Users, UsersRound, KeyRound, Boxes, Table2, EyeOff,
   Target, Mail, Brain, ScrollText, MessageSquare, UserRound, Building2, Bell, type LucideIcon,
@@ -108,12 +109,27 @@ export default function SettingsLayout() {
   const { hasCapability, permsLoaded } = useAuth();
   const location = useLocation();
 
+  // One title for all ~14 settings sub-routes (U7.2): the section that owns the
+  // current sub-path names the tab. /settings/roles/:id is the exception — it is
+  // NOT a SETTINGS_SECTIONS entry, and RoleDetailSection titles the tab with the
+  // role's own name. So when the path is nested BELOW a section we render no
+  // title at all and let the child own it: this layout is the child's parent, and
+  // a parent's effect runs after its children's, so setting one here would
+  // overwrite the role name a moment after RoleDetailSection wrote it.
+  const pathParts = location.pathname.replace(/^\/settings\/?/, '').split('/').filter(Boolean);
+  const [segment, ...nested] = pathParts;
+  const activeSection = SETTINGS_SECTIONS.find((s) => s.path === segment && !s.externalTo);
+  const documentTitle =
+    nested.length > 0 ? null : activeSection ? `${activeSection.label} · Settings` : 'Settings';
+  const titleEl = documentTitle ? <DocumentTitle title={documentTitle} /> : null;
+
   // Until the capability fetch settles, hasCapability is false for EVERYTHING —
   // deciding nav or redirecting now would bounce a deep-linked admin off a page
   // they're allowed on. Render the frame with a skeleton instead.
   if (!permsLoaded) {
     return (
       <div className="max-w-6xl mx-auto">
+        {titleEl}
         <div className="mb-6">
           <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
           <p className="text-muted-foreground mt-1">Your account and workspace configuration.</p>
@@ -133,13 +149,14 @@ export default function SettingsLayout() {
 
   // Route guard: a deep link to a section the member can't see redirects to
   // their default section (the server enforces the real gates regardless).
-  const segment = location.pathname.replace(/^\/settings\/?/, '').split('/')[0];
+  // `segment` is destructured from pathParts above.
   if (segment && !sections.some((s) => s.path === segment && !s.externalTo)) {
     return <Navigate to={`/settings/${defaultSectionPath(hasCapability)}`} replace />;
   }
 
   return (
     <div className="max-w-6xl mx-auto">
+      {titleEl}
       <div className="mb-6">
         <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
         <p className="text-muted-foreground mt-1">Your account and workspace configuration.</p>

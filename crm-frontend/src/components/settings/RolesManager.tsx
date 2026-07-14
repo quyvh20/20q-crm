@@ -1,19 +1,18 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Lock, Users, AlertTriangle, ChevronRight } from 'lucide-react';
+import { ALL_CAPABILITIES, type RoleDetail, type DataScope } from '../../lib/api';
 import {
-  getRoles,
-  getRolesCatalog,
-  createRole,
-  duplicateRole,
-  deleteRole,
-  ALL_CAPABILITIES,
-  type RoleDetail,
-  type DataScope,
-} from '../../lib/api';
+  useRoles,
+  useRolesCatalog,
+  useCreateRole,
+  useDuplicateRole,
+  useDeleteRole,
+} from '../../features/settings/queries';
 import { useAuth } from '../../lib/auth';
 import { prettyRole } from '../../lib/roles';
 import { useConfirm } from '../common/ConfirmDialog';
+import Modal from '../common/Modal';
 
 // Row scope, one line per card (U6). Teams are user groups.
 const SCOPE_LABELS: Record<DataScope, string> = {
@@ -29,21 +28,21 @@ const SCOPE_LABELS: Record<DataScope, string> = {
 // works everywhere. Start a role from a template (which copies its capabilities
 // + object/field access, avoiding the invisible no-access trap), then tune it
 // on its detail page.
+//
+// The list shares the roles cache key with RoleDetailSection (U7.3), so a rename
+// on a role's page shows here — and a delete here is seen there — without a
+// full-page reload.
 export default function RolesManager() {
   const navigate = useNavigate();
   const { hasCapability } = useAuth();
-  const [roles, setRoles] = useState<RoleDetail[]>([]);
-  const [totalCaps, setTotalCaps] = useState<number>(ALL_CAPABILITIES.length);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [busyId, setBusyId] = useState('');
 
-  // New-role form state. cloneFrom defaults to the viewer template so a new role
-  // starts with safe read-only access rather than no access at all.
+  // New-role form state. cloneFrom is null until the admin picks one: it then
+  // defaults to the viewer template, so a new role starts with safe read-only
+  // access rather than no access at all. '' is an explicit "Blank (no access)".
   const [newName, setNewName] = useState('');
   const [newDesc, setNewDesc] = useState('');
-  const [cloneFrom, setCloneFrom] = useState('');
-  const [creating, setCreating] = useState(false);
+  const [cloneFrom, setCloneFrom] = useState<string | null>(null);
 
   // Modals: duplicate a role, or delete a role whose members must be reassigned.
   const [dupTarget, setDupTarget] = useState<RoleDetail | null>(null);
@@ -55,42 +54,41 @@ export default function RolesManager() {
 
   const canSeeMembers = hasCapability('members.manage') || hasCapability('members.invite');
 
-  const load = useCallback(async () => {
-    try {
-      setLoading(true);
-      const [rs, cat] = await Promise.all([getRoles(), getRolesCatalog().catch(() => ({ capabilities: [], groups: [] }))]);
-      setRoles(rs);
-      if (cat.capabilities.length > 0) setTotalCaps(cat.capabilities.length);
-      // Default the create form's template to viewer (safe read-only start).
-      setCloneFrom((cur) => cur || rs.find((r) => r.name === 'viewer')?.id || '');
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load roles');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const { data: roles = [], isLoading, error: loadError } = useRoles();
+  const { data: catalog } = useRolesCatalog();
+  const totalCaps = catalog?.capabilities.length || ALL_CAPABILITIES.length;
 
-  useEffect(() => { load(); }, [load]);
+  const createMut = useCreateRole();
+  const duplicateMut = useDuplicateRole();
+  const deleteMut = useDeleteRole();
 
-  const handleCreate = async () => {
+  // The role a destructive action is in flight for — its buttons stay disabled.
+  const busyId =
+    (deleteMut.isPending && deleteMut.variables?.role.id) ||
+    (duplicateMut.isPending && duplicateMut.variables?.role.id) ||
+    '';
+
+  const cloneFromValue = cloneFrom ?? (roles.find((r) => r.name === 'viewer')?.id ?? '');
+
+  const handleCreate = () => {
     if (!newName.trim()) return;
-    setCreating(true);
     setError('');
-    try {
-      const created = await createRole({
+    createMut.mutate(
+      {
         name: newName.trim(),
         description: newDesc.trim() || undefined,
-        clone_from_id: cloneFrom || undefined,
-      });
-      setNewName('');
-      setNewDesc('');
-      // Land on the new role's detail page — that's where it gets tuned.
-      navigate(`/settings/roles/${created.id}`);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to create role');
-    } finally {
-      setCreating(false);
-    }
+        clone_from_id: cloneFromValue || undefined,
+      },
+      {
+        onSuccess: (created) => {
+          setNewName('');
+          setNewDesc('');
+          // Land on the new role's detail page — that's where it gets tuned.
+          navigate(`/settings/roles/${created.id}`);
+        },
+        onError: (e) => setError(e instanceof Error ? e.message : 'Failed to create role'),
+      },
+    );
   };
 
   // Delete: a role nobody holds is deleted directly; a role with members opens the
@@ -109,18 +107,15 @@ export default function RolesManager() {
     runDelete(role, undefined);
   };
 
-  const runDelete = async (role: RoleDetail, reassign?: string) => {
-    setBusyId(role.id);
+  const runDelete = (role: RoleDetail, reassignTo?: string) => {
     setError('');
-    try {
-      await deleteRole(role.id, reassign);
-      setDelTarget(null);
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to delete role');
-    } finally {
-      setBusyId('');
-    }
+    deleteMut.mutate(
+      { role, reassignTo },
+      {
+        onSuccess: () => setDelTarget(null),
+        onError: (e) => setError(e instanceof Error ? e.message : 'Failed to delete role'),
+      },
+    );
   };
 
   const openDuplicate = (role: RoleDetail) => {
@@ -129,22 +124,24 @@ export default function RolesManager() {
     setDupReassign(false);
   };
 
-  const runDuplicate = async () => {
+  const runDuplicate = () => {
     if (!dupTarget || !dupName.trim()) return;
-    setBusyId(dupTarget.id);
     setError('');
-    try {
-      const copy = await duplicateRole(dupTarget.id, { name: dupName.trim(), reassign_members: dupReassign });
-      setDupTarget(null);
-      navigate(`/settings/roles/${copy.id}`);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to duplicate role');
-    } finally {
-      setBusyId('');
-    }
+    duplicateMut.mutate(
+      { role: dupTarget, name: dupName.trim(), reassign_members: dupReassign },
+      {
+        onSuccess: (copy) => {
+          setDupTarget(null);
+          navigate(`/settings/roles/${copy.id}`);
+        },
+        onError: (e) => setError(e instanceof Error ? e.message : 'Failed to duplicate role'),
+      },
+    );
   };
 
-  if (loading) return <div className="text-sm text-muted-foreground py-8">Loading roles…</div>;
+  if (isLoading) return <div className="text-sm text-muted-foreground py-8">Loading roles…</div>;
+
+  const banner = error || (loadError instanceof Error ? loadError.message : '');
 
   return (
     <div className="space-y-5">
@@ -156,7 +153,7 @@ export default function RolesManager() {
         </p>
       </div>
 
-      {error && <div className="bg-red-50 text-red-700 text-sm rounded-md px-3 py-2">{error}</div>}
+      {banner && <div className="bg-red-50 text-red-700 text-sm rounded-md px-3 py-2">{banner}</div>}
 
       {/* Create / clone a role */}
       <div className="border rounded-lg p-3 bg-muted/20 space-y-2">
@@ -182,7 +179,7 @@ export default function RolesManager() {
           <div className="flex flex-col">
             <label className="text-xs font-medium mb-1">Start from</label>
             <select
-              value={cloneFrom}
+              value={cloneFromValue}
               onChange={(e) => setCloneFrom(e.target.value)}
               className="border rounded-md px-2.5 py-1.5 text-sm bg-background w-44"
             >
@@ -194,13 +191,13 @@ export default function RolesManager() {
           </div>
           <button
             onClick={handleCreate}
-            disabled={creating || !newName.trim()}
+            disabled={createMut.isPending || !newName.trim()}
             className="px-3 py-1.5 text-sm rounded-md bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50"
           >
-            {creating ? 'Creating…' : 'Create role'}
+            {createMut.isPending ? 'Creating…' : 'Create role'}
           </button>
         </div>
-        {!cloneFrom && (
+        {!cloneFromValue && (
           <p className="flex items-start gap-1.5 text-xs text-amber-600">
             <AlertTriangle className="h-3.5 w-3.5 mt-px shrink-0" aria-hidden="true" />
             A blank role starts with no access to any object — members will see nothing until
@@ -301,15 +298,18 @@ export default function RolesManager() {
         })}
       </div>
 
-      {/* Duplicate modal */}
+      {/* Duplicate modal — shared Radix modal (U7): Escape, focus trap/restore and
+          aria for free; dismissal is blocked while the copy is being created. */}
       {dupTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/50" onClick={() => setDupTarget(null)} />
-          <div className="relative bg-card border rounded-2xl shadow-xl w-full max-w-sm p-5">
-            <h3 className="text-base font-semibold mb-1">Duplicate “{prettyRole(dupTarget.name)}”</h3>
-            <p className="text-xs text-muted-foreground mb-3">
-              Creates a new custom role with the same capabilities and object/field access, which you can then tune.
-            </p>
+        <Modal
+          open
+          onClose={() => setDupTarget(null)}
+          title={`Duplicate “${prettyRole(dupTarget.name)}”`}
+          description="Creates a new custom role with the same capabilities and object/field access, which you can then tune."
+          size="sm"
+          dismissable={!duplicateMut.isPending}
+        >
+          <>
             <label className="block text-xs font-medium mb-1">New role name</label>
             <input
               value={dupName}
@@ -332,20 +332,22 @@ export default function RolesManager() {
                 Duplicate
               </button>
             </div>
-          </div>
-        </div>
+          </>
+        </Modal>
       )}
 
-      {/* Delete-with-reassign modal */}
+      {/* Delete-with-reassign modal — dismissal is blocked while the delete runs,
+          so the reassign target can't be lost mid-flight. */}
       {delTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/50" onClick={() => setDelTarget(null)} />
-          <div className="relative bg-card border rounded-2xl shadow-xl w-full max-w-sm p-5">
-            <h3 className="text-base font-semibold mb-1">Delete “{prettyRole(delTarget.name)}”</h3>
-            <p className="text-sm text-muted-foreground mb-3">
-              {delTarget.member_count} member{delTarget.member_count === 1 ? '' : 's'} still {delTarget.member_count === 1 ? 'holds' : 'hold'} this role.
-              Move them to another role, then it will be deleted.
-            </p>
+        <Modal
+          open
+          onClose={() => setDelTarget(null)}
+          title={`Delete “${prettyRole(delTarget.name)}”`}
+          description={`${delTarget.member_count} member${delTarget.member_count === 1 ? '' : 's'} still ${delTarget.member_count === 1 ? 'holds' : 'hold'} this role. Move them to another role, then it will be deleted.`}
+          size="sm"
+          dismissable={!deleteMut.isPending}
+        >
+          <>
             <label className="block text-xs font-medium mb-1">Move members to</label>
             <select
               value={reassignTo}
@@ -367,8 +369,8 @@ export default function RolesManager() {
                 Reassign & delete
               </button>
             </div>
-          </div>
-        </div>
+          </>
+        </Modal>
       )}
       {confirmDialogEl}
     </div>

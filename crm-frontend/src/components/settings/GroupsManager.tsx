@@ -1,9 +1,14 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Pencil } from 'lucide-react';
+import type { UserGroup } from '../../lib/api';
 import {
-  listGroups, createGroup, updateGroup, deleteGroup, addGroupMember, removeGroupMember,
-  getWorkspaceMembers, type UserGroup, type WorkspaceMember,
-} from '../../lib/api';
+  useGroups,
+  useWorkspaceMembers,
+  useCreateGroup,
+  useUpdateGroup,
+  useDeleteGroup,
+  useToggleGroupMember,
+} from '../../features/settings/queries';
 import { useConfirm } from '../common/ConfirmDialog';
 
 // GroupsManager: create named member groups, rename them, and manage membership.
@@ -11,14 +16,14 @@ import { useConfirm } from '../common/ConfirmDialog';
 // sees every record owned by anyone in a group they share) AND it is a share
 // target for records and reports. Gated by the groups.manage capability at the
 // call site (the settings shell's Groups section).
+//
+// Groups and members are react-query caches (U7.3): every mutation invalidates the
+// group list rather than refetching by hand, so a concurrent admin's new group or
+// membership change shows up instead of being overwritten by a stale local copy.
 export default function GroupsManager() {
-  const [groups, setGroups] = useState<UserGroup[]>([]);
-  const [members, setMembers] = useState<WorkspaceMember[]>([]);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [newName, setNewName] = useState('');
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   // Edit-in-place for a group's name + description (the PATCH route was live but
   // no UI ever called it).
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -26,31 +31,26 @@ export default function GroupsManager() {
   const [editDesc, setEditDesc] = useState('');
   const { confirm, dialog } = useConfirm();
 
-  const load = useCallback(async () => {
-    try {
-      setLoading(true);
-      const [g, m] = await Promise.all([listGroups(), getWorkspaceMembers()]);
-      setGroups(g);
-      setMembers(m.filter((x) => x.status === 'active'));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load groups');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const { data: groups = [], isLoading, error: groupsError } = useGroups();
+  const { data: allMembers = [], error: membersError } = useWorkspaceMembers();
+  const members = useMemo(() => allMembers.filter((m) => m.status === 'active'), [allMembers]);
 
-  useEffect(() => { load(); }, [load]);
+  const createMut = useCreateGroup();
+  const updateMut = useUpdateGroup();
+  const deleteMut = useDeleteGroup();
+  const toggleMut = useToggleGroupMember();
+  const busy = createMut.isPending || updateMut.isPending || deleteMut.isPending || toggleMut.isPending;
 
-  const create = async () => {
+  const fail = (fallback: string) => (e: unknown) =>
+    setError(e instanceof Error ? e.message : fallback);
+
+  const create = () => {
     if (!newName.trim()) return;
-    setBusy(true); setError('');
-    try {
-      await createGroup(newName.trim());
-      setNewName('');
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to create group');
-    } finally { setBusy(false); }
+    setError('');
+    createMut.mutate(newName.trim(), {
+      onSuccess: () => setNewName(''),
+      onError: fail('Failed to create group'),
+    });
   };
 
   const startEdit = (g: UserGroup) => {
@@ -59,17 +59,14 @@ export default function GroupsManager() {
     setEditDesc(g.description || '');
   };
 
-  const saveEdit = async (id: string) => {
+  const saveEdit = (id: string) => {
     const name = editName.trim();
     if (!name) return;
-    setBusy(true); setError('');
-    try {
-      await updateGroup(id, name, editDesc.trim());
-      setEditingId(null);
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to rename group');
-    } finally { setBusy(false); }
+    setError('');
+    updateMut.mutate(
+      { id, name, description: editDesc.trim() },
+      { onSuccess: () => setEditingId(null), onError: fail('Failed to rename group') },
+    );
   };
 
   const remove = async (id: string, name: string) => {
@@ -79,28 +76,26 @@ export default function GroupsManager() {
       confirmLabel: 'Delete group',
       tone: 'danger',
     }))) return;
-    setBusy(true); setError('');
-    try { await deleteGroup(id); await load(); }
-    catch (e) { setError(e instanceof Error ? e.message : 'Failed to delete group'); }
-    finally { setBusy(false); }
+    setError('');
+    deleteMut.mutate(id, { onError: fail('Failed to delete group') });
   };
 
-  const toggleMember = async (group: UserGroup, userId: string, isMember: boolean) => {
-    setBusy(true); setError('');
-    try {
-      if (isMember) await removeGroupMember(group.id, userId);
-      else await addGroupMember(group.id, userId);
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to update membership');
-    } finally { setBusy(false); }
+  const toggleMember = (group: UserGroup, userId: string, isMember: boolean) => {
+    setError('');
+    toggleMut.mutate(
+      { groupId: group.id, userId, isMember },
+      { onError: fail('Failed to update membership') },
+    );
   };
 
-  if (loading) return <div className="h-24 animate-pulse rounded-xl bg-muted/50" />;
+  if (isLoading) return <div className="h-24 animate-pulse rounded-xl bg-muted/50" />;
+
+  const loadError = groupsError || membersError;
+  const banner = error || (loadError instanceof Error ? loadError.message : '');
 
   return (
     <div className="space-y-4">
-      {error && <div className="text-sm text-red-600">{error}</div>}
+      {banner && <div className="text-sm text-red-600">{banner}</div>}
 
       <div className="flex gap-2">
         <input

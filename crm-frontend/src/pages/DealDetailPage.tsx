@@ -7,7 +7,9 @@ import MeetingSummary from '../components/ai/MeetingSummary';
 import VoiceUploader from '../components/voice/VoiceUploader';
 import VoiceLibrary from '../components/voice/VoiceLibrary';
 import ShareRecordModal from '../components/records/ShareRecordModal';
+import Modal from '../components/common/Modal';
 import { usePermissions } from '../lib/auth';
+import { useDocumentTitle } from '../lib/useDocumentTitle';
 import { useState, useEffect } from 'react';
 
 const ACTIVITY_ICONS: Record<string, string> = {
@@ -48,91 +50,97 @@ function EditDealModal({ deal, onClose }: { deal: Deal; onClose: () => void }) {
   const probColor = probability >= 70 ? '#10b981' : probability >= 30 ? '#f59e0b' : '#ef4444';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="bg-card w-full max-w-md rounded-2xl shadow-xl overflow-hidden animate-in zoom-in-95 duration-200">
-        <div className="p-6 space-y-5">
-          <h3 className="text-lg font-semibold">Edit Deal</h3>
+    // Shared Radix modal (U7): Escape, focus trap + restore and aria come with it.
+    // padded={false} because the footer action row runs edge-to-edge; dismissal is
+    // blocked mid-save so a stray Escape can't orphan the request.
+    <Modal
+      open
+      onClose={onClose}
+      title="Edit Deal"
+      size="md"
+      padded={false}
+      dismissable={!mutation.isPending}
+    >
+      <div className="px-6 pb-6 space-y-5">
+        <div className="space-y-1.5">
+          <label className="text-xs font-medium text-muted-foreground">Title</label>
+          <input
+            id="edit-deal-title"
+            className="w-full rounded-lg border bg-muted/30 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            value={title}
+            onChange={e => setTitle(e.target.value)}
+          />
+        </div>
 
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">Title</label>
-            <input
-              id="edit-deal-title"
-              className="w-full rounded-lg border bg-muted/30 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              value={title}
-              onChange={e => setTitle(e.target.value)}
-            />
+        <div className="space-y-1.5">
+          <label className="text-xs font-medium text-muted-foreground">Value ($)</label>
+          <input
+            id="edit-deal-value"
+            type="number" min={0}
+            className="w-full rounded-lg border bg-muted/30 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            value={value}
+            onChange={e => setValue(e.target.value)}
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-medium text-muted-foreground">Probability</label>
+            <span className="text-sm font-bold" style={{ color: probColor }}>{probability}%</span>
           </div>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">Value ($)</label>
-            <input
-              id="edit-deal-value"
-              type="number" min={0}
-              className="w-full rounded-lg border bg-muted/30 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              value={value}
-              onChange={e => setValue(e.target.value)}
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-medium text-muted-foreground">Probability</label>
-              <span className="text-sm font-bold" style={{ color: probColor }}>{probability}%</span>
-            </div>
-            <input
-              id="edit-deal-probability"
-              type="range" min={0} max={100}
-              value={probability}
-              onChange={e => setProbability(Number(e.target.value))}
-              className="w-full accent-blue-500"
-            />
-            <div className="flex justify-between text-[10px] text-muted-foreground">
-              <span>0%</span><span>50%</span><span>100%</span>
-            </div>
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">Expected Close Date</label>
-            <input
-              id="edit-deal-close-date"
-              type="date"
-              className="w-full rounded-lg border bg-muted/30 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              value={closeAt}
-              onChange={e => setCloseAt(e.target.value)}
-            />
-          </div>
-
-          {deal.contact && (
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">Contact</label>
-              <div className="rounded-lg border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
-                {deal.contact.first_name} {deal.contact.last_name}
-                {deal.contact.email && ` · ${deal.contact.email}`}
-              </div>
-            </div>
-          )}
-
-          <div className="rounded-lg bg-blue-500/10 px-4 py-2.5 flex items-center justify-between">
-            <span className="text-xs text-muted-foreground">Expected Revenue preview</span>
-            <span className="text-sm font-bold text-blue-400">
-              ${Math.round((parseFloat(value) || 0) * probability / 100).toLocaleString()}
-            </span>
+          <input
+            id="edit-deal-probability"
+            type="range" min={0} max={100}
+            value={probability}
+            onChange={e => setProbability(Number(e.target.value))}
+            className="w-full accent-blue-500"
+          />
+          <div className="flex justify-between text-[10px] text-muted-foreground">
+            <span>0%</span><span>50%</span><span>100%</span>
           </div>
         </div>
 
-        <div className="px-6 py-4 bg-muted/30 flex justify-end gap-3 border-t">
-          <button onClick={onClose} className="px-4 py-2 text-sm font-medium rounded-lg hover:bg-muted transition-colors">Cancel</button>
-          <button
-            id="edit-deal-save"
-            onClick={() => mutation.mutate()}
-            disabled={mutation.isPending || !title.trim()}
-            className="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-50"
-          >
-            {mutation.isPending ? 'Saving…' : 'Save Changes'}
-          </button>
+        <div className="space-y-1.5">
+          <label className="text-xs font-medium text-muted-foreground">Expected Close Date</label>
+          <input
+            id="edit-deal-close-date"
+            type="date"
+            className="w-full rounded-lg border bg-muted/30 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            value={closeAt}
+            onChange={e => setCloseAt(e.target.value)}
+          />
+        </div>
+
+        {deal.contact && (
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">Contact</label>
+            <div className="rounded-lg border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
+              {deal.contact.first_name} {deal.contact.last_name}
+              {deal.contact.email && ` · ${deal.contact.email}`}
+            </div>
+          </div>
+        )}
+
+        <div className="rounded-lg bg-blue-500/10 px-4 py-2.5 flex items-center justify-between">
+          <span className="text-xs text-muted-foreground">Expected Revenue preview</span>
+          <span className="text-sm font-bold text-blue-400">
+            ${Math.round((parseFloat(value) || 0) * probability / 100).toLocaleString()}
+          </span>
         </div>
       </div>
-    </div>
+
+      <div className="px-6 py-4 bg-muted/30 flex justify-end gap-3 border-t">
+        <button onClick={onClose} className="px-4 py-2 text-sm font-medium rounded-lg hover:bg-muted transition-colors">Cancel</button>
+        <button
+          id="edit-deal-save"
+          onClick={() => mutation.mutate()}
+          disabled={mutation.isPending || !title.trim()}
+          className="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-50"
+        >
+          {mutation.isPending ? 'Saving…' : 'Save Changes'}
+        </button>
+      </div>
+    </Modal>
   );
 }
 
@@ -245,6 +253,11 @@ export default function DealDetailPage() {
     queryFn: () => getDeal(id!),
     enabled: !!id,
   });
+
+  // Tab title from the SAVED deal (U7.2) — the react-query record, never the
+  // EditDealModal's bound `title` input, which would retitle the tab on every
+  // keystroke. Undefined while loading ⇒ the bare app name, not "undefined".
+  useDocumentTitle(deal?.title);
 
   const { data: activities = [] } = useQuery<Activity[]>({
     queryKey: ['activities', id],
@@ -804,33 +817,39 @@ export default function DealDetailPage() {
         />
       )}
 
-      {/* Delete confirmation modal */}
+      {/* Delete confirmation modal — hideClose like ConfirmDialog: Cancel and
+          Delete are the only exits, so a third one would just be noise. */}
       {showDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-card w-full max-w-md rounded-2xl shadow-xl overflow-hidden animate-in zoom-in-95 duration-200">
-            <div className="p-6">
-              <h3 className="text-lg font-semibold mb-2">Delete Deal</h3>
-              <p className="text-muted-foreground text-sm">
-                Are you sure you want to delete "{deal.title}"? This cannot be undone.
-              </p>
-            </div>
-            <div className="px-6 py-4 bg-muted/30 flex justify-end gap-3 border-t">
-              <button
-                onClick={() => setShowDelete(false)}
-                className="px-4 py-2 text-sm font-medium rounded-lg hover:bg-muted transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => deleteMutation.mutate()}
-                disabled={deleteMutation.isPending}
-                className="px-4 py-2 text-sm font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-50"
-              >
-                Delete
-              </button>
-            </div>
+        <Modal
+          open
+          onClose={() => setShowDelete(false)}
+          title="Delete Deal"
+          size="md"
+          padded={false}
+          hideClose
+          dismissable={!deleteMutation.isPending}
+        >
+          <div className="px-6 pb-6">
+            <p className="text-muted-foreground text-sm">
+              Are you sure you want to delete "{deal.title}"? This cannot be undone.
+            </p>
           </div>
-        </div>
+          <div className="px-6 py-4 bg-muted/30 flex justify-end gap-3 border-t">
+            <button
+              onClick={() => setShowDelete(false)}
+              className="px-4 py-2 text-sm font-medium rounded-lg hover:bg-muted transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => deleteMutation.mutate()}
+              disabled={deleteMutation.isPending}
+              className="px-4 py-2 text-sm font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-50"
+            >
+              Delete
+            </button>
+          </div>
+        </Modal>
       )}
 
       {/* AI Modals */}

@@ -12,6 +12,23 @@ vi.mock('../../../lib/api', () => ({
   reorderDashboardWidgets: vi.fn(),
   listReports: vi.fn(),
   runReport: vi.fn(),
+  // Read by the setup checklist the dashboard now hosts (U7.5). Its own suite
+  // covers it; here it must simply not fire — this user has no setup capability,
+  // so every step is gated away and the card renders nothing.
+  getWorkspaceMembers: vi.fn(),
+  listInvitations: vi.fn(),
+  getRoles: vi.fn(),
+  getStages: vi.fn(),
+  getContacts: vi.fn(),
+  updateProfile: vi.fn(),
+  createObjectDef: vi.fn(),
+  createFieldDef: vi.fn(),
+  upsertKBSection: vi.fn(),
+}));
+
+vi.mock('../../../lib/auth', () => ({
+  useAuth: () => ({ user: { id: 'me' }, activeWorkspace: { org_id: 'o1' }, setUserProfile: vi.fn() }),
+  usePermissions: () => ({ can: () => false, canAccess: () => false, loaded: true }),
 }));
 
 import {

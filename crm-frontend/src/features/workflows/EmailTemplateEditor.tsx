@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, Save, Send, AlertTriangle } from 'lucide-react';
 import { useEmailTemplate, useSaveEmailTemplate, useTestSendEmailTemplate } from './queries';
+import { useDocumentTitle } from '../../lib/useDocumentTitle';
 import { getWorkflowSchema } from './api';
 import { EmailTemplateBodyEditor, type VariableGroup } from './builder/config/EmailTemplateBodyEditor';
 
@@ -19,6 +20,11 @@ export const EmailTemplateEditor: React.FC = () => {
   const { data: existing, isLoading, isError, refetch } = useEmailTemplate(isNew ? undefined : id);
   const saveMutation = useSaveEmailTemplate();
   const testSend = useTestSendEmailTemplate();
+
+  // Tab title from the SAVED template (U7.2) — `existing.name` from react-query,
+  // never the `name` useState below, which is bound to the name input and would
+  // retitle the tab on every keystroke.
+  useDocumentTitle(isNew ? 'New Email Template' : existing?.name);
 
   // Object catalog for the merge-scope select (entities + custom objects).
   const { data: schema } = useQuery({ queryKey: ['workflowSchema'], queryFn: getWorkflowSchema, staleTime: 60_000 });

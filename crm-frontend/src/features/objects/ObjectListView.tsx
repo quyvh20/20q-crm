@@ -21,6 +21,14 @@ interface ObjectListViewProps {
   slug: string;
   /** Called when the object/schema can't be loaded (e.g. unknown slug). */
   onNotFound?: () => void;
+  /**
+   * Called with the object's schema once it loads. Lets the wrapping PAGE name
+   * itself — /objects/:slug only knows a slug, and the human label ("Invoices")
+   * lives in the schema this component already fetches (U7.2). Handing it up
+   * avoids a second request for the same document.
+   * Must be stable (useCallback) — it is an effect dependency.
+   */
+  onSchemaLoaded?: (schema: ObjectSchema) => void;
 }
 
 // Viewing/editing/deleting a record now happens on its own URL-addressable page
@@ -43,7 +51,7 @@ const MAX_COLUMNS = 4;
 // at (P3 "one renderer"); the filter bar brings it to parity with the legacy
 // per-object pages (P7) — relation filters, tag filter, and semantic search all
 // driven by the schema, with zero per-object code.
-export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps) {
+export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: ObjectListViewProps) {
   const navigate = useNavigate();
   // OLS-aware buttons (U3.7): a role without create access doesn't get an Add
   // button that would only 403. Fails open while permissions are still loading —
@@ -106,7 +114,9 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
     let cancelled = false;
     getObjectSchema(slug)
       .then((s) => {
-        if (!cancelled) setSchema(s);
+        if (cancelled) return;
+        setSchema(s);
+        onSchemaLoaded?.(s);
       })
       .catch(() => {
         if (!cancelled) onNotFound?.();
@@ -114,7 +124,7 @@ export default function ObjectListView({ slug, onNotFound }: ObjectListViewProps
     return () => {
       cancelled = true;
     };
-  }, [slug, onNotFound]);
+  }, [slug, onNotFound, onSchemaLoaded]);
 
   // Load tags for the tag filter (every object is taggable).
   useEffect(() => {

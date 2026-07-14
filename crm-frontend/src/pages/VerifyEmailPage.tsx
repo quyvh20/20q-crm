@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { verifyEmail } from '../lib/api';
+import { useDocumentTitle } from '../lib/useDocumentTitle';
 
 export default function VerifyEmailPage() {
+  useDocumentTitle('Verify Email');
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token');
   const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading');

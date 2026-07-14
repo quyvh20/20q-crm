@@ -1,15 +1,40 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { Loader2, Building2, AlertTriangle, LogOut, Trash2, ShieldCheck } from 'lucide-react';
+import type { WorkspaceDetail } from '../../lib/api';
 import {
-  getCurrentWorkspace, updateWorkspace, leaveWorkspace, deleteWorkspace,
-  type WorkspaceDetail,
-} from '../../lib/api';
+  useWorkspace,
+  useUpdateWorkspace,
+  useLeaveWorkspace,
+  useDeleteWorkspace,
+} from '../../features/settings/queries';
 import { useAuth } from '../../lib/auth';
 import { useConfirm } from '../../components/common/ConfirmDialog';
 
 const CURRENCIES = ['', 'USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'INR', 'BRL'];
 const LOCALES = ['', 'en-US', 'en-GB', 'fr-FR', 'de-DE', 'es-ES', 'pt-BR', 'ja-JP'];
+
+// The editable half of the workspace, split out from the server payload so the
+// form can be compared against (and re-seeded from) the last server snapshot.
+interface WorkspaceForm {
+  name: string;
+  currency: string;
+  locale: string;
+  timezone: string;
+  require2FA: boolean;
+}
+
+const toForm = (w: WorkspaceDetail): WorkspaceForm => ({
+  name: w.name,
+  currency: w.currency,
+  locale: w.locale,
+  timezone: w.timezone,
+  require2FA: !!w.require_two_factor,
+});
+
+const sameForm = (a: WorkspaceForm, b: WorkspaceForm) =>
+  a.name === b.name && a.currency === b.currency && a.locale === b.locale &&
+  a.timezone === b.timezone && a.require2FA === b.require2FA;
 
 // Same accessible switch as the notification preference center — a real
 // role="switch" button, not a styled checkbox.
@@ -33,59 +58,46 @@ function Toggle({ on, onChange, disabled, label }: { on: boolean; onChange: (v: 
 // rename the workspace, set its defaults (currency/locale/timezone), and the
 // danger zone (leave / delete). Leaving and deleting both re-establish auth
 // afterwards (the active workspace changes) instead of leaving a stale session.
+//
+// The workspace is server state read through react-query (U7.3). The form is
+// re-seeded whenever the server copy changes AND the admin hasn't started editing
+// — so another admin's rename lands on this screen instead of being silently
+// overwritten by a stale form, while in-progress typing is never clobbered.
 export default function WorkspaceGeneralSection() {
   const navigate = useNavigate();
   const { refreshAuth } = useAuth();
   const { confirm, dialog } = useConfirm();
 
-  const [ws, setWs] = useState<WorkspaceDetail | null>(null);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [saveMsg, setSaveMsg] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [busy, setBusy] = useState(false);
-
-  // Editable form fields.
-  const [name, setName] = useState('');
-  const [currency, setCurrency] = useState('');
-  const [locale, setLocale] = useState('');
-  const [timezone, setTimezone] = useState('');
-  // The workspace 2FA policy (U6.4).
-  const [require2FA, setRequire2FA] = useState(false);
   // Type-to-confirm text for the destructive delete.
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [showDelete, setShowDelete] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const d = await getCurrentWorkspace();
-      setWs(d);
-      setName(d.name);
-      setCurrency(d.currency);
-      setLocale(d.locale);
-      setTimezone(d.timezone);
-      setRequire2FA(!!d.require_two_factor);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load workspace');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const { data: ws, isLoading, error: loadError } = useWorkspace();
+  const saveMut = useUpdateWorkspace();
+  const leaveMut = useLeaveWorkspace();
+  const deleteMut = useDeleteWorkspace();
+  const saving = saveMut.isPending;
+  const busy = leaveMut.isPending || deleteMut.isPending;
 
-  useEffect(() => { load(); }, [load]);
-
-  const dirty = !!ws && (
-    name !== ws.name || currency !== ws.currency || locale !== ws.locale ||
-    timezone !== ws.timezone || require2FA !== !!ws.require_two_factor
-  );
+  // `draft` holds ONLY the fields this admin has actually touched; the rest render
+  // straight off the server copy. That's what makes the screen safe to re-read: a
+  // concurrent change to an untouched field shows up immediately, while in-progress
+  // typing is never clobbered by a background refetch. (An overlay also needs no
+  // seeding effect — there's no local mirror of the server to keep in sync.)
+  const [draft, setDraft] = useState<Partial<WorkspaceForm>>({});
+  const serverForm = ws ? toForm(ws) : null;
+  const form = serverForm ? { ...serverForm, ...draft } : null;
+  const dirty = !!serverForm && !!form && !sameForm(form, serverForm);
+  const patch = <K extends keyof WorkspaceForm>(key: K, value: WorkspaceForm[K]) =>
+    setDraft((d) => ({ ...d, [key]: value }));
 
   const save = async () => {
-    if (!ws || !name.trim()) return;
+    if (!ws || !form || !form.name.trim()) return;
     // Turning the 2FA policy ON is a change that hits every OTHER member, not just
     // this page — they're locked out of the app until they enrol. Say so first.
-    if (require2FA && !ws.require_two_factor) {
+    if (form.require2FA && !ws.require_two_factor) {
       if (!(await confirm({
         title: 'Require two-factor authentication?',
         body: 'Every member who has not set up two-factor authentication will be locked out of the workspace on their next request until they enrol. Check the Members list to see who has it on. Existing sessions are not exempt.',
@@ -93,22 +105,27 @@ export default function WorkspaceGeneralSection() {
         tone: 'danger',
       }))) return;
     }
-    setSaving(true);
     setError('');
     setSaveMsg('');
-    const nameChanged = name.trim() !== ws.name;
-    try {
-      await updateWorkspace({ name: name.trim(), currency, locale, timezone: timezone.trim(), require_two_factor: require2FA });
-      setWs({ ...ws, name: name.trim(), currency, locale, timezone: timezone.trim(), require_two_factor: require2FA });
-      setSaveMsg('Saved.');
-      // Propagate a rename to the sidebar/switcher (which read the name from the
-      // auth session) — only re-establish auth when the name actually changed.
-      if (nameChanged) await refreshAuth();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to save');
-    } finally {
-      setSaving(false);
-    }
+    const name = form.name.trim();
+    const timezone = form.timezone.trim();
+    const nameChanged = name !== ws.name;
+    saveMut.mutate(
+      { name, currency: form.currency, locale: form.locale, timezone, require_two_factor: form.require2FA },
+      {
+        onSuccess: async () => {
+          // The mutation primes the workspace cache with what was saved, so dropping
+          // the overlay here shows the saved values (not a flash of the old ones) and
+          // leaves the next re-read free to surface someone else's change.
+          setDraft({});
+          setSaveMsg('Saved.');
+          // Propagate a rename to the sidebar/switcher (which read the name from the
+          // auth session) — only re-establish auth when the name actually changed.
+          if (nameChanged) await refreshAuth();
+        },
+        onError: (e) => setError(e instanceof Error ? e.message : 'Failed to save'),
+      },
+    );
   };
 
   const handleLeave = async () => {
@@ -118,35 +135,33 @@ export default function WorkspaceGeneralSection() {
       confirmLabel: 'Leave workspace',
       tone: 'danger',
     }))) return;
-    setBusy(true);
     setError('');
-    try {
-      await leaveWorkspace();
-      await refreshAuth(); // switches into another workspace, or lands on /no-workspace
-      navigate('/');
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to leave workspace');
-      setBusy(false);
-    }
+    leaveMut.mutate(undefined, {
+      onSuccess: async () => {
+        await refreshAuth(); // switches into another workspace, or lands on /no-workspace
+        navigate('/');
+      },
+      onError: (e) => setError(e instanceof Error ? e.message : 'Failed to leave workspace'),
+    });
   };
 
-  const handleDelete = async () => {
+  const handleDelete = () => {
     if (!ws || deleteConfirmText !== ws.name) return;
-    setBusy(true);
     setError('');
-    try {
-      await deleteWorkspace();
-      await refreshAuth();
-      navigate('/');
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to delete workspace');
-      setBusy(false);
-    }
+    deleteMut.mutate(undefined, {
+      onSuccess: async () => {
+        await refreshAuth();
+        navigate('/');
+      },
+      onError: (e) => setError(e instanceof Error ? e.message : 'Failed to delete workspace'),
+    });
   };
 
-  if (loading) return <div className="flex justify-center py-16"><Loader2 className="w-7 h-7 animate-spin text-muted-foreground" /></div>;
-  if (error && !ws) return <div className="bg-red-500/10 text-red-500 text-sm rounded-lg px-3 py-2">{error}</div>;
-  if (!ws) return null;
+  if (isLoading) return <div className="flex justify-center py-16"><Loader2 className="w-7 h-7 animate-spin text-muted-foreground" /></div>;
+
+  const banner = error || (loadError instanceof Error ? loadError.message : '');
+  if (banner && !ws) return <div className="bg-red-500/10 text-red-500 text-sm rounded-lg px-3 py-2">{banner}</div>;
+  if (!ws || !form) return null;
 
   const inputCls = 'w-full max-w-md px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary';
 
@@ -159,34 +174,34 @@ export default function WorkspaceGeneralSection() {
         </p>
       </div>
 
-      {error && <div className="bg-red-500/10 text-red-500 text-sm rounded-lg px-3 py-2">{error}</div>}
+      {banner && <div className="bg-red-500/10 text-red-500 text-sm rounded-lg px-3 py-2">{banner}</div>}
 
       {/* General settings */}
       <div className="space-y-4">
         <div>
           <label className="block text-sm font-medium mb-1.5">Workspace name</label>
-          <input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} />
+          <input value={form.name} onChange={(e) => patch('name', e.target.value)} className={inputCls} />
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-md">
           <div>
             <label className="block text-sm font-medium mb-1.5">Currency</label>
-            <select value={currency} onChange={(e) => setCurrency(e.target.value)} className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary">
+            <select value={form.currency} onChange={(e) => patch('currency', e.target.value)} className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary">
               {CURRENCIES.map((c) => <option key={c} value={c}>{c || '—'}</option>)}
             </select>
           </div>
           <div>
             <label className="block text-sm font-medium mb-1.5">Locale</label>
-            <select value={locale} onChange={(e) => setLocale(e.target.value)} className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary">
+            <select value={form.locale} onChange={(e) => patch('locale', e.target.value)} className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary">
               {LOCALES.map((l) => <option key={l} value={l}>{l || '—'}</option>)}
             </select>
           </div>
           <div>
             <label className="block text-sm font-medium mb-1.5">Timezone</label>
-            <input value={timezone} onChange={(e) => setTimezone(e.target.value)} placeholder="e.g. America/New_York" className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary" />
+            <input value={form.timezone} onChange={(e) => patch('timezone', e.target.value)} placeholder="e.g. America/New_York" className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary" />
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <button onClick={save} disabled={!dirty || saving || !name.trim()} className="px-4 py-2 text-sm rounded-lg bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50">
+          <button onClick={save} disabled={!dirty || saving || !form.name.trim()} className="px-4 py-2 text-sm rounded-lg bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50">
             {saving ? 'Saving…' : 'Save changes'}
           </button>
           {saveMsg && <span className="text-sm text-green-500">{saveMsg}</span>}
@@ -208,13 +223,13 @@ export default function WorkspaceGeneralSection() {
             </p>
           </div>
           <Toggle
-            on={require2FA}
-            onChange={setRequire2FA}
+            on={form.require2FA}
+            onChange={(v) => patch('require2FA', v)}
             disabled={saving || busy}
             label="Require two-factor authentication"
           />
         </div>
-        {require2FA && !ws.require_two_factor && (
+        {form.require2FA && !ws.require_two_factor && (
           <p className="text-xs text-amber-500">Not applied yet — hit “Save changes” above to turn the policy on.</p>
         )}
       </div>
@@ -257,7 +272,7 @@ export default function WorkspaceGeneralSection() {
                 />
                 <div className="flex gap-2">
                   <button onClick={handleDelete} disabled={busy || deleteConfirmText !== ws.name} className="px-3 py-1.5 text-sm rounded-lg bg-red-500 text-white hover:bg-red-600 disabled:opacity-50">
-                    {busy ? 'Deleting…' : 'Delete this workspace'}
+                    {deleteMut.isPending ? 'Deleting…' : 'Delete this workspace'}
                   </button>
                   <button onClick={() => { setShowDelete(false); setDeleteConfirmText(''); }} disabled={busy} className="px-3 py-1.5 text-sm rounded-lg border border-border hover:bg-accent disabled:opacity-50">
                     Cancel

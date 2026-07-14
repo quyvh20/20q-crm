@@ -7,10 +7,15 @@ import {
   type DashboardWidget, type Report, type ReportResult,
 } from '../../lib/api';
 import ReportChart from './charts/ReportChart';
+import SetupChecklist from '../onboarding/SetupChecklist';
 
 // The home page: every user's own grid of pinned reports. Each widget runs its
 // report through the normal run endpoint, so two users pinning the same shared
 // report can legitimately see different numbers (OLS/FLS/data scope).
+//
+// It also hosts the setup checklist (U7.5) — the returnable successor to the
+// blocking welcome wizard. The card renders itself away once its steps are done or
+// the user hides it, so an established workspace sees exactly what it sees today.
 export default function DashboardPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -44,6 +49,8 @@ export default function DashboardPage() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-6">
+      <SetupChecklist />
+
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Dashboard</h1>

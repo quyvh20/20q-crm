@@ -134,7 +134,7 @@ const EmailTemplatesContent: React.FC = () => {
                   )}
                 </div>
               </button>
-              <div className="flex flex-wrap items-center gap-1.5 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100">
+              <div className="flex flex-wrap items-center gap-1.5 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100">
                 <button
                   onClick={() => handleTestSend(t)}
                   disabled={testSend.isPending}

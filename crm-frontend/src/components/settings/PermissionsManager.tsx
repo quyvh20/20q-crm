@@ -1,14 +1,8 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { AlertTriangle, Lock } from 'lucide-react';
-import {
-  getPermissionGrid,
-  setObjectPermission,
-  type PermissionGrid,
-  type PermissionCell,
-  type PermissionAction,
-  type PermRoleInfo,
-} from '../../lib/api';
+import type { PermissionCell, PermissionAction, PermRoleInfo } from '../../lib/api';
+import { usePermissionGrid, useSetObjectPermission } from '../../features/settings/queries';
 import { prettyRole } from '../../lib/roles';
 
 const ACTIONS: { key: PermissionAction; label: string }[] = [
@@ -53,53 +47,41 @@ interface ZeroAccessItem {
 // A role is picked at the top; the table below toggles read/create/edit/delete
 // per object for that role. The owner role bypasses OLS, so its row is shown
 // locked-on. Absence of an explicit grant means no access (default-deny).
+//
+// The grid is server state (U7.3): it's read through react-query and every toggle
+// invalidates it. Two admins editing the same grid used to overwrite each other in
+// silence — a toggle patched the local matrix and the screen never re-read, so a
+// concurrent change was invisible and the next save clobbered it.
 export default function PermissionsManager() {
-  const [grid, setGrid] = useState<PermissionGrid | null>(null);
-  const [selectedRoleId, setSelectedRoleId] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [savingKey, setSavingKey] = useState('');
   const [dismissed, setDismissed] = useState<Set<string>>(readDismissed);
   const [highlightSlug, setHighlightSlug] = useState('');
+  const [saveError, setSaveError] = useState('');
+  // The cell a save is in flight for ('' when idle) — that checkbox stays disabled
+  // until the write lands and the grid is re-read.
+  const [savingKey, setSavingKey] = useState('');
   const [searchParams, setSearchParams] = useSearchParams();
   const rowRefs = useRef(new Map<string, HTMLTableRowElement>());
   const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      setLoading(true);
-      const g = await getPermissionGrid();
-      setGrid(g);
-      setSelectedRoleId((cur) => {
-        if (cur && g.roles.some((r) => r.id === cur)) return cur;
-        // Default to the first editable (non-owner) role, else the first role.
-        const editable = g.roles.find((r) => !r.is_owner) || g.roles[0];
-        return editable ? editable.id : '';
-      });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load permissions');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => { load(); }, [load]);
+  const { data: grid, isLoading, error: loadError } = usePermissionGrid();
+  const saveMut = useSetObjectPermission();
 
   useEffect(() => () => {
     if (highlightTimer.current) clearTimeout(highlightTimer.current);
   }, []);
 
-  // Deep link: ?role=<id> preselects a role tab (RoleDetailSection's access
-  // links land here). Invalid or absent ids leave the default selection alone.
-  useEffect(() => {
-    const param = searchParams.get('role');
-    if (param && grid?.roles.some((r) => r.id === param)) {
-      setSelectedRoleId(param);
-    }
-  }, [searchParams, grid]);
+  // The selected role IS the ?role= param (RoleDetailSection's access links deep
+  // link into it). An absent or unknown id falls back to the first editable
+  // (non-owner) role, else the first role — no separate state to drift from the URL.
+  const roleParam = searchParams.get('role') ?? '';
+  const selectedRoleId = useMemo(() => {
+    const roles = grid?.roles ?? [];
+    if (roleParam && roles.some((r) => r.id === roleParam)) return roleParam;
+    const editable = roles.find((r) => !r.is_owner) || roles[0];
+    return editable?.id ?? '';
+  }, [grid, roleParam]);
 
   const selectRole = (id: string) => {
-    setSelectedRoleId(id);
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
       next.set('role', id);
@@ -163,7 +145,7 @@ export default function PermissionsManager() {
     return c ? { read: c.read, create: c.create, edit: c.edit, delete: c.delete } : { ...EMPTY_CELL };
   };
 
-  const toggle = async (slug: string, action: PermissionAction) => {
+  const toggle = (slug: string, action: PermissionAction) => {
     if (!selectedRole || selectedRole.is_owner) return; // owner bypasses OLS — not editable
     const current = cellFor(selectedRole.id, slug);
     const next = { ...current, [action]: !current[action] };
@@ -178,44 +160,40 @@ export default function PermissionsManager() {
       next.edit = false;
       next.delete = false;
     }
-    const key = `${slug}:${action}`;
-    setSavingKey(key);
-    setError('');
-    try {
-      await setObjectPermission({
+    setSaveError('');
+    setSavingKey(`${slug}:${action}`);
+    saveMut.mutate(
+      {
         role_id: selectedRole.id,
         object_slug: slug,
         can_read: next.read,
         can_create: next.create,
         can_edit: next.edit,
         can_delete: next.delete,
-      });
-      // Update the matrix locally so the toggle is reflected without a refetch.
-      setGrid((g) => {
-        if (!g) return g;
-        const rest = g.matrix.filter((c) => !(c.role_id === selectedRole.id && c.object_slug === slug));
-        return { ...g, matrix: [...rest, { role_id: selectedRole.id, object_slug: slug, ...next }] };
-      });
-      // Granting Read resolves the zero-access pair for good — prune a stale
-      // dismissal so a FUTURE revoke surfaces the warning again.
-      if (next.read) {
-        setDismissed((prev) => {
-          const pairKey = `${selectedRole.id}:${slug}`;
-          if (!prev.has(pairKey)) return prev;
-          const pruned = new Set(prev);
-          pruned.delete(pairKey);
-          writeDismissed(pruned);
-          return pruned;
-        });
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to save permission');
-    } finally {
-      setSavingKey('');
-    }
+      },
+      {
+        onSuccess: () => {
+          // Granting Read resolves the zero-access pair for good — prune a stale
+          // dismissal so a FUTURE revoke surfaces the warning again.
+          if (!next.read) return;
+          setDismissed((prev) => {
+            const pairKey = `${selectedRole.id}:${slug}`;
+            if (!prev.has(pairKey)) return prev;
+            const pruned = new Set(prev);
+            pruned.delete(pairKey);
+            writeDismissed(pruned);
+            return pruned;
+          });
+        },
+        onError: (e) => setSaveError(e instanceof Error ? e.message : 'Failed to save permission'),
+        onSettled: () => setSavingKey(''),
+      },
+    );
   };
 
-  if (loading) return <div className="text-sm text-muted-foreground py-8">Loading permissions…</div>;
+  const error = saveError || (loadError instanceof Error ? loadError.message : '');
+
+  if (isLoading) return <div className="text-sm text-muted-foreground py-8">Loading permissions…</div>;
   if (!grid) return <div className="text-sm text-red-600 py-8">{error || 'No permission data.'}</div>;
 
   return (

@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import { forgotPassword } from '../lib/api';
+import { useDocumentTitle } from '../lib/useDocumentTitle';
 
 export default function ForgotPasswordPage() {
+  useDocumentTitle('Forgot Password');
   const [email, setEmail] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);

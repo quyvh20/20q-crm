@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { submitSummarizeMeeting, getAccessToken } from '../../lib/api';
+import Modal from '../common/Modal';
 
 interface MeetingSummaryProps {
   dealId?: string;
@@ -99,21 +100,19 @@ export default function MeetingSummary({ dealId, contactId, onClose, onTasksCrea
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in duration-200 p-4">
-      <div className="bg-card w-full max-w-2xl rounded-2xl shadow-xl overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
-        <div className="p-6 border-b bg-muted/10">
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-10 shrink-0 bg-violet-600/10 text-violet-600 rounded-xl flex items-center justify-center">
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
-            </div>
-            <div>
-              <h2 className="text-lg font-bold">Meeting Summarizer</h2>
-              <p className="text-sm text-muted-foreground">Extract themes and auto-create tasks from transcripts.</p>
-            </div>
-          </div>
-        </div>
-
-        <div className="p-6 flex-1 overflow-y-auto">
+    // Shared Radix modal (U7). Dismissal is blocked while the summarize job is
+    // in flight — closing would abort the SSE listener and strand the job.
+    <Modal
+      open
+      onClose={onClose}
+      title="Meeting Summarizer"
+      description="Extract themes and auto-create tasks from transcripts."
+      size="2xl"
+      padded={false}
+      dismissable={status !== 'processing'}
+    >
+      <>
+        <div className="p-6">
           {status === 'idle' || status === 'error' ? (
             <div className="space-y-4">
               <textarea
@@ -204,7 +203,7 @@ export default function MeetingSummary({ dealId, contactId, onClose, onTasksCrea
             </button>
           )}
         </div>
-      </div>
-    </div>
+      </>
+    </Modal>
   );
 }

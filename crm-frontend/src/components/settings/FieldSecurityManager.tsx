@@ -1,17 +1,14 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Lock } from 'lucide-react';
+import type { PermRoleInfo, FieldLevel } from '../../lib/api';
 import {
-  getPermissionGrid,
-  getFieldPermissionGrid,
-  getFieldPermissionSummary,
-  setFieldPermission,
-  bulkSetFieldPermissions,
-  type PermObjectInfo,
-  type PermRoleInfo,
-  type FieldPermissionGrid,
-  type FieldLevel,
-} from '../../lib/api';
+  usePermissionGrid,
+  useFieldPermissionGrid,
+  useFieldPermissionSummary,
+  useSetFieldPermission,
+  useBulkSetFieldPermissions,
+} from '../../features/settings/queries';
 import { prettyRole } from '../../lib/roles';
 import { useConfirm } from '../common/ConfirmDialog';
 
@@ -22,10 +19,6 @@ const LEVELS: { value: FieldLevel; label: string }[] = [
 ];
 
 const levelLabel = (level: FieldLevel) => LEVELS.find((l) => l.value === level)?.label ?? level;
-
-// One bulk FLS call is capped server-side at 200 field_keys (maxBulkFieldKeys);
-// wider grids are applied in sequential chunks of this size.
-const BULK_CHUNK_SIZE = 200;
 
 // What a bulk change means for the affected members, phrased per level so the
 // confirm dialog states the consequence, not just the mechanics.
@@ -41,27 +34,19 @@ const BULK_CONSEQUENCE: Record<FieldLevel, string> = {
 // 'read'/'hidden' field rejects writes. FLS is opt-in — every field defaults to
 // full Edit access, so this screen only matters once a field is restricted. The
 // owner role bypasses FLS, so its column is a static "Full access" cell.
+//
+// Both fetches (the object list, and the grid keyed by the selected object) are
+// react-query (U7.3), and every save invalidates them: a cell saved here is
+// re-read rather than patched into a local copy, so a concurrent admin's change to
+// a DIFFERENT cell of the same column is no longer silently overwritten.
 export default function FieldSecurityManager() {
-  const [objects, setObjects] = useState<PermObjectInfo[]>([]);
-  const [selectedSlug, setSelectedSlug] = useState('');
-  const [fieldGrid, setFieldGrid] = useState<FieldPermissionGrid | null>(null);
-  const [loadingObjects, setLoadingObjects] = useState(true);
-  const [loadingGrid, setLoadingGrid] = useState(false);
-  const [error, setError] = useState('');
+  const [saveError, setSaveError] = useState('');
+  // The (role, field) cell a single-cell save is in flight for ('' when idle).
   const [savingKey, setSavingKey] = useState('');
   const [search, setSearch] = useState('');
   const [restrictedOnly, setRestrictedOnly] = useState(false);
-  // Restriction counts per object slug, for the badges on the object pills.
-  // Seeded from the summary endpoint; the currently loaded object's count is
-  // then kept live from the local matrix (see the fieldGrid effect below).
-  const [counts, setCounts] = useState<Record<string, number>>({});
-  // Role id a bulk apply is in flight for ('' when idle).
-  const [bulkRoleId, setBulkRoleId] = useState('');
 
   const [searchParams, setSearchParams] = useSearchParams();
-  // ?object= deep link — captured once at mount; afterwards the pills drive the
-  // param, not the other way around.
-  const initialObjectParam = useRef(searchParams.get('object'));
   // ?role= deep link (a role detail page's "Edit field access"): emphasize that
   // role's column so the admin lands looking at the right one. Display only —
   // every column stays editable.
@@ -69,72 +54,30 @@ export default function FieldSecurityManager() {
 
   const { confirm, dialog } = useConfirm();
 
-  // Load the object list (reusing the OLS grid, which already returns the org's
-  // objects for an admin) and the restriction-count summary once.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const g = await getPermissionGrid();
-        if (cancelled) return;
-        setObjects(g.objects);
-        setSelectedSlug((cur) => {
-          if (cur) return cur;
-          const want = initialObjectParam.current;
-          if (want && g.objects.some((o) => o.slug === want)) return want;
-          return g.objects[0]?.slug ?? '';
-        });
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load objects');
-      } finally {
-        if (!cancelled) setLoadingObjects(false);
-      }
-    })();
-    // Badges are a progressive enhancement — if the summary fails the grid is
-    // still fully usable, so don't surface it in the shared error banner.
-    getFieldPermissionSummary()
-      .then((c) => {
-        // Locally derived counts (from a loaded grid) are fresher than the
-        // summary snapshot, so they win on merge.
-        if (!cancelled) setCounts((prev) => ({ ...c, ...prev }));
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // The object list reuses the OLS grid (which already returns the org's objects
+  // for an admin) — one cache, shared with PermissionsManager.
+  const { data: olsGrid, isLoading: loadingObjects, error: objectsError } = usePermissionGrid();
+  const objects = useMemo(() => olsGrid?.objects ?? [], [olsGrid]);
 
-  const loadGrid = useCallback(async (slug: string) => {
-    if (!slug) return;
-    setLoadingGrid(true);
-    setError('');
-    try {
-      setFieldGrid(await getFieldPermissionGrid(slug));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load field permissions');
-      setFieldGrid(null);
-    } finally {
-      setLoadingGrid(false);
-    }
-  }, []);
+  // The selected object IS the ?object= param; an absent or unknown slug falls back
+  // to the first object.
+  const objectParam = searchParams.get('object') ?? '';
+  const selectedSlug = objects.some((o) => o.slug === objectParam) ? objectParam : objects[0]?.slug ?? '';
 
-  useEffect(() => {
-    setSearch(''); // a field search rarely applies across objects
-    loadGrid(selectedSlug);
-  }, [selectedSlug, loadGrid]);
+  const { data: fieldGrid, isLoading: loadingGrid, error: gridError } = useFieldPermissionGrid(selectedSlug);
+  // Badges are a progressive enhancement — if the summary fails the grid is still
+  // fully usable, so its error never reaches the shared banner.
+  const { data: summary } = useFieldPermissionSummary();
 
-  // Keep the current object's badge count in sync with the local matrix after
-  // any single-cell or bulk save (fieldGrid is re-created on each patch) —
-  // no summary refetch needed. Owner cells (if any ever appear) don't count.
-  useEffect(() => {
-    if (!fieldGrid) return;
-    const ownerIds = new Set(fieldGrid.roles.filter((r) => r.is_owner).map((r) => r.id));
-    const n = fieldGrid.matrix.filter((c) => !ownerIds.has(c.role_id)).length;
-    setCounts((prev) => (prev[fieldGrid.slug] === n ? prev : { ...prev, [fieldGrid.slug]: n }));
-  }, [fieldGrid]);
+  const setLevelMut = useSetFieldPermission();
+  const bulkMut = useBulkSetFieldPermissions();
 
   const selectObject = (slug: string) => {
-    setSelectedSlug(slug);
+    if (slug === selectedSlug) return;
+    // A field search rarely applies across objects, and a save error on the object
+    // being left behind is stale — both are cleared on the way out.
+    setSearch('');
+    setSaveError('');
     setSearchParams(
       (prev) => {
         const p = new URLSearchParams(prev);
@@ -151,6 +94,18 @@ export default function FieldSecurityManager() {
     fieldGrid?.matrix.forEach((c) => m.set(`${c.role_id}:${c.field_key}`, c.level));
     return m;
   }, [fieldGrid]);
+
+  // Restriction counts per object pill: the summary snapshot, with the currently
+  // loaded object's count derived from its (freshly re-read) matrix — owner cells,
+  // if any ever appear, don't count.
+  const counts = useMemo<Record<string, number>>(() => {
+    const c = { ...(summary ?? {}) };
+    if (fieldGrid) {
+      const ownerIds = new Set(fieldGrid.roles.filter((r) => r.is_owner).map((r) => r.id));
+      c[fieldGrid.slug] = fieldGrid.matrix.filter((x) => !ownerIds.has(x.role_id)).length;
+    }
+    return c;
+  }, [summary, fieldGrid]);
 
   // Only highlight when ?role= names a role actually present in the grid.
   const highlightRoleId = useMemo(
@@ -181,31 +136,23 @@ export default function FieldSecurityManager() {
     });
   }, [fieldGrid, query, restrictedOnly, restrictedKeys]);
 
-  const change = async (role: PermRoleInfo, fieldKey: string, level: FieldLevel) => {
+  const change = (role: PermRoleInfo, fieldKey: string, level: FieldLevel) => {
     if (role.is_owner || !fieldGrid) return;
-    const key = `${role.id}:${fieldKey}`;
-    setSavingKey(key);
-    setError('');
-    try {
-      await setFieldPermission({ object_slug: fieldGrid.slug, role_id: role.id, field_key: fieldKey, level });
-      // Reflect locally without a refetch. 'edit' is the default, stored as the
-      // absence of a cell — mirroring the backend, which deletes the row.
-      setFieldGrid((g) => {
-        if (!g) return g;
-        const rest = g.matrix.filter((c) => !(c.role_id === role.id && c.field_key === fieldKey));
-        const matrix = level === 'edit' ? rest : [...rest, { role_id: role.id, field_key: fieldKey, level }];
-        return { ...g, matrix };
-      });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to save field permission');
-    } finally {
-      setSavingKey('');
-    }
+    setSaveError('');
+    setSavingKey(`${role.id}:${fieldKey}`);
+    setLevelMut.mutate(
+      { object_slug: fieldGrid.slug, role_id: role.id, field_key: fieldKey, level },
+      {
+        onError: (e) => setSaveError(e instanceof Error ? e.message : 'Failed to save field permission'),
+        onSettled: () => setSavingKey(''),
+      },
+    );
   };
 
   // Bulk "set column": one confirmed apply covering the currently VISIBLE
-  // (filtered) fields, sent in sequential <=200-key chunks (the server cap);
-  // each chunk is one transaction/audit event server-side.
+  // (filtered) fields. The mutation chunks it to the server's 200-key cap and
+  // re-reads the grid on settle — so a mid-chunk failure shows what actually
+  // landed rather than a local guess.
   const bulkApply = async (role: PermRoleInfo, level: FieldLevel) => {
     if (role.is_owner || !fieldGrid || visibleFields.length === 0) return;
     const keys = visibleFields.map((f) => f.key);
@@ -217,35 +164,18 @@ export default function FieldSecurityManager() {
       tone: level === 'hidden' ? 'danger' : 'default',
     });
     if (!ok) return;
-    setBulkRoleId(role.id);
-    setError('');
-    try {
-      for (let i = 0; i < keys.length; i += BULK_CHUNK_SIZE) {
-        await bulkSetFieldPermissions({
-          object_slug: fieldGrid.slug,
-          role_id: role.id,
-          field_keys: keys.slice(i, i + BULK_CHUNK_SIZE),
-          level,
-        });
-      }
-      setFieldGrid((g) => {
-        if (!g) return g;
-        const keySet = new Set(keys);
-        const rest = g.matrix.filter((c) => !(c.role_id === role.id && keySet.has(c.field_key)));
-        const matrix =
-          level === 'edit' ? rest : [...rest, ...keys.map((k) => ({ role_id: role.id, field_key: k, level }))];
-        return { ...g, matrix };
-      });
-    } catch (e) {
-      // A mid-chunk failure leaves the column half-applied server-side: reload
-      // the grid so the UI shows what actually landed, THEN surface the error
-      // (loadGrid clears the banner on its way in).
-      await loadGrid(fieldGrid.slug);
-      setError(e instanceof Error ? e.message : 'Failed to save field permissions');
-    } finally {
-      setBulkRoleId('');
-    }
+    setSaveError('');
+    bulkMut.mutate(
+      { object_slug: fieldGrid.slug, role_id: role.id, field_keys: keys, level },
+      { onError: (e) => setSaveError(e instanceof Error ? e.message : 'Failed to save field permissions') },
+    );
   };
+
+  // Role id a bulk apply is in flight for ('' when idle).
+  const bulkRoleId = bulkMut.isPending ? bulkMut.variables?.role_id ?? '' : '';
+
+  const loadError = objectsError || gridError;
+  const error = saveError || (loadError instanceof Error ? loadError.message : '');
 
   if (loadingObjects) return <div className="text-sm text-muted-foreground py-8">Loading field security…</div>;
 
@@ -358,7 +288,7 @@ export default function FieldSecurityManager() {
                             <select
                               value=""
                               aria-label={`Set all ${prettyRole(r.name)}`}
-                              disabled={bulkRoleId !== '' || visibleFields.length === 0}
+                              disabled={bulkMut.isPending || visibleFields.length === 0}
                               onChange={(e) => {
                                 const v = e.target.value as FieldLevel;
                                 if (v) bulkApply(r, v);

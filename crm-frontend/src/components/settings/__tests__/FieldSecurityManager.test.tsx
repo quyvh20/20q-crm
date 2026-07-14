@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 // Mock the API so the field-security grid is exercised without a backend. This is
 // the admin surface that configures the Field-Level Security RecordService
@@ -49,23 +50,43 @@ const FIELD_GRID: FieldPermissionGrid = {
   matrix: [{ role_id: 'r-viewer', field_key: 'value', level: 'hidden' }],
 };
 
+// A stand-in for the server's copy of the deal grid. The screen is react-query-
+// backed (U7.3): a save no longer patches a local matrix, it RE-READS — so the fake
+// server has to actually apply the writes for the UI assertions to mean anything.
+// 'edit' is the default level, stored as the ABSENCE of a cell (the backend deletes
+// the row), which the mocks mirror.
+let server: FieldPermissionGrid;
+
 beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
+  server = structuredClone(FIELD_GRID);
   vi.mocked(getPermissionGrid).mockResolvedValue(structuredClone(OLS_GRID));
-  vi.mocked(getFieldPermissionGrid).mockResolvedValue(structuredClone(FIELD_GRID));
+  vi.mocked(getFieldPermissionGrid).mockImplementation(async () => structuredClone(server));
   vi.mocked(getFieldPermissionSummary).mockResolvedValue({});
-  vi.mocked(setFieldPermission).mockResolvedValue(undefined);
-  vi.mocked(bulkSetFieldPermissions).mockResolvedValue(undefined);
+  vi.mocked(setFieldPermission).mockImplementation(async ({ role_id, field_key, level }) => {
+    server.matrix = server.matrix.filter((c) => !(c.role_id === role_id && c.field_key === field_key));
+    if (level !== 'edit') server.matrix.push({ role_id, field_key, level });
+  });
+  vi.mocked(bulkSetFieldPermissions).mockImplementation(async ({ role_id, field_keys, level }) => {
+    const keys = new Set(field_keys);
+    server.matrix = server.matrix.filter((c) => !(c.role_id === role_id && keys.has(c.field_key)));
+    if (level !== 'edit') field_keys.forEach((k) => server.matrix.push({ role_id, field_key: k, level }));
+  });
 });
 
-// The component reads/writes ?object= via useSearchParams, so it needs a router.
-const renderPage = (initialEntry = '/settings/field-access') =>
-  render(
-    <MemoryRouter initialEntries={[initialEntry]}>
-      <FieldSecurityManager />
-    </MemoryRouter>,
+// The component reads/writes ?object= via useSearchParams (router) and reads both
+// grids through react-query (QueryClientProvider).
+const renderPage = (initialEntry = '/settings/field-access') => {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <FieldSecurityManager />
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
+};
 
 describe('FieldSecurityManager — field × role level grid', () => {
   it('renders fields and reflects the configured levels (hidden cell, edit default)', async () => {
@@ -162,7 +183,7 @@ describe('FieldSecurityManager — field × role level grid', () => {
     });
   });
 
-  it('bulk apply patches the local matrix and the object badge without a refetch', async () => {
+  it('bulk apply re-reads the grid, so the cells and the object badge show what landed', async () => {
     renderPage();
     await screen.findByText('Title');
 
@@ -179,13 +200,14 @@ describe('FieldSecurityManager — field × role level grid', () => {
       level: 'read',
     });
 
-    // Local matrix patched: both viewer cells now read (Amount's hidden replaced).
+    // The grid is re-read from the server (U7.3) rather than patched locally: both
+    // viewer cells now read (Amount's hidden replaced).
     await waitFor(() =>
       expect((screen.getByLabelText('Viewer Title') as HTMLSelectElement).value).toBe('read'),
     );
     expect((screen.getByLabelText('Viewer Amount') as HTMLSelectElement).value).toBe('read');
-    // Badge recomputed from the local matrix: 2 restricted cells on deal.
-    expect(getFieldPermissionGrid).toHaveBeenCalledTimes(1); // no refetch
+    expect(getFieldPermissionGrid).toHaveBeenCalledTimes(2); // initial load + post-save re-read
+    // Badge derived from the re-read matrix: 2 restricted cells on deal.
     const dealPill = screen.getByRole('tab', { name: /Deal/ });
     expect(within(dealPill).getByText('2')).toBeInTheDocument();
   });
@@ -234,7 +256,7 @@ describe('FieldSecurityManager — field × role level grid', () => {
     expect(second.field_keys).toEqual(['f200']);
     expect(first).toMatchObject({ object_slug: 'deal', role_id: 'r-viewer', level: 'read' });
     expect(second).toMatchObject({ object_slug: 'deal', role_id: 'r-viewer', level: 'read' });
-    expect(getFieldPermissionGrid).toHaveBeenCalledTimes(1); // success path: no refetch
+    expect(getFieldPermissionGrid).toHaveBeenCalledTimes(2); // initial load + post-save re-read
   });
 
   it('a mid-chunk bulk failure surfaces the error and reloads the grid', async () => {

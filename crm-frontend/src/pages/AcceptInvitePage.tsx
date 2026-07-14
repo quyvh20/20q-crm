@@ -3,6 +3,8 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { getInvitationPreview, type InvitationPreview } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { prettyRole } from '../lib/roles';
+import { useDocumentTitle } from '../lib/useDocumentTitle';
+import LegalConsent from '../components/auth/LegalConsent';
 import { Mail, CheckCircle2, XCircle, ArrowRight, Loader2, Clock, Ban } from 'lucide-react';
 
 // AcceptInvitePage (U4): reads the invite's public metadata first so the invitee
@@ -12,6 +14,7 @@ import { Mail, CheckCircle2, XCircle, ArrowRight, Loader2, Clock, Ban } from 'lu
 // into the app instead of bouncing to /login. Existing accounts skip the
 // password fields (control of the invite link is the auth factor).
 export default function AcceptInvitePage() {
+  useDocumentTitle('Accept Invitation');
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token');
   const navigate = useNavigate();
@@ -77,6 +80,7 @@ export default function AcceptInvitePage() {
 
   const inputCls =
     'w-full px-4 py-3 bg-neutral-800/50 border border-neutral-700 rounded-xl text-white placeholder-neutral-500 focus:outline-none focus:border-blue-500 transition-colors';
+  const labelCls = 'block text-sm font-medium text-neutral-300 mb-1.5';
 
   // One shared shell so every state renders inside the same card.
   const shell = (children: React.ReactNode) => (
@@ -176,7 +180,10 @@ export default function AcceptInvitePage() {
       <p className="text-neutral-400 text-center mb-1">
         You've been invited as <span className="font-semibold text-neutral-200">{prettyRole(preview?.role_name) || 'a member'}</span>.
       </p>
-      {preview?.email && (
+      {/* An existing account gets no form fields, so the invited address is shown
+          here. A NEW invitee sees it as a real (read-only) Email field inside the
+          form below instead — see the password-manager note there. */}
+      {hasAccount && preview?.email && (
         <p className="text-neutral-500 text-center text-sm mb-6">{preview.email}</p>
       )}
 
@@ -184,8 +191,10 @@ export default function AcceptInvitePage() {
         className="flex flex-col gap-3"
         onSubmit={(e) => { e.preventDefault(); submit(true); }}
       >
+        {/* role="alert" so a rejected password (too short, mismatched) is
+            announced rather than only appearing visually. */}
         {errorMessage && (
-          <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3 flex gap-2 text-red-400 text-sm items-center animate-in slide-in-from-top-2">
+          <div role="alert" className="bg-red-500/10 border border-red-500/20 rounded-xl p-3 flex gap-2 text-red-400 text-sm items-center animate-in slide-in-from-top-2">
             <XCircle className="w-4 h-4 shrink-0" />
             <span>{errorMessage}</span>
           </div>
@@ -199,12 +208,47 @@ export default function AcceptInvitePage() {
           </p>
         ) : (
           <>
-            <div className="flex gap-3">
-              <input className={inputCls} placeholder="First name" value={firstName} onChange={e => setFirstName(e.target.value)} autoComplete="given-name" />
-              <input className={inputCls} placeholder="Last name" value={lastName} onChange={e => setLastName(e.target.value)} autoComplete="family-name" />
+            {/* The account identifier. It was previously absent entirely — this
+                page CREATES an account with a password, and a new-password field
+                with no username field beside it gives a password manager nothing
+                to bind the credential to, so it either declines to save or saves
+                it against the wrong site. Read-only because the invite token, not
+                the user, decides which address is being claimed. */}
+            <div>
+              <label htmlFor="invite-email" className={labelCls}>Email</label>
+              <input
+                id="invite-email"
+                name="email"
+                type="email"
+                autoComplete="username"
+                value={preview?.email ?? ''}
+                readOnly
+                className={`${inputCls} cursor-not-allowed opacity-80`}
+              />
             </div>
-            <input className={inputCls} type="password" placeholder="Create a password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="new-password" />
-            <input className={inputCls} type="password" placeholder="Confirm password" value={confirm} onChange={e => setConfirm(e.target.value)} autoComplete="new-password" />
+
+            {/* Every field below was placeholder-only: no <label>, no id, no
+                aria-label. A placeholder is not an accessible name (it vanishes on
+                input and is skipped by many screen readers), so the form read as
+                four anonymous boxes. */}
+            <div className="flex gap-3">
+              <div className="flex-1">
+                <label htmlFor="invite-first-name" className={labelCls}>First name</label>
+                <input id="invite-first-name" name="first_name" className={inputCls} placeholder="Jane" value={firstName} onChange={e => setFirstName(e.target.value)} autoComplete="given-name" />
+              </div>
+              <div className="flex-1">
+                <label htmlFor="invite-last-name" className={labelCls}>Last name</label>
+                <input id="invite-last-name" name="last_name" className={inputCls} placeholder="Doe" value={lastName} onChange={e => setLastName(e.target.value)} autoComplete="family-name" />
+              </div>
+            </div>
+            <div>
+              <label htmlFor="invite-password" className={labelCls}>Create a password</label>
+              <input id="invite-password" name="new-password" className={inputCls} type="password" placeholder="Min. 8 characters" value={password} onChange={e => setPassword(e.target.value)} autoComplete="new-password" minLength={8} />
+            </div>
+            <div>
+              <label htmlFor="invite-confirm-password" className={labelCls}>Confirm password</label>
+              <input id="invite-confirm-password" name="confirm-password" className={inputCls} type="password" placeholder="Re-enter your password" value={confirm} onChange={e => setConfirm(e.target.value)} autoComplete="new-password" />
+            </div>
           </>
         )}
 
@@ -233,6 +277,12 @@ export default function AcceptInvitePage() {
             I'll sign in with Google instead
           </button>
         )}
+
+        {/* Consent (U7.6) — the third account-creation surface. Shown only to a
+            BRAND-NEW invitee: someone who already has an account agreed to these
+            terms when they created it, and re-asking on a workspace join would be
+            noise. Covers both paths above (set a password, or defer to Google). */}
+        {!hasAccount && <LegalConsent className="mt-1 text-neutral-500" />}
       </form>
     </>,
   );

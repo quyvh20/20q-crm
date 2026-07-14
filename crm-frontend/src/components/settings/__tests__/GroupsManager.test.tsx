@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { UserGroup, WorkspaceMember } from '../../../lib/api';
 
 vi.mock('../../../lib/api', () => ({
   listGroups: vi.fn(),
   createGroup: vi.fn(),
+  updateGroup: vi.fn(),
   deleteGroup: vi.fn(),
   addGroupMember: vi.fn(),
   removeGroupMember: vi.fn(),
@@ -32,29 +34,41 @@ beforeEach(() => {
   vi.mocked(getWorkspaceMembers).mockResolvedValue([member({ full_name: 'Alice A', email: 'alice@x.com' })]);
 });
 
+// Groups + members are react-query caches (U7.3), so renders need a provider.
+const renderManager = () => {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <GroupsManager />
+    </QueryClientProvider>,
+  );
+};
+
 describe('GroupsManager', () => {
   it('lists groups with member counts and an empty state', async () => {
     vi.mocked(listGroups).mockResolvedValue([]);
-    render(<GroupsManager />);
+    renderManager();
     await waitFor(() => expect(screen.getByText(/No groups yet/)).toBeTruthy());
   });
 
   it('creates a group', async () => {
     vi.mocked(listGroups).mockResolvedValue([]);
     vi.mocked(createGroup).mockResolvedValue(group({ name: 'West Region' }));
-    render(<GroupsManager />);
+    renderManager();
 
     await waitFor(() => expect(screen.getByLabelText('New group name')).toBeTruthy());
     fireEvent.change(screen.getByLabelText('New group name'), { target: { value: 'West Region' } });
     fireEvent.click(screen.getByText('Create group'));
     await waitFor(() => expect(createGroup).toHaveBeenCalledWith('West Region'));
+    // The list is re-read rather than patched locally.
+    await waitFor(() => expect(listGroups).toHaveBeenCalledTimes(2));
   });
 
   it('adds a member by toggling the checkbox', async () => {
     const g = group({ name: 'Leadership', member_count: 0, members: [] });
     vi.mocked(listGroups).mockResolvedValue([g]);
     vi.mocked(addGroupMember).mockResolvedValue(undefined);
-    render(<GroupsManager />);
+    renderManager();
 
     await waitFor(() => expect(screen.getByText('Leadership')).toBeTruthy());
     fireEvent.click(screen.getByText('Manage members'));

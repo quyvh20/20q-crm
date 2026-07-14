@@ -45,7 +45,8 @@ function StageRow({ stage, onSave, onDelete }: {
             <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-400/10 text-red-400">Lost</span>
           )}
         </div>
-        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        {/* focus-within: hover-only reveal hid these from keyboard users (U7 a11y). */}
+        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
           <button
             onClick={() => setEditing(true)}
             className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
 import { TwoFactorVerifyError } from '../lib/api';
+import { useDocumentTitle } from '../lib/useDocumentTitle';
 
 // The second step of sign-in (U6.4). The password (or Google) proved the identity;
 // this proves possession of the second factor and exchanges the short-lived
@@ -21,6 +22,7 @@ interface ChallengeState {
 }
 
 export default function TwoFactorChallengePage() {
+  useDocumentTitle('Two-Factor Authentication');
   const { verifyTwoFactor } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();

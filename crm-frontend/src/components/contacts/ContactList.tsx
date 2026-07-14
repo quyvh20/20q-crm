@@ -7,6 +7,7 @@ import {
 } from '@tanstack/react-table';
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getContacts, deleteContact, bulkAction, getTags, type Contact, type ContactFilter } from '../../lib/api';
+import { useConfirm } from '../common/ConfirmDialog';
 
 interface ContactListProps {
   filters: ContactFilter;
@@ -23,20 +24,9 @@ export default function ContactList({ filters, onEdit, onImport }: ContactListPr
   const [showTagDropdown, setShowTagDropdown] = useState(false);
   const [bulkFeedback, setBulkFeedback] = useState<string | null>(null);
 
-  // Custom confirm dialog state
-  const [confirmDialog, setConfirmDialog] = useState<{
-    isOpen: boolean;
-    type: 'single' | 'bulk';
-    title: string;
-    message: string;
-    onConfirm: () => void;
-  }>({
-    isOpen: false,
-    type: 'single',
-    title: '',
-    message: '',
-    onConfirm: () => {},
-  });
+  // U7: this list used to ship its own confirm modal — no Escape, no focus trap,
+  // no aria, and a hardcoded red button. It now uses the app's shared dialog.
+  const { confirm, dialog: confirmEl } = useConfirm();
 
   const {
     data,
@@ -60,7 +50,6 @@ export default function ContactList({ filters, onEdit, onImport }: ContactListPr
     mutationFn: deleteContact,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['contacts'] });
-      setConfirmDialog(prev => ({ ...prev, isOpen: false }));
     },
   });
 
@@ -71,13 +60,11 @@ export default function ContactList({ filters, onEdit, onImport }: ContactListPr
       setBulkFeedback(result.message);
       setSelectedIds(new Set());
       setShowTagDropdown(false);
-      setConfirmDialog(prev => ({ ...prev, isOpen: false }));
       queryClient.invalidateQueries({ queryKey: ['contacts'] });
       setTimeout(() => setBulkFeedback(null), 3000);
     },
     onError: (err: Error) => {
       alert(`Bulk action failed: ${err.message}`);
-      setConfirmDialog(prev => ({ ...prev, isOpen: false }));
     },
   });
 
@@ -210,28 +197,31 @@ export default function ContactList({ filters, onEdit, onImport }: ContactListPr
       {
         header: '',
         id: 'actions',
+        // focus-within keeps these reachable for keyboard users: the hover-only
+        // reveal left Edit/Delete invisible while focused (U7 a11y).
         cell: ({ row }) => (
-          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
             <button
               onClick={(e) => { e.stopPropagation(); onEdit(row.original); }}
               className="p-1.5 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
               title="Edit"
+              aria-label={`Edit ${row.original.first_name} ${row.original.last_name}`}
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
             </button>
             <button
-              onClick={(e) => {
+              onClick={async (e) => {
                 e.stopPropagation();
-                setConfirmDialog({
-                  isOpen: true,
-                  type: 'single',
+                const ok = await confirm({
                   title: 'Delete Contact',
-                  message: `Are you sure you want to delete ${row.original.first_name} ${row.original.last_name}?`,
-                  onConfirm: () => deleteMutation.mutate(row.original.id),
+                  body: `Are you sure you want to delete ${row.original.first_name} ${row.original.last_name}?`,
+                  confirmLabel: 'Delete',
                 });
+                if (ok) deleteMutation.mutate(row.original.id);
               }}
               className="p-1.5 rounded-md hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-colors"
               title="Delete"
+              aria-label={`Delete ${row.original.first_name} ${row.original.last_name}`}
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
             </button>
@@ -239,7 +229,7 @@ export default function ContactList({ filters, onEdit, onImport }: ContactListPr
         ),
       },
     ],
-    [onEdit, deleteMutation, selectedIds, allVisibleSelected, someSelected]
+    [onEdit, deleteMutation, confirm, selectedIds, allVisibleSelected, someSelected]
   );
 
   const table = useReactTable({
@@ -309,14 +299,13 @@ export default function ContactList({ filters, onEdit, onImport }: ContactListPr
           {/* Bulk Delete */}
           <button
             id="bulk-delete-btn"
-            onClick={() => {
-              setConfirmDialog({
-                isOpen: true,
-                type: 'bulk',
+            onClick={async () => {
+              const ok = await confirm({
                 title: 'Delete Contacts',
-                message: `Are you sure you want to delete ${selectedIds.size} contact(s)? This action cannot be undone.`,
-                onConfirm: () => bulkMutation.mutate({ action: 'delete' }),
+                body: `Are you sure you want to delete ${selectedIds.size} contact(s)? This action cannot be undone.`,
+                confirmLabel: 'Delete',
               });
+              if (ok) bulkMutation.mutate({ action: 'delete' });
             }}
             disabled={bulkMutation.isPending}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/80 hover:bg-red-500 transition-colors text-sm font-medium disabled:opacity-50"
@@ -406,36 +395,7 @@ export default function ContactList({ filters, onEdit, onImport }: ContactListPr
         )}
       </div>
 
-      {/* Custom Confirm Dialog Modal */}
-      {confirmDialog.isOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-card w-full max-w-md rounded-2xl shadow-xl overflow-hidden animate-in zoom-in-95 duration-200">
-            <div className="p-6">
-              <h3 className="text-lg font-semibold mb-2">{confirmDialog.title}</h3>
-              <p className="text-muted-foreground text-sm">{confirmDialog.message}</p>
-            </div>
-            <div className="px-6 py-4 bg-muted/30 flex justify-end gap-3 border-t">
-              <button
-                onClick={() => setConfirmDialog(prev => ({ ...prev, isOpen: false }))}
-                className="px-4 py-2 text-sm font-medium rounded-lg hover:bg-muted transition-colors"
-                disabled={deleteMutation.isPending || bulkMutation.isPending}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={confirmDialog.onConfirm}
-                disabled={deleteMutation.isPending || bulkMutation.isPending}
-                className="px-4 py-2 text-sm font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors flex items-center gap-2 disabled:opacity-50"
-              >
-                {(deleteMutation.isPending || bulkMutation.isPending) ? (
-                  <div className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
-                ) : null}
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {confirmEl}
     </div>
   );
 }

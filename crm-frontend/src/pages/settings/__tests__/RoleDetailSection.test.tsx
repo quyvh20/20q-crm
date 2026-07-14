@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { RoleAccess } from '../../../lib/api';
 
 // RoleDetailSection is the single-pivot role page (U3.1/U3.2): one merged
@@ -58,20 +59,36 @@ const SALES_ACCESS: RoleAccess = {
   layouts: [{ object_slug: 'deal', layout_id: 'l1', layout_name: 'Sales view' }],
 };
 
-const renderAt = (id = 'r1') =>
-  render(
-    <MemoryRouter initialEntries={[`/settings/roles/${id}`]}>
-      <Routes>
-        <Route path="/settings/roles/:id" element={<RoleDetailSection />} />
-      </Routes>
-    </MemoryRouter>,
+// The page reads its role through react-query (U7.3), so renders need a provider.
+const renderAt = (id = 'r1') => {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={[`/settings/roles/${id}`]}>
+        <Routes>
+          <Route path="/settings/roles/:id" element={<RoleDetailSection />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
+};
+
+// A stand-in for the server's copy of the role. Saves no longer patch a local copy —
+// they invalidate and RE-READ (so a concurrent admin's edit shows up) — so the fake
+// server has to apply the writes for the post-save UI assertions to mean anything.
+// Tests that need a different role override getRoleAccess with a plain mockResolvedValue.
+let access: RoleAccess;
 
 beforeEach(() => {
-  vi.mocked(getRoleAccess).mockResolvedValue(SALES_ACCESS);
+  access = structuredClone(SALES_ACCESS);
+  vi.mocked(getRoleAccess).mockReset().mockImplementation(async () => structuredClone(access));
   vi.mocked(getRolesCatalog).mockResolvedValue(CATALOG);
-  vi.mocked(setRoleCapabilities).mockReset().mockResolvedValue(undefined);
-  vi.mocked(updateRole).mockReset().mockResolvedValue(undefined);
+  vi.mocked(setRoleCapabilities).mockReset().mockImplementation(async (_id, capabilities) => {
+    access.role.capabilities = [...capabilities];
+  });
+  vi.mocked(updateRole).mockReset().mockImplementation(async (_id, patch) => {
+    Object.assign(access.role, patch);
+  });
   hasCapability.mockClear();
 });
 afterEach(cleanup);
@@ -172,9 +189,10 @@ describe('RoleDetailSection — one role, one pivot', () => {
     await waitFor(() =>
       expect(updateRole).toHaveBeenCalledWith('r1', { name: 'Account Exec', description: 'Owns accounts' }),
     );
-    // Back to display mode with the new identity, no refetch needed.
+    // Back to display mode with the new identity, confirmed by the re-read.
     expect(await screen.findByRole('heading', { name: 'Account Exec' })).toBeInTheDocument();
     expect(screen.getByText('Owns accounts')).toBeInTheDocument();
+    await waitFor(() => expect(getRoleAccess).toHaveBeenCalledTimes(2)); // initial load + post-save re-read
   });
 
   it('renders a built-in non-owner role read-only with the duplicate-to-customize copy', async () => {

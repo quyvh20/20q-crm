@@ -1,7 +1,7 @@
 // REST client for the in-app notification inbox (A6.2). Uses the shared apiFetch
 // (bearer token + credentials + 401→refresh) and parseJsonSafe from lib/api. Every
 // endpoint is scoped server-side to (org, caller), so there are no ids in these paths.
-import { apiFetch, parseJsonSafe } from '../../lib/api';
+import { apiFetch, parseJsonSafe, apiError } from '../../lib/api';
 
 export interface AppNotification {
   id: string;
@@ -30,14 +30,14 @@ export async function getNotifications(params?: { cursor?: string; limit?: numbe
   if (params?.unreadOnly) qs.set('unread', 'true');
   const res = await apiFetch(`/api/notifications?${qs.toString()}`);
   const json = await parseJsonSafe(res);
-  if (!res.ok) throw new Error(json.error?.message || json.error || 'Failed to fetch notifications');
+  if (!res.ok) throw apiError(res, json, 'Failed to fetch notifications');
   return json.data as NotificationPage;
 }
 
 export async function getUnreadCount(): Promise<number> {
   const res = await apiFetch(`/api/notifications/unread-count`);
   const json = await parseJsonSafe(res);
-  if (!res.ok) throw new Error(json.error?.message || json.error || 'Failed to fetch unread count');
+  if (!res.ok) throw apiError(res, json, 'Failed to fetch unread count');
   return (json.data?.unread_count ?? 0) as number;
 }
 
@@ -45,7 +45,7 @@ export async function markNotificationRead(id: string): Promise<void> {
   const res = await apiFetch(`/api/notifications/${id}/read`, { method: 'POST' });
   if (!res.ok) {
     const json = await res.json().catch(() => ({}));
-    throw new Error(json.error?.message || json.error || 'Failed to mark notification read');
+    throw apiError(res, json, 'Failed to mark notification read');
   }
 }
 
@@ -53,7 +53,7 @@ export async function markAllNotificationsRead(): Promise<void> {
   const res = await apiFetch(`/api/notifications/read-all`, { method: 'POST' });
   if (!res.ok) {
     const json = await res.json().catch(() => ({}));
-    throw new Error(json.error?.message || json.error || 'Failed to mark all read');
+    throw apiError(res, json, 'Failed to mark all read');
   }
 }
 
@@ -84,13 +84,13 @@ export interface NotificationPreferencesUpdate {
 export async function getNotificationPreferences(): Promise<NotificationPreferences> {
   const res = await apiFetch(`/api/notifications/preferences`);
   const json = await parseJsonSafe(res);
-  if (!res.ok) throw new Error(json.error?.message || json.error || 'Failed to load notification preferences');
+  if (!res.ok) throw apiError(res, json, 'Failed to load notification preferences');
   return json.data as NotificationPreferences;
 }
 
 export async function updateNotificationPreferences(input: NotificationPreferencesUpdate): Promise<NotificationPreferences> {
   const res = await apiFetch(`/api/notifications/preferences`, { method: 'PUT', body: JSON.stringify(input) });
   const json = await parseJsonSafe(res);
-  if (!res.ok) throw new Error(json.error?.message || json.error || 'Failed to save notification preferences');
+  if (!res.ok) throw apiError(res, json, 'Failed to save notification preferences');
   return json.data as NotificationPreferences;
 }

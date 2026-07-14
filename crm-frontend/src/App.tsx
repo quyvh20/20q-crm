@@ -48,6 +48,8 @@ import SharedWithMePage from './pages/SharedWithMePage';
 import ReportsListPage from './features/reports/ReportsListPage';
 import ReportBuilderPage from './features/reports/ReportBuilderPage';
 import DashboardPage from './features/reports/DashboardPage';
+import TermsPage from './pages/legal/TermsPage';
+import PrivacyPage from './pages/legal/PrivacyPage';
 
 // Initialize Sentry
 const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN;
@@ -150,6 +152,15 @@ function App() {
             <Route path="/auth/callback" element={<AuthCallbackPage />} />
             <Route path="/accept-invite" element={<AcceptInvitePage />} />
 
+            {/* Legal pages (U7.6): the fallback destinations for the signup
+                consent line when the operator hasn't pointed VITE_TERMS_URL /
+                VITE_PRIVACY_URL at their real ones. Deliberately NOT wrapped in
+                PublicRoute — that redirects an authenticated user away, and
+                someone who is already signed in must still be able to read the
+                terms they agreed to. */}
+            <Route path="/terms" element={<TermsPage />} />
+            <Route path="/privacy" element={<PrivacyPage />} />
+
             {/* Authenticated but pre-workspace: the R2 chooser + zero-membership
                 dead-end. requireWorkspace={false} so they don't redirect to themselves. */}
             <Route path="/choose-workspace" element={
@@ -167,22 +178,27 @@ function App() {
               <ProtectedRoute requireWorkspace={false}><EnrollTwoFactorPage /></ProtectedRoute>
             } />
 
-            {/* Protected routes */}
+            {/* Protected routes.
+                `title` on AppLayout drives the tab title (U7.2). It is set here
+                for every STATIC page and deliberately OMITTED for the pages whose
+                title is data — a deal, a record, a workflow, a report, a settings
+                section — which call useDocumentTitle themselves once loaded. */}
             <Route path="/" element={
               <ProtectedRoute>
-                <AppLayout><DashboardPage /></AppLayout>
+                <AppLayout title="Dashboard"><DashboardPage /></AppLayout>
               </ProtectedRoute>
             } />
             <Route path="/contacts" element={
               <ProtectedRoute>
-                <AppLayout><ContactsPage /></AppLayout>
+                <AppLayout title="Contacts"><ContactsPage /></AppLayout>
               </ProtectedRoute>
             } />
             <Route path="/deals" element={
               <ProtectedRoute>
-                <AppLayout><DealsPage /></AppLayout>
+                <AppLayout title="Deals"><DealsPage /></AppLayout>
               </ProtectedRoute>
             } />
+            {/* No title: DealDetailPage titles the tab with the loaded deal name. */}
             <Route path="/deals/:id" element={
               <ProtectedRoute>
                 <AppLayout><DealDetailPage /></AppLayout>
@@ -231,24 +247,24 @@ function App() {
             } />
             <Route path="/voice" element={
               <ProtectedRoute>
-                <AppLayout><VoicePage /></AppLayout>
+                <AppLayout title="Voice Notes"><VoicePage /></AppLayout>
               </ProtectedRoute>
             } />
             <Route path="/ai" element={
               <ProtectedRoute>
-                <AppLayout><AIPage /></AppLayout>
+                <AppLayout title="AI Assistant"><AIPage /></AppLayout>
               </ProtectedRoute>
             } />
             <Route path="/workflows" element={
               <ProtectedRoute>
-                <AppLayout><WorkflowList /></AppLayout>
+                <AppLayout title="Automations"><WorkflowList /></AppLayout>
               </ProtectedRoute>
             } />
             {/* A5: email templates library. Static segments outrank "/workflows/:id"
                 in React Router v6 ranking, so these resolve before the builder. */}
             <Route path="/workflows/email-templates" element={
               <ProtectedRoute>
-                <AppLayout><EmailTemplatesPage /></AppLayout>
+                <AppLayout title="Email Templates"><EmailTemplatesPage /></AppLayout>
               </ProtectedRoute>
             } />
             <Route path="/workflows/email-templates/new" element={
@@ -273,12 +289,12 @@ function App() {
             } />
             <Route path="/shared-with-me" element={
               <ProtectedRoute>
-                <AppLayout><SharedWithMePage /></AppLayout>
+                <AppLayout title="Shared with me"><SharedWithMePage /></AppLayout>
               </ProtectedRoute>
             } />
             <Route path="/reports" element={
               <ProtectedRoute>
-                <AppLayout><ReportsListPage /></AppLayout>
+                <AppLayout title="Reports"><ReportsListPage /></AppLayout>
               </ProtectedRoute>
             } />
             <Route path="/reports/new" element={

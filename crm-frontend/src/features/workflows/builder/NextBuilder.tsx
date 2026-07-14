@@ -13,6 +13,7 @@ import { useParams, useNavigate, useLocation, useSearchParams } from 'react-rout
 import { ReactFlowProvider } from '@xyflow/react';
 import { ArrowLeft, Loader2, FlaskConical, X, Sparkles, Undo2 } from 'lucide-react';
 import { useBuilderStore, getStepAtPath, parseStepPath } from '../store';
+import { useDocumentTitle } from '../../../lib/useDocumentTitle';
 import { useWorkflow, useSaveWorkflow, useTestRun } from '../queries';
 import { entityKindForTrigger } from '../RunNowModal';
 import { BuilderContext, type DryRunState } from './BuilderContext';
@@ -37,6 +38,12 @@ export function NextBuilder() {
   const dupQuery = useWorkflow(duplicateFromId, { enabled: isDuplicating });
   const saveMutation = useSaveWorkflow();
   const testMutation = useTestRun();
+
+  // Tab title from the LOADED workflow (U7.2) — deliberately wfQuery.data.name and
+  // NOT store.name, which is bound to the builder's name input: titling off the
+  // store would rewrite document.title on every keystroke of a rename. Undefined
+  // while the query is in flight ⇒ the bare app name.
+  useDocumentTitle(isEditing ? wfQuery.data?.name : 'New automation');
 
   // Dry-run overlay (A3.5). Tests the SAVED workflow (the server loads it), so the
   // Test control requires a saved, non-dirty workflow with a supported trigger.
