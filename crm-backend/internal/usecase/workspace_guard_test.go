@@ -542,3 +542,24 @@ func TestUpdateMemberRole_RejectsCrossTenantRole(t *testing.T) {
 		t.Fatal("target's role must be unchanged after a cross-tenant assignment is rejected")
 	}
 }
+
+// Two-factor (U6.4) — unused by these tests; stubbed to satisfy domain.AuthRepository.
+func (f *fakeWorkspaceRepo) SetTOTPSecret(context.Context, uuid.UUID, string) error { return nil }
+func (f *fakeWorkspaceRepo) EnableTOTP(context.Context, uuid.UUID, []string) error  { return nil }
+func (f *fakeWorkspaceRepo) DisableTOTP(context.Context, uuid.UUID) error           { return nil }
+func (f *fakeWorkspaceRepo) ReplaceBackupCodes(context.Context, uuid.UUID, []string) error { return nil }
+func (f *fakeWorkspaceRepo) ListUnusedBackupCodes(context.Context, uuid.UUID) ([]domain.TwoFactorBackupCode, error) {
+	return nil, nil
+}
+func (f *fakeWorkspaceRepo) ConsumeBackupCode(context.Context, uuid.UUID) (bool, error) { return false, nil }
+func (f *fakeWorkspaceRepo) CountBackupCodesRemaining(context.Context, uuid.UUID) (int, error) { return 0, nil }
+func (f *fakeWorkspaceRepo) CreateTwoFactorChallenge(context.Context, *domain.TwoFactorChallenge) error { return nil }
+func (f *fakeWorkspaceRepo) GetTwoFactorChallengeByHash(context.Context, string) (*domain.TwoFactorChallenge, error) {
+	return nil, nil
+}
+func (f *fakeWorkspaceRepo) IncrementChallengeAttempts(context.Context, uuid.UUID) error { return nil }
+func (f *fakeWorkspaceRepo) ConsumeTwoFactorChallenge(context.Context, uuid.UUID) (bool, error) { return true, nil }
+func (f *fakeWorkspaceRepo) DeleteExpiredTwoFactorChallenges(context.Context) (int64, error) { return 0, nil }
+
+func (f *fakeWorkspaceRepo) ClaimChallengeAttempt(context.Context, uuid.UUID, int) (bool, error) { return true, nil }
+func (f *fakeWorkspaceRepo) RevokeAllUserAPITokens(context.Context, uuid.UUID) (int64, error)    { return 0, nil }

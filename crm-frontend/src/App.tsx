@@ -16,6 +16,7 @@ import WorkspaceGeneralSection from './pages/settings/WorkspaceGeneralSection';
 import RoleDetailSection from './pages/settings/RoleDetailSection';
 import ProfileSection from './pages/settings/ProfileSection';
 import SecuritySection from './pages/settings/SecuritySection';
+import ApiTokensSection from './pages/settings/ApiTokensSection';
 import NotificationPreferencesSection from './pages/settings/NotificationPreferencesSection';
 import PipelineStagesManager from './components/settings/PipelineStagesManager';
 import ObjectsManager from './components/settings/ObjectsManager';
@@ -26,6 +27,8 @@ import FieldSecurityManager from './components/settings/FieldSecurityManager';
 import AuditLogViewer from './components/settings/AuditLogViewer';
 import CustomObjectPage from './pages/CustomObjectPage';
 import ObjectRecordPage from './pages/ObjectRecordPage';
+import TwoFactorChallengePage from './pages/TwoFactorChallengePage';
+import EnrollTwoFactorPage from './pages/EnrollTwoFactorPage';
 import AcceptInvitePage from './pages/AcceptInvitePage';
 import ChooseWorkspacePage from './pages/ChooseWorkspacePage';
 import NoWorkspacePage from './pages/NoWorkspacePage';
@@ -41,6 +44,7 @@ import { RunHistory } from './features/workflows/RunHistory';
 import { EmailTemplatesPage } from './features/workflows/EmailTemplatesPage';
 import { EmailTemplateEditor } from './features/workflows/EmailTemplateEditor';
 import AIPage from './pages/AIPage';
+import SharedWithMePage from './pages/SharedWithMePage';
 import ReportsListPage from './features/reports/ReportsListPage';
 import ReportBuilderPage from './features/reports/ReportBuilderPage';
 import DashboardPage from './features/reports/DashboardPage';
@@ -131,6 +135,11 @@ function App() {
             <Route path="/builder-demo" element={<BuilderDemo />} />
             {/* Public routes */}
             <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
+            {/* The 2FA login challenge (U6.4). Public because the caller has no
+                session yet — only a challenge. Reached from LoginPage (challenge in
+                router state) or straight from the Google callback (challenge in an
+                httpOnly cookie). PublicRoute bounces you out once verify succeeds. */}
+            <Route path="/login/2fa" element={<PublicRoute><TwoFactorChallengePage /></PublicRoute>} />
             <Route path="/register" element={<PublicRoute><RegisterPage /></PublicRoute>} />
             <Route path="/forgot-password" element={<PublicRoute><ForgotPasswordPage /></PublicRoute>} />
             {/* reset/verify are token-bearing links — left UNWRAPPED so a logged-in
@@ -148,6 +157,14 @@ function App() {
             } />
             <Route path="/no-workspace" element={
               <ProtectedRoute requireWorkspace={false}><NoWorkspacePage /></ProtectedRoute>
+            } />
+            {/* Forced 2FA enrollment (U6.4): a real session that the workspace policy
+                confines to enrolling — every other /api/* route 403s with
+                `two_factor_required` and apiFetch parks them here.
+                requireWorkspace={false} so the chooser/dead-end guards can't bounce
+                them out of the one page they're allowed on. */}
+            <Route path="/enroll-2fa" element={
+              <ProtectedRoute requireWorkspace={false}><EnrollTwoFactorPage /></ProtectedRoute>
             } />
 
             {/* Protected routes */}
@@ -182,6 +199,7 @@ function App() {
               <Route index element={<SettingsIndexRedirect />} />
               <Route path="profile" element={<ProfileSection />} />
               <Route path="security" element={<SecuritySection />} />
+              <Route path="api-tokens" element={<ApiTokensSection />} />
               <Route path="notifications" element={<NotificationPreferencesSection />} />
               <Route path="general" element={<WorkspaceGeneralSection />} />
               <Route path="members" element={<MembersSection />} />
@@ -251,6 +269,11 @@ function App() {
             <Route path="/workflows/:id" element={
               <ProtectedRoute>
                 <AppLayout><NextBuilder /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/shared-with-me" element={
+              <ProtectedRoute>
+                <AppLayout><SharedWithMePage /></AppLayout>
               </ProtectedRoute>
             } />
             <Route path="/reports" element={

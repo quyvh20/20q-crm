@@ -13,6 +13,13 @@ const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://l
  * /api/auth/me, then redirect (to the chooser when the server flagged a multi-org
  * user via needs_chooser). On the subsequent full-page load the AuthProvider
  * re-establishes the session from the cookie.
+ *
+ * 2FA (U6.4) never reaches this page: Google proves the identity, not the second
+ * factor, so a 2FA-enrolled user is redirected by the server straight to
+ * /login/2fa with the challenge in an httpOnly cookie — there is no access token
+ * to hand over yet. And a user whose workspace REQUIRES 2FA they haven't set up
+ * does get a session here (they need one to enroll); their first protected request
+ * 403s with `two_factor_required`, and apiFetch parks them on the enrollment page.
  */
 export default function AuthCallbackPage() {
   const [searchParams] = useSearchParams();

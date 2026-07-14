@@ -406,11 +406,14 @@ func reportCatalogForDef(def *domain.ObjectDef, fields []domain.ObjectField) []d
 	addVirtual(domain.ReportField{Key: "created_at", Label: "Created At", Type: "date", Column: "created_at"})
 	addVirtual(domain.ReportField{Key: "updated_at", Label: "Updated At", Type: "date", Column: "updated_at"})
 
-	switch def.Slug {
-	case "contact":
+	// Owner is a real column on every object that has one (contact, deal, and — as
+	// of U6.3 — every custom object), so it is reportable on all of them. Company is
+	// the exception: it is org-wide and carries no owner.
+	if def.Slug != "company" {
 		addVirtual(domain.ReportField{Key: "owner_user_id", Label: "Owner", Type: "relation", Column: "owner_user_id", LabelKind: "user"})
-	case "deal":
-		addVirtual(domain.ReportField{Key: "owner_user_id", Label: "Owner", Type: "relation", Column: "owner_user_id", LabelKind: "user"})
+	}
+
+	if def.Slug == "deal" {
 		addVirtual(domain.ReportField{Key: "is_won", Label: "Is Won", Type: "boolean", Column: "is_won"})
 		addVirtual(domain.ReportField{Key: "is_lost", Label: "Is Lost", Type: "boolean", Column: "is_lost"})
 		addVirtual(domain.ReportField{Key: "closed_at", Label: "Closed At", Type: "date", Column: "closed_at"})

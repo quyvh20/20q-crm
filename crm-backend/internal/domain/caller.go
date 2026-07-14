@@ -38,6 +38,17 @@ type Caller struct {
 	// to fork own-scope and shape its persona (P7); REST relies on the repo-layer
 	// scope, so it doesn't need to read this.
 	DataScope string
+	// IsAPIToken marks a request authenticated by a personal access token rather
+	// than a session (U6.5). The token resolves to the SAME Caller its owner would
+	// get — identical role, row scope and audit actor — with one addition:
+	// TokenScopes narrows what it may do. Nothing downstream branches on this; only
+	// the capability/OLS middleware does, to apply the intersection.
+	IsAPIToken bool
+	// TokenScopes are the scope codes the token was granted. Meaningful only when
+	// IsAPIToken. The gate is an INTERSECTION with the role's own capabilities, and
+	// it is applied BEFORE the owner-role bypass — otherwise a leaked owner token
+	// would ignore the scopes its creator chose for it.
+	TokenScopes []string
 }
 
 type callerCtxKey struct{}

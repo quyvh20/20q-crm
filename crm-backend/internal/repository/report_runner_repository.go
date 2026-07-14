@@ -33,10 +33,10 @@ func reportRefForDef(def *domain.ObjectDef) (reportTableRef, error) {
 		if !reportIdentRe.MatchString(table) {
 			return reportTableRef{}, fmt.Errorf("report: invalid record table %q", table)
 		}
-		return reportTableRef{Table: table, JSONColumn: "custom_fields"}, nil
+		return reportTableRef{Table: table, JSONColumn: "custom_fields", Slug: def.Slug}, nil
 	}
 	defID := def.ID
-	return reportTableRef{Table: "custom_object_records", JSONColumn: "data", ObjectDefID: &defID}, nil
+	return reportTableRef{Table: "custom_object_records", JSONColumn: "data", ObjectDefID: &defID, Slug: def.Slug}, nil
 }
 
 func (r *reportRunnerRepository) Run(ctx context.Context, orgID uuid.UUID, def *domain.ObjectDef, catalog []domain.ReportField, cfg domain.ReportConfig) (*domain.ReportResult, error) {
@@ -45,12 +45,13 @@ func (r *reportRunnerRepository) Run(ctx context.Context, orgID uuid.UUID, def *
 		return nil, err
 	}
 
-	scope, scopeUserID, ok := extractDataScope(ctx)
+	scope, scopeUserID, scopeRoleID, ok := extractCallerScope(ctx)
 	if !ok {
+		// No caller on the context — a trusted in-process run (no HTTP request).
 		scope = domain.DataScopeAll
 	}
 
-	query, args, err := buildReportSQL(ref, catalog, cfg, orgID, scope, scopeUserID)
+	query, args, err := buildReportSQL(ref, catalog, cfg, orgID, reportScope{Scope: scope, UserID: scopeUserID, RoleID: scopeRoleID})
 	if err != nil {
 		return nil, err
 	}

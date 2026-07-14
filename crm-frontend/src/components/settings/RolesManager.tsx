@@ -9,10 +9,18 @@ import {
   deleteRole,
   ALL_CAPABILITIES,
   type RoleDetail,
+  type DataScope,
 } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { prettyRole } from '../../lib/roles';
 import { useConfirm } from '../common/ConfirmDialog';
+
+// Row scope, one line per card (U6). Teams are user groups.
+const SCOPE_LABELS: Record<DataScope, string> = {
+  own: 'Sees own + shared records',
+  team: 'Sees their teams’ records',
+  all: 'Sees all records',
+};
 
 // RolesManager is the roles LIST (U3.1): create/duplicate/delete plus a card per
 // role that links into the role detail page, where everything about one role —
@@ -204,11 +212,11 @@ export default function RolesManager() {
       {/* Role cards → detail */}
       <div className="grid gap-3 sm:grid-cols-2">
         {roles.map((role) => {
+          // Tri-state row scope (U6): 'team' = every record owned by someone in a
+          // user group they belong to.
           const scopeText = role.is_owner
             ? 'Sees everything'
-            : role.data_scope === 'own'
-              ? 'Sees own + shared records'
-              : 'Sees all records';
+            : SCOPE_LABELS[role.data_scope] ?? SCOPE_LABELS.own;
           const capsText = role.is_owner
             ? 'All permissions'
             : `${role.capabilities.length} of ${totalCaps} permissions`;

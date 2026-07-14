@@ -8,6 +8,7 @@ import {
   type UniformRecord,
 } from '../../lib/api';
 import { FieldInput, type RelationOption } from './fieldHelpers';
+import OwnerPicker from '../../components/records/OwnerPicker';
 
 interface ObjectFormProps {
   schema: ObjectSchema;
@@ -22,7 +23,14 @@ interface ObjectFormProps {
 // entirely by the schema descriptor, so a Deal and a custom "Project" are edited
 // through the exact same component — that is the P3 "one ObjectForm" deliverable.
 export default function ObjectForm({ schema, record, inline, onSaved, onCancel }: ObjectFormProps) {
-  const [formData, setFormData] = useState<Record<string, unknown>>(() => ({ ...(record?.fields ?? {}) }));
+  const [formData, setFormData] = useState<Record<string, unknown>>(() => {
+    const base: Record<string, unknown> = { ...(record?.fields ?? {}) };
+    // Owner (U6) rides in the fields map, but seed it from the record's own
+    // owner_user_id too so an older payload that only carries the column still
+    // edits correctly. Unassigning writes null — never fall back through it.
+    if (record && base.owner_user_id === undefined) base.owner_user_id = record.owner_user_id ?? '';
+    return base;
+  });
   const [relationOptions, setRelationOptions] = useState<Record<string, RelationOption[]>>({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -90,6 +98,23 @@ export default function ObjectForm({ schema, record, inline, onSaved, onCancel }
       <div style={{ flex: 1, overflowY: inline ? 'visible' : 'auto', padding: 24 }}>
         {error && (
           <div style={{ background: '#fef2f2', color: '#dc2626', padding: '8px 12px', borderRadius: 6, marginBottom: 16, fontSize: 13 }}>{error}</div>
+        )}
+
+        {/* Owner (U6) is not a registry field — it never appears in schema.fields —
+            so it gets its own control, above the field loop, on every object that
+            has one. It still travels inside the fields map on save. */}
+        {schema.has_owner && (
+          <div style={{ marginBottom: 16 }}>
+            <label htmlFor="object-form-owner" style={{ fontSize: 13, fontWeight: 500, color: '#374151', display: 'block', marginBottom: 4 }}>
+              Owner
+            </label>
+            <OwnerPicker
+              id="object-form-owner"
+              value={(formData.owner_user_id as string | null | undefined) ?? ''}
+              onChange={(userId) => setField('owner_user_id', userId)}
+              disabled={saving}
+            />
+          </div>
         )}
 
         {/* Mirror fields are read-only (their value is pulled from a linked record),

@@ -57,10 +57,12 @@ func ParseSessionCacheValue(val string) (status string, tokenVersion int, dataSc
 	if err != nil {
 		return "", 0, "", uuid.Nil, false, "", false
 	}
-	scope := parts[2]
-	if scope != domain.DataScopeOwn {
-		scope = domain.DataScopeAll
-	}
+	// Whitelist the scope (unknown → narrowest). The old shape here was
+	// `if scope != own { scope = all }`, which would have handed every team-scoped
+	// user the entire workspace on their first Redis cache hit — and only in
+	// production, since a cache-less dev run re-reads the DB on every request and
+	// never exercises this path.
+	scope := domain.NormalizeDataScope(parts[2])
 	return parts[0], tv, scope, rid, owner, parts[5], true
 }
 

@@ -113,3 +113,70 @@ describe('apiFetch — 401 refresh', () => {
     expect(getAccessToken()).toBe('new-token');
   });
 });
+
+// U6.4: a workspace can require 2FA. A member who hasn't enrolled keeps a REAL
+// session (they need one to reach the enrollment endpoints) but every other route
+// 403s with code `two_factor_required` — so the SPA must park them on the
+// enrollment screen instead of rendering a wall of failed panels.
+describe('apiFetch — two_factor_required (403)', () => {
+  const withLocation = async (pathname: string, fn: (loc: Location) => Promise<void>) => {
+    const loc = { href: '', pathname, search: '' } as Location;
+    const original = window.location;
+    Object.defineProperty(window, 'location', { configurable: true, value: loc });
+    try {
+      await fn(loc);
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, value: original });
+    }
+  };
+
+  beforeEach(() => {
+    localStorage.clear();
+    setAccessToken('tok');
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    setAccessToken(null);
+  });
+
+  it('redirects to the enrollment screen and still returns an unconsumed body', async () => {
+    await withLocation('/deals', async (loc) => {
+      vi.stubGlobal('fetch', vi.fn(() =>
+        Promise.resolve(jsonResponse({ data: null, error: 'set it up to continue', code: 'two_factor_required' }, 403)),
+      ));
+
+      const res = await apiFetch('/api/deals');
+
+      expect(loc.href).toBe('/enroll-2fa');
+      // The interceptor peeks at a CLONE — the caller's Response must still be readable.
+      expect(res.status).toBe(403);
+      await expect(res.json()).resolves.toMatchObject({ code: 'two_factor_required' });
+    });
+  });
+
+  it('leaves an ordinary 403 alone', async () => {
+    await withLocation('/deals', async (loc) => {
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(jsonResponse({ error: 'forbidden' }, 403))));
+
+      const res = await apiFetch('/api/deals');
+
+      expect(res.status).toBe(403);
+      expect(loc.href).toBe('');
+    });
+  });
+
+  it('does not re-navigate when already on the enrollment screen (no loop)', async () => {
+    // Every panel on the enrollment page that touches a protected route 403s;
+    // without the guard each one would kick off another navigation.
+    await withLocation('/enroll-2fa', async (loc) => {
+      vi.stubGlobal('fetch', vi.fn(() =>
+        Promise.resolve(jsonResponse({ error: 'nope', code: 'two_factor_required' }, 403)),
+      ));
+
+      await apiFetch('/api/notifications');
+
+      expect(loc.href).toBe('');
+    });
+  });
+});

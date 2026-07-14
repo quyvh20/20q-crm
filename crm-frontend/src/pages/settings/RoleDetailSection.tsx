@@ -16,6 +16,21 @@ import { useAuth } from '../../lib/auth';
 import { prettyRole, SENSITIVE_CAPABILITIES } from '../../lib/roles';
 import { useConfirm } from '../../components/common/ConfirmDialog';
 
+// Row scope in plain words (U6). 'team' is the third value: a team IS a user
+// group, so a team-scoped member sees the records owned by everyone they share
+// a group with — no separate "team" entity to maintain.
+const SCOPE_SUMMARY: Record<DataScope, string> = {
+  own: 'Only records they own, plus records shared with them.',
+  team: 'Records owned by anyone on their teams, plus records shared with them.',
+  all: 'All records in the workspace.',
+};
+
+const SCOPE_HELP: Record<DataScope, string> = {
+  own: 'They see the records they own. Anything else must be shared with them one record at a time.',
+  team: 'Teams are User Groups — a member sees every record owned by someone in a group they belong to. Manage them in Settings → User Groups.',
+  all: 'They see every record of every object they have access to below.',
+};
+
 // RoleDetailSection is one role's whole story on a single page with a single
 // pivot (U3.1): identity + capabilities + effective object/field access + data
 // scope + layout routing + member count. The "What can this role see?" table is
@@ -256,23 +271,27 @@ export default function RoleDetailSection() {
       <section className="border rounded-lg p-4">
         <h3 className="text-sm font-semibold">Which records can they see?</h3>
         <p className="text-xs text-muted-foreground mt-0.5 mb-2">
-          Applies on top of the object access below, per record.
+          Applies on top of the object access below, per record. Records shared with them individually are always visible.
         </p>
         {role.is_owner || role.is_system ? (
-          <p className="text-sm">
-            {role.data_scope === 'own' ? 'Only records they own, plus records shared with them.' : 'All records.'}
-          </p>
+          <p className="text-sm">{SCOPE_SUMMARY[role.data_scope]}</p>
         ) : (
-          <select
-            value={role.data_scope}
-            disabled={busy}
-            onChange={(e) => changeScope(e.target.value as DataScope)}
-            aria-label="Which records members with this role can see"
-            className="border rounded-md px-2.5 py-1.5 text-sm bg-background disabled:opacity-60"
-          >
-            <option value="all">All records</option>
-            <option value="own">Only their own + shared records</option>
-          </select>
+          <>
+            <select
+              value={role.data_scope}
+              disabled={busy}
+              onChange={(e) => changeScope(e.target.value as DataScope)}
+              aria-label="Which records members with this role can see"
+              className="border rounded-md px-2.5 py-1.5 text-sm bg-background disabled:opacity-60"
+            >
+              <option value="all">All records in the workspace</option>
+              <option value="team">Records owned by anyone on their teams</option>
+              <option value="own">Only records they own</option>
+            </select>
+            <p className="text-xs text-muted-foreground mt-2">
+              {SCOPE_HELP[role.data_scope]}
+            </p>
+          </>
         )}
       </section>
 

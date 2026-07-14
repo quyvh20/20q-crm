@@ -135,7 +135,9 @@ func (uc *contactUseCase) Update(ctx context.Context, orgID, id uuid.UUID, input
 	if input.CompanyID != nil {
 		contact.CompanyID = input.CompanyID
 	}
-	if input.OwnerUserID != nil {
+	if input.ClearOwner {
+		contact.OwnerUserID = nil
+	} else if input.OwnerUserID != nil {
 		contact.OwnerUserID = input.OwnerUserID
 	}
 	if input.CustomFields != nil {

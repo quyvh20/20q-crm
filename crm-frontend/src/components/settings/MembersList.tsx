@@ -5,7 +5,7 @@ import { useAuth, usePermissions } from '../../lib/auth';
 import { prettyRole } from '../../lib/roles';
 import { useConfirm } from '../common/ConfirmDialog';
 import MemberDrawer from './MemberDrawer';
-import { ShieldAlert, PauseCircle, PlayCircle, UserMinus, Crown, Shield, KeyRound, CheckCircle2, RotateCw, X, HelpCircle, Search, Check } from 'lucide-react';
+import { ShieldAlert, ShieldCheck, PauseCircle, PlayCircle, UserMinus, Crown, Shield, KeyRound, CheckCircle2, RotateCw, X, HelpCircle, Search, Check } from 'lucide-react';
 
 export default function MembersList() {
   const { user, hasCapability, isOwner, refreshAuth } = useAuth();
@@ -322,6 +322,9 @@ export default function MembersList() {
               <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider hidden md:table-cell">Joined</th>
               <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider hidden lg:table-cell">Last active</th>
               <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider hidden sm:table-cell">Verified</th>
+              {/* Who has actually enrolled in 2FA (U6.4) — the column you need
+                  before turning the workspace policy on. */}
+              <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider hidden sm:table-cell">2FA</th>
               {canManage && (
                 <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider text-right">Actions</th>
               )}
@@ -413,6 +416,13 @@ export default function MembersList() {
                     <Check className="w-4 h-4 text-green-500" aria-label="Email verified" />
                   ) : (
                     <span className="text-xs text-amber-500" title="Email not verified">Pending</span>
+                  )}
+                </td>
+                <td className="py-3 pr-4 hidden sm:table-cell">
+                  {m.two_factor_enabled ? (
+                    <ShieldCheck className="w-4 h-4 text-green-500" aria-label="Two-factor authentication on" />
+                  ) : (
+                    <span className="text-xs text-muted-foreground" title="Two-factor authentication not set up">Off</span>
                   )}
                 </td>
                 {canManage && (

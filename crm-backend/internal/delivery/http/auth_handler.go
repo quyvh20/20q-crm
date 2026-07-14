@@ -133,6 +133,14 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
+	// A 2FA challenge is NOT a session: no refresh cookie, no CSRF cookie. Setting
+	// them here would hand out half the session to someone who has only proved the
+	// first factor.
+	if resp.TwoFactorRequired {
+		c.JSON(http.StatusOK, domain.Success(resp))
+		return
+	}
+
 	setAuthCookies(c, h.cfg, resp.RefreshToken)
 	c.JSON(http.StatusOK, domain.Success(resp))
 }
@@ -536,6 +544,16 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 		log.Printf("[GoogleCallback] GoogleLogin error: %v", err)
 		c.Redirect(http.StatusTemporaryRedirect,
 			fmt.Sprintf("%s/login?error=google_login_failed&detail=%s", frontendURL, url.QueryEscape(err.Error())))
+		return
+	}
+
+	// 2FA (U6.4): Google proved the identity, not the second factor. Carry the
+	// challenge in an httpOnly cookie rather than the redirect URL — a fragment is
+	// better than a query string, but a challenge that never enters the URL at all
+	// can't be shoulder-surfed out of the address bar or restored from history.
+	if resp.TwoFactorRequired {
+		setTwoFactorChallengeCookie(c, h.cfg, resp.ChallengeToken)
+		c.Redirect(http.StatusTemporaryRedirect, frontendURL+"/login/2fa")
 		return
 	}
 

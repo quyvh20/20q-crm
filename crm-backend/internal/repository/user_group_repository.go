@@ -92,10 +92,25 @@ func (r *userGroupRepository) Update(ctx context.Context, g *domain.UserGroup) e
 	return r.db.WithContext(ctx).Save(g).Error
 }
 
+// SoftDelete removes the group and, in the same transaction, every grant that
+// names it. A group is now three things at once — a share target for reports, a
+// share target for records (U6.2), and a team for row scope (U6.1) — so a
+// half-deleted group is a live access path. The membership rows go too: the team
+// predicate joins user_group_members, and a soft-deleted group's rows would
+// otherwise keep two users "teammates" forever.
 func (r *userGroupRepository) SoftDelete(ctx context.Context, orgID, id uuid.UUID) error {
-	return r.db.WithContext(ctx).
-		Where("org_id = ? AND id = ?", orgID, id).
-		Delete(&domain.UserGroup{}).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec(`DELETE FROM report_shares WHERE org_id = ? AND target_type = 'group' AND target_id = ?`, orgID, id).Error; err != nil {
+			return err
+		}
+		if err := tx.Exec(`DELETE FROM record_shares WHERE org_id = ? AND target_type = 'group' AND target_id = ?`, orgID, id).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("org_id = ? AND group_id = ?", orgID, id).Delete(&domain.UserGroupMember{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("org_id = ? AND id = ?", orgID, id).Delete(&domain.UserGroup{}).Error
+	})
 }
 
 // AddMember is idempotent (ON CONFLICT DO NOTHING on the composite PK).
@@ -134,4 +149,36 @@ func (r *userGroupRepository) ExistsInOrg(ctx context.Context, orgID, id uuid.UU
 	err := r.db.WithContext(ctx).Model(&domain.UserGroup{}).
 		Where("org_id = ? AND id = ?", orgID, id).Count(&n).Error
 	return n > 0, err
+}
+
+// TeammateIDs returns the active org members who share at least one group with the
+// user — the same relation the 'team' data scope filters on (U6.1), exposed so the
+// UI can offer a team-scoped user the exact set of people they may assign to.
+//
+// It must agree with the TEAM_CLAUSE in access_predicate.go: same self-join over
+// user_group_members, same exclusion of soft-deleted groups. The caller themselves
+// is included — you are on your own team.
+func (r *userGroupRepository) TeammateIDs(ctx context.Context, orgID, userID uuid.UUID) ([]uuid.UUID, error) {
+	var rows []struct{ UserID uuid.UUID }
+	if err := r.db.WithContext(ctx).Raw(`
+		SELECT DISTINCT m2.user_id
+		FROM user_group_members m1
+		JOIN user_group_members m2 ON m2.group_id = m1.group_id
+		JOIN user_groups g ON g.id = m1.group_id AND g.deleted_at IS NULL
+		JOIN org_users ou ON ou.user_id = m2.user_id AND ou.org_id = ? AND ou.status = 'active' AND ou.deleted_at IS NULL
+		WHERE m1.user_id = ? AND m1.org_id = ?`, orgID, userID, orgID).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	ids := make([]uuid.UUID, 0, len(rows)+1)
+	seenSelf := false
+	for _, row := range rows {
+		if row.UserID == userID {
+			seenSelf = true
+		}
+		ids = append(ids, row.UserID)
+	}
+	if !seenSelf {
+		ids = append(ids, userID)
+	}
+	return ids, nil
 }

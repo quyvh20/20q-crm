@@ -105,6 +105,23 @@ func (h *RecordHandler) ListShares(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": shares, "error": nil})
 }
 
+// SharedWithMe handles GET /api/registry/shared-with-me?slug=&limit=&offset= —
+// records someone else owns that are shared to the caller as a user, via their
+// role, or via a group.
+func (h *RecordHandler) SharedWithMe(c *gin.Context) {
+	orgID := c.MustGet("org_id").(uuid.UUID)
+	userID, _ := GetUserID(c)
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+
+	rows, total, err := h.shares.ListSharedWithMe(c.Request.Context(), orgID, userID, c.Query("slug"), limit, offset)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": rows, "total": total, "error": nil})
+}
+
 // reservedListParams are query keys with dedicated meaning; everything else is
 // treated as a relation/field filter (e.g. company, stage, contact, owner_user_id).
 var reservedListParams = map[string]bool{

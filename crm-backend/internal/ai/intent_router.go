@@ -217,8 +217,9 @@ func (cc *CommandCenter) intentSearchDeals(
 	if cc.authz != nil && cc.authz.Authorize(ctx, orgID, "deal", domain.ActionRead) != nil {
 		return &IntentResult{Text: "You don't have access to deals."}
 	}
-	ownScope := effectiveScope(caller) == domain.DataScopeOwn
-	// Own-scope is applied at the repository from the request context; no name check.
+	scope := effectiveScope(caller)
+	rowScoped := scope != domain.DataScopeAll
+	// Row scope is applied at the repository from the request context; no name check.
 	filter := domain.DealFilter{
 		Limit:     limit,
 		SortBy:    sortBy,
@@ -232,8 +233,8 @@ func (cc *CommandCenter) intentSearchDeals(
 	}
 
 	if len(deals) == 0 {
-		if ownScope {
-			return &IntentResult{Text: "You don't have any deals assigned to you yet. Click **+ New Deal** to create one!"}
+		if rowScoped {
+			return &IntentResult{Text: emptyScopedText(scope, "deals", "Click **+ New Deal** to create one!")}
 		}
 		return &IntentResult{Text: "No deals found in the pipeline yet."}
 	}
@@ -243,11 +244,7 @@ func (cc *CommandCenter) intentSearchDeals(
 	if sortBy == "value" {
 		b.WriteString(fmt.Sprintf("### 💰 Top %d Deals by Value\n\n", len(deals)))
 	} else {
-		scope := "All"
-		if ownScope {
-			scope = "Your"
-		}
-		b.WriteString(fmt.Sprintf("### 📊 %s Deals (%d)\n\n", scope, len(deals)))
+		b.WriteString(fmt.Sprintf("### 📊 %s Deals (%d)\n\n", scopeHeading(scope), len(deals)))
 	}
 
 	b.WriteString("| Deal | Value | Stage | Probability |\n")
@@ -304,8 +301,9 @@ func (cc *CommandCenter) intentSearchContacts(
 	if cc.authz != nil && cc.authz.Authorize(ctx, orgID, "contact", domain.ActionRead) != nil {
 		return &IntentResult{Text: "You don't have access to contacts."}
 	}
-	ownScope := effectiveScope(caller) == domain.DataScopeOwn
-	// Own-scope is applied at the repository from the request context; no name check.
+	scope := effectiveScope(caller)
+	rowScoped := scope != domain.DataScopeAll
+	// Row scope is applied at the repository from the request context; no name check.
 	filter := domain.ContactFilter{Limit: 10, SortBy: "created_at", SortOrder: "desc"}
 
 	contacts, _, err := cc.contactRepo.List(ctx, orgID, filter)
@@ -315,18 +313,14 @@ func (cc *CommandCenter) intentSearchContacts(
 	}
 
 	if len(contacts) == 0 {
-		if ownScope {
-			return &IntentResult{Text: "You don't have any contacts assigned to you yet. Click **+ New Contact** to add one!"}
+		if rowScoped {
+			return &IntentResult{Text: emptyScopedText(scope, "contacts", "Click **+ New Contact** to add one!")}
 		}
 		return &IntentResult{Text: "No contacts found in the system yet."}
 	}
 
-	scope := "All"
-	if ownScope {
-		scope = "Your"
-	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("### 👥 %s Contacts (%d)\n\n", scope, len(contacts)))
+	b.WriteString(fmt.Sprintf("### 👥 %s Contacts (%d)\n\n", scopeHeading(scope), len(contacts)))
 	b.WriteString("| Name | Email | Company |\n")
 	b.WriteString("|------|-------|---------|\n")
 	for _, c := range contacts {
@@ -424,9 +418,9 @@ func (cc *CommandCenter) intentAnalytics(
 	if cc.authz != nil && cc.authz.Authorize(ctx, orgID, "deal", domain.ActionRead) != nil {
 		return &IntentResult{Text: "You don't have access to deals."}
 	}
-	ownScope := effectiveScope(caller) == domain.DataScopeOwn
-	// This is a scoped pipeline/revenue SUMMARY (own vs all, applied at the repo),
-	// not the org-wide forecast — so it needs no analytics.view gate.
+	scope := effectiveScope(caller)
+	// This is a row-scoped pipeline/revenue SUMMARY (own/team/all, applied at the
+	// repo), not the org-wide forecast — so it needs no analytics.view gate.
 	filter := domain.DealFilter{Limit: 500}
 
 	deals, _, err := cc.dealRepo.List(ctx, orgID, filter)
@@ -450,14 +444,9 @@ func (cc *CommandCenter) intentAnalytics(
 		}
 	}
 
-	scope := "Org-wide"
-	if ownScope {
-		scope = "Your"
-	}
-
 	var b strings.Builder
 	if intentName == "analytics_revenue" {
-		b.WriteString(fmt.Sprintf("### 📈 %s Revenue Summary\n\n", scope))
+		b.WriteString(fmt.Sprintf("### 📈 %s Revenue Summary\n\n", scopeHeading(scope)))
 		b.WriteString("| Metric | Value |\n")
 		b.WriteString("|--------|------:|\n")
 		b.WriteString(fmt.Sprintf("| **Won Revenue** | %s |\n", formatMoney(wonValue)))
@@ -467,7 +456,7 @@ func (cc *CommandCenter) intentAnalytics(
 		b.WriteString(fmt.Sprintf("| Deals Active | %d |\n", activeCount))
 		b.WriteString(fmt.Sprintf("| Deals Lost | %d |\n", lostCount))
 	} else {
-		b.WriteString(fmt.Sprintf("### 🏥 %s Pipeline Health\n\n", scope))
+		b.WriteString(fmt.Sprintf("### 🏥 %s Pipeline Health\n\n", scopeHeading(scope)))
 		b.WriteString("| Metric | Value |\n")
 		b.WriteString("|--------|------:|\n")
 		b.WriteString(fmt.Sprintf("| **Active Deals** | %d |\n", activeCount))
@@ -590,4 +579,28 @@ func formatCommas(n int64) string {
 		result = append(result, byte(c))
 	}
 	return string(result)
+}
+
+// scopeHeading titles a result table with the slice of data it actually contains.
+// A team-scoped caller must never see their filtered results headed "All Deals" —
+// the number under that heading would be a lie the model then repeats.
+func scopeHeading(scope string) string {
+	switch scope {
+	case domain.DataScopeOwn:
+		return "Your"
+	case domain.DataScopeTeam:
+		return "Your Team's"
+	default:
+		return "All"
+	}
+}
+
+// emptyScopedText explains an empty result in terms of the caller's row scope, so
+// "nothing here" never reads as "the workspace is empty".
+func emptyScopedText(scope, entity, cta string) string {
+	who := "assigned to you"
+	if scope == domain.DataScopeTeam {
+		who = "assigned to you or your teams"
+	}
+	return "There are no " + entity + " " + who + " yet. " + cta
 }

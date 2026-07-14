@@ -26,6 +26,8 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   // Personal — available to every member.
   { path: 'profile', label: 'Profile', icon: UserRound, group: 'personal', visible: () => true },
   { path: 'security', label: 'Security', icon: Shield, group: 'personal', visible: () => true },
+  // Personal API tokens (U6.5) — self-scoped, so every member gets the page.
+  { path: 'api-tokens', label: 'API Tokens', icon: KeyRound, group: 'personal', visible: () => true },
   { path: 'notifications', label: 'Notifications', icon: Bell, group: 'personal', visible: () => true },
 
   // Workspace — admin/config surfaces, each behind the capability its API checks.

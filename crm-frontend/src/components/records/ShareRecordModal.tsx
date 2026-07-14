@@ -1,17 +1,29 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import {
-  getRecordShares,
-  shareRecord,
-  unshareRecord,
-  getUsers,
-  type RecordShareView,
-  type UserListItem,
+  getRecordShares, shareRecord, unshareRecord,
+  getWorkspaceMembers, getRoleOptions, listGroups,
+  type RecordShareView, type RecordShareLevel, type ShareTargetType,
+  type WorkspaceMember, type RoleOption, type UserGroup,
 } from '../../lib/api';
+import { useAuth } from '../../lib/auth';
+import { prettyRole } from '../../lib/roles';
 
-// ShareRecordModal grants a specific record to individual members — the escape
-// hatch (P3, I2) that lets an 'own'-scoped role reach a record it doesn't own.
-// The backend enforces that the sharer can see the record (own/all scope) and the
-// grantee is an active member, so this UI just lists + edits the grants.
+// ShareRecordModal grants ONE record to a user, role or group at view/edit (U6)
+// — record sharing at parity with report sharing (ReportShareDialog), minus the
+// 'comment' level, which records don't have. It is the escape hatch that lets an
+// 'own'/'team'-scoped role reach a record outside its scope.
+const TARGET_TABS: { type: ShareTargetType; label: string }[] = [
+  { type: 'user', label: 'People' },
+  { type: 'role', label: 'Roles' },
+  { type: 'group', label: 'Groups' },
+];
+const LEVELS: { value: RecordShareLevel; label: string }[] = [
+  { value: 'view', label: 'Can view' },
+  { value: 'edit', label: 'Can edit' },
+];
+const TYPE_ICON: Record<ShareTargetType, string> = { user: '👤', role: '🛡️', group: '👥' };
+
 export default function ShareRecordModal({
   slug,
   recordId,
@@ -23,119 +35,183 @@ export default function ShareRecordModal({
   recordName: string;
   onClose: () => void;
 }) {
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
   const [shares, setShares] = useState<RecordShareView[]>([]);
-  const [users, setUsers] = useState<UserListItem[]>([]);
+  const [members, setMembers] = useState<WorkspaceMember[]>([]);
+  const [roles, setRoles] = useState<RoleOption[]>([]);
+  const [groups, setGroups] = useState<UserGroup[]>([]);
+  const [tab, setTab] = useState<ShareTargetType>('user');
   const [selected, setSelected] = useState('');
+  const [level, setLevel] = useState<RecordShareLevel>('view');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
-    try {
-      setLoading(true);
-      const [s, u] = await Promise.all([getRecordShares(slug, recordId), getUsers()]);
-      setShares(s);
-      setUsers(u);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load shares');
-    } finally {
-      setLoading(false);
-    }
+    setLoading(true);
+    setError('');
+    // allSettled: each picker source loads independently, so one 403/failure
+    // (e.g. a member who can't list roles) can't blank the whole dialog. The
+    // current share list is the only must-have; the rest degrade to empty pickers.
+    const [s, m, r, g] = await Promise.allSettled([
+      getRecordShares(slug, recordId), getWorkspaceMembers(), getRoleOptions(), listGroups(),
+    ]);
+    if (s.status === 'fulfilled') setShares(s.value);
+    else setError(s.reason instanceof Error ? s.reason.message : 'Failed to load sharing');
+    setMembers(m.status === 'fulfilled' ? m.value.filter((x) => x.status === 'active') : []);
+    setRoles(r.status === 'fulfilled' ? r.value : []);
+    setGroups(g.status === 'fulfilled' ? g.value : []);
+    setLoading(false);
   }, [slug, recordId]);
-
   useEffect(() => { load(); }, [load]);
 
-  const sharedIds = new Set(shares.map((s) => s.grantee_user_id));
-  const candidates = users.filter((u) => !sharedIds.has(u.id));
+  // Candidates for the active tab, minus already-shared targets. The current
+  // user is never a People candidate: sharing to yourself is meaningless (and
+  // the server rejects it, as it does sharing to the record's own owner).
+  const sharedIds = useMemo(() => new Set(shares.map((s) => s.target_id)), [shares]);
+  const candidates = useMemo(() => {
+    if (tab === 'user') {
+      return members
+        .filter((m) => !sharedIds.has(m.user_id) && m.user_id !== user?.id)
+        .map((m) => ({ id: m.user_id, name: m.full_name || `${m.first_name} ${m.last_name}`.trim() || m.email }));
+    }
+    if (tab === 'role') return roles.filter((r) => !sharedIds.has(r.id)).map((r) => ({ id: r.id, name: prettyRole(r.name) }));
+    return groups.filter((g) => !sharedIds.has(g.id)).map((g) => ({ id: g.id, name: g.name }));
+  }, [tab, members, roles, groups, sharedIds, user?.id]);
+
+  // The shared-with-me list of every OTHER member changes on a grant/revoke, and
+  // this record's own page may re-read its shares — invalidate both.
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ['shared-with-me'] });
+    queryClient.invalidateQueries({ queryKey: ['record-shares', slug, recordId] });
+  };
 
   const add = async () => {
     if (!selected) return;
-    setBusy(true);
-    setError('');
+    setBusy(true); setError('');
     try {
-      await shareRecord(slug, recordId, selected);
+      await shareRecord(slug, recordId, tab, selected, level);
       setSelected('');
       await load();
+      invalidate();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to share');
-    } finally {
-      setBusy(false);
-    }
+    } finally { setBusy(false); }
+  };
+
+  // Re-sharing the same target upserts its level server-side, so changing a level
+  // is just another share call.
+  const changeLevel = async (s: RecordShareView, next: RecordShareLevel) => {
+    setBusy(true); setError('');
+    try { await shareRecord(slug, recordId, s.target_type, s.target_id, next); await load(); invalidate(); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Failed to update'); }
+    finally { setBusy(false); }
   };
 
   const remove = async (shareId: string) => {
-    setBusy(true);
-    setError('');
+    setBusy(true); setError('');
     try {
       await unshareRecord(slug, recordId, shareId);
       setShares((cur) => cur.filter((s) => s.id !== shareId));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to revoke');
-    } finally {
-      setBusy(false);
-    }
+      invalidate();
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to remove'); }
+    finally { setBusy(false); }
   };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 60, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: '#fff', borderRadius: 12, width: 460, maxWidth: '90vw', overflow: 'hidden' }}>
-        <div style={{ padding: '20px 24px', borderBottom: '1px solid #e2e8f0' }}>
-          <h3 style={{ margin: 0, fontWeight: 600, fontSize: 16 }}>Share “{recordName}”</h3>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#64748b' }}>
-            Grant specific members access to this record even when their role only sees their own.
-          </p>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div className="w-full max-w-lg rounded-2xl border bg-card p-5 text-card-foreground shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="mb-1 flex items-center justify-between gap-3">
+          <h2 className="truncate text-lg font-semibold">Share “{recordName}”</h2>
+          <button onClick={onClose} className="rounded p-1 text-muted-foreground hover:bg-accent" aria-label="Close">✕</button>
         </div>
+        <p className="mb-4 text-sm text-muted-foreground">
+          Give specific people, roles or groups access to this record — even when their role only sees their own.
+        </p>
 
-        <div style={{ padding: 24 }}>
-          {error && (
-            <div style={{ background: '#fef2f2', color: '#dc2626', padding: '8px 12px', borderRadius: 6, marginBottom: 16, fontSize: 13 }}>{error}</div>
-          )}
+        {error && <div className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</div>}
 
-          {/* Add a grantee */}
-          <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+        {/* Add a share */}
+        <div className="space-y-2 rounded-xl border p-3">
+          <div className="flex gap-1">
+            {TARGET_TABS.map((t) => (
+              <button
+                key={t.type}
+                onClick={() => { setTab(t.type); setSelected(''); }}
+                className={`rounded-md px-3 py-1.5 text-sm ${tab === t.type ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'}`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-2">
             <select
+              aria-label="Share target"
               value={selected}
               onChange={(e) => setSelected(e.target.value)}
               disabled={busy || loading}
-              style={{ flex: 1, padding: '8px 10px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 14 }}
+              className="flex-1 rounded-md border bg-background px-2 py-2 text-sm"
             >
-              <option value="">Select a member…</option>
-              {candidates.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {[u.first_name, u.last_name].filter(Boolean).join(' ') || u.email}
-                </option>
-              ))}
+              <option value="">{candidates.length ? `Choose a ${tab}…` : `No ${tab}s to add`}</option>
+              {candidates.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+            <select
+              aria-label="Access level"
+              value={level}
+              onChange={(e) => setLevel(e.target.value as RecordShareLevel)}
+              className="w-28 rounded-md border bg-background px-2 py-2 text-sm"
+            >
+              {LEVELS.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
             </select>
             <button
               onClick={add}
-              disabled={!selected || busy}
-              style={{ padding: '8px 16px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600, fontSize: 14, opacity: !selected || busy ? 0.5 : 1 }}
+              disabled={busy || !selected}
+              className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
             >
-              Share
+              Add
             </button>
           </div>
+        </div>
 
-          {/* Current shares */}
+        {/* Current shares */}
+        <div className="mt-4">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Shared with</div>
           {loading ? (
-            <div style={{ fontSize: 13, color: '#94a3b8' }}>Loading…</div>
+            <div className="h-16 animate-pulse rounded-lg bg-muted/50" />
           ) : shares.length === 0 ? (
-            <div style={{ fontSize: 13, color: '#94a3b8' }}>Not shared with anyone yet.</div>
+            <div className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">Not shared with anyone yet.</div>
           ) : (
-            <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div className="max-h-64 space-y-1 overflow-auto">
               {shares.map((s) => (
-                <li key={s.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', border: '1px solid #e2e8f0', borderRadius: 6 }}>
-                  <span style={{ fontSize: 14 }}>{s.grantee_name || s.grantee_user_id}</span>
-                  <button onClick={() => remove(s.id)} disabled={busy} style={{ fontSize: 12, color: '#dc2626', background: 'none', border: 'none', cursor: 'pointer' }}>
-                    Remove
+                <div key={s.id} className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
+                  <span>{TYPE_ICON[s.target_type]}</span>
+                  <span className="flex-1 truncate">{s.target_name}</span>
+                  <select
+                    aria-label={`Level for ${s.target_name}`}
+                    value={s.level}
+                    onChange={(e) => changeLevel(s, e.target.value as RecordShareLevel)}
+                    disabled={busy}
+                    className="rounded border bg-background px-1.5 py-1 text-xs"
+                  >
+                    {LEVELS.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
+                  </select>
+                  <button
+                    onClick={() => remove(s.id)}
+                    disabled={busy}
+                    className="rounded px-1.5 py-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                    aria-label={`Remove ${s.target_name}`}
+                  >
+                    ✕
                   </button>
-                </li>
+                </div>
               ))}
-            </ul>
+            </div>
           )}
         </div>
 
-        <div style={{ padding: '16px 24px', borderTop: '1px solid #e2e8f0', display: 'flex', justifyContent: 'flex-end' }}>
-          <button onClick={onClose} style={{ padding: '8px 16px', background: '#f1f5f9', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 500 }}>Done</button>
+        <div className="mt-4 flex justify-end">
+          <button onClick={onClose} className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-accent">Done</button>
         </div>
       </div>
     </div>

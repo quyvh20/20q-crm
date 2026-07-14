@@ -31,35 +31,46 @@ func (r *voiceNoteRepository) Create(ctx context.Context, v *domain.VoiceNote) e
 //   - The note's deal   is owned by the user OR shared with them
 //   - The note has no linked contact/deal (user created it themselves — checked via user_id)
 func voiceNoteScope(db *gorm.DB, ctx context.Context, orgID uuid.UUID) *gorm.DB {
-	scope, userID, ok := extractDataScope(ctx)
-	if !ok || scope != domain.DataScopeOwn {
+	scope, userID, roleID, ok := extractCallerScope(ctx)
+	if !ok || scope == domain.DataScopeAll {
 		// 'all'-scope roles (admin / manager / owner / any all-scoped custom role) —
-		// full org access.
+		// full org access. !ok is a trusted in-process call.
+		//
+		// The guard tests for 'all', not "not own": the pre-U6 shape (!= own ⇒ whole
+		// org) would have handed a team-scoped caller every voice note in the
+		// workspace the moment the new scope value shipped.
 		return db.Where("voice_notes.org_id = ?", orgID)
 	}
 
-	// 'own'-scope: accessible if note's contact OR deal is owned/shared, OR note was created by them
+	// Row-scoped: a note is reachable if its linked contact OR deal is reachable
+	// (same predicate as the contact/deal list pages — access_predicate.go), or the
+	// caller recorded it themselves.
+	cSQL, cArgs := RecordAccessPredicate(RecordAccessArgs{
+		Table: "c", RecordType: "contact", OrgID: orgID, Scope: scope, UserID: userID, RoleID: roleID,
+	})
+	dSQL, dArgs := RecordAccessPredicate(RecordAccessArgs{
+		Table: "d", RecordType: "deal", OrgID: orgID, Scope: scope, UserID: userID, RoleID: roleID,
+	})
+
+	args := []any{orgID, userID}
+	args = append(args, cArgs...)
+	args = append(args, dArgs...)
+
 	return db.Where(`voice_notes.org_id = ? AND (
 		voice_notes.user_id = ?
 		OR (voice_notes.contact_id IS NOT NULL AND EXISTS (
 			SELECT 1 FROM contacts c
 			WHERE c.id = voice_notes.contact_id
 			  AND c.deleted_at IS NULL
-			  AND (c.owner_user_id = ? OR EXISTS (
-				SELECT 1 FROM record_shares rs
-				WHERE rs.record_id = c.id AND rs.record_type = 'contact' AND rs.grantee_user_id = ?
-			))
+			  AND `+cSQL+`
 		))
 		OR (voice_notes.deal_id IS NOT NULL AND EXISTS (
 			SELECT 1 FROM deals d
 			WHERE d.id = voice_notes.deal_id
 			  AND d.deleted_at IS NULL
-			  AND (d.owner_user_id = ? OR EXISTS (
-				SELECT 1 FROM record_shares rs
-				WHERE rs.record_id = d.id AND rs.record_type = 'deal' AND rs.grantee_user_id = ?
-			))
+			  AND `+dSQL+`
 		))
-	)`, orgID, userID, userID, userID, userID, userID)
+	)`, args...)
 }
 
 func (r *voiceNoteRepository) GetByID(ctx context.Context, orgID, id uuid.UUID) (*domain.VoiceNote, error) {

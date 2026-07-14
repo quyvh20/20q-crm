@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { X, Monitor, LogOut, Users2, FileText, Loader2, ShieldCheck, ShieldAlert } from 'lucide-react';
-import { getMemberDetail, forceSignOutMember, type MemberDetail } from '../../lib/api';
+import { X, Monitor, LogOut, Users2, FileText, Loader2, ShieldCheck, ShieldAlert, ShieldOff } from 'lucide-react';
+import { getMemberDetail, forceSignOutMember, resetMemberTwoFactor, type MemberDetail } from '../../lib/api';
 import { prettyRole } from '../../lib/roles';
 import { useConfirm } from '../common/ConfirmDialog';
 
@@ -26,6 +26,8 @@ export default function MemberDrawer({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [signingOut, setSigningOut] = useState(false);
+  const [resetting2FA, setResetting2FA] = useState(false);
+  const [notice, setNotice] = useState('');
   const { confirm, dialog } = useConfirm();
 
   const load = useCallback(async () => {
@@ -71,6 +73,33 @@ export default function MemberDrawer({
     }
   };
 
+  // Admin break-glass (U6.4): reset a member's 2FA when they've lost BOTH their
+  // authenticator and their backup codes. Without it, a workspace 2FA policy is a
+  // one-way door with no recovery path — so it's deliberately loud.
+  const handleReset2FA = async () => {
+    if (!detail) return;
+    const name = detail.member.full_name || detail.member.email;
+    if (!(await confirm({
+      title: 'Reset two-factor authentication?',
+      body: `${name}'s authenticator and backup codes are wiped, and they sign in with their password alone until they set it up again. Only do this once you're sure it's really them asking.`,
+      confirmLabel: 'Reset it',
+      tone: 'danger',
+    }))) return;
+    setResetting2FA(true);
+    setError('');
+    setNotice('');
+    try {
+      await resetMemberTwoFactor(userId);
+      setNotice(`Two-factor authentication reset for ${name}.`);
+      await load();
+      onChanged?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to reset the member's two-factor authentication");
+    } finally {
+      setResetting2FA(false);
+    }
+  };
+
   const fmt = (iso?: string) => (iso ? new Date(iso).toLocaleString() : '—');
   const m = detail?.member;
 
@@ -96,6 +125,7 @@ export default function MemberDrawer({
         ) : m ? (
           <div className="p-5 space-y-6">
             {error && <div className="bg-red-500/10 text-red-500 text-sm rounded-lg px-3 py-2">{error}</div>}
+            {notice && <div className="bg-green-500/10 text-green-500 text-sm rounded-lg px-3 py-2">{notice}</div>}
 
             {/* Identity */}
             <div className="flex items-center gap-3">
@@ -138,7 +168,36 @@ export default function MemberDrawer({
                   )}
                 </dd>
               </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">Two-factor</dt>
+                <dd className="flex items-center gap-1.5">
+                  {m.two_factor_enabled ? (
+                    <span className="inline-flex items-center gap-1 text-green-500"><ShieldCheck className="w-3.5 h-3.5" /> On</span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 text-muted-foreground"><ShieldOff className="w-3.5 h-3.5" /> Off</span>
+                  )}
+                </dd>
+              </div>
             </dl>
+
+            {/* 2FA break-glass (U6.4) — only meaningful when they actually have it on. */}
+            {canManage && !isSelf && m.two_factor_enabled && (
+              <div className="rounded-lg border border-border p-3 flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium text-foreground">Lost their authenticator?</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Reset their two-factor authentication so they can sign in and set it up again.
+                  </p>
+                </div>
+                <button
+                  onClick={handleReset2FA}
+                  disabled={resetting2FA}
+                  className="shrink-0 inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-red-500 hover:bg-red-500/10 disabled:opacity-50 transition-colors"
+                >
+                  <ShieldOff className="w-3.5 h-3.5" /> {resetting2FA ? 'Resetting…' : 'Reset 2FA'}
+                </button>
+              </div>
+            )}
 
             {/* Groups */}
             <div>

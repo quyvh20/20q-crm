@@ -60,6 +60,13 @@ type Organization struct {
 	Currency string `gorm:"size:8;not null;default:''" json:"currency"`
 	Locale   string `gorm:"size:16;not null;default:''" json:"locale"`
 	Timezone string `gorm:"size:64;not null;default:''" json:"timezone"`
+	// RequireTwoFactor is the workspace 2FA policy (U6.4): every member must enroll,
+	// and a member who hasn't is confined to the enrollment screen.
+	// A member who hasn't enrolled still gets a session on sign-in, but the token
+	// carries the unsatisfied claim and the middleware confines them to enrolling —
+	// blocking the session outright would leave no authenticated way to reach the
+	// enrollment endpoints.
+	RequireTwoFactor     bool           `gorm:"not null;default:false" json:"require_two_factor"`
 	PlanTier             string         `gorm:"size:50;not null;default:'free'" json:"plan_tier"`
 	PaddleSubscriptionID *string        `gorm:"size:255" json:"paddle_subscription_id,omitempty"`
 	CreatedAt            time.Time      `json:"created_at"`
@@ -89,6 +96,13 @@ type User struct {
 	// serialized (not json:"-") so the SPA can drive the "verify your email"
 	// banner. Existing users are grandfathered as verified by migration 000026.
 	EmailVerifiedAt *time.Time  `gorm:"column:email_verified_at" json:"email_verified_at"`
+	// Two-factor (U6.4). TotpSecret is the AES-GCM-encrypted TOTP seed — never the
+	// raw secret, and never serialized. A leaked seed is a working second factor
+	// forever, so it does not sit in the clear next to the password hash. It is set
+	// at setup and only becomes ACTIVE when TotpEnabledAt is stamped by a successful
+	// code check, so a scan that never registered can't lock anyone out.
+	TotpSecret    *string    `gorm:"column:totp_secret;type:text" json:"-"`
+	TotpEnabledAt *time.Time `gorm:"column:totp_enabled_at" json:"-"`
 	// DefaultOrgID is the user's chosen home workspace (R2, P3). It is the durable,
 	// server-side memory that drives org selection at login/refresh so a multi-org
 	// user isn't asked to choose every time. Validated as an ACTIVE membership at
@@ -341,11 +355,17 @@ type CustomObjectDef struct {
 // hardcoded contact_id/deal_id columns and their preloads were dropped once
 // object_links became the single relationship store (plan §3.3 / P4 → P7).
 type CustomObjectRecord struct {
-	ID          uuid.UUID      `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
-	OrgID       uuid.UUID      `gorm:"type:uuid;not null" json:"org_id"`
-	ObjectDefID uuid.UUID      `gorm:"type:uuid;not null" json:"object_def_id"`
-	DisplayName string         `gorm:"size:500" json:"display_name"`
-	Data        JSON           `gorm:"type:jsonb;default:'{}'" json:"data"`
+	ID          uuid.UUID `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
+	OrgID       uuid.UUID `gorm:"type:uuid;not null" json:"org_id"`
+	ObjectDefID uuid.UUID `gorm:"type:uuid;not null" json:"object_def_id"`
+	DisplayName string    `gorm:"size:500" json:"display_name"`
+	Data        JSON      `gorm:"type:jsonb;default:'{}'" json:"data"`
+	// OwnerUserID is the record's owner (U6.3) — a real COLUMN, deliberately not a
+	// key inside the Data blob: row scope, sharing and assignment all filter on it in
+	// SQL, and a JSONB key cannot be indexed or joined the same way. Before this,
+	// custom objects had no owner at all, so a "private" custom object was impossible
+	// and every custom record was visible org-wide to anyone with object read access.
+	OwnerUserID *uuid.UUID     `gorm:"type:uuid" json:"owner_user_id,omitempty"`
 	CreatedBy   *uuid.UUID     `gorm:"type:uuid" json:"created_by,omitempty"`
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`

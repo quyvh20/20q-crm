@@ -141,6 +141,15 @@ func (uc *authUseCase) applyNewPassword(ctx context.Context, user *domain.User, 
 		return nil, domain.ErrInternal
 	}
 
+	// A personal access token is a long-lived credential minted from this account, and
+	// the token_version bump below does NOT reach it (a token is not a JWT). Re-securing
+	// an account while leaving its tokens working would defeat the point of the reset.
+	if n, err := uc.authRepo.RevokeAllUserAPITokens(ctx, user.ID); err != nil {
+		log.Printf("%s: failed to revoke API tokens for %s: %v", eventType, user.ID, err)
+	} else if n > 0 {
+		log.Printf("%s: revoked %d API token(s) for %s", eventType, n, user.ID)
+	}
+
 	// The password is now committed. Fire the alert + audit BEFORE the sign-out
 	// re-mint so a transient failure there can't swallow the notification the
 	// user must get about their own credential change (mirrors ResetPassword's

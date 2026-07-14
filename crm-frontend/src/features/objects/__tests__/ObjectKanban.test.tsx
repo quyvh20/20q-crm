@@ -42,7 +42,7 @@ import ObjectKanban from '../ObjectKanban';
 
 const dealSchema: ObjectSchema = {
   slug: 'deal', label: 'Deal', label_plural: 'Deals', icon: '💰', color: '#10B981',
-  is_system: true, searchable: false, display_field: 'title',
+  is_system: true, searchable: false, has_owner: true, display_field: 'title',
   fields: [
     { key: 'title', label: 'Title', type: 'text', is_system: true, required: true },
     { key: 'value', label: 'Value', type: 'number', is_system: true, required: false },

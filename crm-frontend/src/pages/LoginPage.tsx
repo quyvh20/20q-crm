@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
+import { ENROLL_TWO_FACTOR_PATH } from '../lib/api';
 
 const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8080' : '');
 
@@ -18,6 +19,7 @@ const NOTICE_MESSAGES: Record<string, string> = {
 
 export default function LoginPage() {
   const { login } = useAuth();
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -49,7 +51,22 @@ export default function LoginPage() {
     setError('');
     setLoading(true);
     try {
-      await login(email, password);
+      const result = await login(email, password);
+      // 2FA (U6.4): a correct password may buy a CHALLENGE rather than a session.
+      // The challenge rides in router state (history.state, so it survives a
+      // reload) and never in the URL — it's a bearer credential for the next step.
+      if (result.twoFactorRequired) {
+        const next = searchParams.get('next');
+        navigate('/login/2fa', { state: { challengeToken: result.challengeToken, next }, replace: true });
+        return;
+      }
+      // A real session, but the workspace demands a factor this user hasn't set
+      // up: they're signed in and confined to enrolling until they comply.
+      if (result.enrollRequired) {
+        navigate(ENROLL_TWO_FACTOR_PATH, { replace: true });
+        return;
+      }
+      // Otherwise the auth context is populated and PublicRoute redirects us out.
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {

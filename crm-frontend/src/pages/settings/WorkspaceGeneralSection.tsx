@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Loader2, Building2, AlertTriangle, LogOut, Trash2 } from 'lucide-react';
+import { useNavigate, Link } from 'react-router-dom';
+import { Loader2, Building2, AlertTriangle, LogOut, Trash2, ShieldCheck } from 'lucide-react';
 import {
   getCurrentWorkspace, updateWorkspace, leaveWorkspace, deleteWorkspace,
   type WorkspaceDetail,
@@ -10,6 +10,24 @@ import { useConfirm } from '../../components/common/ConfirmDialog';
 
 const CURRENCIES = ['', 'USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'INR', 'BRL'];
 const LOCALES = ['', 'en-US', 'en-GB', 'fr-FR', 'de-DE', 'es-ES', 'pt-BR', 'ja-JP'];
+
+// Same accessible switch as the notification preference center — a real
+// role="switch" button, not a styled checkbox.
+function Toggle({ on, onChange, disabled, label }: { on: boolean; onChange: (v: boolean) => void; disabled?: boolean; label: string }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={label}
+      disabled={disabled}
+      onClick={() => onChange(!on)}
+      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-40 ${on ? 'bg-primary' : 'bg-muted'}`}
+    >
+      <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${on ? 'translate-x-4' : 'translate-x-0.5'}`} />
+    </button>
+  );
+}
 
 // WorkspaceGeneralSection (U4): the org.settings-gated Workspace General page —
 // rename the workspace, set its defaults (currency/locale/timezone), and the
@@ -32,6 +50,8 @@ export default function WorkspaceGeneralSection() {
   const [currency, setCurrency] = useState('');
   const [locale, setLocale] = useState('');
   const [timezone, setTimezone] = useState('');
+  // The workspace 2FA policy (U6.4).
+  const [require2FA, setRequire2FA] = useState(false);
   // Type-to-confirm text for the destructive delete.
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [showDelete, setShowDelete] = useState(false);
@@ -46,6 +66,7 @@ export default function WorkspaceGeneralSection() {
       setCurrency(d.currency);
       setLocale(d.locale);
       setTimezone(d.timezone);
+      setRequire2FA(!!d.require_two_factor);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load workspace');
     } finally {
@@ -55,17 +76,30 @@ export default function WorkspaceGeneralSection() {
 
   useEffect(() => { load(); }, [load]);
 
-  const dirty = !!ws && (name !== ws.name || currency !== ws.currency || locale !== ws.locale || timezone !== ws.timezone);
+  const dirty = !!ws && (
+    name !== ws.name || currency !== ws.currency || locale !== ws.locale ||
+    timezone !== ws.timezone || require2FA !== !!ws.require_two_factor
+  );
 
   const save = async () => {
     if (!ws || !name.trim()) return;
+    // Turning the 2FA policy ON is a change that hits every OTHER member, not just
+    // this page — they're locked out of the app until they enrol. Say so first.
+    if (require2FA && !ws.require_two_factor) {
+      if (!(await confirm({
+        title: 'Require two-factor authentication?',
+        body: 'Every member who has not set up two-factor authentication will be locked out of the workspace on their next request until they enrol. Check the Members list to see who has it on. Existing sessions are not exempt.',
+        confirmLabel: 'Require it',
+        tone: 'danger',
+      }))) return;
+    }
     setSaving(true);
     setError('');
     setSaveMsg('');
     const nameChanged = name.trim() !== ws.name;
     try {
-      await updateWorkspace({ name: name.trim(), currency, locale, timezone: timezone.trim() });
-      setWs({ ...ws, name: name.trim(), currency, locale, timezone: timezone.trim() });
+      await updateWorkspace({ name: name.trim(), currency, locale, timezone: timezone.trim(), require_two_factor: require2FA });
+      setWs({ ...ws, name: name.trim(), currency, locale, timezone: timezone.trim(), require_two_factor: require2FA });
       setSaveMsg('Saved.');
       // Propagate a rename to the sidebar/switcher (which read the name from the
       // auth session) — only re-establish auth when the name actually changed.
@@ -157,6 +191,32 @@ export default function WorkspaceGeneralSection() {
           </button>
           {saveMsg && <span className="text-sm text-green-500">{saveMsg}</span>}
         </div>
+      </div>
+
+      {/* Security policy (U6.4) — org-wide 2FA. Saved with the form above, but
+          gated by a confirm because turning it ON locks out every member who
+          hasn't enrolled. */}
+      <div className="border border-border rounded-xl p-5 space-y-3">
+        <h3 className="text-sm font-semibold flex items-center gap-1.5"><ShieldCheck className="w-4 h-4" /> Security</h3>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium">Require two-factor authentication</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Every member must sign in with a code from their authenticator app. Members who haven't set it up are
+              locked out of the workspace until they enrol — including anyone already signed in.{' '}
+              <Link to="/settings/members" className="text-blue-500 hover:underline">See who has it on</Link>.
+            </p>
+          </div>
+          <Toggle
+            on={require2FA}
+            onChange={setRequire2FA}
+            disabled={saving || busy}
+            label="Require two-factor authentication"
+          />
+        </div>
+        {require2FA && !ws.require_two_factor && (
+          <p className="text-xs text-amber-500">Not applied yet — hit “Save changes” above to turn the policy on.</p>
+        )}
       </div>
 
       {/* Danger zone */}

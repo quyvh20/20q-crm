@@ -35,6 +35,12 @@ type recordPage struct {
 	// MirrorValues maps a mirror field's key to the linked record's source-field
 	// value, pre-resolved for the same reason.
 	MirrorValues map[string]string `json:"mirror_values"`
+	// EffectiveLevel is what the CALLER may do with THIS record: 'manage' (owner or
+	// an all-scoped role — may re-share), 'edit', or 'view' (U6.2). Object-level
+	// permissions already gate the Edit button; this is the ROW-level answer, so a
+	// user who reaches a record only through a view-share isn't shown controls that
+	// would 403. Empty when the resolver isn't wired.
+	EffectiveLevel string `json:"effective_level,omitempty"`
 }
 
 // GetPage handles GET /api/registry/objects/:slug/records/:id/page.
@@ -60,9 +66,22 @@ func (h *RecordHandler) GetPage(c *gin.Context) {
 		MirrorValues:   map[string]string{},
 	}
 
+	userID, _ := GetUserID(c)
+
 	var schemaErr, recordErr error
 	var wg sync.WaitGroup
-	wg.Add(5)
+	wg.Add(6)
+	go func() {
+		defer wg.Done()
+		if h.shares == nil {
+			return
+		}
+		// Best-effort: the row-level answer is a UI hint. The server enforces the
+		// real thing on every write regardless of what this says.
+		if lvl, err := h.shares.EffectiveLevel(ctx, orgID, userID, slug, id); err == nil {
+			page.EffectiveLevel = lvl
+		}
+	}()
 	go func() {
 		defer wg.Done()
 		s, err := h.registry.GetSchema(ctx, orgID, slug)

@@ -41,7 +41,7 @@ describe('ObjectsManager — one manager for every object', () => {
   it('editing a system object shows native fields read-only and a custom-field adder', async () => {
     const dealSchema: ObjectSchema = {
       slug: 'deal', label: 'Deal', label_plural: 'Deals', icon: '💰', color: '#10B981',
-      is_system: true, searchable: false, display_field: 'title',
+      is_system: true, searchable: false, has_owner: true, display_field: 'title',
       fields: [
         { key: 'title', label: 'Title', type: 'text', is_system: true, required: true },
         { key: 'renewal_risk', label: 'Renewal Risk', type: 'select', options: ['low', 'high'], is_system: false, required: false },
@@ -119,7 +119,7 @@ describe('ObjectsManager — creation-time access nudge (U3.6)', () => {
     // NumberPrefixEditor loads the schema for the current prefix on mount.
     const projectSchema: ObjectSchema = {
       slug: 'project', label: 'Project', label_plural: 'Projects', icon: '📁', color: '#6B7280',
-      is_system: false, searchable: false, display_field: 'name', fields: [],
+      is_system: false, searchable: false, has_owner: true, display_field: 'name', fields: [],
     };
     vi.mocked(getObjectSchema).mockResolvedValue(projectSchema);
     vi.mocked(updateObjectDef).mockResolvedValue({} as CustomObjectDef);

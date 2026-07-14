@@ -31,7 +31,19 @@ func (h *WorkspaceHandler) ListMembers(c *gin.Context) {
 		return
 	}
 
-	members, err := h.workspaceUC.ListMembers(c.Request.Context(), orgID)
+	// ?scope=teammates narrows the list to the people the caller shares a team with
+	// — the assignee set a 'team'-scoped role may pick from (U6.1). Any member may
+	// ask; the full roster is already readable on this route.
+	var (
+		members []domain.MemberInfo
+		err     error
+	)
+	if c.Query("scope") == "teammates" {
+		userID, _ := GetUserID(c)
+		members, err = h.workspaceUC.ListTeammates(c.Request.Context(), orgID, userID)
+	} else {
+		members, err = h.workspaceUC.ListMembers(c.Request.Context(), orgID)
+	}
 	if err != nil {
 		handleAppError(c, err)
 		return
@@ -299,7 +311,9 @@ func (h *WorkspaceHandler) RemoveMember(c *gin.Context) {
 			c.JSON(http.StatusConflict, gin.H{
 				"code":  domain.CodeReassignmentRequired,
 				"error": reassign.Error(),
-				"owned": gin.H{"contacts": reassign.Contacts, "deals": reassign.Deals},
+				// custom = the custom-object records they own (U6.3). Dropping it here
+				// would under-report the impact in the very dialog where the admin decides.
+				"owned": gin.H{"contacts": reassign.Contacts, "deals": reassign.Deals, "custom": reassign.Custom},
 			})
 			return
 		}

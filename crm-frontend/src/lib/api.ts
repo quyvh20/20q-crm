@@ -86,6 +86,21 @@ function redirectToLoginExpired() {
   window.location.href = `/login?${params.toString()}`;
 }
 
+// The path the 2FA-enrollment-confined user is parked on (U6.4).
+export const ENROLL_TWO_FACTOR_PATH = '/enroll-2fa';
+
+// redirectToTwoFactorEnrollment handles the OTHER kind of "your session can't do
+// this": the workspace requires 2FA and this user hasn't enrolled. The server
+// hands them a REAL session (they need one to reach the enrollment endpoints) but
+// 403s every /api/* route outside /api/auth/* with code `two_factor_required`.
+// Without this the app would render as a wall of failed panels; instead we park
+// them on the enrollment screen. Guarded so a page whose panels each 403 doesn't
+// re-navigate (or loop) once we're already there.
+function redirectToTwoFactorEnrollment() {
+  if (window.location.pathname === ENROLL_TWO_FACTOR_PATH) return;
+  window.location.href = ENROLL_TWO_FACTOR_PATH;
+}
+
 export async function apiFetch(path: string, options: RequestInit & { timeoutMs?: number } = {}): Promise<Response> {
   const { timeoutMs, ...init } = options;
   const buildHeaders = (): Record<string, string> => {
@@ -118,6 +133,21 @@ export async function apiFetch(path: string, options: RequestInit & { timeoutMs?
       } else {
         setAccessToken(null);
         redirectToLoginExpired();
+      }
+    }
+    // Workspace 2FA policy (U6.4): a distinct 403 code means "enroll first", not
+    // "you're not allowed". Read the body from a CLONE so the caller still gets an
+    // unconsumed Response.
+    if (res.status === 403) {
+      const body = await res.clone().text().catch(() => '');
+      if (body.includes('two_factor_required')) {
+        try {
+          if ((JSON.parse(body) as { code?: string }).code === 'two_factor_required') {
+            redirectToTwoFactorEnrollment();
+          }
+        } catch {
+          // Not JSON — leave it to the caller's error handling.
+        }
       }
     }
     return res;
@@ -1052,6 +1082,11 @@ export interface ObjectSchema {
   display_field: string;
   // Label prefix for record numbers (e.g. "DEAL" → DEAL-0001); admin-editable.
   number_prefix?: string;
+  // U6: true when records of this object have an owner (contact, deal and every
+  // custom object; company has none). Owner is NOT a registry field — it never
+  // appears in `fields`, so the UI renders it as a dedicated control keyed off
+  // this flag and writes it as `owner_user_id` inside the fields map.
+  has_owner: boolean;
   fields: ObjectFieldDescriptor[];
   // P8: resolved effective layout, already FLS-filtered. Absent/empty → flat field order.
   layout?: LayoutSection[];
@@ -1075,6 +1110,10 @@ export interface UniformRecord {
   // Human-readable record number (e.g. "DEAL-0001"); absent until the backend has
   // assigned one.
   number?: string;
+  // U6: the record's owner (absent on ownerless objects like company; null when
+  // unassigned). Also mirrored into fields.owner_user_id — writes go through the
+  // fields map ('' / null unassigns).
+  owner_user_id?: string | null;
   fields: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -1241,6 +1280,11 @@ export interface RecordPageData {
   all_tags: Tag[];
   relation_labels: Record<string, string>;
   mirror_values: Record<string, string>;
+  // U6: what the CALLER may do with THIS record (row-level, distinct from the
+  // object-level OLS bits): 'manage' (owner/admin — may share), 'edit', 'view'.
+  // Optional: an older server (or the per-endpoint fallback path) doesn't send
+  // it — undefined means "unknown", and callers fail open (the server enforces).
+  effective_level?: RecordLevel;
 }
 
 export async function getObjectRecordPage(slug: string, id: string): Promise<RecordPageData> {
@@ -1446,7 +1490,20 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   'groups.manage': 'Manage user groups & their members',
 };
 
-export type DataScope = 'own' | 'all';
+// DataScope is a role's row scope (U6): 'own' = only records they own (plus
+// records shared to them), 'team' = additionally every record owned by someone
+// who shares a user group ("team") with them, 'all' = the whole workspace.
+// Ordered narrowest → widest; 'own' is the safe default for anything unknown.
+export const DATA_SCOPES = ['own', 'team', 'all'] as const;
+export type DataScope = (typeof DATA_SCOPES)[number];
+
+// asDataScope whitelists a server value into a DataScope, defaulting to the
+// NARROWEST scope. The old coercion (x === 'own' ? 'own' : 'all') failed OPEN:
+// any value it didn't recognize — including 'team' — rendered as full workspace
+// access in the UI.
+function asDataScope(v: unknown): DataScope {
+  return (DATA_SCOPES as readonly string[]).includes(v as string) ? (v as DataScope) : 'own';
+}
 
 export interface RoleDetail {
   id: string;
@@ -1511,7 +1568,9 @@ export interface MyPermissions {
 // the active org (owner gets all capabilities). Fails closed to an empty, denied
 // identity on any error so the UI never over-shows.
 export async function getMyPermissions(): Promise<MyPermissions> {
-  const denied: MyPermissions = { capabilities: [], data_scope: 'all', role_id: '', role_name: '', is_owner: false };
+  // Denied identity: no capabilities and the NARROWEST row scope. A denied
+  // fetch must never be reported to the UI as "sees every record".
+  const denied: MyPermissions = { capabilities: [], data_scope: 'own', role_id: '', role_name: '', is_owner: false };
   try {
     const res = await apiFetch('/api/auth/capabilities');
     if (!res.ok) return denied;
@@ -1519,7 +1578,7 @@ export async function getMyPermissions(): Promise<MyPermissions> {
     const d = json.data || {};
     return {
       capabilities: (d.capabilities || []) as string[],
-      data_scope: (d.data_scope === 'own' ? 'own' : 'all') as DataScope,
+      data_scope: asDataScope(d.data_scope),
       role_id: (d.role_id || '') as string,
       role_name: (d.role_name || '') as string,
       is_owner: !!d.is_owner,
@@ -1652,15 +1711,23 @@ export async function getRoleAccess(id: string): Promise<RoleAccess> {
 }
 
 // ============================================================
-// Record shares (P3, I2) — grant a specific record to a member; the escape hatch
-// for 'own'-scoped roles.
+// Record shares (U6) — grant ONE record to a user, role or group at view/edit.
+// Parity with report sharing (same target vocabulary), minus 'comment', which is
+// a reports-only level. Re-sharing an existing target upserts its level. The
+// server rejects sharing to yourself and to the record's own owner.
 // ============================================================
+
+// RecordLevel is what a share grants (and what effective_level reports back;
+// 'manage' is only ever produced by the server, never granted through a share).
+export type RecordLevel = 'view' | 'edit' | 'manage';
+export type RecordShareLevel = Extract<RecordLevel, 'view' | 'edit'>;
 
 export interface RecordShareView {
   id: string;
-  grantee_user_id: string;
-  grantee_name: string;
-  permission_level: string;
+  target_type: ShareTargetType;
+  target_id: string;
+  target_name: string;
+  level: RecordShareLevel;
   created_at: string;
 }
 
@@ -1671,13 +1738,22 @@ export async function getRecordShares(slug: string, id: string): Promise<RecordS
   return (json.data || []) as RecordShareView[];
 }
 
-export async function shareRecord(slug: string, id: string, granteeUserID: string, level = 'read'): Promise<void> {
+// shareRecord grants (or re-levels — the server upserts) one record to a target.
+// The level is required on purpose: silently defaulting it is how a caller ends
+// up granting more (or less) than the UI showed.
+export async function shareRecord(
+  slug: string,
+  id: string,
+  targetType: ShareTargetType,
+  targetId: string,
+  level: RecordShareLevel,
+): Promise<void> {
   const res = await apiFetch(`/api/registry/objects/${slug}/records/${id}/share`, {
     method: 'POST',
-    body: JSON.stringify({ grantee_user_id: granteeUserID, permission_level: level }),
+    body: JSON.stringify({ target_type: targetType, target_id: targetId, level }),
   });
   if (!res.ok) {
-    const json = await res.json().catch(() => ({}));
+    const json = await parseJsonSafe(res);
     throw new Error(json.error || 'Failed to share record');
   }
 }
@@ -1685,9 +1761,38 @@ export async function shareRecord(slug: string, id: string, granteeUserID: strin
 export async function unshareRecord(slug: string, id: string, shareID: string): Promise<void> {
   const res = await apiFetch(`/api/registry/objects/${slug}/records/${id}/share/${shareID}`, { method: 'DELETE' });
   if (!res.ok) {
-    const json = await res.json().catch(() => ({}));
+    const json = await parseJsonSafe(res);
     throw new Error(json.error || 'Failed to revoke share');
   }
+}
+
+// SharedRecordView is one row of "Shared with me" (U6): a record someone ELSE
+// owns that reached the caller through a share (direct, via their role, or via
+// a group), across every object.
+export interface SharedRecordView {
+  object_slug: string;
+  object_label: string;
+  record_id: string;
+  display: string;
+  level: RecordShareLevel;
+  owner_name: string;
+  updated_at: string;
+}
+
+export async function listSharedWithMe(
+  slug?: string,
+  limit?: number,
+  offset?: number,
+): Promise<{ records: SharedRecordView[]; total: number }> {
+  const search = new URLSearchParams();
+  if (slug) search.set('slug', slug);
+  if (limit != null) search.set('limit', String(limit));
+  if (offset != null) search.set('offset', String(offset));
+  const qs = search.toString();
+  const res = await apiFetch(`/api/registry/shared-with-me${qs ? '?' + qs : ''}`);
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw new Error(json.error || 'Failed to load shared records');
+  return { records: (json.data || []) as SharedRecordView[], total: (json.total ?? 0) as number };
 }
 
 // ============================================================
@@ -2056,6 +2161,10 @@ export interface WorkspaceMember {
   joined_at?: string;
   email_verified?: boolean;
   last_active_at?: string;
+  // Whether the member has enrolled in 2FA (U6.4) — the column an admin needs
+  // before turning the workspace policy on. Optional for the same reason as the
+  // U4 columns: older callers and test fixtures omit it, so consumers guard.
+  two_factor_enabled?: boolean;
 }
 
 // MemberGroup / MemberDetail back the member detail drawer (U4).
@@ -2139,6 +2248,9 @@ export interface WorkspaceDetail {
   timezone: string;
   member_count: number;
   is_owner: boolean;
+  // The workspace 2FA policy (U6.4): every member must enroll, and one who
+  // hasn't is confined to the enrollment screen. org.settings-gated.
+  require_two_factor: boolean;
   created_at: string;
 }
 
@@ -2149,7 +2261,11 @@ export async function getCurrentWorkspace(): Promise<WorkspaceDetail> {
   return json.data as WorkspaceDetail;
 }
 
-export async function updateWorkspace(patch: Partial<Pick<WorkspaceDetail, 'name' | 'currency' | 'locale' | 'timezone'>>): Promise<void> {
+export type UpdateWorkspaceInput = Partial<
+  Pick<WorkspaceDetail, 'name' | 'currency' | 'locale' | 'timezone' | 'require_two_factor'>
+>;
+
+export async function updateWorkspace(patch: UpdateWorkspaceInput): Promise<void> {
   const res = await apiFetch('/api/workspaces/current', { method: 'PATCH', body: JSON.stringify(patch) });
   if (!res.ok) {
     const json = await parseJsonSafe(res);
@@ -2179,6 +2295,16 @@ export async function getWorkspaceMembers(): Promise<WorkspaceMember[]> {
   const res = await apiFetch('/api/workspaces/members');
   const json = await parseJsonSafe(res);
   if (!res.ok) throw new Error(json.error || 'Failed to fetch members');
+  return (json.data || []) as WorkspaceMember[];
+}
+
+// getTeammates returns only the members the caller shares a team (user group)
+// with — the assignable set for a 'team'-scoped role (U6). Same shape as the
+// unfiltered call.
+export async function getTeammates(): Promise<WorkspaceMember[]> {
+  const res = await apiFetch('/api/workspaces/members?scope=teammates');
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw new Error(json.error || 'Failed to fetch teammates');
   return (json.data || []) as WorkspaceMember[];
 }
 
@@ -2774,6 +2900,225 @@ export async function unlinkGoogle(): Promise<void> {
 }
 
 // ============================================================
+// Two-factor authentication (U6.4)
+// ============================================================
+// TOTP + single-use backup codes, plus a workspace policy that can require it of
+// everyone. Login gains a step: a 2FA-enrolled user gets a short-lived CHALLENGE
+// instead of a session, and only a correct code exchanges it for tokens.
+
+export interface TwoFactorStatus {
+  enabled: boolean;
+  enabled_at?: string;
+  backup_codes_left: number;
+  /** The workspace policy demands 2FA — the user may not turn theirs off. */
+  required_by_workspace: boolean;
+}
+
+// TwoFactorSetupInfo is the enrollment payload. qr_data_uri is a ready-to-render
+// PNG data URI — the SERVER draws the QR, so the app ships no QR library.
+export interface TwoFactorSetupInfo {
+  secret: string;
+  otpauth_url: string;
+  qr_data_uri: string;
+}
+
+// SessionUser mirrors the user object in an auth payload. Structurally identical
+// to auth.tsx's User, so a verified challenge can be fed straight into saveAuth.
+export interface SessionUser {
+  id: string;
+  email: string;
+  first_name: string;
+  last_name: string;
+  full_name?: string;
+  role?: string;
+  avatar_url?: string;
+  email_verified_at?: string | null;
+  timezone?: string;
+  locale?: string;
+  onboarding_completed?: boolean;
+}
+
+// AuthSessionPayload is the `data` of a full auth response (login / 2FA verify).
+export interface AuthSessionPayload {
+  access_token: string;
+  refresh_token: string;
+  user: SessionUser;
+  workspaces?: Workspace[];
+  active_org_id?: string;
+  default_org_id?: string;
+  needs_chooser?: boolean;
+  // A CHALLENGE, not a session: access_token/refresh_token are EMPTY and
+  // challenge_token must be exchanged at POST /auth/2fa/verify (U6.4).
+  two_factor_required?: boolean;
+  challenge_token?: string;
+  // A real session whose workspace requires 2FA the user hasn't set up: signed
+  // in, but confined to enrolling.
+  two_factor_enroll_required?: boolean;
+}
+
+// TwoFactorVerifyError carries the HTTP status so the challenge screen can tell a
+// wrong code (401 — try again) from a dead challenge (429 — five wrong codes, the
+// challenge is gone; sign in again) without matching on message text.
+export class TwoFactorVerifyError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'TwoFactorVerifyError';
+    this.status = status;
+  }
+}
+
+// verifyTwoFactor exchanges a login challenge for a real session. Public by
+// necessity (there is no session yet), so it uses a bare fetch — apiFetch would
+// attach a stale bearer and hard-redirect on 401, which here is just "wrong code".
+// credentials:'include' both receives the new refresh cookie AND sends the
+// httpOnly 2fa_challenge cookie the Google redirect flow uses in place of a body
+// token (challengeToken is '' in that flow).
+export async function verifyTwoFactor(challengeToken: string, code: string): Promise<AuthSessionPayload> {
+  const res = await fetch(`${API_URL}/api/auth/2fa/verify`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challenge_token: challengeToken, code }),
+  });
+  const json = await parseJsonSafe(res);
+  if (!res.ok || json.error) {
+    throw new TwoFactorVerifyError(json.error || 'That code isn’t right', res.status);
+  }
+  return json.data as AuthSessionPayload;
+}
+
+export async function getTwoFactorStatus(): Promise<TwoFactorStatus> {
+  const res = await apiFetch('/api/auth/2fa');
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw new Error(json.error || 'Failed to load two-factor status');
+  return json.data as TwoFactorStatus;
+}
+
+export async function startTwoFactorSetup(): Promise<TwoFactorSetupInfo> {
+  const res = await apiFetch('/api/auth/2fa/setup', { method: 'POST' });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw new Error(json.error || 'Failed to start two-factor setup');
+  return json.data as TwoFactorSetupInfo;
+}
+
+// enableTwoFactor confirms enrollment and returns the backup codes — the ONLY
+// time they exist in plaintext. Show them once, then they're gone forever.
+export async function enableTwoFactor(code: string): Promise<string[]> {
+  const res = await apiFetch('/api/auth/2fa/enable', { method: 'POST', body: JSON.stringify({ code }) });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw new Error(json.error || 'Failed to turn on two-factor authentication');
+  return (json.data?.codes || []) as string[];
+}
+
+// disableTwoFactor requires a live code (TOTP or backup): holding a session is not
+// enough to drop a second factor. Refused with 403 when the workspace requires 2FA.
+export async function disableTwoFactor(code: string): Promise<void> {
+  const res = await apiFetch('/api/auth/2fa/disable', { method: 'POST', body: JSON.stringify({ code }) });
+  if (!res.ok) {
+    const json = await parseJsonSafe(res);
+    throw new Error(json.error || 'Failed to turn off two-factor authentication');
+  }
+}
+
+// regenerateBackupCodes invalidates every existing code and returns a fresh set.
+export async function regenerateBackupCodes(code: string): Promise<string[]> {
+  const res = await apiFetch('/api/auth/2fa/backup-codes', { method: 'POST', body: JSON.stringify({ code }) });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw new Error(json.error || 'Failed to regenerate backup codes');
+  return (json.data?.codes || []) as string[];
+}
+
+// resetMemberTwoFactor is the admin break-glass (members.manage) for a member who
+// lost both their authenticator and their backup codes.
+export async function resetMemberTwoFactor(userId: string): Promise<void> {
+  const res = await apiFetch(`/api/workspaces/members/${userId}/two-factor`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await parseJsonSafe(res);
+    throw new Error(json.error || "Failed to reset the member's two-factor authentication");
+  }
+}
+
+// ============================================================
+// Personal API tokens (U6.5)
+// ============================================================
+// A token authenticates as its OWNER and can only ever do a SUBSET of what its
+// owner can: its scopes intersect their real permissions. The creation form
+// therefore offers only scopes the caller actually holds — the server rejects
+// anything else with a 403.
+
+export interface APIToken {
+  id: string;
+  name: string;
+  /** Display hint ("crm_pat_a1b2…") — enough to recognize, useless as a credential. */
+  prefix: string;
+  scopes: string[];
+  last_used_at?: string;
+  expires_at?: string;
+  revoked_at?: string;
+  created_at: string;
+}
+
+// CreatedAPIToken carries the plaintext secret — returned EXACTLY ONCE.
+export interface CreatedAPIToken {
+  token: APIToken;
+  secret: string;
+}
+
+export interface CreateAPITokenInput {
+  name: string;
+  scopes: string[];
+  expires_in_days?: number;
+}
+
+// SCOPE_RECORDS_READ is a TOKEN-ONLY scope with no role capability behind it:
+// reading records is gated by OLS, not a capability, so without it a narrowly
+// scoped token would still read everything its owner can. Anyone may grant it —
+// it confers nothing its owner doesn't already have.
+export const SCOPE_RECORDS_READ = 'records.read';
+
+// Every scope a token may carry: the role capability catalog plus records.read.
+export const ALL_API_TOKEN_SCOPES: string[] = [SCOPE_RECORDS_READ, ...ALL_CAPABILITIES];
+
+export const API_TOKEN_SCOPE_LABELS: Record<string, string> = {
+  ...CAPABILITY_LABELS,
+  [SCOPE_RECORDS_READ]: 'Read records',
+};
+
+// Server-side limits, mirrored for the UI (domain.MaxAPITokensPerUser / DefaultAPITokenDays).
+export const MAX_API_TOKENS_PER_USER = 20;
+export const DEFAULT_API_TOKEN_DAYS = 90;
+
+export async function listApiTokens(): Promise<APIToken[]> {
+  const res = await apiFetch('/api/auth/api-tokens');
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw new Error(json.error || 'Failed to load API tokens');
+  return (json.data || []) as APIToken[];
+}
+
+export async function createApiToken(input: CreateAPITokenInput): Promise<CreatedAPIToken> {
+  const res = await apiFetch('/api/auth/api-tokens', { method: 'POST', body: JSON.stringify(input) });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw new Error(json.error || 'Failed to create API token');
+  return json.data as CreatedAPIToken;
+}
+
+export async function revokeApiToken(id: string): Promise<void> {
+  const res = await apiFetch(`/api/auth/api-tokens/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await parseJsonSafe(res);
+    throw new Error(json.error || 'Failed to revoke API token');
+  }
+}
+
+// isTokenLive: a token still authenticates unless it was revoked or has expired.
+export function isTokenLive(t: APIToken, now: number = Date.now()): boolean {
+  if (t.revoked_at) return false;
+  if (t.expires_at && new Date(t.expires_at).getTime() <= now) return false;
+  return true;
+}
+
+// ============================================================
 // Reports (P9) — saved report definitions + per-viewer execution
 // ============================================================
 
@@ -2994,7 +3339,10 @@ export async function reorderDashboardWidgets(widgetIds: string[]): Promise<void
 }
 
 // ============================================================
-// User Groups — named member groups (a report-sharing target)
+// User Groups — named member groups. These ARE the "teams" (U6): they define
+// the 'team' data scope (a team-scoped role sees every record owned by anyone
+// who shares a group with them) AND they are a share target for both records
+// and reports.
 // ============================================================
 
 export interface GroupMember {

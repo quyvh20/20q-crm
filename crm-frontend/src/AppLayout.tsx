@@ -115,6 +115,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
           <NavLink to="/ai" className={navItemClass}>✦ AI Assistant</NavLink>
           <NavLink to="/workflows" className={navItemClass}>⚡ Automations</NavLink>
           <NavLink to="/reports" className={navItemClass}>📊 Reports</NavLink>
+          <NavLink to="/shared-with-me" className={navItemClass}>🤝 Shared with me</NavLink>
           {customObjects.map(obj => (
             <NavLink key={obj.slug} to={`/objects/${obj.slug}`} className={navItemClass}>
               <span style={{ marginRight: 6 }}>{obj.icon}</span>{obj.label_plural}

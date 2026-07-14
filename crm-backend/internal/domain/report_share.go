@@ -15,40 +15,10 @@ import (
 // access LEVEL. Levels are totally ordered; a caller's effective level on a
 // report is the HIGHEST that applies (creator/owner/reports.manage → manage).
 // Report data stays per-viewer (OLS/FLS); levels only govern the definition.
-
-// Share target types.
-const (
-	ShareTargetUser  = "user"
-	ShareTargetRole  = "role"
-	ShareTargetGroup = "group"
-)
-
-// Access levels, lowest → highest. ShareLevelManage is not stored (it is derived
-// for creators/owners/reports.manage) but is returned by the resolver.
-const (
-	ShareLevelNone    = "none"
-	ShareLevelView    = "view"
-	ShareLevelComment = "comment"
-	ShareLevelEdit    = "edit"
-	ShareLevelManage  = "manage"
-)
-
-// shareLevelRank ranks levels so "highest wins" is a max over ints.
-var shareLevelRank = map[string]int{
-	ShareLevelNone: 0, ShareLevelView: 1, ShareLevelComment: 2, ShareLevelEdit: 3, ShareLevelManage: 4,
-}
-
-// ShareLevelRank returns the level's rank (unknown → 0). Higher = more access.
-func ShareLevelRank(level string) int { return shareLevelRank[level] }
-
-// ShareLevelAtLeast reports whether have grants at least want.
-func ShareLevelAtLeast(have, want string) bool { return shareLevelRank[have] >= shareLevelRank[want] }
-
-// IsStorableShareLevel guards the level a share row may carry (manage/none are
-// derived, never stored).
-func IsStorableShareLevel(level string) bool {
-	return level == ShareLevelView || level == ShareLevelComment || level == ShareLevelEdit
-}
+//
+// The target kinds, the level ladder, and ShareIdentity live in share.go — record
+// sharing (U6.2) speaks the same vocabulary. Reports are the shareable that
+// supports ShareLevelComment; records are not (IsStorableRecordShareLevel).
 
 type ReportShare struct {
 	ID         uuid.UUID  `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
@@ -79,14 +49,6 @@ type AddReportShareInput struct {
 	TargetType string    `json:"target_type" binding:"required"`
 	TargetID   uuid.UUID `json:"target_id" binding:"required"`
 	Level      string    `json:"level" binding:"required"`
-}
-
-// ShareIdentity is the caller's set of share "handles": their user id, role id,
-// and every group they belong to — matched against report_shares rows.
-type ShareIdentity struct {
-	UserID   uuid.UUID
-	RoleID   uuid.UUID
-	GroupIDs []uuid.UUID
 }
 
 // ============================================================

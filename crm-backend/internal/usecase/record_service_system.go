@@ -140,6 +140,9 @@ func (a *contactAdapter) update(ctx context.Context, orgID, id uuid.UUID, fields
 			input.CompanyID = cid
 		}
 	}
+	// Owner is present-but-null-able: an explicit null/"" means UNASSIGN. Dropping a
+	// nil here (the pre-U6.3 shape) is what made the owner picker's "Unassigned"
+	// option a silent no-op — the field could be set but never cleared.
 	if _, ok := fields["owner_user_id"]; ok {
 		oid, err := uuidField(fields, "owner_user_id")
 		if err != nil {
@@ -147,6 +150,8 @@ func (a *contactAdapter) update(ctx context.Context, orgID, id uuid.UUID, fields
 		}
 		if oid != nil {
 			input.OwnerUserID = oid
+		} else {
+			input.ClearOwner = true
 		}
 	}
 	if cf, ok := customFieldsJSONIfAny(fields, contactNativeKeys); ok {
@@ -182,6 +187,10 @@ func contactToUniform(c *domain.Contact) *domain.UniformRecord {
 	fields["email"] = derefStr(c.Email)
 	fields["phone"] = derefStr(c.Phone)
 	fields["company"] = uuidStr(c.CompanyID)
+	// The uniform API accepted owner_user_id on write but never echoed it back, so
+	// any owner control rendered empty and silently reverted the owner on the next
+	// save (U6.3). It is projected both as the first-class field and into Fields.
+	fields["owner_user_id"] = uuidStr(c.OwnerUserID)
 
 	display := strings.TrimSpace(c.FirstName + " " + c.LastName)
 	if display == "" {
@@ -192,7 +201,8 @@ func contactToUniform(c *domain.Contact) *domain.UniformRecord {
 	}
 	return &domain.UniformRecord{
 		ID: c.ID, Object: "contact", Display: display, Fields: fields,
-		CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt,
+		OwnerUserID: c.OwnerUserID,
+		CreatedAt:   c.CreatedAt, UpdatedAt: c.UpdatedAt,
 	}
 }
 
@@ -460,15 +470,19 @@ func (a *dealAdapter) update(ctx context.Context, orgID, id uuid.UUID, fields ma
 		input.ExpectedCloseAt = closeAt
 		nonStage = true
 	}
+	// Present-but-null means UNASSIGN (U6.3): dropping the nil made the owner
+	// picker's "Unassigned" option a silent no-op on deals.
 	if _, ok := fields["owner_user_id"]; ok {
 		oid, err := uuidField(fields, "owner_user_id")
 		if err != nil {
 			return nil, err
 		}
-		if oid != nil { // partial-update: owner can be reassigned but not cleared here
+		if oid != nil {
 			input.OwnerUserID = oid
-			nonStage = true
+		} else {
+			input.ClearOwner = true
 		}
+		nonStage = true
 	}
 	if cf, ok := customFieldsJSONIfAny(fields, dealNativeKeys); ok {
 		input.CustomFields = &cf
@@ -688,6 +702,7 @@ func dealToUniform(d *domain.Deal) *domain.UniformRecord {
 	} else {
 		fields["expected_close_at"] = ""
 	}
+	fields["owner_user_id"] = uuidStr(d.OwnerUserID)
 
 	display := strings.TrimSpace(d.Title)
 	if display == "" {
@@ -695,7 +710,8 @@ func dealToUniform(d *domain.Deal) *domain.UniformRecord {
 	}
 	return &domain.UniformRecord{
 		ID: d.ID, Object: "deal", Display: display, Fields: fields,
-		CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt,
+		OwnerUserID: d.OwnerUserID,
+		CreatedAt:   d.CreatedAt, UpdatedAt: d.UpdatedAt,
 	}
 }
 

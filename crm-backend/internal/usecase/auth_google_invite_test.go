@@ -243,3 +243,24 @@ func TestResolveGoogleUser_AlreadyLinked_ReturnsExisting(t *testing.T) {
 		t.Fatal("no org should be created for a returning Google user")
 	}
 }
+
+// Two-factor (U6.4) — unused by these tests; stubbed to satisfy domain.AuthRepository.
+func (f *fakeGoogleRepo) SetTOTPSecret(context.Context, uuid.UUID, string) error { return nil }
+func (f *fakeGoogleRepo) EnableTOTP(context.Context, uuid.UUID, []string) error  { return nil }
+func (f *fakeGoogleRepo) DisableTOTP(context.Context, uuid.UUID) error           { return nil }
+func (f *fakeGoogleRepo) ReplaceBackupCodes(context.Context, uuid.UUID, []string) error { return nil }
+func (f *fakeGoogleRepo) ListUnusedBackupCodes(context.Context, uuid.UUID) ([]domain.TwoFactorBackupCode, error) {
+	return nil, nil
+}
+func (f *fakeGoogleRepo) ConsumeBackupCode(context.Context, uuid.UUID) (bool, error) { return false, nil }
+func (f *fakeGoogleRepo) CountBackupCodesRemaining(context.Context, uuid.UUID) (int, error) { return 0, nil }
+func (f *fakeGoogleRepo) CreateTwoFactorChallenge(context.Context, *domain.TwoFactorChallenge) error { return nil }
+func (f *fakeGoogleRepo) GetTwoFactorChallengeByHash(context.Context, string) (*domain.TwoFactorChallenge, error) {
+	return nil, nil
+}
+func (f *fakeGoogleRepo) IncrementChallengeAttempts(context.Context, uuid.UUID) error { return nil }
+func (f *fakeGoogleRepo) ConsumeTwoFactorChallenge(context.Context, uuid.UUID) (bool, error) { return true, nil }
+func (f *fakeGoogleRepo) DeleteExpiredTwoFactorChallenges(context.Context) (int64, error) { return 0, nil }
+
+func (f *fakeGoogleRepo) ClaimChallengeAttempt(context.Context, uuid.UUID, int) (bool, error) { return true, nil }
+func (f *fakeGoogleRepo) RevokeAllUserAPITokens(context.Context, uuid.UUID) (int64, error)    { return 0, nil }

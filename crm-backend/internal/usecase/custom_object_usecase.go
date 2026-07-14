@@ -173,11 +173,11 @@ func (uc *customObjectUseCase) ListRecords(ctx context.Context, orgID uuid.UUID,
 	if def == nil {
 		return nil, 0, &domain.AppError{Code: http.StatusNotFound, Message: "custom object not found"}
 	}
-	return uc.repo.ListRecords(ctx, orgID, def.ID, f)
+	return uc.repo.ListRecords(ctx, orgID, def.ID, slug, f)
 }
 
-func (uc *customObjectUseCase) GetRecord(ctx context.Context, orgID uuid.UUID, id uuid.UUID) (*domain.CustomObjectRecord, error) {
-	rec, err := uc.repo.GetRecord(ctx, orgID, id)
+func (uc *customObjectUseCase) GetRecord(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID) (*domain.CustomObjectRecord, error) {
+	rec, err := uc.repo.GetRecord(ctx, orgID, slug, id)
 	if err != nil {
 		return nil, err
 	}
@@ -211,12 +211,21 @@ func (uc *customObjectUseCase) CreateRecord(ctx context.Context, orgID uuid.UUID
 	// Compute display_name from first text field
 	displayName := uc.computeDisplayName(def.Fields, dataMap)
 
+	// Owner defaults to the creator (U6.3). Without this, a row-scoped user would
+	// create a record and immediately lose sight of it — an unowned row matches no
+	// row-scoped caller.
+	owner := &userID
+	if input.OwnerUserID != nil {
+		owner = input.OwnerUserID
+	}
+
 	rec := &domain.CustomObjectRecord{
 		ID:          uuid.New(),
 		OrgID:       orgID,
 		ObjectDefID: def.ID,
 		DisplayName: displayName,
 		Data:        input.Data,
+		OwnerUserID: owner,
 		CreatedBy:   &userID,
 	}
 
@@ -224,7 +233,18 @@ func (uc *customObjectUseCase) CreateRecord(ctx context.Context, orgID uuid.UUID
 		return nil, err
 	}
 
-	return uc.repo.GetRecord(ctx, orgID, rec.ID)
+	// Re-read to pick up DB defaults, but NEVER let the scoped read decide whether the
+	// write happened: an owner-scoped caller who assigns a record to someone else can
+	// no longer see it, so this read returns (nil, nil) and every caller downstream
+	// would nil-deref on a write that actually succeeded. Fall back to what we wrote.
+	out, err := uc.repo.GetRecord(ctx, orgID, slug, rec.ID)
+	if err != nil {
+		return nil, err
+	}
+	if out == nil {
+		return rec, nil
+	}
+	return out, nil
 }
 
 func (uc *customObjectUseCase) UpdateRecord(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID, input domain.UpdateRecordInput) (*domain.CustomObjectRecord, error) {
@@ -236,7 +256,7 @@ func (uc *customObjectUseCase) UpdateRecord(ctx context.Context, orgID uuid.UUID
 		return nil, &domain.AppError{Code: http.StatusNotFound, Message: "custom object not found"}
 	}
 
-	rec, err := uc.repo.GetRecord(ctx, orgID, id)
+	rec, err := uc.repo.GetRecord(ctx, orgID, slug, id)
 	if err != nil {
 		return nil, err
 	}
@@ -258,15 +278,35 @@ func (uc *customObjectUseCase) UpdateRecord(ctx context.Context, orgID uuid.UUID
 	if input.DisplayName != nil {
 		rec.DisplayName = *input.DisplayName
 	}
+	// Reassign or unassign the owner. ClearOwner is what makes "unassign" expressible:
+	// a nil OwnerUserID alone means "not supplied", so without the flag an owner could
+	// be set but never removed. Save() writes the whole row, so a nil here really does
+	// clear the column (no GORM zero-value omission on this path).
+	if input.ClearOwner {
+		rec.OwnerUserID = nil
+	} else if input.OwnerUserID != nil {
+		rec.OwnerUserID = input.OwnerUserID
+	}
 
-	if err := uc.repo.UpdateRecord(ctx, rec); err != nil {
+	if err := uc.repo.UpdateRecord(ctx, slug, rec); err != nil {
 		return nil, err
 	}
-	return uc.repo.GetRecord(ctx, orgID, rec.ID)
+	// Re-read to pick up DB defaults, but NEVER let the scoped read decide whether the
+	// write happened: an owner-scoped caller who assigns a record to someone else can
+	// no longer see it, so this read returns (nil, nil) and every caller downstream
+	// would nil-deref on a write that actually succeeded. Fall back to what we wrote.
+	out, err := uc.repo.GetRecord(ctx, orgID, slug, rec.ID)
+	if err != nil {
+		return nil, err
+	}
+	if out == nil {
+		return rec, nil
+	}
+	return out, nil
 }
 
-func (uc *customObjectUseCase) DeleteRecord(ctx context.Context, orgID uuid.UUID, id uuid.UUID) error {
-	return uc.repo.SoftDeleteRecord(ctx, orgID, id)
+func (uc *customObjectUseCase) DeleteRecord(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID) error {
+	return uc.repo.SoftDeleteRecord(ctx, orgID, slug, id)
 }
 
 // ============================================================

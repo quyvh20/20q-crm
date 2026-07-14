@@ -22,6 +22,10 @@ vi.mock('../../lib/api', () => ({
   listRegistryObjects: vi.fn().mockResolvedValue([]),
   listRecordRelatedLists: vi.fn().mockResolvedValue([]),
   getTags: vi.fn().mockResolvedValue([]),
+  // U6: the owner control (ObjectForm → OwnerPicker) and the detail view's
+  // read-only owner row resolve names through these.
+  getWorkspaceMembers: vi.fn().mockResolvedValue([]),
+  getUsers: vi.fn().mockResolvedValue([]),
   addRecordLink: vi.fn(),
   removeRecordLink: vi.fn(),
   addRecordTag: vi.fn(),
@@ -51,7 +55,7 @@ import ObjectRecordPage from '../ObjectRecordPage';
 
 const contactSchema: ObjectSchema = {
   slug: 'contact', label: 'Contact', label_plural: 'Contacts', icon: '👤', color: '#6366f1',
-  is_system: true, searchable: false, display_field: 'name',
+  is_system: true, searchable: false, has_owner: true, display_field: 'name',
   fields: [
     { key: 'name', label: 'Name', type: 'text', is_system: true, required: true },
     { key: 'email', label: 'Email', type: 'text', is_system: true, required: false },

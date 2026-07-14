@@ -614,10 +614,18 @@ func (cc *CommandCenter) buildRolePrompt(ctx context.Context, orgID uuid.UUID, r
 	canManageWorkflows := cc.callerHasCapability(ctx, orgID, domain.CapWorkflowsManage)
 
 	var lines []string
-	if scope == domain.DataScopeOwn {
+	// The persona must match what the server will actually return. A team-scoped
+	// caller told they have FULL RECORD ACCESS would confidently narrate org-wide
+	// numbers while the row predicate silently hands back only their team's — the
+	// worst kind of wrong, because it looks authoritative.
+	switch scope {
+	case domain.DataScopeOwn:
 		lines = append(lines, `OWN RECORDS ONLY: you can only see and act on deals and contacts owned by the current user (plus records explicitly shared with them) — no one else's.
 - If asked for team/org-wide data, politely decline: "I can only see your own records." — the server enforces this, so never claim to show data you can't access.`)
-	} else {
+	case domain.DataScopeTeam:
+		lines = append(lines, `TEAM RECORDS ONLY: you can see and act on deals and contacts owned by the current user OR by anyone on their teams (plus records explicitly shared with them) — not the whole workspace.
+- If asked for org-wide data, be honest: "I can only see your team's records." — the server enforces this, so never claim to show data you can't access.`)
+	default:
 		lines = append(lines, `FULL RECORD ACCESS: all deals and contacts in the workspace.
 - Present org-level summaries by default; drill into individuals only when asked.`)
 	}
@@ -913,9 +921,12 @@ func (cc *CommandCenter) toolSearchContacts(ctx context.Context, orgID, userID u
 	// Empty state: give the AI a human-readable message to relay
 	if len(contacts) == 0 {
 		msg := "No contacts found matching your search criteria."
-		if effectiveScope(caller) == domain.DataScopeOwn {
+		switch {
+		case effectiveScope(caller) == domain.DataScopeOwn:
 			msg = "You currently have no contacts assigned to you."
-		} else if query == "" {
+		case effectiveScope(caller) == domain.DataScopeTeam:
+			msg = "There are no contacts assigned to you or your teams."
+		case query == "":
 			msg = "There are no contacts in the system yet."
 		}
 		out, _ := json.Marshal(map[string]any{"count": 0, "contacts": []any{}, "empty_message": msg})
@@ -980,8 +991,11 @@ func (cc *CommandCenter) toolSearchDeals(ctx context.Context, orgID, userID uuid
 	// Empty state: give the AI a human-readable message to relay
 	if len(deals) == 0 {
 		msg := "No deals found in the pipeline matching your criteria."
-		if effectiveScope(caller) == domain.DataScopeOwn {
+		switch effectiveScope(caller) {
+		case domain.DataScopeOwn:
 			msg = "You currently have no deals assigned to you."
+		case domain.DataScopeTeam:
+			msg = "There are no deals assigned to you or your teams."
 		}
 		out, _ := json.Marshal(map[string]any{"count": 0, "deals": []any{}, "empty_message": msg})
 		return out
@@ -1260,12 +1274,17 @@ func (cc *CommandCenter) toolGetAnalytics(ctx context.Context, orgID, userID uui
 	}
 }
 
-// scopeLabel returns a text description of the data scope applied ('own' | 'all').
+// scopeLabel describes the data scope applied ('own' | 'team' | 'all') so the
+// model can tell the user WHICH slice of the data it just summarized.
 func scopeLabel(scope, entity string) string {
-	if scope == domain.DataScopeOwn {
+	switch scope {
+	case domain.DataScopeOwn:
 		return "your own " + entity
+	case domain.DataScopeTeam:
+		return "your team's " + entity
+	default:
+		return "org-wide " + entity
 	}
-	return "org-wide " + entity
 }
 
 // extractCustomFieldParams collects any "cf_*" prefixed parameters from an AI
@@ -1415,6 +1434,12 @@ func (cc *CommandCenter) toolCreateObjectRecord(ctx context.Context, orgID, user
 		fields = f
 	}
 
+	// owner_user_id is a COLUMN on custom records (U6.3), never a key in the data
+	// blob. Drop any the model invented so the two can't disagree; the usecase
+	// assigns the acting user as owner, which is what "the AI made this for me"
+	// should mean anyway.
+	delete(fields, "owner_user_id")
+
 	// Marshal fields map into JSON for the Data field
 	dataJSON, err := json.Marshal(fields)
 	if err != nil {
@@ -1495,6 +1520,8 @@ func (cc *CommandCenter) toolUpdateObjectRecord(ctx context.Context, orgID uuid.
 		input.DisplayName = &newName
 	}
 	if fields, ok := params["fields"].(map[string]interface{}); ok && len(fields) > 0 {
+		// See createCustomRecord: owner lives in a column, not the blob.
+		delete(fields, "owner_user_id")
 		dataJSON, err := json.Marshal(fields)
 		if err != nil {
 			out, _ := json.Marshal(map[string]any{"error": "invalid fields data"})

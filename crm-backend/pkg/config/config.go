@@ -20,7 +20,14 @@ type Config struct {
 	RedisURL    string `mapstructure:"REDIS_URL"`
 
 	// Auth
-	JWTSecret          string `mapstructure:"JWT_SECRET"`
+	JWTSecret string `mapstructure:"JWT_SECRET"`
+	// TOTPEncKey encrypts the stored TOTP secrets at rest (U6.4). Optional: when
+	// unset, the key is derived from JWT_SECRET, so turning 2FA on doesn't force a
+	// self-hosted deployment to manage a second secret. Set it explicitly to rotate
+	// the two independently — and note that rotating JWT_SECRET without setting this
+	// first makes existing TOTP secrets undecryptable (users recover with a backup
+	// code, then re-enroll).
+	TOTPEncKey         string `mapstructure:"TOTP_ENC_KEY"`
 	GoogleClientID     string `mapstructure:"GOOGLE_CLIENT_ID"`
 	GoogleClientSecret string `mapstructure:"GOOGLE_CLIENT_SECRET"`
 	GoogleRedirectURL  string `mapstructure:"GOOGLE_REDIRECT_URL"`

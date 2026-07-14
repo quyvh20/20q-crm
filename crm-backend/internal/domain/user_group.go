@@ -81,8 +81,11 @@ type UserGroupRepository interface {
 	// input to group-based share resolution.
 	GroupIDsForUser(ctx context.Context, orgID, userID uuid.UUID) ([]uuid.UUID, error)
 	// ExistsInOrg reports whether the group id belongs to the org (validation
-	// before sharing a report to it).
+	// before sharing a report or record to it).
 	ExistsInOrg(ctx context.Context, orgID, id uuid.UUID) (bool, error)
+	// TeammateIDs returns the active members who share at least one group with the
+	// user — the relation the 'team' data scope filters on (U6.1). Includes the user.
+	TeammateIDs(ctx context.Context, orgID, userID uuid.UUID) ([]uuid.UUID, error)
 }
 
 // UserGroupUseCase is the admin-facing surface (groups.manage gated for

@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { switchWorkspace as apiSwitchWorkspace, setAccessToken as setApiToken, readCsrfToken, getMyPermissions, parseJsonSafe, apiFetch, type Workspace, type MyPermissions, type DataScope, type ObjectAccessBits } from './api';
+import { switchWorkspace as apiSwitchWorkspace, setAccessToken as setApiToken, readCsrfToken, getMyPermissions, parseJsonSafe, apiFetch, verifyTwoFactor as apiVerifyTwoFactor, type Workspace, type MyPermissions, type DataScope, type ObjectAccessBits } from './api';
 
 const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8080' : '');
 
@@ -43,9 +43,10 @@ interface AuthContextType {
   // navigation (the settings shell guard) must wait instead of redirecting a
   // deep-linked admin off a page they're actually allowed on (U1).
   permsLoaded: boolean;
-  // Role identity + row scope for the active workspace (P6). dataScope 'own' means
-  // the caller only sees records they own/were shared; roleId is the authoritative
-  // role identity; isOwner marks god-mode.
+  // Role identity + row scope for the active workspace (P6/U6). dataScope is
+  // tri-state: 'own' (records they own + shared to them), 'team' (also every
+  // record owned by someone in a user group they belong to) or 'all'. roleId is
+  // the authoritative role identity; isOwner marks god-mode.
   dataScope: DataScope;
   roleId: string;
   isOwner: boolean;
@@ -55,7 +56,14 @@ interface AuthContextType {
   // flash hidden for allowed users; the server still enforces every action.
   objectAccess: Record<string, ObjectAccessBits> | null;
   canAccessObject: (slug: string, action: 'read' | 'create' | 'edit' | 'delete') => boolean;
-  login: (email: string, password: string) => Promise<void>;
+  // login no longer always yields a session (U6.4): a 2FA-enrolled user gets a
+  // CHALLENGE that must be exchanged for tokens at /login/2fa, so the caller has
+  // to branch on the result instead of assuming it's signed in.
+  login: (email: string, password: string) => Promise<LoginResult>;
+  // verifyTwoFactor exchanges a login challenge + code (TOTP or backup) for a real
+  // session and ingests it. challengeToken is '' in the Google flow, where the
+  // challenge rides in an httpOnly cookie instead.
+  verifyTwoFactor: (challengeToken: string, code: string) => Promise<void>;
   register: (data: RegisterData) => Promise<void>;
   // Accept an invite and, when the server auto-logs-in the invitee (U4), ingest
   // the returned session so they land in the app signed in. Resolves to whether
@@ -96,9 +104,24 @@ interface AuthResponse {
     active_org_id?: string;
     default_org_id?: string;
     needs_chooser?: boolean;
+    // Two-factor (U6.4). two_factor_required marks a CHALLENGE, not a session:
+    // access_token/refresh_token are EMPTY and challenge_token must be exchanged
+    // at /auth/2fa/verify. two_factor_enroll_required rides on a REAL session whose
+    // workspace requires 2FA the user hasn't set up — signed in, but confined to
+    // the enrollment screen until they comply.
+    two_factor_required?: boolean;
+    challenge_token?: string;
+    two_factor_enroll_required?: boolean;
   };
   error: string | null;
 }
+
+// LoginResult is what a password sign-in actually yields (U6.4): a session, or a
+// challenge that has to be answered before one exists. `enrollRequired` is a real
+// session whose workspace demands a factor the user hasn't set up yet.
+export type LoginResult =
+  | { twoFactorRequired: true; challengeToken: string }
+  | { twoFactorRequired: false; enrollRequired: boolean };
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -117,6 +140,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const currentRole = activeWorkspace?.role || '';
   const capabilities = perms?.capabilities ?? [];
+  // Tri-state row scope (U6): 'own' | 'team' | 'all'. Before the fetch settles
+  // perms is null — treat that as the WIDEST scope so an all-scoped user doesn't
+  // watch their assignee picker collapse to themselves for a frame; consumers
+  // that care gate on permsLoaded. A settled-but-failed fetch is NOT unknown:
+  // getMyPermissions returns a denied identity whose scope is 'own'.
   const dataScope: DataScope = perms?.data_scope ?? 'all';
   const roleId = perms?.role_id ?? '';
   const isOwner = perms?.is_owner ?? false;
@@ -257,7 +285,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     loadUser();
   }, [refreshAuth]);
 
-  const login = async (email: string, password: string) => {
+  const login = async (email: string, password: string): Promise<LoginResult> => {
     const res = await fetch(`${API_URL}/api/auth/login`, {
       method: 'POST',
       credentials: 'include', // receive the httpOnly refresh + csrf cookies
@@ -270,7 +298,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       throw new Error(json.error || 'Login failed');
     }
 
-    saveAuth(json.data);
+    // 2FA challenge (U6.4): the password was right, but this is NOT a session —
+    // the tokens are empty. Ingesting it would leave the app "logged in" with a
+    // null token, so hand the challenge back and let the caller route to
+    // /login/2fa. The empty-access_token check is the belt to the flag's braces.
+    const data = json.data;
+    if (data?.two_factor_required || !data?.access_token) {
+      if (!data?.challenge_token) throw new Error('Login failed');
+      return { twoFactorRequired: true, challengeToken: data.challenge_token };
+    }
+
+    saveAuth(data);
+    return { twoFactorRequired: false, enrollRequired: !!data.two_factor_enroll_required };
+  };
+
+  // verifyTwoFactor turns a login challenge into a session. Errors (wrong code,
+  // dead challenge) propagate as TwoFactorVerifyError so the screen can tell them
+  // apart by status.
+  const verifyTwoFactor = async (challengeToken: string, code: string) => {
+    const data = await apiVerifyTwoFactor(challengeToken, code);
+    saveAuth(data as AuthResponse['data']);
   };
 
   const register = async (data: RegisterData) => {
@@ -383,6 +430,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         objectAccess,
         canAccessObject,
         login,
+        verifyTwoFactor,
         register,
         acceptInvitation,
         createWorkspace,

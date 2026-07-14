@@ -56,7 +56,7 @@ func (r *contactRepository) List(ctx context.Context, orgID uuid.UUID, f domain.
 		limit = 25
 	}
 
-	query := applyScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "contacts").
+	query := applyScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "contacts", "contact").
 		Preload("Company").
 		Preload("Tags").
 		Preload("Owner")
@@ -142,7 +142,7 @@ func (r *contactRepository) List(ctx context.Context, orgID uuid.UUID, f domain.
 
 func (r *contactRepository) GetByID(ctx context.Context, orgID, id uuid.UUID) (*domain.Contact, error) {
 	var contact domain.Contact
-	err := applyScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "contacts").
+	err := applyScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "contacts", "contact").
 		Where("contacts.id = ?", id).
 		Preload("Company").
 		Preload("Tags").
@@ -183,7 +183,7 @@ func (r *contactRepository) Update(ctx context.Context, c *domain.Contact) error
 // ============================================================
 
 func (r *contactRepository) SoftDelete(ctx context.Context, orgID, id uuid.UUID) error {
-	result := applyWriteScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "contacts").
+	result := applyWriteScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "contacts", "contact").
 		Where("contacts.id = ?", id).
 		Delete(&domain.Contact{})
 	if result.Error != nil {
@@ -269,7 +269,7 @@ func (r *contactRepository) BulkCreate(ctx context.Context, contacts []domain.Co
 
 func (r *contactRepository) Count(ctx context.Context, orgID uuid.UUID) (int64, error) {
 	var count int64
-	err := applyScopeFromCtx(r.db.WithContext(ctx).Model(&domain.Contact{}), ctx, orgID, "contacts").
+	err := applyScopeFromCtx(r.db.WithContext(ctx).Model(&domain.Contact{}), ctx, orgID, "contacts", "contact").
 		Count(&count).Error
 	return count, err
 }
@@ -347,7 +347,7 @@ func (r *contactRepository) BulkDeleteByIDs(ctx context.Context, orgID uuid.UUID
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	result := applyWriteScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "contacts").
+	result := applyWriteScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "contacts", "contact").
 		Where("contacts.id IN ?", ids).
 		Delete(&domain.Contact{})
 	return result.RowsAffected, result.Error
@@ -357,10 +357,25 @@ func (r *contactRepository) BulkAssignTag(ctx context.Context, orgID uuid.UUID, 
 	if len(contactIDs) == 0 {
 		return 0, nil
 	}
+
+	// Tagging is a WRITE to a record, so the ids have to survive the write predicate
+	// first. The raw INSERT below carries no org filter and no row scope of its own:
+	// handed a list of ids, it would happily tag contacts in another workspace, or a
+	// row-scoped caller's colleagues' contacts.
+	var allowed []uuid.UUID
+	if err := applyWriteScopeFromCtx(r.db.WithContext(ctx).Model(&domain.Contact{}), ctx, orgID, "contacts", "contact").
+		Where("contacts.id IN ?", contactIDs).
+		Pluck("contacts.id", &allowed).Error; err != nil {
+		return 0, err
+	}
+	if len(allowed) == 0 {
+		return 0, nil
+	}
+
 	// Build multi-row INSERT INTO contact_tags ON CONFLICT DO NOTHING
 	sql := "INSERT INTO contact_tags (contact_id, tag_id) VALUES "
-	args := make([]interface{}, 0, len(contactIDs)*2)
-	for i, cid := range contactIDs {
+	args := make([]interface{}, 0, len(allowed)*2)
+	for i, cid := range allowed {
 		if i > 0 {
 			sql += ","
 		}
@@ -397,7 +412,7 @@ func (r *contactRepository) SemanticSearch(ctx context.Context, orgID uuid.UUID,
 	vecStr += "]"
 
 	var contacts []domain.Contact
-	err := applyScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "contacts").
+	err := applyScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "contacts", "contact").
 		Where("contacts.embedding IS NOT NULL").
 		Where(fmt.Sprintf("contacts.embedding <=> '%s'::vector < ?", vecStr), threshold).
 		Order(fmt.Sprintf("embedding <=> '%s'::vector", vecStr)).

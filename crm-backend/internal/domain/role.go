@@ -58,64 +58,44 @@ type RolePermission struct {
 
 func (RolePermission) TableName() string { return "role_permissions" }
 
-// Data scopes (roles.data_scope).
+// Data scopes (roles.data_scope) — a role's row visibility, narrowest first.
+//
+//	own  — records the user owns (plus anything shared to them)
+//	team — the above, plus records owned by anyone who shares a group with them
+//	all  — every record in the workspace
+//
+// 'team' (U6.1) is the missing middle: before it, a manager who should see their
+// reports' pipeline had to be given the whole workspace.
 const (
-	DataScopeOwn = "own"
-	DataScopeAll = "all"
+	DataScopeOwn  = "own"
+	DataScopeTeam = "team"
+	DataScopeAll  = "all"
 )
 
-type RecordShare struct {
-	ID             uuid.UUID  `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
-	RecordType     string     `gorm:"size:50;not null" json:"record_type"`
-	RecordID       uuid.UUID  `gorm:"type:uuid;not null" json:"record_id"`
-	GranteeUserID  uuid.UUID  `gorm:"type:uuid;not null" json:"grantee_user_id"`
-	PermissionLevel string    `gorm:"size:50;not null;default:'read'" json:"permission_level"`
-	CreatedBy      *uuid.UUID `gorm:"type:uuid" json:"created_by,omitempty"`
-	CreatedAt      time.Time  `gorm:"not null;default:now()" json:"created_at"`
+// IsValidDataScope reports whether s is a known scope.
+func IsValidDataScope(s string) bool {
+	return s == DataScopeOwn || s == DataScopeTeam || s == DataScopeAll
 }
 
-func (RecordShare) TableName() string { return "record_shares" }
-
-// ShareView is one record share rendered for the record-page share list, with the
-// grantee's display name resolved.
-type ShareView struct {
-	ID              uuid.UUID `json:"id"`
-	GranteeUserID   uuid.UUID `json:"grantee_user_id"`
-	GranteeName     string    `json:"grantee_name"`
-	PermissionLevel string    `json:"permission_level"`
-	CreatedAt       time.Time `json:"created_at"`
+// NormalizeDataScope maps a stored/cached scope value onto the known vocabulary,
+// defaulting an unknown value to the NARROWEST scope.
+//
+// This exists because the pre-U6 code wrote the coercion the other way round —
+// `if scope != "own" { scope = "all" }` — in the middleware, the token minter and
+// the session-cache parser. That shape silently promotes any value it does not
+// recognize to full workspace access, so the day a third scope shipped, every
+// team-scoped user would have been handed the entire org on the first cache hit.
+// Widen the vocabulary here and the unknown case still fails closed.
+func NormalizeDataScope(s string) string {
+	if IsValidDataScope(s) {
+		return s
+	}
+	return DataScopeOwn
 }
 
-// ShareRecordInput grants a record to a user (the escape hatch for 'own'-scoped
-// roles, I2). PermissionLevel defaults to 'read'.
-type ShareRecordInput struct {
-	GranteeUserID   uuid.UUID `json:"grantee_user_id" binding:"required"`
-	PermissionLevel string    `json:"permission_level"`
-}
-
-// RecordShareRepository persists per-record grants (record_shares).
-type RecordShareRepository interface {
-	Create(ctx context.Context, s *RecordShare) error
-	// DeleteByID removes a share by id, scoped to (record_type, record_id) so a
-	// caller can only revoke a share on the record they addressed. Returns rows
-	// affected.
-	DeleteByID(ctx context.Context, id uuid.UUID, recordType string, recordID uuid.UUID) (int64, error)
-	// ListByRecord returns a record's shares with grantee display names resolved.
-	ListByRecord(ctx context.Context, recordType string, recordID uuid.UUID) ([]ShareView, error)
-	// ExistsForGrantee reports whether the record is already shared with the user
-	// (to keep grants idempotent).
-	ExistsForGrantee(ctx context.Context, recordType string, recordID, granteeUserID uuid.UUID) (bool, error)
-}
-
-// ShareUseCase creates/revokes/lists record shares (P3, I2). Visibility of the
-// record under the caller's own data scope is the ownership gate: a caller can
-// only share a record they can see, so an 'own'-scoped role shares only its own
-// records while an 'all'-scoped role can share any.
-type ShareUseCase interface {
-	Share(ctx context.Context, orgID, actorID uuid.UUID, slug string, recordID uuid.UUID, in ShareRecordInput) (*RecordShare, error)
-	Unshare(ctx context.Context, orgID, actorID uuid.UUID, slug string, recordID, shareID uuid.UUID) error
-	List(ctx context.Context, orgID uuid.UUID, slug string, recordID uuid.UUID) ([]ShareView, error)
-}
+// Record shares (the RecordShare model, its views, and the share ports) moved to
+// record_share.go in U6.2 when they grew user/role/group targets — see share.go
+// for the vocabulary both record and report sharing now speak.
 
 type OrgInvitation struct {
 	ID        uuid.UUID `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`

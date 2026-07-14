@@ -216,7 +216,7 @@ func (s *recordService) getInternal(ctx context.Context, orgID uuid.UUID, slug s
 	if err != nil {
 		return nil, err
 	}
-	rec, err := s.customObjUC.GetRecord(ctx, orgID, id)
+	rec, err := s.customObjUC.GetRecord(ctx, orgID, slug, id)
 	if err != nil {
 		return nil, err
 	}
@@ -255,11 +255,16 @@ func (s *recordService) Create(ctx context.Context, orgID, userID uuid.UUID, slu
 		return rec, nil
 	}
 
-	data, err := marshalFields(in.Fields)
+	// owner_user_id is a column, not a blob key — split it out before marshalling.
+	owner, _, rest, err := splitCustomOwner(in.Fields)
 	if err != nil {
 		return nil, err
 	}
-	rec, err := s.customObjUC.CreateRecord(ctx, orgID, userID, slug, domain.CreateRecordInput{Data: data})
+	data, err := marshalFields(rest)
+	if err != nil {
+		return nil, err
+	}
+	rec, err := s.customObjUC.CreateRecord(ctx, orgID, userID, slug, domain.CreateRecordInput{Data: data, OwnerUserID: owner})
 	if err != nil {
 		return nil, err
 	}
@@ -303,11 +308,25 @@ func (s *recordService) Update(ctx context.Context, orgID uuid.UUID, slug string
 		return rec, nil
 	}
 
-	data, err := marshalFields(in.Fields)
+	owner, clearOwner, rest, err := splitCustomOwner(in.Fields)
 	if err != nil {
 		return nil, err
 	}
-	rec, err := s.customObjUC.UpdateRecord(ctx, orgID, slug, id, domain.UpdateRecordInput{Data: data})
+	// The custom update REPLACES the data blob wholesale (custom_object_usecase
+	// applies input.Data when non-empty). So an owner-only change must send NO data
+	// at all — marshalling an empty remainder to "{}" would blank every field on the
+	// record.
+	var data domain.JSON
+	if len(rest) > 0 {
+		if data, err = marshalFields(rest); err != nil {
+			return nil, err
+		}
+	}
+	rec, err := s.customObjUC.UpdateRecord(ctx, orgID, slug, id, domain.UpdateRecordInput{
+		Data:        data,
+		OwnerUserID: owner,
+		ClearOwner:  clearOwner,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -343,7 +362,7 @@ func (s *recordService) Delete(ctx context.Context, orgID uuid.UUID, slug string
 	if err != nil {
 		return err
 	}
-	rec, err := s.customObjUC.GetRecord(ctx, orgID, id)
+	rec, err := s.customObjUC.GetRecord(ctx, orgID, slug, id)
 	if err != nil {
 		return err
 	}
@@ -353,7 +372,7 @@ func (s *recordService) Delete(ctx context.Context, orgID uuid.UUID, slug string
 	// Snapshot the record before deletion so a {slug}_deleted workflow can
 	// condition on its fields.
 	deletedSnapshot := customToUniform(slug, rec)
-	if err := s.customObjUC.DeleteRecord(ctx, orgID, id); err != nil {
+	if err := s.customObjUC.DeleteRecord(ctx, orgID, slug, id); err != nil {
 		return err
 	}
 	s.auditDelete(ctx, orgID, slug, id)
@@ -552,19 +571,27 @@ func (s *recordService) listCustom(ctx context.Context, orgID uuid.UUID, slug st
 	return &domain.RecordList{Records: out, NextCursor: next}, nil
 }
 
-// customToUniform projects a JSONB-backed record into the uniform shape.
+// customToUniform projects a JSONB-backed record into the uniform shape. The owner
+// comes off its column and is surfaced BOTH as UniformRecord.OwnerUserID (the
+// first-class field) and inside Fields, so the generic renderer, the report field
+// catalog and the list filters can address it like any other value without the
+// registry having to carry an owner field row.
 func customToUniform(slug string, rec *domain.CustomObjectRecord) *domain.UniformRecord {
 	fields := map[string]interface{}{}
 	if len(rec.Data) > 0 {
 		_ = json.Unmarshal(rec.Data, &fields)
 	}
+	if rec.OwnerUserID != nil {
+		fields["owner_user_id"] = rec.OwnerUserID.String()
+	}
 	return &domain.UniformRecord{
-		ID:        rec.ID,
-		Object:    slug,
-		Display:   rec.DisplayName,
-		Fields:    fields,
-		CreatedAt: rec.CreatedAt,
-		UpdatedAt: rec.UpdatedAt,
+		ID:          rec.ID,
+		Object:      slug,
+		Display:     rec.DisplayName,
+		OwnerUserID: rec.OwnerUserID,
+		Fields:      fields,
+		CreatedAt:   rec.CreatedAt,
+		UpdatedAt:   rec.UpdatedAt,
 	}
 }
 
@@ -656,6 +683,51 @@ func marshalFields(fields map[string]interface{}) (domain.JSON, error) {
 		return nil, domain.NewAppError(http.StatusBadRequest, "invalid field values")
 	}
 	return domain.JSON(raw), nil
+}
+
+// customNativeKeys are the uniform field keys that map to real COLUMNS on
+// custom_object_records rather than into its JSONB data blob (the custom-object
+// twin of the system adapters' native-key maps). Owner is the only one today.
+//
+// Without this split, marshalFields would stuff owner_user_id into the blob while
+// the column stayed NULL: the record would render an owner, the row predicate would
+// not see one, and the two would drift silently. That is the single nastiest
+// failure mode in U6.3.
+var customNativeKeys = map[string]bool{"owner_user_id": true}
+
+// splitCustomOwner pulls owner_user_id out of the uniform field map and parses it.
+//
+//	owner != nil            → assign to that user
+//	clear == true           → unassign (an explicit null/"" on the wire)
+//	owner == nil && !clear  → not supplied; leave the record's owner untouched
+//
+// The returned map is the remainder, destined for the JSONB blob.
+func splitCustomOwner(fields map[string]interface{}) (owner *uuid.UUID, clear bool, rest map[string]interface{}, err error) {
+	rest = excludeKeys(fields, customNativeKeys)
+	raw, present := fields["owner_user_id"]
+	if !present {
+		return nil, false, rest, nil
+	}
+	switch v := raw.(type) {
+	case nil:
+		return nil, true, rest, nil
+	case string:
+		if v == "" {
+			return nil, true, rest, nil
+		}
+		id, perr := uuid.Parse(v)
+		if perr != nil {
+			return nil, false, rest, domain.NewAppError(http.StatusBadRequest, "owner_user_id must be a user id")
+		}
+		return &id, false, rest, nil
+	case uuid.UUID:
+		if v == uuid.Nil {
+			return nil, true, rest, nil
+		}
+		return &v, false, rest, nil
+	default:
+		return nil, false, rest, domain.NewAppError(http.StatusBadRequest, "owner_user_id must be a user id")
+	}
 }
 
 // excludeKeys returns the subset of fields whose keys are not in exclude.

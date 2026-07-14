@@ -39,15 +39,19 @@ func (r *authRepository) GetOrganizationByID(ctx context.Context, id uuid.UUID) 
 // defaults) with a column-scoped Select so a partial save never clobbers
 // unrelated columns (U4).
 func (r *authRepository) UpdateOrganization(ctx context.Context, org *domain.Organization) error {
+	// A MAP update, not a struct one: GORM omits struct fields holding the zero
+	// value, so turning require_two_factor back OFF through a struct Save would
+	// silently no-op and leave the policy on.
 	return r.db.WithContext(ctx).
 		Model(&domain.Organization{}).
 		Where("id = ?", org.ID).
-		Select("name", "currency", "locale", "timezone").
+		Select("name", "currency", "locale", "timezone", "require_two_factor").
 		Updates(map[string]interface{}{
-			"name":     org.Name,
-			"currency": org.Currency,
-			"locale":   org.Locale,
-			"timezone": org.Timezone,
+			"name":               org.Name,
+			"currency":           org.Currency,
+			"locale":             org.Locale,
+			"timezone":           org.Timezone,
+			"require_two_factor": org.RequireTwoFactor,
 		}).Error
 }
 

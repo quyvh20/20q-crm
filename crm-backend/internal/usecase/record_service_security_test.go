@@ -78,7 +78,7 @@ type secCustomUC struct {
 func (f *secCustomUC) GetDefBySlug(context.Context, uuid.UUID, string) (*domain.CustomObjectDef, error) {
 	return f.def, nil
 }
-func (f *secCustomUC) GetRecord(context.Context, uuid.UUID, uuid.UUID) (*domain.CustomObjectRecord, error) {
+func (f *secCustomUC) GetRecord(context.Context, uuid.UUID, string, uuid.UUID) (*domain.CustomObjectRecord, error) {
 	return f.prior, nil
 }
 func (f *secCustomUC) ListRecords(context.Context, uuid.UUID, string, domain.RecordFilter) ([]domain.CustomObjectRecord, int64, error) {
@@ -95,7 +95,7 @@ func (f *secCustomUC) UpdateRecord(context.Context, uuid.UUID, string, uuid.UUID
 	f.updateCalled = true
 	return f.updated, nil
 }
-func (f *secCustomUC) DeleteRecord(context.Context, uuid.UUID, uuid.UUID) error {
+func (f *secCustomUC) DeleteRecord(context.Context, uuid.UUID, string, uuid.UUID) error {
 	f.deleted = true
 	return nil
 }

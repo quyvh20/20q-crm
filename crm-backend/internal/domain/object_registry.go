@@ -103,6 +103,12 @@ type ObjectDescriptor struct {
 	IsSystem     bool              `json:"is_system"`
 	Searchable   bool              `json:"searchable"`
 	DisplayField string            `json:"display_field"`
+	// HasOwner reports whether this object's records carry an owner (U6.3) — true
+	// for contacts, deals and every custom object; false for company, which is
+	// org-wide by design and has no owner_user_id column. The frontend renders the
+	// owner picker and the Share button off this flag rather than probing for a
+	// field that isn't in the registry.
+	HasOwner bool `json:"has_owner"`
 	// NumberPrefix is the label prefix for this object's record numbers (e.g.
 	// "DEAL" → DEAL-0001). Defaults to the uppercased slug; admin-editable.
 	NumberPrefix string            `json:"number_prefix"`
@@ -148,10 +154,18 @@ type UniformRecord struct {
 	// Number is the human-readable record identifier (e.g. "DEAL-0001"), resolved
 	// on read from the per-object sequence. Empty when numbering is unavailable
 	// (e.g. a record created before numbering, until the backfill runs).
-	Number    string                 `json:"number,omitempty"`
-	Fields    map[string]interface{} `json:"fields"`
-	CreatedAt time.Time              `json:"created_at"`
-	UpdatedAt time.Time              `json:"updated_at"`
+	Number string `json:"number,omitempty"`
+	// OwnerUserID is the record's owner — the anchor for row scope ('own'/'team'),
+	// assignment and sharing. It is a first-class field on the record rather than a
+	// registry field row (U6.3): the registry deliberately excludes ownership/audit
+	// columns, and making owner a field would drag it into the FLS grid, layouts and
+	// the report virtual-field catalog. nil = unassigned, which is reachable only by
+	// an 'all'-scoped role. Objects without an ownership model (company) always
+	// carry nil — see ObjectDescriptor.HasOwner.
+	OwnerUserID *uuid.UUID             `json:"owner_user_id,omitempty"`
+	Fields      map[string]interface{} `json:"fields"`
+	CreatedAt   time.Time              `json:"created_at"`
+	UpdatedAt   time.Time              `json:"updated_at"`
 }
 
 // RecordListInput is the uniform, storage-agnostic list query. Cursor is opaque

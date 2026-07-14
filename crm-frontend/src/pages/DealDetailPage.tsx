@@ -6,6 +6,7 @@ import EmailComposer from '../components/ai/EmailComposer';
 import MeetingSummary from '../components/ai/MeetingSummary';
 import VoiceUploader from '../components/voice/VoiceUploader';
 import VoiceLibrary from '../components/voice/VoiceLibrary';
+import ShareRecordModal from '../components/records/ShareRecordModal';
 import { usePermissions } from '../lib/auth';
 import { useState, useEffect } from 'react';
 
@@ -147,6 +148,9 @@ export default function DealDetailPage() {
   const canDeleteDeal = canAccess('deal', 'delete');
   const [showDelete, setShowDelete] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
+  // U6: a deal is a shareable record like any other — the deal page just has its
+  // own bespoke chrome, so it needs its own Share entry point.
+  const [showShare, setShowShare] = useState(false);
   const [showAddTask, setShowAddTask] = useState(false);
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [newTaskDue, setNewTaskDue] = useState('');
@@ -405,6 +409,14 @@ export default function DealDetailPage() {
                       Edit
                     </button>
                   )}
+                  <button
+                    id="deal-share-btn"
+                    onClick={() => setShowShare(true)}
+                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-muted text-foreground text-xs font-semibold hover:bg-accent transition-all border border-border"
+                    title="Share deal"
+                  >
+                    🤝 Share
+                  </button>
                 </div>
                 {deal.contact && (
                   <p className="text-sm text-muted-foreground mt-1">
@@ -781,6 +793,16 @@ export default function DealDetailPage() {
 
       {/* Edit modal */}
       {showEdit && deal && <EditDealModal deal={deal} onClose={() => setShowEdit(false)} />}
+
+      {/* Share modal (U6) — users, roles and groups at view/edit */}
+      {showShare && deal && (
+        <ShareRecordModal
+          slug="deal"
+          recordId={deal.id}
+          recordName={deal.title}
+          onClose={() => setShowShare(false)}
+        />
+      )}
 
       {/* Delete confirmation modal */}
       {showDelete && (

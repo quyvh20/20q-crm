@@ -28,10 +28,10 @@ import (
 //      pass-through;
 //   3. every value is a bind argument.
 //
-// The builder also replicates applyScopeFromCtx's 'own'-scope predicate
-// (owned OR shared-to-me) for exactly the tables it applies to today —
-// contacts and deals — so a report shows an own-scoped role the same records
-// its list pages do.
+// The builder applies the SAME row predicate as the list pages by calling the one
+// builder in access_predicate.go — so a report can never show a row-scoped role a
+// different set of records than its list pages do. It used to carry its own copy
+// of the rule, which is precisely how the two drift.
 
 // reportTableRef is the physical target of a report query.
 type reportTableRef struct {
@@ -40,6 +40,37 @@ type reportTableRef struct {
 	// ObjectDefID is set for custom_object_records, which multiplexes every
 	// custom object into one table.
 	ObjectDefID *uuid.UUID
+	// Slug is the object slug — the record_shares.record_type discriminator, needed
+	// to apply the row predicate to custom objects.
+	Slug string
+}
+
+// reportScope is the caller's row identity as the runner extracts it from ctx.
+type reportScope struct {
+	Scope  string
+	UserID uuid.UUID
+	RoleID uuid.UUID
+}
+
+// rowPredicateFor returns the row filter for this report's table, or "" when the
+// object has no ownership model (companies, and custom objects on 'table' storage,
+// which carry no owner_user_id column).
+func rowPredicateFor(ref reportTableRef, orgID uuid.UUID, sc reportScope) (string, []any) {
+	recordType := recordTypeForTable(ref.Table)
+	if ref.Table == "custom_object_records" {
+		recordType = ref.Slug
+	}
+	if recordType == "" {
+		return "", nil
+	}
+	return RecordAccessPredicate(RecordAccessArgs{
+		Table:      ref.Table,
+		RecordType: recordType,
+		OrgID:      orgID,
+		Scope:      sc.Scope,
+		UserID:     sc.UserID,
+		RoleID:     sc.RoleID,
+	})
 }
 
 const (
@@ -59,14 +90,14 @@ var reportBuckets = map[string]bool{
 var reportIdentRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,63}$`)
 
 // buildReportSQL translates one validated config into a parameterized query.
-// scope/scopeUserID mirror the ctx data scope the runner extracts.
-func buildReportSQL(ref reportTableRef, catalog []domain.ReportField, cfg domain.ReportConfig, orgID uuid.UUID, scope string, scopeUserID uuid.UUID) (string, []any, error) {
+// sc mirrors the caller's row scope as the runner extracts it from ctx.
+func buildReportSQL(ref reportTableRef, catalog []domain.ReportField, cfg domain.ReportConfig, orgID uuid.UUID, sc reportScope) (string, []any, error) {
 	fields := make(map[string]domain.ReportField, len(catalog))
 	for _, f := range catalog {
 		fields[f.Key] = f
 	}
 
-	where, args, err := buildReportWhere(ref, fields, cfg, orgID, scope, scopeUserID)
+	where, args, err := buildReportWhere(ref, fields, cfg, orgID, sc)
 	if err != nil {
 		return "", nil, err
 	}
@@ -88,7 +119,7 @@ func buildReportSQL(ref reportTableRef, catalog []domain.ReportField, cfg domain
 
 // buildReportWhere assembles the mandatory predicates (org scope, soft delete,
 // custom-object discriminator, own-scope) plus the config's filter tree.
-func buildReportWhere(ref reportTableRef, fields map[string]domain.ReportField, cfg domain.ReportConfig, orgID uuid.UUID, scope string, scopeUserID uuid.UUID) (string, []any, error) {
+func buildReportWhere(ref reportTableRef, fields map[string]domain.ReportField, cfg domain.ReportConfig, orgID uuid.UUID, sc reportScope) (string, []any, error) {
 	parts := []string{ref.Table + ".org_id = ?", ref.Table + ".deleted_at IS NULL"}
 	args := []any{orgID}
 
@@ -97,15 +128,13 @@ func buildReportWhere(ref reportTableRef, fields map[string]domain.ReportField, 
 		args = append(args, *ref.ObjectDefID)
 	}
 
-	// Replicates applyScopeFromCtx (scopes.go): 'own' restricts contacts and
-	// deals to owned-or-shared rows; every other table gets org scoping only.
-	if scope == domain.DataScopeOwn && (ref.Table == "contacts" || ref.Table == "deals") {
-		recordType := "contact"
-		if ref.Table == "deals" {
-			recordType = "deal"
-		}
-		parts = append(parts, "("+ref.Table+".owner_user_id = ? OR EXISTS (SELECT 1 FROM record_shares rs WHERE rs.record_id = "+ref.Table+".id AND rs.record_type = ? AND rs.grantee_user_id = ?))")
-		args = append(args, scopeUserID, recordType, scopeUserID)
+	// The row predicate is the SAME one the list pages use (access_predicate.go):
+	// a row-scoped caller sees what they own, what their team owns, and what is
+	// shared to them. Objects with no ownership model (companies; custom objects on
+	// 'table' storage) get org scoping only.
+	if rowSQL, rowArgs := rowPredicateFor(ref, orgID, sc); rowSQL != "" {
+		parts = append(parts, rowSQL)
+		args = append(args, rowArgs...)
 	}
 
 	if cfg.Filters != nil {

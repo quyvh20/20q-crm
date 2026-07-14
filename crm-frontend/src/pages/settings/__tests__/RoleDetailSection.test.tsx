@@ -189,7 +189,8 @@ describe('RoleDetailSection — one role, one pivot', () => {
     // No rename affordance, no scope select (static text instead), disabled checkboxes.
     expect(screen.queryByRole('button', { name: 'Edit role name and description' })).toBeNull();
     expect(screen.queryByLabelText('Which records members with this role can see')).toBeNull();
-    expect(screen.getByText('All records.')).toBeInTheDocument();
+    // The scope summary is tri-state since U6.1 (own / team / all).
+    expect(screen.getByText('All records in the workspace.')).toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: /Manage roles/ })).toBeDisabled();
     expect(screen.getByRole('checkbox', { name: /Manage members/ })).toBeDisabled();
   });

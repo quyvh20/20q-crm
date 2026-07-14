@@ -197,7 +197,7 @@ func (uc *authUseCase) Register(ctx context.Context, input domain.RegisterInput)
 	}
 	uc.recordAuthEvent(ctx, "auth", "user.registered", orgPtr(org.ID), &user.ID, &user.ID, domain.RequestMeta{}, nil)
 
-	accessToken, err := uc.generateAccessToken(user.ID, org.ID, ownerRole, user.TokenVersion)
+	accessToken, err := uc.generateAccessTokenFor(ctx, user, org.ID, ownerRole)
 	if err != nil {
 		return nil, domain.NewAppError(500, "Access token err: " + err.Error())
 	}
@@ -262,6 +262,33 @@ func (uc *authUseCase) Login(ctx context.Context, input domain.LoginInput, meta 
 	// Success — clear the failure counter so the next login starts fresh.
 	uc.clearLoginFailures(ctx, input.Email)
 
+	// Second factor (U6.4). The password was right, but for an enrolled user that
+	// buys a CHALLENGE, not a session: no access token, no refresh token, no cookies.
+	// This sits before org selection deliberately — nothing about the user's
+	// workspaces should be revealed to someone holding only half the credentials.
+	if uc.twoFactorChallengeRequired(user) {
+		token, err := uc.issueTwoFactorChallenge(ctx, user.ID)
+		if err != nil {
+			return nil, err
+		}
+		uc.recordAuthEvent(ctx, "auth", "two_factor.challenged", orgPtr(user.OrgID), nil, &user.ID, meta, nil)
+		return &domain.AuthResponse{
+			TwoFactorRequired: true,
+			ChallengeToken:    token,
+		}, nil
+	}
+
+	return uc.completeLogin(ctx, user, input.OrgID, meta)
+}
+
+// completeLogin is the shared tail of a successful authentication: resolve the
+// active workspace, mint the tokens, alert on a new device, and audit.
+//
+// Both entry points end here — the password login of a user without 2FA, and
+// VerifyTwoFactor once the code checks out — so an enrolled user's session is
+// built by exactly the same code as everyone else's. Duplicating this tail is how
+// a 2FA login quietly ends up skipping the new-device alert or the audit row.
+func (uc *authUseCase) completeLogin(ctx context.Context, user *domain.User, requestedOrg *uuid.UUID, meta domain.RequestMeta) (*domain.AuthResponse, error) {
 	orgUsers, err := uc.authRepo.ListOrgsByUserID(ctx, user.ID)
 	if err != nil {
 		return nil, domain.ErrInternal
@@ -270,7 +297,7 @@ func (uc *authUseCase) Login(ctx context.Context, input domain.LoginInput, meta 
 	// R2 server-side org selection (P3): explicit org_id → valid default → sole →
 	// deterministic first. An explicit org the user can't access is a hard 403,
 	// never a silent fallback into some other org.
-	sel, needsChooser, explicitMiss := uc.resolveActiveOrg(ctx, user, orgUsers, input.OrgID)
+	sel, needsChooser, explicitMiss := uc.resolveActiveOrg(ctx, user, orgUsers, requestedOrg)
 	if explicitMiss {
 		return nil, domain.NewAppError(http.StatusForbidden, "you are not an active member of the requested workspace")
 	}
@@ -282,7 +309,7 @@ func (uc *authUseCase) Login(ctx context.Context, input domain.LoginInput, meta 
 		activeRole = sel.Role
 	}
 
-	accessToken, err := uc.generateAccessToken(user.ID, activeOrgID, activeRole, user.TokenVersion)
+	accessToken, err := uc.generateAccessTokenFor(ctx, user, activeOrgID, activeRole)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
@@ -307,6 +334,11 @@ func (uc *authUseCase) Login(ctx context.Context, input domain.LoginInput, meta 
 		ActiveOrgID:  activeOrgID,
 		DefaultOrgID: user.DefaultOrgID,
 		NeedsChooser: needsChooser,
+		// The org may require 2FA of a user who hasn't enrolled. They still get a
+		// session (with no session there is no authenticated way to REACH the
+		// enrollment endpoints), but the token carries the unsatisfied claim and the
+		// middleware confines it to enrolling.
+		TwoFactorEnrollRequired: uc.twoFactorUnsatisfied(ctx, user, activeOrgID),
 	}, nil
 }
 
@@ -350,7 +382,7 @@ func (uc *authUseCase) SwitchWorkspace(ctx context.Context, userID uuid.UUID, in
 		user.DefaultOrgID = &orgID
 	}
 
-	accessToken, err := uc.generateAccessToken(userID, input.OrgID, ou.Role, user.TokenVersion)
+	accessToken, err := uc.generateAccessTokenFor(ctx, user, input.OrgID, ou.Role)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
@@ -400,7 +432,7 @@ func (uc *authUseCase) IssueSessionForUser(ctx context.Context, userID, orgID uu
 		return nil, domain.ErrUserNotFound
 	}
 
-	accessToken, err := uc.generateAccessToken(userID, orgID, ou.Role, user.TokenVersion)
+	accessToken, err := uc.generateAccessTokenFor(ctx, user, orgID, ou.Role)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
@@ -460,7 +492,7 @@ func (uc *authUseCase) CreateWorkspace(ctx context.Context, userID uuid.UUID, in
 	uc.recordAuthEvent(ctx, "auth", "workspace.created", orgPtr(org.ID), &user.ID, &user.ID, meta,
 		map[string]interface{}{"name": org.Name})
 
-	accessToken, err := uc.generateAccessToken(user.ID, org.ID, ownerRole, user.TokenVersion)
+	accessToken, err := uc.generateAccessTokenFor(ctx, user, org.ID, ownerRole)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
@@ -566,7 +598,7 @@ func (uc *authUseCase) RefreshToken(ctx context.Context, input domain.RefreshInp
 		activeRole = sel.Role
 	}
 
-	accessToken, err := uc.generateAccessToken(user.ID, activeOrgID, activeRole, user.TokenVersion)
+	accessToken, err := uc.generateAccessTokenFor(ctx, user, activeOrgID, activeRole)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
@@ -650,6 +682,18 @@ func (uc *authUseCase) GoogleLogin(ctx context.Context, code string) (*domain.Au
 		user = fullUser
 	}
 
+	// Second factor (U6.4). Google proved the identity, not the second factor — an
+	// enrolled user gets a challenge here too. Skipping this would make "Continue
+	// with Google" a way around 2FA, which is the whole ballgame.
+	if uc.twoFactorChallengeRequired(user) {
+		token, err := uc.issueTwoFactorChallenge(ctx, user.ID)
+		if err != nil {
+			return nil, err
+		}
+		uc.recordAuthEvent(ctx, "auth", "two_factor.challenged", orgPtr(user.OrgID), nil, &user.ID, domain.RequestMeta{}, nil)
+		return &domain.AuthResponse{TwoFactorRequired: true, ChallengeToken: token}, nil
+	}
+
 	orgUsers, _ := uc.authRepo.ListOrgsByUserID(ctx, user.ID)
 
 	// Same R2 selection chain as password login (P3): a returning multi-org Google
@@ -662,7 +706,7 @@ func (uc *authUseCase) GoogleLogin(ctx context.Context, code string) (*domain.Au
 		activeRole = sel.Role
 	}
 
-	accessToken, err := uc.generateAccessToken(user.ID, activeOrgID, activeRole, user.TokenVersion)
+	accessToken, err := uc.generateAccessTokenFor(ctx, user, activeOrgID, activeRole)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
@@ -841,6 +885,12 @@ type JWTClaims struct {
 	// available, so a stale/empty claim self-heals on the next request.
 	RoleID    uuid.UUID `json:"rid,omitempty"`
 	DataScope string    `json:"ds,omitempty"`
+	// TwoFactorPending marks a session whose workspace REQUIRES 2FA while its user
+	// has not enrolled (U6.4). RequireTwoFactorSatisfied confines such a session to
+	// the enrollment endpoints. Evaluated at mint time, so an admin turning the
+	// policy on takes effect for a live session at its next refresh (≤ the access
+	// token TTL) rather than instantly — a bounded, documented grace.
+	TwoFactorPending bool `json:"2fa,omitempty"`
 	// TokenVersion mirrors users.token_version at mint time. The middleware
 	// rejects the token if it no longer matches, giving instant global session
 	// invalidation (P2). Absent in pre-P2 tokens → decodes to 0 → matches the
@@ -935,7 +985,7 @@ func (uc *authUseCase) SignOutEverywhere(ctx context.Context, userID, orgID uuid
 		activeRole = orgUsers[0].Role
 	}
 
-	accessToken, err := uc.generateAccessToken(user.ID, activeOrgID, activeRole, user.TokenVersion)
+	accessToken, err := uc.generateAccessTokenFor(ctx, user, activeOrgID, activeRole)
 	if err != nil {
 		return nil, domain.ErrInternal
 	}
@@ -1010,24 +1060,38 @@ func (uc *authUseCase) maybeAlertNewDevice(ctx context.Context, user *domain.Use
 // exploitable on a nil-role membership over a real org, where reads have no OLS
 // route gate and fall through to the repository scope filter.
 func (uc *authUseCase) generateAccessToken(userID, orgID uuid.UUID, role *domain.Role, tokenVersion int) (string, error) {
+	return uc.mintAccessToken(userID, orgID, role, tokenVersion, false)
+}
+
+// generateAccessTokenFor is generateAccessToken plus the U6.4 policy claim: it
+// evaluates whether this workspace requires 2FA of a user who has not enrolled,
+// and stamps the token accordingly. Every session-minting path that has the user
+// in hand should use this one, so a workspace's 2FA policy can't be sidestepped by
+// logging in through a path that forgot to check it.
+func (uc *authUseCase) generateAccessTokenFor(ctx context.Context, user *domain.User, orgID uuid.UUID, role *domain.Role) (string, error) {
+	return uc.mintAccessToken(user.ID, orgID, role, user.TokenVersion, uc.twoFactorUnsatisfied(ctx, user, orgID))
+}
+
+func (uc *authUseCase) mintAccessToken(userID, orgID uuid.UUID, role *domain.Role, tokenVersion int, twoFactorPending bool) (string, error) {
 	roleName := domain.RoleViewer
 	roleID := uuid.Nil
 	dataScope := domain.DataScopeOwn
 	if role != nil {
 		roleName = role.Name
 		roleID = role.ID
-		dataScope = domain.DataScopeAll
-		if role.DataScope == domain.DataScopeOwn {
-			dataScope = domain.DataScopeOwn
-		}
+		// Whitelist the role's stored scope (unknown → 'own'). Coercing anything
+		// non-'own' to 'all' here would mint a full-access token for a team-scoped
+		// role — the claim the middleware trusts on the Redis-cache path.
+		dataScope = domain.NormalizeDataScope(role.DataScope)
 	}
 	claims := JWTClaims{
-		UserID:       userID,
-		OrgID:        orgID,
-		Role:         roleName,
-		RoleID:       roleID,
-		DataScope:    dataScope,
-		TokenVersion: tokenVersion,
+		UserID:           userID,
+		OrgID:            orgID,
+		Role:             roleName,
+		RoleID:           roleID,
+		DataScope:        dataScope,
+		TokenVersion:     tokenVersion,
+		TwoFactorPending: twoFactorPending,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(accessTokenDuration)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -1500,6 +1564,12 @@ func (uc *authUseCase) ResetPassword(ctx context.Context, input domain.ResetPass
 	// (P2) rather than lingering for up to their 2h TTL.
 	_ = uc.authRepo.RevokeAllUserRefreshTokens(ctx, user.ID)
 	uc.bumpTokenVersion(ctx, user.ID)
+	// Personal access tokens are NOT JWTs, so the token_version bump above does not
+	// touch them. A password reset is the "I've been compromised" button — it has to
+	// kill the account's long-lived credentials too (U6.5).
+	if _, err := uc.authRepo.RevokeAllUserAPITokens(ctx, user.ID); err != nil {
+		log.Printf("password.reset: failed to revoke API tokens for %s: %v", user.ID, err)
+	}
 
 	// Alert + audit run on a DETACHED context: the request context is canceled
 	// the moment the handler returns, and this codebase has already been bitten

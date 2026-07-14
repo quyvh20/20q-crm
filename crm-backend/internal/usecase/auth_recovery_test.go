@@ -814,3 +814,24 @@ func TestResendVerification_CooldownAndAlreadyVerified(t *testing.T) {
 		t.Error("verified user must not receive a verification email")
 	}
 }
+
+// Two-factor (U6.4) — unused by these tests; stubbed to satisfy domain.AuthRepository.
+func (f *fakeAuthRepo) SetTOTPSecret(context.Context, uuid.UUID, string) error { return nil }
+func (f *fakeAuthRepo) EnableTOTP(context.Context, uuid.UUID, []string) error  { return nil }
+func (f *fakeAuthRepo) DisableTOTP(context.Context, uuid.UUID) error           { return nil }
+func (f *fakeAuthRepo) ReplaceBackupCodes(context.Context, uuid.UUID, []string) error { return nil }
+func (f *fakeAuthRepo) ListUnusedBackupCodes(context.Context, uuid.UUID) ([]domain.TwoFactorBackupCode, error) {
+	return nil, nil
+}
+func (f *fakeAuthRepo) ConsumeBackupCode(context.Context, uuid.UUID) (bool, error) { return false, nil }
+func (f *fakeAuthRepo) CountBackupCodesRemaining(context.Context, uuid.UUID) (int, error) { return 0, nil }
+func (f *fakeAuthRepo) CreateTwoFactorChallenge(context.Context, *domain.TwoFactorChallenge) error { return nil }
+func (f *fakeAuthRepo) GetTwoFactorChallengeByHash(context.Context, string) (*domain.TwoFactorChallenge, error) {
+	return nil, nil
+}
+func (f *fakeAuthRepo) IncrementChallengeAttempts(context.Context, uuid.UUID) error { return nil }
+func (f *fakeAuthRepo) ConsumeTwoFactorChallenge(context.Context, uuid.UUID) (bool, error) { return true, nil }
+func (f *fakeAuthRepo) DeleteExpiredTwoFactorChallenges(context.Context) (int64, error) { return 0, nil }
+
+func (f *fakeAuthRepo) ClaimChallengeAttempt(context.Context, uuid.UUID, int) (bool, error) { return true, nil }
+func (f *fakeAuthRepo) RevokeAllUserAPITokens(context.Context, uuid.UUID) (int64, error)    { return 0, nil }

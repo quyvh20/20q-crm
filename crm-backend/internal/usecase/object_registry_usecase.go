@@ -94,6 +94,17 @@ func (uc *objectRegistryUseCase) SetNumberPrefix(ctx context.Context, orgID uuid
 	return nil
 }
 
+// objectHasOwner reports whether an object's records carry an owner_user_id — the
+// anchor for row scope, assignment and sharing (U6.3).
+//
+// Everything is owned EXCEPT company: a company is a shared entity that many
+// people's contacts and deals hang off, so pinning it to one owner (and thereby
+// hiding it from every row-scoped colleague) would break the model rather than
+// tighten it. Contacts, deals and every custom object are owned.
+func objectHasOwner(slug string) bool {
+	return slug != "company"
+}
+
 // numberPrefix resolves an object's record-number prefix: the configured value, or
 // the uppercased slug as the default (matching the read-path COALESCE in SQL).
 func numberPrefix(def *domain.ObjectDef) string {
@@ -119,6 +130,7 @@ func (uc *objectRegistryUseCase) buildSchema(ctx context.Context, def *domain.Ob
 		Color:        def.Color,
 		IsSystem:     def.IsSystem,
 		Searchable:   def.Searchable,
+		HasOwner:     objectHasOwner(def.Slug),
 		NumberPrefix: numberPrefix(def),
 		Fields:       make([]domain.FieldDescriptor, 0, len(fields)),
 	}

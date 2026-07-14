@@ -496,13 +496,16 @@ func main() {
 		// SeedSystemRoles (below) repopulates the real capability codes; and the
 		// vestigial users.role column is dropped (the user_role enum type is kept).
 		db.Exec(`ALTER TABLE roles ADD COLUMN IF NOT EXISTS data_scope VARCHAR(10) NOT NULL DEFAULT 'all'`)
-		db.Exec(`DO $$
-		BEGIN
-			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'roles_data_scope_check') THEN
-				ALTER TABLE roles ADD CONSTRAINT roles_data_scope_check CHECK (data_scope IN ('own', 'all'));
-			END IF;
-		END $$`)
+		// Team data scope (U6.1, migration 000040). The constraint is DROPPED and
+		// re-ADDED rather than guarded with IF NOT EXISTS: the old guard would find
+		// roles_data_scope_check already present and skip, leaving IN ('own','all') in
+		// force — so every team-scope write would fail at the DB layer, on prod only.
+		// DROP + ADD is idempotent and re-runs safely on every boot.
+		db.Exec(`ALTER TABLE roles DROP CONSTRAINT IF EXISTS roles_data_scope_check`)
+		db.Exec(`ALTER TABLE roles ADD CONSTRAINT roles_data_scope_check CHECK (data_scope IN ('own', 'team', 'all'))`)
 		db.Exec(`UPDATE roles SET data_scope = 'own' WHERE name = 'sales_rep' AND is_system = TRUE`)
+		// Teams ARE user_groups (no second entity); the lead is display metadata.
+		db.Exec(`ALTER TABLE user_groups ADD COLUMN IF NOT EXISTS lead_user_id UUID REFERENCES users(id) ON DELETE SET NULL`)
 		db.Exec(`ALTER TABLE role_permissions ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations(id) ON DELETE CASCADE`)
 		// Purge only the dead legacy vocabulary (colon-format codes like
 		// 'deal:read:team' / 'all:all:all'); real capability codes use dots
@@ -803,6 +806,122 @@ func main() {
 		db.Exec(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS digested_at TIMESTAMPTZ`)
 		db.Exec(`CREATE INDEX IF NOT EXISTS idx_notifications_digest_pending ON notifications(user_id, org_id) WHERE read_at IS NULL AND digested_at IS NULL`)
 
+		// Record-sharing parity (U6.2, migration 000038) — boot guard. Mirrors
+		// migrations/000038_record_shares_parity.up.sql exactly. record_shares predates
+		// report_shares and never caught up: user-only grantee, no org_id, no
+		// uniqueness, and a level that could never change after the first grant. This
+		// brings it to the report_shares model (target_type/target_id over
+		// user|role|group at level view|edit) so ONE predicate — RecordAccessPredicate
+		// — serves both. Keep both files in sync.
+		db.Exec(`ALTER TABLE record_shares ADD COLUMN IF NOT EXISTS org_id UUID`)
+		db.Exec(`ALTER TABLE record_shares ADD COLUMN IF NOT EXISTS target_type VARCHAR(10) NOT NULL DEFAULT 'user'`)
+		db.Exec(`ALTER TABLE record_shares ADD COLUMN IF NOT EXISTS target_id UUID`)
+		db.Exec(`UPDATE record_shares SET target_id = grantee_user_id WHERE target_id IS NULL AND grantee_user_id IS NOT NULL`)
+		db.Exec(`UPDATE record_shares rs SET org_id = c.org_id FROM contacts c WHERE rs.org_id IS NULL AND rs.record_type = 'contact' AND rs.record_id = c.id`)
+		db.Exec(`UPDATE record_shares rs SET org_id = d.org_id FROM deals d WHERE rs.org_id IS NULL AND rs.record_type = 'deal' AND rs.record_id = d.id`)
+		db.Exec(`UPDATE record_shares rs SET org_id = cor.org_id FROM custom_object_records cor WHERE rs.org_id IS NULL AND rs.record_id = cor.id`)
+		// Orphans (the shared record was hard-deleted): a NULL org_id defeats every
+		// org-scoped query below, so drop the row rather than keep an unfilterable one.
+		if res := db.Exec(`DELETE FROM record_shares WHERE org_id IS NULL OR target_id IS NULL`); res.RowsAffected > 0 {
+			log.Info("record_shares: dropped orphaned shares (record no longer exists)", zap.Int64("rows", res.RowsAffected))
+		}
+		// 'read' → 'view' (the shared level ladder). Safe: no predicate compares
+		// 'read' — only 'edit' is ever compared — so no query changes meaning.
+		db.Exec(`UPDATE record_shares SET permission_level = 'view' WHERE permission_level = 'read'`)
+		db.Exec(`UPDATE record_shares SET permission_level = 'view' WHERE permission_level NOT IN ('view', 'edit')`)
+		// The table never had a uniqueness constraint, so duplicates may exist and
+		// would block the unique index. Keep the newest row per target.
+		if res := db.Exec(`DELETE FROM record_shares a USING record_shares b
+			WHERE a.ctid < b.ctid
+			  AND a.record_type = b.record_type AND a.record_id = b.record_id
+			  AND a.target_type = b.target_type AND a.target_id = b.target_id`); res.RowsAffected > 0 {
+			log.Info("record_shares: de-duplicated shares before unique index", zap.Int64("rows", res.RowsAffected))
+		}
+		db.Exec(`ALTER TABLE record_shares ALTER COLUMN target_id SET NOT NULL`)
+		db.Exec(`ALTER TABLE record_shares ALTER COLUMN org_id SET NOT NULL`)
+		db.Exec(`ALTER TABLE record_shares ALTER COLUMN grantee_user_id DROP NOT NULL`)
+		db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_record_shares_target ON record_shares(record_type, record_id, target_type, target_id)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_record_shares_record ON record_shares(record_type, record_id)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_record_shares_target ON record_shares(target_type, target_id)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_record_shares_org ON record_shares(org_id)`)
+		db.Exec(`DO $$
+		BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'record_shares_target_type_check') THEN
+				ALTER TABLE record_shares ADD CONSTRAINT record_shares_target_type_check CHECK (target_type IN ('user', 'role', 'group'));
+			END IF;
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'record_shares_level_check') THEN
+				ALTER TABLE record_shares ADD CONSTRAINT record_shares_level_check CHECK (permission_level IN ('view', 'edit'));
+			END IF;
+		END $$`)
+		// The group-share and team-scope predicates both hit user_group_members by
+		// group_id; only the by-user index existed.
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_user_group_members_group ON user_group_members(group_id)`)
+		db.Exec(`ALTER TABLE record_shares ENABLE ROW LEVEL SECURITY`)
+
+		// Custom-object ownership (U6.3, migration 000039) — boot guard. Mirrors
+		// migrations/000039_custom_record_owner.up.sql exactly. Custom records had no
+		// owner, so row scope had nothing to filter on: every custom record was visible
+		// org-wide to any role that could read the object, and shares written against a
+		// custom slug were never read by anything. Keep both files in sync.
+		db.Exec(`ALTER TABLE custom_object_records ADD COLUMN IF NOT EXISTS owner_user_id UUID REFERENCES users(id) ON DELETE SET NULL`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_custom_object_records_owner ON custom_object_records(owner_user_id)`)
+		// One-time backfill: the creator becomes the owner. A record with no created_by
+		// stays unowned and is reachable only by an 'all'-scoped role (fail closed).
+		if res := db.Exec(`UPDATE custom_object_records SET owner_user_id = created_by WHERE owner_user_id IS NULL AND created_by IS NOT NULL`); res.RowsAffected > 0 {
+			log.Info("custom_object_records: backfilled owner from creator", zap.Int64("rows", res.RowsAffected))
+		}
+
+		// Two-factor authentication (U6.4, migration 000041) — boot guard. Mirrors
+		// migrations/000041_two_factor.up.sql exactly. totp_secret holds the
+		// AES-GCM-ENCRYPTED seed (never the raw one); totp_enabled_at is what makes 2FA
+		// ACTIVE, so a setup that was started but never confirmed can't lock anyone out.
+		// two_factor_challenges is the half-authenticated state between "password
+		// correct" and "code correct". Keep both files in sync.
+		db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret TEXT`)
+		db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled_at TIMESTAMPTZ`)
+		db.Exec(`ALTER TABLE organizations ADD COLUMN IF NOT EXISTS require_two_factor BOOLEAN NOT NULL DEFAULT FALSE`)
+		db.Exec(`CREATE TABLE IF NOT EXISTS two_factor_backup_codes (
+			id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			code_hash  VARCHAR(255) NOT NULL,
+			used_at    TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_2fa_backup_user ON two_factor_backup_codes(user_id) WHERE used_at IS NULL`)
+		db.Exec(`ALTER TABLE two_factor_backup_codes ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`CREATE TABLE IF NOT EXISTS two_factor_challenges (
+			id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			token_hash VARCHAR(255) NOT NULL UNIQUE,
+			attempts   INT NOT NULL DEFAULT 0,
+			expires_at TIMESTAMPTZ NOT NULL,
+			used_at    TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_2fa_challenge_expiry ON two_factor_challenges(expires_at)`)
+		db.Exec(`ALTER TABLE two_factor_challenges ENABLE ROW LEVEL SECURITY`)
+
+		// Personal API tokens (U6.5, migration 000042) — boot guard. Mirrors
+		// migrations/000042_api_tokens.up.sql exactly. The secret is stored as a SHA-256
+		// hash (not bcrypt: this is on the hot path of every API request), and the
+		// prefix is kept only so the UI can show the user which token is which.
+		db.Exec(`CREATE TABLE IF NOT EXISTS api_tokens (
+			id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			org_id       UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			name         VARCHAR(120) NOT NULL,
+			token_hash   VARCHAR(64) NOT NULL UNIQUE,
+			prefix       VARCHAR(24) NOT NULL,
+			scopes       JSONB NOT NULL DEFAULT '[]',
+			last_used_at TIMESTAMPTZ,
+			expires_at   TIMESTAMPTZ,
+			revoked_at   TIMESTAMPTZ,
+			created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id, org_id) WHERE revoked_at IS NULL`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_api_tokens_hash ON api_tokens(token_hash)`)
+		db.Exec(`ALTER TABLE api_tokens ENABLE ROW LEVEL SECURITY`)
+
 		log.Info("Seeding system roles...")
 		// SeedSystemRoles is also the idempotent boot backfill for new capability
 		// codes on existing installs: it inserts any DefaultRoleCapabilities row that
@@ -1017,11 +1136,22 @@ func main() {
 		// Reverse related lists compose the registry + record services (P-relationships):
 		// they surface, on any record, the child records that point back at it.
 		relatedListsUC := usecase.NewRelatedListsUseCase(objectRegistryUC, recordService)
-		// Record shares (P3, I2): the escape hatch that grants an 'own'-scoped role
-		// access to specific records. Ownership is enforced by reusing the
-		// scope-aware RecordService.Get inside the usecase.
+		// Record shares (U6.2): grant a record to a user, a role, or a group at
+		// view/edit — parity with report sharing. Visibility is the gate: the usecase
+		// reuses the scope-aware RecordService.Get, so a row-scoped role can only
+		// share what it can already reach. The identity/group/role repos resolve and
+		// validate share targets (they are stateless db wrappers; roleRepo and
+		// userGroupRepo are constructed again below for the admin usecases).
 		shareRepo := repository.NewRecordShareRepository(db)
-		shareUC := usecase.NewShareUseCase(recordService, shareRepo, authRepo, permissionUC)
+		shareUC := usecase.NewShareUseCase(
+			recordService,
+			shareRepo,
+			repository.NewShareIdentityRepository(db),
+			repository.NewUserGroupRepository(db),
+			repository.NewRoleRepository(db),
+			authRepo,
+			permissionUC,
+		)
 		// The extra deps (registry, layouts, authorizer, tags, shares) feed the
 		// composite record-page endpoint + the share controls.
 		recordHandler := delivery.NewRecordHandler(recordService, relatedListsUC, objectRegistryUC, layoutUC, permissionUC, tagUseCase, shareUC)
@@ -1078,7 +1208,7 @@ func main() {
 
 		// User groups: named member groups, first used as a report-sharing target.
 		// (userGroupRepo is constructed above for the member-drawer group reader.)
-		userGroupUC := usecase.NewUserGroupUseCase(userGroupRepo)
+		userGroupUC := usecase.NewUserGroupUseCase(userGroupRepo, authRepo)
 		userGroupHandler := delivery.NewUserGroupHandler(userGroupUC)
 
 		// Global search (P6): spans searchable custom objects (record_embeddings)
@@ -1121,6 +1251,14 @@ func main() {
 		notificationPrefRepo := repository.NewNotificationPreferenceRepository(db)
 		notificationUC := usecase.NewNotificationUseCase(notificationRepo, notificationPrefRepo, authRepo, mailerSvc, redisClient, cfg.FrontendURL)
 		notificationHandler := delivery.NewNotificationHandler(notificationUC)
+
+		// Personal API tokens (U6.5). The repo is passed to RegisterRoutes as well:
+		// the protected group's middleware authenticates a PAT by hash on every
+		// request (that read IS the revocation check, which is why it isn't cached).
+		apiTokenRepo := repository.NewAPITokenRepository(db)
+		apiTokenHandler := delivery.NewAPITokenHandler(
+			usecase.NewAPITokenUseCase(apiTokenRepo, permissionUC, authRepo),
+		)
 		// 90-day retention sweep: hard-delete stale notifications daily (and once at
 		// boot). Best-effort background loop; a failed pass just retries next tick.
 		go func() {
@@ -1160,7 +1298,7 @@ func main() {
 		voiceNoteUC := usecase.NewVoiceNoteUseCase(voiceNoteRepo, aiJobQueue, cfg, contactRepo)
 		voiceHandler := delivery.NewVoiceHandler(voiceNoteUC)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, layoutHandler, roleHandler, roleAccessHandler, auditHandler, reportHandler, reportShareHandler, reportCommentHandler, dashboardHandler, userGroupHandler, notificationHandler, cfg, db, redisClient, authRepo, permissionUC)
+		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, layoutHandler, roleHandler, roleAccessHandler, auditHandler, reportHandler, reportShareHandler, reportCommentHandler, dashboardHandler, userGroupHandler, notificationHandler, apiTokenHandler, cfg, db, redisClient, authRepo, apiTokenRepo, permissionUC)
 
 		// --- Workflow Automation Engine ---
 		memHandler := logger.NewMemoryHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))

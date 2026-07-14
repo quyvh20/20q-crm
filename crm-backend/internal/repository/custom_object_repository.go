@@ -305,48 +305,48 @@ func marshalStringArrayJSON(opts []string) domain.JSON {
 // Records
 // ============================================================
 
-func (r *customObjectRepository) ListRecords(ctx context.Context, orgID uuid.UUID, defID uuid.UUID, f domain.RecordFilter) ([]domain.CustomObjectRecord, int64, error) {
+// Records — all of them, for every custom object, in one table. Every query below
+// therefore carries BOTH the object_def_id (which object) and the caller's row
+// predicate keyed by the object's slug (which rows). Before U6.3 these queries
+// filtered on org + def only: a custom record had no owner, so row scope had
+// nothing to filter on and every custom record was visible org-wide to anyone whose
+// role could read the object — while the Share button on the record page happily
+// wrote record_shares rows that nothing ever read.
+
+func (r *customObjectRepository) ListRecords(ctx context.Context, orgID uuid.UUID, defID uuid.UUID, slug string, f domain.RecordFilter) ([]domain.CustomObjectRecord, int64, error) {
 	limit := f.Limit
 	if limit <= 0 || limit > 100 {
 		limit = 25
 	}
 
-	query := r.db.WithContext(ctx).
-		Where("custom_object_records.org_id = ? AND custom_object_records.object_def_id = ?", orgID, defID)
-
-	// Search by display_name
-	if f.Q != "" {
-		query = query.Where("custom_object_records.display_name ILIKE ?", "%"+f.Q+"%")
-	}
-
-	// Exact-match field filters against the JSONB data blob (data ->> key = value).
-	// This is how a custom object is listed by a relation value — e.g. all records
-	// whose "contact" field is X — powering reverse related lists for custom-object
-	// children. Keys are field keys, so this can never inject column names.
-	for key, val := range f.Filters {
-		if key == "" || val == "" {
-			continue
+	// scoped applies org + def + the caller's row predicate. Both the page and the
+	// count go through it, so a row-scoped caller's total matches what they can see.
+	scoped := func(base *gorm.DB) *gorm.DB {
+		q := applyScopeFromCtx(base, ctx, orgID, "custom_object_records", slug).
+			Where("custom_object_records.object_def_id = ?", defID)
+		if f.Q != "" {
+			q = q.Where("custom_object_records.display_name ILIKE ?", "%"+f.Q+"%")
 		}
-		query = query.Where("custom_object_records.data ->> ? = ?", key, val)
+		// Exact-match field filters against the JSONB data blob (data ->> key = value).
+		// This is how a custom object is listed by a relation value — e.g. all records
+		// whose "contact" field is X — powering reverse related lists for custom-object
+		// children. Keys are field keys, so this can never inject column names.
+		for key, val := range f.Filters {
+			if key == "" || val == "" {
+				continue
+			}
+			q = q.Where("custom_object_records.data ->> ? = ?", key, val)
+		}
+		return q
 	}
 
-	// Count total
 	var total int64
-	countQ := r.db.WithContext(ctx).Model(&domain.CustomObjectRecord{}).
-		Where("org_id = ? AND object_def_id = ?", orgID, defID)
-	if f.Q != "" {
-		countQ = countQ.Where("display_name ILIKE ?", "%"+f.Q+"%")
+	if err := scoped(r.db.WithContext(ctx).Model(&domain.CustomObjectRecord{})).Count(&total).Error; err != nil {
+		return nil, 0, err
 	}
-	for key, val := range f.Filters {
-		if key == "" || val == "" {
-			continue
-		}
-		countQ = countQ.Where("data ->> ? = ?", key, val)
-	}
-	countQ.Count(&total)
 
 	var records []domain.CustomObjectRecord
-	err := query.
+	err := scoped(r.db.WithContext(ctx)).
 		Order("custom_object_records.created_at DESC").
 		Offset(f.Offset).
 		Limit(limit).
@@ -355,13 +355,30 @@ func (r *customObjectRepository) ListRecords(ctx context.Context, orgID uuid.UUI
 	return records, total, err
 }
 
-func (r *customObjectRepository) GetRecord(ctx context.Context, orgID uuid.UUID, id uuid.UUID) (*domain.CustomObjectRecord, error) {
+// belongsToObject pins a custom-record query to the object named by slug. Every
+// custom object multiplexes into ONE table, so a query filtered only by org + id
+// will happily return (or overwrite) a record of a DIFFERENT object: a caller with
+// edit access to `bug` and none at all to `invoice` could address an invoice row by
+// id through /objects/bug/records/{invoiceID}, and the OLS check — which was made
+// against `bug` — would pass. The def pairing is what makes the slug in the URL
+// mean something.
+func belongsToObject(db *gorm.DB, orgID uuid.UUID, slug string) *gorm.DB {
+	return db.Where(`custom_object_records.object_def_id = (
+		SELECT d.id FROM object_defs d
+		WHERE d.org_id = ? AND d.slug = ? AND d.deleted_at IS NULL)`, orgID, slug)
+}
+
+func (r *customObjectRepository) GetRecord(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID) (*domain.CustomObjectRecord, error) {
 	var rec domain.CustomObjectRecord
-	err := r.db.WithContext(ctx).
-		Where("org_id = ? AND id = ?", orgID, id).
+	err := belongsToObject(
+		applyScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "custom_object_records", slug), orgID, slug).
+		Where("custom_object_records.id = ?", id).
 		First(&rec).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// Either it does not exist or the caller may not see it. Both are "not
+			// found" to the caller — a row-scoped user must not be able to probe for
+			// the existence of records outside their scope.
 			return nil, nil
 		}
 		return nil, err
@@ -373,13 +390,31 @@ func (r *customObjectRepository) CreateRecord(ctx context.Context, rec *domain.C
 	return r.db.WithContext(ctx).Create(rec).Error
 }
 
-func (r *customObjectRepository) UpdateRecord(ctx context.Context, rec *domain.CustomObjectRecord) error {
+// UpdateRecord saves the whole row, so the write-scope check has to happen up
+// front: Save() carries no WHERE beyond the primary key.
+func (r *customObjectRepository) UpdateRecord(ctx context.Context, slug string, rec *domain.CustomObjectRecord) error {
+	if err := requireWriteVisible(r.db, ctx, rec.OrgID, "custom_object_records", slug, rec.ID); err != nil {
+		return err
+	}
+	// Save() writes by primary key alone, so the object pairing has to be checked
+	// separately: without it, a record of another object could be overwritten.
+	var n int64
+	if err := belongsToObject(
+		r.db.WithContext(ctx).Model(&domain.CustomObjectRecord{}), rec.OrgID, slug).
+		Where("custom_object_records.id = ? AND custom_object_records.org_id = ?", rec.ID, rec.OrgID).
+		Count(&n).Error; err != nil {
+		return err
+	}
+	if n == 0 {
+		return gorm.ErrRecordNotFound
+	}
 	return r.db.WithContext(ctx).Save(rec).Error
 }
 
-func (r *customObjectRepository) SoftDeleteRecord(ctx context.Context, orgID uuid.UUID, id uuid.UUID) error {
-	result := r.db.WithContext(ctx).
-		Where("org_id = ? AND id = ?", orgID, id).
+func (r *customObjectRepository) SoftDeleteRecord(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID) error {
+	result := belongsToObject(
+		applyWriteScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "custom_object_records", slug), orgID, slug).
+		Where("custom_object_records.id = ?", id).
 		Delete(&domain.CustomObjectRecord{})
 	if result.Error != nil {
 		return result.Error

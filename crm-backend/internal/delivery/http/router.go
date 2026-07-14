@@ -9,7 +9,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, objectRegistryHandler *ObjectRegistryHandler, recordHandler *RecordHandler, permissionHandler *PermissionHandler, searchHandler *SearchHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, voiceHandler *VoiceHandler, layoutHandler *ObjectLayoutHandler, roleHandler *RoleHandler, roleAccessHandler *RoleAccessHandler, auditHandler *AuditHandler, reportHandler *ReportHandler, reportShareHandler *ReportShareHandler, reportCommentHandler *ReportCommentHandler, dashboardHandler *DashboardHandler, groupHandler *UserGroupHandler, notificationHandler *NotificationHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository, permissionUC domain.PermissionUseCase) {
+func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, objectRegistryHandler *ObjectRegistryHandler, recordHandler *RecordHandler, permissionHandler *PermissionHandler, searchHandler *SearchHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, voiceHandler *VoiceHandler, layoutHandler *ObjectLayoutHandler, roleHandler *RoleHandler, roleAccessHandler *RoleAccessHandler, auditHandler *AuditHandler, reportHandler *ReportHandler, reportShareHandler *ReportShareHandler, reportCommentHandler *ReportCommentHandler, dashboardHandler *DashboardHandler, groupHandler *UserGroupHandler, notificationHandler *NotificationHandler, apiTokenHandler *APITokenHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository, apiTokenRepo domain.APITokenRepository, permissionUC domain.PermissionUseCase) {
 	// Mark every request context as HTTP-originated so the permission engine can
 	// flag a callerless HTTP call reaching Authorize (a route mounted outside
 	// AuthMiddleware) instead of silently treating it as a trusted in-process
@@ -98,6 +98,37 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 		auth.POST("/change-password", authRateLimit, AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), authHandler.ChangePassword)
 		auth.POST("/set-password", authRateLimit, AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), authHandler.SetPassword)
 		auth.POST("/unlink-google", authRateLimit, AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), authHandler.UnlinkGoogle)
+
+		// Two-factor authentication (U6.4). /2fa/verify is PUBLIC by necessity: it is
+		// what turns a login challenge into a session, so the caller has no session
+		// yet. It carries the per-IP limiter, and the usecase enforces a per-challenge
+		// attempt cap — the limiter fails open without Redis, and a 6-digit code needs
+		// a bound that always holds.
+		//
+		// The enrollment routes sit behind AuthMiddleware but deliberately NOT behind
+		// RequireTwoFactorSatisfied: a user the workspace policy is demanding 2FA from
+		// must be able to reach the very endpoints that let them comply.
+		auth.POST("/2fa/verify", authRateLimit, authHandler.VerifyTwoFactor)
+		auth.GET("/2fa", AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), authHandler.GetTwoFactorStatus)
+		auth.POST("/2fa/setup", authRateLimit, AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), authHandler.StartTwoFactorSetup)
+		auth.POST("/2fa/enable", authRateLimit, AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), authHandler.EnableTwoFactor)
+		auth.POST("/2fa/disable", authRateLimit, AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), authHandler.DisableTwoFactor)
+		auth.POST("/2fa/backup-codes", authRateLimit, AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), authHandler.RegenerateBackupCodes)
+
+		// Personal API tokens (U6.5). Self-scoped — the user id comes from the session,
+		// so there is no capability gate and no way to address anyone else's tokens.
+		// Deliberately mounted with the plain AuthMiddleware (no PAT acceptance): a
+		// token must not be able to mint or list other tokens, which would let one
+		// leaked credential quietly propagate itself.
+		//
+		// RequireTwoFactorSatisfied is mounted here even though these are /auth routes:
+		// without it, a user the workspace policy is demanding 2FA from could mint a
+		// token from their confined session and use it to walk straight past the policy
+		// — the token would carry full role access while they never enrolled.
+		auth.GET("/api-tokens", AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), RequireTwoFactorSatisfied(), apiTokenHandler.List)
+		auth.POST("/api-tokens", authRateLimit, AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), RequireTwoFactorSatisfied(), apiTokenHandler.Create)
+		auth.DELETE("/api-tokens/:id", AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), RequireTwoFactorSatisfied(), apiTokenHandler.Revoke)
+
 		// Session / device management (P4). Bearer-authenticated (AuthMiddleware),
 		// so these aren't cookie-CSRF vectors. A user manages only their own
 		// sessions; sign-out-everywhere re-mints this device's session.
@@ -116,7 +147,17 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 	}
 
 	protected := api.Group("/")
-	protected.Use(AuthMiddleware(cfg.JWTSecret, authRepo, redisClient))
+	// The protected group ALSO accepts a personal access token (U6.5). The /auth/*
+	// group above deliberately does not: those routes are cookie-authenticated, and
+	// CSRFProtect only bites when the refresh cookie is present — a PAT sent from a
+	// browser would reach them with no CSRF protection at all.
+	protected.Use(AuthMiddlewareWithAPITokens(cfg.JWTSecret, authRepo, redisClient, apiTokenRepo))
+	// The workspace 2FA policy (U6.4) is enforced HERE, on everything, rather than
+	// only at login: RefreshToken re-mints a session from a cookie with no
+	// credential check, so a session that predates the policy would otherwise renew
+	// itself indefinitely. The /auth/* group above is deliberately outside this —
+	// that is where a confined user goes to enroll and comply.
+	protected.Use(RequireTwoFactorSatisfied())
 	{
 		// List/create workspaces are account-level (they key off user_id only), so they
 		// use the org-optional middleware — a zero-membership user in the dead-end must
@@ -150,6 +191,10 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			// etc. are separate paths, so /:user_id params don't collide.
 			workspaces.GET("/members/:user_id", cap(domain.CapMembersManage), workspaceHandler.GetMemberDetail)
 			workspaces.DELETE("/members/:user_id/sessions", cap(domain.CapMembersManage), workspaceHandler.ForceSignOutMember)
+			// Admin break-glass (U6.4): reset a member's 2FA when they've lost both
+			// their authenticator and their backup codes. Without it, turning on a
+			// workspace 2FA policy is a one-way door with no recovery path.
+			workspaces.DELETE("/members/:user_id/two-factor", cap(domain.CapMembersManage), authHandler.ResetMemberTwoFactor)
 			workspaces.PATCH("/members/:user_id/role", cap(domain.CapMembersManage), workspaceHandler.UpdateMemberRole)
 			workspaces.POST("/members/:user_id/suspend", cap(domain.CapMembersManage), workspaceHandler.SuspendMember)
 			workspaces.POST("/members/:user_id/reinstate", cap(domain.CapMembersManage), workspaceHandler.ReinstateMember)
@@ -381,8 +426,12 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			objects.PUT("/:slug", cap(domain.CapObjectsManage), customObjectHandler.UpdateDef)
 			objects.DELETE("/:slug", cap(domain.CapObjectsManage), customObjectHandler.DeleteDef)
 
-			objects.GET("/:slug/records", customObjectHandler.ListRecords)
-			objects.GET("/:slug/records/:id", customObjectHandler.GetRecord)
+			// These legacy read routes go through the custom-object usecase directly, NOT
+			// through RecordService — so unlike the /registry reads they get no OLS check
+			// from the usecase, and had none from the router either. Their write siblings
+			// were gated all along; the reads were simply missed.
+			objects.GET("/:slug/records", ols(domain.ActionRead), customObjectHandler.ListRecords)
+			objects.GET("/:slug/records/:id", ols(domain.ActionRead), customObjectHandler.GetRecord)
 			objects.POST("/:slug/records", ols(domain.ActionCreate), customObjectHandler.CreateRecord)
 			objects.PUT("/:slug/records/:id", ols(domain.ActionEdit), customObjectHandler.UpdateRecord)
 			objects.DELETE("/:slug/records/:id", ols(domain.ActionDelete), customObjectHandler.DeleteRecord)
@@ -448,12 +497,21 @@ func registerObjectRegistryRoutes(parent *gin.RouterGroup, objectRegistryHandler
 	// the usecase as defense in depth.
 	registry.GET("/:slug/records/:id/audit", cap(domain.CapAuditView), permissionHandler.ListAudit)
 
-	// Record shares (P3, I2) — the escape hatch for 'own'-scoped roles. Granting a
-	// share is an edit-level operation on the record's object; the usecase also
-	// requires the caller own the record or hold members.manage.
-	registry.POST("/:slug/records/:id/share", ols(domain.ActionEdit), recordHandler.Share)
-	registry.DELETE("/:slug/records/:id/share/:shareId", ols(domain.ActionEdit), recordHandler.Unshare)
-	registry.GET("/:slug/records/:id/shares", ols(domain.ActionEdit), recordHandler.ListShares)
+	// Record shares (U6.2) — grant a record to a user, role, or group at view/edit.
+	//
+	// The route gate is READ, not edit: sharing is a *manage* act on a record you can
+	// already see, and the real gate is inside the usecase (it fetches the record
+	// through the scope-aware RecordService first, so you can only share what you can
+	// reach). Gating the LIST at edit-level was worse than redundant — it 403'd a
+	// view-shared user trying to see who else the record is shared with.
+	registry.POST("/:slug/records/:id/share", ols(domain.ActionRead), recordHandler.Share)
+	registry.DELETE("/:slug/records/:id/share/:shareId", ols(domain.ActionRead), recordHandler.Unshare)
+	registry.GET("/:slug/records/:id/shares", ols(domain.ActionRead), recordHandler.ListShares)
+
+	// "Shared with me": records other people own that are shared to the caller
+	// (directly, via their role, or via a group). Not under the /:slug group — it
+	// spans objects — so OLS is applied per object inside the usecase.
+	parent.GET("/registry/shared-with-me", recordHandler.SharedWithMe)
 
 	// Universal relationships + tags (P4). Relating/tagging a record is edit-level.
 	registry.GET("/:slug/records/:id/links", recordHandler.ListLinks)

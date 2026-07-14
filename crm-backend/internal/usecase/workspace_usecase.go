@@ -37,7 +37,7 @@ type roleCapReader interface {
 // grants. repository.OffboardRepository satisfies it. Nil in unit tests →
 // RemoveMember behaves as if the member owns nothing; main.go always wires it.
 type offboardStore interface {
-	CountOwnedRecords(ctx context.Context, orgID, userID uuid.UUID) (contacts, deals int64, err error)
+	CountOwnedRecords(ctx context.Context, orgID, userID uuid.UUID) (contacts, deals, custom int64, err error)
 	ReassignOwnedRecords(ctx context.Context, orgID, fromUserID, toUserID uuid.UUID) error
 	UnassignOwnedRecords(ctx context.Context, orgID, userID uuid.UUID) error
 	RevokeUserGrants(ctx context.Context, orgID, userID uuid.UUID) error
@@ -49,6 +49,9 @@ type offboardStore interface {
 type groupMembershipReader interface {
 	GroupIDsForUser(ctx context.Context, orgID, userID uuid.UUID) ([]uuid.UUID, error)
 	List(ctx context.Context, orgID uuid.UUID) ([]domain.UserGroupView, error)
+	// TeammateIDs backs ListTeammates — the assignee list a 'team'-scoped user may
+	// pick from (U6.1).
+	TeammateIDs(ctx context.Context, orgID, userID uuid.UUID) ([]uuid.UUID, error)
 }
 
 type workspaceUseCase struct {
@@ -177,6 +180,7 @@ func (uc *workspaceUseCase) ListMembers(ctx context.Context, orgID uuid.UUID) ([
 			m.FullName = ou.User.FullName
 			m.AvatarURL = ou.User.AvatarURL
 			m.EmailVerified = ou.User.EmailVerifiedAt != nil
+			m.TwoFactorEnabled = ou.User.TotpEnabledAt != nil
 		}
 		if t, ok := lastActive[ou.UserID]; ok {
 			tt := t
@@ -185,6 +189,37 @@ func (uc *workspaceUseCase) ListMembers(ctx context.Context, orgID uuid.UUID) ([
 		members = append(members, m)
 	}
 	return members, nil
+}
+
+// ListTeammates returns the active members the caller shares a team (group) with —
+// the exact set a 'team'-scoped role may assign records to (U6.1).
+//
+// It is derived from the SAME self-join the row predicate uses, so the assignee
+// picker cannot offer someone whose records the caller would then be unable to see.
+// A caller in no group is their own only teammate.
+func (uc *workspaceUseCase) ListTeammates(ctx context.Context, orgID, userID uuid.UUID) ([]domain.MemberInfo, error) {
+	all, err := uc.ListMembers(ctx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	if uc.groups == nil {
+		return all, nil
+	}
+	ids, err := uc.groups.TeammateIDs(ctx, orgID, userID)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+	allowed := make(map[uuid.UUID]bool, len(ids))
+	for _, id := range ids {
+		allowed[id] = true
+	}
+	out := make([]domain.MemberInfo, 0, len(ids))
+	for _, m := range all {
+		if allowed[m.UserID] && m.Status == domain.StatusActive {
+			out = append(out, m)
+		}
+	}
+	return out, nil
 }
 
 // GetMemberDetail assembles the member drawer payload (U4): identity + groups +
@@ -218,8 +253,8 @@ func (uc *workspaceUseCase) GetMemberDetail(ctx context.Context, orgID, targetUs
 	// Owned-record counts (the offboarding preview). Best-effort — a counting
 	// failure shouldn't blank the whole drawer.
 	if uc.offboard != nil {
-		if contacts, deals, err := uc.offboard.CountOwnedRecords(ctx, orgID, targetUserID); err == nil {
-			detail.OwnedContacts, detail.OwnedDeals = contacts, deals
+		if contacts, deals, custom, err := uc.offboard.CountOwnedRecords(ctx, orgID, targetUserID); err == nil {
+			detail.OwnedContacts, detail.OwnedDeals, detail.OwnedCustom = contacts, deals, custom
 		}
 	}
 
@@ -317,7 +352,8 @@ func (uc *workspaceUseCase) GetCurrentWorkspace(ctx context.Context, orgID, call
 	return &domain.WorkspaceDetail{
 		ID: org.ID, Name: org.Name, Type: org.Type,
 		Currency: org.Currency, Locale: org.Locale, Timezone: org.Timezone,
-		MemberCount: active, IsOwner: isOwner, CreatedAt: org.CreatedAt,
+		RequireTwoFactor: org.RequireTwoFactor,
+		MemberCount:      active, IsOwner: isOwner, CreatedAt: org.CreatedAt,
 	}, nil
 }
 
@@ -347,11 +383,17 @@ func (uc *workspaceUseCase) UpdateWorkspace(ctx context.Context, orgID uuid.UUID
 	if in.Timezone != nil {
 		org.Timezone = strings.TrimSpace(*in.Timezone)
 	}
+	// The 2FA policy (U6.4). Turning it ON confines every member who hasn't enrolled
+	// to the enrollment screen on their next token mint — that is the intended teeth,
+	// and the FE warns before saving.
+	if in.RequireTwoFactor != nil {
+		org.RequireTwoFactor = *in.RequireTwoFactor
+	}
 	if err := uc.authRepo.UpdateOrganization(ctx, org); err != nil {
 		return domain.ErrInternal
 	}
 	recordAdminEvent(ctx, uc.authRepo, orgID, "workspace.updated", nil,
-		map[string]interface{}{"name": org.Name})
+		map[string]interface{}{"name": org.Name, "require_two_factor": org.RequireTwoFactor})
 	return nil
 }
 
@@ -1090,19 +1132,19 @@ func (uc *workspaceUseCase) RemoveMember(ctx context.Context, orgID uuid.UUID, t
 	// someone who owns nothing needs no ceremony, while owned data must be
 	// explicitly transferred or released — and the transfer now actually runs
 	// (U0.2; this replaced the mock that validated the input then ignored it).
-	var ownedContacts, ownedDeals int64
+	var ownedContacts, ownedDeals, ownedCustom int64
 	if uc.offboard != nil {
 		var err error
-		ownedContacts, ownedDeals, err = uc.offboard.CountOwnedRecords(ctx, orgID, targetUserID)
+		ownedContacts, ownedDeals, ownedCustom, err = uc.offboard.CountOwnedRecords(ctx, orgID, targetUserID)
 		if err != nil {
 			return domain.ErrInternal
 		}
 	}
-	if ownedContacts+ownedDeals > 0 {
+	if ownedContacts+ownedDeals+ownedCustom > 0 {
 		switch input.Strategy {
 		case "transfer":
 			if input.ReassignToUserID == nil {
-				return &domain.ReassignmentRequiredError{Contacts: ownedContacts, Deals: ownedDeals}
+				return &domain.ReassignmentRequiredError{Contacts: ownedContacts, Deals: ownedDeals, Custom: ownedCustom}
 			}
 			newOwner := *input.ReassignToUserID
 			if newOwner == targetUserID {
@@ -1123,7 +1165,7 @@ func (uc *workspaceUseCase) RemoveMember(ctx context.Context, orgID uuid.UUID, t
 				return domain.ErrInternal
 			}
 		default:
-			return &domain.ReassignmentRequiredError{Contacts: ownedContacts, Deals: ownedDeals}
+			return &domain.ReassignmentRequiredError{Contacts: ownedContacts, Deals: ownedDeals, Custom: ownedCustom}
 		}
 	}
 

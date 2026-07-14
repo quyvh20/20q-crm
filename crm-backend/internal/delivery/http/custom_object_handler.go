@@ -152,7 +152,7 @@ func (h *CustomObjectHandler) GetRecord(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": "invalid record id"})
 		return
 	}
-	rec, err := h.uc.GetRecord(c.Request.Context(), orgID, id)
+	rec, err := h.uc.GetRecord(c.Request.Context(), orgID, c.Param("slug"), id)
 	if err != nil {
 		handleAppError(c, err)
 		return
@@ -256,7 +256,7 @@ func (h *CustomObjectHandler) DeleteRecord(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": "invalid record id"})
 		return
 	}
-	if err := h.uc.DeleteRecord(c.Request.Context(), orgID, id); err != nil {
+	if err := h.uc.DeleteRecord(c.Request.Context(), orgID, c.Param("slug"), id); err != nil {
 		handleAppError(c, err)
 		return
 	}

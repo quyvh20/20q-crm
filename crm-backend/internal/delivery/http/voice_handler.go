@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"crm-backend/internal/domain"
-	"crm-backend/internal/repository"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -85,7 +84,10 @@ func (h *VoiceHandler) Upload(c *gin.Context) {
 		}
 	}
 
-	ctx := repository.WithDataScope(c.Request.Context(), GetDataScope(c), userUUID)
+	// The auth middleware already put the caller's FULL scope on the context (scope +
+	// user + ROLE). Re-wrapping it here with WithDataScope overwrote the role with
+	// uuid.Nil, so a record shared to the caller's ROLE stopped matching on this path.
+	ctx := c.Request.Context()
 
 	note, jobID, err := h.uc.Upload(ctx, orgUUID, userUUID, input)
 	if err != nil {
@@ -123,8 +125,10 @@ func (h *VoiceHandler) List(c *gin.Context) {
 		f.Limit, _ = strconv.Atoi(l)
 	}
 
-	userUUID, _ := GetUserID(c)
-	ctx := repository.WithDataScope(c.Request.Context(), GetDataScope(c), userUUID)
+	// The auth middleware already put the caller's FULL scope on the context (scope +
+	// user + ROLE). Re-wrapping it here with WithDataScope overwrote the role with
+	// uuid.Nil, so a record shared to the caller's ROLE stopped matching on this path.
+	ctx := c.Request.Context()
 
 	notes, err := h.uc.List(ctx, orgUUID, f)
 	if err != nil {
@@ -148,8 +152,10 @@ func (h *VoiceHandler) GetByID(c *gin.Context) {
 		return
 	}
 
-	userUUID, _ := GetUserID(c)
-	ctx := repository.WithDataScope(c.Request.Context(), GetDataScope(c), userUUID)
+	// The auth middleware already put the caller's FULL scope on the context (scope +
+	// user + ROLE). Re-wrapping it here with WithDataScope overwrote the role with
+	// uuid.Nil, so a record shared to the caller's ROLE stopped matching on this path.
+	ctx := c.Request.Context()
 
 	note, err := h.uc.GetByID(ctx, orgUUID, noteID)
 	if err != nil {
@@ -173,8 +179,10 @@ func (h *VoiceHandler) ApplyUpdates(c *gin.Context) {
 		return
 	}
 
-	userUUID, _ := GetUserID(c)
-	ctx := repository.WithDataScope(c.Request.Context(), GetDataScope(c), userUUID)
+	// The auth middleware already put the caller's FULL scope on the context (scope +
+	// user + ROLE). Re-wrapping it here with WithDataScope overwrote the role with
+	// uuid.Nil, so a record shared to the caller's ROLE stopped matching on this path.
+	ctx := c.Request.Context()
 
 	if err := h.uc.ApplyContactUpdates(ctx, orgUUID, noteID); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -197,8 +205,10 @@ func (h *VoiceHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	userUUID, _ := GetUserID(c)
-	ctx := repository.WithDataScope(c.Request.Context(), GetDataScope(c), userUUID)
+	// The auth middleware already put the caller's FULL scope on the context (scope +
+	// user + ROLE). Re-wrapping it here with WithDataScope overwrote the role with
+	// uuid.Nil, so a record shared to the caller's ROLE stopped matching on this path.
+	ctx := c.Request.Context()
 
 	if err := h.uc.Delete(ctx, orgUUID, noteID); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
@@ -226,7 +236,10 @@ func (h *VoiceHandler) Analyze(c *gin.Context) {
 		return
 	}
 
-	ctx := repository.WithDataScope(c.Request.Context(), GetDataScope(c), userUUID)
+	// The auth middleware already put the caller's FULL scope on the context (scope +
+	// user + ROLE). Re-wrapping it here with WithDataScope overwrote the role with
+	// uuid.Nil, so a record shared to the caller's ROLE stopped matching on this path.
+	ctx := c.Request.Context()
 
 	err = h.uc.Analyze(ctx, orgUUID, userUUID, noteID)
 	if err != nil {

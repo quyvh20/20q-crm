@@ -8,13 +8,16 @@ import DynamicCustomFields from '../common/DynamicCustomFields';
 import VoiceUploader from '../voice/VoiceUploader';
 import VoiceLibrary from '../voice/VoiceLibrary';
 
+// owner_user_id is deliberately absent (U6): this drawer never rendered or sent
+// it, and the legacy contact endpoint treats a null owner as "unchanged", so it
+// couldn't unassign anyway. A contact's owner is edited on its record page
+// (ObjectRecordPage → ObjectForm → OwnerPicker), which assigns AND unassigns.
 const contactSchema = z.object({
   first_name: z.string().min(1, 'First name is required'),
   last_name: z.string(),
   email: z.string(),
   phone: z.string(),
   company_id: z.string(),
-  owner_user_id: z.string(),
 });
 
 type ContactFormData = z.infer<typeof contactSchema>;
@@ -48,7 +51,6 @@ export default function ContactForm({ contact, onClose }: ContactFormProps) {
       email: contact?.email || '',
       phone: contact?.phone || '',
       company_id: contact?.company_id || '',
-      owner_user_id: contact?.owner_user_id || '',
     },
   });
 

@@ -124,6 +124,15 @@ func (uc *permissionUseCase) Authorize(ctx context.Context, orgID uuid.UUID, slu
 		warnCallerlessHTTP(ctx, "Authorize "+string(action)+" "+slug)
 		return nil // trusted in-process call — middleware always sets a caller for user traffic
 	}
+	// An API token's scopes bind BEFORE the owner bypass (U6.5). This lives in the
+	// permission engine rather than in the route middleware because most record READ
+	// routes carry no route-level gate at all — they rely on RecordService calling
+	// Authorize. Gating only in the middleware left every uniform read route
+	// reachable by any token, no matter how narrowly scoped: exactly the leak
+	// ScopeRecordsRead exists to prevent.
+	if err := tokenScopeAllows(caller, recordScopeFor(action)); err != nil {
+		return err
+	}
 	if callerIsOwner(caller) {
 		return nil // god-mode
 	}
@@ -223,6 +232,14 @@ func (uc *permissionUseCase) HasCapability(ctx context.Context, orgID uuid.UUID,
 	if !ok {
 		warnCallerlessHTTP(ctx, "HasCapability "+capability)
 		return nil // trusted in-process call
+	}
+	// The token-scope intersection runs BEFORE the owner bypass (U6.5): applied
+	// after, a leaked owner token would be god-mode regardless of the scopes its
+	// creator picked. Enforcing it here rather than only in RequireCapability also
+	// covers the callers that check capabilities directly — the AI command centre,
+	// the report usecase, the workspace usecase — which the middleware never sees.
+	if err := tokenScopeAllows(caller, capability); err != nil {
+		return err
 	}
 	if callerIsOwner(caller) {
 		return nil // god-mode
@@ -749,4 +766,35 @@ func (uc *permissionUseCase) Invalidate(orgID uuid.UUID) {
 	uc.mu.Lock()
 	delete(uc.cache, orgID)
 	uc.mu.Unlock()
+}
+
+// ============================================================
+// API-token scope intersection (U6.5)
+// ============================================================
+
+// recordScopeFor maps a record action to the token scope that gates it. Record
+// routes are governed by OLS, not by a capability, so there is no role capability
+// to intersect with — record access is opt-in for tokens instead.
+func recordScopeFor(action domain.RecordAction) string {
+	if action == domain.ActionRead {
+		return domain.ScopeRecordsRead
+	}
+	return domain.CapRecordsWrite
+}
+
+// tokenScopeAllows enforces a personal access token's own scope list. A normal
+// session is unaffected (nil). For a token, the request passes only if the token
+// was granted this scope — so a token is always a SUBSET of its owner, never equal
+// to them and never more.
+func tokenScopeAllows(caller domain.Caller, scope string) error {
+	if !caller.IsAPIToken {
+		return nil
+	}
+	for _, s := range caller.TokenScopes {
+		if s == scope {
+			return nil
+		}
+	}
+	return domain.NewAppError(http.StatusForbidden,
+		"this API token doesn't have permission to "+domain.CapabilityLabel(scope))
 }

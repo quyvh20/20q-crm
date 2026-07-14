@@ -21,6 +21,10 @@ vi.mock('../../../lib/api', () => ({
   removeRecordTag: vi.fn(),
   listObjectRecordsUnified: vi.fn().mockResolvedValue({ records: [] }),
   listRecordRelatedLists: vi.fn().mockResolvedValue([]),
+  // U6: the read-only owner row resolves the owner's name through these
+  // (members first, /api/users as the fallback for a role that can't list them).
+  getWorkspaceMembers: vi.fn().mockResolvedValue([]),
+  getUsers: vi.fn().mockResolvedValue([]),
 }));
 
 import { getObjectRecordUnified } from '../../../lib/api';
@@ -28,7 +32,7 @@ import ObjectDetailView from '../ObjectDetailView';
 
 const dealSchema: ObjectSchema = {
   slug: 'deal', label: 'Deal', label_plural: 'Deals', icon: '💰', color: '#10B981',
-  is_system: true, searchable: false, display_field: 'title',
+  is_system: true, searchable: false, has_owner: true, display_field: 'title',
   fields: [
     { key: 'title', label: 'Title', type: 'text', is_system: true, required: true },
     { key: 'company', label: 'Company', type: 'relation', target_slug: 'company', is_system: true, required: false },
@@ -67,7 +71,7 @@ describe('ObjectDetailView — mirror fields', () => {
   it('shows a value mirrored from the linked record', async () => {
     const schema: ObjectSchema = {
       slug: 'deal', label: 'Deal', label_plural: 'Deals', icon: '💰', color: '#10B981',
-      is_system: true, searchable: false, display_field: 'title',
+      is_system: true, searchable: false, has_owner: true, display_field: 'title',
       fields: [
         { key: 'title', label: 'Title', type: 'text', is_system: true, required: true },
         { key: 'company', label: 'Company', type: 'relation', target_slug: 'company', is_system: true, required: false },
@@ -96,7 +100,7 @@ describe('ObjectDetailView — mirror fields', () => {
 
 const contactSchema: ObjectSchema = {
   slug: 'contact', label: 'Contact', label_plural: 'Contacts', icon: '👤', color: '#6366f1',
-  is_system: true, searchable: false, display_field: 'name',
+  is_system: true, searchable: false, has_owner: true, display_field: 'name',
   fields: [
     { key: 'name',  label: 'Name',  type: 'text', is_system: true, required: true },
     { key: 'email', label: 'Email', type: 'text', is_system: true, required: false },

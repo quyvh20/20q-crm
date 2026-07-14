@@ -180,8 +180,8 @@ func (e *AssignUserExecutor) Execute(ctx context.Context, run *WorkflowRun, acti
 	}, nil
 }
 
-// authorize enforces the workflow author's OLS(edit) + FLS(owner_user_id) +
-// own-scope before a reassignment (P8). A nil authz (unit tests) is a no-op.
+// authorize enforces the workflow author's OLS(edit) + FLS(owner_user_id) + row
+// scope before a reassignment (P8). A nil authz (unit tests) is a no-op.
 func (e *AssignUserExecutor) authorize(ctx context.Context, run *WorkflowRun, entity string, recordID uuid.UUID) error {
 	if e.authz == nil {
 		return nil
@@ -193,15 +193,16 @@ func (e *AssignUserExecutor) authorize(ctx context.Context, run *WorkflowRun, en
 		return fmt.Errorf("assign_user: your role may not reassign the owner of %s records", entity)
 	}
 	caller, ok := domain.CallerFromContext(ctx)
-	if !ok || caller.IsOwner || caller.DataScope != domain.DataScopeOwn {
+	if !ok || caller.IsOwner || caller.DataScope == domain.DataScopeAll {
 		return nil
 	}
-	allowed, err := ownScopeAllows(ctx, e.db, run.OrgID, entity+"s", entity, recordID, caller.UserID)
+	// Reassignment is a write: a 'view' share is not enough.
+	allowed, err := rowScopeAllows(ctx, e.db, run.OrgID, entity+"s", entity, recordID, caller, true)
 	if err != nil {
-		return fmt.Errorf("assign_user: own-scope check failed: %w", err)
+		return fmt.Errorf("assign_user: row-scope check failed: %w", err)
 	}
 	if !allowed {
-		return fmt.Errorf("assign_user: your role may only reassign %s records you own", entity)
+		return fmt.Errorf("assign_user: your role may only reassign %s records you own or have edit access to", entity)
 	}
 	return nil
 }

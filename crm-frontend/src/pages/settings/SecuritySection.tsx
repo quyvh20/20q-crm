@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { getMe, changePassword, setPassword, unlinkGoogle, type AuthMethods } from '../../lib/api';
 import SecuritySessions from '../../components/settings/SecuritySessions';
+import TwoFactorSetup from '../../components/settings/TwoFactorSetup';
 import { useConfirm } from '../../components/common/ConfirmDialog';
 
 // Security section (U2): in-app password management + connected accounts on
@@ -166,6 +167,10 @@ export default function SecuritySection() {
           </div>
         </div>
       </section>
+
+      {/* Two-factor authentication (U6.4) — sits between the ways you can sign in
+          and the devices that are signed in, because it gates both. */}
+      <TwoFactorSetup />
 
       {/* Devices */}
       <section>

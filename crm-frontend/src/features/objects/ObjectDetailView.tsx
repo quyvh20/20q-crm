@@ -8,6 +8,8 @@ import {
   type Tag,
   getObjectRecordUnified,
   getStages,
+  getWorkspaceMembers,
+  getUsers,
 } from '../../lib/api';
 import { formatFieldValue } from './fieldHelpers';
 import RecordTags from './RecordTags';
@@ -161,6 +163,7 @@ export default function ObjectDetailView({
 }: ObjectDetailViewProps) {
   const [relationLabels, setRelationLabels] = useState<Record<string, string>>(prefetchedRelationLabels ?? {});
   const [mirrorValues, setMirrorValues] = useState<Record<string, string>>(prefetchedMirrorValues ?? {});
+  const [ownerName, setOwnerName] = useState('');
   // Managed mode: the composite endpoint already resolved these server-side,
   // so the per-target fetches below are skipped.
   const managedLabels = prefetchedRelationLabels !== undefined;
@@ -173,6 +176,43 @@ export default function ObjectDetailView({
   useEffect(() => {
     if (prefetchedMirrorValues) setMirrorValues(prefetchedMirrorValues);
   }, [prefetchedMirrorValues]);
+
+  // Owner (U6) is not a registry field, so it has no FieldRow of its own — it is
+  // read off the record (the server mirrors it into fields too) and resolved to a
+  // name. Members first; /api/users is the fallback for a role that can't list
+  // members. Unresolvable ⇒ we still say SOMEONE owns it, never "Unassigned".
+  const ownerId = schema.has_owner
+    ? ((record.owner_user_id ?? (record.fields.owner_user_id as string | null | undefined)) || '')
+    : '';
+  useEffect(() => {
+    if (!ownerId) {
+      setOwnerName('');
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const members = await getWorkspaceMembers();
+        const hit = members.find((m) => m.user_id === ownerId);
+        if (hit) {
+          if (!cancelled) setOwnerName(hit.full_name || `${hit.first_name} ${hit.last_name}`.trim() || hit.email);
+          return;
+        }
+      } catch {
+        // fall through to the users list
+      }
+      try {
+        const users = await getUsers();
+        const hit = users.find((u) => u.id === ownerId);
+        if (!cancelled) setOwnerName(hit ? `${hit.first_name} ${hit.last_name}`.trim() || hit.email : '');
+      } catch {
+        if (!cancelled) setOwnerName('');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [ownerId]);
 
   // Resolve mirror fields: follow each mirror's via relation to the linked record
   // and read its source field. Best-effort per field; an unreadable link shows "—".
@@ -279,6 +319,17 @@ export default function ObjectDetailView({
 
   return (
     <div>
+      {schema.has_owner && (
+        <div className="mb-6">
+          <div className="mb-0.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Owner</div>
+          <div className="text-sm text-foreground">
+            {ownerId
+              ? (ownerName || <span className="text-muted-foreground">A member of this workspace</span>)
+              : <span className="text-muted-foreground">Unassigned</span>}
+          </div>
+        </div>
+      )}
+
       {sections.map((section) => (
         <SectionPanel
           // Namespaced so a configured section can never collide with the

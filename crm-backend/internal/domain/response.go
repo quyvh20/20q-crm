@@ -66,14 +66,19 @@ const CodeReassignmentRequired = "REASSIGNMENT_REQUIRED"
 
 // ReassignmentRequiredError is returned by RemoveMember when the target still
 // owns records and the caller supplied no strategy. The handler renders it as
-// 409 {code:"REASSIGNMENT_REQUIRED", owned:{contacts,deals}} so the admin
-// decides with real counts in front of them (U0.2).
+// 409 {code:"REASSIGNMENT_REQUIRED", owned:{contacts,deals,custom}} so the admin
+// decides with real counts in front of them (U0.2). Custom records joined the
+// count in U6.3, when custom objects gained an owner.
 type ReassignmentRequiredError struct {
 	Contacts int64
 	Deals    int64
+	Custom   int64
 }
 
 func (e *ReassignmentRequiredError) Error() string {
+	if e.Custom > 0 {
+		return fmt.Sprintf("this member still owns %d contact(s), %d deal(s) and %d other record(s) — transfer them to another member or leave them unassigned", e.Contacts, e.Deals, e.Custom)
+	}
 	return fmt.Sprintf("this member still owns %d contact(s) and %d deal(s) — transfer them to another member or leave them unassigned", e.Contacts, e.Deals)
 }
 

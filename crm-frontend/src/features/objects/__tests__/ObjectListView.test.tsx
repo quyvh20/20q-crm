@@ -14,6 +14,9 @@ vi.mock('../../../lib/api', () => ({
   updateObjectRecordUnified: vi.fn(),
   deleteObjectRecordUnified: vi.fn(),
   getTags: vi.fn().mockResolvedValue([]),
+  // The create form renders an OwnerPicker for objects that have an owner (U6.3),
+  // which loads the member list.
+  getWorkspaceMembers: vi.fn().mockResolvedValue([]),
 }));
 
 // U3.7: the list gates "+ Add"/Import on the caller's OLS create bit. Tests
@@ -36,7 +39,7 @@ import ObjectListView from '../ObjectListView';
 
 const dealSchema: ObjectSchema = {
   slug: 'deal', label: 'Deal', label_plural: 'Deals', icon: '💰', color: '#10B981',
-  is_system: true, searchable: false, display_field: 'title',
+  is_system: true, searchable: false, has_owner: true, display_field: 'title',
   fields: [
     { key: 'title', label: 'Title', type: 'text', is_system: true, required: true },
     { key: 'value', label: 'Value', type: 'number', is_system: true, required: false },
@@ -45,7 +48,7 @@ const dealSchema: ObjectSchema = {
 
 const contactSchema: ObjectSchema = {
   slug: 'contact', label: 'Contact', label_plural: 'Contacts', icon: '👤', color: '#6366f1',
-  is_system: true, searchable: false, display_field: 'name',
+  is_system: true, searchable: false, has_owner: true, display_field: 'name',
   fields: [
     { key: 'name', label: 'Name', type: 'text', is_system: true, required: true },
   ],
@@ -53,7 +56,7 @@ const contactSchema: ObjectSchema = {
 
 const projectSchema: ObjectSchema = {
   slug: 'project', label: 'Project', label_plural: 'Projects', icon: '📁', color: '#6B7280',
-  is_system: false, searchable: false, display_field: 'name',
+  is_system: false, searchable: false, has_owner: true, display_field: 'name',
   fields: [
     { key: 'name', label: 'Name', type: 'text', is_system: false, required: true },
     { key: 'status', label: 'Status', type: 'select', options: ['active', 'done'], is_system: false, required: false },

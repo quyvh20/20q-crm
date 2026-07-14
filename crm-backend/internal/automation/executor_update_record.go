@@ -245,27 +245,29 @@ func flsFieldKey(field, slug string) string {
 	return f
 }
 
-// enforceOwnScope denies the write when the workflow author is own-scoped (and not
-// owner) and the target record is neither owned by nor shared to them — mirroring
-// the read-layer owned-OR-shared rule in repository/scopes.go so automation can't
-// mutate records the author could never see. Applies only to contacts/deals (the
-// only objects with owner_user_id + record_shares); custom objects have no owner
-// column, so their object-level OLS above is the gate. A nil authz or a non-own
-// caller is a no-op.
-func (e *UpdateRecordExecutor) enforceOwnScope(ctx context.Context, run *WorkflowRun, table, recordType string, recordID uuid.UUID) error {
+// enforceRowScope denies the write when the workflow author is row-scoped ('own'
+// or 'team', and not the owner role) and the target record is not one they may
+// WRITE — i.e. not owned by them, not owned by a teammate under 'team' scope, and
+// not shared to them at 'edit'. It runs the same predicate as the REST write path
+// (repository.RecordAccessPredicate with RequireEdit), so a workflow can never
+// mutate a record its author could only look at.
+//
+// The no-op guard tests for 'all' scope, not for "not own": the old shape let any
+// scope value other than the single one it knew about through unchecked.
+func (e *UpdateRecordExecutor) enforceRowScope(ctx context.Context, run *WorkflowRun, table, recordType string, recordID uuid.UUID) error {
 	if e.authz == nil {
 		return nil
 	}
 	caller, ok := domain.CallerFromContext(ctx)
-	if !ok || caller.IsOwner || caller.DataScope != domain.DataScopeOwn {
+	if !ok || caller.IsOwner || caller.DataScope == domain.DataScopeAll {
 		return nil
 	}
-	allowed, err := ownScopeAllows(ctx, e.db, run.OrgID, table, recordType, recordID, caller.UserID)
+	allowed, err := rowScopeAllows(ctx, e.db, run.OrgID, table, recordType, recordID, caller, true)
 	if err != nil {
-		return fmt.Errorf("update_record: own-scope check failed: %w", err)
+		return fmt.Errorf("update_record: row-scope check failed: %w", err)
 	}
 	if !allowed {
-		return fmt.Errorf("update_record: your role may only modify %s records you own", recordType)
+		return fmt.Errorf("update_record: your role may only modify %s records you own or have edit access to", recordType)
 	}
 	return nil
 }
@@ -322,7 +324,7 @@ func (e *UpdateRecordExecutor) executeContact(ctx context.Context, run *Workflow
 
 	// Own-scope (P8): an own-scoped author may only mutate contacts they own/are
 	// shared. Runs after the org existence check so "not in org" stays distinct.
-	if err := e.enforceOwnScope(ctx, run, "contacts", "contact", cid); err != nil {
+	if err := e.enforceRowScope(ctx, run, "contacts", "contact", cid); err != nil {
 		return nil, err
 	}
 
@@ -408,15 +410,29 @@ func (e *UpdateRecordExecutor) executeCustomObject(ctx context.Context, run *Wor
 		return nil, fmt.Errorf("update_record: invalid %s record ID: %w", slug, err)
 	}
 
-	// Verify record exists and belongs to org
+	// Verify the record exists, belongs to the org, AND is of THIS object — every
+	// custom object shares one table, so without the object_def_id pairing a workflow
+	// on `bug` could address an `invoice` row by id.
 	var exists bool
 	if err := e.db.WithContext(ctx).
-		Raw("SELECT EXISTS(SELECT 1 FROM custom_object_records WHERE id = ? AND org_id = ? AND deleted_at IS NULL)", rid, run.OrgID).
+		Raw(`SELECT EXISTS(
+			SELECT 1 FROM custom_object_records r
+			JOIN object_defs d ON d.id = r.object_def_id AND d.slug = ? AND d.org_id = r.org_id
+			WHERE r.id = ? AND r.org_id = ? AND r.deleted_at IS NULL)`, slug, rid, run.OrgID).
 		Scan(&exists).Error; err != nil {
 		return nil, fmt.Errorf("update_record: ownership check failed: %w", err)
 	}
 	if !exists {
 		return nil, fmt.Errorf("update_record: %s record %s not found in org %s", slug, recordID, run.OrgID.String())
+	}
+
+	// Row scope (U6.3). Custom records have an owner now, and the REST path enforces
+	// it — so automation must too, or a row-scoped author with workflows.manage can
+	// mutate custom records they'd be 403'd from touching through the API. That is
+	// exactly the escalation the P8 actor model exists to close; it just never
+	// covered custom objects, because until U6.3 they had nothing to scope on.
+	if err := e.enforceRowScope(ctx, run, "custom_object_records", slug, rid); err != nil {
+		return nil, err
 	}
 
 	// Read current data JSONB — scan into string first (GORM can't scan JSONB → json.RawMessage)
@@ -566,7 +582,7 @@ func (e *UpdateRecordExecutor) executeDeal(ctx context.Context, run *WorkflowRun
 	}
 
 	// Own-scope (P8): an own-scoped author may only mutate deals they own/are shared.
-	if err := e.enforceOwnScope(ctx, run, "deals", "deal", did); err != nil {
+	if err := e.enforceRowScope(ctx, run, "deals", "deal", did); err != nil {
 		return nil, err
 	}
 

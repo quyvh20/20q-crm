@@ -152,8 +152,8 @@ func (uc *roleUseCase) Create(ctx context.Context, orgID uuid.UUID, in domain.Cr
 	if dataScope == "" {
 		dataScope = domain.DataScopeAll
 	}
-	if dataScope != domain.DataScopeOwn && dataScope != domain.DataScopeAll {
-		return nil, domain.NewAppError(http.StatusBadRequest, "data_scope must be 'own' or 'all'")
+	if !domain.IsValidDataScope(dataScope) {
+		return nil, domain.NewAppError(http.StatusBadRequest, "data_scope must be 'own', 'team' or 'all'")
 	}
 
 	// Capabilities: explicit input wins; else inherit the clone source's; else none.
@@ -272,8 +272,8 @@ func (uc *roleUseCase) Update(ctx context.Context, orgID, id uuid.UUID, in domai
 		}
 	}
 	if in.DataScope != nil {
-		if *in.DataScope != domain.DataScopeOwn && *in.DataScope != domain.DataScopeAll {
-			return domain.NewAppError(http.StatusBadRequest, "data_scope must be 'own' or 'all'")
+		if !domain.IsValidDataScope(*in.DataScope) {
+			return domain.NewAppError(http.StatusBadRequest, "data_scope must be 'own', 'team' or 'all'")
 		}
 		if role.DataScope != *in.DataScope {
 			role.DataScope = *in.DataScope

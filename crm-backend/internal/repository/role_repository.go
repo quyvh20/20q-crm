@@ -176,9 +176,14 @@ func (r *roleRepository) DeleteRole(ctx context.Context, orgID, id uuid.UUID) er
 		if err := tx.Where("org_id = ? AND role_id = ?", orgID, id).Delete(&domain.FieldPermission{}).Error; err != nil {
 			return err
 		}
-		// Role-targeted report shares have no FK; left behind they render as
-		// "(removed)" forever and a same-named future role never inherits them.
+		// Role-targeted shares have no FK; left behind they render as "(removed)"
+		// forever and a same-named future role never inherits them. Record shares can
+		// name a role since U6.2, so they are swept alongside report shares — a grant
+		// must never outlive the thing it names.
 		if err := tx.Exec(`DELETE FROM report_shares WHERE org_id = ? AND target_type = 'role' AND target_id = ?`, orgID, id).Error; err != nil {
+			return err
+		}
+		if err := tx.Exec(`DELETE FROM record_shares WHERE org_id = ? AND target_type = 'role' AND target_id = ?`, orgID, id).Error; err != nil {
 			return err
 		}
 		return tx.Where("id = ? AND org_id = ? AND is_system = FALSE", id, orgID).Delete(&domain.Role{}).Error

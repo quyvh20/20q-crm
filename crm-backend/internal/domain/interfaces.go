@@ -61,6 +61,16 @@ type AuthResponse struct {
 	ActiveOrgID  uuid.UUID  `json:"active_org_id"`
 	DefaultOrgID *uuid.UUID `json:"default_org_id,omitempty"`
 	NeedsChooser bool       `json:"needs_chooser"`
+	// Two-factor (U6.4). TwoFactorRequired marks a CHALLENGE, not a session: the
+	// password was right but the second factor is outstanding, so AccessToken and
+	// RefreshToken are EMPTY and ChallengeToken must be exchanged at
+	// POST /auth/2fa/verify. The handler must not set auth cookies on such a
+	// response. TwoFactorEnrollRequired rides on a REAL session whose workspace
+	// requires 2FA the user hasn't set up — they are signed in but confined to
+	// enrolling.
+	TwoFactorRequired       bool   `json:"two_factor_required,omitempty"`
+	TwoFactorEnrollRequired bool   `json:"two_factor_enroll_required,omitempty"`
+	ChallengeToken          string `json:"challenge_token,omitempty"`
 }
 
 // InviteMemberInput / UpdateMemberRoleInput are keyed by role_id, not the role
@@ -93,6 +103,9 @@ type MemberInfo struct {
 	JoinedAt      time.Time  `json:"joined_at"`
 	EmailVerified bool       `json:"email_verified"`
 	LastActiveAt  *time.Time `json:"last_active_at,omitempty"`
+	// TwoFactorEnabled surfaces who has actually enrolled (U6.4) — the column an
+	// admin needs before turning the workspace policy on.
+	TwoFactorEnabled bool `json:"two_factor_enabled"`
 }
 
 // MemberGroup is one user-group a member belongs to, for the member detail
@@ -110,6 +123,8 @@ type MemberDetail struct {
 	Groups        []MemberGroup `json:"groups"`
 	OwnedContacts int64         `json:"owned_contacts"`
 	OwnedDeals    int64         `json:"owned_deals"`
+	// OwnedCustom counts the custom-object records the member owns (U6.3).
+	OwnedCustom int64 `json:"owned_custom"`
 	Sessions      []SessionInfo `json:"sessions"`
 }
 
@@ -125,7 +140,9 @@ type WorkspaceDetail struct {
 	Timezone    string    `json:"timezone"`
 	MemberCount int64     `json:"member_count"`
 	IsOwner     bool      `json:"is_owner"`
-	CreatedAt   time.Time `json:"created_at"`
+	// RequireTwoFactor is the workspace 2FA policy (U6.4).
+	RequireTwoFactor bool      `json:"require_two_factor"`
+	CreatedAt        time.Time `json:"created_at"`
 }
 
 // UpdateWorkspaceInput carries the editable Workspace General fields (U4). All
@@ -136,6 +153,11 @@ type UpdateWorkspaceInput struct {
 	Currency *string `json:"currency"`
 	Locale   *string `json:"locale"`
 	Timezone *string `json:"timezone"`
+	// RequireTwoFactor toggles the workspace 2FA policy (U6.4). A pointer so an
+	// absent field leaves it alone — and because GORM omits a struct field holding
+	// the zero value, turning the policy back OFF must be written through a
+	// column-scoped update, not a struct Save.
+	RequireTwoFactor *bool `json:"require_two_factor"`
 }
 
 // CreateWorkspaceInput creates a NEW workspace for an already-signed-in user (U4)
@@ -262,6 +284,31 @@ type AuthRepository interface {
 	// middleware's per-request check (P2).
 	IncrementUserTokenVersion(ctx context.Context, userID uuid.UUID) error
 	GetUserTokenVersion(ctx context.Context, userID uuid.UUID) (int, error)
+
+	// Two-factor authentication (U6.4).
+	SetTOTPSecret(ctx context.Context, userID uuid.UUID, encryptedSecret string) error
+	EnableTOTP(ctx context.Context, userID uuid.UUID, codeHashes []string) error
+	DisableTOTP(ctx context.Context, userID uuid.UUID) error
+	ReplaceBackupCodes(ctx context.Context, userID uuid.UUID, codeHashes []string) error
+	ListUnusedBackupCodes(ctx context.Context, userID uuid.UUID) ([]TwoFactorBackupCode, error)
+	// ConsumeBackupCode burns one code; false means it was already spent (the guard
+	// is in the WHERE clause, so concurrent requests can't both win).
+	ConsumeBackupCode(ctx context.Context, id uuid.UUID) (bool, error)
+	CountBackupCodesRemaining(ctx context.Context, userID uuid.UUID) (int, error)
+	CreateTwoFactorChallenge(ctx context.Context, ch *TwoFactorChallenge) error
+	GetTwoFactorChallengeByHash(ctx context.Context, tokenHash string) (*TwoFactorChallenge, error)
+	IncrementChallengeAttempts(ctx context.Context, id uuid.UUID) error
+	// ClaimChallengeAttempt atomically spends one attempt against a live challenge;
+	// false means there was none left (used, expired, or the cap reached).
+	ClaimChallengeAttempt(ctx context.Context, id uuid.UUID, maxAttempts int) (bool, error)
+	// ConsumeTwoFactorChallenge burns the challenge; false means someone else already
+	// burned it (two concurrent verifies must not both mint a session).
+	ConsumeTwoFactorChallenge(ctx context.Context, id uuid.UUID) (bool, error)
+	DeleteExpiredTwoFactorChallenges(ctx context.Context) (int64, error)
+
+	// RevokeAllUserAPITokens kills every live personal access token the user holds
+	// (U6.5), in every workspace — fired when the account's password changes.
+	RevokeAllUserAPITokens(ctx context.Context, userID uuid.UUID) (int64, error)
 
 	CreateOrgUser(ctx context.Context, ou *OrgUser) error
 	GetOrgUser(ctx context.Context, userID, orgID uuid.UUID) (*OrgUser, error)
@@ -441,6 +488,19 @@ type AuthUseCase interface {
 	ChangePassword(ctx context.Context, userID, orgID uuid.UUID, input ChangePasswordInput, meta RequestMeta) (*AuthResponse, error)
 	SetPassword(ctx context.Context, userID, orgID uuid.UUID, input SetPasswordInput, meta RequestMeta) (*AuthResponse, error)
 	UnlinkGoogle(ctx context.Context, userID uuid.UUID, meta RequestMeta) error
+
+	// Two-factor authentication (U6.4). Setup stores an unconfirmed secret; Enable
+	// proves the authenticator works and returns the one-time backup codes; Verify
+	// exchanges a login challenge for a real session.
+	StartTwoFactorSetup(ctx context.Context, userID uuid.UUID) (*TwoFactorSetup, error)
+	EnableTwoFactor(ctx context.Context, userID, orgID uuid.UUID, code string, meta RequestMeta) (*BackupCodesResult, error)
+	DisableTwoFactor(ctx context.Context, userID, orgID uuid.UUID, code string, meta RequestMeta) error
+	RegenerateBackupCodes(ctx context.Context, userID, orgID uuid.UUID, code string, meta RequestMeta) (*BackupCodesResult, error)
+	GetTwoFactorStatus(ctx context.Context, userID, orgID uuid.UUID) (*TwoFactorStatus, error)
+	VerifyTwoFactor(ctx context.Context, challengeToken, code string, meta RequestMeta) (*AuthResponse, error)
+	// ResetMemberTwoFactor is the admin break-glass for a member who lost both their
+	// device and their backup codes (members.manage-gated, audited).
+	ResetMemberTwoFactor(ctx context.Context, orgID, actorID, targetUserID uuid.UUID, meta RequestMeta) error
 }
 
 // UpdateProfileInput carries the self-serve profile fields (U2). Pointer
@@ -466,6 +526,9 @@ type SetPasswordInput struct {
 
 type WorkspaceUseCase interface {
 	ListMembers(ctx context.Context, orgID uuid.UUID) ([]MemberInfo, error)
+	// ListTeammates narrows ListMembers to the people the caller shares a team with
+	// — the assignee set a 'team'-scoped role may pick from (U6.1).
+	ListTeammates(ctx context.Context, orgID, userID uuid.UUID) ([]MemberInfo, error)
 	InviteMember(ctx context.Context, orgID uuid.UUID, input InviteMemberInput) (*MemberInfo, *string, error)
 	// AcceptInvite joins the invitee to the org transactionally, optionally setting
 	// the password/name they chose on the accept page (P2). Returns who joined
@@ -586,12 +649,16 @@ type CreateContactInput struct {
 }
 
 type UpdateContactInput struct {
-	FirstName    *string      `json:"first_name"`
-	LastName     *string      `json:"last_name"`
-	Email        *string      `json:"email"`
-	Phone        *string      `json:"phone"`
-	CompanyID    *uuid.UUID   `json:"company_id"`
-	OwnerUserID  *uuid.UUID   `json:"owner_user_id"`
+	FirstName   *string    `json:"first_name"`
+	LastName    *string    `json:"last_name"`
+	Email       *string    `json:"email"`
+	Phone       *string    `json:"phone"`
+	CompanyID   *uuid.UUID `json:"company_id"`
+	OwnerUserID *uuid.UUID `json:"owner_user_id"`
+	// ClearOwner unassigns the record (U6.3). A nil OwnerUserID means "not supplied",
+	// so without this flag an owner could be set but never removed — the picker's
+	// "Unassigned" option would silently do nothing.
+	ClearOwner   bool         `json:"clear_owner"`
 	CustomFields *JSON        `json:"custom_fields"`
 	TagIDs       *[]uuid.UUID `json:"tag_ids"`
 }
@@ -744,8 +811,10 @@ type UpdateDealInput struct {
 	Value           *float64   `json:"value"`
 	Probability     *int       `json:"probability"`
 	OwnerUserID     *uuid.UUID `json:"owner_user_id"`
-	ExpectedCloseAt *string    `json:"expected_close_at"`
-	CustomFields    *JSON      `json:"custom_fields"`
+	// ClearOwner unassigns the deal (U6.3) — see UpdateContactInput.
+	ClearOwner      bool    `json:"clear_owner"`
+	ExpectedCloseAt *string `json:"expected_close_at"`
+	CustomFields    *JSON   `json:"custom_fields"`
 }
 
 type UpdateDealStageInput struct {
@@ -948,11 +1017,20 @@ type UpdateObjectDefInput struct {
 // not hardcoded FK columns.
 type CreateRecordInput struct {
 	Data JSON `json:"data" binding:"required"`
+	// OwnerUserID assigns the record on create (U6.3). nil defaults to the creator,
+	// so a row-scoped user's own record does not vanish from their view the moment
+	// they make it.
+	OwnerUserID *uuid.UUID `json:"owner_user_id"`
 }
 
 type UpdateRecordInput struct {
 	Data        JSON    `json:"data"`
 	DisplayName *string `json:"display_name"`
+	// OwnerUserID reassigns the record. nil means "not supplied — leave as is",
+	// which is why clearing an owner needs its own flag: with a pointer alone,
+	// "unassign" and "don't touch" are the same value on the wire.
+	OwnerUserID *uuid.UUID `json:"owner_user_id"`
+	ClearOwner  bool       `json:"clear_owner"`
 }
 
 type RecordFilter struct {
@@ -975,11 +1053,16 @@ type CustomObjectRepository interface {
 	UpdateDef(ctx context.Context, def *CustomObjectDef) error
 	SoftDeleteDef(ctx context.Context, orgID uuid.UUID, id uuid.UUID) error
 
-	ListRecords(ctx context.Context, orgID uuid.UUID, defID uuid.UUID, f RecordFilter) ([]CustomObjectRecord, int64, error)
-	GetRecord(ctx context.Context, orgID uuid.UUID, id uuid.UUID) (*CustomObjectRecord, error)
+	// The record methods take the object SLUG as well as the def id because row
+	// scope and record shares key off the slug (record_shares.record_type), and every
+	// custom object multiplexes into the one custom_object_records table — the table
+	// name cannot identify the object. Without the slug these queries cannot be
+	// filtered, which is exactly why custom records were org-wide-visible before U6.3.
+	ListRecords(ctx context.Context, orgID uuid.UUID, defID uuid.UUID, slug string, f RecordFilter) ([]CustomObjectRecord, int64, error)
+	GetRecord(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID) (*CustomObjectRecord, error)
 	CreateRecord(ctx context.Context, r *CustomObjectRecord) error
-	UpdateRecord(ctx context.Context, r *CustomObjectRecord) error
-	SoftDeleteRecord(ctx context.Context, orgID uuid.UUID, id uuid.UUID) error
+	UpdateRecord(ctx context.Context, slug string, r *CustomObjectRecord) error
+	SoftDeleteRecord(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID) error
 }
 
 type CustomObjectUseCase interface {
@@ -990,10 +1073,10 @@ type CustomObjectUseCase interface {
 	DeleteDef(ctx context.Context, orgID uuid.UUID, slug string) error
 
 	ListRecords(ctx context.Context, orgID uuid.UUID, slug string, f RecordFilter) ([]CustomObjectRecord, int64, error)
-	GetRecord(ctx context.Context, orgID uuid.UUID, id uuid.UUID) (*CustomObjectRecord, error)
+	GetRecord(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID) (*CustomObjectRecord, error)
 	CreateRecord(ctx context.Context, orgID uuid.UUID, userID uuid.UUID, slug string, input CreateRecordInput) (*CustomObjectRecord, error)
 	UpdateRecord(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID, input UpdateRecordInput) (*CustomObjectRecord, error)
-	DeleteRecord(ctx context.Context, orgID uuid.UUID, id uuid.UUID) error
+	DeleteRecord(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID) error
 }
 
 type UpsertKBInput struct {

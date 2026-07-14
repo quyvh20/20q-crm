@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"crypto/subtle"
 	"net/http"
 	"strings"
@@ -33,7 +34,20 @@ func AuthMiddlewareOptionalOrg(jwtSecret string, authRepo domain.AuthRepository,
 	return authMiddleware(jwtSecret, authRepo, redisClient, true)
 }
 
-func authMiddleware(jwtSecret string, authRepo domain.AuthRepository, redisClient *redis.Client, allowNoOrg bool) gin.HandlerFunc {
+// AuthMiddlewareWithAPITokens is AuthMiddleware that ALSO accepts a personal
+// access token (U6.5). It is mounted on the /api protected group only — never on
+// the /auth/* routes, which are cookie-authenticated: CSRFProtect only bites when
+// the refresh cookie is present, so a PAT sent from a browser would reach those
+// routes with no CSRF protection at all.
+func AuthMiddlewareWithAPITokens(jwtSecret string, authRepo domain.AuthRepository, redisClient *redis.Client, tokenRepo domain.APITokenRepository) gin.HandlerFunc {
+	return authMiddleware(jwtSecret, authRepo, redisClient, false, tokenRepo)
+}
+
+func authMiddleware(jwtSecret string, authRepo domain.AuthRepository, redisClient *redis.Client, allowNoOrg bool, tokenRepos ...domain.APITokenRepository) gin.HandlerFunc {
+	var tokenRepo domain.APITokenRepository
+	if len(tokenRepos) > 0 {
+		tokenRepo = tokenRepos[0]
+	}
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
@@ -48,6 +62,20 @@ func authMiddleware(jwtSecret string, authRepo domain.AuthRepository, redisClien
 		}
 
 		tokenString := parts[1]
+
+		// Personal access token (U6.5). Fork BEFORE the JWT parse — a PAT is not a JWT
+		// and would simply fail to parse. On this path the token authenticates as its
+		// owner and resolves the IDENTICAL Caller a JWT would, so OLS, FLS, row scope
+		// and the audit actor all apply with no downstream changes; the token's scopes
+		// then narrow it further in RequireCapability.
+		if strings.HasPrefix(tokenString, domain.APITokenPrefix) {
+			if tokenRepo == nil {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, domain.Err("API tokens are not accepted on this endpoint"))
+				return
+			}
+			authenticateAPIToken(c, tokenString, tokenRepo, authRepo)
+			return
+		}
 
 		token, err := jwt.ParseWithClaims(tokenString, &usecase.JWTClaims{}, func(token *jwt.Token) (interface{}, error) {
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -88,7 +116,9 @@ func authMiddleware(jwtSecret string, authRepo domain.AuthRepository, redisClien
 				c.AbortWithStatusJSON(http.StatusUnauthorized, domain.Err("session expired, please sign in again"))
 				return
 			}
-			scopedCtx := repository.WithDataScope(c.Request.Context(), domain.DataScopeOwn, claims.UserID)
+			// uuid.Nil role: a zero-membership caller holds no role, so it matches no
+			// role-targeted record share (fail closed).
+			scopedCtx := repository.WithCallerScope(c.Request.Context(), domain.DataScopeOwn, claims.UserID, uuid.Nil)
 			scopedCtx = domain.WithCallerIdentity(scopedCtx, domain.Caller{
 				UserID:    claims.UserID,
 				DataScope: domain.DataScopeOwn,
@@ -129,10 +159,9 @@ func authMiddleware(jwtSecret string, authRepo domain.AuthRepository, redisClien
 			if ou.Role != nil {
 				roleName = ou.Role.Name
 				isOwner = domain.IsOwnerRole(ou.Role)
-				dataScope = domain.DataScopeAll
-				if ou.Role.DataScope == domain.DataScopeOwn {
-					dataScope = domain.DataScopeOwn
-				}
+				// Whitelist, don't coerce-to-all: an unrecognized stored value must
+				// narrow to 'own', never widen to the whole workspace.
+				dataScope = domain.NormalizeDataScope(ou.Role.DataScope)
 			} else {
 				// Role-less membership (unresolved/deleted role): least-privilege,
 				// fail-closed — the NARROWEST 'own' scope, never a stale-token 'all'
@@ -196,7 +225,14 @@ func authMiddleware(jwtSecret string, authRepo domain.AuthRepository, redisClien
 
 		c.Set("role", roleName)
 		c.Set("data_scope", dataScope)
-		scopedCtx := repository.WithDataScope(c.Request.Context(), dataScope, claims.UserID)
+		// The workspace 2FA policy (U6.4), evaluated at mint time and carried on the
+		// token. RequireTwoFactorSatisfied reads it; routes that don't mount that
+		// middleware (enrollment, /me, logout) stay reachable by design.
+		c.Set("two_factor_pending", claims.TwoFactorPending)
+		// The ROLE rides along because a record can be shared to a role (U6.2): the
+		// repository predicate matches shares against the caller's user id, role id,
+		// and group memberships.
+		scopedCtx := repository.WithCallerScope(c.Request.Context(), dataScope, claims.UserID, roleID)
 		// Carry the caller identity so RecordService can enforce Object-Level
 		// Security and stamp the audit actor without threading role/user through
 		// every method (plan P5a). Authorization keys off RoleID/IsOwner (P5); the
@@ -244,6 +280,11 @@ func RequireCapability(checker domain.CapabilityChecker, capability string) gin.
 			c.AbortWithStatusJSON(http.StatusUnauthorized, domain.Err("unauthorized"))
 			return
 		}
+		// The API-token scope intersection lives INSIDE HasCapability (and Authorize),
+		// not here — see usecase/permission_usecase.go. Most record read routes carry
+		// no route-level gate at all, and several capability checks happen outside the
+		// middleware entirely (the AI command centre, reports, workspaces), so a check
+		// bolted onto the middleware would have left all of them ungated.
 		if err := checker.HasCapability(c.Request.Context(), orgID, capability); err != nil {
 			abortWithAppError(c, err)
 			return
@@ -281,10 +322,98 @@ func requireObjectAccess(c *gin.Context, authz domain.RecordAuthorizer, slug str
 		c.AbortWithStatusJSON(http.StatusBadRequest, domain.Err("missing object slug"))
 		return
 	}
+	// Authorize also applies the API-token scope intersection (records.read /
+	// records.write), so a token reaching a record route it was never scoped for is
+	// denied here AND on every read route that has no route-level gate at all.
 	if err := authz.Authorize(c.Request.Context(), orgID, slug, action); err != nil {
 		abortWithAppError(c, err)
 		return
 	}
+	c.Next()
+}
+
+// authenticateAPIToken authenticates a personal access token and installs the
+// SAME Caller the token's owner would get from a JWT — same role, same row scope,
+// same audit actor — plus the token's scopes. Reusing the session's identity
+// resolution verbatim is the whole trick: OLS, FLS, own/team scope and audit all
+// keep working with no PAT-specific branches downstream.
+func authenticateAPIToken(c *gin.Context, secret string, tokenRepo domain.APITokenRepository, authRepo domain.AuthRepository) {
+	ctx := c.Request.Context()
+	tok, err := tokenRepo.GetByHash(ctx, usecase.HashAPIToken(secret))
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, domain.Err("internal server error"))
+		return
+	}
+	// Revocation and expiry are checked on EVERY request. A PAT is not a JWT, so the
+	// token_version gate below does not cover it — this read IS the revocation check,
+	// which is exactly why it is not cached.
+	if tok == nil || !tok.IsLive(time.Now()) {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, domain.Err("invalid or revoked API token"))
+		return
+	}
+	// A token must be bound to a workspace. Letting a nil-org token through would
+	// drop it into the zero-membership branch, which admits a role-less caller.
+	if tok.OrgID == uuid.Nil {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, domain.Err("invalid API token"))
+		return
+	}
+
+	ou, err := authRepo.GetOrgUser(ctx, tok.UserID, tok.OrgID)
+	if err != nil || ou == nil || ou.DeletedAt != nil || ou.Status != domain.StatusActive {
+		// The owner left, was suspended, or lost the membership: the token dies with
+		// their access, without anyone having to remember to revoke it.
+		c.AbortWithStatusJSON(http.StatusForbidden, domain.Err("access denied"))
+		return
+	}
+
+	roleName := domain.RoleViewer
+	isOwner := false
+	dataScope := domain.DataScopeOwn // fail closed if the role can't be resolved
+	if ou.Role != nil {
+		roleName = ou.Role.Name
+		isOwner = domain.IsOwnerRole(ou.Role)
+		dataScope = domain.NormalizeDataScope(ou.Role.DataScope)
+	}
+
+	// The workspace 2FA policy binds a token exactly as it binds a session. Asserting
+	// `false` here would have made a personal access token the way AROUND the policy:
+	// a user the workspace is demanding 2FA from could mint one and walk straight
+	// past RequireTwoFactorSatisfied without ever enrolling.
+	twoFactorPending := false
+	if ou.User != nil && ou.User.TotpEnabledAt == nil {
+		if org, err := authRepo.GetOrganizationByID(ctx, tok.OrgID); err == nil && org != nil {
+			twoFactorPending = org.RequireTwoFactor
+		}
+	}
+
+	c.Set("user_id", tok.UserID)
+	c.Set("org_id", tok.OrgID)
+	c.Set("role", roleName)
+	c.Set("data_scope", dataScope)
+	c.Set("two_factor_pending", twoFactorPending)
+
+	scopedCtx := repository.WithCallerScope(ctx, dataScope, tok.UserID, ou.RoleID)
+	scopedCtx = domain.WithCallerIdentity(scopedCtx, domain.Caller{
+		Role:        roleName,
+		UserID:      tok.UserID,
+		RoleID:      ou.RoleID,
+		IsOwner:     isOwner,
+		DataScope:   dataScope,
+		IsAPIToken:  true,
+		TokenScopes: tok.Scopes,
+	})
+	scopedCtx = domain.WithRequestMeta(scopedCtx, domain.RequestMeta{IP: c.ClientIP(), UserAgent: c.Request.UserAgent()})
+	c.Request = c.Request.WithContext(scopedCtx)
+
+	// Fire-and-forget on a DETACHED context: the request's context is cancelled the
+	// moment the response is written, which would abort this write most of the time.
+	id := tok.ID
+	go func() {
+		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = tokenRepo.TouchLastUsed(bg, id)
+	}()
+
 	c.Next()
 }
 
@@ -306,6 +435,33 @@ func RequireVerifiedEmail(authRepo domain.AuthRepository) gin.HandlerFunc {
 		}
 		if user.EmailVerifiedAt == nil {
 			c.AbortWithStatusJSON(http.StatusForbidden, domain.Err(domain.ErrEmailNotVerified.Message))
+			return
+		}
+		c.Next()
+	}
+}
+
+// RequireTwoFactorSatisfied is the enforcement half of the workspace 2FA policy
+// (U6.4). Login-time checks alone are NOT enough: RefreshToken re-mints a session
+// from a cookie with no credential check, so a session established before the
+// policy was turned on would otherwise renew itself forever.
+//
+// It reads the `2fa` claim, which the token minter stamps when the workspace
+// requires 2FA and the user has not enrolled. Such a session is confined to the
+// enrollment endpoints — it is a real session (it has to be: with no session there
+// is no authenticated way to REACH enrollment), but it can't touch anything else.
+//
+// The 403 carries a distinct code so the SPA can route to the enrollment screen
+// instead of rendering a generic "access denied".
+func RequireTwoFactorSatisfied() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		pending, _ := c.Get("two_factor_pending")
+		if b, ok := pending.(bool); ok && b {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"data":  nil,
+				"error": "this workspace requires two-factor authentication — set it up to continue",
+				"code":  "two_factor_required",
+			})
 			return
 		}
 		c.Next()

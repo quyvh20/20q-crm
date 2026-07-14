@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"crm-backend/internal/domain"
+	"crm-backend/internal/repository"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -67,10 +68,24 @@ func (e *Engine) actorContext(ctx context.Context, run *WorkflowRun) context.Con
 			"created_by", wf.CreatedBy.String(),
 			"error", err.Error(),
 		)
-		return domain.WithCallerIdentity(ctx, restrictedCaller(wf.CreatedBy))
+		return withActorScope(ctx, restrictedCaller(wf.CreatedBy), run.OrgID)
 	}
 
-	return domain.WithCallerIdentity(ctx, caller)
+	return withActorScope(ctx, caller, run.OrgID)
+}
+
+// withActorScope attaches the author's identity AND their repository row scope.
+//
+// Both halves matter. WithCallerIdentity alone drives the executors' explicit
+// authorization probes, but any action that goes through a REPOSITORY — a
+// RecordService-backed read like find_records/enroll_records — filters rows off the
+// repository context instead. With no scope on that context the repositories treat
+// the call as a trusted in-process one and return the whole org, so an own-scoped
+// author could enumerate every record in the workspace through a workflow. The
+// explicit probes then become defense in depth rather than the only line.
+func withActorScope(ctx context.Context, caller domain.Caller, orgID uuid.UUID) context.Context {
+	ctx = domain.WithCallerIdentity(ctx, caller)
+	return repository.WithCallerScope(ctx, caller.DataScope, caller.UserID, caller.RoleID)
 }
 
 // restrictedCaller is the fail-closed actor: it carries a real user id (so an
@@ -82,17 +97,34 @@ func restrictedCaller(userID uuid.UUID) domain.Caller {
 	return domain.Caller{UserID: userID, DataScope: domain.DataScopeOwn}
 }
 
-// ownScopeAllows reports whether an own-scoped author may act on a record,
-// mirroring the read-layer owned-OR-shared rule (repository/scopes.go) so
-// automation can't mutate a record the author could never see. Only meaningful for
-// contacts/deals (the objects with owner_user_id + record_shares): table is the
-// SQL table ("contacts"/"deals"), recordType the record_shares discriminator
-// ("contact"/"deal"). KEEP IN SYNC with repository/scopes.go applyScopeFromCtx.
-func ownScopeAllows(ctx context.Context, db *gorm.DB, orgID uuid.UUID, table, recordType string, recordID, userID uuid.UUID) (bool, error) {
+// rowScopeAllows reports whether a row-scoped author ('own' or 'team') may act on
+// a record. It calls the SAME predicate builder the repositories use
+// (repository.RecordAccessPredicate), so automation can never reach a record the
+// author could not reach through the UI — and so a new scope value or a new share
+// target lands here automatically instead of via a "keep in sync" comment, which
+// is what this function used to carry.
+//
+// requireEdit distinguishes reads from writes: a 'view' share grants visibility
+// only. Before U6 automation used the READ rule to authorize WRITES, so a
+// view-shared record was silently writable by a workflow (the U0.4 bug, still
+// alive on this path).
+func rowScopeAllows(ctx context.Context, db *gorm.DB, orgID uuid.UUID, table, recordType string, recordID uuid.UUID, caller domain.Caller, requireEdit bool) (bool, error) {
+	pred, args := repository.RecordAccessPredicate(repository.RecordAccessArgs{
+		Table:       "t",
+		RecordType:  recordType,
+		OrgID:       orgID,
+		Scope:       caller.DataScope,
+		UserID:      caller.UserID,
+		RoleID:      caller.RoleID,
+		RequireEdit: requireEdit,
+	})
+	if pred == "" {
+		return true, nil // 'all' scope — no row restriction
+	}
 	var allowed bool
-	q := "SELECT EXISTS(SELECT 1 FROM " + table + " t WHERE t.id = ? AND t.org_id = ? AND " +
-		"(t.owner_user_id = ? OR EXISTS (SELECT 1 FROM record_shares rs WHERE rs.record_id = t.id AND rs.record_type = ? AND rs.grantee_user_id = ?)))"
-	err := db.WithContext(ctx).Raw(q, recordID, orgID, userID, recordType, userID).Scan(&allowed).Error
+	q := "SELECT EXISTS(SELECT 1 FROM " + table + " t WHERE t.id = ? AND t.org_id = ? AND " + pred + ")"
+	full := append([]any{recordID, orgID}, args...)
+	err := db.WithContext(ctx).Raw(q, full...).Scan(&allowed).Error
 	return allowed, err
 }
 
@@ -113,15 +145,18 @@ func authorizeLinkedRecordRead(ctx context.Context, db *gorm.DB, authz domain.Re
 		if err := authz.Authorize(ctx, orgID, slug, domain.ActionRead); err != nil {
 			return err
 		}
-		if !hasCaller || caller.IsOwner || caller.DataScope != domain.DataScopeOwn {
+		// 'all' scope (and the owner role) reaches every row; anything narrower goes
+		// through the row predicate. Testing for "is all" rather than "is own" is what
+		// keeps a newly added scope enforced by default.
+		if !hasCaller || caller.IsOwner || caller.DataScope == domain.DataScopeAll {
 			return nil
 		}
-		allowed, err := ownScopeAllows(ctx, db, orgID, slug+"s", slug, *id, caller.UserID)
+		allowed, err := rowScopeAllows(ctx, db, orgID, slug+"s", slug, *id, caller, false)
 		if err != nil {
-			return fmt.Errorf("own-scope check failed for %s: %w", slug, err)
+			return fmt.Errorf("row-scope check failed for %s: %w", slug, err)
 		}
 		if !allowed {
-			return fmt.Errorf("your role may only reference %s records you own", slug)
+			return fmt.Errorf("your role may only reference %s records you can access", slug)
 		}
 		return nil
 	}

@@ -11,6 +11,7 @@ import {
   type ObjectSchema,
   type UniformRecord,
   type RelatedList,
+  type RecordLevel,
   type Tag,
 } from '../lib/api';
 import { ObjectDetailView, ObjectForm } from '../features/objects';
@@ -62,6 +63,11 @@ export default function ObjectRecordPage() {
   // "not provided" — ObjectDetailView then resolves them itself, as before.
   const [relationLabels, setRelationLabels] = useState<Record<string, string> | undefined>(undefined);
   const [mirrorValues, setMirrorValues] = useState<Record<string, string> | undefined>(undefined);
+  // Row-level access for THIS record (U6), distinct from the object-level OLS
+  // bits: 'manage' may share, 'edit' may edit, 'view' is read-only. undefined =
+  // unknown (older server, or the per-endpoint fallback) → fail open, as the OLS
+  // map does; the server enforces every action regardless.
+  const [effectiveLevel, setEffectiveLevel] = useState<RecordLevel | undefined>(undefined);
 
   // Guards against a stale load overwriting a newer one (e.g. clicking through
   // to a related record while the first page's slower requests are in flight).
@@ -78,6 +84,7 @@ export default function ObjectRecordPage() {
     setAllTags(null);
     setRelationLabels(undefined);
     setMirrorValues(undefined);
+    setEffectiveLevel(undefined);
 
     // One request for the whole page. On a remote backend this is the whole
     // game: every panel arrives together after a single round trip.
@@ -91,6 +98,7 @@ export default function ObjectRecordPage() {
       setAllTags(page.all_tags ?? []);
       setRelationLabels(page.relation_labels ?? {});
       setMirrorValues(page.mirror_values ?? {});
+      setEffectiveLevel(page.effective_level);
       setLoading(false);
       return;
     } catch {
@@ -212,15 +220,38 @@ export default function ObjectRecordPage() {
           </div>
         </div>
         {!editing && (
-          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-            {slug && canAccess(slug, 'edit') && (
-              <button id="record-edit-btn" onClick={() => setEditing(true)} style={primaryBtnStyle}>Edit</button>
+          <div className="flex shrink-0 gap-2">
+            {/* Two gates now (U6): the object-level OLS bit AND this record's
+                row-level access — a record shared to you at 'view' is read-only
+                even when your role may edit the object. Unknown level ⇒ shown. */}
+            {slug && canAccess(slug, 'edit') && effectiveLevel !== 'view' && (
+              <button
+                id="record-edit-btn"
+                onClick={() => setEditing(true)}
+                className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90"
+              >
+                Edit
+              </button>
             )}
-            {/* Share is deliberately ungated: the server allows sharing any
-                record you can see, so there is no OLS bit to mirror here. */}
-            <button id="record-share-btn" onClick={() => setSharing(true)} style={secondaryBtnStyle}>Share</button>
-            {slug && canAccess(slug, 'delete') && (
-              <button id="record-delete-btn" onClick={() => setConfirmingDelete(true)} style={dangerBtnStyle}>Delete</button>
+            {/* Sharing a record is a 'manage' action — hidden for someone who
+                merely holds view/edit on it. */}
+            {(effectiveLevel === undefined || effectiveLevel === 'manage') && (
+              <button
+                id="record-share-btn"
+                onClick={() => setSharing(true)}
+                className="rounded-lg border border-border bg-muted px-4 py-2 text-sm font-medium text-foreground hover:bg-accent"
+              >
+                Share
+              </button>
+            )}
+            {slug && canAccess(slug, 'delete') && effectiveLevel !== 'view' && (
+              <button
+                id="record-delete-btn"
+                onClick={() => setConfirmingDelete(true)}
+                className="rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-500/20 dark:text-red-400"
+              >
+                Delete
+              </button>
             )}
           </div>
         )}
@@ -266,20 +297,30 @@ export default function ObjectRecordPage() {
 
       {/* Delete confirmation */}
       {confirmingDelete && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 60, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ background: '#fff', borderRadius: 12, width: 420, maxWidth: '90vw', overflow: 'hidden' }}>
-            <div style={{ padding: '20px 24px', borderBottom: '1px solid #e2e8f0' }}>
-              <h3 style={{ margin: 0, fontWeight: 600, fontSize: 16 }}>Delete {schema.label}?</h3>
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md overflow-hidden rounded-xl border bg-card text-card-foreground shadow-xl">
+            <div className="border-b px-6 py-5">
+              <h3 className="text-base font-semibold">Delete {schema.label}?</h3>
             </div>
-            <div style={{ padding: 24, fontSize: 14, color: '#334155' }}>
+            <div className="px-6 py-5 text-sm">
               {deleteError && (
-                <div style={{ background: '#fef2f2', color: '#dc2626', padding: '8px 12px', borderRadius: 6, marginBottom: 16, fontSize: 13 }}>{deleteError}</div>
+                <div className="mb-4 rounded-md bg-red-500/10 px-3 py-2 text-[13px] text-red-600 dark:text-red-400">{deleteError}</div>
               )}
               This permanently removes <strong>{record.display || 'this record'}</strong>. This cannot be undone.
             </div>
-            <div style={{ padding: '16px 24px', borderTop: '1px solid #e2e8f0', display: 'flex', gap: 8 }}>
-              <button onClick={() => { setConfirmingDelete(false); setDeleteError(''); }} style={{ flex: 1, padding: '10px', background: '#f1f5f9', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 500 }}>Cancel</button>
-              <button id="record-delete-confirm-btn" onClick={handleDelete} disabled={deleting} style={{ flex: 1, padding: '10px', background: '#ef4444', color: '#fff', border: 'none', borderRadius: 6, cursor: deleting ? 'default' : 'pointer', fontWeight: 600, opacity: deleting ? 0.6 : 1 }}>
+            <div className="flex gap-2 border-t px-6 py-4">
+              <button
+                onClick={() => { setConfirmingDelete(false); setDeleteError(''); }}
+                className="flex-1 rounded-md border border-border bg-muted px-3 py-2.5 text-sm font-medium hover:bg-accent"
+              >
+                Cancel
+              </button>
+              <button
+                id="record-delete-confirm-btn"
+                onClick={handleDelete}
+                disabled={deleting}
+                className="flex-1 rounded-md bg-red-600 px-3 py-2.5 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60"
+              >
                 {deleting ? 'Deleting…' : 'Delete'}
               </button>
             </div>
@@ -301,35 +342,3 @@ const backLinkStyle = {
   marginBottom: 16,
 };
 
-const primaryBtnStyle = {
-  padding: '8px 16px',
-  background: '#3b82f6',
-  color: '#fff',
-  border: 'none',
-  borderRadius: 8,
-  cursor: 'pointer',
-  fontWeight: 600,
-  fontSize: 14,
-};
-
-const secondaryBtnStyle = {
-  padding: '8px 16px',
-  background: '#f1f5f9',
-  color: '#334155',
-  border: 'none',
-  borderRadius: 8,
-  cursor: 'pointer',
-  fontWeight: 500,
-  fontSize: 14,
-};
-
-const dangerBtnStyle = {
-  padding: '8px 16px',
-  background: '#fef2f2',
-  color: '#dc2626',
-  border: 'none',
-  borderRadius: 8,
-  cursor: 'pointer',
-  fontWeight: 500,
-  fontSize: 14,
-};

@@ -93,7 +93,9 @@ func (uc *dealUseCase) Update(ctx context.Context, orgID, id uuid.UUID, input do
 	if input.Probability != nil {
 		deal.Probability = *input.Probability
 	}
-	if input.OwnerUserID != nil {
+	if input.ClearOwner {
+		deal.OwnerUserID = nil
+	} else if input.OwnerUserID != nil {
 		deal.OwnerUserID = input.OwnerUserID
 	}
 	if input.ExpectedCloseAt != nil {

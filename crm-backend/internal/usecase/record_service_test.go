@@ -75,7 +75,7 @@ type fakeCustomObjUC struct {
 func (f *fakeCustomObjUC) GetDefBySlug(_ context.Context, _ uuid.UUID, _ string) (*domain.CustomObjectDef, error) {
 	return f.def, f.defErr
 }
-func (f *fakeCustomObjUC) GetRecord(_ context.Context, _, _ uuid.UUID) (*domain.CustomObjectRecord, error) {
+func (f *fakeCustomObjUC) GetRecord(_ context.Context, _ uuid.UUID, _ string, _ uuid.UUID) (*domain.CustomObjectRecord, error) {
 	return f.rec, f.recErr
 }
 func (f *fakeCustomObjUC) CreateRecord(_ context.Context, _, _ uuid.UUID, _ string, in domain.CreateRecordInput) (*domain.CustomObjectRecord, error) {
@@ -90,7 +90,7 @@ func (f *fakeCustomObjUC) ListRecords(_ context.Context, _ uuid.UUID, _ string, 
 	f.listGot = ff
 	return f.listRet, f.listTotal, f.listErr
 }
-func (f *fakeCustomObjUC) DeleteRecord(_ context.Context, _, _ uuid.UUID) error {
+func (f *fakeCustomObjUC) DeleteRecord(_ context.Context, _ uuid.UUID, _ string, _ uuid.UUID) error {
 	f.deleted = true
 	return nil
 }

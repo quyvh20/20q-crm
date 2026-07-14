@@ -111,29 +111,9 @@ func (r *reportShareRepository) Delete(ctx context.Context, orgID, reportID, sha
 }
 
 // GetShareIdentity resolves the caller's role id (org_users) and group ids
-// (user_group_members) — the handles matched against report_shares.
+// (user_group_members) — the handles matched against report_shares. Record shares
+// match against the same handles, so the implementation is shared
+// (share_identity_repository.go).
 func (r *reportShareRepository) GetShareIdentity(ctx context.Context, orgID, userID uuid.UUID) (domain.ShareIdentity, error) {
-	ident := domain.ShareIdentity{UserID: userID}
-
-	// Scan uuids through a struct field so GORM uses uuid.UUID's Scanner (a bare
-	// uuid.UUID dest is treated as [16]byte and fails on the driver's string).
-	var roleRow struct{ RoleID uuid.UUID }
-	if err := r.db.WithContext(ctx).Raw(
-		`SELECT role_id FROM org_users WHERE org_id = ? AND user_id = ? AND deleted_at IS NULL LIMIT 1`,
-		orgID, userID).Scan(&roleRow).Error; err != nil {
-		return ident, err
-	}
-	ident.RoleID = roleRow.RoleID
-
-	var groupRows []struct{ GroupID uuid.UUID }
-	if err := r.db.WithContext(ctx).Raw(
-		`SELECT m.group_id FROM user_group_members m
-		 JOIN user_groups g ON g.id = m.group_id AND g.deleted_at IS NULL
-		 WHERE m.org_id = ? AND m.user_id = ?`, orgID, userID).Scan(&groupRows).Error; err != nil {
-		return ident, err
-	}
-	for _, g := range groupRows {
-		ident.GroupIDs = append(ident.GroupIDs, g.GroupID)
-	}
-	return ident, nil
+	return getShareIdentity(ctx, r.db, orgID, userID)
 }
