@@ -424,6 +424,63 @@ func (uc *authUseCase) IssueSessionForUser(ctx context.Context, userID, orgID uu
 	}, nil
 }
 
+// CreateWorkspace creates a new org owned by an already-signed-in user and
+// returns a session scoped to it (U4). Reuses Register's org-owner seeding
+// (org + default stages + owner membership) but never touches the user's
+// credentials — the account already exists and stays as-is.
+func (uc *authUseCase) CreateWorkspace(ctx context.Context, userID uuid.UUID, in domain.CreateWorkspaceInput, meta domain.RequestMeta) (*domain.AuthResponse, error) {
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		return nil, domain.NewAppError(http.StatusBadRequest, "workspace name is required")
+	}
+	user, err := uc.authRepo.GetUserByID(ctx, userID)
+	if err != nil || user == nil {
+		return nil, domain.ErrUserNotFound
+	}
+
+	orgType := in.Type
+	if orgType == "" {
+		orgType = "company"
+	}
+	org := &domain.Organization{Name: name, Type: orgType}
+	if err := uc.authRepo.CreateOrganization(ctx, org); err != nil {
+		return nil, domain.ErrInternal
+	}
+	uc.seedDefaultStages(ctx, org.ID)
+
+	ownerRole, err := uc.authRepo.GetRoleByName(ctx, domain.RoleOwner, nil)
+	if err != nil || ownerRole == nil {
+		return nil, domain.ErrInternal
+	}
+	ou := &domain.OrgUser{UserID: user.ID, OrgID: org.ID, RoleID: ownerRole.ID, Status: domain.StatusActive}
+	if err := uc.authRepo.CreateOrgUser(ctx, ou); err != nil {
+		return nil, domain.ErrInternal
+	}
+
+	uc.recordAuthEvent(ctx, "auth", "workspace.created", orgPtr(org.ID), &user.ID, &user.ID, meta,
+		map[string]interface{}{"name": org.Name})
+
+	accessToken, err := uc.generateAccessToken(user.ID, org.ID, ownerRole, user.TokenVersion)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+	refreshToken, err := uc.createRefreshToken(ctx, user.ID, meta, nil)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+
+	orgUsers, _ := uc.authRepo.ListOrgsByUserID(ctx, user.ID)
+	return &domain.AuthResponse{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		User:         *user,
+		Workspaces:   uc.buildWorkspaces(ctx, orgUsers),
+		ActiveOrgID:  org.ID,
+		DefaultOrgID: user.DefaultOrgID,
+		NeedsChooser: false,
+	}, nil
+}
+
 // ListWorkspaces returns ALL of a user's memberships (active + suspended) for
 // display — the workspace chooser shows suspended ones as disabled cards. This is
 // the ONLY membership path that surfaces suspended rows; org selection

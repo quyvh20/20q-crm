@@ -371,3 +371,103 @@ func (h *WorkspaceHandler) ForceSignOutMember(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, domain.Success(gin.H{"message": "member signed out of all sessions"}))
 }
+
+// GetCurrentWorkspace handles GET /api/workspaces/current — the Workspace General
+// page payload (U4). Any member may read it.
+func (h *WorkspaceHandler) GetCurrentWorkspace(c *gin.Context) {
+	orgID, ok := GetOrgID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	callerID, _ := GetUserID(c)
+	detail, err := h.workspaceUC.GetCurrentWorkspace(c.Request.Context(), orgID, callerID)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, domain.Success(detail))
+}
+
+// UpdateWorkspace handles PATCH /api/workspaces/current — rename + defaults (U4).
+// org.settings-gated at the route.
+func (h *WorkspaceHandler) UpdateWorkspace(c *gin.Context) {
+	orgID, ok := GetOrgID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	var input domain.UpdateWorkspaceInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, domain.Err(err.Error()))
+		return
+	}
+	if err := h.workspaceUC.UpdateWorkspace(c.Request.Context(), orgID, input); err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, domain.Success(gin.H{"message": "workspace updated"}))
+}
+
+// DeleteWorkspace handles DELETE /api/workspaces/current — soft-delete the whole
+// workspace (U4). Owner-only, verified in the usecase.
+func (h *WorkspaceHandler) DeleteWorkspace(c *gin.Context) {
+	orgID, ok := GetOrgID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	callerID, ok := GetUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	if err := h.workspaceUC.DeleteWorkspace(c.Request.Context(), orgID, callerID); err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, domain.Success(gin.H{"message": "workspace deleted"}))
+}
+
+// LeaveWorkspace handles POST /api/workspaces/leave — the caller leaves the
+// current workspace (U4). Any member; the sole owner is refused.
+func (h *WorkspaceHandler) LeaveWorkspace(c *gin.Context) {
+	orgID, ok := GetOrgID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	callerID, ok := GetUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	if err := h.workspaceUC.LeaveWorkspace(c.Request.Context(), orgID, callerID); err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, domain.Success(gin.H{"message": "left workspace"}))
+}
+
+// CreateWorkspace handles POST /api/workspaces — an already-signed-in user
+// creates a NEW workspace they own and is switched into it (U4). Mints the
+// session + sets the auth cookies like Register.
+func (h *WorkspaceHandler) CreateWorkspace(c *gin.Context) {
+	callerID, ok := GetUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	var input domain.CreateWorkspaceInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, domain.Err(err.Error()))
+		return
+	}
+	resp, err := h.authUC.CreateWorkspace(c.Request.Context(), callerID, input, requestMeta(c))
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	setAuthCookies(c, h.cfg, resp.RefreshToken)
+	c.JSON(http.StatusCreated, domain.Success(resp))
+}

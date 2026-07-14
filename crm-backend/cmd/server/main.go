@@ -163,6 +163,10 @@ func main() {
 		db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS locale VARCHAR(16) NOT NULL DEFAULT ''`)
 		db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_completed BOOLEAN NOT NULL DEFAULT false`)
 		db.Exec(`ALTER TABLE organizations ADD COLUMN IF NOT EXISTS type VARCHAR(50) DEFAULT 'company'`)
+		// Workspace defaults (U4) — golang-migrate is dead on prod, so boot-guard these.
+		db.Exec(`ALTER TABLE organizations ADD COLUMN IF NOT EXISTS currency VARCHAR(8) NOT NULL DEFAULT ''`)
+		db.Exec(`ALTER TABLE organizations ADD COLUMN IF NOT EXISTS locale VARCHAR(16) NOT NULL DEFAULT ''`)
+		db.Exec(`ALTER TABLE organizations ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) NOT NULL DEFAULT ''`)
 		db.Exec(`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS owner_user_id UUID REFERENCES users(id) ON DELETE SET NULL`)
 		db.Exec(`CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts(owner_user_id)`)
 

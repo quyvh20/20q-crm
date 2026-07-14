@@ -2129,6 +2129,52 @@ export async function getWorkspaces(): Promise<Workspace[]> {
   return (json.data || []) as Workspace[];
 }
 
+// WorkspaceDetail backs the Workspace General settings page (U4).
+export interface WorkspaceDetail {
+  id: string;
+  name: string;
+  type: string;
+  currency: string;
+  locale: string;
+  timezone: string;
+  member_count: number;
+  is_owner: boolean;
+  created_at: string;
+}
+
+export async function getCurrentWorkspace(): Promise<WorkspaceDetail> {
+  const res = await apiFetch('/api/workspaces/current');
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw new Error(json.error || 'Failed to load workspace');
+  return json.data as WorkspaceDetail;
+}
+
+export async function updateWorkspace(patch: Partial<Pick<WorkspaceDetail, 'name' | 'currency' | 'locale' | 'timezone'>>): Promise<void> {
+  const res = await apiFetch('/api/workspaces/current', { method: 'PATCH', body: JSON.stringify(patch) });
+  if (!res.ok) {
+    const json = await parseJsonSafe(res);
+    throw new Error(json.error || 'Failed to update workspace');
+  }
+}
+
+// leaveWorkspace / deleteWorkspace are lifecycle actions (U4). Leaving is
+// last-owner-guarded; deleting is owner-only — both enforced server-side.
+export async function leaveWorkspace(): Promise<void> {
+  const res = await apiFetch('/api/workspaces/leave', { method: 'POST' });
+  if (!res.ok) {
+    const json = await parseJsonSafe(res);
+    throw new Error(json.error || 'Failed to leave workspace');
+  }
+}
+
+export async function deleteWorkspace(): Promise<void> {
+  const res = await apiFetch('/api/workspaces/current', { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await parseJsonSafe(res);
+    throw new Error(json.error || 'Failed to delete workspace');
+  }
+}
+
 export async function getWorkspaceMembers(): Promise<WorkspaceMember[]> {
   const res = await apiFetch('/api/workspaces/members');
   const json = await parseJsonSafe(res);

@@ -103,6 +103,15 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 		workspaces := protected.Group("/workspaces")
 		{
 			workspaces.GET("", authHandler.ListWorkspaces)
+			// Workspace lifecycle (U4): create a new workspace for an existing user
+			// (no cap — you're making your own), read/rename the current one, leave
+			// it, or delete it. Rename/delete are org.settings; leave/create are open
+			// to any member (the usecases enforce the owner/last-owner guards).
+			workspaces.POST("", workspaceHandler.CreateWorkspace)
+			workspaces.GET("/current", workspaceHandler.GetCurrentWorkspace)
+			workspaces.PATCH("/current", cap(domain.CapOrgSettings), workspaceHandler.UpdateWorkspace)
+			workspaces.DELETE("/current", cap(domain.CapOrgSettings), workspaceHandler.DeleteWorkspace)
+			workspaces.POST("/leave", workspaceHandler.LeaveWorkspace)
 			workspaces.GET("/members", workspaceHandler.ListMembers)
 			// Inviting members needs the members.invite capability and (soft-gate,
 			// plan D2) a verified email — a brand-new unverified signup can't spread

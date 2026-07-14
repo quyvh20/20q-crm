@@ -61,6 +61,9 @@ interface AuthContextType {
   // the returned session so they land in the app signed in. Resolves to whether
   // a session was established (false ⇒ the caller should route to /login).
   acceptInvitation: (input: { token: string; password?: string; first_name?: string; last_name?: string }) => Promise<boolean>;
+  // Create a new workspace for the signed-in user and switch into it (U4),
+  // ingesting the returned session. Backs the zero-workspace page + chooser.
+  createWorkspace: (input: { name: string; type?: string }) => Promise<void>;
   logout: () => Promise<void>;
   refreshAuth: () => Promise<void>;
   switchWorkspace: (orgId: string, setDefault?: boolean) => Promise<void>;
@@ -302,6 +305,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return false;
   };
 
+  const createWorkspace = async (input: { name: string; type?: string }) => {
+    const res = await fetch(`${API_URL}/api/workspaces`, {
+      method: 'POST',
+      credentials: 'include', // receive the new session's refresh + csrf cookies
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken ?? ''}` },
+      body: JSON.stringify(input),
+    });
+    const json = await parseJsonSafe(res);
+    if (!res.ok || json.error) {
+      throw new Error(json.error || 'Failed to create workspace');
+    }
+    saveAuth(json.data);
+  };
+
   const logout = async () => {
     try {
       await fetch(`${API_URL}/api/auth/logout`, {
@@ -351,6 +368,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         login,
         register,
         acceptInvitation,
+        createWorkspace,
         logout,
         refreshAuth,
         switchWorkspace: doSwitchWorkspace,

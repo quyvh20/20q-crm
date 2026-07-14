@@ -8,7 +8,7 @@ import MemberDrawer from './MemberDrawer';
 import { ShieldAlert, PauseCircle, PlayCircle, UserMinus, Crown, Shield, KeyRound, CheckCircle2, RotateCw, X, HelpCircle, Search, Check } from 'lucide-react';
 
 export default function MembersList() {
-  const { user, hasCapability, isOwner } = useAuth();
+  const { user, hasCapability, isOwner, refreshAuth } = useAuth();
   const { can } = usePermissions();
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
   const [roles, setRoles] = useState<RoleOption[]>([]);
@@ -43,6 +43,9 @@ export default function MembersList() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'suspended' | 'invited'>('all');
   const [drawerUserId, setDrawerUserId] = useState<string | null>(null);
+  const [transferTarget, setTransferTarget] = useState<WorkspaceMember | null>(null);
+  const [transferConfirm, setTransferConfirm] = useState('');
+  const [transferBusy, setTransferBusy] = useState(false);
 
   const canManage = hasCapability('members.manage');
   // Owner role ids (resolved from the dynamic options, P6) so the owner member is
@@ -196,17 +199,23 @@ export default function MembersList() {
     }
   };
 
-  const handleTransfer = async (userId: string) => {
-    if (!(await confirmDialog({
-      title: 'Transfer ownership',
-      body: 'Transfer ownership of this workspace? You will lose Owner privileges and become an Admin — only the new owner can transfer it back.',
-      confirmLabel: 'Transfer ownership',
-    }))) return;
+  // Transfer ownership (U4): a type-to-confirm modal that names the consequences,
+  // then refreshes the auth context (was a hard window.location.reload) so the
+  // caller's demotion to Admin propagates without a full page reload.
+  const submitTransfer = async () => {
+    if (!transferTarget) return;
+    setTransferBusy(true);
+    setErrorMsg('');
     try {
-      await transferOwnership(userId);
-      window.location.reload(); // Hard reload to update auth context completely
+      await transferOwnership(transferTarget.user_id);
+      await refreshAuth();
+      setTransferTarget(null);
+      setTransferConfirm('');
+      fetchMembers();
     } catch (err: any) {
       setErrorMsg(err.message);
+    } finally {
+      setTransferBusy(false);
     }
   };
 
@@ -417,7 +426,7 @@ export default function MembersList() {
                       {m.user_id !== user?.id && !ownerRoleIds.has(m.role_id) && (
                         <>
                           {isOwner && m.status === 'active' && (
-                            <button onClick={() => handleTransfer(m.user_id)} title="Transfer Ownership" className="text-muted-foreground hover:text-purple-400 transition-colors">
+                            <button onClick={() => { setTransferTarget(m); setTransferConfirm(''); }} title="Transfer Ownership" className="text-muted-foreground hover:text-purple-400 transition-colors">
                               <Crown className="w-4 h-4" />
                             </button>
                           )}
@@ -592,6 +601,43 @@ export default function MembersList() {
           onChanged={fetchMembers}
         />
       )}
+
+      {/* Transfer ownership — type-to-confirm (U4). */}
+      {transferTarget && (() => {
+        const targetName = transferTarget.full_name || transferTarget.email;
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => !transferBusy && setTransferTarget(null)} />
+            <div className="relative bg-card border border-border rounded-2xl shadow-xl w-full max-w-md p-6">
+              <h3 className="text-lg font-bold text-foreground mb-2 flex items-center gap-2">
+                <Crown className="w-5 h-5 text-yellow-500" /> Transfer ownership
+              </h3>
+              <p className="text-sm text-muted-foreground mb-4">
+                <strong className="text-foreground">{targetName}</strong> will become the workspace <strong>Owner</strong> with full control.
+                You'll be demoted to <strong>Admin</strong>, and only the new owner can transfer it back.
+              </p>
+              <label className="block text-xs font-medium mb-1.5">
+                Type <strong className="text-foreground">{targetName}</strong> to confirm
+              </label>
+              <input
+                value={transferConfirm}
+                onChange={(e) => setTransferConfirm(e.target.value)}
+                aria-label="Type the new owner's name to confirm"
+                autoFocus
+                className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary mb-4"
+              />
+              <div className="flex gap-2 justify-end">
+                <button onClick={() => setTransferTarget(null)} disabled={transferBusy} className="px-3 py-2 text-sm rounded-lg border border-border hover:bg-accent disabled:opacity-50">
+                  Cancel
+                </button>
+                <button onClick={submitTransfer} disabled={transferBusy || transferConfirm !== targetName} className="px-3 py-2 text-sm rounded-lg bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50">
+                  {transferBusy ? 'Transferring…' : 'Transfer ownership'}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
       {confirmDialogEl}
     </>
   );

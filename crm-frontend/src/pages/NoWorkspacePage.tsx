@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useAuth } from '../lib/auth';
-import { Inbox, LogOut } from 'lucide-react';
+import { Inbox, LogOut, Loader2, ArrowRight } from 'lucide-react';
 
 /**
  * The R2 zero-membership dead-end (P4). A user who authenticates but belongs to
@@ -8,7 +8,29 @@ import { Inbox, LogOut } from 'lucide-react';
  * everywhere; now they land here with an explanation instead.
  */
 export default function NoWorkspacePage() {
-  const { user, logout } = useAuth();
+  const { user, logout, createWorkspace } = useAuth();
+  // Inline create (U4) — the old "Create a workspace" link went to /register,
+  // which PublicRoute bounced right back here for an already-authenticated user
+  // (the redirect loop). Creating in place via POST /workspaces switches them
+  // straight into the new workspace.
+  const [name, setName] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState('');
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+    setCreating(true);
+    setError('');
+    try {
+      await createWorkspace({ name: name.trim() });
+      // saveAuth switched the active org; go to the app.
+      window.location.assign('/');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create workspace');
+      setCreating(false);
+    }
+  };
   // If a refresh 409 bounced us here off an org we just lost (and it was our only
   // one), name it so the message isn't a mysterious "you're in no workspace".
   const [lostWorkspace] = useState<string | null>(() => {
@@ -38,20 +60,32 @@ export default function NoWorkspacePage() {
           Ask a workspace admin to invite you, or create your own to get started.
         </p>
 
-        <div className="flex flex-col gap-3">
-          <a
-            href="/register"
-            className="w-full py-3 px-4 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white font-semibold rounded-xl transition-all"
-          >
-            Create a workspace
-          </a>
+        <form onSubmit={submit} className="flex flex-col gap-3">
+          {error && (
+            <div className="bg-red-500/10 border border-red-500/20 text-red-300 text-sm rounded-xl px-3 py-2">{error}</div>
+          )}
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Name your workspace"
+            aria-label="Workspace name"
+            className="w-full px-4 py-3 bg-slate-800/60 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors"
+          />
           <button
+            type="submit"
+            disabled={creating || !name.trim()}
+            className="w-full py-3 px-4 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white font-semibold rounded-xl transition-all disabled:opacity-60 flex items-center justify-center gap-2"
+          >
+            {creating ? <><Loader2 className="w-4 h-4 animate-spin" /> Creating…</> : <>Create a workspace <ArrowRight className="w-4 h-4" /></>}
+          </button>
+          <button
+            type="button"
             onClick={() => logout()}
             className="mx-auto flex items-center gap-2 text-sm text-slate-500 hover:text-slate-300 transition-colors"
           >
             <LogOut className="w-4 h-4" /> Sign out
           </button>
-        </div>
+        </form>
       </div>
     </div>
   );

@@ -380,6 +380,56 @@ func TestForceSignOutMember(t *testing.T) {
 }
 
 // ============================================================
+// Workspace lifecycle — leave / delete guards (U4)
+// ============================================================
+
+func TestLeaveWorkspace_Guards(t *testing.T) {
+	repo := newFakeWorkspaceRepo()
+	orgID := uuid.New()
+	owner := repo.addRole(domain.RoleOwner, true)
+	viewer := repo.addRole(domain.RoleViewer, false)
+	uc := newWorkspaceUC(repo, "test", &fakeEvictor{})
+
+	// The sole owner can't leave (fake ListMembersByOrgID is empty → 0 other
+	// owners → guard fires).
+	ownerUser := repo.addUser(&domain.User{Email: "o@x.com", OrgID: uuid.New()})
+	repo.addMember(ownerUser.ID, orgID, owner, domain.StatusActive)
+	if err := uc.LeaveWorkspace(context.Background(), orgID, ownerUser.ID); err == nil {
+		t.Error("the sole owner must not be able to leave")
+	}
+
+	// A non-owner leaves fine.
+	member := repo.addUser(&domain.User{Email: "m@x.com", OrgID: uuid.New()})
+	repo.addMember(member.ID, orgID, viewer, domain.StatusActive)
+	if err := uc.LeaveWorkspace(context.Background(), orgID, member.ID); err != nil {
+		t.Errorf("a non-owner should be able to leave: %v", err)
+	}
+	if _, ok := repo.orgUsers[wkey(member.ID, orgID)]; ok {
+		t.Error("leaving must remove the membership")
+	}
+}
+
+func TestDeleteWorkspace_OwnerOnly(t *testing.T) {
+	repo := newFakeWorkspaceRepo()
+	orgID := uuid.New()
+	owner := repo.addRole(domain.RoleOwner, true)
+	viewer := repo.addRole(domain.RoleViewer, false)
+	uc := newWorkspaceUC(repo, "test", &fakeEvictor{})
+
+	nonOwner := repo.addUser(&domain.User{Email: "n@x.com", OrgID: uuid.New()})
+	repo.addMember(nonOwner.ID, orgID, viewer, domain.StatusActive)
+	if err := uc.DeleteWorkspace(context.Background(), orgID, nonOwner.ID); err == nil {
+		t.Error("a non-owner must not be able to delete the workspace")
+	}
+
+	ownerUser := repo.addUser(&domain.User{Email: "o2@x.com", OrgID: uuid.New()})
+	repo.addMember(ownerUser.ID, orgID, owner, domain.StatusActive)
+	if err := uc.DeleteWorkspace(context.Background(), orgID, ownerUser.ID); err != nil {
+		t.Errorf("the owner should be able to delete the workspace: %v", err)
+	}
+}
+
+// ============================================================
 // Admin "send reset link" — membership, cooldown, daily cap (P2)
 // ============================================================
 

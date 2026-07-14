@@ -35,6 +35,39 @@ func (r *authRepository) GetOrganizationByID(ctx context.Context, id uuid.UUID) 
 	return &org, nil
 }
 
+// UpdateOrganization writes an org's editable fields (name + workspace
+// defaults) with a column-scoped Select so a partial save never clobbers
+// unrelated columns (U4).
+func (r *authRepository) UpdateOrganization(ctx context.Context, org *domain.Organization) error {
+	return r.db.WithContext(ctx).
+		Model(&domain.Organization{}).
+		Where("id = ?", org.ID).
+		Select("name", "currency", "locale", "timezone").
+		Updates(map[string]interface{}{
+			"name":     org.Name,
+			"currency": org.Currency,
+			"locale":   org.Locale,
+			"timezone": org.Timezone,
+		}).Error
+}
+
+// SoftDeleteOrganization soft-deletes the org AND deactivates every membership in
+// one transaction (U4): org resolution (ListOrgsByUserID) filters status='active',
+// so deactivating the memberships makes the workspace vanish cleanly from every
+// member's chooser — a bare org soft-delete would strand active memberships with
+// a nil (soft-deleted) Org preload.
+func (r *authRepository) SoftDeleteOrganization(ctx context.Context, id uuid.UUID) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&domain.Organization{}).Where("id = ?", id).
+			Update("deleted_at", time.Now()).Error; err != nil {
+			return err
+		}
+		return tx.Model(&domain.OrgUser{}).
+			Where("org_id = ? AND status != 'deleted'", id).
+			Updates(map[string]interface{}{"status": domain.StatusDeleted, "deleted_at": time.Now()}).Error
+	})
+}
+
 func (r *authRepository) CreateUser(ctx context.Context, user *domain.User) error {
 	return r.db.WithContext(ctx).Create(user).Error
 }
@@ -216,10 +249,13 @@ func (r *authRepository) ListOrgsByUserID(ctx context.Context, userID uuid.UUID)
 // membership can never be minted into a token.
 func (r *authRepository) ListAllOrgMembershipsByUserID(ctx context.Context, userID uuid.UUID) ([]domain.OrgUser, error) {
 	var orgUsers []domain.OrgUser
+	// Exclude 'deleted' memberships (a removed member, or a deleted workspace —
+	// U4): the chooser shows active + suspended, never a tombstoned row (which
+	// would render as an empty card since its org is soft-deleted → nil preload).
 	err := r.db.WithContext(ctx).
 		Preload("Org").
 		Preload("Role").
-		Where("user_id = ?", userID).
+		Where("user_id = ? AND status != 'deleted'", userID).
 		Order("(status = 'active') DESC, joined_at ASC, org_id ASC").
 		Find(&orgUsers).Error
 	return orgUsers, err

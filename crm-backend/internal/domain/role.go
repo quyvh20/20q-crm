@@ -247,7 +247,7 @@ var CapabilityCatalog = []CapabilityInfo{
 	{CapRolesManage, "Manage roles & permissions", "Create custom roles and edit the object/field permission grids. Effectively admin-equivalent.", CapGroupSetup, true},
 	{CapObjectsManage, "Manage objects & fields", "Create and edit objects, fields, and detail layouts.", CapGroupSetup, false},
 	{CapPipelineManage, "Manage pipeline stages", "Create and edit the deal pipeline stages.", CapGroupSetup, false},
-	{CapOrgSettings, "Manage workspace settings", "Edit organization-level settings and templates. (Not yet enforced — the workspace settings surface ships in an upcoming update.)", CapGroupSetup, true},
+	{CapOrgSettings, "Manage workspace settings", "Rename the workspace, set its defaults (currency, locale, timezone), and delete it.", CapGroupSetup, true},
 	{CapRecordsWrite, "Edit collaboration records", "Create and edit tasks, activities, voice notes, tags, and record links.", CapGroupRecords, false},
 	{CapWorkflowsManage, "Manage workflows", "Create and edit automation workflows (org-wide write + email + outbound HTTP).", CapGroupAutomation, true},
 	{CapWorkflowsRunAny, "Run any workflow", "Manually run any workflow, not just the ones you created.", CapGroupAutomation, true},

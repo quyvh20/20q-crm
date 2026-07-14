@@ -290,6 +290,137 @@ func (uc *workspaceUseCase) ForceSignOutMember(ctx context.Context, orgID, calle
 	return nil
 }
 
+// GetCurrentWorkspace returns the Workspace General page payload (U4): the org's
+// identity + defaults, its active-member count, and whether the caller owns it.
+func (uc *workspaceUseCase) GetCurrentWorkspace(ctx context.Context, orgID, callerUserID uuid.UUID) (*domain.WorkspaceDetail, error) {
+	org, err := uc.authRepo.GetOrganizationByID(ctx, orgID)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+	if org == nil {
+		return nil, domain.NewAppError(404, "workspace not found")
+	}
+	members, err := uc.authRepo.ListMembersByOrgID(ctx, orgID)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+	var active int64
+	for _, m := range members {
+		if m.Status != domain.StatusDeleted {
+			active++
+		}
+	}
+	isOwner := false
+	if ou, err := uc.authRepo.GetOrgUser(ctx, callerUserID, orgID); err == nil && ou != nil {
+		isOwner = domain.IsOwnerRole(ou.Role)
+	}
+	return &domain.WorkspaceDetail{
+		ID: org.ID, Name: org.Name, Type: org.Type,
+		Currency: org.Currency, Locale: org.Locale, Timezone: org.Timezone,
+		MemberCount: active, IsOwner: isOwner, CreatedAt: org.CreatedAt,
+	}, nil
+}
+
+// UpdateWorkspace writes the editable workspace fields (U4). Only provided
+// (non-nil) fields change; a name, if provided, must be non-blank.
+func (uc *workspaceUseCase) UpdateWorkspace(ctx context.Context, orgID uuid.UUID, in domain.UpdateWorkspaceInput) error {
+	org, err := uc.authRepo.GetOrganizationByID(ctx, orgID)
+	if err != nil {
+		return domain.ErrInternal
+	}
+	if org == nil {
+		return domain.NewAppError(404, "workspace not found")
+	}
+	if in.Name != nil {
+		name := strings.TrimSpace(*in.Name)
+		if name == "" {
+			return domain.NewAppError(400, "workspace name can't be empty")
+		}
+		org.Name = name
+	}
+	if in.Currency != nil {
+		org.Currency = strings.TrimSpace(*in.Currency)
+	}
+	if in.Locale != nil {
+		org.Locale = strings.TrimSpace(*in.Locale)
+	}
+	if in.Timezone != nil {
+		org.Timezone = strings.TrimSpace(*in.Timezone)
+	}
+	if err := uc.authRepo.UpdateOrganization(ctx, org); err != nil {
+		return domain.ErrInternal
+	}
+	recordAdminEvent(ctx, uc.authRepo, orgID, "workspace.updated", nil,
+		map[string]interface{}{"name": org.Name})
+	return nil
+}
+
+// countActiveOwners returns how many ACTIVE members of the org hold the owner
+// role — the last-owner guard for leave/transfer/delete.
+func (uc *workspaceUseCase) countActiveOwners(ctx context.Context, orgID uuid.UUID) (int, error) {
+	members, err := uc.authRepo.ListMembersByOrgID(ctx, orgID)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for i := range members {
+		if members[i].Status == domain.StatusActive && members[i].Role != nil && domain.IsOwnerRole(members[i].Role) {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// LeaveWorkspace removes the caller's own membership (U4). The sole owner can't
+// leave — they'd orphan an ownerless org; they must transfer ownership or delete
+// the workspace first.
+func (uc *workspaceUseCase) LeaveWorkspace(ctx context.Context, orgID, callerUserID uuid.UUID) error {
+	ou, err := uc.authRepo.GetOrgUser(ctx, callerUserID, orgID)
+	if err != nil {
+		return domain.ErrInternal
+	}
+	if ou == nil {
+		return domain.ErrNotMember
+	}
+	if domain.IsOwnerRole(ou.Role) {
+		owners, err := uc.countActiveOwners(ctx, orgID)
+		if err != nil {
+			return domain.ErrInternal
+		}
+		if owners <= 1 {
+			return domain.NewAppError(409, "you're the only owner — transfer ownership to someone else or delete the workspace before leaving")
+		}
+	}
+	if err := uc.authRepo.DeleteOrgUser(ctx, callerUserID, orgID); err != nil {
+		return domain.ErrInternal
+	}
+	uc.evictSession(ctx, callerUserID, orgID)
+	actor := callerUserID
+	recordAdminEvent(ctx, uc.authRepo, orgID, "member.left", &actor, nil)
+	return nil
+}
+
+// DeleteWorkspace soft-deletes the whole workspace (U4). Owner-only, verified
+// here (not just at the route). Membership resolution excludes soft-deleted
+// orgs, so every member's session falls back to another workspace (or the
+// zero-workspace page) on their next request.
+func (uc *workspaceUseCase) DeleteWorkspace(ctx context.Context, orgID, callerUserID uuid.UUID) error {
+	ou, err := uc.authRepo.GetOrgUser(ctx, callerUserID, orgID)
+	if err != nil {
+		return domain.ErrInternal
+	}
+	if ou == nil || !domain.IsOwnerRole(ou.Role) {
+		return domain.NewAppError(403, "only the workspace owner can delete it")
+	}
+	if err := uc.authRepo.SoftDeleteOrganization(ctx, orgID); err != nil {
+		return domain.ErrInternal
+	}
+	uc.evictSession(ctx, callerUserID, orgID)
+	actor := callerUserID
+	recordAdminEvent(ctx, uc.authRepo, orgID, "workspace.deleted", &actor, nil)
+	return nil
+}
+
 func hashInviteToken(token string) string {
 	hash := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(hash[:])

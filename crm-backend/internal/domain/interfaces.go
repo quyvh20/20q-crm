@@ -113,6 +113,39 @@ type MemberDetail struct {
 	Sessions      []SessionInfo `json:"sessions"`
 }
 
+// WorkspaceDetail is the Workspace General page payload (U4): the org's identity
+// + defaults, its member count, and whether the caller is the owner (gates the
+// destructive actions client-side; the server re-checks).
+type WorkspaceDetail struct {
+	ID          uuid.UUID `json:"id"`
+	Name        string    `json:"name"`
+	Type        string    `json:"type"`
+	Currency    string    `json:"currency"`
+	Locale      string    `json:"locale"`
+	Timezone    string    `json:"timezone"`
+	MemberCount int64     `json:"member_count"`
+	IsOwner     bool      `json:"is_owner"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// UpdateWorkspaceInput carries the editable Workspace General fields (U4). All
+// optional (pointers): only the provided fields are written. A blank Name is
+// rejected in the usecase.
+type UpdateWorkspaceInput struct {
+	Name     *string `json:"name"`
+	Currency *string `json:"currency"`
+	Locale   *string `json:"locale"`
+	Timezone *string `json:"timezone"`
+}
+
+// CreateWorkspaceInput creates a NEW workspace for an already-signed-in user (U4)
+// — the "create workspace" path for an existing account (chooser + zero-workspace
+// dead-end), distinct from Register which also creates the account.
+type CreateWorkspaceInput struct {
+	Name string `json:"name" binding:"required"`
+	Type string `json:"type"`
+}
+
 // AcceptInviteInput carries the invite token and, for a brand-new non-OAuth
 // invitee, the password + name they set on the accept page (P2). Password is
 // optional: an existing account (or one that will use "Continue with Google")
@@ -178,6 +211,13 @@ type GoogleUserInfo struct {
 type AuthRepository interface {
 	CreateOrganization(ctx context.Context, org *Organization) error
 	GetOrganizationByID(ctx context.Context, id uuid.UUID) (*Organization, error)
+	// UpdateOrganization writes an org's editable fields (name + workspace
+	// defaults) (U4).
+	UpdateOrganization(ctx context.Context, org *Organization) error
+	// SoftDeleteOrganization marks the whole workspace deleted (U4). Membership
+	// resolution (ListOrgsByUserID) already excludes soft-deleted orgs, so the
+	// workspace vanishes from every member's chooser on their next request.
+	SoftDeleteOrganization(ctx context.Context, id uuid.UUID) error
 	CreateUser(ctx context.Context, user *User) error
 	GetUserByEmail(ctx context.Context, email string) (*User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (*User, error)
@@ -332,6 +372,11 @@ type AuthUseCase interface {
 	// another means (here, control of the invite link); it verifies the user has
 	// an ACTIVE membership in orgID before issuing, and 403s otherwise.
 	IssueSessionForUser(ctx context.Context, userID, orgID uuid.UUID, meta RequestMeta) (*AuthResponse, error)
+	// CreateWorkspace creates a NEW workspace owned by an already-signed-in user
+	// and returns a session scoped to it (U4) — the "create workspace" path for an
+	// existing account (chooser + zero-workspace dead-end). Reuses the org-owner
+	// seeding of Register without touching the user's credentials.
+	CreateWorkspace(ctx context.Context, userID uuid.UUID, in CreateWorkspaceInput, meta RequestMeta) (*AuthResponse, error)
 	RefreshToken(ctx context.Context, input RefreshInput, meta RequestMeta) (*AuthResponse, error)
 	Logout(ctx context.Context, refreshToken string) error
 	GetMe(ctx context.Context, userID uuid.UUID) (*User, error)
@@ -433,6 +478,18 @@ type WorkspaceUseCase interface {
 	// person out everywhere" button. Refuses to target the caller (use your own
 	// sessions UI) and the owner.
 	ForceSignOutMember(ctx context.Context, orgID, callerUserID, targetUserID uuid.UUID) error
+	// GetCurrentWorkspace returns the Workspace General page payload (U4).
+	GetCurrentWorkspace(ctx context.Context, orgID, callerUserID uuid.UUID) (*WorkspaceDetail, error)
+	// UpdateWorkspace writes the editable workspace fields (name + defaults) (U4).
+	// org.settings-gated at the route; a blank name is rejected here.
+	UpdateWorkspace(ctx context.Context, orgID uuid.UUID, in UpdateWorkspaceInput) error
+	// LeaveWorkspace removes the caller's OWN membership (U4). Guarded: the sole
+	// owner can't leave (they must transfer ownership or delete the workspace
+	// first), so an org can never be orphaned ownerless.
+	LeaveWorkspace(ctx context.Context, orgID, callerUserID uuid.UUID) error
+	// DeleteWorkspace soft-deletes the whole workspace (U4). Owner-only, verified
+	// inside (not just at the route).
+	DeleteWorkspace(ctx context.Context, orgID, callerUserID uuid.UUID) error
 }
 
 type RemoveMemberInput struct {

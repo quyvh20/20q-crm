@@ -12,6 +12,7 @@ import DealDetailPage from './pages/DealDetailPage';
 import SettingsLayout, { SettingsIndexRedirect } from './pages/settings/SettingsLayout';
 import MembersSection from './pages/settings/MembersSection';
 import GroupsSection from './pages/settings/GroupsSection';
+import WorkspaceGeneralSection from './pages/settings/WorkspaceGeneralSection';
 import RoleDetailSection from './pages/settings/RoleDetailSection';
 import ProfileSection from './pages/settings/ProfileSection';
 import SecuritySection from './pages/settings/SecuritySection';
@@ -180,6 +181,7 @@ function App() {
               <Route index element={<SettingsIndexRedirect />} />
               <Route path="profile" element={<ProfileSection />} />
               <Route path="security" element={<SecuritySection />} />
+              <Route path="general" element={<WorkspaceGeneralSection />} />
               <Route path="members" element={<MembersSection />} />
               <Route path="groups" element={<GroupsSection />} />
               <Route path="roles" element={<RolesManager />} />

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from '../lib/auth';
 import { getWorkspaces, type Workspace } from '../lib/api';
-import { Building2, Users, Check, Star, Loader2, LogOut, Ban, AlertTriangle } from 'lucide-react';
+import { Building2, Users, Check, Star, Loader2, LogOut, Ban, AlertTriangle, Plus } from 'lucide-react';
 
 /**
  * The R2 workspace chooser (P4). Shown when a user belongs to multiple active
@@ -15,10 +15,28 @@ import { Building2, Users, Check, Star, Loader2, LogOut, Ban, AlertTriangle } fr
  * bounced them here off an org they just lost.
  */
 export default function ChooseWorkspacePage() {
-  const { workspaces, switchWorkspace, defaultOrgId, logout } = useAuth();
+  const { workspaces, switchWorkspace, defaultOrgId, logout, createWorkspace } = useAuth();
   const [makeDefault, setMakeDefault] = useState(true);
   const [busyOrg, setBusyOrg] = useState<string | null>(null);
   const [error, setError] = useState('');
+  // Inline "create a new workspace" (U4).
+  const [creatingOpen, setCreatingOpen] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [creating, setCreating] = useState(false);
+
+  const create = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newName.trim()) return;
+    setCreating(true);
+    setError('');
+    try {
+      await createWorkspace({ name: newName.trim() });
+      window.location.assign('/');
+    } catch (err: any) {
+      setError(err?.message || 'Could not create the workspace.');
+      setCreating(false);
+    }
+  };
   // Seed from auth state (active-only); enrich with the full list (incl. suspended)
   // once the fetch resolves so suspended cards can render.
   const [allWorkspaces, setAllWorkspaces] = useState<Workspace[]>(workspaces);
@@ -114,6 +132,37 @@ export default function ChooseWorkspacePage() {
               </button>
             );
           })}
+        </div>
+
+        {/* Create a new workspace (U4) — inline, so an existing user isn't sent to
+            /register (which would bounce them). */}
+        <div className="mt-3">
+          {creatingOpen ? (
+            <form onSubmit={create} className="flex gap-2">
+              <input
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="New workspace name"
+                aria-label="New workspace name"
+                autoFocus
+                className="flex-1 px-4 py-3 bg-slate-800/60 border border-slate-700 rounded-2xl text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors"
+              />
+              <button type="submit" disabled={creating || !newName.trim()} className="px-4 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-semibold disabled:opacity-60 flex items-center gap-2">
+                {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Create'}
+              </button>
+            </form>
+          ) : (
+            <button
+              onClick={() => setCreatingOpen(true)}
+              disabled={!!busyOrg}
+              className="w-full flex items-center gap-4 p-4 rounded-2xl border border-dashed border-slate-700 text-slate-300 hover:border-blue-500/50 hover:text-white transition-all disabled:opacity-60"
+            >
+              <div className="w-11 h-11 rounded-xl bg-slate-800 flex items-center justify-center shrink-0">
+                <Plus className="w-5 h-5" />
+              </div>
+              <span className="font-medium">Create a new workspace</span>
+            </button>
+          )}
         </div>
 
         {/* Suspended memberships — shown disabled so the user knows the org exists

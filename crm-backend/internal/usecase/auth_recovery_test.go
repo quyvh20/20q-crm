@@ -261,6 +261,8 @@ func (r *fakeAuthRepo) CreateOrganization(context.Context, *domain.Organization)
 func (r *fakeAuthRepo) GetOrganizationByID(context.Context, uuid.UUID) (*domain.Organization, error) {
 	return nil, nil
 }
+func (r *fakeAuthRepo) UpdateOrganization(context.Context, *domain.Organization) error  { return nil }
+func (r *fakeAuthRepo) SoftDeleteOrganization(context.Context, uuid.UUID) error          { return nil }
 func (r *fakeAuthRepo) CreateUser(context.Context, *domain.User) error                 { return nil }
 func (r *fakeAuthRepo) GetUserByGoogleID(context.Context, string) (*domain.User, error) {
 	return nil, nil

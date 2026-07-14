@@ -55,6 +55,11 @@ type Organization struct {
 	ID                   uuid.UUID      `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
 	Name                 string         `gorm:"size:255;not null" json:"name"`
 	Type                 string         `gorm:"size:50;default:'company'" json:"type"`
+	// Workspace defaults (U4) — surfaced on the Workspace General settings page.
+	// Free-text so we don't hard-code an enum; the FE offers common choices.
+	Currency string `gorm:"size:8;not null;default:''" json:"currency"`
+	Locale   string `gorm:"size:16;not null;default:''" json:"locale"`
+	Timezone string `gorm:"size:64;not null;default:''" json:"timezone"`
 	PlanTier             string         `gorm:"size:50;not null;default:'free'" json:"plan_tier"`
 	PaddleSubscriptionID *string        `gorm:"size:255" json:"paddle_subscription_id,omitempty"`
 	CreatedAt            time.Time      `json:"created_at"`
