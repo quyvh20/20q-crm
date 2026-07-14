@@ -84,6 +84,40 @@ func (h *NotificationHandler) MarkAllRead(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{"marked": n}, "error": nil})
 }
 
+// GetPreferences returns the caller's notification preferences for the workspace
+// (the preference-center payload: settings merged with the event-type catalog) (U5).
+func (h *NotificationHandler) GetPreferences(c *gin.Context) {
+	orgID, userID, ok := h.identity(c)
+	if !ok {
+		return
+	}
+	view, err := h.uc.GetPreferences(c.Request.Context(), orgID, userID)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": view, "error": nil})
+}
+
+// UpdatePreferences upserts the caller's notification preferences (U5).
+func (h *NotificationHandler) UpdatePreferences(c *gin.Context) {
+	orgID, userID, ok := h.identity(c)
+	if !ok {
+		return
+	}
+	var in domain.NotificationPreferenceUpdate
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, domain.Err(err.Error()))
+		return
+	}
+	view, err := h.uc.UpdatePreferences(c.Request.Context(), orgID, userID, in)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": view, "error": nil})
+}
+
 // identity extracts the (org, caller) pair every handler scopes to. Writes the
 // 401 and returns ok=false when either is absent.
 func (h *NotificationHandler) identity(c *gin.Context) (uuid.UUID, uuid.UUID, bool) {

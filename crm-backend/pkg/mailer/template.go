@@ -3,6 +3,9 @@ package mailer
 import (
 	"fmt"
 	"html"
+	"strings"
+
+	"crm-backend/internal/domain"
 )
 
 // ctaEmail renders a branded email with a single call-to-action button. bodyHTML
@@ -30,6 +33,46 @@ func plainEmail(heading, message string) string {
         <h1 style="margin:0 0 16px;font-size:20px;color:#0f172a;">%s</h1>
         <p style="margin:0;font-size:15px;line-height:1.6;color:#334155;">%s</p>`,
 		html.EscapeString(heading), html.EscapeString(message)))
+}
+
+// notificationEmail renders a single in-app notification as an email (U5): the
+// title becomes the heading, the body the copy, and — when the notification has an
+// in-app link — a button to open it. body is user/automation data so it is escaped.
+func notificationEmail(title, body, link string) string {
+	if link != "" {
+		copy := body
+		if strings.TrimSpace(copy) == "" {
+			copy = "You have a new notification."
+		}
+		return ctaEmail(title, html.EscapeString(copy), "View in CRM", link)
+	}
+	return plainEmail(title, body)
+}
+
+// digestEmail renders a daily-digest email (U5): a heading plus one block per
+// notification (title, body, and a link when present). Every interpolated field is
+// user/automation data, so all of it is escaped.
+func digestEmail(items []domain.NotificationDigestItem) string {
+	var b strings.Builder
+	b.WriteString(`<h1 style="margin:0 0 8px;font-size:20px;color:#0f172a;">Your notification digest</h1>`)
+	suffix := ""
+	if len(items) != 1 {
+		suffix = "s"
+	}
+	b.WriteString(fmt.Sprintf(`<p style="margin:0 0 8px;font-size:14px;color:#64748b;">You have %d new notification%s.</p>`, len(items), suffix))
+	for _, it := range items {
+		title := html.EscapeString(it.Title)
+		if it.Link != "" {
+			title = fmt.Sprintf(`<a href="%s" style="color:#2563eb;text-decoration:none;">%s</a>`,
+				html.EscapeString(it.Link), title)
+		}
+		b.WriteString(fmt.Sprintf(`
+        <div style="border-top:1px solid #e2e8f0;padding:14px 0;">
+          <div style="font-size:15px;font-weight:600;color:#0f172a;">%s</div>
+          <div style="font-size:14px;line-height:1.5;color:#334155;margin-top:2px;">%s</div>
+        </div>`, title, html.EscapeString(it.Body)))
+	}
+	return emailShell(b.String())
 }
 
 // emailShell wraps body content in a minimal, email-client-safe layout.

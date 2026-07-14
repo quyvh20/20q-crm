@@ -463,6 +463,11 @@ func (m *fakeMailer) SendSecurityAlert(_ context.Context, to, _, _ string) error
 	return nil
 }
 
+func (m *fakeMailer) SendNotification(_ context.Context, _, _, _, _ string) error { return nil }
+func (m *fakeMailer) SendNotificationDigest(_ context.Context, _ string, _ []domain.NotificationDigestItem) error {
+	return nil
+}
+
 func (m *fakeMailer) alertCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()

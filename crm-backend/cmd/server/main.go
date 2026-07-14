@@ -774,6 +774,35 @@ func main() {
 		db.Exec(`CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(user_id, org_id) WHERE read_at IS NULL`)
 		db.Exec(`ALTER TABLE notifications ENABLE ROW LEVEL SECURITY`)
 
+		// Notification preferences (U5, migration 000037) — boot guard. Mirrors
+		// migrations/000037_notification_preferences.up.sql exactly. One row per
+		// (org_id, user_id): mute-all, email-digest mode, and a sparse jsonb of
+		// per-event-type {in_app,email} overrides (absent keys use built-in defaults).
+		// Gates in-app + email delivery in NotificationUseCase.Create and feeds the
+		// daily-digest job. Keep both files in sync.
+		db.Exec(`CREATE TABLE IF NOT EXISTS notification_preferences (
+			id                   UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			org_id               UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			user_id              UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			mute_all             BOOLEAN NOT NULL DEFAULT FALSE,
+			email_digest         VARCHAR(16) NOT NULL DEFAULT 'off',
+			overrides            JSONB NOT NULL DEFAULT '{}',
+			last_digest_sent_at  TIMESTAMPTZ,
+			created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (org_id, user_id)
+		)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_notif_prefs_digest ON notification_preferences(email_digest) WHERE email_digest = 'daily'`)
+		db.Exec(`ALTER TABLE notification_preferences ENABLE ROW LEVEL SECURITY`)
+
+		// U5 also adds two columns to the A6 notifications table (part of migration
+		// 000037): digest_only (true = a row stored ONLY to be digested, hidden from
+		// the bell) and digested_at (the daily-digest idempotency marker). ADD COLUMN
+		// IF NOT EXISTS so this is safe on installs that already have the A6 table.
+		db.Exec(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS digest_only BOOLEAN NOT NULL DEFAULT FALSE`)
+		db.Exec(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS digested_at TIMESTAMPTZ`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_notifications_digest_pending ON notifications(user_id, org_id) WHERE read_at IS NULL AND digested_at IS NULL`)
+
 		log.Info("Seeding system roles...")
 		// SeedSystemRoles is also the idempotent boot backfill for new capability
 		// codes on existing installs: it inserts any DefaultRoleCapabilities row that
@@ -1086,7 +1115,11 @@ func main() {
 		// eventsHandler.Stream now subscribes alongside the org channel. Nil-safe
 		// without Redis (the row still lands in the inbox, just no live push).
 		notificationRepo := repository.NewNotificationRepository(db)
-		notificationUC := usecase.NewNotificationUseCase(notificationRepo, redisClient)
+		// U5: preference gating + email channel. authRepo resolves a recipient's
+		// email; mailerSvc sends the immediate + digest emails; FrontendURL builds
+		// absolute links. All nil-safe in the usecase.
+		notificationPrefRepo := repository.NewNotificationPreferenceRepository(db)
+		notificationUC := usecase.NewNotificationUseCase(notificationRepo, notificationPrefRepo, authRepo, mailerSvc, redisClient, cfg.FrontendURL)
 		notificationHandler := delivery.NewNotificationHandler(notificationUC)
 		// 90-day retention sweep: hard-delete stale notifications daily (and once at
 		// boot). Best-effort background loop; a failed pass just retries next tick.
@@ -1103,6 +1136,23 @@ func main() {
 			defer ticker.Stop()
 			for range ticker.C {
 				sweep()
+			}
+		}()
+		// Daily-digest pass (U5): email members who chose email_digest='daily' a
+		// summary of their recent unread notifications, at most ~once a day (the
+		// last_digest_sent_at guard makes this hourly tick restart-safe). Best-effort.
+		go func() {
+			run := func() {
+				if n, err := notificationUC.RunDailyDigest(context.Background()); err != nil {
+					log.Warn("notifications: digest pass failed", zap.Error(err))
+				} else if n > 0 {
+					log.Info("notifications: digest sent", zap.Int("emails", n))
+				}
+			}
+			ticker := time.NewTicker(1 * time.Hour)
+			defer ticker.Stop()
+			for range ticker.C {
+				run()
 			}
 		}()
 

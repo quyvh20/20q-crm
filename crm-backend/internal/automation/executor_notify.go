@@ -97,6 +97,19 @@ func (e *NotifyUserExecutor) Execute(ctx context.Context, run *WorkflowRun, acti
 		// A create failure is almost always a transient DB issue → retryable.
 		return nil, NewRetryableError(fmt.Errorf("notify_user: %w", err))
 	}
+	if n == nil {
+		// The recipient's notification preferences suppressed the in-app row (muted,
+		// or the "automation" channel turned off). That's a delivered-as-configured
+		// outcome, not a failure — the action succeeds so the run continues (U5).
+		slog.Info("automation: notification suppressed by recipient preferences",
+			"recipient_id", recipientID.String(),
+			"workflow_run_id", run.ID.String(),
+		)
+		return map[string]any{
+			"user_id":    recipientID.String(),
+			"suppressed": true,
+		}, nil
+	}
 
 	slog.Info("automation: notification sent",
 		"notification_id", n.ID.String(),

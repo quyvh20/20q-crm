@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"crm-backend/internal/domain"
 	"crm-backend/pkg/logger"
 	"go.uber.org/zap"
 )
@@ -66,6 +67,25 @@ func (m *LogMailer) SendSecurityAlert(ctx context.Context, to, subject, message 
 		zap.String("to", to),
 		zap.String("subject", subject),
 		zap.String("message", message),
+	)
+	return nil
+}
+
+func (m *LogMailer) SendNotification(ctx context.Context, to, title, body, link string) error {
+	logger.Log.Info("📧 [EMAIL SENT_LOG_ONLY]",
+		zap.String("type", "Notification"),
+		zap.String("to", to),
+		zap.String("title", title),
+		zap.String("link", link),
+	)
+	return nil
+}
+
+func (m *LogMailer) SendNotificationDigest(ctx context.Context, to string, items []domain.NotificationDigestItem) error {
+	logger.Log.Info("📧 [EMAIL SENT_LOG_ONLY]",
+		zap.String("type", "Notification_Digest"),
+		zap.String("to", to),
+		zap.Int("count", len(items)),
 	)
 	return nil
 }

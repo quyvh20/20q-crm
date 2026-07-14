@@ -44,6 +44,9 @@ func applyNotificationSchema(t *testing.T, db *gorm.DB) (uuid.UUID, uuid.UUID, u
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS organizations (id UUID PRIMARY KEY DEFAULT uuid_generate_v4())`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY DEFAULT uuid_generate_v4())`).Error)
 	runMigrationFile(t, db, "000036_notifications.up.sql")
+	// U5 adds in_app + digested_at to notifications (and the preferences table); the
+	// repo's bell queries filter on in_app, so the test schema needs it too.
+	runMigrationFile(t, db, "000037_notification_preferences.up.sql")
 
 	orgID := uuid.New()
 	userA := uuid.New()

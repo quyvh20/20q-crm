@@ -8,6 +8,8 @@ import (
 	"html"
 	"net/http"
 	"time"
+
+	"crm-backend/internal/domain"
 )
 
 type ResendMailer struct {
@@ -93,4 +95,20 @@ func (m *ResendMailer) SendVerification(ctx context.Context, to, verifyLink stri
 func (m *ResendMailer) SendSecurityAlert(ctx context.Context, to, subject, message string) error {
 	body := plainEmail(subject, message)
 	return m.send(ctx, to, subject, body)
+}
+
+func (m *ResendMailer) SendNotification(ctx context.Context, to, title, body, link string) error {
+	subject := title
+	if subject == "" {
+		subject = "New notification"
+	}
+	return m.send(ctx, to, subject, notificationEmail(title, body, link))
+}
+
+func (m *ResendMailer) SendNotificationDigest(ctx context.Context, to string, items []domain.NotificationDigestItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+	subject := fmt.Sprintf("Your notification digest (%d new)", len(items))
+	return m.send(ctx, to, subject, digestEmail(items))
 }

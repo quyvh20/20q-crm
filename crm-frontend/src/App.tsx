@@ -16,6 +16,7 @@ import WorkspaceGeneralSection from './pages/settings/WorkspaceGeneralSection';
 import RoleDetailSection from './pages/settings/RoleDetailSection';
 import ProfileSection from './pages/settings/ProfileSection';
 import SecuritySection from './pages/settings/SecuritySection';
+import NotificationPreferencesSection from './pages/settings/NotificationPreferencesSection';
 import PipelineStagesManager from './components/settings/PipelineStagesManager';
 import ObjectsManager from './components/settings/ObjectsManager';
 import KnowledgeBase from './components/settings/KnowledgeBase';
@@ -181,6 +182,7 @@ function App() {
               <Route index element={<SettingsIndexRedirect />} />
               <Route path="profile" element={<ProfileSection />} />
               <Route path="security" element={<SecuritySection />} />
+              <Route path="notifications" element={<NotificationPreferencesSection />} />
               <Route path="general" element={<WorkspaceGeneralSection />} />
               <Route path="members" element={<MembersSection />} />
               <Route path="groups" element={<GroupsSection />} />

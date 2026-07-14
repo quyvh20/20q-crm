@@ -2,9 +2,9 @@
 // the light AppLayout header (not the dark builder island). The badge count and
 // list are driven by React Query; useNotificationStream keeps them live over SSE.
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import * as Popover from '@radix-ui/react-popover';
-import { Bell, Check, Loader2, Zap } from 'lucide-react';
+import { Bell, Check, Loader2, Zap, Settings, Filter } from 'lucide-react';
 import { useUnreadCount, useNotifications, useMarkRead, useMarkAllRead } from './queries';
 import type { AppNotification } from './api';
 
@@ -25,10 +25,11 @@ function relativeTime(iso: string): string {
 
 export default function NotificationBell() {
   const [open, setOpen] = useState(false);
+  const [unreadOnly, setUnreadOnly] = useState(false);
   const navigate = useNavigate();
 
   const { data: unread = 0 } = useUnreadCount();
-  const list = useNotifications(open);
+  const list = useNotifications(open, unreadOnly);
   const markRead = useMarkRead();
   const markAllRead = useMarkAllRead();
 
@@ -68,6 +69,25 @@ export default function NotificationBell() {
         >
           <div className="flex items-center justify-between px-4 py-3 border-b border-border">
             <h3 className="text-sm font-semibold">Notifications</h3>
+            <Link
+              to="/settings/notifications"
+              onClick={() => setOpen(false)}
+              aria-label="Notification settings"
+              title="Notification settings"
+              className="text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <Settings className="h-4 w-4" />
+            </Link>
+          </div>
+          <div className="flex items-center justify-between px-4 py-2 border-b border-border">
+            <button
+              type="button"
+              onClick={() => setUnreadOnly((v) => !v)}
+              aria-pressed={unreadOnly}
+              className={`text-xs font-medium inline-flex items-center gap-1 transition-colors ${unreadOnly ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}`}
+            >
+              <Filter className="h-3.5 w-3.5" /> Unread only
+            </button>
             {unread > 0 && (
               <button
                 type="button"
@@ -93,7 +113,7 @@ export default function NotificationBell() {
             ) : notifications.length === 0 ? (
               <div className="px-4 py-12 text-center text-sm text-muted-foreground">
                 <Bell className="h-8 w-8 mx-auto mb-2 opacity-40" />
-                You're all caught up.
+                {unreadOnly ? 'No unread notifications.' : "You're all caught up."}
               </div>
             ) : (
               <ul className="divide-y divide-border">

@@ -543,6 +543,13 @@ type Mailer interface {
 	// SendSecurityAlert notifies a user of a sensitive account change (e.g. a
 	// password reset) so an unexpected change is noticed quickly.
 	SendSecurityAlert(ctx context.Context, to, subject, message string) error
+	// SendNotification emails a single in-app notification to a member who has the
+	// email channel enabled for its type with immediate delivery (U5). link is an
+	// absolute URL (frontend origin + the notification's in-app path); may be empty.
+	SendNotification(ctx context.Context, to, title, body, link string) error
+	// SendNotificationDigest emails a member one daily digest summarizing their
+	// recent unread notifications (U5). items is non-empty and pre-ordered.
+	SendNotificationDigest(ctx context.Context, to string, items []NotificationDigestItem) error
 }
 
 type ContactFilter struct {

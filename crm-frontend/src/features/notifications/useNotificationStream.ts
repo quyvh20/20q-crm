@@ -60,7 +60,7 @@ export function useNotificationStream(enabled: boolean) {
                   } else {
                     qc.invalidateQueries({ queryKey: notificationKeys.unreadCount() });
                   }
-                  qc.invalidateQueries({ queryKey: notificationKeys.list() });
+                  qc.invalidateQueries({ queryKey: notificationKeys.listAll() });
                 }
               } catch { /* ignore keep-alives / non-JSON frames */ }
             }

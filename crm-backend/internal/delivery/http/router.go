@@ -357,6 +357,11 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			notifications.GET("", notificationHandler.List)
 			notifications.GET("/unread-count", notificationHandler.UnreadCount)
 			notifications.POST("/read-all", notificationHandler.MarkAllRead)
+			// Preference center (U5): the caller's own per-workspace notification
+			// settings (channels per event type, mute-all, digest). Self-scoped, no
+			// capability gate — static /preferences coexists with /:id/read below.
+			notifications.GET("/preferences", notificationHandler.GetPreferences)
+			notifications.PUT("/preferences", notificationHandler.UpdatePreferences)
 			notifications.POST("/:id/read", notificationHandler.MarkRead)
 		}
 

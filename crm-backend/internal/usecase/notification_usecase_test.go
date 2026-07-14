@@ -40,11 +40,17 @@ func (f *fakeNotificationRepo) MarkAllRead(context.Context, uuid.UUID, uuid.UUID
 func (f *fakeNotificationRepo) DeleteOlderThan(context.Context, time.Time) (int64, error) {
 	return 0, nil
 }
+func (f *fakeNotificationRepo) ListPendingDigest(context.Context, uuid.UUID, uuid.UUID, time.Time, int) ([]domain.Notification, error) {
+	return nil, nil
+}
+func (f *fakeNotificationRepo) MarkNotificationsDigested(context.Context, []uuid.UUID, time.Time) error {
+	return nil
+}
 
 func TestNotificationUseCase_Create_DefaultsAndNilRedisSafe(t *testing.T) {
 	repo := &fakeNotificationRepo{}
 	// nil redis client → publish is skipped, Create must still succeed.
-	uc := NewNotificationUseCase(repo, nil)
+	uc := NewNotificationUseCase(repo, nil, nil, nil, nil, "")
 
 	orgID, userID := uuid.New(), uuid.New()
 	n, err := uc.Create(context.Background(), domain.NotificationCreateInput{
@@ -62,7 +68,7 @@ func TestNotificationUseCase_Create_DefaultsAndNilRedisSafe(t *testing.T) {
 }
 
 func TestNotificationUseCase_Create_RequiresOrgAndUser(t *testing.T) {
-	uc := NewNotificationUseCase(&fakeNotificationRepo{}, nil)
+	uc := NewNotificationUseCase(&fakeNotificationRepo{}, nil, nil, nil, nil, "")
 
 	_, err := uc.Create(context.Background(), domain.NotificationCreateInput{UserID: uuid.New(), Title: "x"})
 	require.Error(t, err, "missing org must be rejected")
@@ -73,7 +79,7 @@ func TestNotificationUseCase_Create_RequiresOrgAndUser(t *testing.T) {
 
 func TestNotificationUseCase_List_WrapsEmptyAndUnread(t *testing.T) {
 	repo := &fakeNotificationRepo{unread: 3}
-	uc := NewNotificationUseCase(repo, nil)
+	uc := NewNotificationUseCase(repo, nil, nil, nil, nil, "")
 
 	page, err := uc.List(context.Background(), uuid.New(), uuid.New(), domain.NotificationListInput{})
 	require.NoError(t, err)

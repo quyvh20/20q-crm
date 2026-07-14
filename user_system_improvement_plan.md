@@ -90,10 +90,13 @@ Sequenced so trust comes first, the structural container second, then the two au
 7. Groups: wire the existing rename API, show group membership on members, description field — groundwork for U6 teams.
 8. Transfer ownership: real modal with consequences + type-to-confirm; auth-context refresh instead of `window.location.reload()`.
 
-### U5 — Notifications people control
-1. `notification_preferences` table + preference center in Personal settings: per-event-type × channel (in-app / email), mute-all, digest frequency.
-2. Email as a second channel (reuse the Resend mailer + retry/idempotency work from 2026-07-12) with a daily digest option.
-3. Expose the already-built unread-only filter as a bell toggle; settings link from the bell.
+### U5 — Notifications people control — ✅ DONE (2026-07-14, verified live)
+
+**All 3 items shipped.** `notification_preferences` table (per (user,org): mute-all, email_digest off/daily, sparse jsonb per-event-type {in_app,email} overrides; defaults in-app-on/email-off) + boot guard/migration 000037 + `GET/PUT /api/notifications/preferences`; a Personal → **Notifications** preference center (per-type in-app/email switch grid + mute-all + digest selector). Email channel via the Resend mailer (`SendNotification`/`SendNotificationDigest` + escaped `notificationEmail`/`digestEmail` templates); `NotificationUseCase.Create` now gates on prefs (mute-all/in-app-off suppress the bell row; email-on+digest-off sends an immediate email). Daily digest = an hourly `main.go` ticker (`RunDailyDigest`) that batches each opted-in member's pending notifications into one email. Bell got an **unread-only** toggle (threaded into the RQ list key so the two views cache separately) + a settings link. A 13-agent adversarial review caught a **HIGH** (in-app-off + email-on + digest=daily silently dropped the notification on every channel — the digest read from the in-app row that in-app-off suppressed) plus 2 MEDIUM + 2 LOW, all fixed: a `digest_only` column (store-for-digest, hide-from-bell — framed as the non-default `true` to dodge GORM's zero-value-omission trap), a `digested_at` idempotency column (each notification digested exactly once despite the per-run cap/bursts), and an atomic `TryClaimDailyDigest` compare-and-swap (no double-send under multi-instance). Verified live: prefs GET/PUT round-trip + jsonb serializer, preference center renders/saves, bell toggle + settings link, notification endpoints work with the new filters; BE build/vet/tests (incl. the Docker-gated notification integration test) + FE tsc/756 tests green. Deferred (documented LOW): per-user-timezone digest send windows (digest fires ~daily on the server clock).
+
+1. `notification_preferences` table + preference center in Personal settings: per-event-type × channel (in-app / email), mute-all, digest frequency. ✅
+2. Email as a second channel (reuse the Resend mailer) with a daily digest option. ✅
+3. Expose the already-built unread-only filter as a bell toggle; settings link from the bell. ✅
 
 ### U6 — Deeper access model (backend-heavy, each item independently shippable)
 1. **Team scope**: groups grow into teams; `data_scope` gains `team` (own + my teams' records) — the missing middle between "mine" and "everything".
@@ -121,7 +124,7 @@ Sequenced so trust comes first, the structural container second, then the two au
 | U2 | My Account | **DONE** (uncommitted; BE build/vet/tests + FE tsc + 713 tests green) |
 | U3 | Understandable permissions | **DONE** (uncommitted; BE build/vet/tests + FE tsc + 756 tests green; verified live) |
 | U4 | Members & lifecycle | **DONE** (all 8 items) — slices 1 (c5bb834) + 2 (48471e6) + 3 (cbf0921) + 4 (item 6, consent-based Google-first invitee + zero-org-session infra) verified live; BE+FE tests green |
-| U5 | Notification preferences | NOT STARTED |
+| U5 | Notification preferences | **DONE** (2026-07-14) — prefs table + preference center + email channel + daily digest + bell unread toggle; 13-agent review fixed a HIGH silent-drop + digest robustness; verified live; BE+FE tests green |
 | U6 | Team scope / sharing / 2FA | NOT STARTED |
 | U7 | Fit & finish | NOT STARTED |
 

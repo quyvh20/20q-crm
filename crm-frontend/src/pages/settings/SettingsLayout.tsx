@@ -2,7 +2,7 @@ import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../../lib/auth';
 import {
   Shield, Users, UsersRound, KeyRound, Boxes, Table2, EyeOff,
-  Target, Mail, Brain, ScrollText, MessageSquare, UserRound, Building2, type LucideIcon,
+  Target, Mail, Brain, ScrollText, MessageSquare, UserRound, Building2, Bell, type LucideIcon,
 } from 'lucide-react';
 
 // The unified settings shell (U1): ONE routed area, grouped into Personal vs
@@ -26,6 +26,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   // Personal — available to every member.
   { path: 'profile', label: 'Profile', icon: UserRound, group: 'personal', visible: () => true },
   { path: 'security', label: 'Security', icon: Shield, group: 'personal', visible: () => true },
+  { path: 'notifications', label: 'Notifications', icon: Bell, group: 'personal', visible: () => true },
 
   // Workspace — admin/config surfaces, each behind the capability its API checks.
   { path: 'general', label: 'General', icon: Building2, group: 'workspace', visible: (can) => can('org.settings') },

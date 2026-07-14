@@ -56,3 +56,41 @@ export async function markAllNotificationsRead(): Promise<void> {
     throw new Error(json.error?.message || json.error || 'Failed to mark all read');
   }
 }
+
+// --- Preferences (U5) ---
+
+export interface NotificationTypePref {
+  key: string;
+  label: string;
+  description: string;
+  in_app: boolean;
+  email: boolean;
+}
+
+export interface NotificationPreferences {
+  mute_all: boolean;
+  email_digest: 'off' | 'daily';
+  types: NotificationTypePref[];
+}
+
+// The PUT payload: mute-all + digest are optional; types is a sparse list of the
+// rows the user changed (only known catalog keys are honored server-side).
+export interface NotificationPreferencesUpdate {
+  mute_all?: boolean;
+  email_digest?: 'off' | 'daily';
+  types?: { key: string; in_app: boolean; email: boolean }[];
+}
+
+export async function getNotificationPreferences(): Promise<NotificationPreferences> {
+  const res = await apiFetch(`/api/notifications/preferences`);
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw new Error(json.error?.message || json.error || 'Failed to load notification preferences');
+  return json.data as NotificationPreferences;
+}
+
+export async function updateNotificationPreferences(input: NotificationPreferencesUpdate): Promise<NotificationPreferences> {
+  const res = await apiFetch(`/api/notifications/preferences`, { method: 'PUT', body: JSON.stringify(input) });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw new Error(json.error?.message || json.error || 'Failed to save notification preferences');
+  return json.data as NotificationPreferences;
+}
