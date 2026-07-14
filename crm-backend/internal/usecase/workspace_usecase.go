@@ -658,6 +658,105 @@ func (uc *workspaceUseCase) GetInvitationPreview(ctx context.Context, token stri
 	return preview, nil
 }
 
+// ListMyInvitations returns the currently-acceptable invitations addressed to the
+// authenticated user's own account email, across all workspaces (U4 item 6) — the
+// post-OAuth / zero-workspace "you've been invited to X" consent surface. The repo
+// query already excludes expired/revoked invites and soft-deleted workspaces; org
+// and role names are resolved here for display.
+func (uc *workspaceUseCase) ListMyInvitations(ctx context.Context, userID uuid.UUID) ([]domain.IncomingInvitation, error) {
+	user, err := uc.authRepo.GetUserByID(ctx, userID)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+	if user == nil {
+		return nil, domain.ErrUserNotFound
+	}
+	// Consent-by-email requires a PROVEN email. A brand-new signup is active but
+	// email-unverified (soft-gate), and anyone can register a not-yet-taken address
+	// without controlling that inbox — so surfacing (and later accepting) invites by
+	// a bare email match would let such an account hijack someone else's invite.
+	// Google-first invitees are created verified, so they pass; an unverified account
+	// simply has no consent-acceptable invites here and must use the emailed link
+	// (whose single-use token is itself the proof of inbox control).
+	if user.EmailVerifiedAt == nil {
+		return []domain.IncomingInvitation{}, nil
+	}
+	invs, err := uc.authRepo.ListValidInvitationsByEmail(ctx, user.Email)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+	out := make([]domain.IncomingInvitation, 0, len(invs))
+	for i := range invs {
+		inv := invs[i]
+		org, err := uc.authRepo.GetOrganizationByID(ctx, inv.OrgID)
+		if err != nil || org == nil {
+			continue // workspace vanished between the JOIN and here — skip defensively
+		}
+		roleName := ""
+		if role, err := uc.authRepo.GetRoleByID(ctx, inv.RoleID); err == nil && role != nil {
+			roleName = role.Name
+		}
+		out = append(out, domain.IncomingInvitation{
+			ID:        inv.ID,
+			OrgID:     inv.OrgID,
+			OrgName:   org.Name,
+			RoleName:  roleName,
+			ExpiresAt: inv.ExpiresAt,
+		})
+	}
+	return out, nil
+}
+
+// AcceptMyInvitation accepts one of the caller's OWN pending invitations by id (U4
+// item 6). Authorization is the email match: the invitation's addressee email must
+// equal the authenticated account's email — the invite id is not a secret, so the
+// email match (not id possession) is what grants the join. It reuses the same
+// one-transaction AcceptInvitation as the link flow but never creates a user or sets
+// a password (the account already exists and is authenticated). Returns the joined
+// org so the handler can mint a session scoped to it.
+func (uc *workspaceUseCase) AcceptMyInvitation(ctx context.Context, userID, invitationID uuid.UUID) (uuid.UUID, error) {
+	user, err := uc.authRepo.GetUserByID(ctx, userID)
+	if err != nil {
+		return uuid.Nil, domain.ErrInternal
+	}
+	if user == nil {
+		return uuid.Nil, domain.ErrUserNotFound
+	}
+	// The email match is the whole authorization, so it is only sound when the
+	// account's email is PROVEN. An unverified account (a password signup that never
+	// confirmed its inbox) could otherwise claim any not-yet-registered address and
+	// hijack an invite addressed to it — the emailed-link flow proves inbox control
+	// via its single-use token; this by-email flow proves it via a verified email.
+	// Google-first invitees are created verified and pass.
+	if user.EmailVerifiedAt == nil {
+		return uuid.Nil, domain.NewAppError(403, "verify your email to accept invitations here, or open the link in your invitation email")
+	}
+	inv, err := uc.authRepo.GetOrgInvitationByIDUnscoped(ctx, invitationID)
+	if err != nil {
+		return uuid.Nil, domain.ErrInternal
+	}
+	if inv == nil {
+		return uuid.Nil, domain.NewAppError(404, "invitation not found")
+	}
+	if !strings.EqualFold(normalizeEmail(inv.Email), normalizeEmail(user.Email)) {
+		return uuid.Nil, domain.NewAppError(403, "this invitation was not sent to your account")
+	}
+	if inv.Status != "pending" || inv.RevokedAt != nil || time.Now().After(inv.ExpiresAt) {
+		return uuid.Nil, domain.NewAppError(400, "this invitation is no longer valid")
+	}
+	// The workspace must still exist — GetOrganizationByID returns nil for a
+	// soft-deleted org, so a deleted workspace's stale invite can't be accepted.
+	if org, err := uc.authRepo.GetOrganizationByID(ctx, inv.OrgID); err != nil || org == nil {
+		return uuid.Nil, domain.NewAppError(400, "this workspace no longer exists")
+	}
+	if err := uc.authRepo.AcceptInvitation(ctx, inv, user, false, nil); err != nil {
+		return uuid.Nil, domain.ErrInternal
+	}
+	recordAdminEvent(ctx, uc.authRepo, inv.OrgID, "member.invite_accepted", &user.ID,
+		map[string]interface{}{"email": inv.Email, "via": "consent"})
+	return inv.OrgID, nil
+}
+
 // ListInvitations returns the org's still-actionable (pending) invitations for
 // the members panel (P2).
 func (uc *workspaceUseCase) ListInvitations(ctx context.Context, orgID uuid.UUID) ([]domain.InvitationInfo, error) {

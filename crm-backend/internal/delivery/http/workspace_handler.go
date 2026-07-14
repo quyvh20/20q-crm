@@ -110,6 +110,55 @@ func (h *WorkspaceHandler) AcceptInvite(c *gin.Context) {
 	c.JSON(http.StatusOK, domain.Success(gin.H{"message": "invitation accepted"}))
 }
 
+// ListMyInvitations handles GET /api/auth/me/invitations — the pending invitations
+// addressed to the authenticated user's OWN account email, across workspaces, for
+// the post-OAuth / zero-workspace "you've been invited to X" consent surface (U4
+// item 6). Runs under AuthMiddlewareOptionalOrg so a zero-membership caller reaches it.
+func (h *WorkspaceHandler) ListMyInvitations(c *gin.Context) {
+	userID, ok := GetUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	invites, err := h.workspaceUC.ListMyInvitations(c.Request.Context(), userID)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, domain.Success(invites))
+}
+
+// AcceptMyInvitation handles POST /api/auth/me/invitations/:id/accept — the caller
+// accepts one of their OWN pending invitations (authorized by the email match, not
+// id possession) and is signed straight into the joined workspace (U4 item 6). Runs
+// under AuthMiddlewareOptionalOrg so a zero-membership caller reaches it.
+func (h *WorkspaceHandler) AcceptMyInvitation(c *gin.Context) {
+	userID, ok := GetUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, domain.Err("unauthorized"))
+		return
+	}
+	invID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, domain.Err("invalid invitation id"))
+		return
+	}
+	orgID, err := h.workspaceUC.AcceptMyInvitation(c.Request.Context(), userID, invID)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	// Mint a session scoped to the newly-joined workspace so the SPA lands the user
+	// in it (the membership now exists, so IssueSessionForUser succeeds).
+	resp, err := h.authUC.IssueSessionForUser(c.Request.Context(), userID, orgID, requestMeta(c))
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	setAuthCookies(c, h.cfg, resp.RefreshToken)
+	c.JSON(http.StatusOK, domain.Success(resp))
+}
+
 // ListInvitations returns the org's pending invitations for the members panel (P2).
 func (h *WorkspaceHandler) ListInvitations(c *gin.Context) {
 	orgID, ok := GetOrgID(c)

@@ -409,6 +409,12 @@ func (r *fakeAuthRepo) ListOpenInvitations(context.Context, uuid.UUID) ([]domain
 func (r *fakeAuthRepo) GetPendingInvitationByEmail(context.Context, uuid.UUID, string) (*domain.OrgInvitation, error) {
 	return nil, nil
 }
+func (r *fakeAuthRepo) ListValidInvitationsByEmail(context.Context, string) ([]domain.OrgInvitation, error) {
+	return nil, nil
+}
+func (r *fakeAuthRepo) GetOrgInvitationByIDUnscoped(context.Context, uuid.UUID) (*domain.OrgInvitation, error) {
+	return nil, nil
+}
 func (r *fakeAuthRepo) LatestSessionActivityByUsers(context.Context, []uuid.UUID) (map[uuid.UUID]time.Time, error) {
 	return map[uuid.UUID]time.Time{}, nil
 }

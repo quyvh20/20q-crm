@@ -640,85 +640,9 @@ func (uc *authUseCase) GoogleLogin(ctx context.Context, code string) (*domain.Au
 	if err := json.Unmarshal(body, &googleUser); err != nil {
 		return nil, domain.ErrInternal
 	}
-	// Normalize so a Google account whose email differs only by case from an
-	// existing local account links to it instead of forking a new one (P2).
-	googleUser.Email = normalizeEmail(googleUser.Email)
-
-	user, err := uc.authRepo.GetUserByGoogleID(ctx, googleUser.ID)
+	user, err := uc.resolveGoogleUser(ctx, googleUser)
 	if err != nil {
-		return nil, domain.ErrInternal
-	}
-
-	if user == nil {
-		user, err = uc.authRepo.GetUserByEmail(ctx, googleUser.Email)
-		if err != nil {
-			return nil, domain.ErrInternal
-		}
-
-		if user != nil {
-			user.GoogleID = &googleUser.ID
-			if googleUser.Picture != "" {
-				user.AvatarURL = &googleUser.Picture
-			}
-			// Google has already verified this email, so a linked local account
-			// is verified too — never soft-gate an OAuth user.
-			if user.EmailVerifiedAt == nil && googleUser.VerifiedEmail {
-				now := time.Now()
-				user.EmailVerifiedAt = &now
-			}
-			if err := uc.authRepo.UpdateUser(ctx, user); err != nil {
-				return nil, domain.ErrInternal
-			}
-		} else {
-			org := &domain.Organization{
-				Name: fmt.Sprintf("%s's Workspace", googleUser.GivenName),
-				Type: "personal",
-			}
-			if err := uc.authRepo.CreateOrganization(ctx, org); err != nil {
-				return nil, domain.ErrInternal
-			}
-
-			fullName := googleUser.GivenName
-			if googleUser.FamilyName != "" {
-				fullName = googleUser.GivenName + " " + googleUser.FamilyName
-			}
-
-			user = &domain.User{
-				OrgID:     org.ID,
-				Email:     googleUser.Email,
-				FirstName: googleUser.GivenName,
-				LastName:  googleUser.FamilyName,
-				FullName:  fullName,
-				GoogleID:  &googleUser.ID,
-				AvatarURL: &googleUser.Picture,
-			}
-			// Google-provided emails are pre-verified.
-			if googleUser.VerifiedEmail {
-				now := time.Now()
-				user.EmailVerifiedAt = &now
-			}
-			if err := uc.authRepo.CreateUser(ctx, user); err != nil {
-				return nil, domain.ErrInternal
-			}
-
-			ownerRole, err := uc.authRepo.GetRoleByName(ctx, domain.RoleOwner, nil)
-			if err != nil {
-				return nil, domain.ErrInternal
-			}
-
-			ou := &domain.OrgUser{
-				UserID: user.ID,
-				OrgID:  org.ID,
-				RoleID: ownerRole.ID,
-				Status: domain.StatusActive,
-			}
-			if err := uc.authRepo.CreateOrgUser(ctx, ou); err != nil {
-				return nil, domain.ErrInternal
-			}
-
-			// Seed default pipeline stages for the new organization
-			uc.seedDefaultStages(ctx, org.ID)
-		}
+		return nil, err
 	}
 
 	fullUser, _ := uc.authRepo.GetUserByID(ctx, user.ID)
@@ -757,6 +681,153 @@ func (uc *authUseCase) GoogleLogin(ctx context.Context, code string) (*domain.Au
 		DefaultOrgID: user.DefaultOrgID,
 		NeedsChooser: needsChooser,
 	}, nil
+}
+
+// resolveGoogleUser turns a fetched Google profile into a CRM user, isolating all
+// the account-provisioning logic from GoogleLogin's OAuth network I/O so it can be
+// unit-tested. Three cases:
+//  1. A Google-linked account already exists → return it.
+//  2. A local account with the same (normalized) email exists → link Google to it
+//     and mark it verified; never fork a second account (P2).
+//  3. Brand-new email → if a workspace has an open invitation for this VERIFIED
+//     address, create the account with NO personal org and NO membership (U4 item
+//     6): they land in the zero-membership dead-end where the SPA surfaces the
+//     invite for EXPLICIT consent, rather than being silently auto-joined (which
+//     would let a malicious inviter capture a stranger's first sign-in) OR forked
+//     into a junk "<name>'s Workspace" they didn't ask for. No open invite → the
+//     personal org is forked as before.
+func (uc *authUseCase) resolveGoogleUser(ctx context.Context, googleUser domain.GoogleUserInfo) (*domain.User, error) {
+	// Normalize so a Google account whose email differs only by case from an
+	// existing local account links to it instead of forking a new one (P2).
+	googleUser.Email = normalizeEmail(googleUser.Email)
+
+	user, err := uc.authRepo.GetUserByGoogleID(ctx, googleUser.ID)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+	if user != nil {
+		return user, nil
+	}
+
+	user, err = uc.authRepo.GetUserByEmail(ctx, googleUser.Email)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+	if user != nil {
+		user.GoogleID = &googleUser.ID
+		if googleUser.Picture != "" {
+			user.AvatarURL = &googleUser.Picture
+		}
+		// Google has already verified this email, so a linked local account is
+		// verified too — never soft-gate an OAuth user.
+		if user.EmailVerifiedAt == nil && googleUser.VerifiedEmail {
+			now := time.Now()
+			user.EmailVerifiedAt = &now
+		}
+		if err := uc.authRepo.UpdateUser(ctx, user); err != nil {
+			return nil, domain.ErrInternal
+		}
+		return user, nil
+	}
+
+	// Brand-new email. U4 item 6 — Google-first invitee: if this verified address
+	// has an open invitation to a live workspace, create the account WITHOUT a
+	// personal org so it lands in the zero-membership dead-end and the SPA offers
+	// the invite for explicit acceptance. A verified email is required (the
+	// invite→email trust assumes the address is proven, and Google's verified_email
+	// is that proof). The lookup fails CLOSED — a DB error must not silently fork a
+	// junk org and strand the invite (the whole bug item 6 fixes).
+	if googleUser.VerifiedEmail {
+		invs, err := uc.authRepo.ListValidInvitationsByEmail(ctx, googleUser.Email)
+		if err != nil {
+			return nil, domain.ErrInternal
+		}
+		if len(invs) > 0 {
+			return uc.createGoogleInviteeNoWorkspace(ctx, googleUser)
+		}
+	}
+	return uc.createGoogleUserWithPersonalOrg(ctx, googleUser)
+}
+
+// createGoogleInviteeNoWorkspace creates a brand-new, Google-verified account with
+// NO personal org and NO membership — the zero-membership landing for an invitee who
+// signed in with Google before accepting their invite (U4 item 6). user.OrgID stays
+// uuid.Nil (safe on every login/me/session path, which use active-membership lists,
+// not OrgID). The SPA then reads GET /api/auth/me/invitations and lets them Join.
+func (uc *authUseCase) createGoogleInviteeNoWorkspace(ctx context.Context, googleUser domain.GoogleUserInfo) (*domain.User, error) {
+	fullName := googleUser.GivenName
+	if googleUser.FamilyName != "" {
+		fullName = googleUser.GivenName + " " + googleUser.FamilyName
+	}
+	now := time.Now()
+	user := &domain.User{
+		Email:           googleUser.Email,
+		FirstName:       googleUser.GivenName,
+		LastName:        googleUser.FamilyName,
+		FullName:        fullName,
+		GoogleID:        &googleUser.ID,
+		AvatarURL:       &googleUser.Picture,
+		EmailVerifiedAt: &now, // resolveGoogleUser only reaches here for a verified email
+	}
+	if err := uc.authRepo.CreateUser(ctx, user); err != nil {
+		return nil, domain.ErrInternal
+	}
+	return user, nil
+}
+
+// createGoogleUserWithPersonalOrg forks a fresh personal "<name>'s Workspace" org
+// and makes the new Google user its owner — the default path for a brand-new Google
+// sign-up with no pending invitation.
+func (uc *authUseCase) createGoogleUserWithPersonalOrg(ctx context.Context, googleUser domain.GoogleUserInfo) (*domain.User, error) {
+	org := &domain.Organization{
+		Name: fmt.Sprintf("%s's Workspace", googleUser.GivenName),
+		Type: "personal",
+	}
+	if err := uc.authRepo.CreateOrganization(ctx, org); err != nil {
+		return nil, domain.ErrInternal
+	}
+
+	fullName := googleUser.GivenName
+	if googleUser.FamilyName != "" {
+		fullName = googleUser.GivenName + " " + googleUser.FamilyName
+	}
+
+	user := &domain.User{
+		OrgID:     org.ID,
+		Email:     googleUser.Email,
+		FirstName: googleUser.GivenName,
+		LastName:  googleUser.FamilyName,
+		FullName:  fullName,
+		GoogleID:  &googleUser.ID,
+		AvatarURL: &googleUser.Picture,
+	}
+	// Google-provided emails are pre-verified.
+	if googleUser.VerifiedEmail {
+		now := time.Now()
+		user.EmailVerifiedAt = &now
+	}
+	if err := uc.authRepo.CreateUser(ctx, user); err != nil {
+		return nil, domain.ErrInternal
+	}
+
+	ownerRole, err := uc.authRepo.GetRoleByName(ctx, domain.RoleOwner, nil)
+	if err != nil {
+		return nil, domain.ErrInternal
+	}
+
+	ou := &domain.OrgUser{
+		UserID: user.ID,
+		OrgID:  org.ID,
+		RoleID: ownerRole.ID,
+		Status: domain.StatusActive,
+	}
+	if err := uc.authRepo.CreateOrgUser(ctx, ou); err != nil {
+		return nil, domain.ErrInternal
+	}
+
+	// Seed default pipeline stages for the new organization.
+	uc.seedDefaultStages(ctx, org.ID)
+	return user, nil
 }
 
 type JWTClaims struct {

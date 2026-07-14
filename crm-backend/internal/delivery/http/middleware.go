@@ -17,6 +17,23 @@ import (
 )
 
 func AuthMiddleware(jwtSecret string, authRepo domain.AuthRepository, redisClient *redis.Client) gin.HandlerFunc {
+	return authMiddleware(jwtSecret, authRepo, redisClient, false)
+}
+
+// AuthMiddlewareOptionalOrg authenticates the bearer token but does NOT require an
+// active workspace membership when the token carries no org (org_id == uuid.Nil):
+// a zero-membership "dead-end" caller — e.g. a brand-new Google invitee for whom no
+// junk personal org was forked (U4 item 6) — can reach account-level routes (/me,
+// list/create workspaces, list/accept their own pending invitations) before they
+// belong to any workspace. token_version is still enforced (global invalidation via
+// sign-out-everywhere / password reset), and an org-SCOPED token still gets the full
+// active-membership check — nil-org tolerance is the ONLY relaxation, so no existing
+// behavior changes for a normal session.
+func AuthMiddlewareOptionalOrg(jwtSecret string, authRepo domain.AuthRepository, redisClient *redis.Client) gin.HandlerFunc {
+	return authMiddleware(jwtSecret, authRepo, redisClient, true)
+}
+
+func authMiddleware(jwtSecret string, authRepo domain.AuthRepository, redisClient *redis.Client, allowNoOrg bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
@@ -51,6 +68,36 @@ func AuthMiddleware(jwtSecret string, authRepo domain.AuthRepository, redisClien
 
 		c.Set("user_id", claims.UserID)
 		c.Set("org_id", claims.OrgID)
+
+		// Zero-membership caller (org-optional routes only): a nil-org token has no
+		// membership to resolve a role/scope from, so skip the GetOrgUser check that
+		// would otherwise 403. Authenticate the account directly instead: the user must
+		// still EXIST — GetUserByID is soft-delete-scoped, so a deleted account fails
+		// closed here (GetUserTokenVersion's Pluck would return 0 for a missing row and
+		// let a tv=0 token through) — and carry a current token_version (the
+		// sign-out-everywhere / password-reset global-invalidation gate). Only then
+		// admit a least-privilege, org-less caller (these routes key off user_id). An
+		// org-SCOPED token falls through to the full membership check below, unchanged.
+		if allowNoOrg && claims.OrgID == uuid.Nil {
+			u, err := authRepo.GetUserByID(c.Request.Context(), claims.UserID)
+			if err != nil {
+				c.AbortWithStatusJSON(http.StatusInternalServerError, domain.Err("internal server error"))
+				return
+			}
+			if u == nil || claims.TokenVersion != u.TokenVersion {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, domain.Err("session expired, please sign in again"))
+				return
+			}
+			scopedCtx := repository.WithDataScope(c.Request.Context(), domain.DataScopeOwn, claims.UserID)
+			scopedCtx = domain.WithCallerIdentity(scopedCtx, domain.Caller{
+				UserID:    claims.UserID,
+				DataScope: domain.DataScopeOwn,
+			})
+			scopedCtx = domain.WithRequestMeta(scopedCtx, domain.RequestMeta{IP: c.ClientIP(), UserAgent: c.Request.UserAgent()})
+			c.Request = c.Request.WithContext(scopedCtx)
+			c.Next()
+			return
+		}
 
 		status := "active"
 		roleName := claims.Role

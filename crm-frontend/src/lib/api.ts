@@ -2279,6 +2279,29 @@ export async function getInvitationPreview(token: string): Promise<InvitationPre
   return (json.data || { status: 'invalid' }) as InvitationPreview;
 }
 
+// IncomingInvitation is a pending invitation addressed to the logged-in user's own
+// email (U4 item 6): the workspace + role they'd join. Distinct from Invitation (an
+// admin's view of a workspace's OUTGOING invites).
+export interface IncomingInvitation {
+  id: string;
+  org_id: string;
+  org_name: string;
+  role_name: string;
+  expires_at: string;
+}
+
+// getMyInvitations lists the pending invitations addressed to the logged-in user's
+// OWN email (U4 item 6) — the post-OAuth / zero-workspace "you've been invited to X"
+// consent surface. Served under org-optional auth, so a zero-membership caller (e.g.
+// a brand-new Google invitee with no personal org) can reach it. Accepting one goes
+// through useAuth().acceptMyInvitation, which ingests the joined-workspace session.
+export async function getMyInvitations(): Promise<IncomingInvitation[]> {
+  const res = await apiFetch('/api/auth/me/invitations');
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw new Error(json.error || 'Failed to load invitations');
+  return (json.data || []) as IncomingInvitation[];
+}
+
 // Invite-accept happens through useAuth().acceptInvitation (U4), which ingests
 // the server's auto-login session — there is no standalone acceptInvite() fetch.
 

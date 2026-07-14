@@ -50,6 +50,14 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 	companyHandler.SetFieldMasker(permissionUC)
 	dealHandler.SetFieldMasker(permissionUC)
 
+	// Org-optional auth: authenticates the bearer token (incl. token_version) but
+	// tolerates a nil-org token, so a zero-membership caller — a brand-new Google
+	// invitee with no junk personal org (U4 item 6), or anyone in the zero-workspace
+	// dead-end — can reach account-level routes (/me, list/create workspaces,
+	// list/accept their own invites). An org-scoped token still gets the full
+	// membership check, so no existing session's behavior changes.
+	authOptionalOrg := AuthMiddlewareOptionalOrg(cfg.JWTSecret, authRepo, redisClient)
+
 	auth := api.Group("/auth")
 	{
 		auth.POST("/register", authRateLimit, authHandler.Register)
@@ -69,7 +77,17 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 		auth.GET("/google", authHandler.GoogleLogin)
 		auth.GET("/google/callback", authHandler.GoogleCallback)
 
-		auth.GET("/me", AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), authHandler.Me)
+		// /me and the account-level workspace/invitation routes use the org-optional
+		// middleware so a zero-membership caller — e.g. a brand-new Google invitee for
+		// whom no junk personal org was forked (U4 item 6) — can load their account,
+		// see their pending invites, accept one, or create a workspace before they
+		// belong to any workspace. token_version is still enforced; an org-scoped token
+		// still gets the full membership check.
+		auth.GET("/me", authOptionalOrg, authHandler.Me)
+		// Incoming invitations addressed to the caller's own email + accept-by-consent
+		// (U4 item 6). Distinct path prefix from the public /invitations/:token below.
+		auth.GET("/me/invitations", authOptionalOrg, workspaceHandler.ListMyInvitations)
+		auth.POST("/me/invitations/:id/accept", authOptionalOrg, workspaceHandler.AcceptMyInvitation)
 		// My Account self-service (U2): profile/preferences + in-app password
 		// management + Google unlink. All bearer-authenticated.
 		auth.PATCH("/me", AuthMiddleware(cfg.JWTSecret, authRepo, redisClient), authHandler.UpdateMe)
@@ -100,14 +118,19 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 	protected := api.Group("/")
 	protected.Use(AuthMiddleware(cfg.JWTSecret, authRepo, redisClient))
 	{
+		// List/create workspaces are account-level (they key off user_id only), so they
+		// use the org-optional middleware — a zero-membership user in the dead-end must
+		// be able to see they have no workspaces and create one (U4: fixes the case
+		// where the NoWorkspacePage create-workspace call would 403 on a nil-org token).
+		// The remaining /workspaces/* routes below require an active membership.
+		api.GET("/workspaces", authOptionalOrg, authHandler.ListWorkspaces)
+		api.POST("/workspaces", authOptionalOrg, workspaceHandler.CreateWorkspace)
+
 		workspaces := protected.Group("/workspaces")
 		{
-			workspaces.GET("", authHandler.ListWorkspaces)
-			// Workspace lifecycle (U4): create a new workspace for an existing user
-			// (no cap — you're making your own), read/rename the current one, leave
-			// it, or delete it. Rename/delete are org.settings; leave/create are open
-			// to any member (the usecases enforce the owner/last-owner guards).
-			workspaces.POST("", workspaceHandler.CreateWorkspace)
+			// Workspace lifecycle (U4): read/rename the current workspace, leave it, or
+			// delete it. Rename/delete are org.settings; leave is open to any member
+			// (the usecases enforce the owner/last-owner guards).
 			workspaces.GET("/current", workspaceHandler.GetCurrentWorkspace)
 			workspaces.PATCH("/current", cap(domain.CapOrgSettings), workspaceHandler.UpdateWorkspace)
 			workspaces.DELETE("/current", cap(domain.CapOrgSettings), workspaceHandler.DeleteWorkspace)

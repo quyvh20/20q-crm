@@ -26,6 +26,9 @@ type fakeWorkspaceRepo struct {
 	rolesByID map[uuid.UUID]*domain.Role
 	roleCaps  map[uuid.UUID][]string
 	invites   []*domain.OrgInvitation
+	// orgs backs GetOrganizationByID; an org absent from the map models a
+	// soft-deleted / non-existent workspace (the real repo returns nil for those).
+	orgs map[uuid.UUID]*domain.Organization
 }
 
 func newFakeWorkspaceRepo() *fakeWorkspaceRepo {
@@ -35,7 +38,42 @@ func newFakeWorkspaceRepo() *fakeWorkspaceRepo {
 		roles:        map[string]*domain.Role{},
 		rolesByID:    map[uuid.UUID]*domain.Role{},
 		roleCaps:     map[uuid.UUID][]string{},
+		orgs:         map[uuid.UUID]*domain.Organization{},
 	}
+}
+
+// addOrg registers a live workspace so GetOrganizationByID returns it (U4 item 6
+// consent tests). Omit an org to model it as soft-deleted / gone.
+func (f *fakeWorkspaceRepo) addOrg(id uuid.UUID, name string) *domain.Organization {
+	o := &domain.Organization{ID: id, Name: name, Type: "company"}
+	f.orgs[id] = o
+	return o
+}
+
+func (f *fakeWorkspaceRepo) GetOrganizationByID(_ context.Context, id uuid.UUID) (*domain.Organization, error) {
+	return f.orgs[id], nil
+}
+
+// ListValidInvitationsByEmail mirrors the real repo: pending, not revoked, not
+// expired, to a live workspace (present in orgs), newest first, across all orgs.
+func (f *fakeWorkspaceRepo) ListValidInvitationsByEmail(_ context.Context, email string) ([]domain.OrgInvitation, error) {
+	var out []domain.OrgInvitation
+	for _, inv := range f.invites {
+		if strings.EqualFold(inv.Email, email) && inv.Status == "pending" && inv.RevokedAt == nil &&
+			inv.ExpiresAt.After(time.Now()) && f.orgs[inv.OrgID] != nil {
+			out = append(out, *inv)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeWorkspaceRepo) GetOrgInvitationByIDUnscoped(_ context.Context, id uuid.UUID) (*domain.OrgInvitation, error) {
+	for _, inv := range f.invites {
+		if inv.ID == id {
+			return inv, nil
+		}
+	}
+	return nil, nil
 }
 
 func wkey(userID, orgID uuid.UUID) string { return userID.String() + "|" + orgID.String() }

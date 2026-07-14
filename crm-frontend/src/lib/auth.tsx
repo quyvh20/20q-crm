@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { switchWorkspace as apiSwitchWorkspace, setAccessToken as setApiToken, readCsrfToken, getMyPermissions, parseJsonSafe, type Workspace, type MyPermissions, type DataScope, type ObjectAccessBits } from './api';
+import { switchWorkspace as apiSwitchWorkspace, setAccessToken as setApiToken, readCsrfToken, getMyPermissions, parseJsonSafe, apiFetch, type Workspace, type MyPermissions, type DataScope, type ObjectAccessBits } from './api';
 
 const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8080' : '');
 
@@ -64,6 +64,10 @@ interface AuthContextType {
   // Create a new workspace for the signed-in user and switch into it (U4),
   // ingesting the returned session. Backs the zero-workspace page + chooser.
   createWorkspace: (input: { name: string; type?: string }) => Promise<void>;
+  // Accept one of the user's OWN pending invitations by id (U4 item 6) — the
+  // zero-workspace / post-OAuth consent surface — ingesting the joined-workspace
+  // session so they land in it.
+  acceptMyInvitation: (invitationId: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshAuth: () => Promise<void>;
   switchWorkspace: (orgId: string, setDefault?: boolean) => Promise<void>;
@@ -319,6 +323,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     saveAuth(json.data);
   };
 
+  const acceptMyInvitation = async (invitationId: string) => {
+    // apiFetch carries the in-memory bearer, credentials:'include' (to receive the
+    // joined workspace's refresh + csrf cookies), and a transparent 401→refresh→retry
+    // — so a nil-org access token that expired while the invitee sat on the page is
+    // silently renewed instead of turning Join into a dead-end error.
+    const res = await apiFetch(`/api/auth/me/invitations/${invitationId}/accept`, { method: 'POST' });
+    const json = await parseJsonSafe(res);
+    if (!res.ok || json.error) {
+      throw new Error(json.error || 'Failed to accept invitation');
+    }
+    saveAuth(json.data);
+  };
+
   const logout = async () => {
     try {
       await fetch(`${API_URL}/api/auth/logout`, {
@@ -369,6 +386,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         register,
         acceptInvitation,
         createWorkspace,
+        acceptMyInvitation,
         logout,
         refreshAuth,
         switchWorkspace: doSwitchWorkspace,

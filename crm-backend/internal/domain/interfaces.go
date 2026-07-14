@@ -198,6 +198,19 @@ type InvitationInfo struct {
 	ResentAt  *time.Time `json:"resent_at,omitempty"`
 }
 
+// IncomingInvitation is a pending invitation addressed to the authenticated user
+// (matched by their account email), for the post-OAuth / zero-workspace "you've
+// been invited" consent surface (U4 item 6). Unlike InvitationInfo (an admin's view
+// of a workspace's OUTGOING invites) it names the workspace + role the user would
+// join if they accept.
+type IncomingInvitation struct {
+	ID        uuid.UUID `json:"id"`
+	OrgID     uuid.UUID `json:"org_id"`
+	OrgName   string    `json:"org_name"`
+	RoleName  string    `json:"role_name"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
 type GoogleUserInfo struct {
 	ID            string `json:"id"`
 	Email         string `json:"email"`
@@ -300,6 +313,17 @@ type AuthRepository interface {
 	// lookup so a re-invite resends the existing row instead of stacking a second
 	// one (U4). Email is matched case-insensitively.
 	GetPendingInvitationByEmail(ctx context.Context, orgID uuid.UUID, email string) (*OrgInvitation, error)
+	// ListValidInvitationsByEmail returns every currently-acceptable invitation
+	// (status 'pending', not revoked, NOT expired, and to a workspace that still
+	// exists) for an email across ALL orgs, newest first — the by-email lookup for
+	// the Google-first / zero-workspace consent flow (U4 item 6). Excludes
+	// soft-deleted workspaces so a user is never offered (or auto-routed to) a dead
+	// one. Email is matched case-insensitively.
+	ListValidInvitationsByEmail(ctx context.Context, email string) ([]OrgInvitation, error)
+	// GetOrgInvitationByIDUnscoped returns an invitation by id alone (no org scope),
+	// or nil — for accepting one's OWN invitation, where authorization is the email
+	// match against the authenticated account, not org membership (U4 item 6).
+	GetOrgInvitationByIDUnscoped(ctx context.Context, id uuid.UUID) (*OrgInvitation, error)
 	// AcceptInvitation runs the whole accept in ONE transaction (P2): create the
 	// invitee (createUser) or set a password on the existing account
 	// (newPasswordHash), UPSERT the org_users membership to active (reinstating a
@@ -451,6 +475,17 @@ type WorkspaceUseCase interface {
 	// metadata (org/role/email + validity + whether the account exists) without
 	// consuming it (U4). Never errors on a bad token — returns Status "invalid".
 	GetInvitationPreview(ctx context.Context, token string) (*InvitationPreview, error)
+	// ListMyInvitations returns the currently-acceptable invitations addressed to
+	// the authenticated user's own account email, across all workspaces (U4 item 6)
+	// — the post-OAuth / zero-workspace "you've been invited to X" consent surface.
+	// Soft-deleted workspaces and expired/revoked invites are excluded.
+	ListMyInvitations(ctx context.Context, userID uuid.UUID) ([]IncomingInvitation, error)
+	// AcceptMyInvitation accepts one of the caller's own pending invitations (by id,
+	// authorized by matching the invite's email to the caller's account email) and
+	// returns the joined org so the handler can mint a session (U4 item 6). Unlike
+	// token-based AcceptInvite it never creates a user or sets a password — the
+	// account already exists and is authenticated.
+	AcceptMyInvitation(ctx context.Context, userID, invitationID uuid.UUID) (uuid.UUID, error)
 	// ListInvitations / ResendInvitation / RevokeInvitation drive the pending-
 	// invitations panel (P2). Resend re-mints a fresh 256-bit token; revoke kills
 	// the pending token so it can no longer be accepted.

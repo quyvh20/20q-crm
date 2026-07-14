@@ -447,6 +447,40 @@ func (r *authRepository) GetPendingInvitationByEmail(ctx context.Context, orgID 
 	return &inv, nil
 }
 
+// ListValidInvitationsByEmail returns every currently-acceptable invitation for an
+// email across ALL orgs (status 'pending', not revoked, not yet expired) whose
+// workspace still exists, newest first — the by-email lookup for the Google-first /
+// zero-workspace consent flow (U4 item 6). The JOIN with organizations.deleted_at
+// IS NULL excludes invites to soft-deleted workspaces (org_invitations has no
+// soft-delete of its own, and SoftDeleteOrganization does not revoke pending
+// invites), so a user is never offered a dead workspace.
+func (r *authRepository) ListValidInvitationsByEmail(ctx context.Context, email string) ([]domain.OrgInvitation, error) {
+	var invites []domain.OrgInvitation
+	err := r.db.WithContext(ctx).
+		Model(&domain.OrgInvitation{}).
+		Joins("JOIN organizations ON organizations.id = org_invitations.org_id AND organizations.deleted_at IS NULL").
+		Where("LOWER(org_invitations.email) = LOWER(?) AND org_invitations.status = 'pending' AND org_invitations.revoked_at IS NULL AND org_invitations.expires_at > ?", email, time.Now()).
+		Order("org_invitations.created_at DESC").
+		Find(&invites).Error
+	return invites, err
+}
+
+// GetOrgInvitationByIDUnscoped returns an invitation by id alone, or nil — for
+// accepting one's OWN invitation (U4 item 6), where the authorization check is the
+// email match against the authenticated account (done in the usecase), not org
+// membership. The org-scoped GetOrgInvitationByID stays the admin path.
+func (r *authRepository) GetOrgInvitationByIDUnscoped(ctx context.Context, id uuid.UUID) (*domain.OrgInvitation, error) {
+	var inv domain.OrgInvitation
+	err := r.db.WithContext(ctx).Where("id = ?", id).First(&inv).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &inv, nil
+}
+
 func (r *authRepository) UpdateOrgInvitation(ctx context.Context, inv *domain.OrgInvitation) error {
 	return r.db.WithContext(ctx).Save(inv).Error
 }
