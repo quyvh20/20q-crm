@@ -10,9 +10,10 @@ import {
 } from '../../features/settings/queries';
 import { useAuth } from '../../lib/auth';
 import { useConfirm } from '../../components/common/ConfirmDialog';
+import { currencyOptions, localeOptions } from '../../lib/intlOptions';
 
-const CURRENCIES = ['', 'USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'INR', 'BRL'];
-const LOCALES = ['', 'en-US', 'en-GB', 'fr-FR', 'de-DE', 'es-ES', 'pt-BR', 'ja-JP'];
+const CURRENCIES = currencyOptions();
+const LOCALES = localeOptions();
 
 // The editable half of the workspace, split out from the server payload so the
 // form can be compared against (and re-seeded from) the last server snapshot.
@@ -186,13 +187,15 @@ export default function WorkspaceGeneralSection() {
           <div>
             <label className="block text-sm font-medium mb-1.5">Currency</label>
             <select value={form.currency} onChange={(e) => patch('currency', e.target.value)} className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary">
-              {CURRENCIES.map((c) => <option key={c} value={c}>{c || '—'}</option>)}
+              <option value="">— No default —</option>
+              {CURRENCIES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
             </select>
           </div>
           <div>
             <label className="block text-sm font-medium mb-1.5">Locale</label>
             <select value={form.locale} onChange={(e) => patch('locale', e.target.value)} className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary">
-              {LOCALES.map((l) => <option key={l} value={l}>{l || '—'}</option>)}
+              <option value="">— No default —</option>
+              {LOCALES.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
             </select>
           </div>
           <div>

@@ -2,12 +2,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { getMe, updateProfile } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { getThemePreference, setThemePreference, type ThemePreference } from '../../lib/theme';
+import { localeOptions } from '../../lib/intlOptions';
 
 // Profile section (U2 My Account): the first place a user can edit their own
 // name, avatar, and preferences — before this, a typo'd name at signup was
 // permanent without a DB console.
 
-const COMMON_LOCALES = ['en-US', 'en-GB', 'vi-VN', 'de-DE', 'fr-FR', 'es-ES', 'pt-BR', 'ja-JP', 'ko-KR', 'zh-CN'];
+const COMMON_LOCALES = localeOptions();
 
 export default function ProfileSection() {
   const { setUserProfile } = useAuth();
@@ -145,7 +146,7 @@ export default function ProfileSection() {
           <label className="block text-xs font-medium text-muted-foreground mb-1">Locale</label>
           <input list="locale-options" value={locale} onChange={(e) => setLocale(e.target.value)} placeholder="e.g. en-US" className={inputCls} />
           <datalist id="locale-options">
-            {COMMON_LOCALES.map((l) => <option key={l} value={l} />)}
+            {COMMON_LOCALES.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
           </datalist>
         </div>
       </div>
