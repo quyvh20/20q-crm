@@ -265,14 +265,24 @@ func (uc *customObjectUseCase) UpdateRecord(ctx context.Context, orgID uuid.UUID
 	}
 
 	if len(input.Data) > 0 {
-		var dataMap map[string]interface{}
-		if err := json.Unmarshal(input.Data, &dataMap); err != nil {
+		// Merge the incoming keys over the record's stored data rather than replacing
+		// the blob wholesale: the uniform edit form PATCHes only the fields the user
+		// changed, so a wholesale replace would blank every omitted field (and an FLS
+		// read-only field is always omitted). Validate + name from the MERGED map so a
+		// required-field check sees the whole record, not just the delta. A malformed
+		// incoming blob surfaces as the 400 below.
+		dataMap, err := mergeJSONObjects(rec.Data, input.Data)
+		if err != nil {
 			return nil, &domain.AppError{Code: http.StatusBadRequest, Message: "invalid data JSON"}
 		}
 		if err := uc.validateRecordData(def.Fields, dataMap); err != nil {
 			return nil, err
 		}
-		rec.Data = input.Data
+		mergedJSON, err := json.Marshal(dataMap)
+		if err != nil {
+			return nil, &domain.AppError{Code: http.StatusInternalServerError, Message: "failed to encode record data"}
+		}
+		rec.Data = domain.JSON(mergedJSON)
 		rec.DisplayName = uc.computeDisplayName(def.Fields, dataMap)
 	}
 	if input.DisplayName != nil {

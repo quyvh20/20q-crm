@@ -290,8 +290,19 @@ func (s *recordService) Update(ctx context.Context, orgID uuid.UUID, slug string
 	if err := guardFieldWrites(mask, in.Fields); err != nil {
 		return nil, err
 	}
-	// Best-effort prior snapshot for the diff; a load error here is ignored and
+	// Best-effort prior snapshot for the audit diff; a load error here is ignored and
 	// surfaced authoritatively by the write itself below.
+	//
+	// NOTE on partial edits: the frontend PATCHes only the fields the user actually
+	// changed. Native system columns handle that natively (present-key = "change this
+	// column"), so an FLS read-only field the user didn't touch is simply absent and
+	// the guard above lets the write through. The two wholesale-replaced BLOBs — the
+	// custom-object data blob and a system object's custom_fields — instead merge the
+	// incoming keys over the stored blob at their write site (customObjectUseCase.
+	// UpdateRecord / the deal & contact usecases), so a partial edit never blanks an
+	// untouched field there. Merging here at the uniform layer would be wrong: it would
+	// re-introduce every native key and make "stage present" (→ ChangeStage) fire on
+	// every deal edit.
 	prior, _ := s.getInternal(ctx, orgID, slug, id)
 
 	if a, ok := s.systemAdapters[slug]; ok {
@@ -312,10 +323,10 @@ func (s *recordService) Update(ctx context.Context, orgID uuid.UUID, slug string
 	if err != nil {
 		return nil, err
 	}
-	// The custom update REPLACES the data blob wholesale (custom_object_usecase
-	// applies input.Data when non-empty). So an owner-only change must send NO data
-	// at all — marshalling an empty remainder to "{}" would blank every field on the
-	// record.
+	// The custom update MERGES the data blob over the stored record (see
+	// customObjectUseCase.UpdateRecord), so a partial edit rewrites only the keys it
+	// carries. An owner-only change carries no data keys, so send nil (an empty "{}"
+	// would still be a no-op merge, but sending nil skips the blob write entirely).
 	var data domain.JSON
 	if len(rest) > 0 {
 		if data, err = marshalFields(rest); err != nil {

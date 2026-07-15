@@ -64,7 +64,13 @@ func (uc *companyUseCase) Update(ctx context.Context, orgID, id uuid.UUID, input
 		company.Website = input.Website
 	}
 	if input.CustomFields != nil {
-		company.CustomFields = *input.CustomFields
+		// Merge over the stored custom_fields so a partial uniform edit (the edit form
+		// PATCHes only changed keys) doesn't blank the custom fields it didn't touch.
+		merged, err := mergeJSONBlob(company.CustomFields, *input.CustomFields)
+		if err != nil {
+			return nil, domain.NewAppError(400, "invalid custom field data")
+		}
+		company.CustomFields = merged
 	}
 
 	if err := uc.repo.Update(ctx, company); err != nil {

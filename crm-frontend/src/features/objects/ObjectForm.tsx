@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   createObjectRecordUnified,
   updateObjectRecordUnified,
@@ -31,6 +31,14 @@ export default function ObjectForm({ schema, record, inline, onSaved, onCancel }
     if (record && base.owner_user_id === undefined) base.owner_user_id = record.owner_user_id ?? '';
     return base;
   });
+  // Snapshot of the loaded values, captured once. On save we send ONLY the keys the
+  // user actually changed (diffed against this). Two bugs die with it: (1) a field the
+  // role may see but not write (FLS "read") is no longer in the payload, so the write
+  // guard stops 403-ing every save; (2) a field the user never touched is no longer
+  // sent, so a concurrent editor's change to it isn't silently reverted. Untouched
+  // keys keep their reference from the initial spread, so a per-key `!==` is an exact
+  // "did the user change this" test — even for array/object values.
+  const initialData = useRef(formData).current;
   const [relationOptions, setRelationOptions] = useState<Record<string, RelationOption[]>>({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -75,9 +83,20 @@ export default function ObjectForm({ schema, record, inline, onSaved, onCancel }
     setError('');
     setSaving(true);
     try {
-      const saved = record
-        ? await updateObjectRecordUnified(schema.slug, record.id, formData)
-        : await createObjectRecordUnified(schema.slug, formData);
+      let saved: UniformRecord;
+      if (record) {
+        // Send only the keys the user actually changed (see initialData). The backend
+        // merges them over the current record, so untouched fields — and any concurrent
+        // edit to them — survive; an unchanged FLS read-only field is never in the diff,
+        // so it can't trip the field-write guard.
+        const changed: Record<string, unknown> = {};
+        for (const key of Object.keys(formData)) {
+          if (formData[key] !== initialData[key]) changed[key] = formData[key];
+        }
+        saved = await updateObjectRecordUnified(schema.slug, record.id, changed);
+      } else {
+        saved = await createObjectRecordUnified(schema.slug, formData);
+      }
       onSaved(saved);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Save failed');

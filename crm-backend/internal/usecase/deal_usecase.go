@@ -105,7 +105,13 @@ func (uc *dealUseCase) Update(ctx context.Context, orgID, id uuid.UUID, input do
 		}
 	}
 	if input.CustomFields != nil {
-		deal.CustomFields = *input.CustomFields
+		// Merge over the stored custom_fields so a partial uniform edit (the edit form
+		// PATCHes only changed keys) doesn't blank the custom fields it didn't touch.
+		merged, err := mergeJSONBlob(deal.CustomFields, *input.CustomFields)
+		if err != nil {
+			return nil, domain.NewAppError(400, "invalid custom field data")
+		}
+		deal.CustomFields = merged
 	}
 
 	if err := uc.dealRepo.Update(ctx, deal); err != nil {

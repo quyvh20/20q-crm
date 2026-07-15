@@ -141,7 +141,13 @@ func (uc *contactUseCase) Update(ctx context.Context, orgID, id uuid.UUID, input
 		contact.OwnerUserID = input.OwnerUserID
 	}
 	if input.CustomFields != nil {
-		contact.CustomFields = *input.CustomFields
+		// Merge over the stored custom_fields so a partial uniform edit (the edit form
+		// PATCHes only changed keys) doesn't blank the custom fields it didn't touch.
+		merged, err := mergeJSONBlob(contact.CustomFields, *input.CustomFields)
+		if err != nil {
+			return nil, domain.NewAppError(400, "invalid custom field data")
+		}
+		contact.CustomFields = merged
 	}
 
 	if err := uc.contactRepo.Update(ctx, contact); err != nil {
