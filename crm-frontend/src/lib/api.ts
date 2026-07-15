@@ -3425,7 +3425,12 @@ export async function listGroups(): Promise<UserGroup[]> {
   const res = await apiFetch('/api/groups');
   const json = await parseJsonSafe(res);
   if (!res.ok) throw apiError(res, json, 'Failed to load groups');
-  return (json.data || []) as UserGroup[];
+  // members: the backend marshals a zero-member group's nil slice as null —
+  // normalize here so no consumer can trip on .map during render.
+  return asArray<UserGroup>(json.data, 'GET /api/groups').map((g) => ({
+    ...g,
+    members: g.members ?? [],
+  }));
 }
 
 export async function createGroup(name: string, description = ''): Promise<UserGroup> {

@@ -122,7 +122,10 @@ export default function GroupsManager() {
       ) : (
         <div className="space-y-2">
           {groups.map((g) => {
-            const memberIds = new Set(g.members.map((m) => m.user_id));
+            // (g.members ?? []): the backend sends `"members": null` for a
+            // zero-member group (Go nil slice) — unguarded .map threw on the
+            // first render and white-screened the page under the error boundary.
+            const memberIds = new Set((g.members ?? []).map((m) => m.user_id));
             const open = expanded === g.id;
             const editing = editingId === g.id;
             return (

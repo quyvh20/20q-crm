@@ -64,6 +64,20 @@ describe('GroupsManager', () => {
     await waitFor(() => expect(listGroups).toHaveBeenCalledTimes(2));
   });
 
+  it('renders a zero-member group whose members arrived as null (Go nil slice)', async () => {
+    // The backend marshals a nil Members slice as `"members": null` for a group
+    // with no members (user_group_repository.List builds it from a map miss).
+    // Unguarded, g.members.map threw during the first render and the app-wide
+    // error boundary white-screened /settings/groups on load.
+    vi.mocked(listGroups).mockResolvedValue([
+      group({ name: 'Empty Team', member_count: 0, members: null as any }),
+    ]);
+    renderManager();
+
+    await waitFor(() => expect(screen.getByText('Empty Team')).toBeTruthy());
+    expect(screen.getByText(/0 members/)).toBeTruthy();
+  });
+
   it('adds a member by toggling the checkbox', async () => {
     const g = group({ name: 'Leadership', member_count: 0, members: [] });
     vi.mocked(listGroups).mockResolvedValue([g]);

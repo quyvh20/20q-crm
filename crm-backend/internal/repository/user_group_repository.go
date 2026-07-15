@@ -80,6 +80,11 @@ func (r *userGroupRepository) List(ctx context.Context, orgID uuid.UUID) ([]doma
 	out := make([]domain.UserGroupView, 0, len(groups))
 	for _, g := range groups {
 		members := byGroup[g.ID]
+		if members == nil {
+			// A zero-member group misses the map and yields a nil slice, which
+			// marshals as `"members": null` — the frontend expects an array.
+			members = []domain.GroupMemberInfo{}
+		}
 		out = append(out, domain.UserGroupView{
 			ID: g.ID, Name: g.Name, Description: g.Description,
 			MemberCount: len(members), Members: members, CreatedAt: g.CreatedAt,
