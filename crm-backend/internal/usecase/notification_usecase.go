@@ -333,7 +333,20 @@ func (u *notificationUseCase) RunDailyDigest(ctx context.Context) (int, error) {
 		consumed := true
 		if len(items) > 0 {
 			user, err := u.users.GetUserByID(ctx, pref.UserID)
-			if err == nil && user != nil && user.Email != "" {
+			switch {
+			case err != nil:
+				// TRANSIENT recipient-lookup failure (pool exhaustion, replica
+				// hiccup, bad connection). No email went out, so the rows must NOT
+				// be consumed: stamping digested_at here would make ListPendingDigest
+				// (digested_at IS NULL) skip them forever — a permanent drop on every
+				// channel. Hold them; the claim already advanced last_digest_sent_at,
+				// so they retry on the next daily pass rather than being lost.
+				slog.Warn("notification digest: recipient lookup failed", "user", pref.UserID, "error", err)
+				consumed = false
+			case user == nil || user.Email == "":
+				// Genuinely unmailable (no such user / no address): nothing to
+				// retry, so consume the rows.
+			default:
 				if err := u.mailer.SendNotificationDigest(ctx, user.Email, items); err != nil {
 					slog.Warn("notification digest: send failed", "to", user.Email, "error", err)
 					consumed = false
@@ -341,7 +354,6 @@ func (u *notificationUseCase) RunDailyDigest(ctx context.Context) (int, error) {
 					sent++
 				}
 			}
-			// missing user / no email: nothing to retry (unmailable) → consume.
 		}
 		if consumed {
 			_ = u.repo.MarkNotificationsDigested(ctx, ids, now)

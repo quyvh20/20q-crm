@@ -25,6 +25,11 @@ func seedInvite(repo *fakeWorkspaceRepo, orgID uuid.UUID, email string, roleID u
 		CreatedAt: time.Now(),
 	}
 	repo.invites = append(repo.invites, inv)
+	// AcceptInvite now rejects an invite into a soft-deleted / missing workspace,
+	// so a seeded invite must have a live org unless a test deliberately deletes it.
+	if repo.orgs[orgID] == nil {
+		repo.addOrg(orgID, "Acme")
+	}
 	return inv
 }
 
@@ -123,6 +128,48 @@ func TestAcceptInvite_ExistingUserPasswordNotOverwritten(t *testing.T) {
 	}
 	if ou := repo.orgUsers[wkey(existing.ID, orgID)]; ou == nil || ou.Status != domain.StatusActive {
 		t.Fatal("existing user should be (re)granted active membership")
+	}
+}
+
+// A Google-only (passwordless) EXISTING account must not have a password set from
+// the invite-accept form — otherwise a leaked/forwarded invite for that address is
+// an account-takeover primitive (attacker POSTs a chosen password, then signs in).
+func TestAcceptInvite_PasswordlessAccountNotHijacked(t *testing.T) {
+	repo := newFakeWorkspaceRepo()
+	orgID := uuid.New()
+	viewer := repo.addRole(domain.RoleViewer, false)
+	// Existing account with NO password (signed up via Google).
+	existing := repo.addUser(&domain.User{Email: "google-user@x.com", PasswordHash: nil, OrgID: uuid.New()})
+	raw := uuid.NewString()
+	seedInvite(repo, orgID, "google-user@x.com", viewer.ID, raw)
+
+	uc := newWorkspaceUC(repo, "test", nil)
+	if _, err := uc.AcceptInvite(context.Background(), domain.AcceptInviteInput{Token: raw, Password: "Attacker-Set1!"}); err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	if existing.PasswordHash != nil {
+		t.Fatal("a passwordless (Google-only) account must stay passwordless — invite-accept must never set its password")
+	}
+	if ou := repo.orgUsers[wkey(existing.ID, orgID)]; ou == nil || ou.Status != domain.StatusActive {
+		t.Fatal("the existing account should still be (re)granted active membership")
+	}
+}
+
+// An invite into a workspace that has since been (soft-)deleted must not resurrect
+// membership — GetOrganizationByID returns nil for a deleted org.
+func TestAcceptInvite_RejectsDeletedWorkspace(t *testing.T) {
+	repo := newFakeWorkspaceRepo()
+	orgID := uuid.New()
+	viewer := repo.addRole(domain.RoleViewer, false)
+	raw := uuid.NewString()
+	seedInvite(repo, orgID, "invitee@x.com", viewer.ID, raw)
+	delete(repo.orgs, orgID) // model the workspace being deleted after the invite went out
+
+	uc := newWorkspaceUC(repo, "test", nil)
+	_, err := uc.AcceptInvite(context.Background(), domain.AcceptInviteInput{Token: raw, Password: "Sup3r-Secret!"})
+	assertWorkspaceErr(t, err, 400, "accept into a deleted workspace")
+	if repo.usersByEmail["invitee@x.com"] != nil {
+		t.Error("no account should be created when accepting into a deleted workspace")
 	}
 }
 

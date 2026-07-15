@@ -379,11 +379,20 @@ func authenticateAPIToken(c *gin.Context, secret string, tokenRepo domain.APITok
 	// `false` here would have made a personal access token the way AROUND the policy:
 	// a user the workspace is demanding 2FA from could mint one and walk straight
 	// past RequireTwoFactorSatisfied without ever enrolling.
+	//
+	// GetOrgUser does not Preload("User"), so ou.User is nil here — reading
+	// ou.User.TotpEnabledAt off it would make twoFactorPending unconditionally
+	// false and silently reopen exactly that bypass. Resolve the enrollment state
+	// explicitly, and fail CLOSED (treat as pending) if the policy is on and the
+	// user can't be loaded to prove enrollment.
 	twoFactorPending := false
-	if ou.User != nil && ou.User.TotpEnabledAt == nil {
-		if org, err := authRepo.GetOrganizationByID(ctx, tok.OrgID); err == nil && org != nil {
-			twoFactorPending = org.RequireTwoFactor
+	if org, err := authRepo.GetOrganizationByID(ctx, tok.OrgID); err == nil && org != nil && org.RequireTwoFactor {
+		u, err := authRepo.GetUserByID(ctx, tok.UserID)
+		if err != nil || u == nil {
+			c.AbortWithStatusJSON(http.StatusForbidden, domain.Err("access denied"))
+			return
 		}
+		twoFactorPending = u.TotpEnabledAt == nil
 	}
 
 	c.Set("user_id", tok.UserID)

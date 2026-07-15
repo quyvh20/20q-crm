@@ -219,13 +219,17 @@ describe('SetupChecklist — capability gating', () => {
 });
 
 describe('SetupChecklist — dismiss and restore', () => {
-  it('hides on dismiss, persists it, and records the flag on the account', async () => {
+  it('hides on dismiss and persists it PER-WORKSPACE without writing the global flag', async () => {
     renderCard();
     fireEvent.click(await screen.findByText('Hide'));
 
     expect(screen.queryByText('Set up your workspace')).not.toBeInTheDocument();
     expect(localStorage.getItem('setup_checklist_dismissed:org-1')).toBe('true');
-    await waitFor(() => expect(updateProfile).toHaveBeenCalledWith({ onboarding_completed: true }));
+    // Regression (bug-hunt finding): dismissing in one workspace must NOT set the
+    // global `onboarding_completed` flag — that flag suppresses the checklist in
+    // EVERY workspace, so it would hide the card in the user's other workspaces,
+    // including brand-new empty ones where it's most useful. Dismissal is per-org.
+    expect(updateProfile).not.toHaveBeenCalled();
   });
 
   it('stays hidden on re-render after a dismiss', async () => {

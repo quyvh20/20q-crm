@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Check, ChevronRight, Circle, Sparkles } from 'lucide-react';
 import HelpTip from '../../components/common/HelpTip';
-import { updateProfile } from '../../lib/api';
 import { useAuth, usePermissions } from '../../lib/auth';
 import {
   dismissSetupChecklist,
@@ -28,7 +27,7 @@ import { useSetupChecklist } from './useSetupChecklist';
 //   every visible step done               → hide (its job is finished)
 //   no visible steps at all               → hide (nothing this user may set up)
 export default function SetupChecklist() {
-  const { user, activeWorkspace, setUserProfile } = useAuth();
+  const { user, activeWorkspace } = useAuth();
   const { can } = usePermissions();
   const orgId = activeWorkspace?.org_id ?? '';
   const { dismissed, forceOpen } = useChecklistVisibility(orgId);
@@ -44,14 +43,13 @@ export default function SetupChecklist() {
   const suppressed = dismissed || !!user?.onboarding_completed || isLegacyOnboardingDone();
 
   const handleDismiss = () => {
+    // Per-ORG dismissal only. Deliberately does NOT set the global
+    // `onboarding_completed` flag: that flag suppresses the checklist in EVERY
+    // workspace (see `suppressed` above), so writing it here would hide the
+    // checklist in all the user's other workspaces — including brand-new empty
+    // ones, where it's the most useful thing on the dashboard. The per-org
+    // localStorage key records this dismissal for this workspace alone.
     dismissSetupChecklist(orgId);
-    if (user?.onboarding_completed) return;
-    // Best effort, and deliberately not awaited: the card is already gone, and the
-    // localStorage flag suppresses it here regardless. The PATCH only matters for
-    // the user's OTHER devices.
-    updateProfile({ onboarding_completed: true })
-      .then(() => setUserProfile({ onboarding_completed: true }))
-      .catch(() => {});
   };
 
   if (loading || steps.length === 0) return null;

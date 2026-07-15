@@ -433,6 +433,16 @@ func (uc *workspaceUseCase) LeaveWorkspace(ctx context.Context, orgID, callerUse
 			return domain.NewAppError(409, "you're the only owner — transfer ownership to someone else or delete the workspace before leaving")
 		}
 	}
+	// Revoke the leaver's org-scoped grants (record shares to them, report shares
+	// targeting them, group memberships) — same as RemoveMember. Without this, a
+	// left member's shares/team memberships survive and a later re-invite silently
+	// restores their old access. (Owned records are left in place; self-serve leave
+	// doesn't collect a reassignment target — an admin RemoveMember does that.)
+	if uc.offboard != nil {
+		if err := uc.offboard.RevokeUserGrants(ctx, orgID, callerUserID); err != nil {
+			return domain.ErrInternal
+		}
+	}
 	if err := uc.authRepo.DeleteOrgUser(ctx, callerUserID, orgID); err != nil {
 		return domain.ErrInternal
 	}
@@ -454,10 +464,18 @@ func (uc *workspaceUseCase) DeleteWorkspace(ctx context.Context, orgID, callerUs
 	if ou == nil || !domain.IsOwnerRole(ou.Role) {
 		return domain.NewAppError(403, "only the workspace owner can delete it")
 	}
+	// Snapshot the members BEFORE the soft-delete so we can evict every one of
+	// them, not just the deleting owner. Otherwise the other members keep their
+	// warm Redis session entry (status=active) and retain full read/write access
+	// to the deleted workspace for up to the cache TTL (~5 min) on the prod path.
+	members, _ := uc.authRepo.ListMembersByOrgID(ctx, orgID)
 	if err := uc.authRepo.SoftDeleteOrganization(ctx, orgID); err != nil {
 		return domain.ErrInternal
 	}
-	uc.evictSession(ctx, callerUserID, orgID)
+	for i := range members {
+		uc.evictSession(ctx, members[i].UserID, orgID)
+	}
+	uc.evictSession(ctx, callerUserID, orgID) // belt-and-braces if the caller wasn't in the list
 	actor := callerUserID
 	recordAdminEvent(ctx, uc.authRepo, orgID, "workspace.deleted", &actor, nil)
 	return nil
@@ -599,6 +617,13 @@ func (uc *workspaceUseCase) AcceptInvite(ctx context.Context, input domain.Accep
 	if inv.Status != "pending" || inv.RevokedAt != nil || time.Now().After(inv.ExpiresAt) {
 		return nil, domain.NewAppError(400, "this invitation link is no longer valid")
 	}
+	// The workspace must still exist — GetOrganizationByID is soft-delete-scoped
+	// and returns nil for a deleted org, so a stale invite link into a deleted
+	// workspace can't resurrect membership + full data access (parity with the
+	// consent-based AcceptMyInvitation, which already guards this).
+	if org, err := uc.authRepo.GetOrganizationByID(ctx, inv.OrgID); err != nil || org == nil {
+		return nil, domain.NewAppError(400, "this workspace no longer exists")
+	}
 
 	// A supplied password must pass policy BEFORE any write, so a weak password
 	// can't leave a half-created account behind.
@@ -638,10 +663,14 @@ func (uc *workspaceUseCase) AcceptInvite(ctx context.Context, input domain.Accep
 			FullName:     fullName,
 			PasswordHash: newPasswordHash, // may be nil (Google-only invitee)
 		}
-	} else if user.PasswordHash != nil {
-		// Existing account already has a password — never overwrite it from the
-		// invite-accept form (that would be an account-takeover primitive). The
-		// password field is ignored; membership is still (re)granted.
+	} else {
+		// Existing account — never set credentials from the invite-accept form,
+		// whether or not it currently has a password. Overwriting a Google-only
+		// (passwordless) account's password here is an account-takeover primitive:
+		// a leaked/forwarded invite for that address would let anyone POST a chosen
+		// password and then sign in as that user. The password field is ignored;
+		// membership is still (re)granted, and a passwordless invitee keeps signing
+		// in with Google (or sets a password later from account settings).
 		newPasswordHash = nil
 	}
 
