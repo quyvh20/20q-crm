@@ -181,6 +181,11 @@ func main() {
 		db.Exec(`ALTER TABLE organizations ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) NOT NULL DEFAULT ''`)
 		db.Exec(`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS owner_user_id UUID REFERENCES users(id) ON DELETE SET NULL`)
 		db.Exec(`CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts(owner_user_id)`)
+		// Task creator (U0.1-ext): row scope keeps a rep's own unlinked/unassigned
+		// tasks visible to them via created_by. golang-migrate is dead on prod, so
+		// boot-guard the column (000043 mirrors this for local/dev).
+		db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES users(id) ON DELETE SET NULL`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_created_by ON tasks(created_by)`)
 
 		db.AutoMigrate(&domain.Role{}, &domain.RolePermission{}, &domain.OrgUser{}, &domain.KnowledgeBaseEntry{}, &domain.AITokenUsage{}, &domain.RecordShare{}, &domain.OrgInvitation{}, &domain.ChatSession{}, &domain.ChatMessage{}, &domain.VoiceNote{})
 
@@ -1145,6 +1150,11 @@ func main() {
 		recordService := usecase.NewRecordService(customObjUC, orgSettingsUC, contactUseCase, companyUseCase, dealUseCase, linkRepo, tagRepo, permissionUC)
 		// Human-readable record numbers (DEAL-0001): allocate on create, resolve on read.
 		recordService.SetNumberRepo(repository.NewRecordNumberRepository(db))
+		// The per-record audit trail 404s the history of a record the caller can't
+		// see by resolving it through the scope-aware RecordService first (U0.1-ext).
+		// Wired here (not as a constructor arg) because recordService takes permissionUC
+		// as its OLS authorizer — the dependency only runs one way through construction.
+		permissionUC.SetRecordReader(recordService)
 		// Reverse related lists compose the registry + record services (P-relationships):
 		// they surface, on any record, the child records that point back at it.
 		relatedListsUC := usecase.NewRelatedListsUseCase(objectRegistryUC, recordService)

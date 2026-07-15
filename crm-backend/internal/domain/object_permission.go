@@ -108,6 +108,16 @@ type RecordAuthorizer interface {
 	FieldMask(ctx context.Context, orgID uuid.UUID, slug string) FieldMask
 }
 
+// RecordReader is the narrow read port the per-record audit trail uses to enforce
+// row-level reachability before disclosing a record's change history. Its Get must
+// resolve exactly as the main read path does — Object-Level Security plus own/team
+// scope plus record shares — returning a NotFound error for a record the caller
+// cannot otherwise see. RecordService satisfies it; the audit usecase depends only
+// on this one method so it needn't import the full write surface.
+type RecordReader interface {
+	Get(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID) (*UniformRecord, error)
+}
+
 // ============================================================
 // Grid DTOs (the admin role × object matrix)
 // ============================================================
@@ -301,6 +311,14 @@ type PermissionUseCase interface {
 	// Invalidate drops the cached OLS + FLS maps for an org (called when permissions
 	// or the object set change, so live edits apply without a restart).
 	Invalidate(orgID uuid.UUID)
+	// SetRecordReader wires the row-scope-aware record reader used by
+	// ListRecordAudit to 404 the change history of a record the caller cannot see
+	// (U0.1-ext). Called once at startup after RecordService exists (it can't be a
+	// constructor arg — RecordService takes this same value as its authorizer). On
+	// the interface so a signature drift fails the build rather than silently
+	// re-opening the leak; until set, the row check is skipped (trusted/unit-test
+	// wiring), OLS still applies.
+	SetRecordReader(r RecordReader)
 	// EnsureSeeded idempotently seeds the org's default OLS grid for any object
 	// that has no rows yet. Called before cloning a role, so the clone source has
 	// its default grid materialized to copy from.

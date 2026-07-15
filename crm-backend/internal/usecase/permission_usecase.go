@@ -34,7 +34,13 @@ type permissionUseCase struct {
 	repo       domain.PermissionRepository
 	registryUC domain.ObjectRegistryUseCase
 	audit      domain.AuthEventWriter // optional; nil in unit tests → grid-edit audit is a no-op
-	ttl        time.Duration
+	// records resolves a record with full row scope (OLS + own/team + shares) so
+	// ListRecordAudit can 404 the history of a record the caller can't see. Wired
+	// via SetRecordReader after startup (RecordService takes this usecase as its
+	// authorizer, so it can't be a constructor arg). nil → row check skipped
+	// (trusted/unit-test wiring); OLS still applies.
+	records domain.RecordReader
+	ttl     time.Duration
 
 	mu    sync.RWMutex
 	cache map[uuid.UUID]*orgAccessEntry
@@ -746,11 +752,52 @@ func (uc *permissionUseCase) FieldRestrictionSummary(ctx context.Context, orgID 
 // ListRecordAudit returns a record's change history. Viewing the trail requires
 // OLS read on the object (defense in depth on top of the route's manager+ floor),
 // so you can't inspect history for an object you can't otherwise read.
+//
+// OLS is object-level, so it isn't enough on its own: the route's audit.view
+// floor can be granted to a custom role whose data_scope is 'own'/'team', and
+// that caller would otherwise read the full change history — old and new values —
+// of any record it can't open (U0.1-ext). So the record is resolved through the
+// row-scope-aware reader first (404 when unreachable), and FLS-hidden field
+// values are stripped from every diff, since a field the caller can't read must
+// not leak through its history either.
 func (uc *permissionUseCase) ListRecordAudit(ctx context.Context, orgID uuid.UUID, slug string, recordID uuid.UUID) ([]domain.AuditView, error) {
 	if err := uc.Authorize(ctx, orgID, slug, domain.ActionRead); err != nil {
 		return nil, err
 	}
-	return uc.repo.ListAudit(ctx, orgID, slug, recordID, 100)
+	// Row-level reachability: resolve the record exactly as the read path would.
+	// An unreachable record returns the reader's NotFound, so the trail is 404,
+	// not disclosed. nil reader = trusted/unit-test wiring → skip (OLS still ran).
+	if uc.records != nil {
+		if _, err := uc.records.Get(ctx, orgID, slug, recordID); err != nil {
+			return nil, err
+		}
+	}
+
+	entries, err := uc.repo.ListAudit(ctx, orgID, slug, recordID, 100)
+	if err != nil {
+		return nil, err
+	}
+
+	// FLS: strip hidden field values from each diff. The audit table stores the
+	// full before/after (the trigger/audit path is trusted — see record_service),
+	// so masking has to happen here on the way out to the human caller.
+	if mask := uc.FieldMask(ctx, orgID, slug); !mask.Empty() {
+		for i := range entries {
+			for key := range entries[i].Changes {
+				if mask.IsHidden(key) {
+					delete(entries[i].Changes, key)
+				}
+			}
+		}
+	}
+	return entries, nil
+}
+
+// SetRecordReader wires the row-scope-aware reader used by ListRecordAudit. Called
+// once at startup after RecordService is constructed (it takes this usecase as its
+// authorizer, so the dependency can't run the other way through a constructor).
+func (uc *permissionUseCase) SetRecordReader(r domain.RecordReader) {
+	uc.records = r
 }
 
 // EnsureSeeded idempotently materializes the org's default OLS grid (delegating
