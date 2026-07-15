@@ -7,7 +7,9 @@ import { CAPABILITY_LABELS } from './api';
 // Custom role names are admin-typed free text ("Support Agent") — splitting on
 // '_' leaves them untouched.
 export const prettyRole = (name: string | undefined | null): string =>
-  (name ?? '')
+  // String() coerces defensively: a malformed payload that delivers a non-string
+  // here (number/object) would otherwise throw on .split and crash the render.
+  String(name ?? '')
     .split('_')
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(' ');

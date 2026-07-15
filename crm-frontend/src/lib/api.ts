@@ -231,6 +231,18 @@ export function apiError(res: Response, json: unknown, fallback: string): ApiErr
   );
 }
 
+// asArray defensively coerces an API `data` field that MUST be a list into an
+// array. An unexpected response shape (object, string, null) becomes [] instead
+// of reaching a `.map`/`.filter`/`.length` consumer — a non-array there throws
+// during render and, under the app-wide error boundary, white-screens the whole
+// page ("Something went wrong") on load. The anomaly is logged (not swallowed
+// silently) so the root cause stays discoverable in the console.
+export function asArray<T>(data: unknown, ctx: string): T[] {
+  if (Array.isArray(data)) return data as T[];
+  if (data != null) console.warn(`[api] ${ctx}: expected an array, got ${typeof data}`);
+  return [];
+}
+
 // authStreamFetch is the streaming counterpart to apiFetch: it attaches the
 // in-memory bearer token, sends credentials, and transparently retries once
 // after a single-flight refresh on 401. Returns the raw Response so the caller
@@ -1647,7 +1659,7 @@ export async function getRoleOptions(): Promise<RoleOption[]> {
   const res = await apiFetch('/api/roles/options');
   const json = await parseJsonSafe(res);
   if (!res.ok) throw apiError(res, json, 'Failed to load roles');
-  return (json.data || []) as RoleOption[];
+  return asArray<RoleOption>(json.data, 'GET /api/roles/options');
 }
 
 // getRolesCatalog returns the capability metadata (labels/descriptions/groups/
@@ -2344,7 +2356,7 @@ export async function getWorkspaceMembers(): Promise<WorkspaceMember[]> {
   const res = await apiFetch('/api/workspaces/members');
   const json = await parseJsonSafe(res);
   if (!res.ok) throw apiError(res, json, 'Failed to fetch members');
-  return (json.data || []) as WorkspaceMember[];
+  return asArray<WorkspaceMember>(json.data, 'GET /api/workspaces/members');
 }
 
 // getTeammates returns only the members the caller shares a team (user group)
@@ -2496,7 +2508,7 @@ export async function listInvitations(): Promise<Invitation[]> {
   const res = await apiFetch('/api/workspaces/invitations');
   const json = await parseJsonSafe(res);
   if (!res.ok) throw apiError(res, json, 'Failed to fetch invitations');
-  return (json.data || []) as Invitation[];
+  return asArray<Invitation>(json.data, 'GET /api/workspaces/invitations');
 }
 
 export async function resendInvitation(id: string): Promise<{ debug_token?: string }> {

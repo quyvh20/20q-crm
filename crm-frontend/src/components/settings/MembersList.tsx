@@ -60,7 +60,7 @@ export default function MembersList() {
   const visibleMembers = members.filter((m) => {
     if (roleFilter && m.role_id !== roleFilter) return false;
     if (statusFilter !== 'all' && m.status !== statusFilter) return false;
-    if (query && !(m.full_name || '').toLowerCase().includes(query) && !m.email.toLowerCase().includes(query)) return false;
+    if (query && !String(m.full_name ?? '').toLowerCase().includes(query) && !String(m.email ?? '').toLowerCase().includes(query)) return false;
     return true;
   });
 
