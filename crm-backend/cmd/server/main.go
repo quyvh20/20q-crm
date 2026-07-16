@@ -13,6 +13,7 @@ import (
 	"crm-backend/internal/ai"
 	"crm-backend/internal/automation"
 	"crm-backend/internal/domain"
+	"crm-backend/internal/integrations"
 	"crm-backend/internal/repository"
 	"crm-backend/internal/usecase"
 	"crm-backend/internal/worker"
@@ -934,6 +935,94 @@ func main() {
 		db.Exec(`CREATE INDEX IF NOT EXISTS idx_api_tokens_hash ON api_tokens(token_hash)`)
 		db.Exec(`ALTER TABLE api_tokens ENABLE ROW LEVEL SECURITY`)
 
+		// ── Lead integration platform (L1.1) ─────────────────────────────
+		// These guards are the ONLY path that reaches prod (golang-migrate is dirty
+		// at v2 and start.sh swallows its failure), so migrations/000043_*.sql is the
+		// fresh-install twin of this block — the two must agree.
+		//
+		// Errors are checked and logged here, against the house style of discarding
+		// them: a typo in a guard for a table that does not exist yet means prod
+		// boots green and the capture endpoint 500s on the first real lead, with
+		// nothing in the logs to say why. Follows the roles-index precedent above.
+		leadGuards := []struct {
+			what string
+			sql  string
+		}{
+			{"lead_sources", `CREATE TABLE IF NOT EXISTS lead_sources (
+				id                   UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+				org_id               UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+				kind                 VARCHAR(32) NOT NULL,
+				name                 VARCHAR(160) NOT NULL,
+				token_hash           VARCHAR(64) UNIQUE,
+				token_prefix         VARCHAR(24),
+				target_slug          VARCHAR(64) NOT NULL DEFAULT 'contact',
+				match_fields         JSONB NOT NULL DEFAULT '["email"]',
+				field_map            JSONB NOT NULL DEFAULT '{}',
+				update_policy        VARCHAR(24) NOT NULL DEFAULT 'fill_blank_only',
+				default_owner_id     UUID REFERENCES users(id) ON DELETE SET NULL,
+				config               JSONB NOT NULL DEFAULT '{}',
+				status               VARCHAR(16) NOT NULL DEFAULT 'active',
+				consecutive_failures INT NOT NULL DEFAULT 0,
+				last_used_at         TIMESTAMPTZ,
+				daily_cap            INT NOT NULL DEFAULT 0,
+				created_by           UUID REFERENCES users(id) ON DELETE SET NULL,
+				created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				deleted_at           TIMESTAMPTZ,
+				disabled_at          TIMESTAMPTZ
+			)`},
+			{"lead_sources org index", `CREATE INDEX IF NOT EXISTS idx_lead_sources_org ON lead_sources(org_id) WHERE deleted_at IS NULL`},
+			{"integration_events", `CREATE TABLE IF NOT EXISTS integration_events (
+				id                 UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+				org_id             UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+				source_id          UUID REFERENCES lead_sources(id) ON DELETE SET NULL,
+				connection_id      UUID,
+				provider_event_id  TEXT,
+				status             VARCHAR(16) NOT NULL,
+				claimed_at         TIMESTAMPTZ,
+				attempts           INT NOT NULL DEFAULT 0,
+				raw_payload        JSONB NOT NULL DEFAULT '{}',
+				context            JSONB NOT NULL DEFAULT '{}',
+				quarantined_fields JSONB NOT NULL DEFAULT '{}',
+				result_slug        VARCHAR(64),
+				result_record_id   UUID,
+				outcome            VARCHAR(16),
+				error              TEXT,
+				created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				processed_at       TIMESTAMPTZ
+			)`},
+			// Two dedupe indexes, not one: Postgres treats NULLs as DISTINCT, so a
+			// source-scoped index alone never fires for a provider webhook (which has
+			// a connection but no source yet) and every retry would duplicate.
+			{"events source dedupe", `CREATE UNIQUE INDEX IF NOT EXISTS idx_integration_events_source_provider
+				ON integration_events(source_id, provider_event_id)
+				WHERE source_id IS NOT NULL AND provider_event_id IS NOT NULL`},
+			{"events connection dedupe", `CREATE UNIQUE INDEX IF NOT EXISTS idx_integration_events_conn_provider
+				ON integration_events(connection_id, provider_event_id)
+				WHERE connection_id IS NOT NULL AND provider_event_id IS NOT NULL`},
+			{"events pending index", `CREATE INDEX IF NOT EXISTS idx_integration_events_pending
+				ON integration_events(created_at) WHERE status = 'pending'`},
+			{"events source/created index", `CREATE INDEX IF NOT EXISTS idx_integration_events_source_created
+				ON integration_events(source_id, created_at)`},
+			{"events org/created index", `CREATE INDEX IF NOT EXISTS idx_integration_events_org_created
+				ON integration_events(org_id, created_at DESC)`},
+			// NON-unique on purpose. The existing contacts unique index is on raw
+			// (org_id, email) and is case-SENSITIVE, so case-variant twins are legal
+			// today; a UNIQUE index here would fail to build on any org that has them —
+			// silently, leaving prod with no index while local tests pass. Takes an
+			// ACCESS EXCLUSIVE lock on contacts for its duration (CONCURRENTLY can't run
+			// on the boot path); fine at current size, but it is a write lock on the
+			// busiest table.
+			{"contacts lower(email) index", `CREATE INDEX IF NOT EXISTS idx_contacts_org_lower_email
+				ON contacts(org_id, LOWER(email)) WHERE deleted_at IS NULL`},
+		}
+		for _, g := range leadGuards {
+			if err := db.Exec(g.sql).Error; err != nil {
+				log.Error("lead integrations boot guard failed", zap.String("what", g.what), zap.Error(err))
+			}
+		}
+		log.Info("Lead integration tables ready")
+
 		log.Info("Seeding system roles...")
 		// SeedSystemRoles is also the idempotent boot backfill for new capability
 		// codes on existing installs: it inserts any DefaultRoleCapabilities row that
@@ -1352,6 +1441,33 @@ func main() {
 		autoHandler.SetDraftAI(gateway)
 		autoHandler.RegisterRoutes(router,
 			delivery.AuthMiddleware(cfg.JWTSecret, authRepo, redisClient),
+			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
+		)
+
+		// ── Lead integrations (L1.1) ─────────────────────────────────────
+		// The protected-group-equivalent stack, built once and handed over whole.
+		// It is NOT the plain AuthMiddleware the automation registration above
+		// passes: that call is why automation's management routes reject personal
+		// access tokens and skip the workspace 2FA policy. Order matters —
+		// RequireTwoFactorSatisfied reads a context key the auth middleware sets, so
+		// mounted first or alone it silently passes everything.
+		integrationsProtected := []gin.HandlerFunc{
+			delivery.AuthMiddlewareWithAPITokens(cfg.JWTSecret, authRepo, redisClient, apiTokenRepo),
+			delivery.RequireTwoFactorSatisfied(),
+		}
+		integrationsRepo := integrations.NewRepository(db)
+		// redisClient may be nil; the limiter then runs entirely in-process. It never
+		// degrades to "allow" — see integrations.RateLimiter.
+		integrationsLimiter := integrations.NewRateLimiter(redisClient, 0, 0)
+		integrationsHandler := integrations.NewHandler(
+			integrationsRepo,
+			integrations.NewLeadIngestService(integrationsRepo, recordService, contactRepo, objectRegistryUC),
+			permissionUC,
+			integrationsLimiter,
+			autoLogger, // same slog handler the automation engine writes to
+		)
+		integrationsHandler.RegisterRoutes(router,
+			integrationsProtected,
 			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
 		)
 

@@ -32,6 +32,17 @@ type Config struct {
 	GoogleClientSecret string `mapstructure:"GOOGLE_CLIENT_SECRET"`
 	GoogleRedirectURL  string `mapstructure:"GOOGLE_REDIRECT_URL"`
 	FrontendURL        string `mapstructure:"FRONTEND_URL"`
+	// PublicAPIBaseURL is the origin third parties and providers reach us on — the
+	// base for capture URLs shown in the UI and, later, OAuth redirect URIs and
+	// provider webhook callbacks.
+	//
+	// Config-derived, never c.Request.Host: prod fronts /api through a Cloudflare
+	// Pages Function that strips Host and sends no X-Forwarded-Host, so a
+	// host-derived URL renders the Railway origin — and a later move to a custom
+	// domain would silently break every callback already registered in a provider's
+	// console. Server-to-server callers need no cookies, so pointing them straight
+	// at the API origin is correct.
+	PublicAPIBaseURL string `mapstructure:"PUBLIC_API_BASE_URL"`
 
 	// Refresh-token cookie policy (P2). The refresh token moves out of
 	// localStorage into an httpOnly cookie. In production the frontend and API
@@ -87,6 +98,11 @@ func LoadConfig() (*Config, error) {
 	viper.BindEnv("GOOGLE_CLIENT_SECRET")
 	viper.BindEnv("GOOGLE_REDIRECT_URL")
 	viper.BindEnv("FRONTEND_URL")
+	// Required, not optional: viper.AutomaticEnv() does NOT feed Unmarshal into the
+	// struct — only explicitly bound keys land. Without this line the field reads ""
+	// in prod (no .env file) and every capture URL the UI renders is malformed.
+	// PADDLE_WEBHOOK_SECRET and TOTP_ENC_KEY are both live victims of exactly this.
+	viper.BindEnv("PUBLIC_API_BASE_URL")
 	viper.BindEnv("COOKIE_SECURE")
 	viper.BindEnv("COOKIE_SAMESITE")
 	viper.BindEnv("COOKIE_DOMAIN")

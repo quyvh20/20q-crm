@@ -167,6 +167,16 @@ const (
 	// CapGroupsManage gates creating/editing user groups and their membership.
 	// Listing groups needs no capability (any member picks a group when sharing).
 	CapGroupsManage = "groups.manage"
+	// CapIntegrationsManage gates lead-source configuration: minting the capture
+	// keys third parties authenticate with, and choosing where their leads land.
+	//
+	// It is deliberately NOT a write power. Captured leads are written by a trusted
+	// callerless actor, so object-level security never runs at ingest time — which
+	// would make this capability an org-wide write primitive if nothing else
+	// checked. The integrations handler therefore re-authorizes the CONFIGURING
+	// admin's own create+edit permission on a source's target object, with their
+	// real caller, whenever the target is set or changed.
+	CapIntegrationsManage = "integrations.manage"
 )
 
 // AllCapabilities is the canonical list, used for validation and the roles UI.
@@ -174,7 +184,7 @@ var AllCapabilities = []string{
 	CapMembersInvite, CapMembersManage, CapRolesManage, CapObjectsManage,
 	CapWorkflowsManage, CapWorkflowsRunAny, CapAuditView, CapAnalyticsView,
 	CapOrgSettings, CapDataExport, CapPipelineManage, CapKnowledgeManage, CapRecordsWrite,
-	CapReportsManage, CapGroupsManage,
+	CapReportsManage, CapGroupsManage, CapIntegrationsManage,
 }
 
 // IsCapability reports whether code is a recognized capability.
@@ -230,6 +240,7 @@ var CapabilityCatalog = []CapabilityInfo{
 	{CapOrgSettings, "Manage workspace settings", "Rename the workspace, set its defaults (currency, locale, timezone), and delete it.", CapGroupSetup, true},
 	{CapRecordsWrite, "Edit collaboration records", "Create and edit tasks, activities, voice notes, tags, and record links.", CapGroupRecords, false},
 	{CapWorkflowsManage, "Manage workflows", "Create and edit automation workflows (org-wide write + email + outbound HTTP).", CapGroupAutomation, true},
+	{CapIntegrationsManage, "Manage integrations", "Connect lead sources and mint the capture keys third parties use to send leads in.", CapGroupAutomation, true},
 	{CapWorkflowsRunAny, "Run any workflow", "Manually run any workflow, not just the ones you created.", CapGroupAutomation, true},
 	{CapKnowledgeManage, "Manage knowledge base", "Edit the knowledge base that powers AI answers.", CapGroupAutomation, false},
 	{CapAuditView, "View audit log", "See the who-did-what admin and security audit trail.", CapGroupOversight, false},

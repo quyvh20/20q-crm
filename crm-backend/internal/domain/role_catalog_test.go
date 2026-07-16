@@ -50,6 +50,11 @@ func TestCapabilityCatalogCoversAllCapabilities(t *testing.T) {
 		CapWorkflowsRunAny: true,
 		CapOrgSettings:     true,
 		CapDataExport:      true,
+		// Minting a capture key hands an outside party a channel that writes records
+		// into the workspace, and choosing a source's target picks which object they
+		// land in — same blast radius as workflow authoring, which is flagged for the
+		// same reason.
+		CapIntegrationsManage: true,
 	}
 	for _, ci := range CapabilityCatalog {
 		if ci.Sensitive != wantSensitive[ci.Code] {

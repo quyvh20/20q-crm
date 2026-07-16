@@ -141,7 +141,13 @@ type LeadSource struct {
 	// workflows, so an unbounded window is a cost bomb, not just noise. 0 = unset.
 	DailyCap int `gorm:"not null;default:0" json:"daily_cap"`
 
-	CreatedBy uuid.UUID      `gorm:"type:uuid" json:"created_by"`
+	// CreatedBy is a POINTER so it can be NULL. A plain uuid.UUID makes GORM send
+	// the zero UUID on every insert, which violates the users(id) FK — the column
+	// is nullable precisely so a source can outlive the admin who made it (ON
+	// DELETE SET NULL). A lead pipe is org infrastructure; it must not die with a
+	// person, which is the credential-dies-with-membership failure this platform
+	// exists to avoid.
+	CreatedBy *uuid.UUID     `gorm:"type:uuid" json:"created_by,omitempty"`
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"` // soft delete: the ledger outlives the source
