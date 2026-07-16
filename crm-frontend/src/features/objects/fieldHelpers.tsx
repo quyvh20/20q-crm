@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
+import { Check, X } from 'lucide-react';
 import {
   listObjectRecordsUnified,
   getObjectRecordUnified,
   type ObjectFieldDescriptor,
 } from '../../lib/api';
 import { recordPath } from './recordRoutes';
+import { Input, Select } from '@/components/ui';
 
 export interface RelationOption {
   id: string;
@@ -16,15 +18,6 @@ export interface RelationOption {
 // 10 case-insensitive matches while searching.
 const PICKER_LIMIT = 10;
 
-const inputStyle = {
-  width: '100%' as const,
-  padding: '8px 10px',
-  border: '1px solid #d1d5db',
-  borderRadius: 6,
-  fontSize: 14,
-  boxSizing: 'border-box' as const,
-};
-
 // formatFieldValue renders a record's value for read-only display (list cells,
 // detail view). Relations show their resolved label when one is supplied, else
 // the raw id — system relations are resolved lazily by the caller.
@@ -34,14 +27,18 @@ export function formatFieldValue(
   relationLabel?: string,
 ) {
   if (value === null || value === undefined || value === '') {
-    return <span style={{ color: '#94a3b8' }}>—</span>;
+    return <span className="text-muted-foreground">—</span>;
   }
   switch (field.type) {
     case 'boolean':
-      return value ? '✅' : '❌';
+      return value ? (
+        <Check aria-label="Yes" className="h-4 w-4 text-primary" />
+      ) : (
+        <X aria-label="No" className="h-4 w-4 text-muted-foreground" />
+      );
     case 'url':
       return (
-        <a href={String(value)} target="_blank" rel="noreferrer" style={{ color: '#3b82f6' }}>
+        <a href={String(value)} target="_blank" rel="noreferrer" className="text-primary hover:underline">
           {String(value).replace(/^https?:\/\//, '').slice(0, 30)}
         </a>
       );
@@ -57,7 +54,7 @@ export function formatFieldValue(
           <Link
             to={recordPath(field.target_slug, String(value))}
             onClick={(e) => e.stopPropagation()}
-            style={{ color: '#3b82f6', textDecoration: 'none' }}
+            className="text-primary no-underline hover:underline"
           >
             {label}
           </Link>
@@ -84,46 +81,49 @@ export function FieldInput({ field, value, onChange, relationOptions }: FieldInp
   switch (field.type) {
     case 'number':
       return (
-        <input
+        <Input
           type="number"
           value={value === '' || value === null || value === undefined ? '' : Number(value)}
           onChange={(e) => onChange(e.target.value === '' ? '' : Number(e.target.value))}
-          style={inputStyle}
         />
       );
     case 'date':
       return (
-        <input
+        <Input
           type="date"
           value={value ? String(value).slice(0, 10) : ''}
           onChange={(e) => onChange(e.target.value)}
-          style={inputStyle}
         />
       );
     case 'url':
       return (
-        <input
+        <Input
           type="url"
           value={String(value ?? '')}
           onChange={(e) => onChange(e.target.value)}
           placeholder="https://..."
-          style={inputStyle}
         />
       );
     case 'boolean':
       return (
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-          <input type="checkbox" checked={!!value} onChange={(e) => onChange(e.target.checked)} /> Yes
+        <label className="flex cursor-pointer items-center gap-2 text-sm text-foreground">
+          <input
+            type="checkbox"
+            checked={!!value}
+            onChange={(e) => onChange(e.target.checked)}
+            className="h-4 w-4 rounded border-input accent-primary"
+          />{' '}
+          Yes
         </label>
       );
     case 'select':
       return (
-        <select value={String(value ?? '')} onChange={(e) => onChange(e.target.value)} style={inputStyle}>
+        <Select value={String(value ?? '')} onChange={(e) => onChange(e.target.value)}>
           <option value="">— Select —</option>
           {(field.options || []).map((opt) => (
             <option key={opt} value={opt}>{opt}</option>
           ))}
-        </select>
+        </Select>
       );
     case 'relation':
       // Always use the searchable picker for a relation with a target object — it
@@ -143,23 +143,21 @@ export function FieldInput({ field, value, onChange, relationOptions }: FieldInp
         );
       }
       return (
-        <input
+        <Input
           type="text"
           value={String(value ?? '')}
           onChange={(e) => onChange(e.target.value)}
           placeholder="Related record id"
-          style={inputStyle}
         />
       );
     case 'text':
     default:
       return (
-        <input
+        <Input
           type="text"
           value={String(value ?? '')}
           onChange={(e) => onChange(e.target.value)}
           placeholder={`Enter ${field.label.toLowerCase()}`}
-          style={inputStyle}
         />
       );
   }
@@ -229,8 +227,8 @@ function RelationPicker({
   const shown = (q ? base.filter((o) => o.label.toLowerCase().includes(q)) : base).slice(0, PICKER_LIMIT);
 
   return (
-    <div style={{ position: 'relative' }}>
-      <input
+    <div className="relative">
+      <Input
         type="text"
         // While the menu is open the input is the search box; closed, it shows the
         // current selection's label.
@@ -240,19 +238,12 @@ function RelationPicker({
         // Delay close so a click on an option (mousedown) registers first.
         onBlur={() => setTimeout(() => setOpen(false), 150)}
         placeholder={selectedLabel ?? '— None — (type to search)'}
-        style={inputStyle}
       />
       {open && (
-        <div
-          style={{
-            position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 30,
-            background: '#fff', border: '1px solid #d1d5db', borderRadius: 6,
-            marginTop: 2, maxHeight: 220, overflowY: 'auto', boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
-          }}
-        >
+        <div className="absolute left-0 right-0 top-full z-30 mt-1 max-h-56 overflow-y-auto rounded-lg border border-border bg-popover text-popover-foreground shadow-lg">
           <div
             onMouseDown={() => { onChange(''); setOpen(false); }}
-            style={{ padding: '8px 10px', fontSize: 13, color: '#94a3b8', cursor: 'pointer' }}
+            className="cursor-pointer px-3 py-2 text-sm text-muted-foreground hover:bg-accent"
           >
             — None —
           </div>
@@ -260,16 +251,15 @@ function RelationPicker({
             <div
               key={o.id}
               onMouseDown={() => { onChange(o.id); setOpen(false); }}
-              style={{
-                padding: '8px 10px', fontSize: 14, cursor: 'pointer',
-                background: o.id === idStr ? '#eff6ff' : '#fff',
-              }}
+              className={`cursor-pointer px-3 py-2 text-sm hover:bg-accent ${
+                o.id === idStr ? 'bg-primary/10 text-primary' : ''
+              }`}
             >
               {o.label}
             </div>
           ))}
           {shown.length === 0 && (
-            <div style={{ padding: '8px 10px', fontSize: 13, color: '#94a3b8' }}>No matches</div>
+            <div className="px-3 py-2 text-sm text-muted-foreground">No matches</div>
           )}
         </div>
       )}

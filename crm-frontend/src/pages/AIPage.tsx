@@ -1,7 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import {
+  BarChart3, Calendar, ClipboardList, DollarSign, Flame, Phone, Plus, Send, Sparkles,
+  Target, Ticket, TrendingUp, TriangleAlert, Trophy, User, Users, type LucideIcon,
+} from 'lucide-react';
 import { useAuth } from '../lib/auth';
 import { sendCommand, endChatSession, type WorkspaceContext } from '../lib/api';
+import { Badge } from '../components/ui/badge';
+import { Button } from '../components/ui/button';
 import MessageBubble from '../components/ai/MessageBubble';
 import ConfirmBanner from '../components/ai/ConfirmBanner';
 import InlineForm from '../components/ai/InlineForm';
@@ -38,34 +44,34 @@ function saveSession(sessionId: string, messages: ChatMessage[]) {
 
 // ── Role-based suggested prompts ─────────────────────────────────────────────
 
-const ROLE_SUGGESTIONS: Record<string, { icon: string; label: string; command: string }[]> = {
+const ROLE_SUGGESTIONS: Record<string, { icon: LucideIcon; label: string; command: string }[]> = {
   owner: [
-    { icon: '📊', label: 'Org analytics', command: "Show me this month's sales performance" },
-    { icon: '🏆', label: 'Top performers', command: 'Who are the top performing sales reps?' },
-    { icon: '💰', label: 'Revenue forecast', command: 'Give me the revenue forecast for next quarter' },
-    { icon: '🎫', label: 'Create a ticket', command: 'Create a new support ticket' },
+    { icon: BarChart3, label: 'Org analytics', command: "Show me this month's sales performance" },
+    { icon: Trophy, label: 'Top performers', command: 'Who are the top performing sales reps?' },
+    { icon: DollarSign, label: 'Revenue forecast', command: 'Give me the revenue forecast for next quarter' },
+    { icon: Ticket, label: 'Create a ticket', command: 'Create a new support ticket' },
   ],
   admin: [
-    { icon: '📊', label: 'Pipeline health', command: 'What is the current pipeline health?' },
-    { icon: '🔥', label: 'Deals at risk', command: 'Which deals are at risk of being lost?' },
-    { icon: '📈', label: 'Monthly summary', command: "Give me a summary of this month's performance" },
-    { icon: '🎫', label: 'Create a ticket', command: 'Create a new support ticket' },
+    { icon: BarChart3, label: 'Pipeline health', command: 'What is the current pipeline health?' },
+    { icon: Flame, label: 'Deals at risk', command: 'Which deals are at risk of being lost?' },
+    { icon: TrendingUp, label: 'Monthly summary', command: "Give me a summary of this month's performance" },
+    { icon: Ticket, label: 'Create a ticket', command: 'Create a new support ticket' },
   ],
   manager: [
-    { icon: '👥', label: 'Team pipeline', command: 'Give me a pipeline summary for my team' },
-    { icon: '⚠️', label: 'Stale deals', command: 'Find all deals with no activity in 7+ days' },
-    { icon: '🎯', label: 'Coaching insights', command: 'Which deals need my attention this week?' },
-    { icon: '🎫', label: 'Create a ticket', command: 'Create a new support ticket' },
+    { icon: Users, label: 'Team pipeline', command: 'Give me a pipeline summary for my team' },
+    { icon: TriangleAlert, label: 'Stale deals', command: 'Find all deals with no activity in 7+ days' },
+    { icon: Target, label: 'Coaching insights', command: 'Which deals need my attention this week?' },
+    { icon: Ticket, label: 'Create a ticket', command: 'Create a new support ticket' },
   ],
   sales_rep: [
-    { icon: '📋', label: 'My deals', command: 'Show me my active deals' },
-    { icon: '📅', label: 'Tasks today', command: 'What tasks are due today?' },
-    { icon: '📞', label: 'Follow-ups', command: 'Which of my contacts need a follow-up?' },
-    { icon: '🎫', label: 'Create a ticket', command: 'Create a new support ticket' },
+    { icon: ClipboardList, label: 'My deals', command: 'Show me my active deals' },
+    { icon: Calendar, label: 'Tasks today', command: 'What tasks are due today?' },
+    { icon: Phone, label: 'Follow-ups', command: 'Which of my contacts need a follow-up?' },
+    { icon: Ticket, label: 'Create a ticket', command: 'Create a new support ticket' },
   ],
   viewer: [
-    { icon: '📊', label: 'Pipeline overview', command: 'Show the pipeline overview' },
-    { icon: '👤', label: 'Top contacts', command: 'Who are the highest value contacts?' },
+    { icon: BarChart3, label: 'Pipeline overview', command: 'Show the pipeline overview' },
+    { icon: User, label: 'Top contacts', command: 'Who are the highest value contacts?' },
   ],
 };
 
@@ -252,37 +258,39 @@ export default function AIPage() {
   const isEmpty = messages.length === 0 && !streaming;
 
   return (
-    <div className="ai-page">
+    // Counteract the p-6 (24px) padding from AppLayout's <main>.
+    <div className="-m-6 flex h-[calc(100%+3rem)] min-h-0 flex-col bg-background">
       {/* Top bar */}
-      <header className="ai-page-header">
-        <div className="ai-page-header-left">
-          <span className="ai-page-logo">✦</span>
-          <span className="ai-page-title">AI Assistant</span>
-          <span className="ai-page-badge">{currentRole}</span>
+      <header className="flex shrink-0 items-center justify-between border-b border-border bg-card px-6 py-3">
+        <div className="flex items-center gap-2">
+          <Sparkles aria-hidden className="h-[18px] w-[18px] text-primary" />
+          <span className="text-base font-bold text-foreground">AI Assistant</span>
+          <Badge className="capitalize">{currentRole}</Badge>
         </div>
-        <button className="ai-page-new-chat" onClick={handleNewChat} disabled={streaming}>
-          ＋ New Chat
-        </button>
+        <Button variant="outline" size="sm" onClick={handleNewChat} disabled={streaming}>
+          <Plus aria-hidden />
+          New Chat
+        </Button>
       </header>
 
       {/* Scrollable body */}
-      <div className="ai-page-body" ref={scrollRef}>
-        <div className="ai-page-column">
+      <div className="flex-1 overflow-y-auto px-4 pb-4 pt-6" ref={scrollRef}>
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-1 [&_.ai-inline-form]:max-w-[520px] [&_.ai-markdown-content_table]:max-w-full">
           {/* Empty state */}
           {isEmpty && (
-            <div className="ai-page-empty">
-              <div className="ai-page-empty-icon">✦</div>
-              <h1 className="ai-page-empty-title">How can I help you?</h1>
-              <p className="ai-page-empty-sub">Ask anything about your CRM data, or create records with natural language.</p>
-              <div className="ai-page-chips">
+            <div className="flex flex-col items-center justify-center px-5 pb-10 pt-20 text-center">
+              <Sparkles aria-hidden className="mb-4 h-12 w-12 text-primary" />
+              <h1 className="mb-2 text-3xl font-bold text-foreground">How can I help you?</h1>
+              <p className="mb-8 max-w-md text-[15px] text-muted-foreground">Ask anything about your CRM data, or create records with natural language.</p>
+              <div className="grid w-full max-w-lg grid-cols-2 gap-2.5">
                 {suggestions.map(s => (
                   <button
                     key={s.command}
-                    className="ai-page-chip"
+                    className="flex items-center gap-2.5 rounded-xl border border-border bg-card px-4 py-3.5 text-left text-sm font-medium text-foreground transition-colors hover:border-primary/50 hover:bg-accent disabled:opacity-50"
                     onClick={() => sendMessage(s.command)}
                     disabled={streaming}
                   >
-                    <span className="ai-page-chip-icon">{s.icon}</span>
+                    <s.icon aria-hidden className="h-5 w-5 shrink-0 text-primary" />
                     <span>{s.label}</span>
                   </button>
                 ))}
@@ -308,7 +316,7 @@ export default function AIPage() {
           {formQueue.length > 0 && !streaming && (
             <>
               {formQueue.length > 1 && (
-                <div className="ai-page-form-counter">
+                <div className="mb-1 inline-flex items-center gap-1.5 self-start rounded-full border border-primary/25 bg-primary/10 px-3.5 py-1.5 text-xs font-semibold text-primary">
                   Form 1 of {formQueue.length} — {formQueue.length - 1} more after this
                 </div>
               )}
@@ -336,20 +344,20 @@ export default function AIPage() {
 
           {/* Streaming indicator */}
           {streaming && (
-            <div className="ai-page-thinking">
-              <span className="ai-page-dot" />
-              <span className="ai-page-dot" />
-              <span className="ai-page-dot" />
+            <div className="flex items-center gap-1.5 px-2 py-3">
+              <span className="h-2 w-2 animate-pulse rounded-full bg-primary" />
+              <span className="h-2 w-2 animate-pulse rounded-full bg-primary [animation-delay:150ms]" />
+              <span className="h-2 w-2 animate-pulse rounded-full bg-primary [animation-delay:300ms]" />
             </div>
           )}
 
-          <div ref={bottomAnchorRef} style={{ minHeight: 1 }} />
+          <div ref={bottomAnchorRef} className="min-h-px" />
         </div>
       </div>
 
       {/* Input bar */}
-      <div className="ai-page-input-area">
-        <div className="ai-page-input-wrap">
+      <div className="flex shrink-0 flex-col items-center border-t border-border bg-card p-4">
+        <div className="flex w-full max-w-3xl items-end gap-2.5 rounded-2xl border border-input bg-background py-2.5 pl-4 pr-3 transition-colors focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/20">
           <textarea
             ref={inputRef}
             value={input}
@@ -358,286 +366,20 @@ export default function AIPage() {
             placeholder="Message AI Assistant…"
             rows={1}
             disabled={streaming}
-            className="ai-page-textarea"
+            className="max-h-40 min-h-6 flex-1 resize-none bg-transparent text-[15px] leading-normal text-foreground outline-none placeholder:text-muted-foreground"
           />
-          <button
-            className="ai-page-send"
+          <Button
+            size="icon"
             onClick={() => sendMessage()}
             disabled={!input.trim() || streaming}
             title="Send"
+            aria-label="Send"
           >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" />
-            </svg>
-          </button>
+            <Send aria-hidden />
+          </Button>
         </div>
-        <p className="ai-page-disclaimer">AI can make mistakes. Verify important information.</p>
+        <p className="mt-1.5 text-[11px] text-muted-foreground/70">AI can make mistakes. Verify important information.</p>
       </div>
-
-      <style>{pageCSS}</style>
     </div>
   );
 }
-
-// ── Styles ────────────────────────────────────────────────────────────────────
-
-const pageCSS = `
-  .ai-page {
-    display: flex;
-    flex-direction: column;
-    /* Counteract the p-6 (24px) padding from AppLayout's <main> */
-    margin: -24px;
-    height: calc(100% + 48px);
-    min-height: 0;
-    background: var(--background);
-  }
-
-  /* ── Header ── */
-  .ai-page-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 24px;
-    border-bottom: 1px solid var(--border);
-    background: var(--card);
-    flex-shrink: 0;
-  }
-  .ai-page-header-left {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .ai-page-logo {
-    font-size: 18px;
-    background: linear-gradient(135deg, #f59e0b, #ef4444);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-  }
-  .ai-page-title {
-    font-weight: 700;
-    font-size: 16px;
-    color: var(--foreground);
-  }
-  .ai-page-badge {
-    font-size: 10px;
-    font-weight: 600;
-    background: linear-gradient(135deg, #f59e0b, #ef4444);
-    color: #fff;
-    border-radius: 10px;
-    padding: 2px 8px;
-    text-transform: capitalize;
-  }
-  .ai-page-new-chat {
-    background: var(--background);
-    border: 1px solid var(--border);
-    color: var(--foreground);
-    border-radius: 8px;
-    padding: 6px 14px;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.15s;
-  }
-  .ai-page-new-chat:hover {
-    border-color: #f59e0b;
-    color: #b45309;
-  }
-
-  /* ── Scrollable body ── */
-  .ai-page-body {
-    flex: 1;
-    overflow-y: auto;
-    padding: 24px 16px 16px;
-  }
-  .ai-page-column {
-    max-width: 768px;
-    margin: 0 auto;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  /* ── Empty state ── */
-  .ai-page-empty {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 80px 20px 40px;
-    text-align: center;
-  }
-  .ai-page-empty-icon {
-    font-size: 48px;
-    background: linear-gradient(135deg, #f59e0b, #ef4444);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    margin-bottom: 16px;
-  }
-  .ai-page-empty-title {
-    font-size: 28px;
-    font-weight: 700;
-    color: var(--foreground);
-    margin: 0 0 8px;
-  }
-  .ai-page-empty-sub {
-    font-size: 15px;
-    color: var(--muted-foreground);
-    margin: 0 0 32px;
-    max-width: 420px;
-  }
-  .ai-page-chips {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 10px;
-    max-width: 480px;
-    width: 100%;
-  }
-  .ai-page-chip {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 14px 18px;
-    border-radius: 12px;
-    border: 1px solid var(--border);
-    background: var(--card);
-    cursor: pointer;
-    font-size: 14px;
-    font-weight: 500;
-    color: var(--foreground);
-    text-align: left;
-    transition: all 0.15s;
-  }
-  .ai-page-chip:hover {
-    border-color: #f59e0b;
-    background: rgba(245, 158, 11, 0.04);
-    transform: translateY(-1px);
-    box-shadow: 0 2px 8px rgba(245, 158, 11, 0.1);
-  }
-  .ai-page-chip-icon {
-    font-size: 20px;
-    flex-shrink: 0;
-  }
-
-  /* ── Thinking dots ── */
-  .ai-page-thinking {
-    display: flex;
-    gap: 5px;
-    padding: 12px 8px;
-    align-items: center;
-  }
-  .ai-page-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #f59e0b;
-    animation: aip-blink 1s ease infinite;
-  }
-  .ai-page-dot:nth-child(2) { animation-delay: 0.15s; }
-  .ai-page-dot:nth-child(3) { animation-delay: 0.3s; }
-
-  /* ── Input area ── */
-  .ai-page-input-area {
-    border-top: 1px solid var(--border);
-    padding: 16px;
-    background: var(--card);
-    flex-shrink: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-  }
-  .ai-page-input-wrap {
-    max-width: 768px;
-    width: 100%;
-    display: flex;
-    align-items: flex-end;
-    gap: 10px;
-    background: var(--background);
-    border: 1px solid var(--border);
-    border-radius: 16px;
-    padding: 10px 12px 10px 16px;
-    transition: border-color 0.15s, box-shadow 0.15s;
-  }
-  .ai-page-input-wrap:focus-within {
-    border-color: #f59e0b;
-    box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.1);
-  }
-  .ai-page-textarea {
-    flex: 1;
-    border: none;
-    outline: none;
-    background: transparent;
-    color: var(--foreground);
-    font-family: inherit;
-    font-size: 15px;
-    line-height: 1.5;
-    resize: none;
-    max-height: 150px;
-    min-height: 24px;
-  }
-  .ai-page-textarea::placeholder {
-    color: var(--muted-foreground);
-  }
-  .ai-page-send {
-    width: 36px;
-    height: 36px;
-    border-radius: 10px;
-    border: none;
-    background: linear-gradient(135deg, #f59e0b, #ef4444);
-    color: #fff;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    transition: opacity 0.15s, transform 0.1s;
-  }
-  .ai-page-send:disabled {
-    opacity: 0.35;
-    cursor: default;
-  }
-  .ai-page-send:not(:disabled):hover {
-    transform: scale(1.05);
-  }
-  .ai-page-disclaimer {
-    font-size: 11px;
-    color: var(--muted-foreground);
-    margin: 6px 0 0;
-    opacity: 0.6;
-  }
-
-  /* ── Animations ── */
-  @keyframes aip-blink {
-    0%, 100% { opacity: 0.3; transform: scale(0.8); }
-    50%      { opacity: 1;   transform: scale(1); }
-  }
-
-  /* ── Override message bubble widths for full page ── */
-  .ai-page-column .ai-markdown-content table {
-    max-width: 100%;
-  }
-
-  /* ── Inline form gets more breathing room ── */
-  .ai-page-column .ai-inline-form {
-    max-width: 520px;
-  }
-
-  /* ── Form queue counter ── */
-  .ai-page-form-counter {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 14px;
-    border-radius: 20px;
-    background: linear-gradient(135deg, rgba(245, 158, 11, 0.1), rgba(239, 68, 68, 0.08));
-    border: 1px solid rgba(245, 158, 11, 0.25);
-    font-size: 12px;
-    font-weight: 600;
-    color: #b45309;
-    margin-bottom: 4px;
-    animation: fadeSlide 0.2s ease;
-  }
-  @keyframes fadeSlide {
-    from { opacity: 0; transform: translateY(6px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
-`;

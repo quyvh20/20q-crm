@@ -8,6 +8,7 @@ import { prettyRole, SENSITIVE_CAPABILITIES } from '../../lib/roles';
 import { useDocumentTitle } from '../../lib/useDocumentTitle';
 import { useConfirm } from '../../components/common/ConfirmDialog';
 import HelpTip from '../../components/common/HelpTip';
+import { Badge, Button, Input, Select, SpinnerBlock, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableShell } from '@/components/ui';
 
 // Row scope in plain words (U6). 'team' is the third value: a team IS a user
 // group, so a team-scoped member sees the records owned by everyone they share
@@ -137,15 +138,15 @@ export default function RoleDetailSection() {
     );
   };
 
-  if (isLoading) return <div className="text-sm text-muted-foreground py-8">Loading role…</div>;
+  if (isLoading) return <SpinnerBlock label="Loading role…" />;
 
   if (loadError || !role || !data) {
     return (
       <div className="space-y-3">
-        <Link to="/settings/roles" className="inline-flex items-center gap-1.5 text-sm text-blue-600 hover:underline">
+        <Link to="/settings/roles" className="inline-flex items-center gap-1.5 text-sm text-primary hover:underline">
           <ArrowLeft className="w-4 h-4" /> All roles
         </Link>
-        <div className="bg-red-50 text-red-700 text-sm rounded-md px-3 py-2">
+        <div className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {loadError instanceof Error ? loadError.message : 'Role not found.'}
         </div>
       </div>
@@ -159,39 +160,30 @@ export default function RoleDetailSection() {
     <div className="space-y-5">
       {/* Breadcrumb + identity */}
       <div>
-        <Link to="/settings/roles" className="inline-flex items-center gap-1.5 text-sm text-blue-600 hover:underline">
+        <Link to="/settings/roles" className="inline-flex items-center gap-1.5 text-sm text-primary hover:underline">
           <ArrowLeft className="w-4 h-4" /> All roles
         </Link>
         {editingIdentity ? (
           <div className="mt-2 space-y-2 max-w-md">
-            <input
+            <Input
               value={editName}
               onChange={(e) => setEditName(e.target.value)}
               aria-label="Role name"
-              className="w-full border rounded-md px-2.5 py-1.5 text-sm bg-background font-semibold"
+              className="font-semibold"
             />
-            <input
+            <Input
               value={editDesc}
               onChange={(e) => setEditDesc(e.target.value)}
               aria-label="Role description"
               placeholder="What this role is for (optional)"
-              className="w-full border rounded-md px-2.5 py-1.5 text-sm bg-background"
             />
             <div className="flex gap-2">
-              <button
-                onClick={saveIdentity}
-                disabled={busy || !editName.trim()}
-                className="px-3 py-1.5 text-sm rounded-md bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50"
-              >
+              <Button size="sm" onClick={saveIdentity} disabled={busy || !editName.trim()}>
                 Save
-              </button>
-              <button
-                onClick={() => setEditingIdentity(false)}
-                disabled={busy}
-                className="px-3 py-1.5 text-sm rounded-md border hover:bg-accent disabled:opacity-50"
-              >
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => setEditingIdentity(false)} disabled={busy}>
                 Cancel
-              </button>
+              </Button>
             </div>
           </div>
         ) : (
@@ -216,25 +208,26 @@ export default function RoleDetailSection() {
               </HelpTip>
               {!role.is_system && (
                 <button
+                  type="button"
                   onClick={startEditIdentity}
                   aria-label="Edit role name and description"
-                  className="text-muted-foreground hover:text-foreground"
+                  className="rounded text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <Pencil className="w-3.5 h-3.5" aria-hidden="true" />
                 </button>
               )}
               {role.is_owner && (
-                <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+                <Badge variant="secondary">
                   <Lock className="w-3 h-3" aria-hidden="true" /> Full access
-                </span>
+                </Badge>
               )}
-              <span className="text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+              <Badge variant="secondary">
                 {role.is_system ? 'Built-in role' : 'Custom role'}
-              </span>
+              </Badge>
               {canSeeMembers ? (
                 <Link
                   to={`/settings/members?role=${role.id}`}
-                  className="inline-flex items-center gap-1 text-xs text-blue-600 hover:underline"
+                  className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
                 >
                   <Users className="w-3.5 h-3.5" aria-hidden="true" /> {memberCountText}
                 </Link>
@@ -260,10 +253,10 @@ export default function RoleDetailSection() {
         )}
       </div>
 
-      {saveError && <div className="bg-red-50 text-red-700 text-sm rounded-md px-3 py-2">{saveError}</div>}
+      {saveError && <div className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{saveError}</div>}
 
       {/* Data access (row scope, in plain words) */}
-      <section className="border rounded-lg p-4">
+      <section className="border border-border rounded-xl p-4">
         <h3 className="text-sm font-semibold">Which records can they see?</h3>
         <p className="text-xs text-muted-foreground mt-0.5 mb-2">
           Applies on top of the object access below, per record. Records shared with them individually are always visible.
@@ -272,17 +265,17 @@ export default function RoleDetailSection() {
           <p className="text-sm">{SCOPE_SUMMARY[role.data_scope]}</p>
         ) : (
           <>
-            <select
+            <Select
               value={role.data_scope}
               disabled={busy}
               onChange={(e) => changeScope(e.target.value as DataScope)}
               aria-label="Which records members with this role can see"
-              className="border rounded-md px-2.5 py-1.5 text-sm bg-background disabled:opacity-60"
+              className="w-auto"
             >
               <option value="all">All records in the workspace</option>
               <option value="team">Records owned by anyone on their teams</option>
               <option value="own">Only records they own</option>
-            </select>
+            </Select>
             <p className="text-xs text-muted-foreground mt-2">
               {SCOPE_HELP[role.data_scope]}
             </p>
@@ -291,7 +284,7 @@ export default function RoleDetailSection() {
       </section>
 
       {/* Effective access: the merged "what can this role see?" table (U3.2) */}
-      <section className="border rounded-lg p-4 space-y-3">
+      <section className="border border-border rounded-xl p-4 space-y-3">
         <div className="flex items-start justify-between gap-3 flex-wrap">
           <div>
             <h3 className="text-sm font-semibold">What can this role see and do?</h3>
@@ -301,14 +294,14 @@ export default function RoleDetailSection() {
           </div>
           {!role.is_owner && (
             <div className="flex gap-3 text-xs">
-              <Link to={`/settings/object-access?role=${role.id}`} className="text-blue-600 hover:underline">
+              <Link to={`/settings/object-access?role=${role.id}`} className="text-primary hover:underline">
                 Edit object access
               </Link>
-              <Link to={`/settings/field-access?role=${role.id}`} className="text-blue-600 hover:underline">
+              <Link to={`/settings/field-access?role=${role.id}`} className="text-primary hover:underline">
                 Edit field access
               </Link>
               {/* Layout assignments live on the ObjectsManager's Layouts tab. */}
-              <Link to="/settings/objects" className="text-blue-600 hover:underline">
+              <Link to="/settings/objects" className="text-primary hover:underline">
                 Edit layouts
               </Link>
             </div>
@@ -316,7 +309,7 @@ export default function RoleDetailSection() {
         </div>
 
         {zeroRead && (
-          <div className="flex items-start gap-2 bg-amber-50 text-amber-800 text-sm rounded-md px-3 py-2 border border-amber-200">
+          <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-600 dark:text-amber-400">
             <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" aria-hidden="true" />
             <span>
               This role can't see any objects yet — members with it will find every page empty.{' '}
@@ -327,67 +320,60 @@ export default function RoleDetailSection() {
           </div>
         )}
 
-        <div className="border rounded-lg overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/40">
-              <tr>
-                <th className="text-left font-medium px-3 py-2">Object</th>
-                <th className="font-medium px-3 py-2 text-center">Read</th>
-                <th className="font-medium px-3 py-2 text-center">Create</th>
-                <th className="font-medium px-3 py-2 text-center">Edit</th>
-                <th className="font-medium px-3 py-2 text-center">Delete</th>
-                <th className="text-left font-medium px-3 py-2">Field limits</th>
-                <th className="text-left font-medium px-3 py-2">Layout</th>
-              </tr>
-            </thead>
-            <tbody>
+        <TableShell>
+          <Table>
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead>Object</TableHead>
+                <TableHead className="text-center">Read</TableHead>
+                <TableHead className="text-center">Create</TableHead>
+                <TableHead className="text-center">Edit</TableHead>
+                <TableHead className="text-center">Delete</TableHead>
+                <TableHead>Field limits</TableHead>
+                <TableHead>Layout</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {data.objects.map((o) => (
-                <tr key={o.slug} className="border-t">
-                  <td className="px-3 py-2 whitespace-nowrap">
-                    <span className="mr-1.5">{o.icon}</span>{o.label}
+                <TableRow key={o.slug} className="hover:bg-transparent">
+                  <TableCell className="whitespace-nowrap">
+                    <span aria-hidden className="mr-1.5 inline-flex h-6 w-6 items-center justify-center rounded bg-muted text-sm align-middle">{o.icon}</span>{o.label}
                     {!o.is_system && <span className="ml-1.5 text-xs text-muted-foreground">(custom)</span>}
-                  </td>
+                  </TableCell>
                   {(['read', 'create', 'edit', 'delete'] as const).map((action) => (
-                    <td key={action} className="px-3 py-2 text-center">
+                    <TableCell key={action} className="text-center">
                       {o[action] ? (
-                        <Check className="w-4 h-4 text-green-600 inline" role="img" aria-label={`Can ${action} ${o.label}`} />
+                        <Check className="w-4 h-4 text-emerald-600 dark:text-emerald-400 inline" role="img" aria-label={`Can ${action} ${o.label}`} />
                       ) : (
                         <Minus className="w-4 h-4 text-muted-foreground/50 inline" role="img" aria-label={`Cannot ${action} ${o.label}`} />
                       )}
-                    </td>
+                    </TableCell>
                   ))}
-                  <td className="px-3 py-2">
+                  <TableCell>
                     {o.restricted_fields.length === 0 ? (
                       <span className="text-xs text-muted-foreground">All fields</span>
                     ) : (
                       <div className="flex flex-wrap gap-1">
                         {o.restricted_fields.map((f) => (
-                          <span
-                            key={f.key}
-                            className={`text-[11px] px-1.5 py-0.5 rounded border ${
-                              f.level === 'hidden'
-                                ? 'bg-amber-500/10 text-amber-700 border-amber-500/30'
-                                : 'bg-muted text-muted-foreground border-border'
-                            }`}
-                          >
+                          <Badge key={f.key} variant={f.level === 'hidden' ? 'warning' : 'secondary'}>
                             {f.label} · {f.level === 'hidden' ? 'Hidden' : 'Read-only'}
-                          </span>
+                          </Badge>
                         ))}
                       </div>
                     )}
-                  </td>
-                  <td className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap">
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
                     {layoutBySlug.get(o.slug) ?? 'Default'}
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
-        </div>
+            </TableBody>
+          </Table>
+        </TableShell>
       </section>
 
       {/* Capabilities — grouped, descriptions visible, editable for custom roles */}
-      <section className="border rounded-lg p-4 space-y-3">
+      <section className="border border-border rounded-xl p-4 space-y-3">
         <div>
           <h3 className="text-sm font-semibold">What can they manage?</h3>
           <p className="text-xs text-muted-foreground mt-0.5">
@@ -415,11 +401,7 @@ export default function RoleDetailSection() {
                       <span className={role.is_system ? 'text-muted-foreground' : ''}>
                         <span className="inline-flex items-center gap-1.5">
                           {cap.label}
-                          {cap.sensitive && (
-                            <span className="text-[10px] font-medium px-1.5 py-px rounded-full bg-amber-500/15 text-amber-700">
-                              Sensitive
-                            </span>
-                          )}
+                          {cap.sensitive && <Badge variant="warning">Sensitive</Badge>}
                         </span>
                         {cap.description && (
                           <span className="block text-xs text-muted-foreground">{cap.description}</span>

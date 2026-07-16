@@ -3,6 +3,7 @@ import { getMe, changePassword, setPassword, unlinkGoogle, type AuthMethods } fr
 import SecuritySessions from '../../components/settings/SecuritySessions';
 import TwoFactorSetup from '../../components/settings/TwoFactorSetup';
 import { useConfirm } from '../../components/common/ConfirmDialog';
+import { Badge, Button, Input, Label, Skeleton } from '@/components/ui';
 
 // Security section (U2): in-app password management + connected accounts on
 // top of the existing device-session list. Before this, rotating a password
@@ -78,17 +79,15 @@ export default function SecuritySection() {
     }
   };
 
-  const inputCls = 'w-full px-3 py-2 bg-background border border-border rounded-lg text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary';
-
   return (
     <div className="space-y-8">
       {loadError && (
-        <div className="rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-400">{loadError}</div>
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{loadError}</div>
       )}
 
       {/* Password — wait for methods so we don't flash the wrong form */}
       {methods === null && !loadError ? (
-        <div className="max-w-md h-40 rounded-lg bg-muted/50 animate-pulse" />
+        <Skeleton className="max-w-md h-40 rounded-lg" />
       ) : (
       <section className="max-w-md space-y-3">
         <div>
@@ -100,31 +99,27 @@ export default function SecuritySection() {
           </p>
         </div>
         {msg && (
-          <div className={`rounded-md border p-3 text-sm ${msg.ok ? 'border-green-500/40 bg-green-500/10 text-green-500' : 'border-red-500/40 bg-red-500/10 text-red-400'}`}>
+          <div className={`rounded-lg border p-3 text-sm ${msg.ok ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'border-destructive/40 bg-destructive/10 text-destructive'}`}>
             {msg.text}
           </div>
         )}
         {hasPassword && (
           <div>
-            <label className="block text-xs font-medium text-muted-foreground mb-1">Current password</label>
-            <input type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} className={inputCls} />
+            <Label htmlFor="current-password" className="mb-1 block text-xs text-muted-foreground">Current password</Label>
+            <Input id="current-password" type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} />
           </div>
         )}
         <div>
-          <label className="block text-xs font-medium text-muted-foreground mb-1">New password</label>
-          <input type="password" autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} className={inputCls} />
+          <Label htmlFor="new-password" className="mb-1 block text-xs text-muted-foreground">New password</Label>
+          <Input id="new-password" type="password" autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} />
         </div>
         <div>
-          <label className="block text-xs font-medium text-muted-foreground mb-1">Confirm new password</label>
-          <input type="password" autoComplete="new-password" value={confirmPw} onChange={(e) => setConfirmPw(e.target.value)} className={inputCls} />
+          <Label htmlFor="confirm-password" className="mb-1 block text-xs text-muted-foreground">Confirm new password</Label>
+          <Input id="confirm-password" type="password" autoComplete="new-password" value={confirmPw} onChange={(e) => setConfirmPw(e.target.value)} />
         </div>
-        <button
-          onClick={submitPassword}
-          disabled={busy || !next || !confirmPw || (hasPassword && !current)}
-          className="px-4 py-2 bg-primary text-primary-foreground rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-50"
-        >
+        <Button onClick={submitPassword} disabled={busy || !next || !confirmPw || (hasPassword && !current)}>
           {busy ? 'Saving…' : hasPassword ? 'Change password' : 'Set password'}
-        </button>
+        </Button>
       </section>
       )}
 
@@ -141,9 +136,7 @@ export default function SecuritySection() {
               <p className="text-sm font-medium text-foreground">Email &amp; password</p>
               <p className="text-xs text-muted-foreground">{hasPassword ? 'Enabled' : 'Not set — use the form above to add one'}</p>
             </div>
-            <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${hasPassword ? 'bg-green-500/10 text-green-500' : 'bg-muted text-muted-foreground'}`}>
-              {hasPassword ? 'Active' : 'Off'}
-            </span>
+            <Badge variant={hasPassword ? 'success' : 'secondary'}>{hasPassword ? 'Active' : 'Off'}</Badge>
           </div>
           <div className="flex items-center justify-between p-3">
             <div>
@@ -153,16 +146,18 @@ export default function SecuritySection() {
               </p>
             </div>
             {methods?.google ? (
-              <button
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={disconnectGoogle}
                 disabled={googleBusy || !hasPassword}
                 title={!hasPassword ? 'Set a password first so you keep a way to sign in' : undefined}
-                className="text-sm text-red-400 border border-border rounded-md px-3 py-1.5 hover:bg-red-500/10 disabled:opacity-50"
+                className="text-destructive hover:bg-destructive/10 hover:text-destructive"
               >
                 {googleBusy ? 'Disconnecting…' : 'Disconnect'}
-              </button>
+              </Button>
             ) : (
-              <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-muted text-muted-foreground">Off</span>
+              <Badge variant="secondary">Off</Badge>
             )}
           </div>
         </div>

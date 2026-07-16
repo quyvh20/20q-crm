@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, Save, Send, AlertTriangle } from 'lucide-react';
+import { AlertCircle, ArrowLeft, CheckCircle2, Save, Send, AlertTriangle } from 'lucide-react';
 import { useEmailTemplate, useSaveEmailTemplate, useTestSendEmailTemplate } from './queries';
 import { useDocumentTitle } from '../../lib/useDocumentTitle';
 import { getWorkflowSchema } from './api';
 import { EmailTemplateBodyEditor, type VariableGroup } from './builder/config/EmailTemplateBodyEditor';
+import { Button, SpinnerBlock } from '@/components/ui';
 
 // Meta scopes always resolvable regardless of the template's object scope.
 const META_SCOPES = new Set(['trigger', 'org', 'user', 'actions']);
@@ -114,11 +115,7 @@ export const EmailTemplateEditor: React.FC = () => {
     'w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring';
 
   if (!isNew && isLoading) {
-    return (
-      <div className="flex justify-center py-24">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-      </div>
-    );
+    return <SpinnerBlock label="Loading…" className="py-24" />;
   }
 
   // A failed load of an existing template must NOT fall through to a blank, editable
@@ -126,66 +123,65 @@ export const EmailTemplateEditor: React.FC = () => {
   // Block with an explicit error + retry when the fetch errored and we have no data.
   if (!isNew && isError && !existing) {
     return (
-      <div className="mx-auto max-w-3xl px-4 py-8">
-        <button
+      <div className="mx-auto w-full max-w-3xl">
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={() => navigate('/workflows/email-templates')}
-          className="mb-4 inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+          className="mb-4 -ml-2 text-muted-foreground"
         >
-          <ArrowLeft className="h-4 w-4" /> Email Templates
-        </button>
+          <ArrowLeft aria-hidden /> Email Templates
+        </Button>
         <div className="flex flex-col items-center gap-3 rounded-2xl border border-destructive/40 bg-destructive/10 py-16 text-center">
-          <AlertTriangle className="h-8 w-8 text-destructive" />
+          <AlertTriangle aria-hidden className="h-8 w-8 text-destructive" />
           <p className="text-foreground">Couldn't load this template.</p>
-          <button
-            onClick={() => refetch()}
-            className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-          >
-            Retry
-          </button>
+          <Button onClick={() => refetch()}>Retry</Button>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="mx-auto max-w-3xl px-4 py-8">
+    <div className="mx-auto w-full max-w-3xl">
       {toast && (
-        <div
-          className={`fixed right-4 top-4 z-50 rounded-xl px-4 py-3 text-sm font-medium text-white shadow-lg ${
-            toast.type === 'error' ? 'bg-red-500/90' : 'bg-emerald-500/90'
-          }`}
-        >
+        <div className="fixed right-4 top-4 z-50 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm font-medium text-foreground shadow-lg">
+          {toast.type === 'error' ? (
+            <AlertCircle aria-hidden className="h-4 w-4 shrink-0 text-destructive" />
+          ) : (
+            <CheckCircle2 aria-hidden className="h-4 w-4 shrink-0 text-primary" />
+          )}
           {toast.msg}
         </div>
       )}
 
-      <button
+      <Button
+        variant="ghost"
+        size="sm"
         onClick={() => navigate('/workflows/email-templates')}
-        className="mb-4 inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+        className="mb-4 -ml-2 text-muted-foreground"
       >
-        <ArrowLeft className="h-4 w-4" /> Email Templates
-      </button>
+        <ArrowLeft aria-hidden /> Email Templates
+      </Button>
 
       <div className="mb-6 flex items-center justify-between gap-4">
-        <h1 className="text-2xl font-bold text-foreground">{isNew ? 'New email template' : 'Edit email template'}</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-foreground">{isNew ? 'New email template' : 'Edit email template'}</h1>
         <div className="flex items-center gap-2">
           {!isNew && (
-            <button
+            <Button
+              variant="outline"
               onClick={handleTestSend}
               disabled={testSend.isPending || dirty}
               title={dirty ? 'Save your changes first' : 'Send a test to yourself'}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground transition-colors hover:bg-accent disabled:opacity-50"
             >
-              <Send className="h-4 w-4" /> {testSend.isPending ? 'Sending…' : 'Test send'}
-            </button>
+              <Send aria-hidden /> {testSend.isPending ? 'Sending…' : 'Test send'}
+            </Button>
           )}
-          <button
+          <Button
             onClick={handleSave}
             disabled={saveMutation.isPending}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
           >
-            <Save className="h-4 w-4" /> {saveMutation.isPending ? 'Saving…' : 'Save'}
-          </button>
+            <Save aria-hidden /> {saveMutation.isPending ? 'Saving…' : 'Save'}
+          </Button>
         </div>
       </div>
 

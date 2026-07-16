@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { Loader2, Building2, AlertTriangle, LogOut, Trash2, ShieldCheck } from 'lucide-react';
+import { Building2, AlertTriangle, LogOut, Trash2, ShieldCheck } from 'lucide-react';
 import type { WorkspaceDetail } from '../../lib/api';
+import { Button, Input, Label, Select, SpinnerBlock } from '@/components/ui';
 import {
   useWorkspace,
   useUpdateWorkspace,
@@ -48,9 +49,9 @@ function Toggle({ on, onChange, disabled, label }: { on: boolean; onChange: (v: 
       aria-label={label}
       disabled={disabled}
       onClick={() => onChange(!on)}
-      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-40 ${on ? 'bg-primary' : 'bg-muted'}`}
+      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40 ${on ? 'bg-primary' : 'bg-muted'}`}
     >
-      <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${on ? 'translate-x-4' : 'translate-x-0.5'}`} />
+      <span className={`inline-block h-4 w-4 transform rounded-full bg-background shadow transition-transform ${on ? 'translate-x-4' : 'translate-x-0.5'}`} />
     </button>
   );
 }
@@ -158,13 +159,11 @@ export default function WorkspaceGeneralSection() {
     });
   };
 
-  if (isLoading) return <div className="flex justify-center py-16"><Loader2 className="w-7 h-7 animate-spin text-muted-foreground" /></div>;
+  if (isLoading) return <SpinnerBlock />;
 
   const banner = error || (loadError instanceof Error ? loadError.message : '');
-  if (banner && !ws) return <div className="bg-red-500/10 text-red-500 text-sm rounded-lg px-3 py-2">{banner}</div>;
+  if (banner && !ws) return <div className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{banner}</div>;
   if (!ws || !form) return null;
-
-  const inputCls = 'w-full max-w-md px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary';
 
   return (
     <div className="space-y-8 max-w-2xl">
@@ -175,39 +174,39 @@ export default function WorkspaceGeneralSection() {
         </p>
       </div>
 
-      {banner && <div className="bg-red-500/10 text-red-500 text-sm rounded-lg px-3 py-2">{banner}</div>}
+      {banner && <div className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{banner}</div>}
 
       {/* General settings */}
       <div className="space-y-4">
         <div>
-          <label className="block text-sm font-medium mb-1.5">Workspace name</label>
-          <input value={form.name} onChange={(e) => patch('name', e.target.value)} className={inputCls} />
+          <Label htmlFor="ws-name" className="mb-1.5 block text-sm">Workspace name</Label>
+          <Input id="ws-name" value={form.name} onChange={(e) => patch('name', e.target.value)} className="max-w-md" />
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-md">
           <div>
-            <label className="block text-sm font-medium mb-1.5">Currency</label>
-            <select value={form.currency} onChange={(e) => patch('currency', e.target.value)} className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary">
+            <Label htmlFor="ws-currency" className="mb-1.5 block text-sm">Currency</Label>
+            <Select id="ws-currency" value={form.currency} onChange={(e) => patch('currency', e.target.value)}>
               <option value="">— No default —</option>
               {CURRENCIES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
-            </select>
+            </Select>
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1.5">Locale</label>
-            <select value={form.locale} onChange={(e) => patch('locale', e.target.value)} className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary">
+            <Label htmlFor="ws-locale" className="mb-1.5 block text-sm">Locale</Label>
+            <Select id="ws-locale" value={form.locale} onChange={(e) => patch('locale', e.target.value)}>
               <option value="">— No default —</option>
               {LOCALES.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
-            </select>
+            </Select>
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1.5">Timezone</label>
-            <input value={form.timezone} onChange={(e) => patch('timezone', e.target.value)} placeholder="e.g. America/New_York" className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary" />
+            <Label htmlFor="ws-timezone" className="mb-1.5 block text-sm">Timezone</Label>
+            <Input id="ws-timezone" value={form.timezone} onChange={(e) => patch('timezone', e.target.value)} placeholder="e.g. America/New_York" />
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <button onClick={save} disabled={!dirty || saving || !form.name.trim()} className="px-4 py-2 text-sm rounded-lg bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50">
+          <Button onClick={save} disabled={!dirty || saving || !form.name.trim()}>
             {saving ? 'Saving…' : 'Save changes'}
-          </button>
-          {saveMsg && <span className="text-sm text-green-500">{saveMsg}</span>}
+          </Button>
+          {saveMsg && <span className="text-sm text-emerald-600 dark:text-emerald-400">{saveMsg}</span>}
         </div>
       </div>
 
@@ -222,7 +221,7 @@ export default function WorkspaceGeneralSection() {
             <p className="text-xs text-muted-foreground mt-0.5">
               Every member must sign in with a code from their authenticator app. Members who haven't set it up are
               locked out of the workspace until they enrol — including anyone already signed in.{' '}
-              <Link to="/settings/members" className="text-blue-500 hover:underline">See who has it on</Link>.
+              <Link to="/settings/members" className="text-primary hover:underline">See who has it on</Link>.
             </p>
           </div>
           <Toggle
@@ -233,53 +232,56 @@ export default function WorkspaceGeneralSection() {
           />
         </div>
         {form.require2FA && !ws.require_two_factor && (
-          <p className="text-xs text-amber-500">Not applied yet — hit “Save changes” above to turn the policy on.</p>
+          <p className="text-xs text-amber-600 dark:text-amber-400">Not applied yet — hit “Save changes” above to turn the policy on.</p>
         )}
       </div>
 
       {/* Danger zone */}
-      <div className="border border-red-500/30 rounded-xl p-5 space-y-4">
-        <h3 className="text-sm font-semibold text-red-500 flex items-center gap-1.5"><AlertTriangle className="w-4 h-4" /> Danger zone</h3>
+      <div className="border border-destructive/30 rounded-xl p-5 space-y-4">
+        <h3 className="text-sm font-semibold text-destructive flex items-center gap-1.5"><AlertTriangle className="w-4 h-4" /> Danger zone</h3>
 
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div>
             <p className="text-sm font-medium">Leave workspace</p>
             <p className="text-xs text-muted-foreground">Remove yourself from this workspace. The sole owner must transfer ownership first.</p>
           </div>
-          <button onClick={handleLeave} disabled={busy} className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border border-border hover:bg-accent disabled:opacity-50 whitespace-nowrap">
-            <LogOut className="w-4 h-4" /> Leave
-          </button>
+          <Button variant="outline" onClick={handleLeave} disabled={busy} className="whitespace-nowrap">
+            <LogOut aria-hidden /> Leave
+          </Button>
         </div>
 
         {ws.is_owner && (
-          <div className="pt-4 border-t border-red-500/20">
+          <div className="pt-4 border-t border-destructive/20">
             {!showDelete ? (
               <div className="flex items-center justify-between gap-4 flex-wrap">
                 <div>
                   <p className="text-sm font-medium">Delete workspace</p>
                   <p className="text-xs text-muted-foreground">Permanently remove this workspace and revoke everyone's access. This can't be undone.</p>
                 </div>
-                <button onClick={() => setShowDelete(true)} className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-red-500/10 text-red-500 hover:bg-red-500/20 whitespace-nowrap">
-                  <Trash2 className="w-4 h-4" /> Delete
-                </button>
+                <Button
+                  onClick={() => setShowDelete(true)}
+                  className="whitespace-nowrap bg-destructive/10 text-destructive shadow-none hover:bg-destructive/20"
+                >
+                  <Trash2 aria-hidden /> Delete
+                </Button>
               </div>
             ) : (
               <div className="space-y-2">
                 <p className="text-sm">Type <strong className="font-semibold">{ws.name}</strong> to confirm deletion:</p>
-                <input
+                <Input
                   value={deleteConfirmText}
                   onChange={(e) => setDeleteConfirmText(e.target.value)}
                   aria-label="Type the workspace name to confirm"
-                  className={inputCls}
+                  className="max-w-md"
                   autoFocus
                 />
                 <div className="flex gap-2">
-                  <button onClick={handleDelete} disabled={busy || deleteConfirmText !== ws.name} className="px-3 py-1.5 text-sm rounded-lg bg-red-500 text-white hover:bg-red-600 disabled:opacity-50">
+                  <Button variant="destructive" onClick={handleDelete} disabled={busy || deleteConfirmText !== ws.name}>
                     {deleteMut.isPending ? 'Deleting…' : 'Delete this workspace'}
-                  </button>
-                  <button onClick={() => { setShowDelete(false); setDeleteConfirmText(''); }} disabled={busy} className="px-3 py-1.5 text-sm rounded-lg border border-border hover:bg-accent disabled:opacity-50">
+                  </Button>
+                  <Button variant="outline" onClick={() => { setShowDelete(false); setDeleteConfirmText(''); }} disabled={busy}>
                     Cancel
-                  </button>
+                  </Button>
                 </div>
               </div>
             )}

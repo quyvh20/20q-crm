@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { Shield, User, Users, X, type LucideIcon } from 'lucide-react';
 import {
   listReportShares, addReportShare, removeReportShare, updateReport,
   getWorkspaceMembers, getRoleOptions, listGroups,
@@ -9,6 +10,8 @@ import {
 import { useAuth } from '../../lib/auth';
 import { prettyRole } from '../../lib/roles';
 import Modal from '../../components/common/Modal';
+import { Button } from '../../components/ui/button';
+import { Skeleton } from '../../components/ui/skeleton';
 
 // ReportShareDialog manages a report's granular share list: grant a user, role,
 // or group access at view/comment/edit. Shown only to a caller who can 'manage'
@@ -23,7 +26,7 @@ const LEVELS: { value: ShareLevel; label: string }[] = [
   { value: 'comment', label: 'Can comment' },
   { value: 'edit', label: 'Can edit' },
 ];
-const TYPE_ICON: Record<ShareTargetType, string> = { user: '👤', role: '🛡️', group: '👥' };
+const TYPE_ICON: Record<ShareTargetType, LucideIcon> = { user: User, role: Shield, group: Users };
 
 export default function ReportShareDialog({ report, onClose }: { report: Report; onClose: () => void }) {
   const { user } = useAuth();
@@ -126,7 +129,7 @@ export default function ReportShareDialog({ report, onClose }: { report: Report;
       dismissable={!busy}
     >
       <>
-        {error && <div className="mb-3 text-sm text-red-600">{error}</div>}
+        {error && <div className="mb-3 text-sm text-destructive">{error}</div>}
 
         {/* General access */}
         <div className="mb-4">
@@ -164,7 +167,7 @@ export default function ReportShareDialog({ report, onClose }: { report: Report;
             <select aria-label="Access level" value={level} onChange={(e) => setLevel(e.target.value as ShareLevel)} className="w-28 rounded-md border bg-background px-2 py-2 text-sm">
               {LEVELS.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
             </select>
-            <button onClick={add} disabled={busy || !selected} className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50">Add</button>
+            <Button onClick={add} disabled={busy || !selected}>Add</Button>
           </div>
         </div>
 
@@ -172,14 +175,16 @@ export default function ReportShareDialog({ report, onClose }: { report: Report;
         <div className="mt-4">
           <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Shared with</div>
           {loading ? (
-            <div className="h-16 animate-pulse rounded-lg bg-muted/50" />
+            <Skeleton className="h-16 rounded-lg" />
           ) : shares.length === 0 ? (
             <div className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">Not shared with anyone yet.</div>
           ) : (
             <div className="max-h-64 space-y-1 overflow-auto">
-              {shares.map((s) => (
-                <div key={s.id} className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
-                  <span>{TYPE_ICON[s.target_type]}</span>
+              {shares.map((s) => {
+                const TargetIcon = TYPE_ICON[s.target_type];
+                return (
+                <div key={s.id} className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm">
+                  <TargetIcon aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
                   <span className="flex-1 truncate">{s.target_name}</span>
                   <select
                     aria-label={`Level for ${s.target_name}`}
@@ -190,9 +195,12 @@ export default function ReportShareDialog({ report, onClose }: { report: Report;
                   >
                     {LEVELS.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
                   </select>
-                  <button onClick={() => remove(s.id)} disabled={busy} className="rounded px-1.5 py-1 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label={`Remove ${s.target_name}`}>✕</button>
+                  <Button variant="ghost" size="icon" onClick={() => remove(s.id)} disabled={busy} className="h-7 w-7 text-muted-foreground hover:text-foreground" aria-label={`Remove ${s.target_name}`}>
+                    <X aria-hidden />
+                  </Button>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

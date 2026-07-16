@@ -12,7 +12,7 @@ export default function GroupsSection() {
           share individual records and reports with.
         </p>
       </div>
-      <div className="bg-card border border-border rounded-2xl p-6">
+      <div className="bg-card border border-border rounded-xl p-6">
         <GroupsManager />
       </div>
     </div>

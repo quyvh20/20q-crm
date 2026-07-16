@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Check, ChevronRight, Circle, Sparkles } from 'lucide-react';
 import HelpTip from '../../components/common/HelpTip';
+import { Button } from '../../components/ui/button';
 import { useAuth, usePermissions } from '../../lib/auth';
 import {
   dismissSetupChecklist,
@@ -80,12 +81,9 @@ export default function SetupChecklist() {
               : `${doneCount} of ${steps.length} done. Pick up wherever you left off.`}
           </p>
         </div>
-        <button
-          onClick={handleDismiss}
-          className="rounded-md px-2 py-1 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        >
+        <Button variant="ghost" size="sm" onClick={handleDismiss} className="text-muted-foreground hover:text-foreground">
           Hide
-        </button>
+        </Button>
       </div>
 
       <ul className="mt-4 space-y-1">
@@ -99,9 +97,9 @@ export default function SetupChecklist() {
                 <span
                   role="img"
                   aria-label={`${step.title} — done`}
-                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-green-500/15"
+                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-500/15"
                 >
-                  <Check className="h-4 w-4 text-green-600 dark:text-green-400" aria-hidden="true" />
+                  <Check className="h-4 w-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
                 </span>
               ) : (
                 <span

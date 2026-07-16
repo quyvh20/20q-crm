@@ -13,6 +13,7 @@ import { useAuth } from '../../lib/auth';
 import { prettyRole } from '../../lib/roles';
 import { useConfirm } from '../common/ConfirmDialog';
 import Modal from '../common/Modal';
+import { Badge, Button, Input, Label, Select } from '@/components/ui';
 
 // Row scope, one line per card (U6). Teams are user groups.
 const SCOPE_LABELS: Record<DataScope, string> = {
@@ -153,52 +154,47 @@ export default function RolesManager() {
         </p>
       </div>
 
-      {banner && <div className="bg-red-50 text-red-700 text-sm rounded-md px-3 py-2">{banner}</div>}
+      {banner && <div className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{banner}</div>}
 
       {/* Create / clone a role */}
-      <div className="border rounded-lg p-3 bg-muted/20 space-y-2">
+      <div className="border border-border rounded-xl p-3 bg-muted/20 space-y-2">
         <div className="flex flex-wrap items-end gap-2">
           <div className="flex flex-col">
-            <label className="text-xs font-medium mb-1">New role name</label>
-            <input
+            <Label className="mb-1 text-xs">New role name</Label>
+            <Input
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
               placeholder="e.g. Support Agent"
-              className="border rounded-md px-2.5 py-1.5 text-sm bg-background w-52"
+              className="w-52"
             />
           </div>
           <div className="flex flex-col flex-1 min-w-[12rem]">
-            <label className="text-xs font-medium mb-1">Description (optional)</label>
-            <input
+            <Label className="mb-1 text-xs">Description (optional)</Label>
+            <Input
               value={newDesc}
               onChange={(e) => setNewDesc(e.target.value)}
               placeholder="What this role is for"
-              className="border rounded-md px-2.5 py-1.5 text-sm bg-background w-full"
             />
           </div>
           <div className="flex flex-col">
-            <label className="text-xs font-medium mb-1">Start from</label>
-            <select
+            <Label className="mb-1 text-xs">Start from</Label>
+            <Select
               value={cloneFromValue}
               onChange={(e) => setCloneFrom(e.target.value)}
-              className="border rounded-md px-2.5 py-1.5 text-sm bg-background w-44"
+              className="w-44"
             >
               <option value="">Blank (no access)</option>
               {roles.map((r) => (
                 <option key={r.id} value={r.id}>{prettyRole(r.name)}</option>
               ))}
-            </select>
+            </Select>
           </div>
-          <button
-            onClick={handleCreate}
-            disabled={createMut.isPending || !newName.trim()}
-            className="px-3 py-1.5 text-sm rounded-md bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50"
-          >
+          <Button onClick={handleCreate} disabled={createMut.isPending || !newName.trim()}>
             {createMut.isPending ? 'Creating…' : 'Create role'}
-          </button>
+          </Button>
         </div>
         {!cloneFromValue && (
-          <p className="flex items-start gap-1.5 text-xs text-amber-600">
+          <p className="flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
             <AlertTriangle className="h-3.5 w-3.5 mt-px shrink-0" aria-hidden="true" />
             A blank role starts with no access to any object — members will see nothing until
             you grant access on the role's page.
@@ -220,7 +216,7 @@ export default function RolesManager() {
           return (
             <div
               key={role.id}
-              className="relative border rounded-lg p-4 hover:border-blue-400 transition-colors"
+              className="relative border border-border rounded-xl p-4 hover:border-primary/50 transition-colors"
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
@@ -232,13 +228,13 @@ export default function RolesManager() {
                   </Link>
                   <div className="mt-1 flex items-center gap-1.5 flex-wrap">
                     {role.is_owner && (
-                      <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+                      <Badge variant="secondary">
                         <Lock className="w-3 h-3" aria-hidden="true" /> Full access
-                      </span>
+                      </Badge>
                     )}
-                    <span className="text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+                    <Badge variant="secondary">
                       {role.is_system ? 'Built-in' : 'Custom'}
-                    </span>
+                    </Badge>
                     {!role.is_system && role.template_key && (
                       <span className="text-xs text-muted-foreground italic">from {role.template_key} template</span>
                     )}
@@ -258,7 +254,7 @@ export default function RolesManager() {
                 {canSeeMembers ? (
                   <Link
                     to={`/settings/members?role=${role.id}`}
-                    className="relative z-10 inline-flex items-center gap-1 text-blue-600 hover:underline"
+                    className="relative z-10 inline-flex items-center gap-1 text-primary hover:underline"
                   >
                     <Users className="w-3.5 h-3.5" aria-hidden="true" />
                     {role.member_count} member{role.member_count === 1 ? '' : 's'}
@@ -276,18 +272,20 @@ export default function RolesManager() {
               <div className="mt-3 flex items-center gap-3 text-xs">
                 {!role.is_owner && (
                   <button
+                    type="button"
                     onClick={() => openDuplicate(role)}
                     disabled={busyId === role.id}
-                    className="relative z-10 text-blue-600 hover:underline disabled:opacity-50"
+                    className="relative z-10 rounded text-primary hover:underline disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     Duplicate
                   </button>
                 )}
                 {!role.is_system && (
                   <button
+                    type="button"
                     onClick={() => startDelete(role)}
                     disabled={busyId === role.id}
-                    className="relative z-10 text-red-600 hover:underline disabled:opacity-50"
+                    className="relative z-10 rounded text-destructive hover:underline disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     Delete
                   </button>
@@ -310,11 +308,11 @@ export default function RolesManager() {
           dismissable={!duplicateMut.isPending}
         >
           <>
-            <label className="block text-xs font-medium mb-1">New role name</label>
-            <input
+            <Label className="mb-1 block text-xs">New role name</Label>
+            <Input
               value={dupName}
               onChange={(e) => setDupName(e.target.value)}
-              className="w-full border rounded-md px-2.5 py-1.5 text-sm bg-background mb-3"
+              className="mb-3"
             />
             {dupTarget.member_count > 0 && (
               <label className="flex items-center gap-2 text-sm mb-4">
@@ -323,14 +321,14 @@ export default function RolesManager() {
               </label>
             )}
             <div className="flex gap-2">
-              <button onClick={() => setDupTarget(null)} className="flex-1 px-3 py-1.5 border rounded-md text-sm hover:bg-accent">Cancel</button>
-              <button
+              <Button variant="outline" onClick={() => setDupTarget(null)} className="flex-1">Cancel</Button>
+              <Button
                 onClick={runDuplicate}
                 disabled={!dupName.trim() || busyId === dupTarget.id}
-                className="flex-1 px-3 py-1.5 bg-blue-500 text-white rounded-md text-sm font-medium hover:bg-blue-600 disabled:opacity-50"
+                className="flex-1"
               >
                 Duplicate
-              </button>
+              </Button>
             </div>
           </>
         </Modal>
@@ -348,26 +346,27 @@ export default function RolesManager() {
           dismissable={!deleteMut.isPending}
         >
           <>
-            <label className="block text-xs font-medium mb-1">Move members to</label>
-            <select
+            <Label className="mb-1 block text-xs">Move members to</Label>
+            <Select
               value={reassignTo}
               onChange={(e) => setReassignTo(e.target.value)}
-              className="w-full border rounded-md px-2.5 py-1.5 text-sm bg-background mb-4"
+              className="mb-4"
             >
               <option value="">-- Select a role --</option>
               {roles.filter((r) => r.id !== delTarget.id && !r.is_owner).map((r) => (
                 <option key={r.id} value={r.id}>{prettyRole(r.name)}</option>
               ))}
-            </select>
+            </Select>
             <div className="flex gap-2">
-              <button onClick={() => setDelTarget(null)} className="flex-1 px-3 py-1.5 border rounded-md text-sm hover:bg-accent">Cancel</button>
-              <button
+              <Button variant="outline" onClick={() => setDelTarget(null)} className="flex-1">Cancel</Button>
+              <Button
+                variant="destructive"
                 onClick={() => runDelete(delTarget, reassignTo)}
                 disabled={!reassignTo || busyId === delTarget.id}
-                className="flex-1 px-3 py-1.5 bg-red-500 text-white rounded-md text-sm font-medium hover:bg-red-600 disabled:opacity-50"
+                className="flex-1"
               >
                 Reassign & delete
-              </button>
+              </Button>
             </div>
           </>
         </Modal>

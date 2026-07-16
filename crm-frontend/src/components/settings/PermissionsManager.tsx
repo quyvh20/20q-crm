@@ -4,6 +4,9 @@ import { AlertTriangle, Lock } from 'lucide-react';
 import type { PermissionCell, PermissionAction, PermRoleInfo } from '../../lib/api';
 import { usePermissionGrid, useSetObjectPermission } from '../../features/settings/queries';
 import { prettyRole } from '../../lib/roles';
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableShell,
+} from '@/components/ui';
 
 const ACTIONS: { key: PermissionAction; label: string }[] = [
   { key: 'read', label: 'Read' },
@@ -194,7 +197,7 @@ export default function PermissionsManager() {
   const error = saveError || (loadError instanceof Error ? loadError.message : '');
 
   if (isLoading) return <div className="text-sm text-muted-foreground py-8">Loading permissions…</div>;
-  if (!grid) return <div className="text-sm text-red-600 py-8">{error || 'No permission data.'}</div>;
+  if (!grid) return <div className="text-sm text-destructive py-8">{error || 'No permission data.'}</div>;
 
   return (
     <div className="space-y-4">
@@ -208,11 +211,11 @@ export default function PermissionsManager() {
       </div>
 
       {error && (
-        <div className="bg-red-50 text-red-700 text-sm rounded-md px-3 py-2">{error}</div>
+        <div className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>
       )}
 
       {zeroAccess.length > 0 && (
-        <div className="bg-amber-50 text-amber-800 text-sm rounded-md px-3 py-2 border border-amber-200 space-y-2">
+        <div className="space-y-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-600 dark:text-amber-400">
           {zeroAccess.map((item) => {
             const roleName = prettyRole(item.role.name);
             return (
@@ -224,16 +227,18 @@ export default function PermissionsManager() {
                   won't see {item.objects.length === 1 ? 'it' : 'them'} anywhere.
                 </span>
                 <button
+                  type="button"
                   onClick={() => reviewItem(item)}
                   aria-label={`Review ${roleName} access`}
-                  className="shrink-0 px-2 py-0.5 text-xs font-medium rounded border border-amber-300 hover:bg-amber-100 transition-colors"
+                  className="shrink-0 rounded border border-amber-500/40 px-2 py-0.5 text-xs font-medium transition-colors hover:bg-amber-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   Review
                 </button>
                 <button
+                  type="button"
                   onClick={() => dismissItem(item)}
                   aria-label={`Dismiss ${roleName} access warning`}
-                  className="shrink-0 px-2 py-0.5 text-xs font-medium rounded border border-transparent hover:bg-amber-100 transition-colors"
+                  className="shrink-0 rounded border border-transparent px-2 py-0.5 text-xs font-medium transition-colors hover:bg-amber-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   Dismiss
                 </button>
@@ -248,13 +253,14 @@ export default function PermissionsManager() {
         {grid.roles.map((r) => (
           <button
             key={r.id}
+            type="button"
             role="tab"
             aria-selected={r.id === selectedRoleId}
             onClick={() => selectRole(r.id)}
-            className={`inline-flex items-center gap-1 px-3 py-1.5 text-sm rounded-md border transition-colors ${
+            className={`inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
               r.id === selectedRoleId
-                ? 'bg-blue-500 text-white border-blue-500'
-                : 'bg-background border-muted-foreground/20 hover:border-muted-foreground/40'
+                ? 'border-primary bg-primary text-primary-foreground'
+                : 'border-input bg-background hover:bg-accent hover:text-accent-foreground'
             }`}
           >
             {prettyRole(r.name)}
@@ -264,38 +270,36 @@ export default function PermissionsManager() {
       </div>
 
       {/* Access matrix for the selected role */}
-      <div className="border rounded-lg overflow-hidden">
-        <table className="w-full text-sm">
-          <thead className="bg-muted/40">
-            <tr>
-              <th className="text-left font-medium px-3 py-2">Object</th>
+      <TableShell>
+        <Table>
+          <TableHeader>
+            <TableRow className="hover:bg-transparent">
+              <TableHead>Object</TableHead>
               {ACTIONS.map((a) => (
-                <th key={a.key} className="font-medium px-3 py-2 text-center w-20">{a.label}</th>
+                <TableHead key={a.key} className="w-20 text-center">{a.label}</TableHead>
               ))}
-            </tr>
-          </thead>
-          <tbody>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {grid.objects.map((o) => {
               const cell = cellFor(selectedRoleId, o.slug);
               return (
-                <tr
+                <TableRow
                   key={o.slug}
                   ref={(el) => {
                     if (el) rowRefs.current.set(o.slug, el);
                     else rowRefs.current.delete(o.slug);
                   }}
-                  className={`border-t transition-colors ${
-                    highlightSlug === o.slug ? 'bg-amber-100 dark:bg-amber-900/40' : ''
-                  }`}
+                  className={highlightSlug === o.slug ? 'bg-amber-500/20 hover:bg-amber-500/20' : 'hover:bg-transparent'}
                 >
-                  <td className="px-3 py-2">
-                    <span className="mr-1.5">{o.icon}</span>{o.label}
+                  <TableCell>
+                    <span aria-hidden className="mr-1.5 inline-flex h-6 w-6 items-center justify-center rounded bg-muted text-sm align-middle">{o.icon}</span>{o.label}
                     {!o.is_system && <span className="ml-1.5 text-xs text-muted-foreground">(custom)</span>}
-                  </td>
+                  </TableCell>
                   {ACTIONS.map((a) => {
                     const checkboxKey = `${o.slug}:${a.key}`;
                     return (
-                      <td key={a.key} className="px-3 py-2 text-center">
+                      <TableCell key={a.key} className="text-center">
                         <input
                           type="checkbox"
                           checked={cell[a.key]}
@@ -304,15 +308,15 @@ export default function PermissionsManager() {
                           onChange={() => toggle(o.slug, a.key)}
                           className="h-4 w-4 cursor-pointer disabled:cursor-not-allowed"
                         />
-                      </td>
+                      </TableCell>
                     );
                   })}
-                </tr>
+                </TableRow>
               );
             })}
-          </tbody>
-        </table>
-      </div>
+          </TableBody>
+        </Table>
+      </TableShell>
 
       {selectedRole?.is_owner && (
         <p className="text-xs text-muted-foreground">

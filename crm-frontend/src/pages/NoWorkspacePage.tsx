@@ -4,6 +4,7 @@ import { getMyInvitations, type IncomingInvitation } from '../lib/api';
 import { prettyRole } from '../lib/roles';
 import { useDocumentTitle } from '../lib/useDocumentTitle';
 import { Inbox, LogOut, Loader2, ArrowRight, Building2 } from 'lucide-react';
+import { Button, Input } from '@/components/ui';
 
 /**
  * The R2 zero-membership dead-end (P4). A user who authenticates but belongs to
@@ -85,41 +86,41 @@ export default function NoWorkspacePage() {
   const busy = acceptingId !== null || creating;
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-4">
+    <div className="min-h-screen bg-muted/30 flex flex-col items-center justify-center px-4 py-10">
       <div className="w-full max-w-md text-center">
-        <div className="w-16 h-16 mx-auto mb-6 rounded-2xl bg-slate-800/70 border border-slate-700/50 flex items-center justify-center">
-          <Inbox className="w-8 h-8 text-slate-400" />
+        <div className="w-16 h-16 mx-auto mb-6 rounded-xl border border-border bg-card flex items-center justify-center">
+          <Inbox className="w-8 h-8 text-muted-foreground" />
         </div>
-        <h1 className="text-2xl font-bold text-white tracking-tight mb-2">
+        <h1 className="text-2xl font-semibold tracking-tight text-foreground mb-2">
           {hasInvites ? "You've been invited" : "You're not in any workspace"}
         </h1>
         {hasInvites ? (
-          <p className="text-slate-400 mb-6">
-            {user?.email && <>You're signed in as <span className="text-slate-200">{user.email}</span>. </>}
+          <p className="text-sm text-muted-foreground mb-6">
+            {user?.email && <>You're signed in as <span className="font-medium text-foreground">{user.email}</span>. </>}
             Join a workspace you've been invited to, or create your own.
           </p>
         ) : (
           <>
-            <p className="text-slate-400 mb-2">
+            <p className="text-sm text-muted-foreground mb-2">
               {lostWorkspace ? (
-                <>You no longer have access to <span className="text-slate-200">{lostWorkspace}</span>, and you're </>
+                <>You no longer have access to <span className="font-medium text-foreground">{lostWorkspace}</span>, and you're </>
               ) : user?.email ? (
-                <>You're signed in as <span className="text-slate-200">{user.email}</span>, but you're </>
+                <>You're signed in as <span className="font-medium text-foreground">{user.email}</span>, but you're </>
               ) : (
                 'You '
               )}
               not currently a member of any active workspace.
             </p>
-            <p className="text-slate-400 mb-8">
+            <p className="text-sm text-muted-foreground mb-8">
               Ask a workspace admin to invite you, or create your own to get started.
             </p>
           </>
         )}
 
         {invitesError && (
-          <div className="bg-amber-500/10 border border-amber-500/20 text-amber-300 text-sm rounded-xl px-3 py-2 mb-4 text-left">
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-600 dark:text-amber-400 mb-4 text-left">
             We couldn't check your invitations right now.{' '}
-            <button type="button" onClick={() => window.location.reload()} className="underline hover:text-amber-200">
+            <button type="button" onClick={() => window.location.reload()} className="underline hover:no-underline">
               Reload to try again
             </button>{' '}
             before creating a new workspace.
@@ -127,11 +128,11 @@ export default function NoWorkspacePage() {
         )}
 
         {error && (
-          <div className="bg-red-500/10 border border-red-500/20 text-red-300 text-sm rounded-xl px-3 py-2 mb-4 text-left">{error}</div>
+          <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive mb-4 text-left">{error}</div>
         )}
 
         {invitesLoading ? (
-          <div className="flex items-center justify-center gap-2 text-slate-400 py-6">
+          <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground py-6">
             <Loader2 className="w-4 h-4 animate-spin" /> Checking for invitations…
           </div>
         ) : (
@@ -140,25 +141,25 @@ export default function NoWorkspacePage() {
               {invites.map((inv) => (
                 <div
                   key={inv.id}
-                  className="flex items-center gap-3 bg-slate-800/60 border border-slate-700 rounded-xl px-4 py-3 text-left"
+                  className="flex items-center gap-3 rounded-lg border border-border bg-card p-4 text-left hover:bg-accent transition-colors"
                 >
-                  <div className="w-9 h-9 shrink-0 rounded-lg bg-blue-500/15 border border-blue-500/20 flex items-center justify-center">
-                    <Building2 className="w-4 h-4 text-blue-300" />
+                  <div className="w-9 h-9 shrink-0 rounded-lg bg-primary/10 flex items-center justify-center">
+                    <Building2 className="w-4 h-4 text-primary" />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="text-white font-medium truncate">{inv.org_name}</div>
+                    <div className="text-foreground font-medium truncate">{inv.org_name}</div>
                     {inv.role_name && (
-                      <div className="text-xs text-slate-400">Join as {prettyRole(inv.role_name)}</div>
+                      <div className="text-xs text-muted-foreground">Join as {prettyRole(inv.role_name)}</div>
                     )}
                   </div>
-                  <button
+                  <Button
                     type="button"
                     onClick={() => accept(inv)}
                     disabled={busy}
-                    className="shrink-0 py-2 px-4 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white text-sm font-semibold rounded-lg transition-all disabled:opacity-60 flex items-center gap-2"
+                    className="shrink-0"
                   >
-                    {acceptingId === inv.id ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Join'}
-                  </button>
+                    {acceptingId === inv.id ? <Loader2 className="animate-spin" /> : 'Join'}
+                  </Button>
                 </div>
               ))}
             </div>
@@ -167,28 +168,23 @@ export default function NoWorkspacePage() {
 
         <form onSubmit={submit} className="flex flex-col gap-3">
           {hasInvites && (
-            <div className="flex items-center gap-3 text-xs text-slate-500 my-1">
-              <span className="h-px flex-1 bg-slate-700/60" /> or create your own <span className="h-px flex-1 bg-slate-700/60" />
+            <div className="flex items-center gap-3 text-xs text-muted-foreground my-1">
+              <span className="h-px flex-1 bg-border" /> or create your own <span className="h-px flex-1 bg-border" />
             </div>
           )}
-          <input
+          <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Name your workspace"
             aria-label="Workspace name"
-            className="w-full px-4 py-3 bg-slate-800/60 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors"
           />
-          <button
-            type="submit"
-            disabled={busy || !name.trim()}
-            className="w-full py-3 px-4 bg-slate-700/70 hover:bg-slate-700 text-white font-semibold rounded-xl transition-all disabled:opacity-60 flex items-center justify-center gap-2"
-          >
-            {creating ? <><Loader2 className="w-4 h-4 animate-spin" /> Creating…</> : <>Create a workspace <ArrowRight className="w-4 h-4" /></>}
-          </button>
+          <Button type="submit" variant="secondary" disabled={busy || !name.trim()} className="w-full">
+            {creating ? <><Loader2 className="animate-spin" /> Creating…</> : <>Create a workspace <ArrowRight /></>}
+          </Button>
           <button
             type="button"
             onClick={() => logout()}
-            className="mx-auto flex items-center gap-2 text-sm text-slate-500 hover:text-slate-300 transition-colors"
+            className="mx-auto flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
           >
             <LogOut className="w-4 h-4" /> Sign out
           </button>

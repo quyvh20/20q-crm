@@ -44,15 +44,15 @@ function FieldRow({
   mirrorValue?: string;
 }) {
   return (
-    <div style={{ marginBottom: 16 }}>
-      <div style={{ fontSize: 12, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', marginBottom: 2 }}>
+    <div className="mb-4">
+      <div className="mb-0.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
         {field.label}
       </div>
-      <div style={{ fontSize: 14, color: '#0f172a' }}>
+      <div className="text-sm text-foreground">
         {/* A mirror stores no value of its own; it shows the resolved value pulled
             from the linked record (empty renders as an em dash). */}
         {field.type === 'mirror'
-          ? (mirrorValue ? mirrorValue : <span style={{ color: '#94a3b8' }}>—</span>)
+          ? (mirrorValue ? mirrorValue : <span className="text-muted-foreground">—</span>)
           : formatFieldValue(field, value, relationLabel)}
       </div>
     </div>
@@ -82,33 +82,18 @@ function SectionPanel({
   if (visibleFields.length === 0) return null;
 
   return (
-    <div style={{ marginBottom: 24 }}>
+    <div className="mb-6">
       {section.label && (
-        <div style={{
-          fontSize: 11,
-          fontWeight: 700,
-          color: '#94a3b8',
-          textTransform: 'uppercase',
-          letterSpacing: '0.08em',
-          borderBottom: '1px solid #e2e8f0',
-          paddingBottom: 6,
-          marginBottom: 14,
-        }}>
+        <div className="mb-3.5 border-b border-border pb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           {section.label}
         </div>
       )}
-      <div
-        style={
-          section.columns === 2
-            ? { display: 'grid', gridTemplateColumns: '1fr 1fr', columnGap: 24 }
-            : undefined
-        }
-      >
+      <div className={section.columns === 2 ? 'grid grid-cols-2 gap-x-6' : undefined}>
         {visibleFields.map((slot) => {
+          const fullWidth = section.columns === 2 && slot.width === 'full';
           const field = fieldMap[slot.key];
-          const span = section.columns === 2 && slot.width === 'full' ? { gridColumn: '1 / -1' } : undefined;
           return (
-            <div key={slot.key} style={span}>
+            <div key={slot.key} className={fullWidth ? 'col-span-full' : undefined}>
               <FieldRow
                 field={field}
                 value={record.fields[slot.key]}

@@ -3,6 +3,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { resetPassword } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useDocumentTitle } from '../lib/useDocumentTitle';
+import { Button, Card, Input, Label } from '@/components/ui';
 
 export default function ResetPasswordPage() {
   useDocumentTitle('Reset Password');
@@ -60,24 +61,24 @@ export default function ResetPasswordPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+    <div className="min-h-screen bg-muted/30 flex flex-col items-center justify-center px-4 py-10">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-white tracking-tight">
-            Guerrilla <span className="text-blue-400">CRM</span>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+            Guerrilla <span className="text-primary">CRM</span>
           </h1>
-          <p className="text-slate-400 mt-2">Choose a new password</p>
+          <p className="text-sm text-muted-foreground mt-2">Choose a new password</p>
         </div>
 
-        <div className="bg-slate-800/50 backdrop-blur-xl border border-slate-700/50 rounded-2xl p-8 shadow-2xl">
+        <Card className="p-8">
           {!token ? (
             <div className="space-y-4">
-              <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
+              <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                 This password reset link is invalid or incomplete. Please request a new one.
               </div>
               <a
                 href="/forgot-password"
-                className="block text-center text-blue-400 hover:text-blue-300 font-medium transition-colors"
+                className="block text-center font-medium text-primary hover:underline"
               >
                 Request a new link
               </a>
@@ -85,55 +86,49 @@ export default function ResetPasswordPage() {
           ) : (
             <>
               {error && (
-                <div className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
+                <div className="mb-4 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                   {error}
                 </div>
               )}
 
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
-                  <label htmlFor="reset-password" className="block text-sm font-medium text-slate-300 mb-1.5">
+                  <Label htmlFor="reset-password" className="mb-1.5">
                     New password
-                  </label>
-                  <input
+                  </Label>
+                  <Input
                     id="reset-password"
                     type="password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     required
                     autoComplete="new-password"
-                    className="w-full px-4 py-3 bg-slate-900/50 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all"
                     placeholder="At least 8 characters"
                   />
                 </div>
 
                 <div>
-                  <label htmlFor="reset-confirm" className="block text-sm font-medium text-slate-300 mb-1.5">
+                  <Label htmlFor="reset-confirm" className="mb-1.5">
                     Confirm new password
-                  </label>
-                  <input
+                  </Label>
+                  <Input
                     id="reset-confirm"
                     type="password"
                     value={confirm}
                     onChange={(e) => setConfirm(e.target.value)}
                     required
                     autoComplete="new-password"
-                    className="w-full px-4 py-3 bg-slate-900/50 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all"
                     placeholder="Re-enter your new password"
                   />
                 </div>
 
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="w-full py-3 px-4 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white font-semibold rounded-xl transition-all duration-200 hover:shadow-lg hover:shadow-blue-500/25 hover:scale-[1.01] active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
-                >
+                <Button type="submit" disabled={loading} className="w-full">
                   {loading ? 'Resetting...' : 'Reset password'}
-                </button>
+                </Button>
               </form>
             </>
           )}
-        </div>
+        </Card>
       </div>
     </div>
   );

@@ -1,6 +1,7 @@
 import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../../lib/auth';
 import { DocumentTitle } from '../../lib/useDocumentTitle';
+import { Skeleton } from '@/components/ui';
 import {
   Shield, Users, UsersRound, KeyRound, Boxes, Table2, EyeOff,
   Target, Mail, Brain, ScrollText, MessageSquare, UserRound, Building2, Bell, type LucideIcon,
@@ -71,7 +72,7 @@ function SettingsSkeleton() {
   return (
     <div className="space-y-3 py-4">
       {[...Array(4)].map((_, i) => (
-        <div key={i} className="h-10 rounded-lg bg-muted/50 animate-pulse" />
+        <Skeleton key={i} className="h-10 rounded-lg" />
       ))}
     </div>
   );
@@ -86,10 +87,10 @@ function NavGroup({ title, sections }: { title: string; sections: SettingsSectio
         {sections.map((s) => {
           const Icon = s.icon;
           const cls = ({ isActive }: { isActive: boolean }) =>
-            `flex items-center gap-2 px-3 py-2 rounded-md text-sm whitespace-nowrap transition-colors ${
+            `flex items-center gap-2 px-3 py-2 rounded-lg text-sm whitespace-nowrap transition-colors ${
               isActive && !s.externalTo
-                ? 'bg-accent text-accent-foreground font-medium'
-                : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
+                ? 'bg-primary/10 text-primary font-medium'
+                : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
             }`;
           // No `end`: nested pages (e.g. /settings/roles/:id) keep their parent
           // section highlighted. Section paths never prefix each other.
@@ -128,15 +129,15 @@ export default function SettingsLayout() {
   // they're allowed on. Render the frame with a skeleton instead.
   if (!permsLoaded) {
     return (
-      <div className="max-w-6xl mx-auto">
+      <div className="mx-auto w-full max-w-6xl">
         {titleEl}
         <div className="mb-6">
-          <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">Settings</h1>
           <p className="text-muted-foreground mt-1">Your account and workspace configuration.</p>
         </div>
         <div className="space-y-3">
           {[...Array(5)].map((_, i) => (
-            <div key={i} className="h-10 rounded-lg bg-muted/50 animate-pulse" />
+            <Skeleton key={i} className="h-10 rounded-lg" />
           ))}
         </div>
       </div>
@@ -155,10 +156,10 @@ export default function SettingsLayout() {
   }
 
   return (
-    <div className="max-w-6xl mx-auto">
+    <div className="mx-auto w-full max-w-6xl">
       {titleEl}
       <div className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-foreground">Settings</h1>
         <p className="text-muted-foreground mt-1">Your account and workspace configuration.</p>
       </div>
 

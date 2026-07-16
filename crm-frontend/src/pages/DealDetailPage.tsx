@@ -11,16 +11,59 @@ import Modal from '../components/common/Modal';
 import { usePermissions } from '../lib/auth';
 import { useDocumentTitle } from '../lib/useDocumentTitle';
 import { useState, useEffect } from 'react';
+import {
+  ArrowLeft,
+  Phone,
+  Mail,
+  Handshake,
+  FileText,
+  GitBranch,
+  Trophy,
+  HeartCrack,
+  ClipboardList,
+  Pencil,
+  Share2,
+  Brain,
+  Mic,
+  Plus,
+  X,
+  Calendar,
+  AlertTriangle,
+  User,
+  Check,
+  Circle,
+  type LucideIcon,
+} from 'lucide-react';
+import { Badge, Button, Input, Label, Select, Spinner } from '@/components/ui';
 
-const ACTIVITY_ICONS: Record<string, string> = {
-  call: '📞',
-  email: '✉️',
-  meeting: '🤝',
-  note: '📝',
-  stage_change: '🔀',
-  won: '🏆',
-  lost: '💔',
+const ACTIVITY_ICONS: Record<string, LucideIcon> = {
+  call: Phone,
+  email: Mail,
+  meeting: Handshake,
+  note: FileText,
+  stage_change: GitBranch,
+  won: Trophy,
+  lost: HeartCrack,
 };
+
+type BadgeVariant = 'default' | 'secondary' | 'outline' | 'destructive' | 'success' | 'warning';
+
+const PRIORITY_VARIANT: Record<string, BadgeVariant> = {
+  high: 'destructive',
+  medium: 'warning',
+  low: 'success',
+};
+
+const SENTIMENT_VARIANT: Record<string, BadgeVariant> = {
+  positive: 'success',
+  neutral: 'warning',
+  negative: 'destructive',
+};
+
+// Probability status color, routed through Badge semantics (no raw palette).
+function probabilityVariant(probability: number): BadgeVariant {
+  return probability >= 70 ? 'success' : probability >= 30 ? 'warning' : 'destructive';
+}
 
 // ── Edit Deal Modal ─────────────────────────────────────────────
 function EditDealModal({ deal, onClose }: { deal: Deal; onClose: () => void }) {
@@ -47,8 +90,6 @@ function EditDealModal({ deal, onClose }: { deal: Deal; onClose: () => void }) {
     },
   });
 
-  const probColor = probability >= 70 ? '#10b981' : probability >= 30 ? '#f59e0b' : '#ef4444';
-
   return (
     // Shared Radix modal (U7): Escape, focus trap + restore and aria come with it.
     // padded={false} because the footer action row runs edge-to-edge; dismissal is
@@ -63,21 +104,19 @@ function EditDealModal({ deal, onClose }: { deal: Deal; onClose: () => void }) {
     >
       <div className="px-6 pb-6 space-y-5">
         <div className="space-y-1.5">
-          <label className="text-xs font-medium text-muted-foreground">Title</label>
-          <input
+          <Label htmlFor="edit-deal-title" className="text-xs text-muted-foreground">Title</Label>
+          <Input
             id="edit-deal-title"
-            className="w-full rounded-lg border bg-muted/30 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             value={title}
             onChange={e => setTitle(e.target.value)}
           />
         </div>
 
         <div className="space-y-1.5">
-          <label className="text-xs font-medium text-muted-foreground">Value ($)</label>
-          <input
+          <Label htmlFor="edit-deal-value" className="text-xs text-muted-foreground">Value ($)</Label>
+          <Input
             id="edit-deal-value"
             type="number" min={0}
-            className="w-full rounded-lg border bg-muted/30 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             value={value}
             onChange={e => setValue(e.target.value)}
           />
@@ -85,15 +124,15 @@ function EditDealModal({ deal, onClose }: { deal: Deal; onClose: () => void }) {
 
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
-            <label className="text-xs font-medium text-muted-foreground">Probability</label>
-            <span className="text-sm font-bold" style={{ color: probColor }}>{probability}%</span>
+            <Label htmlFor="edit-deal-probability" className="text-xs text-muted-foreground">Probability</Label>
+            <Badge variant={probabilityVariant(probability)}>{probability}%</Badge>
           </div>
           <input
             id="edit-deal-probability"
             type="range" min={0} max={100}
             value={probability}
             onChange={e => setProbability(Number(e.target.value))}
-            className="w-full accent-blue-500"
+            className="w-full accent-primary"
           />
           <div className="flex justify-between text-[10px] text-muted-foreground">
             <span>0%</span><span>50%</span><span>100%</span>
@@ -101,11 +140,10 @@ function EditDealModal({ deal, onClose }: { deal: Deal; onClose: () => void }) {
         </div>
 
         <div className="space-y-1.5">
-          <label className="text-xs font-medium text-muted-foreground">Expected Close Date</label>
-          <input
+          <Label htmlFor="edit-deal-close-date" className="text-xs text-muted-foreground">Expected Close Date</Label>
+          <Input
             id="edit-deal-close-date"
             type="date"
-            className="w-full rounded-lg border bg-muted/30 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             value={closeAt}
             onChange={e => setCloseAt(e.target.value)}
           />
@@ -113,7 +151,7 @@ function EditDealModal({ deal, onClose }: { deal: Deal; onClose: () => void }) {
 
         {deal.contact && (
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">Contact</label>
+            <Label className="text-xs text-muted-foreground">Contact</Label>
             <div className="rounded-lg border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
               {deal.contact.first_name} {deal.contact.last_name}
               {deal.contact.email && ` · ${deal.contact.email}`}
@@ -121,24 +159,23 @@ function EditDealModal({ deal, onClose }: { deal: Deal; onClose: () => void }) {
           </div>
         )}
 
-        <div className="rounded-lg bg-blue-500/10 px-4 py-2.5 flex items-center justify-between">
+        <div className="rounded-lg bg-primary/10 px-4 py-2.5 flex items-center justify-between">
           <span className="text-xs text-muted-foreground">Expected Revenue preview</span>
-          <span className="text-sm font-bold text-blue-400">
+          <span className="text-sm font-bold text-primary">
             ${Math.round((parseFloat(value) || 0) * probability / 100).toLocaleString()}
           </span>
         </div>
       </div>
 
       <div className="px-6 py-4 bg-muted/30 flex justify-end gap-3 border-t">
-        <button onClick={onClose} className="px-4 py-2 text-sm font-medium rounded-lg hover:bg-muted transition-colors">Cancel</button>
-        <button
+        <Button variant="ghost" onClick={onClose}>Cancel</Button>
+        <Button
           id="edit-deal-save"
           onClick={() => mutation.mutate()}
           disabled={mutation.isPending || !title.trim()}
-          className="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-50"
         >
           {mutation.isPending ? 'Saving…' : 'Save Changes'}
-        </button>
+        </Button>
       </div>
     </Modal>
   );
@@ -396,9 +433,9 @@ export default function DealDetailPage() {
       {/* Back button */}
       <button
         onClick={() => navigate('/deals')}
-        className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors mb-4"
+        className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors mb-4 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
+        <ArrowLeft aria-hidden className="h-3.5 w-3.5" />
         Back to deals
       </button>
 
@@ -412,24 +449,25 @@ export default function DealDetailPage() {
                 <div className="flex flex-wrap items-center gap-3">
                   <h1 className="text-2xl font-bold">{deal.title}</h1>
                   {canEditDeal && (
-                    <button
+                    <Button
                       id="edit-deal-btn"
+                      variant="outline"
+                      size="sm"
                       onClick={() => setShowEdit(true)}
-                      className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-blue-600/10 text-blue-600 text-xs font-semibold hover:bg-blue-600 hover:text-white transition-all border border-blue-600/20"
                       title="Edit deal"
                     >
-                      <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
-                      Edit
-                    </button>
+                      <Pencil aria-hidden /> Edit
+                    </Button>
                   )}
-                  <button
+                  <Button
                     id="deal-share-btn"
+                    variant="outline"
+                    size="sm"
                     onClick={() => setShowShare(true)}
-                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-muted text-foreground text-xs font-semibold hover:bg-accent transition-all border border-border"
                     title="Share deal"
                   >
-                    🤝 Share
-                  </button>
+                    <Share2 aria-hidden /> Share
+                  </Button>
                 </div>
                 {deal.contact && (
                   <p className="text-sm text-muted-foreground mt-1">
@@ -445,35 +483,32 @@ export default function DealDetailPage() {
                 
                 {/* AI Actions Row */}
                 <div className="flex flex-wrap gap-2 mt-4">
-                  <button
+                  <Button
+                    variant="outline"
+                    size="sm"
                     onClick={handleScoreDeal}
                     disabled={scoreStatus === 'processing'}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600/10 text-violet-600 text-xs font-semibold hover:bg-violet-600 hover:text-white transition-all border border-violet-600/20 disabled:opacity-50"
                   >
                     {scoreStatus === 'processing' ? (
-                      <><svg className="h-3 w-3 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> Scoring...</>
-                    ) : '🧠 Score Deal'}
-                  </button>
-                  <button
-                    onClick={() => setShowEmailComposer(true)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600/10 text-blue-600 text-xs font-semibold hover:bg-blue-600 hover:text-white transition-all border border-blue-600/20"
-                  >
-                    ✉️ Draft Email
-                  </button>
-                  <button
-                    onClick={() => setShowMeetingSummary(true)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600/10 text-emerald-600 text-xs font-semibold hover:bg-emerald-600 hover:text-white transition-all border border-emerald-600/20"
-                  >
-                    🎙 Summarize Meeting
-                  </button>
+                      <><Spinner size="sm" /> Scoring...</>
+                    ) : (
+                      <><Brain aria-hidden /> Score Deal</>
+                    )}
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => setShowEmailComposer(true)}>
+                    <Mail aria-hidden /> Draft Email
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => setShowMeetingSummary(true)}>
+                    <Mic aria-hidden /> Summarize Meeting
+                  </Button>
                 </div>
               </div>
               <div className="flex flex-col items-end gap-2">
                 {deal.is_won && (
-                  <span className="px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-500 text-xs font-bold">WON</span>
+                  <Badge variant="success" className="font-bold">WON</Badge>
                 )}
                 {deal.is_lost && (
-                  <span className="px-3 py-1 rounded-full bg-red-500/10 text-red-500 text-xs font-bold">LOST</span>
+                  <Badge variant="destructive" className="font-bold">LOST</Badge>
                 )}
                 {!deal.is_won && !deal.is_lost && deal.stage && (
                   <span
@@ -488,34 +523,35 @@ export default function DealDetailPage() {
 
             {/* AI Deal Score Widget */}
             {scoreStatus === 'error' && (
-              <div className="mb-6 p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-600 text-sm">
-                ⚠️ Failed to calculate deal score. Please try again later.
+              <div className="mb-6 p-4 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-sm flex items-center gap-2">
+                <AlertTriangle aria-hidden className="h-4 w-4 shrink-0" />
+                Failed to calculate deal score. Please try again later.
               </div>
             )}
             {dealScore && scoreStatus === 'done' && (
-              <div className="mb-6 p-5 rounded-xl border bg-violet-500/5 animate-in fade-in slide-in-from-top-4">
+              <div className="mb-6 p-5 rounded-xl border bg-primary/5 animate-in fade-in slide-in-from-top-4">
                 <div className="flex items-start gap-5">
-                  <div className="flex flex-col items-center justify-center h-20 w-20 rounded-full border-4 border-violet-500 shrink-0 bg-background text-violet-600">
+                  <div className="flex flex-col items-center justify-center h-20 w-20 rounded-full border-4 border-primary shrink-0 bg-background text-primary">
                     <span className="text-2xl font-bold">{dealScore.score}</span>
                     <span className="text-[10px] uppercase font-semibold">Score</span>
                   </div>
                   <div className="flex-1">
-                    <h3 className="font-semibold text-violet-700 dark:text-violet-400 mb-2 border-b border-violet-500/20 pb-1">AI Recommendation</h3>
+                    <h3 className="font-semibold text-foreground mb-2 border-b border-border pb-1">AI Recommendation</h3>
                     <p className="text-sm text-foreground mb-3">{dealScore.recommendation}</p>
                     <div className="grid grid-cols-2 gap-3 text-xs">
                       <div>
-                        <span className="text-emerald-600 font-semibold block mb-1">Positives</span>
+                        <Badge variant="success" className="mb-1">Positives</Badge>
                         <ul className="space-y-1">
                           {dealScore.factors.filter((f: string) => f.startsWith('+')).map((f: string, i: number) => (
-                            <li key={i} className="flex gap-1.5 items-start text-muted-foreground"><span className="text-emerald-500">✓</span> <span>{f.substring(1).trim()}</span></li>
+                            <li key={i} className="flex gap-1.5 items-start text-muted-foreground"><Check aria-hidden className="h-3 w-3 mt-0.5 shrink-0" /> <span>{f.substring(1).trim()}</span></li>
                           ))}
                         </ul>
                       </div>
                       <div>
-                        <span className="text-red-500 font-semibold block mb-1">Risks</span>
+                        <Badge variant="destructive" className="mb-1">Risks</Badge>
                         <ul className="space-y-1">
                           {dealScore.factors.filter((f: string) => f.startsWith('-')).map((f: string, i: number) => (
-                            <li key={i} className="flex gap-1.5 items-start text-muted-foreground"><span className="text-red-500">✗</span> <span>{f.substring(1).trim()}</span></li>
+                            <li key={i} className="flex gap-1.5 items-start text-muted-foreground"><X aria-hidden className="h-3 w-3 mt-0.5 shrink-0" /> <span>{f.substring(1).trim()}</span></li>
                           ))}
                         </ul>
                       </div>
@@ -558,24 +594,21 @@ export default function DealDetailPage() {
                 {canEditDeal ? (
                   <div className="flex flex-wrap gap-1.5">
                     {stages.filter(s => !s.is_won && !s.is_lost).map(s => (
-                      <button
+                      <Button
                         key={s.id}
+                        size="sm"
+                        variant={deal.stage_id === s.id ? 'default' : 'secondary'}
                         onClick={() => stageChangeMutation.mutate({ stageId: s.id })}
                         disabled={deal.stage_id === s.id || stageChangeMutation.isPending}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                          deal.stage_id === s.id
-                            ? 'bg-blue-600 text-white'
-                            : 'bg-muted/50 hover:bg-muted text-muted-foreground hover:text-foreground'
-                        } disabled:opacity-50`}
                       >
                         {s.name}
-                      </button>
+                      </Button>
                     ))}
                   </div>
                 ) : (
                   <span
-                    className="inline-block px-3 py-1.5 rounded-lg text-xs font-medium text-white"
-                    style={{ backgroundColor: deal.stage?.color || '#64748b' }}
+                    className={`inline-block px-3 py-1.5 rounded-lg text-xs font-medium text-white ${deal.stage?.color ? '' : 'bg-muted-foreground'}`}
+                    style={deal.stage?.color ? { backgroundColor: deal.stage.color } : undefined}
                   >
                     {deal.stage?.name || '—'}
                   </span>
@@ -587,31 +620,31 @@ export default function DealDetailPage() {
             {!deal.is_won && !deal.is_lost && (canEditDeal || canDeleteDeal) && (
               <div className="flex gap-2 pt-4 border-t">
                 {wonStage && canEditDeal && (
-                  <button
+                  <Button
                     onClick={() => stageChangeMutation.mutate({ stageId: wonStage.id })}
                     disabled={stageChangeMutation.isPending}
-                    className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 transition-colors disabled:opacity-50"
                   >
-                    🏆 Mark Won
-                  </button>
+                    <Trophy aria-hidden /> Mark Won
+                  </Button>
                 )}
                 {lostStage && canEditDeal && (
-                  <button
+                  <Button
+                    variant="destructive"
                     onClick={() => stageChangeMutation.mutate({ stageId: lostStage.id })}
                     disabled={stageChangeMutation.isPending}
-                    className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition-colors disabled:opacity-50"
                   >
-                    💔 Mark Lost
-                  </button>
+                    <HeartCrack aria-hidden /> Mark Lost
+                  </Button>
                 )}
                 <div className="flex-1" />
                 {canDeleteDeal && (
-                  <button
+                  <Button
+                    variant="ghost"
                     onClick={() => setShowDelete(true)}
-                    className="px-3 py-2 rounded-lg text-sm text-red-500 hover:bg-red-500/10 transition-colors"
+                    className="text-destructive hover:bg-destructive/10 hover:text-destructive"
                   >
                     Delete
-                  </button>
+                  </Button>
                 )}
               </div>
             )}
@@ -621,72 +654,69 @@ export default function DealDetailPage() {
           <div className="rounded-xl border bg-card p-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Tasks</h2>
-              <button
+              <Button
                 id="add-task-btn"
+                variant="outline"
+                size="sm"
                 onClick={() => setShowAddTask(!showAddTask)}
-                className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-blue-600/10 text-blue-600 text-xs font-semibold hover:bg-blue-600 hover:text-white transition-all border border-blue-600/20"
               >
-                {showAddTask ? '✕ Cancel' : '+ Add Task'}
-              </button>
+                {showAddTask ? (<><X aria-hidden /> Cancel</>) : (<><Plus aria-hidden /> Add Task</>)}
+              </Button>
             </div>
 
             {/* Add Task Form */}
             {showAddTask && (
               <div className="mb-4 p-4 rounded-lg border bg-muted/20 space-y-3">
-                <input
+                <Input
                   id="new-task-title"
                   placeholder="Task title..."
                   value={newTaskTitle}
                   onChange={e => setNewTaskTitle(e.target.value)}
-                  className="w-full rounded-lg border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
                 <div className="grid grid-cols-3 gap-2">
                   <div>
-                    <label className="text-[10px] text-muted-foreground block mb-1">Due Date</label>
-                    <input
+                    <Label htmlFor="new-task-due" className="mb-1 block text-[10px] text-muted-foreground">Due Date</Label>
+                    <Input
                       id="new-task-due"
                       type="date"
                       value={newTaskDue}
                       onChange={e => setNewTaskDue(e.target.value)}
-                      className="w-full rounded-lg border bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
                   <div>
-                    <label className="text-[10px] text-muted-foreground block mb-1">Priority</label>
-                    <select
+                    <Label htmlFor="new-task-priority" className="mb-1 block text-[10px] text-muted-foreground">Priority</Label>
+                    <Select
                       id="new-task-priority"
                       value={newTaskPriority}
                       onChange={e => setNewTaskPriority(e.target.value)}
-                      className="w-full rounded-lg border bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
                     >
                       <option value="low">Low</option>
                       <option value="medium">Medium</option>
                       <option value="high">High</option>
-                    </select>
+                    </Select>
                   </div>
                   <div>
-                    <label className="text-[10px] text-muted-foreground block mb-1">Assignee</label>
-                    <select
+                    <Label htmlFor="new-task-assignee" className="mb-1 block text-[10px] text-muted-foreground">Assignee</Label>
+                    <Select
                       id="new-task-assignee"
                       value={newTaskAssignee}
                       onChange={e => setNewTaskAssignee(e.target.value)}
-                      className="w-full rounded-lg border bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
                     >
                       <option value="">Unassigned</option>
                       {users.map(u => (
                         <option key={u.id} value={u.id}>{u.first_name} {u.last_name}</option>
                       ))}
-                    </select>
+                    </Select>
                   </div>
                 </div>
-                <button
+                <Button
                   id="save-task-btn"
+                  size="sm"
                   onClick={() => createTaskMutation.mutate()}
                   disabled={!newTaskTitle.trim() || createTaskMutation.isPending}
-                  className="px-4 py-1.5 text-xs font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-50"
                 >
                   {createTaskMutation.isPending ? 'Saving...' : 'Create Task'}
-                </button>
+                </Button>
               </div>
             )}
 
@@ -698,11 +728,6 @@ export default function DealDetailPage() {
               {tasks.map(task => {
                 const assignee = users.find(u => u.id === task.assigned_to);
                 const isOverdue = task.due_at && !task.completed_at && new Date(task.due_at) < new Date();
-                const priorityColors: Record<string, string> = {
-                  high: 'bg-red-500/10 text-red-500',
-                  medium: 'bg-amber-500/10 text-amber-500',
-                  low: 'bg-emerald-500/10 text-emerald-500',
-                };
                 return (
                   <div
                     key={task.id}
@@ -715,25 +740,25 @@ export default function DealDetailPage() {
                         type="checkbox"
                         checked={!!task.completed_at}
                         onChange={() => toggleTaskMutation.mutate({ taskId: task.id, completed: !task.completed_at })}
-                        className="h-4 w-4 mt-0.5 rounded border-2 accent-blue-600 shrink-0 cursor-pointer"
+                        className="h-4 w-4 mt-0.5 rounded border-2 accent-primary shrink-0 cursor-pointer"
                       />
                       <div className="flex-1 min-w-0">
                         <p className={`text-sm font-medium ${task.completed_at ? 'line-through text-muted-foreground' : ''}`}>
                           {task.title}
                         </p>
                         <div className="flex items-center gap-2 mt-1 flex-wrap">
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${priorityColors[task.priority] || priorityColors.medium}`}>
+                          <Badge variant={PRIORITY_VARIANT[task.priority] ?? 'warning'} className="rounded px-1.5 py-0.5 text-[10px] capitalize">
                             {task.priority}
-                          </span>
+                          </Badge>
                           {task.due_at && (
-                            <span className={`text-[10px] ${isOverdue ? 'text-red-500 font-bold' : 'text-muted-foreground'}`}>
-                              {isOverdue ? '⚠ ' : '📅 '}
+                            <span className={`inline-flex items-center gap-1 text-[10px] ${isOverdue ? 'text-destructive font-bold' : 'text-muted-foreground'}`}>
+                              {isOverdue ? <AlertTriangle aria-hidden className="h-3 w-3" /> : <Calendar aria-hidden className="h-3 w-3" />}
                               {new Date(task.due_at).toLocaleDateString()}
                             </span>
                           )}
                           {assignee && (
-                            <span className="text-[10px] text-muted-foreground">
-                              👤 {assignee.first_name} {assignee.last_name}
+                            <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+                              <User aria-hidden className="h-3 w-3" /> {assignee.first_name} {assignee.last_name}
                             </span>
                           )}
                         </div>
@@ -741,10 +766,7 @@ export default function DealDetailPage() {
                     </div>
                     {pendingTasks[task.id] && (
                       <div className="shrink-0 flex items-center justify-center p-1">
-                        <svg className="animate-spin h-4 w-4 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
+                        <Spinner size="sm" />
                       </div>
                     )}
                   </div>
@@ -764,10 +786,12 @@ export default function DealDetailPage() {
             {activities.length === 0 && (
               <p className="text-sm text-muted-foreground text-center py-8">No activities yet</p>
             )}
-            {activities.map(a => (
+            {activities.map(a => {
+              const ActivityIcon = ACTIVITY_ICONS[a.type] || ClipboardList;
+              return (
               <div key={a.id} className="flex gap-3 items-start">
-                <div className="shrink-0 h-8 w-8 rounded-full bg-muted/50 flex items-center justify-center text-sm">
-                  {ACTIVITY_ICONS[a.type] || '📋'}
+                <div className="shrink-0 h-8 w-8 rounded-full bg-muted/50 flex items-center justify-center text-muted-foreground">
+                  <ActivityIcon aria-hidden className="h-4 w-4" />
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium">{a.title || a.type}</p>
@@ -783,19 +807,24 @@ export default function DealDetailPage() {
                     )}
                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted/50 text-muted-foreground capitalize">{a.type}</span>
                     {a.sentiment && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted/50" title={`Sentiment: ${a.sentiment}`}>
-                        {a.sentiment === 'positive' ? '🟢' : a.sentiment === 'neutral' ? '🟡' : a.sentiment === 'negative' ? '🔴' : '⚪'}
-                      </span>
+                      <Badge
+                        variant={SENTIMENT_VARIANT[a.sentiment] ?? 'outline'}
+                        title={`Sentiment: ${a.sentiment}`}
+                        className="h-4 w-4 justify-center p-0"
+                      >
+                        <Circle aria-hidden className="h-2 w-2 fill-current" />
+                      </Badge>
                     )}
                   </div>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* Voice Notes section */}
           <div className="rounded-xl border bg-card p-5">
-            <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">🎙 Voice Notes</h2>
+            <h2 className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4"><Mic aria-hidden className="h-3.5 w-3.5" /> Voice Notes</h2>
 
             {/* Record / Upload mini-tabs */}
             <DealVoiceTabs dealId={id!} />
@@ -835,19 +864,16 @@ export default function DealDetailPage() {
             </p>
           </div>
           <div className="px-6 py-4 bg-muted/30 flex justify-end gap-3 border-t">
-            <button
-              onClick={() => setShowDelete(false)}
-              className="px-4 py-2 text-sm font-medium rounded-lg hover:bg-muted transition-colors"
-            >
+            <Button variant="ghost" onClick={() => setShowDelete(false)}>
               Cancel
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="destructive"
               onClick={() => deleteMutation.mutate()}
               disabled={deleteMutation.isPending}
-              className="px-4 py-2 text-sm font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-50"
             >
               Delete
-            </button>
+            </Button>
           </div>
         </Modal>
       )}

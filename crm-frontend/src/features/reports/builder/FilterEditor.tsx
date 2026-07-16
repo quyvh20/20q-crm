@@ -1,4 +1,6 @@
+import { X } from 'lucide-react';
 import type { ReportFieldDescriptor, ReportFilterGroup, ReportFilterRule } from '../../../lib/api';
+import { Button } from '../../../components/ui/button';
 
 // Flat filter rows (field + operator + value) joined by one AND/OR toggle —
 // the same leaf shape the workflow condition builder produces. Nested groups
@@ -137,14 +139,16 @@ export default function FilterEditor({ fields, value, onChange }: Props) {
               <ValueInput field={field} value={rule.value} onChange={(v) => updateRule(i, { value: v })} />
             )}
 
-            <button
+            <Button
               type="button"
+              variant="ghost"
+              size="icon"
               aria-label="Remove filter"
               onClick={() => removeRule(i)}
-              className="rounded-md px-2 py-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
             >
-              ✕
-            </button>
+              <X aria-hidden />
+            </Button>
           </div>
         );
       })}

@@ -1,7 +1,12 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
+import { Share2 } from 'lucide-react';
 import { listSharedWithMe, type SharedRecordView } from '../lib/api';
 import { recordPath } from '../features/objects/recordRoutes';
+import { Badge } from '../components/ui/badge';
+import { EmptyState } from '../components/ui/empty-state';
+import { PageHeader } from '../components/ui/page-header';
+import { Skeleton } from '../components/ui/skeleton';
 
 // SharedWithMePage lists every record someone ELSE owns that reached the caller
 // through a share (U6) — directly, through their role, or through a group.
@@ -28,35 +33,32 @@ export default function SharedWithMePage() {
   }
 
   return (
-    <div className="mx-auto max-w-5xl space-y-8">
-      <div>
-        <h1 className="text-2xl font-bold">Shared with me</h1>
-        <p className="text-sm text-muted-foreground">
-          Records other people own that were shared with you — directly, through your role, or through one of your teams.
-        </p>
-      </div>
+    <div className="mx-auto w-full max-w-6xl space-y-8">
+      <PageHeader
+        className="mb-0"
+        title="Shared with me"
+        description="Records other people own that were shared with you — directly, through your role, or through one of your teams."
+      />
 
       {isLoading ? (
-        <div className="h-40 animate-pulse rounded-xl bg-muted/50" />
+        <Skeleton className="h-40 rounded-xl" />
       ) : error ? (
-        <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-600 dark:text-red-400">
+        <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           {error instanceof Error ? error.message : 'Failed to load shared records.'}
         </div>
       ) : records.length === 0 ? (
-        <div className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground">
-          Nothing has been shared with you yet.
-        </div>
+        <EmptyState icon={Share2} title="Nothing has been shared with you yet." />
       ) : (
         <div className="space-y-6">
           {groups.map((g) => (
             <section key={g.slug}>
               <h2 className="mb-3 text-sm font-semibold text-muted-foreground">{g.label}</h2>
-              <div className="overflow-hidden rounded-xl border">
+              <div className="overflow-hidden rounded-xl border border-border">
                 {g.rows.map((r) => (
                   <Link
                     key={`${r.object_slug}:${r.record_id}`}
                     to={recordPath(r.object_slug, r.record_id)}
-                    className="flex items-center gap-3 border-b px-4 py-3 last:border-0 hover:bg-accent"
+                    className="flex items-center gap-3 border-b border-border px-4 py-3 last:border-0 hover:bg-accent"
                   >
                     <div className="min-w-0 flex-1">
                       <div className="truncate font-medium">{r.display || 'Untitled'}</div>
@@ -69,15 +71,9 @@ export default function SharedWithMePage() {
                         Updated {new Date(r.updated_at).toLocaleDateString()}
                       </span>
                     )}
-                    <span
-                      className={`rounded-full px-2 py-0.5 text-xs ${
-                        r.level === 'edit'
-                          ? 'bg-primary/10 text-primary'
-                          : 'bg-muted text-muted-foreground'
-                      }`}
-                    >
-                      {r.level === 'edit' ? 'Can edit' : 'Can view'}
-                    </span>
+                    {r.level === 'edit'
+                      ? <Badge>Can edit</Badge>
+                      : <Badge variant="secondary" className="text-muted-foreground">Can view</Badge>}
                   </Link>
                 ))}
               </div>

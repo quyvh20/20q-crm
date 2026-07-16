@@ -1,17 +1,19 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { Plus, Phone, Mail, Handshake, FileText, type LucideIcon } from 'lucide-react';
 import { createActivity } from '../../lib/api';
+import { Button, Input, Textarea } from '@/components/ui';
 
 interface ActivityFormProps {
   dealId?: string;
   contactId?: string;
 }
 
-const ACTIVITY_TYPES = [
-  { value: 'call', label: 'Call', icon: '📞' },
-  { value: 'email', label: 'Email', icon: '✉️' },
-  { value: 'meeting', label: 'Meeting', icon: '🤝' },
-  { value: 'note', label: 'Note', icon: '📝' },
+const ACTIVITY_TYPES: { value: string; label: string; icon: LucideIcon }[] = [
+  { value: 'call', label: 'Call', icon: Phone },
+  { value: 'email', label: 'Email', icon: Mail },
+  { value: 'meeting', label: 'Meeting', icon: Handshake },
+  { value: 'note', label: 'Note', icon: FileText },
 ];
 
 export default function ActivityForm({ dealId, contactId }: ActivityFormProps) {
@@ -49,9 +51,9 @@ export default function ActivityForm({ dealId, contactId }: ActivityFormProps) {
     return (
       <button
         onClick={() => setIsOpen(true)}
-        className="w-full py-2.5 rounded-xl border-2 border-dashed border-muted-foreground/20 text-sm text-muted-foreground hover:border-blue-500/50 hover:text-blue-500 transition-colors"
+        className="w-full py-2.5 rounded-xl border-2 border-dashed border-muted-foreground/20 text-sm text-muted-foreground hover:border-primary/50 hover:text-primary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        + Log Activity
+        <Plus aria-hidden className="inline h-4 w-4 -mt-0.5 mr-1" /> Log Activity
       </button>
     );
   }
@@ -60,62 +62,53 @@ export default function ActivityForm({ dealId, contactId }: ActivityFormProps) {
     <form onSubmit={handleSubmit} className="rounded-xl border bg-card p-4 space-y-3">
       {/* Type selector */}
       <div className="flex gap-1.5">
-        {ACTIVITY_TYPES.map(t => (
-          <button
-            key={t.value}
-            type="button"
-            onClick={() => setType(t.value)}
-            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-              type === t.value
-                ? 'bg-blue-600 text-white'
-                : 'bg-muted/50 text-muted-foreground hover:bg-muted'
-            }`}
-          >
-            <span>{t.icon}</span> {t.label}
-          </button>
-        ))}
+        {ACTIVITY_TYPES.map(t => {
+          const Icon = t.icon;
+          return (
+            <Button
+              key={t.value}
+              type="button"
+              size="sm"
+              variant={type === t.value ? 'default' : 'secondary'}
+              onClick={() => setType(t.value)}
+            >
+              <Icon aria-hidden /> {t.label}
+            </Button>
+          );
+        })}
       </div>
 
-      <input
+      <Input
         value={title}
         onChange={e => setTitle(e.target.value)}
         placeholder="Title"
         required
-        className="w-full px-3 py-2 rounded-lg border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
       />
 
-      <textarea
+      <Textarea
         value={body}
         onChange={e => setBody(e.target.value)}
         placeholder="Notes (optional)"
         rows={2}
-        className="w-full px-3 py-2 rounded-lg border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+        className="resize-none"
       />
 
       <div className="flex items-center gap-3">
-        <input
+        <Input
           type="number"
           value={duration}
           onChange={e => setDuration(e.target.value)}
           placeholder="Duration (min)"
           min="0"
-          className="w-32 px-3 py-2 rounded-lg border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="w-32"
         />
         <div className="flex-1" />
-        <button
-          type="button"
-          onClick={() => setIsOpen(false)}
-          className="px-3 py-2 text-sm rounded-lg hover:bg-muted transition-colors"
-        >
+        <Button type="button" variant="ghost" onClick={() => setIsOpen(false)}>
           Cancel
-        </button>
-        <button
-          type="submit"
-          disabled={!title || mutation.isPending}
-          className="px-3 py-2 text-sm font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-50"
-        >
+        </Button>
+        <Button type="submit" disabled={!title || mutation.isPending}>
           Save
-        </button>
+        </Button>
       </div>
     </form>
   );

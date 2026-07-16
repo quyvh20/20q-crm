@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { getFieldDefs, type CustomFieldDef } from '../../lib/api';
+import { Input, Label, Select, Spinner } from '@/components/ui';
 
 interface DynamicCustomFieldsProps {
   entityType: 'contact' | 'company' | 'deal';
@@ -25,12 +26,7 @@ export default function DynamicCustomFields({
   });
 
   if (isLoading) {
-    return (
-      <div className="flex items-center gap-2 py-3 text-sm text-muted-foreground">
-        <span className="animate-spin h-3.5 w-3.5 border-2 border-blue-500 border-t-transparent rounded-full" />
-        Loading custom fields…
-      </div>
-    );
+    return <Spinner size="sm" label="Loading custom fields…" className="py-3" />;
   }
 
   if (fieldDefs.length === 0) return null;
@@ -77,40 +73,35 @@ function FieldInput({
   onChange: (v: unknown) => void;
   disabled: boolean;
 }) {
-  const inputClass =
-    'w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-all disabled:opacity-50';
-
   return (
     <div className="space-y-1.5">
-      <label className="text-sm font-medium text-foreground">
+      <Label>
         {def.label}
-        {def.required && <span className="text-red-400 ml-0.5">*</span>}
-      </label>
+        {def.required && <span className="ml-0.5 text-destructive">*</span>}
+      </Label>
 
       {def.type === 'text' && (
-        <input
+        <Input
           type="text"
           value={(value as string) ?? ''}
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
-          className={inputClass}
           placeholder={`Enter ${def.label.toLowerCase()}`}
         />
       )}
 
       {def.type === 'url' && (
-        <input
+        <Input
           type="url"
           value={(value as string) ?? ''}
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
-          className={inputClass}
           placeholder="https://example.com"
         />
       )}
 
       {def.type === 'number' && (
-        <input
+        <Input
           type="number"
           value={value !== undefined && value !== null ? String(value) : ''}
           onChange={(e) => {
@@ -118,29 +109,27 @@ function FieldInput({
             onChange(v === '' ? null : parseFloat(v));
           }}
           disabled={disabled}
-          className={inputClass}
           placeholder="0"
         />
       )}
 
       {def.type === 'date' && (
-        <input
+        <Input
           type="date"
           value={(value as string) ?? ''}
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
-          className={inputClass}
         />
       )}
 
       {def.type === 'boolean' && (
-        <label className="flex items-center gap-2 cursor-pointer">
+        <label className="flex cursor-pointer items-center gap-2">
           <input
             type="checkbox"
             checked={!!value}
             onChange={(e) => onChange(e.target.checked)}
             disabled={disabled}
-            className="h-4 w-4 rounded border-gray-500 text-blue-600 focus:ring-blue-500/40"
+            className="h-4 w-4 rounded border-input accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
           <span className="text-sm text-muted-foreground">
             {value ? 'Yes' : 'No'}
@@ -149,11 +138,10 @@ function FieldInput({
       )}
 
       {def.type === 'select' && (
-        <select
+        <Select
           value={(value as string) ?? ''}
           onChange={(e) => onChange(e.target.value || null)}
           disabled={disabled}
-          className={inputClass}
         >
           <option value="">Select {def.label.toLowerCase()}…</option>
           {def.options?.map((opt) => (
@@ -161,7 +149,7 @@ function FieldInput({
               {opt}
             </option>
           ))}
-        </select>
+        </Select>
       )}
     </div>
   );

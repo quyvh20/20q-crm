@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Monitor } from 'lucide-react';
 import { getSessions, revokeSession, signOutEverywhere, type UserSession } from '../../lib/api';
 import { useConfirm } from '../common/ConfirmDialog';
+import { Badge, Button, EmptyState, SpinnerBlock } from '@/components/ui';
 
 function relativeTime(iso?: string): string {
   if (!iso) return '—';
@@ -84,47 +86,41 @@ export default function SecuritySessions() {
       </div>
 
       {actionError && (
-        <div className="rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-400">{actionError}</div>
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{actionError}</div>
       )}
 
       {error ? (
-        <div className="rounded-md border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-400">{error}</div>
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">{error}</div>
       ) : loading ? (
-        <div className="flex items-center justify-center py-12">
-          <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-        </div>
+        <SpinnerBlock />
       ) : sessions.length === 0 ? (
-        <div className="rounded-md border border-border py-12 text-center text-sm text-muted-foreground">
-          No active sessions.
-        </div>
+        <EmptyState icon={Monitor} title="No active sessions." />
       ) : (
         <div className="space-y-2">
           {sessions.map((s) => (
             <div
               key={s.id}
-              className="flex items-center justify-between rounded-lg border border-border p-3"
+              className="flex items-center justify-between rounded-xl border border-border p-3"
             >
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="font-medium text-foreground">{s.device_label || 'Unknown device'}</span>
-                  {s.current && (
-                    <span className="rounded bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-400">
-                      This device
-                    </span>
-                  )}
+                  {s.current && <Badge variant="success">This device</Badge>}
                 </div>
                 <div className="mt-0.5 text-xs text-muted-foreground">
                   {s.ip || 'unknown IP'} · last active {relativeTime(s.last_used_at || s.created_at)}
                 </div>
               </div>
               {!s.current && (
-                <button
+                <Button
+                  variant="outline"
+                  size="sm"
                   onClick={() => handleRevoke(s.id)}
                   disabled={busyId === s.id}
-                  className="rounded-md border border-border px-3 py-1.5 text-sm text-red-400 hover:bg-red-500/10 disabled:opacity-50"
+                  className="text-destructive hover:bg-destructive/10 hover:text-destructive"
                 >
                   {busyId === s.id ? 'Revoking…' : 'Revoke'}
-                </button>
+                </Button>
               )}
             </div>
           ))}
@@ -133,13 +129,13 @@ export default function SecuritySessions() {
 
       {others.length > 0 && (
         <div className="pt-2">
-          <button
+          <Button
             onClick={handleSignOutAll}
             disabled={signingOut}
-            className="rounded-md border border-red-500/50 bg-red-500/10 px-4 py-2 text-sm font-medium text-red-400 hover:bg-red-500/20 disabled:opacity-50"
+            className="bg-destructive/10 text-destructive shadow-none hover:bg-destructive/20"
           >
             {signingOut ? 'Signing out…' : 'Sign out all other devices'}
-          </button>
+          </Button>
           <p className="mt-1.5 text-xs text-muted-foreground">
             Ends every session except this one and invalidates their access immediately.
           </p>

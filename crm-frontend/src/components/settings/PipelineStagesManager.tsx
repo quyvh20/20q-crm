@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { Pencil, Plus, Sparkles, Target, Trash2 } from 'lucide-react';
 import { useConfirm } from '../common/ConfirmDialog';
 import {
   getStages,
@@ -9,6 +10,7 @@ import {
   seedDefaultStages,
   type PipelineStage,
 } from '../../lib/api';
+import { Badge, Button, EmptyState, Input, Skeleton } from '@/components/ui';
 
 const COLORS = [
   '#6366F1', '#3B82F6', '#06B6D4', '#10B981',
@@ -34,42 +36,30 @@ function StageRow({ stage, onSave, onDelete }: {
 
   if (!editing) {
     return (
-      <div className="flex items-center justify-between p-3 rounded-xl border bg-card group hover:shadow-sm transition-shadow">
+      <div className="flex items-center justify-between p-3 rounded-xl border border-border bg-card group hover:shadow-sm transition-shadow">
         <div className="flex items-center gap-3">
+          {/* Dynamic user-chosen stage color. */}
           <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: stage.color }} />
           <span className="text-sm font-medium">{stage.name}</span>
-          {stage.is_won && (
-            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500">Won</span>
-          )}
-          {stage.is_lost && (
-            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-400/10 text-red-400">Lost</span>
-          )}
+          {stage.is_won && <Badge variant="success">Won</Badge>}
+          {stage.is_lost && <Badge variant="destructive">Lost</Badge>}
         </div>
         {/* focus-within: hover-only reveal hid these from keyboard users (U7 a11y). */}
         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
-          <button
-            onClick={() => setEditing(true)}
-            className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
-            title="Edit"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
-          </button>
-          <button
-            onClick={() => onDelete(stage.id)}
-            className="p-1.5 rounded-lg hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-colors"
-            title="Delete"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
-          </button>
+          <Button variant="ghost" size="icon" onClick={() => setEditing(true)} title="Edit" className="h-8 w-8 text-muted-foreground hover:text-foreground">
+            <Pencil className="h-3.5 w-3.5" />
+          </Button>
+          <Button variant="ghost" size="icon" onClick={() => onDelete(stage.id)} title="Delete" className="h-8 w-8 text-muted-foreground hover:text-destructive">
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="p-3 rounded-xl border bg-accent/30 space-y-3">
-      <input
-        className="w-full px-3 py-1.5 rounded-lg border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+    <div className="p-3 rounded-xl border border-border bg-accent/30 space-y-3">
+      <Input
         value={name}
         onChange={e => setName(e.target.value)}
         placeholder="Stage name"
@@ -79,8 +69,10 @@ function StageRow({ stage, onSave, onDelete }: {
         {COLORS.map(c => (
           <button
             key={c}
+            type="button"
             onClick={() => setColor(c)}
-            className={`w-6 h-6 rounded-full transition-transform ${color === c ? 'scale-125 ring-2 ring-offset-1 ring-blue-500' : 'hover:scale-110'}`}
+            aria-label={`Use color ${c}`}
+            className={`w-6 h-6 rounded-full transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 ${color === c ? 'scale-125 ring-2 ring-offset-1 ring-ring' : 'hover:scale-110'}`}
             style={{ backgroundColor: c }}
           />
         ))}
@@ -96,18 +88,14 @@ function StageRow({ stage, onSave, onDelete }: {
         </label>
       </div>
       <div className="flex gap-2">
-        <button
-          onClick={save}
-          className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 transition-colors"
-        >
-          Save
-        </button>
-        <button
+        <Button size="sm" onClick={save}>Save</Button>
+        <Button
+          size="sm"
+          variant="secondary"
           onClick={() => { setName(stage.name); setColor(stage.color); setIsWon(stage.is_won); setIsLost(stage.is_lost); setEditing(false); }}
-          className="px-3 py-1.5 rounded-lg bg-muted text-xs font-medium hover:bg-accent transition-colors"
         >
           Cancel
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -157,7 +145,7 @@ export default function PipelineStagesManager() {
   });
 
   if (isLoading) {
-    return <div className="space-y-2">{[...Array(4)].map((_, i) => <div key={i} className="h-12 rounded-xl bg-muted/30 animate-pulse" />)}</div>;
+    return <div className="space-y-2">{[...Array(4)].map((_, i) => <Skeleton key={i} className="h-12 rounded-xl" />)}</div>;
   }
 
   return (
@@ -169,34 +157,26 @@ export default function PipelineStagesManager() {
         </div>
         <div className="flex gap-2">
           {stages.length === 0 && (
-            <button
-              onClick={() => seedMut.mutate()}
-              disabled={seedMut.isPending}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm bg-emerald-600 text-white hover:bg-emerald-700 transition-colors disabled:opacity-60"
-            >
-              {seedMut.isPending ? 'Seeding…' : '✨ Seed Defaults'}
-            </button>
+            <Button variant="outline" onClick={() => seedMut.mutate()} disabled={seedMut.isPending}>
+              <Sparkles aria-hidden /> {seedMut.isPending ? 'Seeding…' : 'Seed Defaults'}
+            </Button>
           )}
-          <button
-            onClick={() => setShowAdd(v => !v)}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm bg-blue-600 text-white hover:bg-blue-700 transition-colors"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
-            Add Stage
-          </button>
+          <Button onClick={() => setShowAdd(v => !v)}>
+            <Plus aria-hidden /> Add Stage
+          </Button>
         </div>
       </div>
 
       {error && (
-        <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-500 text-sm">{error}</div>
+        <div className="rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>
       )}
 
       {stages.length === 0 && !showAdd && (
-        <div className="flex flex-col items-center justify-center border-2 border-dashed rounded-xl border-muted py-12 text-center text-muted-foreground">
-          <div className="text-4xl mb-3">🎯</div>
-          <p className="font-medium text-foreground">No pipeline stages yet</p>
-          <p className="text-sm mt-1">Click "Seed Defaults" to get started quickly, or add your own.</p>
-        </div>
+        <EmptyState
+          icon={Target}
+          title="No pipeline stages yet"
+          description={'Click "Seed Defaults" to get started quickly, or add your own.'}
+        />
       )}
 
       <div className="space-y-2">
@@ -219,10 +199,9 @@ export default function PipelineStagesManager() {
       </div>
 
       {showAdd && (
-        <div className="p-4 rounded-xl border bg-accent/20 space-y-3">
+        <div className="p-4 rounded-xl border border-border bg-accent/20 space-y-3">
           <h4 className="text-sm font-semibold">New Stage</h4>
-          <input
-            className="w-full px-3 py-2 rounded-lg border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          <Input
             value={newName}
             onChange={e => setNewName(e.target.value)}
             placeholder="e.g. Discovery Call"
@@ -232,8 +211,10 @@ export default function PipelineStagesManager() {
             {COLORS.map(c => (
               <button
                 key={c}
+                type="button"
                 onClick={() => setNewColor(c)}
-                className={`w-6 h-6 rounded-full transition-transform ${newColor === c ? 'scale-125 ring-2 ring-offset-1 ring-blue-500' : 'hover:scale-110'}`}
+                aria-label={`Use color ${c}`}
+                className={`w-6 h-6 rounded-full transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 ${newColor === c ? 'scale-125 ring-2 ring-offset-1 ring-ring' : 'hover:scale-110'}`}
                 style={{ backgroundColor: c }}
               />
             ))}
@@ -249,19 +230,15 @@ export default function PipelineStagesManager() {
             </label>
           </div>
           <div className="flex gap-2">
-            <button
+            <Button
               disabled={!newName.trim() || createMut.isPending}
               onClick={() => createMut.mutate({ name: newName, color: newColor, is_won: newIsWon, is_lost: newIsLost })}
-              className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-60"
             >
               {createMut.isPending ? 'Creating…' : 'Create Stage'}
-            </button>
-            <button
-              onClick={() => { setShowAdd(false); setError(''); }}
-              className="px-4 py-2 rounded-lg bg-muted text-sm font-medium hover:bg-accent transition-colors"
-            >
+            </Button>
+            <Button variant="secondary" onClick={() => { setShowAdd(false); setError(''); }}>
               Cancel
-            </button>
+            </Button>
           </div>
         </div>
       )}

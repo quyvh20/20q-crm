@@ -195,6 +195,29 @@ export const STATUS_COLORS: Record<string, string> = {
   skipped: '#F59E0B',
 };
 
+// Run + action-log statuses mapped to the shared Badge variants, so status
+// chrome renders through tokens (light/dark safe) instead of hardcoded hex.
+// Covers both WorkflowRun.status and ActionLog.status keys.
+export type StatusBadgeVariant =
+  | 'default'
+  | 'secondary'
+  | 'success'
+  | 'warning'
+  | 'destructive'
+  | 'outline';
+
+export const STATUS_BADGE_VARIANT: Record<string, StatusBadgeVariant> = {
+  pending: 'secondary',
+  running: 'default',
+  waiting: 'warning',
+  completed: 'success',
+  failed: 'destructive',
+  skipped: 'warning',
+  // ActionLog-only statuses
+  success: 'success',
+  retrying: 'warning',
+};
+
 // NOTE: Operator definitions live ONLY in useSchema.ts → getOperatorsForType().
 // Do NOT define operator lists here. Single source of truth.
 

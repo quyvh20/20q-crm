@@ -56,7 +56,7 @@ export default function RelatedLists({ slug, recordId, prefetchedLists }: Relate
 
   if (loading) {
     return (
-      <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: 16, marginTop: 8, color: '#94a3b8', fontSize: 13 }}>
+      <div className="mt-2 border-t border-border pt-4 text-sm text-muted-foreground">
         Loading related records…
       </div>
     );
@@ -64,58 +64,54 @@ export default function RelatedLists({ slug, recordId, prefetchedLists }: Relate
 
   if (error) {
     return (
-      <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: 16, marginTop: 8 }}>
-        <div style={{ background: '#fef2f2', color: '#dc2626', padding: '8px 12px', borderRadius: 6, fontSize: 13 }}>{error}</div>
+      <div className="mt-2 border-t border-border pt-4">
+        <div className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>
       </div>
     );
   }
 
   if (nonEmpty.length === 0) {
     return (
-      <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: 16, marginTop: 8, color: '#94a3b8', fontSize: 13 }}>
+      <div className="mt-2 border-t border-border pt-4 text-sm text-muted-foreground">
         No related records
       </div>
     );
   }
 
   return (
-    <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: 16, marginTop: 8 }}>
+    <div className="mt-2 border-t border-border pt-4">
       {nonEmpty.map((group) => (
-        <div key={`${group.object}:${group.field_key}`} style={{ marginBottom: 24 }}>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: '#334155' }}>
-              {group.icon} {group.label}
+        <div key={`${group.object}:${group.field_key}`} className="mb-6">
+          <div className="mb-2 flex items-center gap-2">
+            <span className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+              {/* The group icon is schema data (the target object's emoji), shown
+                  in a neutral chip rather than as bare glyph chrome. */}
+              <span aria-hidden className="flex h-6 w-6 items-center justify-center rounded bg-muted text-sm">
+                {group.icon}
+              </span>
+              {group.label}
             </span>
-            <span style={{ fontSize: 12, color: '#94a3b8' }}>
+            <span className="text-xs text-muted-foreground">
               {group.count}{group.has_more ? '+' : ''}
               {/* Which field on the child points back, so "Deals · via Contact" is unambiguous
                   when a child relates through more than one field. */}
               {' · via '}{group.field_label}
             </span>
           </div>
-          <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden' }}>
-            {group.records.map((rec, i) => (
+          <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
+            {group.records.map((rec) => (
               <Link
                 key={rec.id}
                 to={recordPath(group.object, rec.id)}
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  padding: '8px 12px',
-                  fontSize: 13,
-                  color: '#0f172a',
-                  textDecoration: 'none',
-                  borderTop: i === 0 ? 'none' : '1px solid #f1f5f9',
-                }}
+                className="flex items-center justify-between gap-3 px-3 py-2 text-sm text-foreground no-underline transition-colors hover:bg-accent"
               >
-                <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                <span className="flex min-w-0 items-center gap-2">
                   {rec.number && (
-                    <span style={{ fontSize: 11, fontWeight: 600, color: '#94a3b8', whiteSpace: 'nowrap' }}>{rec.number}</span>
+                    <span className="whitespace-nowrap text-[11px] font-semibold text-muted-foreground">{rec.number}</span>
                   )}
-                  <span style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{rec.display || 'Untitled'}</span>
+                  <span className="truncate font-medium">{rec.display || 'Untitled'}</span>
                 </span>
-                <span style={{ color: '#94a3b8', fontSize: 12, whiteSpace: 'nowrap' }}>
+                <span className="whitespace-nowrap text-xs text-muted-foreground">
                   {new Date(rec.created_at).toLocaleDateString()}
                 </span>
               </Link>

@@ -132,7 +132,7 @@ export default function ShareRecordModal({
       size="lg"
     >
       <>
-        {error && <div className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</div>}
+        {error && <div className="mb-3 text-sm text-destructive">{error}</div>}
 
         {/* Add a share */}
         <div className="space-y-2 rounded-xl border p-3">

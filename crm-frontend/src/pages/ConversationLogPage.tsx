@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, MessagesSquare, Sparkles, Trash2, User } from 'lucide-react';
 import { useAuth, usePermissions } from '../lib/auth';
 import { prettyRole } from '../lib/roles';
 import { useConfirm } from '../components/common/ConfirmDialog';
@@ -10,13 +11,28 @@ import {
   type ChatSession,
   type ChatMessageItem,
 } from '../lib/api';
+import {
+  Badge,
+  Button,
+  EmptyState,
+  SpinnerBlock,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableShell,
+} from '@/components/ui';
 
-const ROLE_COLORS: Record<string, string> = {
-  owner: '#7c3aed',
-  admin: '#1d4ed8',
-  manager: '#0891b2',
-  sales_rep: '#059669',
-  viewer: '#6b7280',
+type RoleBadgeVariant = 'default' | 'secondary' | 'outline' | 'destructive' | 'success' | 'warning';
+
+const ROLE_BADGES: Record<string, RoleBadgeVariant> = {
+  owner: 'warning',
+  admin: 'default',
+  manager: 'secondary',
+  sales_rep: 'success',
+  viewer: 'outline',
 };
 
 export default function ConversationLogPage() {
@@ -88,11 +104,7 @@ export default function ConversationLogPage() {
   // admin doesn't flash the denied panel (the SettingsLayout trap; matches
   // EmailTemplatesPage). hasCapability is false while perms are still loading.
   if (!permsLoaded) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 64 }}>
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-      </div>
-    );
+    return <SpinnerBlock />;
   }
 
   if (!canAccess) {
@@ -102,156 +114,139 @@ export default function ConversationLogPage() {
   const totalPages = Math.ceil(total / limit);
 
   return (
-    <div style={styles.page}>
-      <div style={styles.header}>
+    // Section-level chrome: this renders INSIDE the settings shell (U1), which
+    // already owns the page header and padding.
+    <div className="w-full">
+      <div className="mb-4 flex items-start justify-between">
         <div>
-          <h2 style={styles.title}>AI Conversation Logs</h2>
-          <p style={styles.subtitle}>{total} total sessions · Page {page} of {Math.max(1, totalPages)}</p>
+          <h2 className="mb-1 text-lg font-semibold text-foreground">AI Conversation Logs</h2>
+          <p className="text-sm text-muted-foreground">{total} total sessions · Page {page} of {Math.max(1, totalPages)}</p>
         </div>
       </div>
 
-      {error && <div style={styles.errorBanner}>{error}</div>}
+      {error && (
+        <div className="mb-4 rounded-lg border border-destructive/40 bg-destructive/10 px-3.5 py-2.5 text-sm text-destructive">{error}</div>
+      )}
 
       {loading ? (
-        <div style={styles.loading}>Loading sessions…</div>
+        <SpinnerBlock label="Loading sessions…" />
       ) : sessions.length === 0 ? (
-        <div style={styles.empty}>
-          <p>No conversation sessions yet.</p>
-          <p style={{ color: 'var(--muted-foreground)', fontSize: 13 }}>Sessions appear here once users start chatting.</p>
-        </div>
+        <EmptyState
+          icon={MessagesSquare}
+          title="No conversation sessions yet."
+          description="Sessions appear here once users start chatting."
+        />
       ) : (
-        <div style={styles.tableWrapper}>
-          <table style={styles.table}>
-            <thead>
-              <tr>
-                {['User', 'Role', 'First Message', 'Started', 'Status', ''].map(h => (
-                  <th key={h} style={styles.th}>{h}</th>
+        <TableShell>
+          <Table>
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                {['User', 'Role', 'First Message', 'Started', 'Status', ''].map((h, i) => (
+                  <TableHead key={h || `col-${i}`} className="whitespace-nowrap">{h}</TableHead>
                 ))}
-              </tr>
-            </thead>
-            <tbody>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {sessions.map(session => {
                 const isExpanded = expandedId === session.id;
                 return (
                   <React.Fragment key={session.id}>
-                    <tr style={{ ...styles.tr, background: isExpanded ? 'rgba(245,158,11,0.04)' : undefined }}>
-                      <td style={styles.td}>
-                        <span style={styles.userName}>
+                    <TableRow className={isExpanded ? 'bg-muted/40' : undefined}>
+                      <TableCell>
+                        <span className="font-semibold text-foreground">
                           {session.user ? `${session.user.first_name} ${session.user.last_name}` : 'Unknown'}
                         </span>
                         <br />
-                        <span style={styles.userEmail}>{session.user?.email}</span>
-                      </td>
-                      <td style={styles.td}>
-                        <span style={{
-                          ...styles.roleBadge,
-                          background: (ROLE_COLORS[session.role] || '#6b7280') + '22',
-                          color: ROLE_COLORS[session.role] || '#6b7280',
-                          border: `1px solid ${(ROLE_COLORS[session.role] || '#6b7280')}44`,
-                        }}>
+                        <span className="text-xs text-muted-foreground">{session.user?.email}</span>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={ROLE_BADGES[session.role] ?? 'outline'} className="capitalize">
                           {prettyRole(session.role)}
-                        </span>
-                      </td>
-                      <td style={{ ...styles.td, maxWidth: 220 }}>
-                        <span style={styles.titleCell}>{session.title || '(empty)'}</span>
-                      </td>
-                      <td style={styles.td}>
-                        <span style={styles.date}>{new Date(session.created_at).toLocaleString()}</span>
-                      </td>
-                      <td style={styles.td}>
-                        <span style={{
-                          ...styles.statusDot,
-                          background: session.ended_at ? '#10b981' : '#f59e0b',
-                        }} />
-                        {session.ended_at ? 'Ended' : 'Active'}
-                      </td>
-                      <td style={styles.td}>
-                        <div style={styles.actions}>
-                          <button style={styles.expandBtn} onClick={() => expand(session.id)}>
-                            {isExpanded ? '▲ Hide' : '▼ View'}
-                          </button>
-                          <button style={styles.deleteBtn} onClick={() => remove(session.id)}>🗑</button>
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="max-w-[220px]">
+                        <span className="block truncate text-foreground">{session.title || '(empty)'}</span>
+                      </TableCell>
+                      <TableCell>
+                        <span className="whitespace-nowrap text-xs text-muted-foreground">{new Date(session.created_at).toLocaleString()}</span>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={session.ended_at ? 'success' : 'warning'}>
+                          {session.ended_at ? 'Ended' : 'Active'}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-1.5">
+                          <Button variant="outline" size="sm" onClick={() => expand(session.id)}>
+                            {isExpanded ? <ChevronUp aria-hidden /> : <ChevronDown aria-hidden />}
+                            {isExpanded ? 'Hide' : 'View'}
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => remove(session.id)}
+                            aria-label="Delete conversation"
+                            className="h-8 w-8 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                          >
+                            <Trash2 aria-hidden />
+                          </Button>
                         </div>
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                     {isExpanded && (
-                      <tr>
-                        <td colSpan={6} style={styles.transcriptCell}>
+                      <TableRow className="hover:bg-transparent">
+                        <TableCell colSpan={6} className="p-0">
                           {transcriptLoading ? (
-                            <div style={{ padding: '16px', color: 'var(--muted-foreground)' }}>Loading transcript…</div>
+                            <div className="p-4 text-sm text-muted-foreground">Loading transcript…</div>
                           ) : transcript.length === 0 ? (
-                            <div style={{ padding: '16px', color: 'var(--muted-foreground)' }}>No messages in this session.</div>
+                            <div className="p-4 text-sm text-muted-foreground">No messages in this session.</div>
                           ) : (
-                            <div style={styles.transcript}>
+                            <div className="flex max-h-[360px] flex-col gap-2 overflow-y-auto bg-muted/50 px-4 py-3">
                               {transcript.map(m => (
-                                <div key={m.id} style={{
-                                  ...styles.transcriptMsg,
-                                  ...(m.role === 'user' ? styles.transcriptUser : styles.transcriptAssistant),
-                                }}>
-                                  <span style={styles.transcriptRole}>{m.role === 'user' ? '👤 User' : '✦ AI'}</span>
-                                  <p style={styles.transcriptContent}>{m.content}</p>
-                                  <span style={styles.transcriptTime}>{new Date(m.created_at).toLocaleTimeString()}</span>
+                                <div
+                                  key={m.id}
+                                  className={`max-w-[80%] rounded-lg border px-3 py-2 ${
+                                    m.role === 'user'
+                                      ? 'self-end border-primary/20 bg-primary/10'
+                                      : 'self-start border-border bg-background'
+                                  }`}
+                                >
+                                  <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-muted-foreground">
+                                    {m.role === 'user'
+                                      ? <User aria-hidden className="h-3 w-3" />
+                                      : <Sparkles aria-hidden className="h-3 w-3" />}
+                                    {m.role === 'user' ? 'User' : 'AI'}
+                                  </span>
+                                  <p className="mb-0.5 mt-1 whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground">{m.content}</p>
+                                  <span className="text-[10px] text-muted-foreground">{new Date(m.created_at).toLocaleTimeString()}</span>
                                 </div>
                               ))}
                             </div>
                           )}
-                        </td>
-                      </tr>
+                        </TableCell>
+                      </TableRow>
                     )}
                   </React.Fragment>
                 );
               })}
-            </tbody>
-          </table>
-        </div>
+            </TableBody>
+          </Table>
+        </TableShell>
       )}
 
       {/* Pagination */}
       {totalPages > 1 && (
-        <div style={styles.pagination}>
-          <button style={styles.pageBtn} disabled={page <= 1} onClick={() => setPage(p => p - 1)}>← Prev</button>
-          <span style={styles.pageInfo}>Page {page} of {totalPages}</span>
-          <button style={styles.pageBtn} disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>Next →</button>
+        <div className="mt-5 flex items-center justify-center gap-3">
+          <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>
+            <ChevronLeft aria-hidden /> Prev
+          </Button>
+          <span className="text-sm text-muted-foreground">Page {page} of {totalPages}</span>
+          <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>
+            Next <ChevronRight aria-hidden />
+          </Button>
         </div>
       )}
       {confirmDialogEl}
     </div>
   );
 }
-
-const styles: Record<string, React.CSSProperties> = {
-  // Section-level chrome: this renders INSIDE the settings shell (U1), which
-  // already owns the page header and padding.
-  page: { maxWidth: '100%' },
-  header: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 16 },
-  title: { fontSize: 18, fontWeight: 600, margin: '0 0 4px' },
-  subtitle: { fontSize: 13, color: 'var(--muted-foreground)', margin: 0 },
-  errorBanner: { background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.4)', color: '#ef4444', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 13 },
-  loading: { textAlign: 'center', padding: 40, color: 'var(--muted-foreground)' },
-  empty: { textAlign: 'center', padding: 60 },
-  tableWrapper: { overflowX: 'auto', borderRadius: 12, border: '1px solid var(--border)' },
-  table: { width: '100%', borderCollapse: 'collapse' },
-  th: { textAlign: 'left', padding: '10px 14px', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--muted-foreground)', borderBottom: '1px solid var(--border)', background: 'var(--accent)', whiteSpace: 'nowrap' },
-  tr: { borderBottom: '1px solid var(--border)', transition: 'background 0.1s' },
-  td: { padding: '12px 14px', fontSize: 13, verticalAlign: 'middle' },
-  userName: { fontWeight: 600 },
-  userEmail: { fontSize: 11, color: 'var(--muted-foreground)' },
-  roleBadge: { fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 10, textTransform: 'capitalize' },
-  titleCell: { display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 220, color: 'var(--foreground)' },
-  date: { fontSize: 12, color: 'var(--muted-foreground)', whiteSpace: 'nowrap' },
-  statusDot: { width: 7, height: 7, borderRadius: '50%', display: 'inline-block', marginRight: 5 },
-  actions: { display: 'flex', gap: 6, alignItems: 'center' },
-  expandBtn: { padding: '4px 10px', borderRadius: 7, border: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', fontSize: 11, fontWeight: 600, color: 'var(--foreground)', whiteSpace: 'nowrap' },
-  deleteBtn: { padding: '4px 8px', borderRadius: 7, border: '1px solid #fecaca', background: '#fff1f2', cursor: 'pointer', fontSize: 13 },
-  transcriptCell: { padding: 0 },
-  transcript: { display: 'flex', flexDirection: 'column', gap: 8, padding: '12px 16px', background: 'var(--accent)', maxHeight: 360, overflowY: 'auto' },
-  transcriptMsg: { borderRadius: 10, padding: '8px 12px', maxWidth: '80%' },
-  transcriptUser: { background: 'linear-gradient(135deg, rgba(245,158,11,0.15), rgba(239,68,68,0.1))', alignSelf: 'flex-end', border: '1px solid rgba(245,158,11,0.2)' },
-  transcriptAssistant: { background: 'var(--background)', alignSelf: 'flex-start', border: '1px solid var(--border)' },
-  transcriptRole: { fontSize: 10, fontWeight: 700, color: 'var(--muted-foreground)', textTransform: 'uppercase', letterSpacing: '0.05em' },
-  transcriptContent: { fontSize: 13, margin: '4px 0 2px', lineHeight: 1.55, whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
-  transcriptTime: { fontSize: 10, color: 'var(--muted-foreground)' },
-  pagination: { display: 'flex', alignItems: 'center', gap: 12, justifyContent: 'center', marginTop: 20 },
-  pageBtn: { padding: '6px 16px', borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', fontSize: 13, fontWeight: 600 },
-  pageInfo: { fontSize: 13, color: 'var(--muted-foreground)' },
-};

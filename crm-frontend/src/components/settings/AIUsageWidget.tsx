@@ -1,5 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
+import { AlertTriangle, Box } from 'lucide-react';
 import { getAIUsage } from '../../lib/api';
+import { Skeleton } from '@/components/ui';
 
 export default function AIUsageWidget() {
   const { data: usage, isLoading } = useQuery({
@@ -11,8 +13,8 @@ export default function AIUsageWidget() {
 
   if (isLoading) {
     return (
-      <div className="ai-usage-widget loading">
-        <div className="ai-usage-shimmer" />
+      <div className="my-1 rounded-xl border border-border bg-card p-3">
+        <Skeleton className="h-14 w-full rounded-lg" />
       </div>
     );
   }
@@ -20,57 +22,43 @@ export default function AIUsageWidget() {
   if (!usage) return null;
 
   const pct = usage.percent;
-  const color = pct >= 90 ? '#ef4444' : pct >= 70 ? '#f59e0b' : '#6366f1';
+  // Semantic meter color: red near the cap, amber when warm, primary otherwise.
+  const barColor = pct >= 90 ? 'bg-destructive' : pct >= 70 ? 'bg-amber-500' : 'bg-primary';
   const used = (usage.used_tokens / 1000).toFixed(1);
   const limit = (usage.limit_tokens / 1000).toFixed(0);
 
   return (
-    <div className="ai-usage-widget" id="ai-usage-widget">
-      <div className="ai-usage-header">
-        <span className="ai-usage-label">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'inline', marginRight: 4 }}>
-            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
-          </svg>
+    <div className="my-1 rounded-xl border border-border bg-card p-3" id="ai-usage-widget">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+          <Box aria-hidden className="h-3.5 w-3.5" />
           AI Tokens
         </span>
-        <span className="ai-usage-count">
+        <span className="text-xs font-semibold text-foreground">
           {used}k / {limit}k
         </span>
       </div>
 
       {/* Progress bar */}
-      <div className="ai-usage-bar-bg">
+      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
         <div
-          className="ai-usage-bar-fill"
-          style={{ width: `${Math.min(pct, 100)}%`, background: color }}
+          className={`h-full rounded-full transition-[width] duration-500 ${barColor}`}
+          style={{ width: `${Math.min(pct, 100)}%` }}
         />
       </div>
 
-      <div className="ai-usage-meta">
-        <span style={{ color: pct >= 90 ? '#ef4444' : '#6b7280' }}>
-          {pct >= 90 ? '⚠ Near limit' : `${pct}% used`}
+      <div className="mt-1.5 flex justify-between text-[10px] text-muted-foreground">
+        <span className={pct >= 90 ? 'flex items-center gap-0.5 font-medium text-destructive' : undefined}>
+          {pct >= 90 ? (
+            <>
+              <AlertTriangle aria-hidden className="h-2.5 w-2.5" /> Near limit
+            </>
+          ) : (
+            `${pct}% used`
+          )}
         </span>
         <span>Resets {usage.reset_at}</span>
       </div>
-
-      <style>{`
-        .ai-usage-widget {
-          background: var(--card, #fff);
-          border: 1px solid var(--border, #e5e7eb);
-          border-radius: 12px;
-          padding: 12px 14px;
-          margin: 4px 0;
-        }
-        .ai-usage-widget.loading { min-height: 72px; }
-        .ai-usage-shimmer { height: 60px; background: linear-gradient(90deg, #f3f4f6 25%, #e5e7eb 50%, #f3f4f6 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 8px; }
-        @keyframes shimmer { to { background-position: -200% 0; } }
-        .ai-usage-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-        .ai-usage-label { font-size: 12px; font-weight: 500; color: var(--muted-foreground, #6b7280); display: flex; align-items: center; }
-        .ai-usage-count { font-size: 12px; font-weight: 600; color: var(--foreground, #111); }
-        .ai-usage-bar-bg { height: 6px; background: var(--muted, #f3f4f6); border-radius: 99px; overflow: hidden; }
-        .ai-usage-bar-fill { height: 100%; border-radius: 99px; transition: width 0.6s ease; }
-        .ai-usage-meta { display: flex; justify-content: space-between; margin-top: 6px; font-size: 10px; color: #9ca3af; }
-      `}</style>
     </div>
   );
 }

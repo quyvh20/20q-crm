@@ -1,11 +1,23 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import {
+  ArrowLeft,
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Clipboard,
+  Hourglass,
+  RotateCcw,
+  X,
+} from 'lucide-react';
 import { getWorkflowRuns, getRunDetail, getWorkflow, retryRun } from './api';
 import type { WorkflowRun, ActionLog, Workflow } from './types';
-import { STATUS_COLORS, ACTION_LABELS } from './types';
+import { STATUS_BADGE_VARIANT, ACTION_LABELS } from './types';
 import { useAuth } from '../../lib/auth';
 import { useDocumentTitle } from '../../lib/useDocumentTitle';
 import { canRunWorkflowNow } from './RunNowModal';
+import { Badge, Button, EmptyState, SpinnerBlock } from '@/components/ui';
 
 export const RunHistory: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -184,47 +196,46 @@ export const RunHistory: React.FC = () => {
   });
 
   return (
-    <div className="max-w-5xl mx-auto py-8 px-4">
+    <div className="mx-auto w-full max-w-6xl">
       {/* Header */}
-      <div className="flex items-center gap-4 mb-8">
+      <div className="mb-8 flex items-center gap-4">
         <button
           onClick={() => navigate('/workflows')}
-          className="text-muted-foreground hover:text-foreground transition-colors"
+          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          ← Back
+          <ArrowLeft aria-hidden className="h-4 w-4" /> Back
         </button>
         <div>
-          <h1 className="text-2xl font-bold text-foreground">
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
             {workflow?.name || 'Run History'}
           </h1>
-          <p className="text-sm text-muted-foreground mt-1">
+          <p className="mt-1 text-sm text-muted-foreground">
             {total} run{total !== 1 ? 's' : ''} total
           </p>
         </div>
       </div>
 
       {retryError && (
-        <div className="mb-4 px-4 py-2.5 rounded-lg bg-destructive/10 border border-destructive/40 text-sm text-destructive flex items-center justify-between">
+        <div className="mb-4 flex items-center justify-between rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-2.5 text-sm text-destructive">
           <span>{retryError}</span>
           <button
             onClick={() => setRetryError(null)}
-            className="text-destructive rounded hover:bg-destructive/20 ml-4 px-1"
+            className="ml-4 rounded px-1 text-destructive hover:bg-destructive/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label="Dismiss error"
           >
-            ✕
+            <X aria-hidden className="h-4 w-4" />
           </button>
         </div>
       )}
 
       {loading ? (
-        <div className="flex justify-center py-16">
-          <div className="w-8 h-8 border-2 border-border border-t-primary rounded-full animate-spin" />
-        </div>
+        <SpinnerBlock label="Loading…" />
       ) : runs.length === 0 ? (
-        <div className="text-center py-16 text-muted-foreground">
-          <p className="text-lg mb-2">No runs yet</p>
-          <p className="text-sm">This workflow hasn't been triggered yet</p>
-        </div>
+        <EmptyState
+          icon={Hourglass}
+          title="No runs yet"
+          description="This workflow hasn't been triggered yet"
+        />
       ) : (
         <div className="space-y-2">
           {runs.map((run) => (
@@ -239,15 +250,12 @@ export const RunHistory: React.FC = () => {
               >
                 <div className="flex items-center gap-4">
                   {/* Status badge */}
-                  <span
-                    className="px-2.5 py-1 rounded-full text-xs font-semibold uppercase tracking-wider"
-                    style={{
-                      backgroundColor: `${STATUS_COLORS[run.status]}20`,
-                      color: STATUS_COLORS[run.status],
-                    }}
+                  <Badge
+                    variant={STATUS_BADGE_VARIANT[run.status] ?? 'secondary'}
+                    className="uppercase tracking-wider"
                   >
                     {run.status}
-                  </span>
+                  </Badge>
 
                   {/* Run info */}
                   <div className="flex-1 min-w-0">
@@ -275,8 +283,8 @@ export const RunHistory: React.FC = () => {
                       {new Date(run.created_at).toLocaleString()}
                     </p>
                     {run.status === 'waiting' && run.wake_at && (
-                      <p className="text-xs text-amber-600 dark:text-amber-400">
-                        ⏳ resumes {formatRelativeTime(run.wake_at)}
+                      <p className="inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
+                        <Hourglass aria-hidden className="h-3 w-3" /> resumes {formatRelativeTime(run.wake_at)}
                       </p>
                     )}
                     {run.finished_at && (
@@ -289,26 +297,30 @@ export const RunHistory: React.FC = () => {
                   {/* Retry (P21) — failed runs only. Resumes from the failed step,
                       preserving completed work. stopPropagation so it doesn't toggle the row. */}
                   {run.status === 'failed' && (
-                    <button
+                    <Button
+                      variant="outline"
+                      size="sm"
                       onClick={(e) => {
                         e.stopPropagation();
                         handleRetry(run.id);
                       }}
                       disabled={!canRetry || retryingRunId === run.id}
-                      className="px-2.5 py-1 rounded-lg text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 hover:text-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       title={
                         canRetry
                           ? 'Re-queue this run — resumes from the step that failed, keeping completed steps'
                           : "Only an admin, manager, or the workflow's creator can retry runs"
                       }
                     >
-                      {retryingRunId === run.id ? '↻ Retrying…' : '↻ Retry'}
-                    </button>
+                      <RotateCcw aria-hidden className={retryingRunId === run.id ? 'animate-spin' : undefined} />
+                      {retryingRunId === run.id ? 'Retrying…' : 'Retry'}
+                    </Button>
                   )}
 
-                  <span className="text-muted-foreground/70 text-sm">
-                    {selectedRunId === run.id ? '▼' : '▶'}
-                  </span>
+                  {selectedRunId === run.id ? (
+                    <ChevronDown aria-hidden className="h-4 w-4 text-muted-foreground/70" />
+                  ) : (
+                    <ChevronRight aria-hidden className="h-4 w-4 text-muted-foreground/70" />
+                  )}
                 </div>
               </div>
 
@@ -334,10 +346,6 @@ export const RunHistory: React.FC = () => {
                           className="bg-muted/40 border border-border/60 rounded-lg overflow-hidden group/log"
                         >
                           <summary className="flex items-center gap-3 p-3 cursor-pointer select-none hover:bg-accent hover:text-accent-foreground transition-colors list-none">
-                            <span
-                              className="w-2 h-2 rounded-full flex-shrink-0"
-                              style={{ backgroundColor: STATUS_COLORS[log.status] || '#666' }}
-                            />
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2">
                                 <span className="text-xs font-medium text-foreground">
@@ -354,12 +362,9 @@ export const RunHistory: React.FC = () => {
                                 <p className="text-xs text-destructive mt-0.5 truncate group-open/log:hidden">{log.error}</p>
                               )}
                             </div>
-                            <span
-                              className="text-xs font-medium"
-                              style={{ color: STATUS_COLORS[log.status] || '#666' }}
-                            >
+                            <Badge variant={STATUS_BADGE_VARIANT[log.status] ?? 'secondary'}>
                               {log.status}
-                            </span>
+                            </Badge>
                             {/* Deep link (A3.6): jump to this step's node in the builder. Only
                                 steps-based runs carry a structural action_path; preventDefault
                                 stops the click from toggling the <details>. */}
@@ -378,7 +383,7 @@ export const RunHistory: React.FC = () => {
                               </button>
                             )}
                             {hasDetail && (
-                              <span className="text-muted-foreground/70 text-xs transition-transform group-open/log:rotate-90">▶</span>
+                              <ChevronRight aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70 transition-transform group-open/log:rotate-90" />
                             )}
                           </summary>
 
@@ -403,7 +408,7 @@ export const RunHistory: React.FC = () => {
                               {log.error && (
                                 <div>
                                   <p className="text-xs text-muted-foreground mb-1 font-medium">Error</p>
-                                  <pre className="text-xs font-mono text-red-700 dark:text-red-300 p-2 bg-destructive/10 rounded-lg border border-destructive/30 whitespace-pre-wrap">
+                                  <pre className="text-xs font-mono text-destructive p-2 bg-destructive/10 rounded-lg border border-destructive/30 whitespace-pre-wrap">
                                     {log.error}
                                   </pre>
                                 </div>
@@ -423,24 +428,28 @@ export const RunHistory: React.FC = () => {
 
       {/* Pagination */}
       {totalPages > 1 && (
-        <div className="flex justify-center gap-2 mt-6">
-          <button
+        <div className="mt-6 flex items-center justify-center gap-2">
+          <Button
+            variant="outline"
+            size="icon"
             onClick={() => setPage((p) => Math.max(1, p - 1))}
             disabled={page <= 1}
-            className="px-3 py-1.5 rounded-lg text-sm bg-card text-muted-foreground hover:text-foreground disabled:opacity-30"
+            aria-label="Previous page"
           >
-            ←
-          </button>
+            <ChevronLeft aria-hidden />
+          </Button>
           <span className="px-3 py-1.5 text-sm text-muted-foreground">
             Page {page} of {totalPages}
           </span>
-          <button
+          <Button
+            variant="outline"
+            size="icon"
             onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
             disabled={page >= totalPages}
-            className="px-3 py-1.5 rounded-lg text-sm bg-card text-muted-foreground hover:text-foreground disabled:opacity-30"
+            aria-label="Next page"
           >
-            →
-          </button>
+            <ChevronRight aria-hidden />
+          </Button>
         </div>
       )}
     </div>
@@ -590,21 +599,29 @@ const TriggerContextAccordion: React.FC<{ context: Record<string, unknown> }> = 
   return (
     <details className="bg-muted/40 border border-border/60 rounded-lg overflow-hidden group/ctx">
       <summary className="flex items-center gap-2 px-3 py-2.5 cursor-pointer select-none hover:bg-accent hover:text-accent-foreground transition-colors list-none">
-        <span className="text-muted-foreground text-xs transition-transform group-open/ctx:rotate-90">▶</span>
+        <ChevronRight aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open/ctx:rotate-90" />
         <span className="text-xs font-medium text-foreground">Trigger Context</span>
         <span className="text-xs text-muted-foreground/70 ml-1">
           ({Object.keys(context).length} field{Object.keys(context).length !== 1 ? 's' : ''})
         </span>
         <button
           onClick={handleCopy}
-          className={`ml-auto px-2 py-0.5 rounded text-xs transition-colors ${
+          className={`ml-auto inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
             copied
               ? 'text-primary bg-primary/10'
               : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
           }`}
           title="Copy to clipboard"
         >
-          {copied ? '✓ Copied' : '📋 Copy'}
+          {copied ? (
+            <>
+              <Check aria-hidden className="h-3 w-3" /> Copied
+            </>
+          ) : (
+            <>
+              <Clipboard aria-hidden className="h-3 w-3" /> Copy
+            </>
+          )}
         </button>
       </summary>
       <div className="px-3 pb-3">

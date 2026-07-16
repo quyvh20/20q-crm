@@ -1,6 +1,13 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { ScrollText } from 'lucide-react';
 import { getAuditEvents, exportAuditCsv, type AuditEventFilters } from '../../lib/api';
+import {
+  Badge, Button, EmptyState, Input, Select, SpinnerBlock,
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableShell,
+} from '@/components/ui';
+
+type BadgeVariant = 'default' | 'secondary' | 'outline' | 'destructive' | 'success' | 'warning';
 
 const PAGE_SIZE = 50;
 
@@ -38,10 +45,12 @@ const EVENT_LABELS: Record<string, string> = {
   'session.signed_out_others': 'Signed out other devices',
 };
 
-const CATEGORY_BADGE: Record<string, string> = {
-  admin: 'bg-blue-500/15 text-blue-400',
-  auth: 'bg-emerald-500/15 text-emerald-400',
-  security: 'bg-amber-500/15 text-amber-400',
+// Map each audit category to a Badge variant, preserving the semantic color
+// distinctions the old hand-rolled tint map carried.
+const CATEGORY_VARIANT: Record<string, BadgeVariant> = {
+  admin: 'default',
+  auth: 'success',
+  security: 'warning',
 };
 
 function eventLabel(t: string): string {
@@ -118,83 +127,75 @@ export default function AuditLogViewer() {
       </div>
 
       {exportError && (
-        <div className="rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-400">{exportError}</div>
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{exportError}</div>
       )}
 
       {/* Filters */}
       <div className="flex flex-wrap items-end gap-3">
         <label className="flex flex-col gap-1 text-xs text-muted-foreground">
           Activity
-          <select
+          <Select
             value={category}
             onChange={(e) => resetPageAnd(() => setCategory(e.target.value))}
-            className="h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground"
+            className="w-auto"
           >
             {CATEGORIES.map((c) => (
               <option key={c.value} value={c.value}>{c.label}</option>
             ))}
-          </select>
+          </Select>
         </label>
         <label className="flex flex-col gap-1 text-xs text-muted-foreground">
           From
-          <input
+          <Input
             type="date"
             value={from}
             onChange={(e) => resetPageAnd(() => setFrom(e.target.value))}
-            className="h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground"
+            className="w-auto"
           />
         </label>
         <label className="flex flex-col gap-1 text-xs text-muted-foreground">
           To
-          <input
+          <Input
             type="date"
             value={to}
             onChange={(e) => resetPageAnd(() => setTo(e.target.value))}
-            className="h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground"
+            className="w-auto"
           />
         </label>
         <div className="ml-auto">
-          <button
-            onClick={handleExport}
-            disabled={exporting}
-            className="h-9 rounded-md border border-border px-3 text-sm font-medium hover:bg-accent/40 disabled:opacity-50"
-          >
+          <Button variant="outline" onClick={handleExport} disabled={exporting}>
             {exporting ? 'Exporting…' : 'Export CSV'}
-          </button>
+          </Button>
         </div>
       </div>
 
       {/* Table */}
       {isError ? (
-        <div className="rounded-md border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-400">
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
           {error instanceof Error ? error.message : 'Failed to load audit log'}
         </div>
       ) : isLoading ? (
-        <div className="flex items-center justify-center py-12">
-          <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-        </div>
+        <SpinnerBlock />
       ) : events.length === 0 ? (
-        <div className="rounded-md border border-border py-12 text-center text-sm text-muted-foreground">
-          No activity recorded for this filter yet.
-        </div>
+        <EmptyState icon={ScrollText} title="No activity recorded for this filter yet." />
       ) : (
-        <div className="overflow-x-auto rounded-md border border-border">
-          <table className="w-full text-left text-sm">
-            <thead>
-              <tr className="border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
-                <th className="px-3 py-2 font-medium">When</th>
-                <th className="px-3 py-2 font-medium">Actor</th>
-                <th className="px-3 py-2 font-medium">Event</th>
-                <th className="px-3 py-2 font-medium">Details</th>
-              </tr>
-            </thead>
-            <tbody>
+        <TableShell>
+          <Table>
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead>When</TableHead>
+                <TableHead>Actor</TableHead>
+                <TableHead>Event</TableHead>
+                <TableHead>Details</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {events.map((e) => (
-                <tr key={e.id} className="border-b border-border/50 last:border-0 hover:bg-accent/20">
-                  <td className="whitespace-nowrap px-3 py-2 text-muted-foreground">
+                <TableRow key={e.id}>
+                  <TableCell className="whitespace-nowrap text-muted-foreground">
                     {new Date(e.created_at).toLocaleString()}
-                  </td>
-                  <td className="px-3 py-2">
+                  </TableCell>
+                  <TableCell>
                     {e.actor_name || e.actor_email ? (
                       <div>
                         <div className="text-foreground">{e.actor_name || e.actor_email}</div>
@@ -205,25 +206,21 @@ export default function AuditLogViewer() {
                     ) : (
                       <span className="text-muted-foreground">System</span>
                     )}
-                  </td>
-                  <td className="px-3 py-2">
-                    <span
-                      className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${
-                        CATEGORY_BADGE[e.category] || 'bg-muted text-muted-foreground'
-                      }`}
-                    >
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant={CATEGORY_VARIANT[e.category] ?? 'secondary'}>
                       {eventLabel(e.event_type)}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 text-xs text-muted-foreground">
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
                     {summarizeMeta(e.metadata)}
                     {e.ip ? <span className="ml-2 opacity-70">{e.ip}</span> : null}
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
-        </div>
+            </TableBody>
+          </Table>
+        </TableShell>
       )}
 
       {/* Pagination */}
@@ -233,20 +230,12 @@ export default function AuditLogViewer() {
             {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} of {total}
           </span>
           <div className="flex gap-2">
-            <button
-              onClick={() => setPage((p) => Math.max(0, p - 1))}
-              disabled={page === 0}
-              className="h-8 rounded-md border border-border px-3 hover:bg-accent/40 disabled:opacity-40"
-            >
+            <Button variant="outline" size="sm" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0}>
               Previous
-            </button>
-            <button
-              onClick={() => setPage((p) => (p + 1 < totalPages ? p + 1 : p))}
-              disabled={page + 1 >= totalPages}
-              className="h-8 rounded-md border border-border px-3 hover:bg-accent/40 disabled:opacity-40"
-            >
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setPage((p) => (p + 1 < totalPages ? p + 1 : p))} disabled={page + 1 >= totalPages}>
               Next
-            </button>
+            </Button>
           </div>
         </div>
       )}

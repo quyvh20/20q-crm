@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { X } from 'lucide-react';
 import {
   createObjectRecordUnified,
   updateObjectRecordUnified,
@@ -9,6 +10,7 @@ import {
 } from '../../lib/api';
 import { FieldInput, type RelationOption } from './fieldHelpers';
 import OwnerPicker from '../../components/records/OwnerPicker';
+import { Button, Label } from '@/components/ui';
 
 interface ObjectFormProps {
   schema: ObjectSchema;
@@ -106,27 +108,33 @@ export default function ObjectForm({ schema, record, inline, onSaved, onCancel }
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: inline ? 'auto' : '100%', minHeight: 0 }}>
-      <div style={{ padding: '20px 24px', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h3 style={{ margin: 0, fontWeight: 600, fontSize: 16 }}>
+    <div className={`flex flex-col ${inline ? '' : 'h-full min-h-0'}`}>
+      <div className="flex items-center justify-between border-b border-border px-6 py-4">
+        <h3 className="text-base font-semibold text-foreground">
           {record ? `Edit ${schema.label}` : `New ${schema.label}`}
         </h3>
-        <button onClick={onCancel} aria-label="Close" style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#64748b' }}>×</button>
+        <button
+          onClick={onCancel}
+          aria-label="Close"
+          className="-mr-1.5 shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <X className="h-[18px] w-[18px]" />
+        </button>
       </div>
 
-      <div style={{ flex: 1, overflowY: inline ? 'visible' : 'auto', padding: 24 }}>
+      <div className={`flex-1 p-6 ${inline ? '' : 'overflow-y-auto'}`}>
         {error && (
-          <div style={{ background: '#fef2f2', color: '#dc2626', padding: '8px 12px', borderRadius: 6, marginBottom: 16, fontSize: 13 }}>{error}</div>
+          <div className="mb-4 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>
         )}
 
         {/* Owner (U6) is not a registry field — it never appears in schema.fields —
             so it gets its own control, above the field loop, on every object that
             has one. It still travels inside the fields map on save. */}
         {schema.has_owner && (
-          <div style={{ marginBottom: 16 }}>
-            <label htmlFor="object-form-owner" style={{ fontSize: 13, fontWeight: 500, color: '#374151', display: 'block', marginBottom: 4 }}>
+          <div className="mb-4">
+            <Label htmlFor="object-form-owner" className="mb-1">
               Owner
-            </label>
+            </Label>
             <OwnerPicker
               id="object-form-owner"
               value={(formData.owner_user_id as string | null | undefined) ?? ''}
@@ -139,11 +147,11 @@ export default function ObjectForm({ schema, record, inline, onSaved, onCancel }
         {/* Mirror fields are read-only (their value is pulled from a linked record),
             so they have no editor here — they only render on the record's detail page. */}
         {schema.fields.filter((field) => field.type !== 'mirror').map((field) => (
-          <div key={field.key} style={{ marginBottom: 16 }}>
-            <label style={{ fontSize: 13, fontWeight: 500, color: '#374151', display: 'block', marginBottom: 4 }}>
+          <div key={field.key} className="mb-4">
+            <Label className="mb-1">
               {field.label}
-              {field.required && <span style={{ color: '#ef4444' }}> *</span>}
-            </label>
+              {field.required && <span className="text-destructive"> *</span>}
+            </Label>
             <FieldInput
               field={field}
               value={formData[field.key] ?? ''}
@@ -154,11 +162,13 @@ export default function ObjectForm({ schema, record, inline, onSaved, onCancel }
         ))}
       </div>
 
-      <div style={{ padding: '16px 24px', borderTop: '1px solid #e2e8f0', display: 'flex', gap: 8 }}>
-        <button onClick={onCancel} style={{ flex: 1, padding: '10px', background: '#f1f5f9', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 500 }}>Cancel</button>
-        <button id="object-form-submit" onClick={handleSubmit} disabled={saving} style={{ flex: 1, padding: '10px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>
+      <div className="flex gap-2 border-t border-border bg-muted/30 px-6 py-4">
+        <Button variant="outline" onClick={onCancel} className="flex-1">
+          Cancel
+        </Button>
+        <Button id="object-form-submit" onClick={handleSubmit} disabled={saving} className="flex-1">
           {saving ? 'Saving...' : record ? `Update ${schema.label}` : `Create ${schema.label}`}
-        </button>
+        </Button>
       </div>
     </div>
   );

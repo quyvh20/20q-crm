@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Building2, Loader2, MonitorSmartphone } from 'lucide-react';
 import Modal from '../../components/common/Modal';
+import { Button } from '../../components/ui/button';
 import { createFieldDef, createObjectDef } from '../../lib/api';
 import { usePermissions } from '../../lib/auth';
 import KBQuickFillForm from './KBQuickFillForm';
@@ -140,7 +141,7 @@ export default function StarterTemplateModal({ open, onClose }: StarterTemplateM
           </p>
 
           {error && (
-            <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-500">{error}</div>
+            <div className="rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>
           )}
 
           <div className="grid gap-4 sm:grid-cols-2">
@@ -169,13 +170,14 @@ export default function StarterTemplateModal({ open, onClose }: StarterTemplateM
 
           <div className="flex items-center justify-between gap-3 border-t border-border pt-4">
             <p className="text-sm text-muted-foreground">Prefer to build your own?</p>
-            <button
+            <Button
+              variant="outline"
               onClick={() => (canKB ? setStep('kb') : close())}
               disabled={!!deploying}
-              className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+              className="text-muted-foreground hover:text-foreground"
             >
               {canKB ? 'Skip — train the AI instead' : 'Not now'}
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -191,7 +193,7 @@ export default function StarterTemplateModal({ open, onClose }: StarterTemplateM
 
       {step === 'done' && (
         <div className="space-y-4">
-          <div className="rounded-lg border border-green-500/20 bg-green-500/10 px-3 py-2 text-sm text-green-600 dark:text-green-400">
+          <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-600 dark:text-emerald-400">
             {deployed
               ? 'Template applied — your new object is in the sidebar.'
               : 'Saved to your knowledge base.'}
@@ -212,12 +214,7 @@ export default function StarterTemplateModal({ open, onClose }: StarterTemplateM
             .
           </p>
           <div className="flex justify-end border-t border-border pt-4">
-            <button
-              onClick={close}
-              className="rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90"
-            >
-              Done
-            </button>
+            <Button onClick={close}>Done</Button>
           </div>
         </div>
       )}

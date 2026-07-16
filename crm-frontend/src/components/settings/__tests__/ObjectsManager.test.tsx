@@ -76,12 +76,12 @@ describe('ObjectsManager — one manager for every object', () => {
     fireEvent.click(screen.getAllByTitle('Edit fields')[1]);
 
     await waitFor(() => expect(screen.getByText('Edit Project')).toBeInTheDocument());
-    expect(screen.getByText('🔍 Searchable')).toBeInTheDocument();
+    expect(screen.getByText('Searchable')).toBeInTheDocument();
   });
 
   it('opens the new custom object form', async () => {
     render(<ObjectsManager />);
-    fireEvent.click(await screen.findByText('+ New Object'));
+    fireEvent.click(await screen.findByRole('button', { name: 'New Object' }));
     await waitFor(() => expect(screen.getByText('New Custom Object')).toBeInTheDocument());
   });
 });
@@ -94,7 +94,7 @@ describe('ObjectsManager — creation-time access nudge (U3.6)', () => {
     vi.mocked(createObjectDef).mockResolvedValue({} as CustomObjectDef);
 
     render(<MemoryRouter><ObjectsManager /></MemoryRouter>);
-    fireEvent.click(await screen.findByText('+ New Object'));
+    fireEvent.click(await screen.findByRole('button', { name: 'New Object' }));
     await waitFor(() => expect(screen.getByText('New Custom Object')).toBeInTheDocument());
 
     fireEvent.change(screen.getByPlaceholderText('e.g. Project'), { target: { value: 'Invoice' } });
@@ -132,7 +132,7 @@ describe('ObjectsManager — creation-time access nudge (U3.6)', () => {
     fireEvent.click(screen.getByText('Update Object'));
 
     // Saving an edit returns to the list without the nudge.
-    expect(await screen.findByText('+ New Object')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'New Object' })).toBeInTheDocument();
     expect(screen.queryByText(/was created/)).toBeNull();
     expect(screen.queryByLabelText('Dismiss access reminder')).toBeNull();
   });

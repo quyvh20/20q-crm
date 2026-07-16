@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
-import { KeyRound, Loader2, ShieldCheck, ShieldOff, Smartphone } from 'lucide-react';
+import { KeyRound, ShieldCheck, ShieldOff, Smartphone } from 'lucide-react';
 import {
   getTwoFactorStatus, startTwoFactorSetup, enableTwoFactor, disableTwoFactor, regenerateBackupCodes,
   type TwoFactorSetupInfo, type TwoFactorStatus,
 } from '../../lib/api';
 import { useConfirm } from '../common/ConfirmDialog';
 import SecretReveal from './SecretReveal';
+import { Badge, Button, Input, Label, Spinner } from '@/components/ui';
 
 // TwoFactorSetup (U6.4) is the whole personal 2FA lifecycle in one panel: enroll
 // (QR → confirm a code → the one-time backup codes), regenerate those codes, and
@@ -144,9 +145,9 @@ export default function TwoFactorSetup({
   // A code (TOTP or backup) gates every state change; both forms live in this box.
   const codeInput = (label: string, onSubmit: () => void, submitLabel: string) => (
     <div className="space-y-2">
-      <label htmlFor="twofa-code" className="block text-xs font-medium text-muted-foreground">{label}</label>
+      <Label htmlFor="twofa-code" className="block text-xs text-muted-foreground">{label}</Label>
       <div className="flex flex-wrap gap-2">
-        <input
+        <Input
           id="twofa-code"
           type="text"
           inputMode="text"
@@ -154,23 +155,15 @@ export default function TwoFactorSetup({
           value={code}
           onChange={(e) => setCode(e.target.value)}
           placeholder="123456 or a backup code"
-          className="w-48 px-3 py-2 bg-background border border-border rounded-lg text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+          className="w-48"
         />
-        <button
-          onClick={onSubmit}
-          disabled={busy || code.trim().length < 6}
-          className="px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-50"
-        >
+        <Button onClick={onSubmit} disabled={busy || code.trim().length < 6}>
           {busy ? 'Checking…' : submitLabel}
-        </button>
+        </Button>
         {!(forced && mode === 'enrolling') && (
-          <button
-            onClick={resetFlow}
-            disabled={busy}
-            className="px-3 py-2 border border-border rounded-lg text-sm hover:bg-accent transition-colors disabled:opacity-50"
-          >
+          <Button variant="outline" onClick={resetFlow} disabled={busy}>
             Cancel
-          </button>
+          </Button>
         )}
       </div>
     </div>
@@ -180,7 +173,7 @@ export default function TwoFactorSetup({
     return (
       <section className="max-w-md">
         <div className="flex items-center justify-center py-10">
-          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+          <Spinner />
         </div>
       </section>
     );
@@ -190,10 +183,10 @@ export default function TwoFactorSetup({
     return (
       <section className="max-w-md space-y-3">
         <h2 className="text-lg font-semibold">Two-factor authentication</h2>
-        <div className="rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-400">{loadError}</div>
-        <button onClick={() => void load()} className="px-3 py-1.5 text-sm rounded-lg border border-border hover:bg-accent transition-colors">
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{loadError}</div>
+        <Button variant="outline" size="sm" onClick={() => void load()}>
           Try again
-        </button>
+        </Button>
       </section>
     );
   }
@@ -206,7 +199,7 @@ export default function TwoFactorSetup({
     <section className="max-w-md space-y-4">
       <div>
         <h2 className="text-lg font-semibold flex items-center gap-2">
-          <ShieldCheck className={`w-5 h-5 ${enabled ? 'text-green-500' : 'text-muted-foreground'}`} />
+          <ShieldCheck className={`w-5 h-5 ${enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'}`} />
           Two-factor authentication
         </h2>
         <p className="text-sm text-muted-foreground mt-0.5">
@@ -215,10 +208,10 @@ export default function TwoFactorSetup({
       </div>
 
       {notice && (
-        <div className="rounded-md border border-green-500/40 bg-green-500/10 p-3 text-sm text-green-500">{notice}</div>
+        <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-600 dark:text-emerald-400">{notice}</div>
       )}
       {actionError && (
-        <div className="rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-400">{actionError}</div>
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{actionError}</div>
       )}
 
       {/* The one-time reveal — backup codes, fresh or regenerated. */}
@@ -239,7 +232,7 @@ export default function TwoFactorSetup({
       )}
 
       {mode !== 'reveal' && (
-        <div className="rounded-lg border border-border p-4 space-y-4">
+        <div className="rounded-xl border border-border p-4 space-y-4">
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-sm font-medium text-foreground flex items-center gap-1.5">
@@ -251,31 +244,25 @@ export default function TwoFactorSetup({
                   : 'Not set up'}
               </p>
             </div>
-            <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${enabled ? 'bg-green-500/10 text-green-500' : 'bg-muted text-muted-foreground'}`}>
-              {enabled ? 'Active' : 'Off'}
-            </span>
+            <Badge variant={enabled ? 'success' : 'secondary'}>{enabled ? 'Active' : 'Off'}</Badge>
           </div>
 
           {lockedOn && (
-            <p className="text-xs text-amber-500">
+            <p className="text-xs text-amber-600 dark:text-amber-400">
               This workspace requires two-factor authentication, so it can't be turned off.
             </p>
           )}
           {lowCodes && (
-            <p className="text-xs text-amber-500">
+            <p className="text-xs text-amber-600 dark:text-amber-400">
               You're almost out of backup codes — regenerate a fresh set so you don't get locked out.
             </p>
           )}
 
           {/* Not enrolled — start, or finish, the enrollment. */}
           {!enabled && mode === 'idle' && (
-            <button
-              onClick={beginSetup}
-              disabled={busy}
-              className="px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-50"
-            >
+            <Button onClick={beginSetup} disabled={busy}>
               {busy ? 'Preparing…' : 'Set up two-factor authentication'}
-            </button>
+            </Button>
           )}
 
           {!enabled && mode === 'enrolling' && setup && (
@@ -292,7 +279,7 @@ export default function TwoFactorSetup({
                 <button
                   type="button"
                   onClick={() => setShowSecret((v) => !v)}
-                  className="text-xs text-blue-500 hover:underline"
+                  className="rounded text-xs text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {showSecret ? 'Hide setup key' : "Can't scan? Enter a setup key instead"}
                 </button>
@@ -309,19 +296,22 @@ export default function TwoFactorSetup({
           {/* Enrolled — rotate the codes, or (unless the workspace forbids it) stop. */}
           {enabled && mode === 'idle' && (
             <div className="flex flex-wrap gap-2">
-              <button
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={() => { setMode('regenerating'); setCode(''); setActionError(''); setNotice(''); }}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border border-border hover:bg-accent transition-colors"
               >
-                <KeyRound className="w-4 h-4" /> Regenerate backup codes
-              </button>
+                <KeyRound aria-hidden /> Regenerate backup codes
+              </Button>
               {!lockedOn && (
-                <button
+                <Button
+                  variant="outline"
+                  size="sm"
                   onClick={() => { setMode('disabling'); setCode(''); setActionError(''); setNotice(''); }}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border border-border text-red-400 hover:bg-red-500/10 transition-colors"
+                  className="text-destructive hover:bg-destructive/10 hover:text-destructive"
                 >
-                  <ShieldOff className="w-4 h-4" /> Turn off
-                </button>
+                  <ShieldOff aria-hidden /> Turn off
+                </Button>
               )}
             </div>
           )}

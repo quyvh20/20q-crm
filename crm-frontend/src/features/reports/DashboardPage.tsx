@@ -1,11 +1,16 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
+import { ArrowDown, ArrowUp, BarChart3, Maximize2, Minimize2, Plus, X } from 'lucide-react';
 import {
   addDashboardWidget, listDashboardWidgets, listReports, removeDashboardWidget,
   reorderDashboardWidgets, runReport, updateDashboardWidget,
   type DashboardWidget, type Report, type ReportResult,
 } from '../../lib/api';
+import { Button } from '../../components/ui/button';
+import { EmptyState } from '../../components/ui/empty-state';
+import { PageHeader } from '../../components/ui/page-header';
+import { Skeleton } from '../../components/ui/skeleton';
 import ReportChart from './charts/ReportChart';
 import SetupChecklist from '../onboarding/SetupChecklist';
 
@@ -48,21 +53,20 @@ export default function DashboardPage() {
   };
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6">
+    <div className="mx-auto w-full max-w-6xl space-y-6">
       <SetupChecklist />
 
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Dashboard</h1>
-          <p className="text-sm text-muted-foreground">Your pinned reports, refreshed on every visit.</p>
-        </div>
-        <button
-          onClick={() => setAdding((v) => !v)}
-          className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
-        >
-          + Add widget
-        </button>
-      </div>
+      <PageHeader
+        className="mb-0"
+        title="Dashboard"
+        description="Your pinned reports, refreshed on every visit."
+        actions={
+          <Button variant="outline" size="sm" onClick={() => setAdding((v) => !v)}>
+            <Plus aria-hidden />
+            Add widget
+          </Button>
+        }
+      />
 
       {adding && (
         <AddWidgetPicker
@@ -74,24 +78,21 @@ export default function DashboardPage() {
 
       {isLoading ? (
         <div className="grid gap-4 md:grid-cols-2">
-          <div className="h-72 animate-pulse rounded-xl bg-muted/50" />
-          <div className="h-72 animate-pulse rounded-xl bg-muted/50" />
+          <Skeleton className="h-72 rounded-xl" />
+          <Skeleton className="h-72 rounded-xl" />
         </div>
       ) : widgets.length === 0 ? (
-        <div className="rounded-xl border border-dashed p-12 text-center">
-          <div className="text-4xl">📊</div>
-          <h2 className="mt-3 font-semibold">Your dashboard is empty</h2>
-          <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-            Pin any saved report here to see it every time you open the app.
-            Build one in <Link to="/reports" className="text-primary underline">Reports</Link> — there are ready-made templates to start from.
-          </p>
-          <button
-            onClick={() => navigate('/reports')}
-            className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
-          >
-            Go to Reports
-          </button>
-        </div>
+        <EmptyState
+          icon={BarChart3}
+          title="Your dashboard is empty"
+          description={
+            <>
+              Pin any saved report here to see it every time you open the app.
+              Build one in <Link to="/reports" className="text-primary underline">Reports</Link> — there are ready-made templates to start from.
+            </>
+          }
+          action={<Button onClick={() => navigate('/reports')}>Go to Reports</Button>}
+        />
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
           {widgets.map((w, i) => (
@@ -121,29 +122,25 @@ function AddWidgetPicker({ pinnedReportIds, onAdd, adding }: {
 
   if (available.length === 0) {
     return (
-      <div className="rounded-xl border bg-card p-4 text-sm text-muted-foreground">
+      <div className="rounded-xl border border-border bg-card p-4 text-sm text-muted-foreground">
         Every report you can see is already pinned. <Link to="/reports/new" className="text-primary underline">Build a new one</Link>.
       </div>
     );
   }
   return (
-    <div className="flex items-center gap-2 rounded-xl border bg-card p-4">
+    <div className="flex items-center gap-2 rounded-xl border border-border bg-card p-4">
       <select
         aria-label="Report to pin"
         value={selected}
         onChange={(e) => setSelected(e.target.value)}
-        className="flex-1 rounded-md border bg-background px-2 py-2 text-sm"
+        className="h-9 flex-1 rounded-lg border border-input bg-background px-2 text-sm focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
       >
         <option value="">Choose a report…</option>
         {available.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
       </select>
-      <button
-        onClick={() => selected && onAdd(selected)}
-        disabled={!selected || adding}
-        className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-      >
+      <Button onClick={() => selected && onAdd(selected)} disabled={!selected || adding}>
         {adding ? 'Pinning…' : 'Pin to dashboard'}
-      </button>
+      </Button>
     </div>
   );
 }
@@ -162,27 +159,37 @@ function WidgetCard({ widget, onMoveUp, onMoveDown, onResize, onRemove }: {
     staleTime: 60_000,
   });
 
-  const btn = 'rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground';
+  const btn = 'h-7 w-7 text-muted-foreground hover:text-foreground';
 
   return (
-    <div className={`rounded-xl border bg-card p-4 ${widget.size === 'full' ? 'md:col-span-2' : ''}`}>
+    <div className={`rounded-xl border border-border bg-card p-4 ${widget.size === 'full' ? 'md:col-span-2' : ''}`}>
       <div className="mb-2 flex items-center justify-between gap-2">
         <Link to={`/reports/${widget.report_id}`} className="truncate text-sm font-semibold hover:underline">
           {report?.name ?? 'Report'}
         </Link>
         <div className="flex shrink-0 items-center gap-1">
-          {onMoveUp && <button className={btn} onClick={onMoveUp} title="Move up" aria-label="Move widget up">↑</button>}
-          {onMoveDown && <button className={btn} onClick={onMoveDown} title="Move down" aria-label="Move widget down">↓</button>}
-          <button className={btn} onClick={onResize} title={widget.size === 'half' ? 'Expand' : 'Shrink'} aria-label="Toggle widget size">
-            {widget.size === 'half' ? '⤢' : '⤡'}
-          </button>
-          <button className={btn} onClick={onRemove} title="Remove from dashboard" aria-label="Remove widget">✕</button>
+          {onMoveUp && (
+            <Button variant="ghost" size="icon" className={btn} onClick={onMoveUp} title="Move up" aria-label="Move widget up">
+              <ArrowUp aria-hidden />
+            </Button>
+          )}
+          {onMoveDown && (
+            <Button variant="ghost" size="icon" className={btn} onClick={onMoveDown} title="Move down" aria-label="Move widget down">
+              <ArrowDown aria-hidden />
+            </Button>
+          )}
+          <Button variant="ghost" size="icon" className={btn} onClick={onResize} title={widget.size === 'half' ? 'Expand' : 'Shrink'} aria-label="Toggle widget size">
+            {widget.size === 'half' ? <Maximize2 aria-hidden /> : <Minimize2 aria-hidden />}
+          </Button>
+          <Button variant="ghost" size="icon" className={btn} onClick={onRemove} title="Remove from dashboard" aria-label="Remove widget">
+            <X aria-hidden />
+          </Button>
         </div>
       </div>
       {isLoading ? (
-        <div className="h-56 animate-pulse rounded-lg bg-muted/50" />
+        <Skeleton className="h-56 rounded-lg" />
       ) : isError ? (
-        <div className="flex h-56 items-center justify-center px-6 text-center text-sm text-red-600">{error.message}</div>
+        <div className="flex h-56 items-center justify-center px-6 text-center text-sm text-destructive">{error.message}</div>
       ) : data && report ? (
         <ReportChart chart={report.config.chart} result={data} height={widget.size === 'full' ? 320 : 240} />
       ) : null}

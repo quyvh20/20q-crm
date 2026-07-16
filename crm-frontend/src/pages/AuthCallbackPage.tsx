@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { setAccessToken } from '../lib/api';
 import { useDocumentTitle } from '../lib/useDocumentTitle';
+import { Spinner } from '@/components/ui';
 
 const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8080' : '');
 
@@ -77,10 +78,10 @@ export default function AuthCallbackPage() {
   }, [searchParams]);
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+    <div className="min-h-screen bg-muted/30 flex flex-col items-center justify-center px-4 py-10">
       <div className="text-center">
-        <div className="animate-spin h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full mx-auto mb-4"></div>
-        <p className="text-slate-400">{status}</p>
+        <Spinner size="lg" className="mb-4" />
+        <p className="text-sm text-muted-foreground">{status}</p>
       </div>
     </div>
   );

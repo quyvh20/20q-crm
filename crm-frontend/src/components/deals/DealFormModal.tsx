@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createDeal, getContacts, getCompanies, type PipelineStage, type Contact, type Company } from '../../lib/api';
 import DynamicCustomFields from '../common/DynamicCustomFields';
 import Modal from '../common/Modal';
+import { Button, Input, Label, Select, Spinner } from '@/components/ui';
 
 interface DealFormModalProps {
   isOpen: boolean;
@@ -88,95 +89,89 @@ export default function DealFormModal({ isOpen, onClose, stages, defaultStageId 
             <div className="space-y-4">
               {/* Title */}
               <div>
-                <label className="text-sm font-medium text-muted-foreground mb-1 block">Deal Title *</label>
-                <input
+                <Label className="mb-1 text-muted-foreground">Deal Title *</Label>
+                <Input
                   value={title}
                   onChange={e => setTitle(e.target.value)}
                   required
                   placeholder="e.g. Website redesign project"
-                  className="w-full px-3 py-2 rounded-lg border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
               {/* Value + Probability */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="text-sm font-medium text-muted-foreground mb-1 block">Value ($)</label>
-                  <input
+                  <Label className="mb-1 text-muted-foreground">Value ($)</Label>
+                  <Input
                     type="number"
                     value={value}
                     onChange={e => setValue(e.target.value)}
                     placeholder="0"
                     min="0"
-                    className="w-full px-3 py-2 rounded-lg border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
                 <div>
-                  <label className="text-sm font-medium text-muted-foreground mb-1 block">Probability: {probability}%</label>
+                  <Label className="mb-1 text-muted-foreground">Probability: {probability}%</Label>
                   <input
                     type="range"
                     min="0"
                     max="100"
                     value={probability}
                     onChange={e => setProbability(Number(e.target.value))}
-                    className="w-full mt-2 accent-blue-500"
+                    className="w-full mt-2 accent-primary"
                   />
                 </div>
               </div>
 
               {/* Stage */}
               <div>
-                <label className="text-sm font-medium text-muted-foreground mb-1 block">Stage</label>
-                <select
+                <Label className="mb-1 text-muted-foreground">Stage</Label>
+                <Select
                   value={stageId}
                   onChange={e => setStageId(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="">Select stage</option>
                   {stages.filter(s => !s.is_won && !s.is_lost).map(s => (
                     <option key={s.id} value={s.id}>{s.name}</option>
                   ))}
-                </select>
+                </Select>
               </div>
 
               {/* Contact + Company */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="text-sm font-medium text-muted-foreground mb-1 block">Contact</label>
-                  <select
+                  <Label className="mb-1 text-muted-foreground">Contact</Label>
+                  <Select
                     value={contactId}
                     onChange={e => setContactId(e.target.value)}
-                    className="w-full px-3 py-2 rounded-lg border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
                     <option value="">None</option>
                     {contacts.map(c => (
                       <option key={c.id} value={c.id}>{c.first_name} {c.last_name}</option>
                     ))}
-                  </select>
+                  </Select>
                 </div>
                 <div>
-                  <label className="text-sm font-medium text-muted-foreground mb-1 block">Company</label>
-                  <select
+                  <Label className="mb-1 text-muted-foreground">Company</Label>
+                  <Select
                     value={companyId}
                     onChange={e => setCompanyId(e.target.value)}
-                    className="w-full px-3 py-2 rounded-lg border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
                     <option value="">None</option>
                     {companies.map(c => (
                       <option key={c.id} value={c.id}>{c.name}</option>
                     ))}
-                  </select>
+                  </Select>
                 </div>
               </div>
 
               {/* Expected Close */}
               <div>
-                <label className="text-sm font-medium text-muted-foreground mb-1 block">Expected Close Date</label>
-                <input
+                <Label className="mb-1 text-muted-foreground">Expected Close Date</Label>
+                <Input
                   type="date"
                   value={expectedCloseAt}
                   onChange={e => setExpectedCloseAt(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
@@ -191,21 +186,16 @@ export default function DealFormModal({ isOpen, onClose, stages, defaultStageId 
           </div>
 
           <div className="px-6 py-4 bg-muted/30 flex justify-end gap-3 border-t">
-            <button
-              type="button"
-              onClick={close}
-              className="px-4 py-2 text-sm font-medium rounded-lg hover:bg-muted transition-colors"
-            >
+            <Button type="button" variant="ghost" onClick={close}>
               Cancel
-            </button>
-            <button
+            </Button>
+            <Button
               type="submit"
               disabled={!title || mutation.isPending}
-              className="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-2"
             >
-              {mutation.isPending && <div className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />}
+              {mutation.isPending && <Spinner size="sm" />}
               Create Deal
-            </button>
+            </Button>
           </div>
         </form>
     </Modal>

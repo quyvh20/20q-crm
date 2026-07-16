@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Monitor, LogOut, Users2, FileText, Loader2, ShieldCheck, ShieldAlert, ShieldOff } from 'lucide-react';
+import { Monitor, LogOut, Users2, FileText, ShieldCheck, ShieldAlert, ShieldOff } from 'lucide-react';
 import { getMemberDetail, forceSignOutMember, resetMemberTwoFactor, type MemberDetail } from '../../lib/api';
 import { prettyRole } from '../../lib/roles';
 import { useConfirm } from '../common/ConfirmDialog';
 import Modal from '../common/Modal';
+import { Badge, Button, Spinner } from '@/components/ui';
 
 // MemberDrawer is the per-member detail slide-over (U4): role, groups, the
 // records they own (the offboarding preview), and their live sessions with an
@@ -113,13 +114,13 @@ export default function MemberDrawer({
         dismissable={!signingOut && !resetting2FA}
       >
         {loading ? (
-          <div className="flex justify-center py-20"><Loader2 className="w-7 h-7 animate-spin text-muted-foreground" /></div>
+          <div className="flex justify-center py-20"><Spinner size="lg" /></div>
         ) : error && !detail ? (
-          <div className="m-5 bg-red-500/10 text-red-500 text-sm rounded-lg px-3 py-2">{error}</div>
+          <div className="m-5 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>
         ) : m ? (
           <div className="p-5 space-y-6">
-            {error && <div className="bg-red-500/10 text-red-500 text-sm rounded-lg px-3 py-2">{error}</div>}
-            {notice && <div className="bg-green-500/10 text-green-500 text-sm rounded-lg px-3 py-2">{notice}</div>}
+            {error && <div className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>}
+            {notice && <div className="rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-600 dark:text-emerald-400">{notice}</div>}
 
             {/* Identity */}
             <div className="flex items-center gap-3">
@@ -141,7 +142,7 @@ export default function MemberDrawer({
               <div>
                 <dt className="text-xs text-muted-foreground">Role</dt>
                 <dd className="text-foreground">
-                  <Link to={`/settings/roles/${m.role_id}`} className="text-blue-500 hover:underline">{prettyRole(m.role)}</Link>
+                  <Link to={`/settings/roles/${m.role_id}`} className="text-primary hover:underline">{prettyRole(m.role)}</Link>
                 </dd>
               </div>
               <div>
@@ -156,9 +157,9 @@ export default function MemberDrawer({
                 <dt className="text-xs text-muted-foreground">Email</dt>
                 <dd className="flex items-center gap-1.5">
                   {m.email_verified ? (
-                    <span className="inline-flex items-center gap-1 text-green-500"><ShieldCheck className="w-3.5 h-3.5" /> Verified</span>
+                    <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400"><ShieldCheck className="w-3.5 h-3.5" /> Verified</span>
                   ) : (
-                    <span className="inline-flex items-center gap-1 text-amber-500"><ShieldAlert className="w-3.5 h-3.5" /> Unverified</span>
+                    <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400"><ShieldAlert className="w-3.5 h-3.5" /> Unverified</span>
                   )}
                 </dd>
               </div>
@@ -166,7 +167,7 @@ export default function MemberDrawer({
                 <dt className="text-xs text-muted-foreground">Two-factor</dt>
                 <dd className="flex items-center gap-1.5">
                   {m.two_factor_enabled ? (
-                    <span className="inline-flex items-center gap-1 text-green-500"><ShieldCheck className="w-3.5 h-3.5" /> On</span>
+                    <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400"><ShieldCheck className="w-3.5 h-3.5" /> On</span>
                   ) : (
                     <span className="inline-flex items-center gap-1 text-muted-foreground"><ShieldOff className="w-3.5 h-3.5" /> Off</span>
                   )}
@@ -176,20 +177,22 @@ export default function MemberDrawer({
 
             {/* 2FA break-glass (U6.4) — only meaningful when they actually have it on. */}
             {canManage && !isSelf && m.two_factor_enabled && (
-              <div className="rounded-lg border border-border p-3 flex items-start justify-between gap-3">
+              <div className="rounded-xl border border-border p-3 flex items-start justify-between gap-3">
                 <div>
                   <p className="text-sm font-medium text-foreground">Lost their authenticator?</p>
                   <p className="text-xs text-muted-foreground mt-0.5">
                     Reset their two-factor authentication so they can sign in and set it up again.
                   </p>
                 </div>
-                <button
+                <Button
+                  variant="outline"
+                  size="sm"
                   onClick={handleReset2FA}
                   disabled={resetting2FA}
-                  className="shrink-0 inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-red-500 hover:bg-red-500/10 disabled:opacity-50 transition-colors"
+                  className="shrink-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
                 >
-                  <ShieldOff className="w-3.5 h-3.5" /> {resetting2FA ? 'Resetting…' : 'Reset 2FA'}
-                </button>
+                  <ShieldOff aria-hidden /> {resetting2FA ? 'Resetting…' : 'Reset 2FA'}
+                </Button>
               </div>
             )}
 
@@ -203,9 +206,7 @@ export default function MemberDrawer({
               ) : (
                 <div className="flex flex-wrap gap-1.5">
                   {detail.groups.map(g => (
-                    <span key={g.id} className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-muted text-muted-foreground border border-border">
-                      {g.name}
-                    </span>
+                    <Badge key={g.id} variant="secondary">{g.name}</Badge>
                   ))}
                 </div>
               )}
@@ -229,9 +230,10 @@ export default function MemberDrawer({
                 </h3>
                 {canManage && !isSelf && detail.sessions.length > 0 && (
                   <button
+                    type="button"
                     onClick={handleForceSignOut}
                     disabled={signingOut}
-                    className="inline-flex items-center gap-1 text-xs font-medium text-red-500 hover:text-red-600 disabled:opacity-50 transition-colors"
+                    className="inline-flex items-center gap-1 rounded text-xs font-medium text-destructive transition-colors hover:text-destructive/80 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <LogOut className="w-3.5 h-3.5" /> Sign out everywhere
                   </button>
@@ -254,7 +256,7 @@ export default function MemberDrawer({
             {/* Audit trail link */}
             <Link
               to={`/settings/audit?user=${userId}`}
-              className="inline-flex items-center gap-1.5 text-sm text-blue-500 hover:underline"
+              className="inline-flex items-center gap-1.5 text-sm text-primary hover:underline"
             >
               <FileText className="w-4 h-4" /> View activity in the audit log
             </Link>

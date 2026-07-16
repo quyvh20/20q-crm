@@ -3,6 +3,8 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
 import { TwoFactorVerifyError } from '../lib/api';
 import { useDocumentTitle } from '../lib/useDocumentTitle';
+import { Button, Card, Input, Label, buttonVariants } from '@/components/ui';
+import { cn } from '@/lib/utils';
 
 // The second step of sign-in (U6.4). The password (or Google) proved the identity;
 // this proves possession of the second factor and exchanges the short-lived
@@ -72,37 +74,34 @@ export default function TwoFactorChallengePage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+    <div className="min-h-screen bg-muted/30 flex flex-col items-center justify-center px-4 py-10">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-white tracking-tight">
-            Guerrilla <span className="text-blue-400">CRM</span>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+            Guerrilla <span className="text-primary">CRM</span>
           </h1>
-          <p className="text-slate-400 mt-2">Two-factor authentication</p>
+          <p className="text-sm text-muted-foreground mt-2">Two-factor authentication</p>
         </div>
 
-        <div className="bg-slate-800/50 backdrop-blur-xl border border-slate-700/50 rounded-2xl p-8 shadow-2xl">
+        <Card className="p-8">
           {error && (
-            <div className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
+            <div className="mb-4 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               {error}
             </div>
           )}
 
           {dead ? (
             <div className="text-center space-y-4">
-              <p className="text-slate-300 text-sm">
+              <p className="text-sm text-muted-foreground">
                 This sign-in attempt has been cancelled for your safety. Start again from the sign-in page.
               </p>
-              <a
-                href="/login"
-                className="inline-block w-full py-3 px-4 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white font-semibold rounded-xl transition-all"
-              >
+              <a href="/login" className={cn(buttonVariants(), 'w-full')}>
                 Back to sign in
               </a>
             </div>
           ) : (
             <>
-              <p className="text-slate-400 text-sm mb-5">
+              <p className="text-sm text-muted-foreground mb-5">
                 {useBackup
                   ? 'Enter one of the backup codes you saved when you turned on two-factor authentication. Each code works once.'
                   : 'Open your authenticator app and enter the 6-digit code for Guerrilla CRM.'}
@@ -110,10 +109,10 @@ export default function TwoFactorChallengePage() {
 
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
-                  <label htmlFor="totp-code" className="block text-sm font-medium text-slate-300 mb-1.5">
+                  <Label htmlFor="totp-code" className="mb-1.5">
                     {useBackup ? 'Backup code' : 'Authentication code'}
-                  </label>
-                  <input
+                  </Label>
+                  <Input
                     id="totp-code"
                     type="text"
                     inputMode={useBackup ? 'text' : 'numeric'}
@@ -123,35 +122,31 @@ export default function TwoFactorChallengePage() {
                     onChange={(e) => setCode(e.target.value)}
                     placeholder={useBackup ? 'XXXXX-XXXXX' : '123456'}
                     maxLength={useBackup ? 24 : 6}
-                    className="w-full px-4 py-3 bg-slate-900/50 border border-slate-700 rounded-xl text-white tracking-[0.3em] text-center text-lg placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all"
+                    className="h-11 text-center text-lg tracking-[0.3em]"
                   />
                 </div>
 
-                <button
-                  type="submit"
-                  disabled={!canSubmit}
-                  className="w-full py-3 px-4 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white font-semibold rounded-xl transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
+                <Button type="submit" disabled={!canSubmit} className="w-full">
                   {loading ? 'Verifying…' : 'Verify'}
-                </button>
+                </Button>
               </form>
 
               <button
                 type="button"
                 onClick={switchMode}
-                className="w-full text-center text-sm text-blue-400 hover:text-blue-300 font-medium transition-colors mt-5"
+                className="w-full text-center text-sm font-medium text-primary hover:underline mt-5"
               >
                 {useBackup ? 'Use your authenticator app instead' : 'Use a backup code instead'}
               </button>
             </>
           )}
 
-          <p className="text-center text-sm text-slate-500 mt-6">
-            <a href="/login" className="hover:text-slate-300 transition-colors">
+          <p className="text-center text-sm text-muted-foreground mt-6">
+            <a href="/login" className="transition-colors hover:text-foreground">
               Cancel and sign in as someone else
             </a>
           </p>
-        </div>
+        </Card>
       </div>
     </div>
   );

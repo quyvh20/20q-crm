@@ -1,9 +1,12 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { X } from 'lucide-react';
 import {
   addReportComment, deleteReportComment, listReportComments,
   type ReportCommentView,
 } from '../../lib/api';
+import { Button } from '../../components/ui/button';
+import { Skeleton } from '../../components/ui/skeleton';
 
 // shortDate renders a comment timestamp compactly (e.g. "Jul 4, 2:15 PM").
 function shortDate(iso: string): string {
@@ -52,9 +55,9 @@ export default function ReportComments({ reportId, canComment }: { reportId: str
       </div>
 
       {isError ? (
-        <div className="text-sm text-red-600">{(error as Error).message}</div>
+        <div className="text-sm text-destructive">{(error as Error).message}</div>
       ) : isLoading ? (
-        <div className="h-16 animate-pulse rounded-lg bg-muted/50" />
+        <Skeleton className="h-16 rounded-lg" />
       ) : comments.length === 0 ? (
         <div className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">No comments yet.</div>
       ) : (
@@ -69,14 +72,16 @@ export default function ReportComments({ reportId, canComment }: { reportId: str
                 <div className="whitespace-pre-wrap break-words text-foreground">{c.body}</div>
               </div>
               {c.can_delete && (
-                <button
+                <Button
+                  variant="ghost"
+                  size="icon"
                   onClick={() => deleteMutation.mutate(c.id)}
                   disabled={deleteMutation.isPending}
-                  className="rounded px-1.5 py-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                  className="h-7 w-7 text-muted-foreground hover:text-foreground"
                   aria-label={`Delete comment by ${c.author_name}`}
                 >
-                  ✕
-                </button>
+                  <X aria-hidden />
+                </Button>
               )}
             </li>
           ))}
@@ -91,17 +96,13 @@ export default function ReportComments({ reportId, canComment }: { reportId: str
             onChange={(e) => setBody(e.target.value)}
             placeholder="Add a comment…"
             rows={2}
-            className="w-full resize-y rounded-md border bg-background px-3 py-2 text-sm"
+            className="w-full resize-y rounded-lg border border-input bg-background px-3 py-2 text-sm focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
           />
-          {addMutation.isError && <div className="text-sm text-red-600">{(addMutation.error as Error).message}</div>}
+          {addMutation.isError && <div className="text-sm text-destructive">{(addMutation.error as Error).message}</div>}
           <div className="flex justify-end">
-            <button
-              onClick={submit}
-              disabled={addMutation.isPending || !body.trim()}
-              className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-            >
+            <Button onClick={submit} disabled={addMutation.isPending || !body.trim()}>
               {addMutation.isPending ? 'Posting…' : 'Comment'}
-            </button>
+            </Button>
           </div>
         </div>
       ) : (

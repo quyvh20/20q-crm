@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { upsertKBSection } from '../../lib/api';
+import { Button } from '../../components/ui/button';
 
 // The knowledge-base quick fill (U7.5) — the useful half of the retired welcome
 // wizard, kept alive.
@@ -109,12 +110,12 @@ export default function KBQuickFillForm({ templateId, onSaved, onSkip, skipLabel
       </p>
 
       {error && (
-        <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-500">{error}</div>
+        <div className="rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>
       )}
 
       <div>
         <label htmlFor="kb-company-name" className="mb-1 block text-sm font-medium text-foreground">
-          Company name <span className="text-red-500">*</span>
+          Company name <span className="text-destructive">*</span>
         </label>
         <input
           id="kb-company-name"
@@ -213,20 +214,12 @@ export default function KBQuickFillForm({ templateId, onSaved, onSkip, skipLabel
       </div>
 
       <div className="flex items-center justify-between gap-3 border-t border-border pt-4">
-        <button
-          onClick={onSkip}
-          disabled={saving}
-          className="text-sm text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
-        >
+        <Button variant="ghost" size="sm" onClick={onSkip} disabled={saving} className="text-muted-foreground hover:text-foreground">
           {skipLabel}
-        </button>
-        <button
-          onClick={handleSave}
-          disabled={saving || !form.companyName.trim()}
-          className="rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
-        >
+        </Button>
+        <Button onClick={handleSave} disabled={saving || !form.companyName.trim()}>
           {saving ? 'Saving…' : 'Save to knowledge base'}
-        </button>
+        </Button>
       </div>
     </div>
   );

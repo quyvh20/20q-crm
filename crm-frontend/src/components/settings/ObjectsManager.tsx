@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
+import { Check, ChevronDown, ChevronUp, Pencil, Plus, Search, Trash2, X } from 'lucide-react';
 import {
   listRegistryObjects, getObjectSchema, getObjectDef,
   createObjectDef, updateObjectDef, deleteObjectDef,
@@ -11,6 +12,10 @@ import {
 } from '../../lib/api';
 import { useConfirm } from '../common/ConfirmDialog';
 import { prettyRole } from '../../lib/roles';
+import {
+  Badge, Button, Input, Label, Select, SpinnerBlock,
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableShell,
+} from '@/components/ui';
 
 // ObjectsManager is the single admin surface for every object's schema (P7 — it
 // replaces the separate CustomFieldManager + ObjectDefManager now that object_defs/
@@ -24,11 +29,19 @@ import { prettyRole } from '../../lib/roles';
 
 const ICONS = ['📦', '🏗️', '🚗', '📋', '🎯', '💼', '🏠', '📊', '🔧', '📝', '🎪', '🧩', '📁', '🗂️', '⚙️', '🛒'];
 const FIELD_TYPES: FieldType[] = ['text', 'number', 'date', 'select', 'boolean', 'url', 'relation', 'mirror'];
+// Type option labels keep their leading glyph: they render inside native <option>
+// elements, which cannot host an SVG icon.
 const typeLabel = (t: string) => ({ text: 'Aa Text', number: '# Number', date: '📅 Date', select: '▼ Select', boolean: '✓ Yes/No', url: '🔗 URL', relation: '↗ Relation', mirror: '⇄ Mirror' }[t] || t);
 const autoSlug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 50);
 
-const inputStyle = { width: '100%', padding: '8px 10px', border: '1px solid hsl(var(--input))', borderRadius: 6, fontSize: 14, boxSizing: 'border-box' as const };
-const btn = (bg: string) => ({ padding: '8px 16px', background: bg, color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 500 });
+/** Emoji chosen as an object's icon is user data — box it in a neutral container. */
+function ObjectIcon({ icon, className = '' }: { icon: string; className?: string }) {
+  return (
+    <span aria-hidden className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded bg-muted text-base ${className}`}>
+      {icon}
+    </span>
+  );
+}
 
 type Mode = { kind: 'list' } | { kind: 'new' } | { kind: 'edit'; slug: string; isSystem: boolean };
 
@@ -70,7 +83,7 @@ export default function ObjectsManager() {
     }
   };
 
-  if (loading) return <p style={{ color: 'hsl(var(--muted-foreground))', padding: 20 }}>Loading...</p>;
+  if (loading) return <SpinnerBlock label="Loading…" />;
 
   if (mode.kind === 'new') {
     return (
@@ -92,75 +105,83 @@ export default function ObjectsManager() {
 
   return (
     <div>
-      <p style={{ color: 'hsl(var(--muted-foreground))', fontSize: 13, marginTop: 0 }}>
+      <p className="mt-0 text-sm text-muted-foreground">
         Every object — built-in or custom — and its fields, in one place.
       </p>
-      {error && <div style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>{error}</div>}
+      {error && <div className="mb-3 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>}
 
       {/* Post-creation access nudge (U3.6): roles without an access grant can't
           see the new object anywhere — say so while the admin is still here. */}
       {justCreated && (
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.4)', color: '#d97706', padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>
-          <span style={{ flex: 1 }}>
+        <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-600 dark:text-amber-400">
+          <span className="flex-1">
             <strong>{justCreated}</strong> was created. Roles without an access grant won't see
             it anywhere — review who can use it in{' '}
-            <Link to="/settings/object-access" style={{ color: '#d97706', fontWeight: 600, textDecoration: 'underline' }}>
+            <Link to="/settings/object-access" className="font-semibold underline">
               Object Access
             </Link>.
           </span>
           <button
+            type="button"
             onClick={() => setJustCreated('')}
             aria-label="Dismiss access reminder"
-            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#d97706', fontSize: 14, padding: 0, lineHeight: 1 }}
+            className="rounded p-0.5 leading-none hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            ✕
+            <X className="h-4 w-4" />
           </button>
         </div>
       )}
 
-      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 16 }}>
-        <thead>
-          <tr style={{ borderBottom: '1px solid hsl(var(--border))', textAlign: 'left' }}>
-            {['', 'Label', 'Slug', 'Type', 'Fields', ''].map((h, i) => (
-              <th key={i} style={{ padding: '8px 12px', fontSize: 13, color: 'hsl(var(--muted-foreground))', textAlign: i === 5 ? 'right' : 'left' }}>{h}</th>
+      <TableShell className="mb-4">
+        <Table>
+          <TableHeader>
+            <TableRow className="hover:bg-transparent">
+              <TableHead className="w-10" />
+              <TableHead>Label</TableHead>
+              <TableHead>Slug</TableHead>
+              <TableHead>Type</TableHead>
+              <TableHead>Fields</TableHead>
+              <TableHead className="text-right" />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {objects.map(o => (
+              <TableRow key={o.slug} className="hover:bg-transparent">
+                <TableCell><ObjectIcon icon={o.icon} /></TableCell>
+                <TableCell className="font-medium">{o.label} <span className="font-normal text-muted-foreground">/ {o.label_plural}</span></TableCell>
+                <TableCell><code className="rounded bg-muted px-1.5 py-0.5 text-[13px]">{o.slug}</code></TableCell>
+                <TableCell>
+                  <Badge variant={o.is_system ? 'default' : 'success'}>{o.is_system ? 'Built-in' : 'Custom'}</Badge>
+                </TableCell>
+                <TableCell className="text-muted-foreground">{o.field_count}</TableCell>
+                <TableCell className="text-right">
+                  {confirmDelete === o.slug ? (
+                    <div className="flex items-center justify-end gap-2">
+                      <Button variant="destructive" size="sm" onClick={() => handleDelete(o.slug)}>Confirm</Button>
+                      <Button variant="secondary" size="sm" onClick={() => setConfirmDelete(null)}>Cancel</Button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-end gap-1">
+                      <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setMode({ kind: 'edit', slug: o.slug, isSystem: o.is_system })} title="Edit fields">
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                      {!o.is_system && (
+                        <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={() => setConfirmDelete(o.slug)} title="Delete object">
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </TableCell>
+              </TableRow>
             ))}
-          </tr>
-        </thead>
-        <tbody>
-          {objects.map(o => (
-            <tr key={o.slug} style={{ borderBottom: '1px solid hsl(var(--muted))' }}>
-              <td style={{ padding: '10px 12px', fontSize: 20 }}>{o.icon}</td>
-              <td style={{ padding: '10px 12px', fontWeight: 500 }}>{o.label} <span style={{ color: 'hsl(var(--muted-foreground))', fontWeight: 400 }}>/ {o.label_plural}</span></td>
-              <td style={{ padding: '10px 12px' }}><code style={{ background: 'hsl(var(--muted))', padding: '2px 6px', borderRadius: 4, fontSize: 13 }}>{o.slug}</code></td>
-              <td style={{ padding: '10px 12px' }}>
-                <span style={{ fontSize: 12, padding: '2px 8px', borderRadius: 12, background: o.is_system ? 'rgba(59,130,246,0.12)' : 'rgba(34,197,94,0.12)', color: o.is_system ? '#3b82f6' : '#22c55e' }}>
-                  {o.is_system ? 'Built-in' : 'Custom'}
-                </span>
-              </td>
-              <td style={{ padding: '10px 12px', color: 'hsl(var(--muted-foreground))' }}>{o.field_count}</td>
-              <td style={{ padding: '10px 12px', textAlign: 'right' }}>
-                {confirmDelete === o.slug ? (
-                  <>
-                    <button onClick={() => handleDelete(o.slug)} style={{ ...btn('#ef4444'), padding: '4px 12px', marginRight: 4, fontSize: 13 }}>Confirm</button>
-                    <button onClick={() => setConfirmDelete(null)} style={{ background: 'hsl(var(--border))', border: 'none', padding: '4px 12px', borderRadius: 4, cursor: 'pointer', fontSize: 13 }}>Cancel</button>
-                  </>
-                ) : (
-                  <>
-                    <button onClick={() => setMode({ kind: 'edit', slug: o.slug, isSystem: o.is_system })} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, padding: 4 }} title="Edit fields">✏️</button>
-                    {!o.is_system && (
-                      <button onClick={() => setConfirmDelete(o.slug)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, padding: 4 }} title="Delete object">🗑️</button>
-                    )}
-                  </>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+          </TableBody>
+        </Table>
+      </TableShell>
 
-      <button onClick={() => setMode({ kind: 'new' })} style={{ ...btn('#3b82f6'), display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-        + New Object
-      </button>
+      <Button onClick={() => setMode({ kind: 'new' })}>
+        <Plus aria-hidden /> New Object
+      </Button>
     </div>
   );
 }
@@ -171,13 +192,20 @@ export default function ObjectsManager() {
 
 function TabBar({ active, onSelect, tabs }: { active: string; onSelect: (t: string) => void; tabs: string[] }) {
   return (
-    <div style={{ display: 'flex', gap: 2, borderBottom: '1px solid hsl(var(--border))', marginBottom: 20 }}>
+    <div className="mb-5 flex gap-0.5 border-b border-border">
       {tabs.map(t => (
-        <button key={t} onClick={() => onSelect(t)} style={{
-          padding: '8px 16px', border: 'none', borderBottom: active === t ? '2px solid #3b82f6' : '2px solid transparent',
-          background: 'none', cursor: 'pointer', fontWeight: active === t ? 600 : 400,
-          color: active === t ? '#3b82f6' : 'hsl(var(--muted-foreground))', fontSize: 13,
-        }}>{t}</button>
+        <button
+          key={t}
+          type="button"
+          onClick={() => onSelect(t)}
+          className={`px-4 py-2 text-[13px] capitalize transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+            active === t
+              ? 'border-b-2 border-primary font-semibold text-primary'
+              : 'border-b-2 border-transparent text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          {t}
+        </button>
       ))}
     </div>
   );
@@ -210,21 +238,21 @@ function NumberPrefixEditor({ slug }: { slug: string }) {
 
   const sample = `${(prefix.trim() || slug).toUpperCase()}-0001`;
   return (
-    <div style={{ border: '1px solid hsl(var(--border))', borderRadius: 6, padding: 12, background: 'hsl(var(--muted))', marginBottom: 12 }}>
-      <label style={{ fontSize: 13, fontWeight: 500, display: 'block', marginBottom: 4 }}>Record number prefix</label>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-        <input
+    <div className="mb-3 rounded-lg border border-border bg-muted p-3">
+      <Label className="mb-1 block text-[13px]">Record number prefix</Label>
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
           value={prefix}
           onChange={e => { setPrefix(e.target.value.toUpperCase().slice(0, 16)); setSaved(false); }}
           placeholder={slug.toUpperCase()}
-          style={{ ...inputStyle, width: 160, padding: '6px 8px', fontSize: 13 }}
+          className="w-40"
         />
-        <span style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))' }}>e.g. <code>{sample}</code></span>
-        <button onClick={save} disabled={saving} style={{ ...btn(saving ? 'hsl(var(--muted-foreground))' : '#3b82f6'), padding: '6px 12px', fontSize: 13 }}>{saving ? 'Saving…' : 'Save'}</button>
-        {saved && <span style={{ color: '#22c55e', fontSize: 12 }}>Saved ✓</span>}
+        <span className="text-xs text-muted-foreground">e.g. <code>{sample}</code></span>
+        <Button size="sm" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save'}</Button>
+        {saved && <span className="inline-flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400"><Check className="h-3.5 w-3.5" aria-hidden /> Saved</span>}
       </div>
-      {err && <p style={{ color: '#ef4444', fontSize: 12, margin: '4px 0 0' }}>{err}</p>}
-      <p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', margin: '4px 0 0' }}>A friendly identifier shown on each record instead of its database id. Blank uses the object name.</p>
+      {err && <p className="mt-1 text-xs text-destructive">{err}</p>}
+      <p className="mt-1 text-[11px] text-muted-foreground">A friendly identifier shown on each record instead of its database id. Blank uses the object name.</p>
     </div>
   );
 }
@@ -289,67 +317,64 @@ function FieldBuilder({ draft, setDraft, onAdd, editing, currentSlug, relations 
     && (!isMirror || (!!draft.via_field && !!draft.source_field));
 
   return (
-    <div style={{ border: '1px solid hsl(var(--border))', borderRadius: 6, padding: 12, background: 'hsl(var(--muted))' }}>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto auto', gap: 8, alignItems: 'end' }}>
+    <div className="rounded-lg border border-border bg-muted p-3">
+      <div className="grid grid-cols-[1fr_1fr_auto_auto] items-end gap-2">
         <div>
-          <label style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))' }}>Field Label</label>
-          <input value={draft.label} onChange={e => setDraft({ ...draft, label: e.target.value, key: editing ? draft.key : autoSlug(e.target.value) })} placeholder="e.g. Priority" style={{ ...inputStyle, padding: '6px 8px', fontSize: 13 }} />
+          <Label className="text-xs text-muted-foreground">Field Label</Label>
+          <Input value={draft.label} onChange={e => setDraft({ ...draft, label: e.target.value, key: editing ? draft.key : autoSlug(e.target.value) })} placeholder="e.g. Priority" />
         </div>
         <div>
-          <label style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))' }}>Type</label>
-          <select value={draft.type} onChange={e => setDraft({ ...draft, type: e.target.value })} style={{ ...inputStyle, padding: '6px 8px', fontSize: 13 }}>
+          <Label className="text-xs text-muted-foreground">Type</Label>
+          <Select value={draft.type} onChange={e => setDraft({ ...draft, type: e.target.value })}>
             {FIELD_TYPES.map(t => <option key={t} value={t}>{typeLabel(t)}</option>)}
-          </select>
+          </Select>
         </div>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'hsl(var(--muted-foreground))', cursor: 'pointer' }}>
+        <label className="flex cursor-pointer items-center gap-1 pb-2 text-xs text-muted-foreground">
           <input type="checkbox" checked={draft.required} onChange={e => setDraft({ ...draft, required: e.target.checked })} /> Req
         </label>
-        <button onClick={onAdd} disabled={!canSubmit} style={{ ...btn(canSubmit ? '#3b82f6' : 'hsl(var(--muted-foreground))'), padding: '6px 14px', fontSize: 13 }}>{editing ? 'Save' : '+ Add'}</button>
+        <Button size="sm" onClick={onAdd} disabled={!canSubmit}>{editing ? 'Save' : '+ Add'}</Button>
       </div>
       {isRelation && (
-        <div style={{ marginTop: 8 }}>
-          <label style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))' }}>Related object</label>
-          <select
+        <div className="mt-2">
+          <Label className="text-xs text-muted-foreground">Related object</Label>
+          <Select
             value={draft.target_slug || ''}
             onChange={e => setDraft({ ...draft, target_slug: e.target.value })}
-            style={{ ...inputStyle, padding: '6px 8px', fontSize: 13 }}
           >
             <option value="">— Choose an object —</option>
             {objects.filter(o => o.slug !== currentSlug).map(o => (
               <option key={o.slug} value={o.slug}>{o.icon} {o.label}</option>
             ))}
-          </select>
-          <p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', margin: '4px 0 0' }}>
+          </Select>
+          <p className="mt-1 text-[11px] text-muted-foreground">
             This field links each record to one {draft.target_slug ? objects.find(o => o.slug === draft.target_slug)?.label || 'record' : 'record'}; the related object will show these in a related list.
           </p>
         </div>
       )}
       {isMirror && (
-        <div style={{ marginTop: 8, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+        <div className="mt-2 grid grid-cols-2 gap-2">
           <div>
-            <label style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))' }}>Via relation</label>
-            <select
+            <Label className="text-xs text-muted-foreground">Via relation</Label>
+            <Select
               value={draft.via_field || ''}
               onChange={e => setDraft({ ...draft, via_field: e.target.value, source_field: '' })}
-              style={{ ...inputStyle, padding: '6px 8px', fontSize: 13 }}
             >
               <option value="">— Choose a relation —</option>
               {viaCandidates.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
-            </select>
+            </Select>
           </div>
           <div>
-            <label style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))' }}>Show which field</label>
-            <select
+            <Label className="text-xs text-muted-foreground">Show which field</Label>
+            <Select
               value={draft.source_field || ''}
               onChange={e => setDraft({ ...draft, source_field: e.target.value })}
               disabled={!draft.via_field}
-              style={{ ...inputStyle, padding: '6px 8px', fontSize: 13 }}
             >
               <option value="">{draft.via_field ? '— Choose a field —' : 'Pick a relation first'}</option>
               {sourceFields.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
-            </select>
+            </Select>
           </div>
-          <p style={{ gridColumn: '1 / -1', fontSize: 11, color: 'hsl(var(--muted-foreground))', margin: 0 }}>
+          <p className="col-span-2 m-0 text-[11px] text-muted-foreground">
             {relations.length === 0
               ? 'Add a Relation field to this object first — a mirror displays a field from the record it links to.'
               : viaCandidates.length === 0
@@ -359,18 +384,21 @@ function FieldBuilder({ draft, setDraft, onAdd, editing, currentSlug, relations 
         </div>
       )}
       {draft.type === 'select' && (
-        <div style={{ marginTop: 8 }}>
-          <label style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))' }}>Options (press Enter)</label>
-          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 4 }}>
+        <div className="mt-2">
+          <Label className="text-xs text-muted-foreground">Options (press Enter)</Label>
+          <div className="mb-1 flex flex-wrap gap-1">
             {draft.options.map(opt => (
-              <span key={opt} style={{ background: 'rgba(59,130,246,0.12)', color: '#3b82f6', padding: '2px 8px', borderRadius: 12, fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
-                {opt} <button onClick={() => setDraft({ ...draft, options: draft.options.filter(o => o !== opt) })} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#3b82f6', fontSize: 12, padding: 0 }}>✕</button>
-              </span>
+              <Badge key={opt} className="gap-1">
+                {opt}
+                <button type="button" onClick={() => setDraft({ ...draft, options: draft.options.filter(o => o !== opt) })} className="rounded hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  <X className="h-3 w-3" />
+                </button>
+              </Badge>
             ))}
           </div>
-          <input value={optInput} onChange={e => setOptInput(e.target.value)}
+          <Input value={optInput} onChange={e => setOptInput(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && optInput.trim()) { e.preventDefault(); setDraft({ ...draft, options: [...draft.options, optInput.trim()] }); setOptInput(''); } }}
-            placeholder="Type and press Enter" style={{ ...inputStyle, padding: '6px 8px', fontSize: 13 }} />
+            placeholder="Type and press Enter" />
         </div>
       )}
     </div>
@@ -436,54 +464,63 @@ function CustomObjectForm({ editSlug, onDone, onCancel }: { editSlug?: string; o
     }
   };
 
-  if (loading) return <p style={{ color: 'hsl(var(--muted-foreground))', padding: 20 }}>Loading...</p>;
+  if (loading) return <SpinnerBlock label="Loading…" />;
 
   return (
     <div>
-      <h4 style={{ margin: '0 0 16px' }}>{editSlug ? `Edit ${label}` : 'New Custom Object'}</h4>
-      {error && <div style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>{error}</div>}
+      <h4 className="mb-4 mt-0 text-base font-semibold">{editSlug ? `Edit ${label}` : 'New Custom Object'}</h4>
+      {error && <div className="mb-3 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>}
 
       {/* Layout tab is only available once the object exists */}
       {editSlug && <TabBar active={tab} onSelect={t => setTab(t as 'fields' | 'layouts')} tabs={['fields', 'layouts']} />}
 
       {tab === 'fields' ? (
         <>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 16 }}>
-            <div><label style={{ fontSize: 13, fontWeight: 500, display: 'block', marginBottom: 4 }}>Label *</label><input value={label} onChange={e => onLabel(e.target.value)} placeholder="e.g. Project" style={inputStyle} /></div>
-            <div><label style={{ fontSize: 13, fontWeight: 500, display: 'block', marginBottom: 4 }}>Slug</label><input value={slug} onChange={e => setSlug(e.target.value)} disabled={!!editSlug} style={{ ...inputStyle, background: editSlug ? 'hsl(var(--muted))' : 'hsl(var(--card))' }} /></div>
-            <div><label style={{ fontSize: 13, fontWeight: 500, display: 'block', marginBottom: 4 }}>Plural Label</label><input value={labelPlural} onChange={e => setLabelPlural(e.target.value)} placeholder="e.g. Projects" style={inputStyle} /></div>
+          <div className="mb-4 grid grid-cols-3 gap-3">
+            <div><Label className="mb-1 block text-[13px]">Label *</Label><Input value={label} onChange={e => onLabel(e.target.value)} placeholder="e.g. Project" /></div>
+            <div><Label className="mb-1 block text-[13px]">Slug</Label><Input value={slug} onChange={e => setSlug(e.target.value)} disabled={!!editSlug} /></div>
+            <div><Label className="mb-1 block text-[13px]">Plural Label</Label><Input value={labelPlural} onChange={e => setLabelPlural(e.target.value)} placeholder="e.g. Projects" /></div>
           </div>
 
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ fontSize: 13, fontWeight: 500, display: 'block', marginBottom: 4 }}>Icon</label>
-            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+          <div className="mb-4">
+            <Label className="mb-1 block text-[13px]">Icon</Label>
+            <div className="flex flex-wrap gap-1">
               {ICONS.map(ic => (
-                <button key={ic} onClick={() => setIcon(ic)} style={{ fontSize: 20, padding: '4px 8px', border: icon === ic ? '2px solid #3b82f6' : '1px solid hsl(var(--border))', borderRadius: 6, background: icon === ic ? 'rgba(59,130,246,0.12)' : 'hsl(var(--card))', cursor: 'pointer' }}>{ic}</button>
+                <button
+                  key={ic}
+                  type="button"
+                  onClick={() => setIcon(ic)}
+                  aria-label={`Use icon ${ic}`}
+                  className={`rounded-lg border px-2 py-1 text-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${icon === ic ? 'border-primary bg-primary/10' : 'border-border bg-card hover:bg-accent'}`}
+                >{ic}</button>
               ))}
             </div>
           </div>
 
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 500, cursor: 'pointer' }}>
-              <input type="checkbox" checked={searchable} onChange={e => setSearchable(e.target.checked)} /> 🔍 Searchable
+          <div className="mb-4">
+            <label className="flex cursor-pointer items-center gap-2 text-[13px] font-medium">
+              <input type="checkbox" checked={searchable} onChange={e => setSearchable(e.target.checked)} />
+              <Search className="h-3.5 w-3.5 text-muted-foreground" aria-hidden /> Searchable
             </label>
-            <p style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', margin: '4px 0 0 24px' }}>Index records for semantic + full-text global search and AI.</p>
+            <p className="ml-6 mt-1 text-xs text-muted-foreground">Index records for semantic + full-text global search and AI.</p>
           </div>
 
           {/* Record-number prefix is editable once the object exists (has a slug). */}
           {editSlug && <NumberPrefixEditor slug={editSlug} />}
 
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ fontSize: 13, fontWeight: 500, display: 'block', marginBottom: 8 }}>Fields ({fields.length})</label>
+          <div className="mb-4">
+            <Label className="mb-2 block text-[13px]">Fields ({fields.length})</Label>
             {fields.length > 0 && (
-              <div style={{ border: '1px solid hsl(var(--border))', borderRadius: 6, overflow: 'hidden', marginBottom: 8 }}>
+              <div className="mb-2 overflow-hidden rounded-lg border border-border">
                 {fields.map((f, i) => (
-                  <div key={f.key} style={{ display: 'flex', alignItems: 'center', padding: '6px 10px', borderBottom: i < fields.length - 1 ? '1px solid hsl(var(--muted))' : 'none' }}>
-                    <span style={{ flex: 1, fontWeight: 500, fontSize: 13 }}>{f.label}</span>
-                    <code style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', marginRight: 8 }}>{f.key}</code>
-                    <span style={{ fontSize: 12, color: '#3b82f6', marginRight: 8 }}>{typeLabel(f.type)}</span>
-                    {f.required && <span style={{ fontSize: 11, color: '#ef4444', marginRight: 8 }}>Required</span>}
-                    <button onClick={() => setFields(fields.filter(x => x.key !== f.key))} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', fontSize: 14 }}>✕</button>
+                  <div key={f.key} className={`flex items-center px-2.5 py-1.5 ${i < fields.length - 1 ? 'border-b border-border' : ''}`}>
+                    <span className="flex-1 text-[13px] font-medium">{f.label}</span>
+                    <code className="mr-2 text-xs text-muted-foreground">{f.key}</code>
+                    <span className="mr-2 text-xs text-primary">{typeLabel(f.type)}</span>
+                    {f.required && <span className="mr-2 text-[11px] text-destructive">Required</span>}
+                    <button type="button" onClick={() => setFields(fields.filter(x => x.key !== f.key))} aria-label={`Remove ${f.label}`} className="rounded text-muted-foreground hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                      <X className="h-4 w-4" />
+                    </button>
                   </div>
                 ))}
               </div>
@@ -494,9 +531,9 @@ function CustomObjectForm({ editSlug, onDone, onCancel }: { editSlug?: string; o
             />
           </div>
 
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={save} style={btn('#3b82f6')}>{editSlug ? 'Update Object' : 'Create Object'}</button>
-            <button onClick={onCancel} style={{ padding: '8px 16px', background: 'hsl(var(--border))', border: 'none', borderRadius: 6, cursor: 'pointer' }}>Cancel</button>
+          <div className="flex gap-2">
+            <Button onClick={save}>{editSlug ? 'Update Object' : 'Create Object'}</Button>
+            <Button variant="secondary" onClick={onCancel}>Cancel</Button>
           </div>
         </>
       ) : (
@@ -582,56 +619,56 @@ function SystemFieldsEditor({ slug, onBack }: { slug: string; onBack: () => void
     try { await deleteFieldDef(key); load(); } catch (e) { setError(e instanceof Error ? e.message : 'Delete failed'); }
   };
 
-  if (loading) return <p style={{ color: 'hsl(var(--muted-foreground))', padding: 20 }}>Loading...</p>;
+  if (loading) return <SpinnerBlock label="Loading…" />;
 
   // Deals use a Kanban layout — no point offering a custom section builder for them.
   const showLayouts = slug !== 'deal';
 
   return (
     <div>
-      <h4 style={{ margin: '0 0 4px' }}>{icon} {label} <span style={{ fontSize: 12, color: '#3b82f6', fontWeight: 400 }}>· Built-in</span></h4>
+      <h4 className="mb-1 mt-0 flex items-center gap-2 text-base font-semibold"><ObjectIcon icon={icon} className="h-6 w-6 text-sm" /> {label} <span className="text-xs font-normal text-primary">· Built-in</span></h4>
 
       {showLayouts
         ? <TabBar active={tab} onSelect={t => setTab(t as 'fields' | 'layouts')} tabs={['fields', 'layouts']} />
-        : <p style={{ color: 'hsl(var(--muted-foreground))', fontSize: 13, marginTop: 0 }}>Built-in fields are fixed; add or edit your own custom fields below.</p>
+        : <p className="mt-0 text-[13px] text-muted-foreground">Built-in fields are fixed; add or edit your own custom fields below.</p>
       }
 
       {tab === 'fields' ? (
         <>
           {showLayouts || (
-            <p style={{ color: 'hsl(var(--muted-foreground))', fontSize: 13, marginTop: 0 }}>Built-in fields are fixed; add or edit your own custom fields below.</p>
+            <p className="mt-0 text-[13px] text-muted-foreground">Built-in fields are fixed; add or edit your own custom fields below.</p>
           )}
-          {error && <div style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>{error}</div>}
+          {error && <div className="mb-3 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>}
 
           <NumberPrefixEditor slug={slug} />
 
-          <div style={{ border: '1px solid hsl(var(--border))', borderRadius: 6, overflow: 'hidden', marginBottom: 12 }}>
+          <div className="mb-3 overflow-hidden rounded-lg border border-border">
             {rows.map((r, i) => (
-              <div key={r.key} style={{ display: 'flex', alignItems: 'center', padding: '8px 10px', borderBottom: i < rows.length - 1 ? '1px solid hsl(var(--muted))' : 'none', background: r.is_system ? 'hsl(var(--muted))' : 'hsl(var(--card))' }}>
-                <span style={{ flex: 1, fontWeight: 500, fontSize: 13 }}>{r.label}</span>
-                <code style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', marginRight: 8 }}>{r.key}</code>
-                <span style={{ fontSize: 12, color: '#3b82f6', marginRight: 8 }}>{typeLabel(r.type)}</span>
+              <div key={r.key} className={`flex items-center px-2.5 py-2 ${i < rows.length - 1 ? 'border-b border-border' : ''} ${r.is_system ? 'bg-muted' : 'bg-card'}`}>
+                <span className="flex-1 text-[13px] font-medium">{r.label}</span>
+                <code className="mr-2 text-xs text-muted-foreground">{r.key}</code>
+                <span className="mr-2 text-xs text-primary">{typeLabel(r.type)}</span>
                 {r.is_system ? (
-                  <span style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))' }}>Built-in</span>
+                  <span className="text-[11px] text-muted-foreground">Built-in</span>
                 ) : (
-                  <>
-                    <button onClick={() => editField(r)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, padding: 2 }} title="Edit">✏️</button>
-                    <button onClick={() => removeField(r.key)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', fontSize: 14, padding: 2 }} title="Delete">✕</button>
-                  </>
+                  <div className="flex items-center gap-1">
+                    <button type="button" onClick={() => editField(r)} title="Edit" className="rounded p-0.5 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><Pencil className="h-3.5 w-3.5" /></button>
+                    <button type="button" onClick={() => removeField(r.key)} title="Delete" className="rounded p-0.5 text-muted-foreground hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><X className="h-4 w-4" /></button>
+                  </div>
                 )}
               </div>
             ))}
           </div>
 
-          <label style={{ fontSize: 13, fontWeight: 500, display: 'block', marginBottom: 6 }}>{editingKey ? `Edit field "${editingKey}"` : 'Add a custom field'}</label>
+          <Label className="mb-1.5 block text-[13px]">{editingKey ? `Edit field "${editingKey}"` : 'Add a custom field'}</Label>
           <FieldBuilder
             draft={draft} setDraft={setDraft} onAdd={saveField} editing={!!editingKey} currentSlug={slug}
             relations={rows.filter(r => r.type === 'relation').map(r => ({ key: r.key, label: r.label, target_slug: r.target_slug }))}
           />
 
-          <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
-            <button onClick={onBack} style={{ padding: '8px 16px', background: 'hsl(var(--border))', border: 'none', borderRadius: 6, cursor: 'pointer' }}>← Back to objects</button>
-            {editingKey && <button onClick={() => { setEditingKey(null); setDraft({ ...emptyDraft }); }} style={{ padding: '8px 16px', background: 'hsl(var(--card))', border: '1px solid hsl(var(--input))', borderRadius: 6, cursor: 'pointer' }}>Cancel edit</button>}
+          <div className="mt-4 flex gap-2">
+            <Button variant="secondary" onClick={onBack}>← Back to objects</Button>
+            {editingKey && <Button variant="outline" onClick={() => { setEditingKey(null); setDraft({ ...emptyDraft }); }}>Cancel edit</Button>}
           </div>
         </>
       ) : (
@@ -642,8 +679,8 @@ function SystemFieldsEditor({ slug, onBack }: { slug: string; onBack: () => void
       )}
 
       {tab === 'layouts' && (
-        <div style={{ marginTop: 20 }}>
-          <button onClick={onBack} style={{ padding: '8px 16px', background: 'hsl(var(--border))', border: 'none', borderRadius: 6, cursor: 'pointer' }}>← Back to objects</button>
+        <div className="mt-5">
+          <Button variant="secondary" onClick={onBack}>← Back to objects</Button>
         </div>
       )}
       {confirmDialogEl}
@@ -692,7 +729,7 @@ function LayoutsEditor({ slug, fieldKeys }: { slug: string; fieldKeys: FieldEntr
     try { await deleteObjectLayout(slug, id); load(); } catch (e) { setError(e instanceof Error ? e.message : 'Delete failed'); }
   };
 
-  if (loading) return <p style={{ color: 'hsl(var(--muted-foreground))' }}>Loading layouts…</p>;
+  if (loading) return <SpinnerBlock label="Loading layouts…" />;
 
   if (creating || editing) {
     return (
@@ -711,47 +748,43 @@ function LayoutsEditor({ slug, fieldKeys }: { slug: string; fieldKeys: FieldEntr
 
   return (
     <div>
-      <p style={{ fontSize: 13, color: 'hsl(var(--muted-foreground))', marginTop: 0 }}>
+      <p className="mt-0 text-[13px] text-muted-foreground">
         Layouts control how fields are arranged on a record's detail page, per role. A role sees
         the layout assigned to it; roles without one see the default layout, or a simple field
         list if no default exists.
       </p>
-      {error && <div style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>{error}</div>}
+      {error && <div className="mb-3 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>}
 
       {layouts.length === 0 ? (
-        <div style={{ padding: '32px 0', textAlign: 'center', color: 'hsl(var(--muted-foreground))', fontSize: 13 }}>
+        <div className="py-8 text-center text-[13px] text-muted-foreground">
           No layouts yet. All roles see a flat list of fields ordered by position.
         </div>
       ) : (
-        <div style={{ border: '1px solid hsl(var(--border))', borderRadius: 6, overflow: 'hidden', marginBottom: 12 }}>
+        <div className="mb-3 overflow-hidden rounded-lg border border-border">
           {layouts.map((l, i) => (
-            <div key={l.id} style={{ display: 'flex', alignItems: 'center', padding: '10px 12px', borderBottom: i < layouts.length - 1 ? '1px solid hsl(var(--muted))' : 'none' }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontWeight: 500, fontSize: 13 }}>{l.name}</span>
-                  {l.is_default && (
-                    <span style={{ fontSize: 11, padding: '1px 7px', background: 'rgba(34,197,94,0.12)', color: '#22c55e', borderRadius: 10, fontWeight: 600 }}>default</span>
-                  )}
+            <div key={l.id} className={`flex items-center px-3 py-2.5 ${i < layouts.length - 1 ? 'border-b border-border' : ''}`}>
+              <div className="flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-[13px] font-medium">{l.name}</span>
+                  {l.is_default && <Badge variant="success">default</Badge>}
                 </div>
                 {l.role_ids.length > 0 && (
-                  <div style={{ marginTop: 3, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                  <div className="mt-1 flex flex-wrap gap-1">
                     {l.role_ids.map(rid => (
-                      <span key={rid} style={{ fontSize: 11, padding: '1px 7px', background: 'rgba(59,130,246,0.12)', color: '#3b82f6', borderRadius: 10 }}>
-                        {roleMap[rid] ?? rid}
-                      </span>
+                      <Badge key={rid}>{roleMap[rid] ?? rid}</Badge>
                     ))}
                   </div>
                 )}
               </div>
-              <span style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', marginRight: 12 }}>{(l.layout ?? []).length} sections</span>
-              <button onClick={() => setEditing(l)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, padding: 4 }} title="Edit">✏️</button>
-              <button onClick={() => handleDelete(l.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', fontSize: 14, padding: 4 }} title="Delete">🗑️</button>
+              <span className="mr-3 text-xs text-muted-foreground">{(l.layout ?? []).length} sections</span>
+              <button type="button" onClick={() => setEditing(l)} title="Edit" className="rounded p-1 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><Pencil className="h-4 w-4" /></button>
+              <button type="button" onClick={() => handleDelete(l.id)} title="Delete" className="rounded p-1 text-muted-foreground hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><Trash2 className="h-4 w-4" /></button>
             </div>
           ))}
         </div>
       )}
 
-      <button onClick={() => setCreating(true)} style={{ ...btn('#3b82f6'), fontSize: 13 }}>+ New Layout</button>
+      <Button onClick={() => setCreating(true)}><Plus aria-hidden /> New Layout</Button>
       {confirmDialogEl}
     </div>
   );
@@ -852,16 +885,16 @@ function LayoutForm({
 
   return (
     <div>
-      <h4 style={{ margin: '0 0 16px' }}>{initial ? `Edit layout: ${initial.name}` : 'New layout'}</h4>
-      {error && <div style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>{error}</div>}
+      <h4 className="mb-4 mt-0 text-base font-semibold">{initial ? `Edit layout: ${initial.name}` : 'New layout'}</h4>
+      {error && <div className="mb-3 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>}
 
       {/* Name + options row */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 16, alignItems: 'end', marginBottom: 16 }}>
+      <div className="mb-4 grid grid-cols-[1fr_auto] items-end gap-4">
         <div>
-          <label style={{ fontSize: 13, fontWeight: 500, display: 'block', marginBottom: 4 }}>Layout name *</label>
-          <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Sales view" style={inputStyle} />
+          <Label className="mb-1 block text-[13px]">Layout name *</Label>
+          <Input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Sales view" />
         </div>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 500, cursor: 'pointer', paddingBottom: 2 }}>
+        <label className="flex cursor-pointer items-center gap-1.5 pb-2 text-[13px] font-medium">
           <input type="checkbox" checked={isDefault} onChange={e => setIsDefault(e.target.checked)} />
           Default for all roles
         </label>
@@ -869,24 +902,26 @@ function LayoutForm({
 
       {/* Role assignment */}
       {roles.length > 0 && (
-        <div style={{ marginBottom: 16 }}>
-          <label style={{ fontSize: 13, fontWeight: 500, display: 'block', marginBottom: 6 }}>Show this layout to</label>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <div className="mb-4">
+          <Label className="mb-1.5 block text-[13px]">Show this layout to</Label>
+          <div className="flex flex-wrap gap-2">
             {roles.map(r => {
               const active = selectedRoles.has(r.id);
               return (
-                <button key={r.id} onClick={() => toggleRole(r.id)} style={{
-                  padding: '5px 12px', borderRadius: 20, fontSize: 12, fontWeight: 500,
-                  border: active ? '1px solid #3b82f6' : '1px solid hsl(var(--input))',
-                  background: active ? 'rgba(59,130,246,0.12)' : 'hsl(var(--card))', color: active ? '#3b82f6' : 'hsl(var(--muted-foreground))',
-                  cursor: 'pointer',
-                }}>
+                <button
+                  key={r.id}
+                  type="button"
+                  onClick={() => toggleRole(r.id)}
+                  className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                    active ? 'border-primary bg-primary/10 text-primary' : 'border-input bg-card text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+                  }`}
+                >
                   {prettyRole(r.name)}
                 </button>
               );
             })}
           </div>
-          <p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', margin: '4px 0 0' }}>
+          <p className="mt-1 text-[11px] text-muted-foreground">
             Roles without an assignment fall back to the default layout, then flat field order.
           </p>
         </div>
@@ -894,20 +929,20 @@ function LayoutForm({
 
       {/* Unplaced fields hint */}
       {unplacedFields.length > 0 && (
-        <div style={{ background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.4)', borderRadius: 6, padding: '8px 12px', marginBottom: 12, fontSize: 12, color: '#d97706' }}>
+        <div className="mb-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
           {unplacedFields.length} field{unplacedFields.length > 1 ? 's' : ''} not in any section ({unplacedFields.map(f => f.label).join(', ')}) — they will appear in an "Other" section on the detail page.
         </div>
       )}
 
       {/* Sections */}
-      <div style={{ marginBottom: 12 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-          <label style={{ fontSize: 13, fontWeight: 500 }}>Sections ({sections.length})</label>
-          <button onClick={addSection} style={{ ...btn('#3b82f6'), padding: '5px 12px', fontSize: 12 }}>+ Section</button>
+      <div className="mb-3">
+        <div className="mb-2 flex items-center justify-between">
+          <Label className="text-[13px]">Sections ({sections.length})</Label>
+          <Button size="sm" onClick={addSection}><Plus aria-hidden /> Section</Button>
         </div>
 
         {sections.length === 0 && (
-          <div style={{ padding: '24px', textAlign: 'center', border: '1px dashed hsl(var(--input))', borderRadius: 6, color: 'hsl(var(--muted-foreground))', fontSize: 13 }}>
+          <div className="rounded-lg border border-dashed border-input px-6 py-6 text-center text-[13px] text-muted-foreground">
             Add sections to group fields. Without sections, all fields render in the "Other" fallback.
           </div>
         )}
@@ -929,11 +964,11 @@ function LayoutForm({
         ))}
       </div>
 
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button onClick={save} disabled={saving} style={btn(saving ? 'hsl(var(--muted-foreground))' : '#3b82f6')}>
+      <div className="flex gap-2">
+        <Button onClick={save} disabled={saving}>
           {saving ? 'Saving…' : initial ? 'Update Layout' : 'Create Layout'}
-        </button>
-        <button onClick={onCancel} style={{ padding: '8px 16px', background: 'hsl(var(--border))', border: 'none', borderRadius: 6, cursor: 'pointer' }}>Cancel</button>
+        </Button>
+        <Button variant="secondary" onClick={onCancel}>Cancel</Button>
       </div>
     </div>
   );
@@ -969,50 +1004,50 @@ function SectionEditor({
   const [fieldPick, setFieldPick] = useState('');
 
   return (
-    <div style={{ border: '1px solid hsl(var(--border))', borderRadius: 8, padding: 12, marginBottom: 8, background: 'hsl(var(--card))' }}>
+    <div className="mb-2 rounded-xl border border-border bg-card p-3">
       {/* Section header controls */}
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
-        <input
+      <div className="mb-2.5 flex items-center gap-2">
+        <Input
           value={section.label}
           onChange={e => onUpdate({ label: e.target.value })}
           placeholder="Section label"
-          style={{ ...inputStyle, padding: '5px 8px', fontSize: 13 }}
         />
-        <select
+        <Select
           value={section.columns}
           onChange={e => onUpdate({ columns: Number(e.target.value) as 1 | 2 })}
-          style={{ padding: '5px 8px', border: '1px solid hsl(var(--input))', borderRadius: 6, fontSize: 13, cursor: 'pointer' }}
+          className="w-auto"
         >
           <option value={1}>1 column</option>
           <option value={2}>2 columns</option>
-        </select>
-        <div style={{ display: 'flex', gap: 2 }}>
-          <button onClick={onMoveUp} disabled={!onMoveUp} style={{ background: 'none', border: '1px solid hsl(var(--border))', borderRadius: 4, cursor: onMoveUp ? 'pointer' : 'default', padding: '3px 7px', opacity: onMoveUp ? 1 : 0.3 }}>↑</button>
-          <button onClick={onMoveDown} disabled={!onMoveDown} style={{ background: 'none', border: '1px solid hsl(var(--border))', borderRadius: 4, cursor: onMoveDown ? 'pointer' : 'default', padding: '3px 7px', opacity: onMoveDown ? 1 : 0.3 }}>↓</button>
+        </Select>
+        <div className="flex gap-0.5">
+          <Button variant="outline" size="icon" className="h-8 w-8" onClick={onMoveUp} disabled={!onMoveUp} aria-label="Move section up"><ChevronUp className="h-4 w-4" /></Button>
+          <Button variant="outline" size="icon" className="h-8 w-8" onClick={onMoveDown} disabled={!onMoveDown} aria-label="Move section down"><ChevronDown className="h-4 w-4" /></Button>
         </div>
-        <button onClick={onRemove} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', fontSize: 16, padding: '0 4px' }} title="Remove section">✕</button>
+        <button type="button" onClick={onRemove} title="Remove section" className="rounded p-0.5 text-muted-foreground hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><X className="h-4 w-4" /></button>
       </div>
 
       {/* Field list */}
       {section.fields.length === 0 ? (
-        <p style={{ color: 'hsl(var(--muted-foreground))', fontSize: 12, margin: '0 0 8px' }}>No fields yet — add from the list below.</p>
+        <p className="m-0 mb-2 text-xs text-muted-foreground">No fields yet — add from the list below.</p>
       ) : (
-        <div style={{ border: '1px solid hsl(var(--border))', borderRadius: 6, overflow: 'hidden', marginBottom: 8 }}>
+        <div className="mb-2 overflow-hidden rounded-lg border border-border">
           {section.fields.map((f, fi) => (
-            <div key={f.key} style={{ display: 'flex', alignItems: 'center', padding: '5px 8px', borderBottom: fi < section.fields.length - 1 ? '1px solid hsl(var(--muted))' : 'none', fontSize: 13 }}>
-              <span style={{ flex: 1, color: 'hsl(var(--foreground))' }}>{fieldLabelMap[f.key] ?? f.key}</span>
-              <code style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', marginRight: 8 }}>{f.key}</code>
+            <div key={f.key} className={`flex items-center px-2 py-1.5 text-[13px] ${fi < section.fields.length - 1 ? 'border-b border-border' : ''}`}>
+              <span className="flex-1 text-foreground">{fieldLabelMap[f.key] ?? f.key}</span>
+              <code className="mr-2 text-[11px] text-muted-foreground">{f.key}</code>
               {section.columns === 2 && (
-                <select
+                <Select
                   value={f.width ?? 'half'}
                   onChange={e => onSetFieldWidth(f.key, e.target.value as LayoutField['width'])}
-                  style={{ fontSize: 11, padding: '2px 5px', border: '1px solid hsl(var(--border))', borderRadius: 4, marginRight: 6, cursor: 'pointer' }}
+                  aria-label={`Width for ${fieldLabelMap[f.key] ?? f.key}`}
+                  className="mr-2 w-auto"
                 >
                   <option value="half">½ col</option>
                   <option value="full">full</option>
-                </select>
+                </Select>
               )}
-              <button onClick={() => onRemoveField(f.key)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', fontSize: 13 }}>✕</button>
+              <button type="button" onClick={() => onRemoveField(f.key)} aria-label={`Remove ${fieldLabelMap[f.key] ?? f.key}`} className="rounded text-muted-foreground hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><X className="h-3.5 w-3.5" /></button>
             </div>
           ))}
         </div>
@@ -1020,20 +1055,17 @@ function SectionEditor({
 
       {/* Add field picker */}
       {availableFields.length > 0 && (
-        <div style={{ display: 'flex', gap: 6 }}>
-          <select
+        <div className="flex gap-1.5">
+          <Select
             value={fieldPick}
             onChange={e => setFieldPick(e.target.value)}
-            style={{ flex: 1, padding: '5px 8px', border: '1px solid hsl(var(--input))', borderRadius: 6, fontSize: 12, cursor: 'pointer' }}
+            aria-label="Add a field to this section"
+            className="flex-1"
           >
             <option value="">— add a field —</option>
             {availableFields.map(f => <option key={f.key} value={f.key}>{f.label} ({f.key})</option>)}
-          </select>
-          <button
-            onClick={() => { if (fieldPick) { onAddField(fieldPick); setFieldPick(''); } }}
-            disabled={!fieldPick}
-            style={{ ...btn(fieldPick ? '#3b82f6' : 'hsl(var(--muted-foreground))'), padding: '5px 12px', fontSize: 12 }}
-          >Add</button>
+          </Select>
+          <Button size="sm" onClick={() => { if (fieldPick) { onAddField(fieldPick); setFieldPick(''); } }} disabled={!fieldPick}>Add</Button>
         </div>
       )}
     </div>

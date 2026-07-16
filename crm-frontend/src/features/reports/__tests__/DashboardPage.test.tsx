@@ -100,8 +100,8 @@ describe('DashboardPage', () => {
     vi.mocked(addDashboardWidget).mockResolvedValue(widget(unpinned));
 
     renderPage();
-    await waitFor(() => expect(screen.getByText('+ Add widget')).toBeTruthy());
-    fireEvent.click(screen.getByText('+ Add widget'));
+    await waitFor(() => expect(screen.getByText('Add widget')).toBeTruthy());
+    fireEvent.click(screen.getByText('Add widget'));
 
     const select = await screen.findByLabelText('Report to pin');
     fireEvent.change(select, { target: { value: unpinned.id } });

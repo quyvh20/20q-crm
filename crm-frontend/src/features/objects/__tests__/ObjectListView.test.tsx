@@ -102,7 +102,7 @@ describe('ObjectListView renders any object from its schema', () => {
 
     renderView('deal');
 
-    expect(await screen.findByText('💰 Deals')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Deals' })).toBeInTheDocument();
     // "Acme renewal" appears in both the Name cell and the Title field column.
     expect((await screen.findAllByText('Acme renewal')).length).toBeGreaterThan(0);
     // Column headers come from the schema fields.
@@ -119,7 +119,7 @@ describe('ObjectListView renders any object from its schema', () => {
 
     renderView('project');
 
-    expect(await screen.findByText('📁 Projects')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Projects' })).toBeInTheDocument();
     expect((await screen.findAllByText('Apollo')).length).toBeGreaterThan(0);
     expect(screen.getByText('Status')).toBeInTheDocument();
   });
@@ -130,9 +130,10 @@ describe('ObjectListView renders any object from its schema', () => {
 
     renderView('deal');
 
-    fireEvent.click(await screen.findByText('+ Add Deal'));
-    // ObjectForm header + a schema-driven field label appear.
-    await waitFor(() => expect(screen.getByText('New Deal')).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: 'Add Deal' }));
+    // ObjectForm header + a schema-driven field label appear. (The text shows
+    // twice — the Modal's sr-only dialog title and the form's visible header.)
+    await waitFor(() => expect(screen.getAllByText('New Deal').length).toBeGreaterThan(0));
     expect(screen.getByText('Create Deal')).toBeInTheDocument();
   });
 
@@ -160,13 +161,13 @@ describe('ObjectListView renders any object from its schema', () => {
 
     renderView('contact');
 
-    expect(await screen.findByText('👤 Contacts')).toBeInTheDocument();
-    expect(screen.queryByText('+ Add Contact')).not.toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Contacts' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Add Contact' })).not.toBeInTheDocument();
     // Import is a contact affordance, so its absence here is the create gate.
     expect(screen.queryByText('Import')).not.toBeInTheDocument();
     // The empty state doesn't tell a create-denied role to click a button it doesn't have.
     expect(await screen.findByText('No contacts to show.')).toBeInTheDocument();
-    expect(screen.queryByText(/Click "\+ Add/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Click "Add/)).not.toBeInTheDocument();
   });
 
   it('keeps + Add and Import for a role with create access (contact)', async () => {
@@ -175,7 +176,7 @@ describe('ObjectListView renders any object from its schema', () => {
 
     renderView('contact');
 
-    expect(await screen.findByText('+ Add Contact')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Add Contact' })).toBeInTheDocument();
     expect(screen.getByText('Import')).toBeInTheDocument();
   });
 

@@ -6,8 +6,21 @@ import {
   type ColumnDef,
 } from '@tanstack/react-table';
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { Pencil, Trash2, Tag, ChevronDown, X, Check, Users } from 'lucide-react';
 import { getContacts, deleteContact, bulkAction, getTags, type Contact, type ContactFilter } from '../../lib/api';
 import { useConfirm } from '../common/ConfirmDialog';
+import {
+  Badge,
+  Button,
+  Spinner,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableShell,
+} from '@/components/ui';
 
 interface ContactListProps {
   filters: ContactFilter;
@@ -120,7 +133,7 @@ export default function ContactList({ filters, onEdit, onImport }: ContactListPr
             ref={(el) => { if (el) el.indeterminate = someSelected; }}
             onChange={toggleAll}
             onClick={(e) => e.stopPropagation()}
-            className="h-4 w-4 rounded border-muted-foreground/30 accent-blue-500 cursor-pointer"
+            className="h-4 w-4 rounded border-muted-foreground/30 accent-primary cursor-pointer"
           />
         ),
         cell: ({ row }) => (
@@ -130,7 +143,7 @@ export default function ContactList({ filters, onEdit, onImport }: ContactListPr
             checked={selectedIds.has(row.original.id)}
             onChange={() => toggleOne(row.original.id)}
             onClick={(e) => e.stopPropagation()}
-            className="h-4 w-4 rounded border-muted-foreground/30 accent-blue-500 cursor-pointer"
+            className="h-4 w-4 rounded border-muted-foreground/30 accent-primary cursor-pointer"
           />
         ),
       },
@@ -139,7 +152,7 @@ export default function ContactList({ filters, onEdit, onImport }: ContactListPr
         accessorFn: (row) => `${row.first_name} ${row.last_name}`,
         cell: ({ row }) => (
           <div className="flex items-center gap-3">
-            <div className="h-8 w-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-xs font-semibold shrink-0">
+            <div className="h-8 w-8 rounded-full bg-primary flex items-center justify-center text-primary-foreground text-xs font-semibold shrink-0">
               {row.original.first_name[0]}{row.original.last_name?.[0] || ''}
             </div>
             <div className="min-w-0">
@@ -203,11 +216,11 @@ export default function ContactList({ filters, onEdit, onImport }: ContactListPr
           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
             <button
               onClick={(e) => { e.stopPropagation(); onEdit(row.original); }}
-              className="p-1.5 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+              className="p-1.5 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               title="Edit"
               aria-label={`Edit ${row.original.first_name} ${row.original.last_name}`}
             >
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+              <Pencil aria-hidden className="h-3.5 w-3.5" />
             </button>
             <button
               onClick={async (e) => {
@@ -219,11 +232,11 @@ export default function ContactList({ filters, onEdit, onImport }: ContactListPr
                 });
                 if (ok) deleteMutation.mutate(row.original.id);
               }}
-              className="p-1.5 rounded-md hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-colors"
+              className="p-1.5 rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               title="Delete"
               aria-label={`Delete ${row.original.first_name} ${row.original.last_name}`}
             >
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+              <Trash2 aria-hidden className="h-3.5 w-3.5" />
             </button>
           </div>
         ),
@@ -254,12 +267,12 @@ export default function ContactList({ filters, onEdit, onImport }: ContactListPr
       {selectedIds.size > 0 && (
         <div
           id="bulk-action-toolbar"
-          className="mb-3 flex items-center gap-3 px-4 py-2.5 rounded-xl bg-blue-600 text-white shadow-lg shadow-blue-600/20 animate-in slide-in-from-top-2 duration-200"
+          className="mb-3 flex items-center gap-3 px-4 py-2.5 rounded-xl bg-primary text-primary-foreground shadow-lg shadow-primary/20 animate-in slide-in-from-top-2 duration-200"
         >
           <span className="text-sm font-semibold">
             {selectedIds.size} selected
           </span>
-          <div className="h-4 w-px bg-white/30" />
+          <div className="h-4 w-px bg-primary-foreground/30" />
 
           {/* Assign Tag dropdown trigger */}
           <div className="relative">
@@ -267,11 +280,11 @@ export default function ContactList({ filters, onEdit, onImport }: ContactListPr
               id="bulk-assign-tag-btn"
               onClick={() => setShowTagDropdown(v => !v)}
               disabled={bulkMutation.isPending}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/15 hover:bg-white/25 transition-colors text-sm font-medium disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary-foreground/15 hover:bg-primary-foreground/25 transition-colors text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-foreground/50"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z"/><path d="M7 7h.01"/></svg>
+              <Tag aria-hidden className="h-3.5 w-3.5" />
               Assign Tag
-              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+              <ChevronDown aria-hidden className="h-3 w-3" />
             </button>
             {showTagDropdown && (
               <div className="absolute top-full left-0 mt-1 w-48 rounded-xl bg-popover border shadow-xl z-50 overflow-hidden py-1 text-foreground">
@@ -308,90 +321,90 @@ export default function ContactList({ filters, onEdit, onImport }: ContactListPr
               if (ok) bulkMutation.mutate({ action: 'delete' });
             }}
             disabled={bulkMutation.isPending}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/80 hover:bg-red-500 transition-colors text-sm font-medium disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-foreground/50"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+            <Trash2 aria-hidden className="h-3.5 w-3.5" />
             Delete {selectedIds.size}
           </button>
 
           {/* Clear selection */}
           <button
             onClick={() => setSelectedIds(new Set())}
-            className="ml-auto px-2 py-1 rounded-lg hover:bg-white/15 transition-colors text-xs opacity-75 hover:opacity-100"
+            className="ml-auto flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-primary-foreground/15 transition-colors text-xs opacity-75 hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-foreground/50"
           >
-            ✕ Clear
+            <X aria-hidden className="h-3 w-3" /> Clear
           </button>
         </div>
       )}
 
       {/* Success feedback */}
       {bulkFeedback && (
-        <div className="mb-3 px-4 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-sm text-emerald-600 font-medium">
-          ✓ {bulkFeedback}
+        <div className="mb-3">
+          <Badge variant="success" className="px-3 py-1">
+            <Check aria-hidden className="h-3.5 w-3.5" /> {bulkFeedback}
+          </Badge>
         </div>
       )}
 
-      <div className="rounded-xl border bg-card overflow-hidden">
-        <table className="w-full">
-          <thead>
+      <TableShell>
+        <Table>
+          <TableHeader>
             {table.getHeaderGroups().map((hg) => (
-              <tr key={hg.id} className="border-b bg-muted/30">
+              <TableRow key={hg.id} className="hover:bg-transparent">
                 {hg.headers.map((header) => (
-                  <th key={header.id} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  <TableHead key={header.id} className="px-4 py-3">
                     {flexRender(header.column.columnDef.header, header.getContext())}
-                  </th>
+                  </TableHead>
                 ))}
-              </tr>
+              </TableRow>
             ))}
-          </thead>
-          <tbody>
+          </TableHeader>
+          <TableBody>
             {table.getRowModel().rows.length === 0 ? (
-              <tr>
-                <td colSpan={columns.length} className="px-4 py-12 text-center text-muted-foreground">
+              <TableRow className="hover:bg-transparent">
+                <TableCell colSpan={columns.length} className="px-4 py-12 text-center text-muted-foreground">
                   <div className="flex flex-col items-center gap-3">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground/40"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                    <Users aria-hidden className="h-12 w-12 text-muted-foreground/40" strokeWidth={1} />
                     <p className="text-sm">No contacts found</p>
-                    <button
-                      onClick={onImport}
-                      className="text-sm text-blue-500 hover:text-blue-400 underline underline-offset-4"
-                    >
+                    <Button variant="link" onClick={onImport} className="h-auto p-0">
                       Import contacts from CSV
-                    </button>
+                    </Button>
                   </div>
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ) : (
               table.getRowModel().rows.map((row, i) => (
-                <tr
+                <TableRow
                   key={row.id}
+                  data-clickable="true"
                   onClick={() => onEdit(row.original)}
-                  className={`border-b last:border-b-0 hover:bg-muted/20 cursor-pointer transition-colors group ${
-                    selectedIds.has(row.original.id) ? 'bg-blue-500/5' : ''
+                  className={`group ${
+                    selectedIds.has(row.original.id) ? 'bg-primary/5' : ''
                   }`}
                   ref={i === table.getRowModel().rows.length - 1 ? lastElementRef : null}
                 >
                   {row.getVisibleCells().map((cell) => (
-                    <td key={cell.id} className="px-4 py-3">
+                    <TableCell key={cell.id} className="px-4 py-3">
                       {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                    </td>
+                    </TableCell>
                   ))}
-                </tr>
+                </TableRow>
               ))
             )}
-          </tbody>
-        </table>
-      </div>
+          </TableBody>
+        </Table>
+      </TableShell>
 
       {isFetchingNextPage && (
         <div className="flex justify-center py-4">
-          <div className="animate-spin h-5 w-5 border-2 border-blue-500 border-t-transparent rounded-full" />
+          <Spinner />
         </div>
       )}
 
       <div className="mt-3 text-xs text-muted-foreground text-center">
         Showing {contacts.length} of {totalCount} contacts
         {selectedIds.size > 0 && (
-          <span className="ml-2 text-blue-500">&bull; {selectedIds.size} selected</span>
+          <span className="ml-2 text-primary">&bull; {selectedIds.size} selected</span>
         )}
       </div>
 

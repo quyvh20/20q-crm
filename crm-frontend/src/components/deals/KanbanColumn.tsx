@@ -1,5 +1,6 @@
 import { useDroppable } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
+import { Plus } from 'lucide-react';
 import DealCard from './DealCard';
 import type { Deal, PipelineStage } from '../../lib/api';
 
@@ -19,7 +20,7 @@ export default function KanbanColumn({ stage, deals, onDealClick, onAddDeal }: K
     <div
       ref={setNodeRef}
       className={`flex flex-col min-w-[280px] w-[280px] rounded-xl bg-muted/30 border transition-colors ${
-        isOver ? 'border-blue-500/50 bg-blue-500/5' : ''
+        isOver ? 'border-primary/50 bg-primary/5' : ''
       }`}
     >
       {/* Column header */}
@@ -33,10 +34,10 @@ export default function KanbanColumn({ stage, deals, onDealClick, onAddDeal }: K
           </div>
           <button
             onClick={() => onAddDeal(stage.id)}
-            className="h-6 w-6 rounded-md hover:bg-accent flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+            className="h-6 w-6 rounded-md hover:bg-accent flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             title="Add deal"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+            <Plus aria-hidden className="h-3.5 w-3.5" />
           </button>
         </div>
         <p className="text-xs text-muted-foreground mt-1">

@@ -3,6 +3,7 @@ import { getMe, updateProfile } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { getThemePreference, setThemePreference, type ThemePreference } from '../../lib/theme';
 import { localeOptions } from '../../lib/intlOptions';
+import { Button, Input, Label, Skeleton } from '@/components/ui';
 
 // Profile section (U2 My Account): the first place a user can edit their own
 // name, avatar, and preferences — before this, a typo'd name at signup was
@@ -79,14 +80,13 @@ export default function ProfileSection() {
   };
 
   if (loading) {
-    return <div className="space-y-3">{[...Array(3)].map((_, i) => <div key={i} className="h-10 rounded-lg bg-muted/50 animate-pulse" />)}</div>;
+    return <div className="space-y-3">{[...Array(3)].map((_, i) => <Skeleton key={i} className="h-10 rounded-lg" />)}</div>;
   }
   if (loadError) {
-    return <div className="rounded-md border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-400">{loadError}</div>;
+    return <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">{loadError}</div>;
   }
 
   const initials = `${firstName?.[0] ?? ''}${lastName?.[0] ?? ''}`.toUpperCase() || '?';
-  const inputCls = 'w-full px-3 py-2 bg-background border border-border rounded-lg text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary';
 
   return (
     <div className="space-y-6 max-w-xl">
@@ -96,7 +96,7 @@ export default function ProfileSection() {
       </div>
 
       {saveMsg && (
-        <div className={`rounded-md border p-3 text-sm ${saveMsg.ok ? 'border-green-500/40 bg-green-500/10 text-green-500' : 'border-red-500/40 bg-red-500/10 text-red-400'}`}>
+        <div className={`rounded-lg border p-3 text-sm ${saveMsg.ok ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'border-destructive/40 bg-destructive/10 text-destructive'}`}>
           {saveMsg.text}
         </div>
       )}
@@ -110,41 +110,41 @@ export default function ProfileSection() {
           </div>
         )}
         <div className="flex-1">
-          <label className="block text-xs font-medium text-muted-foreground mb-1">Avatar URL</label>
-          <input value={avatarUrl} onChange={(e) => setAvatarUrl(e.target.value)} placeholder="https://…" className={inputCls} />
+          <Label htmlFor="avatar-url" className="mb-1 block text-xs text-muted-foreground">Avatar URL</Label>
+          <Input id="avatar-url" value={avatarUrl} onChange={(e) => setAvatarUrl(e.target.value)} placeholder="https://…" />
           <p className="text-xs text-muted-foreground mt-1">Paste an image link, or leave empty to use your initials. Google sign-in fills this automatically.</p>
         </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
-          <label className="block text-xs font-medium text-muted-foreground mb-1">First name</label>
-          <input value={firstName} onChange={(e) => setFirstName(e.target.value)} autoComplete="given-name" className={inputCls} />
+          <Label htmlFor="first-name" className="mb-1 block text-xs text-muted-foreground">First name</Label>
+          <Input id="first-name" value={firstName} onChange={(e) => setFirstName(e.target.value)} autoComplete="given-name" />
         </div>
         <div>
-          <label className="block text-xs font-medium text-muted-foreground mb-1">Last name</label>
-          <input value={lastName} onChange={(e) => setLastName(e.target.value)} autoComplete="family-name" className={inputCls} />
+          <Label htmlFor="last-name" className="mb-1 block text-xs text-muted-foreground">Last name</Label>
+          <Input id="last-name" value={lastName} onChange={(e) => setLastName(e.target.value)} autoComplete="family-name" />
         </div>
       </div>
 
       <div>
-        <label className="block text-xs font-medium text-muted-foreground mb-1">Email</label>
-        <input value={email} disabled className={`${inputCls} opacity-60 cursor-not-allowed`} />
+        <Label htmlFor="email" className="mb-1 block text-xs text-muted-foreground">Email</Label>
+        <Input id="email" value={email} disabled className="cursor-not-allowed opacity-60" />
         <p className="text-xs text-muted-foreground mt-1">Changing your sign-in email is coming in a later update.</p>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
-          <label className="block text-xs font-medium text-muted-foreground mb-1">Timezone</label>
-          <input list="tz-options" value={timezone} onChange={(e) => setTimezone(e.target.value)} placeholder="e.g. Asia/Saigon" className={inputCls} />
+          <Label htmlFor="timezone" className="mb-1 block text-xs text-muted-foreground">Timezone</Label>
+          <Input id="timezone" list="tz-options" value={timezone} onChange={(e) => setTimezone(e.target.value)} placeholder="e.g. Asia/Saigon" />
           <datalist id="tz-options">
             {timezones.map((tz) => <option key={tz} value={tz} />)}
           </datalist>
           <p className="text-xs text-muted-foreground mt-1">Automations you schedule use this when they don't set their own.</p>
         </div>
         <div>
-          <label className="block text-xs font-medium text-muted-foreground mb-1">Locale</label>
-          <input list="locale-options" value={locale} onChange={(e) => setLocale(e.target.value)} placeholder="e.g. en-US" className={inputCls} />
+          <Label htmlFor="locale" className="mb-1 block text-xs text-muted-foreground">Locale</Label>
+          <Input id="locale" list="locale-options" value={locale} onChange={(e) => setLocale(e.target.value)} placeholder="e.g. en-US" />
           <datalist id="locale-options">
             {COMMON_LOCALES.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
           </datalist>
@@ -152,13 +152,14 @@ export default function ProfileSection() {
       </div>
 
       <div>
-        <label className="block text-xs font-medium text-muted-foreground mb-1.5">Appearance</label>
-        <div className="inline-flex rounded-lg border border-border overflow-hidden">
+        <Label className="mb-1.5 block text-xs text-muted-foreground">Appearance</Label>
+        <div className="inline-flex rounded-lg border border-input overflow-hidden">
           {(['light', 'system', 'dark'] as const).map((t) => (
             <button
               key={t}
+              type="button"
               onClick={() => changeTheme(t)}
-              className={`px-4 py-1.5 text-sm capitalize transition-colors ${theme === t ? 'bg-accent text-accent-foreground font-medium' : 'text-muted-foreground hover:bg-accent/50'}`}
+              className={`px-4 py-1.5 text-sm capitalize transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${theme === t ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'}`}
             >
               {t}
             </button>
@@ -168,13 +169,9 @@ export default function ProfileSection() {
       </div>
 
       <div>
-        <button
-          onClick={save}
-          disabled={saving || !firstName.trim()}
-          className="px-4 py-2 bg-primary text-primary-foreground rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-50"
-        >
+        <Button onClick={save} disabled={saving || !firstName.trim()}>
           {saving ? 'Saving…' : 'Save profile'}
-        </button>
+        </Button>
       </div>
     </div>
   );

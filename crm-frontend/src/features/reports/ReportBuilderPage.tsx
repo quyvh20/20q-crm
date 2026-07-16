@@ -2,11 +2,16 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
+  ArrowLeft, BarChart3, Globe, Hash, LineChart, Lock, PieChart, Table, type LucideIcon,
+} from 'lucide-react';
+import {
   createReport, deleteReport, exportReportCsv, getReport, listRegistryObjects, listReportFields, updateReport,
   type ObjectSummary, type Report, type ReportChart as ReportChartKind, type ReportConfig,
   type ReportDateBucket, type ReportFieldDescriptor, type ReportVisibility,
 } from '../../lib/api';
 import { useReportPreview, isRunnableConfig } from './useReportPreview';
+import { Button } from '../../components/ui/button';
+import { Skeleton } from '../../components/ui/skeleton';
 import { usePermissions } from '../../lib/auth';
 import { useDocumentTitle } from '../../lib/useDocumentTitle';
 import { REPORT_TEMPLATES } from './templates';
@@ -15,13 +20,13 @@ import FilterEditor from './builder/FilterEditor';
 import ReportShareDialog from './ReportShareDialog';
 import ReportComments from './ReportComments';
 
-const CHART_TYPES: { value: ReportChartKind; label: string; icon: string }[] = [
-  { value: 'bar', label: 'Bar', icon: '📊' },
-  { value: 'line', label: 'Line', icon: '📈' },
-  { value: 'pie', label: 'Pie', icon: '🥧' },
-  { value: 'donut', label: 'Donut', icon: '🍩' },
-  { value: 'kpi', label: 'Number', icon: '🔢' },
-  { value: 'table', label: 'Table', icon: '📋' },
+const CHART_TYPES: { value: ReportChartKind; label: string; icon: LucideIcon }[] = [
+  { value: 'bar', label: 'Bar', icon: BarChart3 },
+  { value: 'line', label: 'Line', icon: LineChart },
+  { value: 'pie', label: 'Pie', icon: PieChart },
+  { value: 'donut', label: 'Donut', icon: PieChart },
+  { value: 'kpi', label: 'Number', icon: Hash },
+  { value: 'table', label: 'Table', icon: Table },
 ];
 
 const BUCKETS: { value: ReportDateBucket; label: string }[] = [
@@ -170,46 +175,48 @@ export default function ReportBuilderPage() {
     <div className="mx-auto max-w-7xl space-y-4">
       {/* Header: name, visibility, save/export/delete */}
       <div className="flex flex-wrap items-center gap-2">
-        <button onClick={() => navigate('/reports')} className="rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent">← Reports</button>
+        <Button variant="ghost" onClick={() => navigate('/reports')} className="text-muted-foreground">
+          <ArrowLeft aria-hidden />
+          Reports
+        </Button>
         <input
           aria-label="Report name"
           value={name}
           onChange={(e) => { setName(e.target.value); if (e.target.value.trim()) setNameError(false); }}
           placeholder="Untitled report"
-          className={`min-w-56 flex-1 rounded-md border bg-background px-3 py-2 text-lg font-semibold ${nameError ? 'border-red-500' : ''}`}
+          className={`min-w-56 flex-1 rounded-lg border bg-background px-3 py-2 text-lg font-semibold focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 ${nameError ? 'border-destructive' : 'border-input'}`}
           disabled={!canManage}
         />
         {existing && canShare && (
           <>
-            <span className="rounded-md border px-2 py-2 text-sm text-muted-foreground">
-              {existing.visibility === 'org' ? '🌐 Workspace' : '🔒 Private'}
+            <span className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-2 text-sm text-muted-foreground">
+              {existing.visibility === 'org'
+                ? <><Globe aria-hidden className="h-3.5 w-3.5" /> Workspace</>
+                : <><Lock aria-hidden className="h-3.5 w-3.5" /> Private</>}
             </span>
-            <button onClick={() => setShowShare(true)} className="rounded-md border px-3 py-2 text-sm hover:bg-accent">Share</button>
+            <Button variant="outline" onClick={() => setShowShare(true)}>Share</Button>
           </>
         )}
         {existing && canExport && (
-          <button onClick={handleExport} className="rounded-md border px-3 py-2 text-sm hover:bg-accent">Export CSV</button>
+          <Button variant="outline" onClick={handleExport}>Export CSV</Button>
         )}
         {canManage && (
-          <button
-            onClick={handleSave}
-            disabled={saveMutation.isPending}
-            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-          >
+          <Button onClick={handleSave} disabled={saveMutation.isPending}>
             {saveMutation.isPending ? 'Saving…' : existing ? 'Save changes' : 'Save report'}
-          </button>
+          </Button>
         )}
         {existing && canDelete && (
-          <button
+          <Button
+            variant="outline"
             onClick={() => { if (window.confirm(`Delete report "${existing.name}"?`)) deleteMutation.mutate(); }}
-            className="rounded-md border border-red-300 px-3 py-2 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-950"
+            className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
           >
             Delete
-          </button>
+          </Button>
         )}
       </div>
       {showShare && existing && <ReportShareDialog report={existing} onClose={() => setShowShare(false)} />}
-      {saveMutation.isError && <div className="text-sm text-red-600">{(saveMutation.error as Error).message}</div>}
+      {saveMutation.isError && <div className="text-sm text-destructive">{(saveMutation.error as Error).message}</div>}
 
       <div className="grid gap-4 lg:grid-cols-[400px_1fr]">
         {/* Config panel */}
@@ -238,9 +245,10 @@ export default function ReportBuilderPage() {
                   type="button"
                   onClick={() => setChart(c.value)}
                   disabled={!canManage}
-                  className={`rounded-lg border px-2 py-2 text-sm transition-colors ${config.chart === c.value ? 'border-primary bg-primary/10 font-medium' : 'hover:bg-accent'}`}
+                  className={`inline-flex items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-sm transition-colors ${config.chart === c.value ? 'border-primary bg-primary/10 font-medium' : 'border-border hover:bg-accent'}`}
                 >
-                  <span className="mr-1">{c.icon}</span>{c.label}
+                  <c.icon aria-hidden className="h-4 w-4" />
+                  {c.label}
                 </button>
               ))}
             </div>
@@ -398,9 +406,9 @@ export default function ReportBuilderPage() {
               {config.chart === 'table' ? 'Pick at least one column to preview.' : 'Pick a "Group by" field to preview.'}
             </div>
           ) : preview.isError ? (
-            <div className="flex h-72 items-center justify-center px-8 text-center text-sm text-red-600">{preview.error.message}</div>
+            <div className="flex h-72 items-center justify-center px-8 text-center text-sm text-destructive">{preview.error.message}</div>
           ) : preview.isLoading ? (
-            <div className="h-72 animate-pulse rounded-lg bg-muted/50" />
+            <Skeleton className="h-72 rounded-lg" />
           ) : preview.data ? (
             <ReportChart chart={config.chart} result={preview.data} height={380} columnLabels={fieldLabels} />
           ) : null}

@@ -8,6 +8,8 @@ import DynamicCustomFields from '../common/DynamicCustomFields';
 import Modal from '../common/Modal';
 import VoiceUploader from '../voice/VoiceUploader';
 import VoiceLibrary from '../voice/VoiceLibrary';
+import { Mic } from 'lucide-react';
+import { Button, Input, Label, Spinner } from '@/components/ui';
 
 // owner_user_id is deliberately absent (U6): this drawer never rendered or sent
 // it, and the legacy contact endpoint treats a null owner as "unchanged", so it
@@ -114,9 +116,9 @@ export default function ContactForm({ contact, onClose }: ContactFormProps) {
             <button
               id="contact-tab-details"
               onClick={() => setActiveTab('details')}
-              className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px ${
+              className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                 activeTab === 'details'
-                  ? 'border-blue-500 text-blue-600'
+                  ? 'border-primary text-primary'
                   : 'border-transparent text-muted-foreground hover:text-foreground'
               }`}
             >
@@ -125,13 +127,13 @@ export default function ContactForm({ contact, onClose }: ContactFormProps) {
             <button
               id="contact-tab-voice"
               onClick={() => setActiveTab('voice')}
-              className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px flex items-center gap-1.5 ${
+              className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px flex items-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                 activeTab === 'voice'
-                  ? 'border-blue-500 text-blue-600'
+                  ? 'border-primary text-primary'
                   : 'border-transparent text-muted-foreground hover:text-foreground'
               }`}
             >
-              🎙 Voice Notes
+              <Mic aria-hidden className="h-4 w-4" /> Voice Notes
             </button>
           </div>
         )}
@@ -142,56 +144,52 @@ export default function ContactForm({ contact, onClose }: ContactFormProps) {
           <form onSubmit={handleSubmit(onSubmit)} className="p-6 space-y-5">
             {/* Error banner */}
             {error && (
-              <div className="rounded-lg bg-red-500/10 border border-red-500/20 px-4 py-3 text-sm text-red-400">
+              <div className="rounded-lg bg-destructive/10 border border-destructive/20 px-4 py-3 text-sm text-destructive">
                 {(error as Error).message}
               </div>
             )}
 
             {/* First Name */}
             <div className="space-y-1.5">
-              <label className="text-sm font-medium text-foreground">
-                First Name <span className="text-red-400">*</span>
-              </label>
-              <input
+              <Label>
+                First Name <span className="text-destructive">*</span>
+              </Label>
+              <Input
                 {...register('first_name')}
-                className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-all"
                 placeholder="e.g. John"
               />
               {errors.first_name && (
-                <p className="text-xs text-red-400">{errors.first_name.message}</p>
+                <p className="text-xs text-destructive">{errors.first_name.message}</p>
               )}
             </div>
 
             {/* Last Name */}
             <div className="space-y-1.5">
-              <label className="text-sm font-medium text-foreground">Last Name</label>
-              <input
+              <Label>Last Name</Label>
+              <Input
                 {...register('last_name')}
-                className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-all"
                 placeholder="e.g. Doe"
               />
             </div>
 
             {/* Email */}
             <div className="space-y-1.5">
-              <label className="text-sm font-medium text-foreground">Email</label>
-              <input
+              <Label>Email</Label>
+              <Input
                 {...register('email')}
                 type="email"
-                className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-all"
                 placeholder="john@company.com"
               />
               {errors.email && (
-                <p className="text-xs text-red-400">{errors.email.message}</p>
+                <p className="text-xs text-destructive">{errors.email.message}</p>
               )}
             </div>
 
             {/* Phone */}
             <div className="space-y-1.5">
-              <label className="text-sm font-medium text-foreground">Phone</label>
-              <input
+              <Label>Phone</Label>
+              <Input
                 {...register('phone')}
-                className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-all"
                 placeholder="+84 123 456 789"
               />
             </div>
@@ -206,39 +204,40 @@ export default function ContactForm({ contact, onClose }: ContactFormProps) {
 
             {/* Submit */}
             <div className="flex gap-3 pt-4 border-t">
-              <button
+              <Button
                 type="button"
+                variant="outline"
                 onClick={onClose}
-                className="flex-1 px-4 py-2.5 rounded-lg border text-sm font-medium hover:bg-accent transition-colors"
+                className="flex-1"
               >
                 Cancel
-              </button>
-              <button
+              </Button>
+              <Button
                 type="submit"
                 disabled={isSubmitting}
-                className="flex-1 px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="flex-1"
               >
                 {isSubmitting ? (
-                  <span className="flex items-center justify-center gap-2">
-                    <span className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
+                  <>
+                    <Spinner size="sm" />
                     Saving...
-                  </span>
+                  </>
                 ) : isEditing ? 'Update Contact' : 'Create Contact'}
-              </button>
+              </Button>
             </div>
 
             {/* Voice Notes — always visible in Details tab for existing contacts */}
             {isEditing && contact && (
               <div className="pt-4 border-t space-y-3">
                 <div className="flex items-center justify-between">
-                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    🎙 Voice Notes
+                  <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    <Mic aria-hidden className="h-3.5 w-3.5" /> Voice Notes
                   </p>
                   <button
                     type="button"
                     id="contact-voice-tab-btn"
                     onClick={() => setActiveTab('voice')}
-                    className="text-xs text-blue-500 hover:text-blue-400 transition-colors"
+                    className="text-xs text-primary hover:text-primary/80 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
                   >
                     + Upload Voice Note
                   </button>

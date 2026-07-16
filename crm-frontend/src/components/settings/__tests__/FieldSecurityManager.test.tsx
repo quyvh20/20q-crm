@@ -288,14 +288,14 @@ describe('FieldSecurityManager — field × role level grid', () => {
     await screen.findByText('Title');
 
     const viewerHeader = screen.getByRole('columnheader', { name: /Viewer/ });
-    expect(viewerHeader.className).toContain('bg-blue-500/10');
+    expect(viewerHeader.className).toContain('bg-primary/10');
     const ownerHeader = screen.getByRole('columnheader', { name: /Owner/ });
-    expect(ownerHeader.className).not.toContain('bg-blue-500/10');
+    expect(ownerHeader.className).not.toContain('bg-primary/10');
 
     cleanup();
     renderPage('/settings/field-access?role=bogus');
     await screen.findByText('Title');
-    expect(screen.getByRole('columnheader', { name: /Viewer/ }).className).not.toContain('bg-blue-500/10');
+    expect(screen.getByRole('columnheader', { name: /Viewer/ }).className).not.toContain('bg-primary/10');
   });
 
   it('?object= preselects the matching pill, unknown slugs fall back to the first', async () => {

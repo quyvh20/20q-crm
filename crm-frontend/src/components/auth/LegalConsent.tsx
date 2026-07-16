@@ -18,7 +18,7 @@ interface LegalLinkProps {
   children: React.ReactNode;
 }
 
-const linkCls = 'text-blue-400 hover:text-blue-300 underline underline-offset-2 transition-colors';
+const linkCls = 'text-primary underline underline-offset-2 hover:no-underline';
 
 function LegalLink({ href, external, children }: LegalLinkProps) {
   if (external) {
@@ -38,13 +38,13 @@ function LegalLink({ href, external, children }: LegalLinkProps) {
 }
 
 interface LegalConsentProps {
-  /** Extra classes for the wrapper (the auth cards use slightly different palettes). */
+  /** Extra classes for the wrapper (mostly spacing on the auth cards). */
   className?: string;
 }
 
 export default function LegalConsent({ className = '' }: LegalConsentProps) {
   return (
-    <p className={`text-center text-xs leading-relaxed text-slate-500 ${className}`}>
+    <p className={`text-center text-xs leading-relaxed text-muted-foreground ${className}`}>
       By continuing, you agree to our{' '}
       <LegalLink href={TERMS_URL} external={TERMS_IS_EXTERNAL}>
         Terms of Service

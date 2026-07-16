@@ -11,6 +11,10 @@ import {
 } from '../../features/settings/queries';
 import { prettyRole } from '../../lib/roles';
 import { useConfirm } from '../common/ConfirmDialog';
+import {
+  Input, Select,
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableShell,
+} from '@/components/ui';
 
 const LEVELS: { value: FieldLevel; label: string }[] = [
   { value: 'edit', label: 'Edit' },
@@ -191,7 +195,7 @@ export default function FieldSecurityManager() {
         </p>
       </div>
 
-      {error && <div className="bg-red-50 text-red-700 text-sm rounded-md px-3 py-2">{error}</div>}
+      {error && <div className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>}
 
       {/* Object selector, with a restriction-count badge per object */}
       <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Objects">
@@ -201,22 +205,23 @@ export default function FieldSecurityManager() {
           return (
             <button
               key={o.slug}
+              type="button"
               role="tab"
               aria-selected={selected}
               onClick={() => selectObject(o.slug)}
-              className={`px-3 py-1.5 text-sm rounded-md border transition-colors ${
+              className={`rounded-lg border px-3 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                 selected
-                  ? 'bg-blue-500 text-white border-blue-500'
-                  : 'bg-background border-muted-foreground/20 hover:border-muted-foreground/40'
+                  ? 'border-primary bg-primary text-primary-foreground'
+                  : 'border-input bg-background hover:bg-accent hover:text-accent-foreground'
               }`}
             >
-              <span className="mr-1">{o.icon}</span>
+              <span aria-hidden className="mr-1">{o.icon}</span>
               {o.label}
               {count > 0 && (
                 <span
                   aria-label={`${count} field restriction${count === 1 ? '' : 's'}`}
                   className={`ml-1.5 inline-flex items-center justify-center min-w-[1.125rem] px-1 rounded-full text-[10px] font-semibold leading-4 ${
-                    selected ? 'bg-white/25 text-white' : 'bg-amber-500/15 text-amber-600'
+                    selected ? 'bg-primary-foreground/25 text-primary-foreground' : 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
                   }`}
                 >
                   {count}
@@ -235,13 +240,13 @@ export default function FieldSecurityManager() {
         <>
           {/* Field filters */}
           <div className="flex flex-wrap items-center gap-3">
-            <input
+            <Input
               type="search"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search fields…"
               aria-label="Search fields"
-              className="text-sm rounded-md border border-muted-foreground/20 bg-background px-2.5 py-1.5 w-56"
+              className="w-56"
             />
             <label className="flex items-center gap-1.5 text-sm cursor-pointer select-none">
               <input
@@ -261,16 +266,16 @@ export default function FieldSecurityManager() {
           {visibleFields.length === 0 ? (
             <div className="text-sm text-muted-foreground py-6">No fields match your filters.</div>
           ) : (
-            <div className="border rounded-lg overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-muted/40">
-                  <tr>
-                    <th className="text-left font-medium px-3 py-2 align-top">Field</th>
+            <TableShell>
+              <Table>
+                <TableHeader>
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className="align-top">Field</TableHead>
                     {fieldGrid.roles.map((r) => (
-                      <th
+                      <TableHead
                         key={r.id}
-                        className={`font-medium px-3 py-2 text-center whitespace-nowrap align-top ${
-                          r.id === highlightRoleId ? 'bg-blue-500/10 text-blue-700' : ''
+                        className={`text-center whitespace-nowrap align-top ${
+                          r.id === highlightRoleId ? 'bg-primary/10 text-primary' : ''
                         }`}
                       >
                         {r.is_owner ? (
@@ -285,7 +290,7 @@ export default function FieldSecurityManager() {
                         ) : (
                           <>
                             <div>{prettyRole(r.name)}</div>
-                            <select
+                            <Select
                               value=""
                               aria-label={`Set all ${prettyRole(r.name)}`}
                               disabled={bulkMut.isPending || visibleFields.length === 0}
@@ -293,7 +298,7 @@ export default function FieldSecurityManager() {
                                 const v = e.target.value as FieldLevel;
                                 if (v) bulkApply(r, v);
                               }}
-                              className="mt-1 text-xs font-normal text-muted-foreground rounded-md border border-muted-foreground/20 bg-background px-1 py-0.5 disabled:opacity-60 disabled:cursor-not-allowed"
+                              className="mt-1 w-auto"
                             >
                               <option value="" disabled>
                                 Set all…
@@ -303,60 +308,60 @@ export default function FieldSecurityManager() {
                                   {l.label}
                                 </option>
                               ))}
-                            </select>
+                            </Select>
                           </>
                         )}
-                      </th>
+                      </TableHead>
                     ))}
-                  </tr>
-                </thead>
-                <tbody>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
                   {visibleFields.map((f) => (
-                    <tr key={f.key} className="border-t">
-                      <td className="px-3 py-2">
+                    <TableRow key={f.key} className="hover:bg-transparent">
+                      <TableCell>
                         {f.label}
                         {f.is_system && <span className="ml-1.5 text-xs text-muted-foreground">(system)</span>}
-                      </td>
+                      </TableCell>
                       {fieldGrid.roles.map((r) => {
                         if (r.is_owner) {
                           // Owner bypasses FLS — a static cell instead of ~30
                           // pointless disabled selects per grid.
                           return (
-                            <td
+                            <TableCell
                               key={r.id}
-                              className={`px-3 py-2 text-center text-xs text-muted-foreground ${
-                                r.id === highlightRoleId ? 'bg-blue-500/5' : ''
+                              className={`text-center text-xs text-muted-foreground ${
+                                r.id === highlightRoleId ? 'bg-primary/5' : ''
                               }`}
                             >
                               Full access
-                            </td>
+                            </TableCell>
                           );
                         }
                         const level = levelFor(r, f.key);
                         const key = `${r.id}:${f.key}`;
                         return (
-                          <td key={r.id} className={`px-3 py-2 text-center ${r.id === highlightRoleId ? 'bg-blue-500/5' : ''}`}>
-                            <select
+                          <TableCell key={r.id} className={`text-center ${r.id === highlightRoleId ? 'bg-primary/5' : ''}`}>
+                            <Select
                               value={level}
                               disabled={savingKey === key || bulkRoleId === r.id}
                               aria-label={`${prettyRole(r.name)} ${f.label}`}
                               onChange={(e) => change(r, f.key, e.target.value as FieldLevel)}
-                              className="text-sm rounded-md border border-muted-foreground/20 bg-background px-1.5 py-1 disabled:opacity-60 disabled:cursor-not-allowed"
+                              className="w-auto"
                             >
                               {LEVELS.map((l) => (
                                 <option key={l.value} value={l.value}>
                                   {l.label}
                                 </option>
                               ))}
-                            </select>
-                          </td>
+                            </Select>
+                          </TableCell>
                         );
                       })}
-                    </tr>
+                    </TableRow>
                   ))}
-                </tbody>
-              </table>
-            </div>
+                </TableBody>
+              </Table>
+            </TableShell>
           )}
         </>
       )}

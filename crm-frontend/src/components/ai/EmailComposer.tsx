@@ -1,6 +1,8 @@
 import { useState } from 'react';
+import { Copy, Loader2 } from 'lucide-react';
 import { composeEmail } from '../../lib/api';
 import Modal from '../common/Modal';
+import { Button } from '../ui/button';
 
 interface EmailComposerProps {
   contactId?: string;
@@ -77,7 +79,7 @@ export default function EmailComposer({ contactId, dealId, contactName, onClose 
                 value={instruction}
                 onChange={(e) => setInstruction(e.target.value)}
                 placeholder="e.g., Follow up on our meeting from yesterday and ask for their Q3 budget requirements."
-                className="w-full h-32 rounded-xl border bg-muted/30 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none placeholder:text-muted-foreground/60"
+                className="h-32 w-full resize-none rounded-lg border border-input bg-muted/30 px-4 py-3 text-sm placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-ring"
               />
             </div>
 
@@ -86,7 +88,7 @@ export default function EmailComposer({ contactId, dealId, contactName, onClose 
               <select
                 value={tone}
                 onChange={(e) => setTone(e.target.value)}
-                className="w-full rounded-xl border bg-muted/30 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full rounded-lg border border-input bg-muted/30 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
               >
                 <option value="professional">👔 Professional</option>
                 <option value="friendly">👋 Friendly & Casual</option>
@@ -95,23 +97,23 @@ export default function EmailComposer({ contactId, dealId, contactName, onClose 
               </select>
             </div>
 
-            <button
+            <Button
               onClick={generateEmail}
               disabled={isGenerating || !instruction.trim()}
-              className="w-full rounded-xl bg-blue-600 px-4 py-3 text-sm font-bold text-white transition-all hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
+              className="w-full"
             >
               {isGenerating ? (
                 <>
-                  <svg className="h-4 w-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                  <Loader2 aria-hidden className="animate-spin" />
                   Drafting...
                 </>
               ) : (
                 'Generate Draft'
               )}
-            </button>
+            </Button>
 
             {error && (
-              <div className="p-3 rounded-lg bg-red-500/10 text-red-500 text-sm border border-red-500/20">
+              <div className="rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
                 {error}
               </div>
             )}
@@ -124,9 +126,9 @@ export default function EmailComposer({ contactId, dealId, contactName, onClose 
               {output && (
                 <button
                   onClick={copyToClipboard}
-                  className="text-blue-600 hover:text-blue-700 text-xs flex items-center gap-1 bg-blue-600/10 px-2 py-1 rounded transition-colors"
+                  className="flex items-center gap-1 rounded bg-primary/10 px-2 py-1 text-xs text-primary transition-colors hover:text-primary/80"
                 >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+                  <Copy aria-hidden className="h-3 w-3" />
                   Copy
                 </button>
               )}
@@ -135,7 +137,7 @@ export default function EmailComposer({ contactId, dealId, contactName, onClose 
               {output ? (
                 <div className="text-foreground leading-relaxed">
                   {wrapTextWithParagraphs(output)}
-                  {isGenerating && <span className="inline-block w-2 h-4 bg-blue-600 animate-pulse ml-1 align-middle"></span>}
+                  {isGenerating && <span className="ml-1 inline-block h-4 w-2 animate-pulse bg-primary align-middle"></span>}
                 </div>
               ) : (
                 <div className="absolute inset-0 flex items-center justify-center text-muted-foreground/50 text-center px-6">
@@ -147,12 +149,9 @@ export default function EmailComposer({ contactId, dealId, contactName, onClose 
         </div>
 
         <div className="px-6 py-4 bg-muted/30 border-t flex justify-end">
-          <button
-            onClick={onClose}
-            className="px-5 py-2 text-sm font-medium rounded-xl hover:bg-muted transition-colors border"
-          >
+          <Button variant="outline" onClick={onClose}>
             Close
-          </button>
+          </Button>
         </div>
       </>
     </Modal>

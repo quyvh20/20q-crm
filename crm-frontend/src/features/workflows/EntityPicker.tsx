@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { getContacts, getDeals } from '../../lib/api';
 import type { Contact, Deal } from '../../lib/api';
+import { Spinner } from '../../components/ui/spinner';
 
 /**
  * A normalized candidate entity surfaced by the EntityPicker. Downstream
@@ -136,19 +137,16 @@ export const EntityPicker: React.FC<EntityPickerProps> = ({ kind, onSelect }) =>
         placeholder={placeholder}
         autoComplete="off"
         aria-label={`Search ${kind}s`}
-        className="w-full px-3 py-2 rounded-lg bg-gray-900 border border-gray-700 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition-colors"
+        className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground transition-colors placeholder:text-muted-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/20"
       />
 
       <div className="min-h-[3rem]">
         {loading ? (
-          <div className="flex items-center gap-2 py-3 text-sm text-gray-400">
-            <span className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-            Searching…
-          </div>
+          <Spinner size="sm" label="Searching…" className="py-3" />
         ) : error ? (
-          <p className="py-3 text-sm text-red-400">{error}</p>
+          <p className="py-3 text-sm text-destructive">{error}</p>
         ) : results.length === 0 ? (
-          <p className="py-3 text-sm text-gray-500">
+          <p className="py-3 text-sm text-muted-foreground">
             {debouncedQuery ? `No ${kind}s match “${debouncedQuery}”.` : `No ${kind}s found.`}
           </p>
         ) : (
@@ -164,15 +162,15 @@ export const EntityPicker: React.FC<EntityPickerProps> = ({ kind, onSelect }) =>
                     onClick={() => handlePick(candidate)}
                     className={`w-full text-left px-3 py-2 rounded-lg border transition-colors ${
                       isSelected
-                        ? 'border-indigo-500 bg-indigo-500/10'
-                        : 'border-gray-700 bg-gray-800/60 hover:border-gray-600 hover:bg-gray-800'
+                        ? 'border-primary bg-primary/10'
+                        : 'border-border bg-muted/40 hover:border-muted-foreground/40 hover:bg-muted'
                     }`}
                   >
-                    <span className="block text-sm font-medium text-white truncate">
+                    <span className="block text-sm font-medium text-foreground truncate">
                       {candidate.label}
                     </span>
                     {candidate.sublabel && (
-                      <span className="block text-xs text-gray-400 truncate">{candidate.sublabel}</span>
+                      <span className="block text-xs text-muted-foreground truncate">{candidate.sublabel}</span>
                     )}
                   </button>
                 </li>

@@ -1,7 +1,9 @@
 import { useState } from 'react';
+import { UserPlus } from 'lucide-react';
 import { useAuth } from '../../lib/auth';
 import MembersList from '../../components/settings/MembersList';
 import InviteMemberModal from '../../components/settings/InviteMemberModal';
+import { Button } from '@/components/ui';
 
 // Members section of the settings shell (U1) — the former WorkspaceSettingsPage
 // minus the page chrome (the shell owns the header) and minus groups (their own
@@ -23,16 +25,13 @@ export default function MembersSection() {
           </p>
         </div>
         {canInvite && (
-          <button
-            onClick={() => setShowInvite(true)}
-            className="px-4 py-2 bg-primary text-primary-foreground rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity shrink-0"
-          >
-            + Invite member
-          </button>
+          <Button onClick={() => setShowInvite(true)} className="shrink-0">
+            <UserPlus aria-hidden /> Invite member
+          </Button>
         )}
       </div>
 
-      <div className="bg-card border border-border rounded-2xl p-6">
+      <div className="bg-card border border-border rounded-xl p-6">
         <MembersList key={refreshKey} />
       </div>
 

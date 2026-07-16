@@ -1,5 +1,10 @@
 import { useEffect, useState } from 'react';
 import {
+  Bell, Briefcase, Building2, Calendar, Check, CheckSquare, ChevronDown, ChevronUp, Circle,
+  Clock, DollarSign, FileText, Frown, Loader2, Mail, Meh, Mic, Phone, Pin, RotateCw,
+  Smile, Sparkles, Trash2, TriangleAlert, UserRound, Zap, type LucideIcon,
+} from 'lucide-react';
+import {
   getVoiceNotes,
   getVoiceNote,
   applyVoiceNoteUpdates,
@@ -9,6 +14,10 @@ import {
   type VoiceNote,
   type ExtractedContactUpdates,
 } from '../../lib/api';
+import { Badge, type BadgeProps } from '../ui/badge';
+import { Button } from '../ui/button';
+import { EmptyState } from '../ui/empty-state';
+import { Skeleton } from '../ui/skeleton';
 
 interface VoiceLibraryProps {
   contactId?: string;
@@ -17,12 +26,12 @@ interface VoiceLibraryProps {
 
 
 
-const statusConfig: Record<string, { label: string; color: string; bg: string }> = {
-  uploaded:   { label: 'Ready',      color: '#0ea5e9', bg: 'rgba(14,165,233,0.15)' },
-  pending:    { label: 'Queued',     color: '#f59e0b', bg: 'rgba(245,158,11,0.15)' },
-  processing: { label: 'Analyzing', color: '#6366f1', bg: 'rgba(99,102,241,0.15)' },
-  done:       { label: 'Done',       color: '#22c55e', bg: 'rgba(34,197,94,0.15)' },
-  error:      { label: 'Error',      color: '#ef4444', bg: 'rgba(239,68,68,0.15)' },
+const statusConfig: Record<string, { label: string; variant: BadgeProps['variant'] }> = {
+  uploaded:   { label: 'Ready',     variant: 'default' },
+  pending:    { label: 'Queued',    variant: 'warning' },
+  processing: { label: 'Analyzing', variant: 'default' },
+  done:       { label: 'Done',      variant: 'success' },
+  error:      { label: 'Error',     variant: 'destructive' },
 };
 
 function hasExtractedUpdates(u?: ExtractedContactUpdates): boolean {
@@ -36,11 +45,12 @@ function hasExtractedUpdates(u?: ExtractedContactUpdates): boolean {
   );
 }
 
-function sentimentEmoji(s?: string) {
-  if (s === 'positive') return '😊';
-  if (s === 'negative') return '😟';
-  if (s === 'mixed') return '😐';
-  return '🔵';
+function SentimentIcon({ sentiment }: { sentiment?: string }) {
+  const cls = 'h-4 w-4 shrink-0';
+  if (sentiment === 'positive') return <Smile aria-hidden className={`${cls} text-emerald-600 dark:text-emerald-400`} />;
+  if (sentiment === 'negative') return <Frown aria-hidden className={`${cls} text-destructive`} />;
+  if (sentiment === 'mixed') return <Meh aria-hidden className={`${cls} text-amber-600 dark:text-amber-400`} />;
+  return <Circle aria-hidden className={`${cls} text-primary`} />;
 }
 
 function formatDuration(s: number) {
@@ -201,26 +211,26 @@ export default function VoiceLibrary({ contactId, dealId }: VoiceLibraryProps) {
 
   if (loading) {
     return (
-      <div style={containerStyle}>
+      <div className="flex flex-col gap-3">
         {[1, 2, 3].map((i) => (
-          <div key={i} style={{ ...cardStyle, opacity: 0.4, height: 80, animation: 'pulse 1.5s infinite' }} />
+          <Skeleton key={i} className="h-20 rounded-xl" />
         ))}
-        <style>{`@keyframes pulse { 0%,100%{opacity:.4} 50%{opacity:.7} }`}</style>
       </div>
     );
   }
 
   if (notes.length === 0) {
     return (
-      <div style={{ ...containerStyle, textAlign: 'center', padding: 40, opacity: 0.6 }}>
-        <div style={{ fontSize: 36, marginBottom: 12 }}>🎙</div>
-        <p style={{ margin: 0, fontSize: 14 }}>No voice notes yet.<br />Upload your first audio file to get started.</p>
-      </div>
+      <EmptyState
+        icon={Mic}
+        title="No voice notes yet."
+        description="Upload your first audio file to get started."
+      />
     );
   }
 
   return (
-    <div style={containerStyle}>
+    <div className="flex flex-col gap-3">
       {notes.map((note) => {
         const sc = statusConfig[note.status];
         const isExpanded = expandedId === note.id;
@@ -228,218 +238,241 @@ export default function VoiceLibrary({ contactId, dealId }: VoiceLibraryProps) {
         const showUpdates = note.status === 'done' && hasExtractedUpdates(updates) && note.contact_id;
 
         return (
-          <div key={note.id} style={cardStyle}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-              <div style={{ width: 40, height: 40, borderRadius: 10, background: 'rgba(99,102,241,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>
-                🎙
+          <div key={note.id} className="rounded-xl border border-border bg-card p-4">
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+                <Mic aria-hidden className="h-5 w-5 text-primary" />
               </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0' }}>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[13px] font-semibold text-foreground">
                     {formatDate(note.created_at)}
                   </span>
-                  <span style={{ padding: '2px 8px', borderRadius: 100, fontSize: 11, fontWeight: 600, color: sc.color, background: sc.bg }}>
-                    {note.status === 'processing'
-                      ? <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
-                          <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span>
-                          {sc.label}
-                        </span>
-                      : sc.label}
-                  </span>
+                  <Badge variant={sc.variant}>
+                    {note.status === 'processing' && <Loader2 aria-hidden className="h-3 w-3 animate-spin" />}
+                    {sc.label}
+                  </Badge>
                   {note.duration_seconds > 0 && (
-                    <span style={{ fontSize: 11, opacity: 0.5 }}>⏱ {formatDuration(note.duration_seconds)}</span>
+                    <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                      <Clock aria-hidden className="h-3 w-3" />
+                      {formatDuration(note.duration_seconds)}
+                    </span>
                   )}
-                  {note.sentiment && (
-                    <span style={{ fontSize: 13 }}>{sentimentEmoji(note.sentiment)}</span>
-                  )}
+                  {note.sentiment && <SentimentIcon sentiment={note.sentiment} />}
                 </div>
                 {(note.contact || note.deal) && (
-                  <p style={{ margin: '4px 0 0', fontSize: 12, opacity: 0.6 }}>
-                    {note.contact && `👤 ${note.contact.first_name} ${note.contact.last_name}`}
+                  <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+                    {note.contact && (
+                      <span className="inline-flex items-center gap-1">
+                        <UserRound aria-hidden className="h-3 w-3" />
+                        {note.contact.first_name} {note.contact.last_name}
+                      </span>
+                    )}
                     {note.contact && note.deal && ' · '}
-                    {note.deal && `💼 ${note.deal.title}`}
+                    {note.deal && (
+                      <span className="inline-flex items-center gap-1">
+                        <Briefcase aria-hidden className="h-3 w-3" />
+                        {note.deal.title}
+                      </span>
+                    )}
                   </p>
                 )}
               </div>
               {(note.status === 'uploaded' || note.status === 'error') && (
-                <button
+                <Button
                   id={`voice-analyze-${note.id}`}
+                  size="sm"
+                  className="mr-2 shrink-0"
                   onClick={() => handleAnalyze(note.id)}
-                  style={{
-                    padding: '6px 12px', borderRadius: 8, border: 'none', cursor: 'pointer',
-                    background: note.status === 'error'
-                      ? 'linear-gradient(135deg, #f59e0b, #d97706)'
-                      : 'linear-gradient(135deg, #0ea5e9, #0284c7)',
-                    color: '#fff',
-                    fontSize: 12, fontWeight: 600, marginRight: 8,
-                    opacity: analyzingId === note.id ? 0.6 : 1,
-                  }}
                   disabled={analyzingId === note.id}
                 >
-                  {analyzingId === note.id ? 'Starting...' : note.status === 'error' ? '↻ Retry Analysis' : '✨ Analyze Audio'}
-                </button>
+                  {analyzingId === note.id
+                    ? 'Starting...'
+                    : note.status === 'error'
+                      ? <><RotateCw aria-hidden />Retry Analysis</>
+                      : <><Sparkles aria-hidden />Analyze Audio</>}
+                </Button>
               )}
               {(note.status === 'pending' || note.status === 'processing') && (
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginRight: 8 }}>
-                  <span style={{
-                    display: 'inline-flex', alignItems: 'center', gap: 5,
-                    padding: '6px 10px', borderRadius: 8,
-                    background: 'rgba(99,102,241,0.15)', color: '#a5b4fc',
-                    fontSize: 12, fontWeight: 600,
-                  }}>
-                    <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span>
+                <span className="mr-2 inline-flex shrink-0 items-center gap-1.5">
+                  <span className="inline-flex items-center gap-1.5 rounded-lg bg-primary/10 px-2.5 py-1.5 text-xs font-semibold text-primary">
+                    <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />
                     {note.status === 'pending' ? 'Queued…' : 'Analyzing…'}
                   </span>
                   {note.status === 'pending' && (
-                    <button
+                    <Button
                       id={`voice-retry-${note.id}`}
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-amber-600 dark:text-amber-400"
                       onClick={() => handleAnalyze(note.id)}
                       disabled={analyzingId === note.id}
                       title="Job may be stuck — click to re-queue"
-                      style={{
-                        padding: '4px 8px', borderRadius: 6, border: '1px solid rgba(245,158,11,0.4)',
-                        background: 'rgba(245,158,11,0.1)', color: '#fbbf24',
-                        fontSize: 11, fontWeight: 600, cursor: 'pointer',
-                        opacity: analyzingId === note.id ? 0.5 : 1,
-                      }}
                     >
-                      {analyzingId === note.id ? '…' : '↻'}
-                    </button>
+                      {analyzingId === note.id ? <Loader2 aria-hidden className="animate-spin" /> : <RotateCw aria-hidden />}
+                    </Button>
                   )}
                 </span>
               )}
               {note.status === 'done' && (
-                <button
+                <Button
                   id={`voice-expand-${note.id}`}
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
                   onClick={() => setExpandedId(isExpanded ? null : note.id)}
-                  style={iconBtnStyle}
                   title={isExpanded ? 'Collapse' : 'AI Insights'}
                 >
-                  {isExpanded ? '▲' : '▼'}
-                </button>
+                  {isExpanded ? <ChevronUp aria-hidden /> : <ChevronDown aria-hidden />}
+                </Button>
               )}
               {/* Delete button */}
               {confirmDeleteId === note.id ? (
-                <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexShrink: 0 }}>
-                  <span style={{ fontSize: 11, opacity: 0.7 }}>Delete?</span>
-                  <button
+                <div className="flex shrink-0 items-center gap-1">
+                  <span className="text-[11px] text-muted-foreground">Delete?</span>
+                  <Button
                     id={`voice-delete-confirm-${note.id}`}
+                    variant="destructive"
+                    size="sm"
+                    className="h-7 px-2 text-[11px]"
                     onClick={() => handleDelete(note.id)}
                     disabled={deletingId === note.id}
-                    style={{ ...iconBtnStyle, background: 'rgba(239,68,68,0.3)', borderColor: 'rgba(239,68,68,0.5)', color: '#fca5a5', fontSize: 11 }}
                   >
-                    {deletingId === note.id ? '⟳' : 'Yes'}
-                  </button>
-                  <button
+                    {deletingId === note.id ? <Loader2 aria-hidden className="animate-spin" /> : 'Yes'}
+                  </Button>
+                  <Button
                     id={`voice-delete-cancel-${note.id}`}
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2 text-[11px]"
                     onClick={() => setConfirmDeleteId(null)}
-                    style={{ ...iconBtnStyle, fontSize: 11 }}
                   >
                     No
-                  </button>
+                  </Button>
                 </div>
               ) : (
-                <button
+                <Button
                   id={`voice-delete-${note.id}`}
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 shrink-0 text-destructive hover:text-destructive"
                   onClick={() => setConfirmDeleteId(note.id)}
-                  style={{ ...iconBtnStyle, color: '#f87171', flexShrink: 0 }}
                   title="Delete voice note"
                 >
-                  🗑
-                </button>
+                  <Trash2 aria-hidden />
+                </Button>
               )}
             </div>
 
             {note.status === 'error' && note.error_message && (
-              <p style={{ margin: '10px 0 0', fontSize: 12, color: '#f87171', background: 'rgba(239,68,68,0.1)', padding: '6px 10px', borderRadius: 6 }}>
-                ✗ {note.error_message}
+              <p className="mt-2.5 flex items-start gap-1.5 rounded-md bg-destructive/10 px-2.5 py-1.5 text-xs text-destructive">
+                <TriangleAlert aria-hidden className="mt-0.5 h-3 w-3 shrink-0" />
+                {note.error_message}
               </p>
             )}
 
             {isExpanded && note.status === 'done' && (
-              <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div className="mt-4 flex flex-col gap-3.5">
                 {note.summary && (
-                  <div style={insightSectionStyle}>
-                    <p style={insightLabelStyle}>✦ Summary</p>
-                    <p style={{ margin: 0, fontSize: 13, lineHeight: 1.6, opacity: 0.9 }}>{note.summary}</p>
-                  </div>
+                  <InsightSection icon={Sparkles} label="Summary">
+                    <p className="m-0 text-[13px] leading-relaxed text-foreground/90">{note.summary}</p>
+                  </InsightSection>
                 )}
 
                 {(note.key_points?.length ?? 0) > 0 && (
-                  <div style={insightSectionStyle}>
-                    <p style={insightLabelStyle}>📌 Key Points</p>
-                    <ul style={{ margin: 0, paddingLeft: 18 }}>
+                  <InsightSection icon={Pin} label="Key Points">
+                    <ul className="m-0 list-disc pl-4">
                       {note.key_points!.map((kp, i) => (
-                        <li key={i} style={{ fontSize: 13, opacity: 0.85, marginBottom: 4, lineHeight: 1.5 }}>{kp}</li>
+                        <li key={i} className="mb-1 text-[13px] leading-normal text-foreground/85">{kp}</li>
                       ))}
                     </ul>
-                  </div>
+                  </InsightSection>
                 )}
 
                 {(note.action_items?.length ?? 0) > 0 && (
-                  <div style={insightSectionStyle}>
-                    <p style={insightLabelStyle}>✅ Action Items</p>
+                  <InsightSection icon={CheckSquare} label="Action Items">
                     {note.action_items!.map((ai, i) => (
-                      <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 6 }}>
-                        <span style={{ padding: '1px 6px', borderRadius: 4, fontSize: 10, fontWeight: 700, background: priorityBg(ai.priority), color: '#fff', flexShrink: 0, marginTop: 1 }}>
+                      <div key={i} className="mb-1.5 flex items-start gap-2">
+                        <span className={`mt-px shrink-0 rounded px-1.5 py-px text-[10px] font-bold ${priorityClass(ai.priority)}`}>
                           {ai.priority.toUpperCase()}
                         </span>
-                        <span style={{ fontSize: 13, opacity: 0.85 }}>
+                        <span className="text-[13px] text-foreground/85">
                           {ai.title}
-                          {ai.due && <span style={{ opacity: 0.5, marginLeft: 6, fontSize: 11 }}>{new Date(ai.due).toLocaleDateString()}</span>}
+                          {ai.due && <span className="ml-1.5 text-[11px] text-muted-foreground">{new Date(ai.due).toLocaleDateString()}</span>}
                         </span>
                       </div>
                     ))}
-                  </div>
+                  </InsightSection>
                 )}
 
                 {note.transcript && (
-                  <details style={{ marginTop: 4 }}>
-                    <summary style={{ cursor: 'pointer', fontSize: 12, opacity: 0.5, userSelect: 'none' }}>📄 Show transcript</summary>
-                    <p style={{ margin: '8px 0 0', fontSize: 12, lineHeight: 1.7, opacity: 0.7, fontFamily: 'monospace', background: 'rgba(0,0,0,0.2)', padding: 10, borderRadius: 6 }}>
+                  <details className="mt-1">
+                    <summary className="cursor-pointer select-none text-xs text-muted-foreground">
+                      <FileText aria-hidden className="mr-1 inline h-3 w-3 align-[-1px]" />
+                      Show transcript
+                    </summary>
+                    <p className="mt-2 rounded-md bg-muted/60 p-2.5 font-mono text-xs leading-relaxed text-muted-foreground">
                       {note.transcript}
                     </p>
                   </details>
                 )}
 
                 {showUpdates && (
-                  <div style={{ ...insightSectionStyle, borderColor: 'rgba(245,158,11,0.5)', background: 'rgba(245,158,11,0.08)' }}>
-                    <p style={{ ...insightLabelStyle, color: '#f59e0b' }}>🔔 AI Extracted Contact Data</p>
-                    <div style={{ fontSize: 13, display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 12 }}>
+                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3.5">
+                    <p className="mb-2 flex items-center gap-1.5 text-xs font-bold text-amber-600 dark:text-amber-400">
+                      <Bell aria-hidden className="h-3.5 w-3.5" />
+                      AI Extracted Contact Data
+                    </p>
+                    <div className="mb-3 flex flex-col gap-1.5 text-[13px]">
                       {(updates!.phone_numbers?.length ?? 0) > 0 && (
-                        <span>📞 <strong>Phone:</strong> {updates!.phone_numbers!.join(', ')}</span>
+                        <span className="inline-flex items-center gap-1.5">
+                          <Phone aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <strong>Phone:</strong> {updates!.phone_numbers!.join(', ')}
+                        </span>
                       )}
                       {(updates!.emails?.length ?? 0) > 0 && (
-                        <span>✉️ <strong>Email:</strong> {updates!.emails!.join(', ')}</span>
+                        <span className="inline-flex items-center gap-1.5">
+                          <Mail aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <strong>Email:</strong> {updates!.emails!.join(', ')}
+                        </span>
                       )}
                       {updates!.budget && (
-                        <span>💰 <strong>Budget:</strong> {updates!.budget}</span>
+                        <span className="inline-flex items-center gap-1.5">
+                          <DollarSign aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <strong>Budget:</strong> {updates!.budget}
+                        </span>
                       )}
                       {updates!.next_meeting_date && (
-                        <span>📅 <strong>Next Meeting:</strong> {updates!.next_meeting_date}</span>
+                        <span className="inline-flex items-center gap-1.5">
+                          <Calendar aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <strong>Next Meeting:</strong> {updates!.next_meeting_date}
+                        </span>
                       )}
                       {updates!.company_name && (
-                        <span>🏢 <strong>Company:</strong> {updates!.company_name}</span>
+                        <span className="inline-flex items-center gap-1.5">
+                          <Building2 aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <strong>Company:</strong> {updates!.company_name}
+                        </span>
                       )}
                     </div>
                     {applySuccess === note.id ? (
-                      <p style={{ margin: 0, fontSize: 12, color: '#22c55e', fontWeight: 600 }}>✓ Applied to contact profile</p>
+                      <p className="m-0 flex items-center gap-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                        <Check aria-hidden className="h-3.5 w-3.5" />
+                        Applied to contact profile
+                      </p>
                     ) : (
-                      <button
+                      <Button
                         id={`voice-apply-${note.id}`}
+                        size="sm"
                         onClick={() => handleApply(note)}
                         disabled={applyingId === note.id}
-                        style={{
-                          padding: '7px 16px', borderRadius: 8, border: 'none', cursor: 'pointer',
-                          background: 'linear-gradient(135deg, #f59e0b, #d97706)',
-                          color: '#fff', fontSize: 12, fontWeight: 600,
-                          opacity: applyingId === note.id ? 0.6 : 1,
-                        }}
                       >
-                        {applyingId === note.id ? '⟳ Applying…' : '⚡ Apply to Contact Profile'}
-                      </button>
+                        {applyingId === note.id
+                          ? <><Loader2 aria-hidden className="animate-spin" />Applying…</>
+                          : <><Zap aria-hidden />Apply to Contact Profile</>}
+                      </Button>
                     )}
-                    {applyError && <p style={{ margin: '6px 0 0', fontSize: 11, color: '#f87171' }}>{applyError}</p>}
+                    {applyError && <p className="mt-1.5 text-[11px] text-destructive">{applyError}</p>}
                   </div>
                 )}
               </div>
@@ -447,43 +480,26 @@ export default function VoiceLibrary({ contactId, dealId }: VoiceLibraryProps) {
           </div>
         );
       })}
-      <style>{`@keyframes spin { to{transform:rotate(360deg)} }`}</style>
     </div>
   );
 }
 
-function priorityBg(p: string) {
-  if (p === 'high') return '#ef4444';
-  if (p === 'medium') return '#f59e0b';
-  return '#6b7280';
+function InsightSection({ icon: Icon, label, children }: {
+  icon: LucideIcon; label: string; children: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-muted/40 p-3.5">
+      <p className="mb-2 flex items-center gap-1.5 text-xs font-bold text-primary">
+        <Icon aria-hidden className="h-3.5 w-3.5" />
+        {label}
+      </p>
+      {children}
+    </div>
+  );
 }
 
-const containerStyle: React.CSSProperties = {
-  display: 'flex', flexDirection: 'column', gap: 12,
-  fontFamily: "'Inter', sans-serif",
-};
-
-const cardStyle: React.CSSProperties = {
-  background: 'rgba(255,255,255,0.03)',
-  border: '1px solid rgba(255,255,255,0.08)',
-  borderRadius: 14,
-  padding: 16,
-  transition: 'border-color 0.2s',
-};
-
-const insightSectionStyle: React.CSSProperties = {
-  background: 'rgba(99,102,241,0.08)',
-  border: '1px solid rgba(99,102,241,0.2)',
-  borderRadius: 10,
-  padding: 14,
-};
-
-const insightLabelStyle: React.CSSProperties = {
-  margin: '0 0 8px', fontSize: 12, fontWeight: 700, color: '#a5b4fc', letterSpacing: '0.5px',
-};
-
-const iconBtnStyle: React.CSSProperties = {
-  background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)',
-  borderRadius: 6, padding: '4px 8px', cursor: 'pointer', color: '#94a3b8', fontSize: 11,
-  flexShrink: 0,
-};
+function priorityClass(p: string) {
+  if (p === 'high') return 'bg-destructive/10 text-destructive';
+  if (p === 'medium') return 'bg-amber-500/10 text-amber-600 dark:text-amber-400';
+  return 'bg-secondary text-secondary-foreground';
+}

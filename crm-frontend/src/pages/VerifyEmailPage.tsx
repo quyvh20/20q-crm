@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { verifyEmail } from '../lib/api';
 import { useDocumentTitle } from '../lib/useDocumentTitle';
+import { Card, Spinner } from '@/components/ui';
 
 export default function VerifyEmailPage() {
   useDocumentTitle('Verify Email');
@@ -30,31 +31,31 @@ export default function VerifyEmailPage() {
   }, [token]);
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+    <div className="min-h-screen bg-muted/30 flex flex-col items-center justify-center px-4 py-10">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-white tracking-tight">
-            Guerrilla <span className="text-blue-400">CRM</span>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+            Guerrilla <span className="text-primary">CRM</span>
           </h1>
-          <p className="text-slate-400 mt-2">Email verification</p>
+          <p className="text-sm text-muted-foreground mt-2">Email verification</p>
         </div>
 
-        <div className="bg-slate-800/50 backdrop-blur-xl border border-slate-700/50 rounded-2xl p-8 shadow-2xl text-center">
+        <Card className="p-8 text-center">
           {status === 'loading' && (
             <div className="flex flex-col items-center gap-4 py-4">
-              <div className="animate-spin h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full" />
-              <p className="text-slate-400 text-sm">Verifying your email…</p>
+              <Spinner size="lg" />
+              <p className="text-sm text-muted-foreground">Verifying your email…</p>
             </div>
           )}
 
           {status === 'success' && (
             <div className="space-y-4">
-              <div className="p-4 rounded-xl bg-green-500/10 border border-green-500/20 text-green-300 text-sm">
+              <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-600 dark:text-emerald-400">
                 Your email address has been verified. Thanks!
               </div>
               <a
                 href="/"
-                className="block text-center text-blue-400 hover:text-blue-300 font-medium transition-colors"
+                className="block text-center font-medium text-primary hover:underline"
               >
                 Continue to Guerrilla CRM
               </a>
@@ -63,21 +64,21 @@ export default function VerifyEmailPage() {
 
           {status === 'error' && (
             <div className="space-y-4">
-              <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
+              <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                 {message || 'This verification link is invalid or has expired.'}
               </div>
-              <p className="text-slate-400 text-sm">
+              <p className="text-sm text-muted-foreground">
                 Sign in and use the banner to request a fresh verification email.
               </p>
               <a
                 href="/login"
-                className="block text-center text-blue-400 hover:text-blue-300 font-medium transition-colors"
+                className="block text-center font-medium text-primary hover:underline"
               >
                 Go to sign in
               </a>
             </div>
           )}
-        </div>
+        </Card>
       </div>
     </div>
   );

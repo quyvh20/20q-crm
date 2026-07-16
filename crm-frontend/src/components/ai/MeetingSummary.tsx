@@ -1,6 +1,9 @@
 import { useState, useEffect } from 'react';
+import { Brain, Sparkles } from 'lucide-react';
 import { submitSummarizeMeeting, getAccessToken } from '../../lib/api';
 import Modal from '../common/Modal';
+import { Button } from '../ui/button';
+import { Spinner } from '../ui/spinner';
 
 interface MeetingSummaryProps {
   dealId?: string;
@@ -119,23 +122,22 @@ export default function MeetingSummary({ dealId, contactId, onClose, onTasksCrea
                 value={transcript}
                 onChange={(e) => setTranscript(e.target.value)}
                 placeholder="Paste the meeting transcript here..."
-                className="w-full h-64 rounded-xl border bg-muted/30 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 resize-none font-mono text-xs"
+                className="h-64 w-full resize-none rounded-lg border border-input bg-muted/30 px-4 py-3 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring"
               />
               {status === 'error' && (
-                <div className="p-3 rounded-lg bg-red-500/10 text-red-500 text-sm border border-red-500/20">
+                <div className="rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
                   {error}
                 </div>
               )}
             </div>
           ) : status === 'processing' ? (
-            <div className="py-20 flex flex-col items-center justify-center text-center space-y-6">
-              <div className="relative h-20 w-20">
-                <div className="absolute inset-0 border-4 border-violet-500/30 rounded-full"></div>
-                <div className="absolute inset-0 border-4 border-violet-600 rounded-full border-t-transparent animate-spin"></div>
-                <div className="absolute inset-0 flex items-center justify-center text-2xl">🧠</div>
-              </div>
+            <div className="flex flex-col items-center justify-center space-y-6 py-20 text-center">
+              <Spinner size="lg" />
               <div>
-                <p className="font-semibold text-lg text-violet-600 mb-1 flex items-center justify-center gap-2">🧠 AI is analyzing...</p>
+                <p className="mb-1 flex items-center justify-center gap-2 text-lg font-semibold text-primary">
+                  <Brain aria-hidden className="h-5 w-5" />
+                  AI is analyzing...
+                </p>
                 <p className="text-sm text-muted-foreground max-w-sm">
                   We're distilling key insights, identifying decisions, and extracting action items directly into your CRM.
                 </p>
@@ -144,7 +146,7 @@ export default function MeetingSummary({ dealId, contactId, onClose, onTasksCrea
           ) : (
             <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500 fade-in">
               <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4 flex items-start gap-4">
-                <span className="text-2xl mt-1">✨</span>
+                <Sparkles aria-hidden className="mt-1 h-6 w-6 shrink-0 text-emerald-600 dark:text-emerald-400" />
                 <div>
                   <h3 className="font-bold text-emerald-700 dark:text-emerald-400 mb-1">Executive Summary</h3>
                   <p className="text-sm leading-relaxed">{result?.summary}</p>
@@ -159,7 +161,7 @@ export default function MeetingSummary({ dealId, contactId, onClose, onTasksCrea
                       <div key={task.id} className="flex flex-col gap-1 p-3 rounded-xl border bg-muted/20">
                         <div className="flex justify-between items-start gap-4">
                           <p className="text-sm font-semibold">{task.title}</p>
-                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-500 font-bold tracking-wider uppercase">
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary/10 text-primary font-bold tracking-wider uppercase">
                             {task.priority || 'medium'}
                           </span>
                         </div>
@@ -177,30 +179,24 @@ export default function MeetingSummary({ dealId, contactId, onClose, onTasksCrea
 
         <div className="px-6 py-4 bg-muted/30 border-t flex justify-end gap-3">
           {(status === 'done' || status === 'error') && (
-            <button
+            <Button
+              variant="outline"
               onClick={() => {
                 setStatus('idle');
                 setTranscript('');
               }}
-              className="px-5 py-2 text-sm font-medium rounded-xl border bg-card hover:bg-muted transition-colors mr-auto"
+              className="mr-auto"
             >
               Summarize Another
-            </button>
+            </Button>
           )}
-          <button
-            onClick={onClose}
-            className="px-5 py-2 text-sm font-medium rounded-xl hover:bg-muted transition-colors border bg-card"
-          >
+          <Button variant="outline" onClick={onClose}>
             {status === 'done' ? 'Done' : 'Cancel'}
-          </button>
+          </Button>
           {status === 'idle' && (
-            <button
-              onClick={handleSubmit}
-              disabled={!transcript.trim()}
-              className="px-5 py-2 text-sm font-bold rounded-xl bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50"
-            >
+            <Button onClick={handleSubmit} disabled={!transcript.trim()}>
               Analyze Meeting
-            </button>
+            </Button>
           )}
         </div>
       </>

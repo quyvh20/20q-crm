@@ -1,10 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Briefcase, CheckCircle2, FileAudio, FolderOpen, Music, RotateCcw, TriangleAlert, Upload, User, X,
+} from 'lucide-react';
+import {
   uploadVoiceNote,
   getContacts,
   getDeals,
   type VoiceNote,
 } from '../../lib/api';
+import { Badge } from '../ui/badge';
+import { Button } from '../ui/button';
+import { Spinner } from '../ui/spinner';
 
 /* ─────────────────────────── Types ─────────────────────────── */
 
@@ -147,6 +153,10 @@ function validateFile(file: File): string | null {
   return null;
 }
 
+/* ─────────────────────────── Shared classes ────────────────── */
+
+const inputClass =
+  'w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/20';
 
 /* ─────────────────────────── Component ─────────────────────── */
 
@@ -284,63 +294,59 @@ export default function VoiceUploader({
 
   /* ──────────────────────── Render ───────────────────────── */
   return (
-    <div style={{
-      background: 'linear-gradient(135deg, #0f0c29, #302b63, #24243e)',
-      borderRadius: 20, padding: 28, color: '#fff',
-      fontFamily: "'Inter', sans-serif", maxWidth: 560,
-    }}>
+    <div className="w-full max-w-xl rounded-xl border border-border bg-card p-6 text-card-foreground">
 
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 24 }}>
-        <span style={{ fontSize: 22 }}>📁</span>
-        <h3 style={{ margin: 0, fontSize: 18, fontWeight: 700, letterSpacing: '-0.5px' }}>
-          Upload Audio File
-        </h3>
-        <span style={{
-          marginLeft: 'auto', fontSize: 11, fontWeight: 600, opacity: 0.5,
-          border: '1px solid rgba(255,255,255,0.2)', borderRadius: 6, padding: '2px 8px',
-        }}>
+      <div className="mb-5 flex flex-wrap items-center gap-2.5">
+        <FileAudio aria-hidden className="h-5 w-5 text-primary" />
+        <h3 className="text-base font-semibold tracking-tight">Upload Audio File</h3>
+        <Badge variant="outline" className="ml-auto">
           {ACCEPTED_TYPES.join(' · ')} · max 500 MB
-        </span>
+        </Badge>
       </div>
 
       {/* ── Contact / Deal selectors (global /voice only) ── */}
       {showSelectors && uploaderState !== 'done' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 20 }}>
+        <div className="mb-5 flex flex-col gap-3">
 
           {/* Contact — REQUIRED */}
-          <div style={{ position: 'relative' }}>
-            <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-              <span style={{ opacity: 0.7 }}>Contact</span>
-              <span style={{ background: 'rgba(239,68,68,0.25)', color: '#fca5a5', fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 4, letterSpacing: '0.5px' }}>REQUIRED</span>
+          <div className="relative">
+            <label className="mb-1.5 flex items-center gap-1.5 text-xs">
+              <span className="text-muted-foreground">Contact</span>
+              <Badge variant="destructive" className="px-1.5 text-[10px] font-bold tracking-wide">REQUIRED</Badge>
             </label>
             {contactId ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 8, background: 'rgba(99,102,241,0.25)', border: '1px solid rgba(99,102,241,0.5)' }}>
-                <span>👤</span>
-                <span style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>{selectedContactName}</span>
-                <button onClick={() => { setContactId(''); setSelectedContactName(''); setContactSearch(''); setShowContactError(false); }}
-                  style={clearBtnStyle} title="Clear">✕</button>
+              <div className="flex items-center gap-2 rounded-lg border border-primary/50 bg-primary/10 px-3 py-2">
+                <User aria-hidden className="h-4 w-4 shrink-0 text-primary" />
+                <span className="flex-1 truncate text-[13px] font-semibold">{selectedContactName}</span>
+                <Button
+                  variant="ghost" size="icon" className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
+                  onClick={() => { setContactId(''); setSelectedContactName(''); setContactSearch(''); setShowContactError(false); }}
+                  title="Clear"
+                >
+                  <X aria-hidden />
+                </Button>
               </div>
             ) : (
-              <div style={{ position: 'relative' }}>
+              <div className="relative">
                 <input
                   id="uploader-contact-search"
                   value={contactSearch}
                   onChange={e => { setContactSearch(e.target.value); setContactDropOpen(true); setShowContactError(false); }}
                   onFocus={() => setContactDropOpen(true)}
                   onBlur={() => setTimeout(() => setContactDropOpen(false), 150)}
-                  placeholder="🔍 Search by name or email…"
+                  placeholder="Search by name or email…"
                   autoComplete="off"
-                  style={{ ...inputStyle, borderColor: showContactError ? '#ef4444' : 'rgba(255,255,255,0.2)' }}
+                  className={`${inputClass} ${showContactError ? 'border-destructive' : ''}`}
                 />
                 {contactDropOpen && contacts.length > 0 && (
-                  <div style={dropdownStyle}>
+                  <div className="absolute inset-x-0 top-full z-50 mt-1 max-h-44 overflow-y-auto rounded-lg border border-border bg-popover text-popover-foreground shadow-lg">
                     {contacts.map(c => (
                       <div key={c.id} id={`uploader-contact-opt-${c.id}`}
-                        style={dropItemStyle}
+                        className="flex cursor-pointer items-center gap-2 px-3 py-2 text-[13px] transition-colors hover:bg-accent"
                         onMouseDown={e => e.preventDefault()}
                         onClick={() => { setContactId(c.id); setSelectedContactName(c.name); setContactSearch(''); setContactDropOpen(false); setShowContactError(false); }}>
-                        <span style={{ marginRight: 8 }}>👤</span>{c.name}
+                        <User aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{c.name}
                       </div>
                     ))}
                   </div>
@@ -348,43 +354,51 @@ export default function VoiceUploader({
               </div>
             )}
             {showContactError && (
-              <p style={{ margin: '5px 0 0', fontSize: 11, color: '#fca5a5' }}>⚠ A contact is required before uploading</p>
+              <p className="mt-1.5 flex items-center gap-1 text-[11px] text-destructive">
+                <TriangleAlert aria-hidden className="h-3 w-3 shrink-0" />
+                A contact is required before uploading
+              </p>
             )}
           </div>
 
           {/* Deal — OPTIONAL */}
-          <div style={{ position: 'relative' }}>
-            <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-              <span style={{ opacity: 0.7 }}>Deal</span>
-              <span style={{ background: 'rgba(107,114,128,0.3)', color: 'rgba(255,255,255,0.5)', fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 4, letterSpacing: '0.5px' }}>OPTIONAL</span>
+          <div className="relative">
+            <label className="mb-1.5 flex items-center gap-1.5 text-xs">
+              <span className="text-muted-foreground">Deal</span>
+              <Badge variant="secondary" className="px-1.5 text-[10px] font-bold tracking-wide text-muted-foreground">OPTIONAL</Badge>
             </label>
             {dealId ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 8, background: 'rgba(34,197,94,0.15)', border: '1px solid rgba(34,197,94,0.35)' }}>
-                <span>💼</span>
-                <span style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>{selectedDealTitle}</span>
-                <button onClick={() => { setDealId(''); setSelectedDealTitle(''); setDealSearch(''); }}
-                  style={clearBtnStyle} title="Clear">✕</button>
+              <div className="flex items-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2">
+                <Briefcase aria-hidden className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                <span className="flex-1 truncate text-[13px] font-semibold">{selectedDealTitle}</span>
+                <Button
+                  variant="ghost" size="icon" className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
+                  onClick={() => { setDealId(''); setSelectedDealTitle(''); setDealSearch(''); }}
+                  title="Clear"
+                >
+                  <X aria-hidden />
+                </Button>
               </div>
             ) : (
-              <div style={{ position: 'relative' }}>
+              <div className="relative">
                 <input
                   id="uploader-deal-search"
                   value={dealSearch}
                   onChange={e => { setDealSearch(e.target.value); setDealDropOpen(true); }}
                   onFocus={() => setDealDropOpen(true)}
                   onBlur={() => setTimeout(() => setDealDropOpen(false), 150)}
-                  placeholder="🔍 Search deals… (optional)"
+                  placeholder="Search deals… (optional)"
                   autoComplete="off"
-                  style={inputStyle}
+                  className={inputClass}
                 />
                 {dealDropOpen && deals.length > 0 && (
-                  <div style={dropdownStyle}>
+                  <div className="absolute inset-x-0 top-full z-50 mt-1 max-h-44 overflow-y-auto rounded-lg border border-border bg-popover text-popover-foreground shadow-lg">
                     {deals.map(d => (
                       <div key={d.id} id={`uploader-deal-opt-${d.id}`}
-                        style={dropItemStyle}
+                        className="flex cursor-pointer items-center gap-2 px-3 py-2 text-[13px] transition-colors hover:bg-accent"
                         onMouseDown={e => e.preventDefault()}
                         onClick={() => { setDealId(d.id); setSelectedDealTitle(d.title); setDealSearch(''); setDealDropOpen(false); }}>
-                        <span style={{ marginRight: 8 }}>💼</span>{d.title}
+                        <Briefcase aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{d.title}
                       </div>
                     ))}
                   </div>
@@ -397,13 +411,13 @@ export default function VoiceUploader({
 
       {/* ── Language selector ── */}
       {uploaderState !== 'done' && (
-        <div style={{ marginBottom: 20 }}>
-          <label style={{ fontSize: 12, opacity: 0.7, display: 'block', marginBottom: 6 }}>Language</label>
+        <div className="mb-5">
+          <label htmlFor="uploader-language-select" className="mb-1.5 block text-xs text-muted-foreground">Language</label>
           <select
             id="uploader-language-select"
             value={languageCode}
             onChange={e => setLanguageCode(e.target.value)}
-            style={{ ...inputStyle, cursor: 'pointer' }}
+            className={`${inputClass} cursor-pointer`}
           >
             {LANGUAGES.map(l => <option key={l.code} value={l.code}>{l.label}</option>)}
           </select>
@@ -418,63 +432,54 @@ export default function VoiceUploader({
           onDragLeave={() => setIsDragOver(false)}
           onDrop={handleDrop}
           onClick={() => fileInputRef.current?.click()}
-          style={{
-            border: `2px dashed ${isDragOver ? '#6366f1' : selectedFile ? 'rgba(34,197,94,0.6)' : 'rgba(255,255,255,0.2)'}`,
-            borderRadius: 14,
-            padding: selectedFile ? '16px 20px' : '36px 20px',
-            textAlign: 'center',
-            cursor: 'pointer',
-            background: isDragOver
-              ? 'rgba(99,102,241,0.12)'
+          className={`mb-4 cursor-pointer rounded-xl border-2 border-dashed text-center transition-colors ${
+            isDragOver
+              ? 'border-primary bg-primary/10'
               : selectedFile
-                ? 'rgba(34,197,94,0.07)'
-                : 'rgba(255,255,255,0.03)',
-            transition: 'all 0.2s ease',
-            marginBottom: 16,
-          }}
+                ? 'border-emerald-500/50 bg-emerald-500/5'
+                : 'border-border bg-muted/30'
+          } ${selectedFile ? 'px-5 py-4' : 'px-5 py-9'}`}
         >
           <input
             ref={fileInputRef}
             type="file"
             accept={ACCEPT_ATTR}
-            style={{ display: 'none' }}
+            className="hidden"
             onChange={handleInputChange}
             id="uploader-file-input"
           />
 
           {!selectedFile ? (
             <>
-              <div style={{ fontSize: 36, marginBottom: 12, opacity: isDragOver ? 1 : 0.5 }}>
-                {isDragOver ? '📂' : '🎵'}
-              </div>
-              <p style={{ margin: '0 0 6px', fontSize: 14, fontWeight: 600, opacity: isDragOver ? 1 : 0.7 }}>
+              {isDragOver
+                ? <FolderOpen aria-hidden className="mx-auto mb-3 h-9 w-9 text-primary" />
+                : <Music aria-hidden className="mx-auto mb-3 h-9 w-9 text-muted-foreground/70" />}
+              <p className={`mb-1.5 text-sm font-semibold ${isDragOver ? 'text-foreground' : 'text-muted-foreground'}`}>
                 {isDragOver ? 'Drop your audio file here' : 'Drag & drop or click to browse'}
               </p>
-              <p style={{ margin: 0, fontSize: 12, opacity: 0.4 }}>
+              <p className="text-xs text-muted-foreground/70">
                 {ACCEPTED_TYPES.join(', ')} · Maximum 500 MB
               </p>
             </>
           ) : (
             /* ── File preview ── */
             <div onClick={e => e.stopPropagation()}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14, textAlign: 'left' }}>
-                <div style={{ width: 44, height: 44, borderRadius: 10, background: 'rgba(34,197,94,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, flexShrink: 0 }}>
-                  🎵
+              <div className="mb-3.5 flex items-center gap-3 text-left">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-emerald-500/15">
+                  <Music aria-hidden className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
                 </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <p style={{ margin: 0, fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {selectedFile.name}
-                  </p>
-                  <p style={{ margin: '3px 0 0', fontSize: 12, opacity: 0.5 }}>
-                    {formatBytes(selectedFile.size)}
-                  </p>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[13px] font-bold">{selectedFile.name}</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">{formatBytes(selectedFile.size)}</p>
                 </div>
-                <button
+                <Button
                   id="uploader-remove-file"
+                  variant="ghost" size="icon" className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
                   onClick={() => { setSelectedFile(null); if (audioUrl) URL.revokeObjectURL(audioUrl); setAudioUrl(null); setUploaderState('idle'); setFileError(null); }}
-                  style={{ ...clearBtnStyle, fontSize: 18 }}
                   title="Remove file"
-                >✕</button>
+                >
+                  <X aria-hidden />
+                </Button>
               </div>
 
               {/* Audio preview player */}
@@ -483,15 +488,11 @@ export default function VoiceUploader({
                   id="uploader-audio-preview"
                   controls
                   src={audioUrl}
-                  style={{
-                    width: '100%', height: 36, borderRadius: 8,
-                    accentColor: '#6366f1',
-                    filter: 'invert(1) hue-rotate(180deg) brightness(1.1)',
-                  }}
+                  className="h-9 w-full rounded-lg"
                 />
               )}
 
-              <p style={{ margin: '10px 0 0', fontSize: 11, opacity: 0.45, textAlign: 'center' }}>
+              <p className="mt-2.5 text-center text-[11px] text-muted-foreground/70">
                 Click elsewhere in the box to replace file
               </p>
             </div>
@@ -501,113 +502,76 @@ export default function VoiceUploader({
 
       {/* ── File validation error ── */}
       {fileError && (
-        <div style={{ marginBottom: 16, padding: '10px 14px', borderRadius: 10, background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.35)', fontSize: 13, color: '#fca5a5', display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-          <span style={{ fontSize: 16, flexShrink: 0 }}>⚠</span>
+        <div className="mb-4 flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3.5 py-2.5 text-[13px] text-destructive">
+          <TriangleAlert aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />
           <span>{fileError}</span>
         </div>
       )}
 
       {/* ── Uploading state ── */}
       {uploaderState === 'uploading' && (
-        <div style={{ textAlign: 'center', padding: '32px 0' }}>
-          <div style={{ fontSize: 40, marginBottom: 16, animation: 'spin 1.5s linear infinite', display: 'inline-block' }}>⟳</div>
-          <p style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>{progress}</p>
-          <p style={{ margin: '6px 0 20px', fontSize: 12, opacity: 0.5 }}>Uploading securely to server…</p>
+        <div className="py-8 text-center">
+          <div className="mb-4 flex justify-center">
+            <Spinner size="lg" />
+          </div>
+          <p className="text-sm font-semibold">{progress}</p>
+          <p className="mb-5 mt-1.5 text-xs text-muted-foreground">Uploading securely to server…</p>
 
-          <div style={{ width: '100%', height: 6, background: 'rgba(255,255,255,0.1)', borderRadius: 10, overflow: 'hidden' }}>
-            <div style={{ 
-              width: `${uploadProgressPct}%`, 
-              height: '100%', 
-              background: 'linear-gradient(90deg, #6366f1, #a855f7)',
-              transition: 'width 0.2s ease-out' 
-            }} />
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+            <div
+              className="h-full bg-primary transition-[width] duration-200 ease-out"
+              style={{ width: `${uploadProgressPct}%` }}
+            />
           </div>
         </div>
       )}
 
       {/* ── Done state ── */}
       {uploaderState === 'done' && (
-        <div style={{ textAlign: 'center', padding: '28px 20px', background: 'rgba(34,197,94,0.1)', borderRadius: 14, border: '1px solid rgba(34,197,94,0.3)' }}>
-          <div style={{ fontSize: 44, marginBottom: 12 }}>✅</div>
-          <p style={{ margin: '0 0 6px', fontSize: 15, fontWeight: 700, color: '#4ade80' }}>Upload Successful</p>
-          <p style={{ margin: '0 0 20px', fontSize: 13, opacity: 0.7 }}>{progress}</p>
-          <button id="uploader-reset-btn" onClick={reset} style={primaryBtnStyle('#6366f1')}>
-            ↩ Upload Another File
-          </button>
+        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-5 py-7 text-center">
+          <CheckCircle2 aria-hidden className="mx-auto mb-3 h-11 w-11 text-emerald-600 dark:text-emerald-400" />
+          <p className="mb-1.5 text-[15px] font-bold text-emerald-600 dark:text-emerald-400">Upload Successful</p>
+          <p className="mb-5 text-[13px] text-muted-foreground">{progress}</p>
+          <Button id="uploader-reset-btn" onClick={reset}>
+            <RotateCcw aria-hidden />
+            Upload Another File
+          </Button>
         </div>
       )}
 
       {/* ── Upload error ── */}
       {uploaderState === 'error' && uploadError && (
-        <div style={{ marginBottom: 16, padding: '12px 14px', borderRadius: 10, background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.35)', fontSize: 13, color: '#fca5a5' }}>
-          <p style={{ margin: '0 0 8px', fontWeight: 600 }}>✗ Upload failed</p>
-          <p style={{ margin: 0, opacity: 0.85 }}>{uploadError}</p>
-          <button onClick={() => setUploaderState('selecting_file')} style={{ marginTop: 10, ...primaryBtnStyle('#ef4444') }}>
+        <div className="mb-4 rounded-lg border border-destructive/30 bg-destructive/10 px-3.5 py-3 text-[13px] text-destructive">
+          <p className="mb-2 flex items-center gap-1.5 font-semibold">
+            <TriangleAlert aria-hidden className="h-4 w-4 shrink-0" />
+            Upload failed
+          </p>
+          <p className="opacity-90">{uploadError}</p>
+          <Button variant="destructive" size="sm" className="mt-2.5" onClick={() => setUploaderState('selecting_file')}>
             Try Again
-          </button>
+          </Button>
         </div>
       )}
 
       {/* ── Submit button ── */}
       {(uploaderState === 'idle' || uploaderState === 'selecting_file') && selectedFile && (
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
-          <button
+        <div className="flex flex-col items-center gap-2">
+          {/* Deliberately NOT `disabled`: clicking without a contact surfaces the
+              inline "contact required" error instead of doing nothing. */}
+          <Button
             id="uploader-submit-btn"
             onClick={handleUpload}
             title={!canUpload ? 'Select a contact first' : undefined}
-            style={{
-              ...primaryBtnStyle('#6366f1'),
-              width: '100%',
-              opacity: canUpload ? 1 : 0.45,
-              cursor: canUpload ? 'pointer' : 'not-allowed',
-              fontSize: 15,
-              padding: '12px 24px',
-            }}
+            className={`w-full ${!canUpload ? 'cursor-not-allowed opacity-50' : ''}`}
           >
-            ⬆ Upload File
-          </button>
+            <Upload aria-hidden />
+            Upload File
+          </Button>
           {!canUpload && (
-            <span style={{ fontSize: 11, color: '#fca5a5', opacity: 0.8 }}>Select a contact to enable upload</span>
+            <span className="text-[11px] text-destructive/80">Select a contact to enable upload</span>
           )}
         </div>
       )}
-
-      <style>{`
-        @keyframes spin { to { transform: rotate(360deg); } }
-      `}</style>
     </div>
   );
 }
-
-/* ─────────────────────────── Style tokens ──────────────────── */
-
-const inputStyle: React.CSSProperties = {
-  width: '100%', padding: '9px 12px', borderRadius: 8,
-  background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.2)',
-  color: '#fff', fontSize: 13, outline: 'none', boxSizing: 'border-box',
-};
-
-const dropdownStyle: React.CSSProperties = {
-  position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 99, marginTop: 4,
-  background: '#1e1b4b', border: '1px solid rgba(99,102,241,0.4)',
-  borderRadius: 8, maxHeight: 180, overflowY: 'auto',
-  boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
-};
-
-const dropItemStyle: React.CSSProperties = {
-  padding: '9px 12px', cursor: 'pointer', fontSize: 13,
-  transition: 'background 0.15s',
-};
-
-const clearBtnStyle: React.CSSProperties = {
-  background: 'none', border: 'none', cursor: 'pointer',
-  color: 'rgba(255,255,255,0.5)', fontSize: 16, lineHeight: 1,
-  padding: 0, flexShrink: 0, transition: 'color 0.15s',
-};
-
-const primaryBtnStyle = (bg: string): React.CSSProperties => ({
-  padding: '10px 24px', borderRadius: 10, border: 'none', cursor: 'pointer',
-  background: `linear-gradient(135deg, ${bg}, ${bg}cc)`,
-  color: '#fff', fontSize: 14, fontWeight: 600, letterSpacing: '0.3px',
-  boxShadow: `0 4px 15px ${bg}55`, transition: 'opacity 0.15s, transform 0.1s',
-});

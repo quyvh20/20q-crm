@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
+import { AlertTriangle, Loader2, Play, Zap } from 'lucide-react';
 import { EntityPicker, type EntityCandidate } from './EntityPicker';
 import Modal from '../../components/common/Modal';
+import { Button, Label } from '@/components/ui';
 import { runNowWorkflow } from './api';
 import type { Workflow } from './types';
 import { TRIGGER_LABELS } from './types';
@@ -156,8 +158,16 @@ export const RunNowModal: React.FC<RunNowModalProps> = ({ workflow, onClose, onS
     <Modal
       open
       onClose={handleDismiss}
-      title="▶ Run Now"
-      description={`${workflow.name} · ⚡ ${triggerLabel}`}
+      title={
+        <span className="inline-flex items-center gap-2">
+          <Play aria-hidden className="h-4 w-4" /> Run Now
+        </span>
+      }
+      description={
+        <span className="inline-flex items-center gap-1.5">
+          {workflow.name} · <Zap aria-hidden className="h-3.5 w-3.5" /> {triggerLabel}
+        </span>
+      }
       size="lg"
       padded={false}
       dismissable={!submitting}
@@ -170,7 +180,7 @@ export const RunNowModal: React.FC<RunNowModalProps> = ({ workflow, onClose, onS
             role="alert"
             className="flex items-start gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3"
           >
-            <span className="text-amber-500 text-base leading-none mt-0.5" aria-hidden="true">⚠️</span>
+            <AlertTriangle aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
             <p className="text-sm text-amber-700 dark:text-amber-200">
               This executes the workflow <strong>for real</strong> against the selected record.
               All side effects happen — emails are sent, tasks are created, fields are updated, and
@@ -180,9 +190,9 @@ export const RunNowModal: React.FC<RunNowModalProps> = ({ workflow, onClose, onS
 
           {kind ? (
             <div>
-              <label className="block text-sm font-medium text-foreground mb-2">
+              <Label className="mb-2 block">
                 Select a {kind} to run against
-              </label>
+              </Label>
               <EntityPicker kind={kind} onSelect={setSelected} />
             </div>
           ) : (
@@ -200,33 +210,28 @@ export const RunNowModal: React.FC<RunNowModalProps> = ({ workflow, onClose, onS
 
           {/* Failure message (Req 10.4) — selection is retained for retry. */}
           {error && (
-            <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+            <p role="alert" className="text-sm text-destructive">
               {error}
             </p>
           )}
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 bg-muted/30 border-t border-border flex justify-end gap-3">
-          <button
-            type="button"
+        <div className="flex justify-end gap-3 border-t border-border bg-muted/30 px-6 py-4">
+          <Button
+            variant="ghost"
             onClick={handleDismiss}
             disabled={submitting}
-            className="px-4 py-2 text-sm font-medium rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             Cancel
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
             onClick={handleConfirm}
             disabled={!canConfirm}
-            className="px-4 py-2 text-sm font-medium rounded-lg bg-gradient-to-r from-indigo-500 to-purple-500 text-white hover:from-indigo-600 hover:to-purple-600 transition-all shadow-lg shadow-indigo-500/20 disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none flex items-center gap-2"
           >
-            {submitting && (
-              <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-            )}
+            {submitting && <Loader2 aria-hidden className="animate-spin" />}
             {submitting ? 'Running…' : 'Run Now'}
-          </button>
+          </Button>
         </div>
       </>
     </Modal>

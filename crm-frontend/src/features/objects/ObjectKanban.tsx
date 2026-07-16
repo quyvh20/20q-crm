@@ -10,6 +10,7 @@ import {
   type DragStartEvent,
   type DragEndEvent,
 } from '@dnd-kit/core';
+import { LayoutGrid } from 'lucide-react';
 import {
   getStages,
   listObjectRecordsUnified,
@@ -19,6 +20,7 @@ import {
   type UniformRecord,
 } from '../../lib/api';
 import { usePermissions } from '../../lib/auth';
+import { EmptyState, SpinnerBlock } from '@/components/ui';
 
 interface ObjectKanbanProps {
   schema: ObjectSchema;
@@ -99,22 +101,23 @@ export default function ObjectKanban({ schema, stageKey, onCardClick }: ObjectKa
   };
 
   if (loading) {
-    return <div style={{ padding: 40, color: '#94a3b8', textAlign: 'center' }}>Loading board...</div>;
+    return <SpinnerBlock label="Loading board..." />;
   }
   if (stages.length === 0) {
     return (
-      <div style={{ padding: 40, color: '#64748b', textAlign: 'center', border: '2px dashed #e2e8f0', borderRadius: 12 }}>
-        No pipeline stages yet. Create them in Settings → Pipeline to use the board.
-      </div>
+      <EmptyState
+        icon={LayoutGrid}
+        title="No pipeline stages yet. Create them in Settings → Pipeline to use the board."
+      />
     );
   }
 
   return (
     <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
       {moveError && (
-        <div style={{ background: '#fef2f2', color: '#dc2626', padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>{moveError}</div>
+        <div className="mb-3 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{moveError}</div>
       )}
-      <div style={{ display: 'flex', gap: 16, overflowX: 'auto', paddingBottom: 8 }}>
+      <div className="flex gap-4 overflow-x-auto pb-2">
         {stages.map((stage) => (
           <KanbanColumn key={stage.id} stage={stage} count={(byStage[stage.id] || []).length}>
             {(byStage[stage.id] || []).map((rec) => (
@@ -125,7 +128,7 @@ export default function ObjectKanban({ schema, stageKey, onCardClick }: ObjectKa
       </div>
       <DragOverlay>
         {activeRecord ? (
-          <div style={{ transform: 'rotate(2deg)' }}>
+          <div className="rotate-2">
             <KanbanCardBody record={activeRecord} schema={schema} stageKey={stageKey} />
           </div>
         ) : null}
@@ -137,20 +140,22 @@ export default function ObjectKanban({ schema, stageKey, onCardClick }: ObjectKa
 function KanbanColumn({ stage, count, children }: { stage: PipelineStage; count: number; children: React.ReactNode }) {
   const { setNodeRef, isOver } = useDroppable({ id: stage.id });
   return (
-    <div style={{ minWidth: 260, width: 260, flexShrink: 0 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-        <span style={{ width: 10, height: 10, borderRadius: 999, background: stage.color || '#94a3b8' }} />
-        <span style={{ fontWeight: 600, fontSize: 13 }}>{stage.name}</span>
-        <span style={{ color: '#94a3b8', fontSize: 12 }}>{count}</span>
+    <div className="w-[260px] min-w-[260px] shrink-0">
+      <div className="mb-2 flex items-center gap-2 px-1">
+        {/* The dot takes the stage's own configured color — user data, not chrome. */}
+        <span
+          aria-hidden
+          className={`h-2.5 w-2.5 rounded-full ${stage.color ? '' : 'bg-muted-foreground'}`}
+          style={stage.color ? { background: stage.color } : undefined}
+        />
+        <span className="text-sm font-semibold text-foreground">{stage.name}</span>
+        <span className="text-xs text-muted-foreground">{count}</span>
       </div>
       <div
         ref={setNodeRef}
-        style={{
-          minHeight: 120, padding: 8, borderRadius: 10,
-          background: isOver ? '#eff6ff' : '#f8fafc',
-          border: isOver ? '1px dashed #3b82f6' : '1px solid #e2e8f0',
-          display: 'flex', flexDirection: 'column', gap: 8,
-        }}
+        className={`flex min-h-[120px] flex-col gap-2 rounded-xl border p-2 transition-colors ${
+          isOver ? 'border-dashed border-primary bg-primary/10' : 'border-border bg-muted/50'
+        }`}
       >
         {children}
       </div>
@@ -168,7 +173,9 @@ function KanbanCard({ record, schema, stageKey, disabled, onClick }: { record: U
       {...listeners}
       {...attributes}
       onClick={onClick}
-      style={{ opacity: isDragging ? 0.4 : 1, cursor: disabled ? 'pointer' : 'grab' }}
+      className={`rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+        isDragging ? 'opacity-40' : ''
+      } ${disabled ? 'cursor-pointer' : 'cursor-grab'}`}
     >
       <KanbanCardBody record={record} schema={schema} stageKey={stageKey} />
     </div>
@@ -181,13 +188,14 @@ function KanbanCardBody({ record, schema, stageKey }: { record: UniformRecord; s
     (f) => f.key !== stageKey && f.type !== 'relation' && f.key !== schema.display_field,
   );
   const subtitle = subtitleField ? record.fields[subtitleField.key] : undefined;
+  const hasSubtitle = subtitle != null && subtitle !== '';
   return (
-    <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '10px 12px', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
-      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: subtitle != null && subtitle !== '' ? 4 : 0 }}>
+    <div className="rounded-lg border border-border bg-card p-3 shadow-sm transition-shadow hover:shadow">
+      <div className={`text-sm font-semibold text-card-foreground ${hasSubtitle ? 'mb-1' : ''}`}>
         {record.display || 'Untitled'}
       </div>
-      {subtitle != null && subtitle !== '' && (
-        <div style={{ fontSize: 12, color: '#64748b' }}>
+      {hasSubtitle && (
+        <div className="text-xs text-muted-foreground">
           {subtitleField?.label}: {String(subtitle)}
         </div>
       )}

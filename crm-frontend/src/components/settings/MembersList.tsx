@@ -7,6 +7,10 @@ import { useConfirm } from '../common/ConfirmDialog';
 import Modal from '../common/Modal';
 import MemberDrawer from './MemberDrawer';
 import { ShieldAlert, ShieldCheck, PauseCircle, PlayCircle, UserMinus, Crown, Shield, KeyRound, CheckCircle2, RotateCw, X, HelpCircle, Search, Check } from 'lucide-react';
+import {
+  Badge, Button, Input, Select, SpinnerBlock,
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableShell,
+} from '@/components/ui';
 
 export default function MembersList() {
   const { user, hasCapability, isOwner, refreshAuth } = useAuth();
@@ -221,24 +225,20 @@ export default function MembersList() {
   };
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <div className="animate-spin h-6 w-6 border-2 border-primary border-t-transparent rounded-full" />
-      </div>
-    );
+    return <SpinnerBlock />;
   }
 
   return (
     <>
-      <div className="overflow-x-auto">
+      <div>
         {errorMsg && (
-          <div className="mb-4 p-3 bg-red-500/10 border border-red-500/20 text-red-500 text-sm rounded-lg flex items-center gap-2">
+          <div className="mb-4 flex items-center gap-2 rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
             <ShieldAlert className="w-4 h-4" />
             {errorMsg}
           </div>
         )}
         {noticeMsg && (
-          <div className="mb-4 p-3 bg-green-500/10 border border-green-500/20 text-green-500 text-sm rounded-lg flex items-center gap-2">
+          <div className="mb-4 flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3 text-sm text-emerald-600 dark:text-emerald-400">
             <CheckCircle2 className="w-4 h-4" />
             {noticeMsg}
           </div>
@@ -247,27 +247,27 @@ export default function MembersList() {
             pill filter, alongside the deep-linkable role filter below. */}
         <div className="mb-3 flex items-center gap-2 flex-wrap">
           <div className="relative flex-1 min-w-[180px] max-w-xs">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-            <input
+            <Search aria-hidden className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search name or email"
               aria-label="Search members"
-              className="w-full pl-8 pr-2 py-1.5 text-sm bg-background border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+              className="pl-8"
             />
           </div>
-          <select
+          <Select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
             aria-label="Filter by status"
-            className="px-2 py-1.5 text-sm bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+            className="w-auto"
           >
             <option value="all">All statuses</option>
             <option value="active">Active</option>
             <option value="suspended">Suspended</option>
             <option value="invited">Invited</option>
-          </select>
+          </Select>
         </div>
         {/* Role filter (U3.3) — the landing target for "N members" links on role
             cards/detail. URL-backed, so those deep links arrive pre-filtered. */}
@@ -276,21 +276,21 @@ export default function MembersList() {
             <label htmlFor="member-role-filter" className="text-xs text-muted-foreground">
               Filter by role
             </label>
-            <select
+            <Select
               id="member-role-filter"
               value={roleFilter}
               onChange={(e) => setRoleFilter(e.target.value)}
-              className="px-2 py-1 text-sm bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+              className="w-auto"
             >
               <option value="">All roles</option>
               {roles.map((r) => (
                 <option key={r.id} value={r.id}>{prettyRole(r.name)}</option>
               ))}
-            </select>
+            </Select>
             {hasCapability('roles.manage') && (
               <Link
                 to={roleFilter ? `/settings/roles/${roleFilter}` : '/settings/roles'}
-                className="text-xs text-blue-500 hover:underline"
+                className="text-xs text-primary hover:underline"
               >
                 What does {roleFilter ? 'this role' : 'each role'} grant?
               </Link>
@@ -302,39 +302,39 @@ export default function MembersList() {
             escapable even without the select above. */}
         {roles.length === 0 && roleFilter && (
           <div className="mb-4">
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-muted text-muted-foreground border border-border">
+            <Badge variant="outline">
               Filtered by role
               <button
+                type="button"
                 onClick={() => setRoleFilter('')}
                 aria-label="Clear role filter"
-                className="hover:text-foreground transition-colors"
+                className="rounded transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <X className="w-3 h-3" />
               </button>
-            </span>
+            </Badge>
           </div>
         )}
-        <table className="w-full text-left">
-          <thead>
-            <tr className="border-b border-border">
-              <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">Member</th>
-              <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">Role</th>
-              <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">Status</th>
-              <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider hidden md:table-cell">Joined</th>
-              <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider hidden lg:table-cell">Last active</th>
-              <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider hidden sm:table-cell">Verified</th>
-              {/* Who has actually enrolled in 2FA (U6.4) — the column you need
-                  before turning the workspace policy on. */}
-              <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider hidden sm:table-cell">2FA</th>
-              {canManage && (
-                <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider text-right">Actions</th>
-              )}
-            </tr>
-          </thead>
-          <tbody>
+        <TableShell>
+          <Table>
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead>Member</TableHead>
+                <TableHead>Role</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="hidden md:table-cell">Joined</TableHead>
+                <TableHead className="hidden lg:table-cell">Last active</TableHead>
+                <TableHead className="hidden sm:table-cell">Verified</TableHead>
+                {/* Who has actually enrolled in 2FA (U6.4) — the column you need
+                    before turning the workspace policy on. */}
+                <TableHead className="hidden sm:table-cell">2FA</TableHead>
+                {canManage && <TableHead className="text-right">Actions</TableHead>}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
             {visibleMembers.map(m => (
-              <tr key={m.user_id} className={`border-b border-border/50 hover:bg-accent/30 transition-colors ${m.status === 'suspended' ? 'opacity-60' : ''}`}>
-                <td className="py-3 pr-4">
+              <TableRow key={m.user_id} className={m.status === 'suspended' ? 'opacity-60' : undefined}>
+                <TableCell>
                   <div className="flex items-center gap-3">
                     {m.avatar_url ? (
                       <img src={m.avatar_url} alt="" className="h-8 w-8 rounded-full object-cover" />
@@ -346,32 +346,32 @@ export default function MembersList() {
                     <div>
                       <p className="text-sm font-medium text-foreground flex items-center gap-2">
                         {canManage ? (
-                          <button onClick={() => setDrawerUserId(m.user_id)} className="hover:underline text-left">
+                          <button type="button" onClick={() => setDrawerUserId(m.user_id)} className="rounded text-left hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                             {m.full_name || `${m.first_name} ${m.last_name}`}
                           </button>
                         ) : (
                           <span>{m.full_name || `${m.first_name} ${m.last_name}`}</span>
                         )}
-                        {m.user_id === user?.id && <span className="text-[10px] bg-primary/20 text-primary px-1.5 py-0.5 rounded-sm">You</span>}
+                        {m.user_id === user?.id && <Badge>You</Badge>}
                       </p>
                       <p className="text-xs text-muted-foreground">{m.email}</p>
                     </div>
                   </div>
-                </td>
-                <td className="py-3 pr-4">
+                </TableCell>
+                <TableCell>
                   {canManage && !ownerRoleIds.has(m.role_id) && m.user_id !== user?.id && m.status !== 'deleted' ? (
                     <div className="flex items-center gap-1.5">
-                      <select
+                      <Select
                         value={m.role_id}
                         onChange={e => handleRoleChange(m.user_id, e.target.value)}
-                        className="px-2 py-1 flex items-center text-sm bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                        className="w-auto"
                       >
                         {roles.map(r => (
                           <option key={r.id} value={r.id} disabled={r.is_owner}>
                             {prettyRole(r.name)}{r.is_owner ? ' — transfer instead' : ''}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                       {/* Jump into the assigned role's capability list right where
                           it's assigned (U3.3) — replaces the near-invisible
                           title-tooltips on the options (U3.5). */}
@@ -379,96 +379,97 @@ export default function MembersList() {
                         <Link
                           to={`/settings/roles/${m.role_id}`}
                           aria-label="What does this role grant?"
-                          className="text-muted-foreground hover:text-blue-500 transition-colors"
+                          className="text-muted-foreground transition-colors hover:text-primary"
                         >
                           <HelpCircle className="w-3.5 h-3.5" />
                         </Link>
                       )}
                     </div>
                   ) : (
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-muted text-muted-foreground border border-border">
-                      {m.role === 'owner' && <Crown className="w-3 h-3 text-yellow-500" />}
-                      {m.role === 'admin' && <Shield className="w-3 h-3 text-blue-400" />}
+                    <Badge variant="secondary">
+                      {m.role === 'owner' && <Crown className="w-3 h-3 text-amber-500" />}
+                      {m.role === 'admin' && <Shield className="w-3 h-3 text-primary" />}
                       {prettyRole(m.role)}
-                    </span>
+                    </Badge>
                   )}
-                </td>
-                <td className="py-3 pr-4">
-                  <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider border ${
-                    m.status === 'active'
-                      ? 'bg-green-500/10 text-green-400 border-green-500/20'
-                      : m.status === 'suspended'
-                      ? 'bg-orange-500/10 text-orange-400 border-orange-500/20'
-                      : m.status === 'invited'
-                      ? 'bg-blue-500/10 text-blue-400 border-blue-500/20'
-                      : 'bg-neutral-500/10 text-neutral-400 border-neutral-500/20'
-                  }`}>
+                </TableCell>
+                <TableCell>
+                  <Badge
+                    className="uppercase tracking-wider"
+                    variant={
+                      m.status === 'active' ? 'success'
+                      : m.status === 'suspended' ? 'warning'
+                      : m.status === 'invited' ? 'default'
+                      : 'secondary'
+                    }
+                  >
                     {m.status}
-                  </span>
-                </td>
-                <td className="py-3 pr-4 text-xs text-muted-foreground hidden md:table-cell whitespace-nowrap">
+                  </Badge>
+                </TableCell>
+                <TableCell className="text-xs text-muted-foreground hidden md:table-cell whitespace-nowrap">
                   {m.joined_at ? new Date(m.joined_at).toLocaleDateString() : '—'}
-                </td>
-                <td className="py-3 pr-4 text-xs text-muted-foreground hidden lg:table-cell whitespace-nowrap">
+                </TableCell>
+                <TableCell className="text-xs text-muted-foreground hidden lg:table-cell whitespace-nowrap">
                   {m.last_active_at ? new Date(m.last_active_at).toLocaleDateString() : '—'}
-                </td>
-                <td className="py-3 pr-4 hidden sm:table-cell">
+                </TableCell>
+                <TableCell className="hidden sm:table-cell">
                   {m.email_verified ? (
-                    <Check className="w-4 h-4 text-green-500" aria-label="Email verified" />
+                    <Check className="w-4 h-4 text-emerald-600 dark:text-emerald-400" aria-label="Email verified" />
                   ) : (
-                    <span className="text-xs text-amber-500" title="Email not verified">Pending</span>
+                    <span className="text-xs text-amber-600 dark:text-amber-400" title="Email not verified">Pending</span>
                   )}
-                </td>
-                <td className="py-3 pr-4 hidden sm:table-cell">
+                </TableCell>
+                <TableCell className="hidden sm:table-cell">
                   {m.two_factor_enabled ? (
-                    <ShieldCheck className="w-4 h-4 text-green-500" aria-label="Two-factor authentication on" />
+                    <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" aria-label="Two-factor authentication on" />
                   ) : (
                     <span className="text-xs text-muted-foreground" title="Two-factor authentication not set up">Off</span>
                   )}
-                </td>
+                </TableCell>
                 {canManage && (
-                  <td className="py-3 text-right">
-                    <div className="flex items-center justify-end gap-3">
+                  <TableCell className="text-right">
+                    <div className="flex items-center justify-end gap-1">
                       {m.user_id !== user?.id && m.status !== 'invited' && m.status !== 'deleted' && (
-                        <button onClick={() => handleSendReset(m)} title="Send password reset link" className="text-muted-foreground hover:text-blue-400 transition-colors">
+                        <Button variant="ghost" size="icon" onClick={() => handleSendReset(m)} title="Send password reset link" className="h-8 w-8 text-muted-foreground hover:text-foreground">
                           <KeyRound className="w-4 h-4" />
-                        </button>
+                        </Button>
                       )}
                       {m.user_id !== user?.id && !ownerRoleIds.has(m.role_id) && (
                         <>
                           {isOwner && m.status === 'active' && (
-                            <button onClick={() => { setTransferTarget(m); setTransferConfirm(''); }} title="Transfer Ownership" className="text-muted-foreground hover:text-purple-400 transition-colors">
+                            <Button variant="ghost" size="icon" onClick={() => { setTransferTarget(m); setTransferConfirm(''); }} title="Transfer Ownership" className="h-8 w-8 text-muted-foreground hover:text-foreground">
                               <Crown className="w-4 h-4" />
-                            </button>
+                            </Button>
                           )}
                           {m.status === 'active' && (
-                            <button onClick={() => handleSuspend(m.user_id)} title="Suspend Member" className="text-muted-foreground hover:text-orange-400 transition-colors">
+                            <Button variant="ghost" size="icon" onClick={() => handleSuspend(m.user_id)} title="Suspend Member" className="h-8 w-8 text-muted-foreground hover:text-foreground">
                               <PauseCircle className="w-4 h-4" />
-                            </button>
+                            </Button>
                           )}
                           {m.status === 'suspended' && (
-                            <button onClick={() => handleReinstate(m.user_id)} title="Reinstate Member" className="text-muted-foreground hover:text-green-400 transition-colors">
+                            <Button variant="ghost" size="icon" onClick={() => handleReinstate(m.user_id)} title="Reinstate Member" className="h-8 w-8 text-muted-foreground hover:text-foreground">
                               <PlayCircle className="w-4 h-4" />
-                            </button>
+                            </Button>
                           )}
-                          <button onClick={() => handleRemove(m.user_id)} title="Remove Member" className="text-muted-foreground hover:text-red-400 transition-colors">
+                          <Button variant="ghost" size="icon" onClick={() => handleRemove(m.user_id)} title="Remove Member" className="h-8 w-8 text-muted-foreground hover:text-destructive">
                             <UserMinus className="w-4 h-4" />
-                          </button>
+                          </Button>
                         </>
                       )}
                     </div>
-                  </td>
+                  </TableCell>
                 )}
-              </tr>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+            </TableBody>
+          </Table>
+        </TableShell>
         {members.length === 0 ? (
           <p className="text-center text-muted-foreground py-8 text-sm">No members found.</p>
         ) : visibleMembers.length === 0 ? (
           <p className="text-center text-muted-foreground py-8 text-sm">
             No members hold this role.{' '}
-            <button onClick={() => setRoleFilter('')} className="text-blue-500 hover:underline">
+            <button type="button" onClick={() => setRoleFilter('')} className="text-primary hover:underline">
               Show all roles
             </button>
           </p>
@@ -479,57 +480,51 @@ export default function MembersList() {
         <div className="mt-8">
           <h3 className="text-sm font-semibold text-foreground mb-3 flex items-center gap-2">
             Pending invitations
-            <span className="text-[11px] font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20 px-1.5 py-0.5 rounded-full">{invitations.length}</span>
+            <Badge>{invitations.length}</Badge>
           </h3>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead>
-                <tr className="border-b border-border">
-                  <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">Email</th>
-                  <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">Role</th>
-                  <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">Expires</th>
-                  <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
+          <TableShell>
+            <Table>
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead>Email</TableHead>
+                  <TableHead>Role</TableHead>
+                  <TableHead>Expires</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {invitations.map(inv => {
                   const expired = inv.status === 'expired';
                   return (
-                  <tr key={inv.id} className="border-b border-border/50 hover:bg-accent/30 transition-colors">
-                    <td className="py-3 pr-4 text-sm text-foreground">
+                  <TableRow key={inv.id}>
+                    <TableCell className="text-sm text-foreground">
                       <span className="inline-flex items-center gap-2">
                         {inv.email}
-                        {expired && (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/15 text-amber-600 border border-amber-500/30">
-                            Expired
-                          </span>
-                        )}
+                        {expired && <Badge variant="warning">Expired</Badge>}
                       </span>
-                    </td>
-                    <td className="py-3 pr-4">
-                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-muted text-muted-foreground border border-border">
-                        {prettyRole(inv.role)}
-                      </span>
-                    </td>
-                    <td className={`py-3 pr-4 text-xs ${expired ? 'text-amber-600 font-medium' : 'text-muted-foreground'}`}>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="secondary">{prettyRole(inv.role)}</Badge>
+                    </TableCell>
+                    <TableCell className={`text-xs ${expired ? 'text-amber-600 dark:text-amber-400 font-medium' : 'text-muted-foreground'}`}>
                       {expired ? 'Expired — resend to renew' : new Date(inv.expires_at).toLocaleDateString()}
-                    </td>
-                    <td className="py-3 text-right">
-                      <div className="flex items-center justify-end gap-3">
-                        <button onClick={() => handleResendInvite(inv)} title="Resend invitation" className="text-muted-foreground hover:text-blue-400 transition-colors">
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        <Button variant="ghost" size="icon" onClick={() => handleResendInvite(inv)} title="Resend invitation" className="h-8 w-8 text-muted-foreground hover:text-foreground">
                           <RotateCw className="w-4 h-4" />
-                        </button>
-                        <button onClick={() => handleRevokeInvite(inv)} title="Revoke invitation" className="text-muted-foreground hover:text-red-400 transition-colors">
+                        </Button>
+                        <Button variant="ghost" size="icon" onClick={() => handleRevokeInvite(inv)} title="Revoke invitation" className="h-8 w-8 text-muted-foreground hover:text-destructive">
                           <X className="w-4 h-4" />
-                        </button>
+                        </Button>
                       </div>
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                   );
                 })}
-              </tbody>
-            </table>
-          </div>
+              </TableBody>
+            </Table>
+          </TableShell>
         </div>
       )}
 
@@ -561,8 +556,7 @@ export default function MembersList() {
                 <span>Transfer them to another member</span>
               </label>
               {removeStrategy === 'transfer' && (
-                <select
-                  className="w-full px-3 py-2 bg-background border border-border rounded-lg text-foreground focus:outline-none focus:border-primary"
+                <Select
                   value={targetOwnerId}
                   onChange={e => setTargetOwnerId(e.target.value)}
                 >
@@ -570,7 +564,7 @@ export default function MembersList() {
                   {members.filter(m => m.user_id !== reassignModalUser.user_id && m.status === 'active').map(m => (
                     <option key={m.user_id} value={m.user_id}>{m.full_name || m.email}</option>
                   ))}
-                </select>
+                </Select>
               )}
               <label className="flex items-start gap-2 text-sm text-foreground cursor-pointer">
                 <input
@@ -587,22 +581,20 @@ export default function MembersList() {
               </label>
             </div>
             <div className="flex gap-2">
-              <button
-                onClick={() => setReassignModalUser(null)}
-                className="flex-1 px-4 py-2 border border-border rounded-xl text-sm font-medium hover:bg-accent transition"
-              >
+              <Button variant="outline" onClick={() => setReassignModalUser(null)} className="flex-1">
                 Cancel
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="destructive"
                 disabled={removeStrategy === 'transfer' && !targetOwnerId}
                 onClick={() => handleRemove(reassignModalUser.user_id,
                   removeStrategy === 'transfer'
                     ? { strategy: 'transfer', reassign_to_user_id: targetOwnerId }
                     : { strategy: 'unassign' })}
-                className="flex-1 px-4 py-2 bg-red-500/20 text-red-500 border border-red-500/50 rounded-xl text-sm font-bold hover:bg-red-500/30 transition disabled:opacity-50"
+                className="flex-1"
               >
                 {removeStrategy === 'transfer' ? 'Transfer & remove' : 'Remove member'}
-              </button>
+              </Button>
             </div>
           </>
         </Modal>
@@ -624,7 +616,7 @@ export default function MembersList() {
           <Modal
             open
             onClose={() => setTransferTarget(null)}
-            title={<span className="flex items-center gap-2"><Crown className="w-5 h-5 text-yellow-500" /> Transfer ownership</span>}
+            title={<span className="flex items-center gap-2"><Crown className="w-5 h-5 text-amber-500" /> Transfer ownership</span>}
             size="md"
             dismissable={!transferBusy}
           >
@@ -638,19 +630,19 @@ export default function MembersList() {
               </label>
               {/* No autoFocus: it lands before Modal captures the element to
                   restore focus to on close, which breaks the restore. */}
-              <input
+              <Input
                 value={transferConfirm}
                 onChange={(e) => setTransferConfirm(e.target.value)}
                 aria-label="Type the new owner's name to confirm"
-                className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary mb-4"
+                className="mb-4"
               />
               <div className="flex gap-2 justify-end">
-                <button onClick={() => setTransferTarget(null)} disabled={transferBusy} className="px-3 py-2 text-sm rounded-lg border border-border hover:bg-accent disabled:opacity-50">
+                <Button variant="outline" onClick={() => setTransferTarget(null)} disabled={transferBusy}>
                   Cancel
-                </button>
-                <button onClick={submitTransfer} disabled={transferBusy || transferConfirm !== targetName} className="px-3 py-2 text-sm rounded-lg bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50">
+                </Button>
+                <Button onClick={submitTransfer} disabled={transferBusy || transferConfirm !== targetName}>
                   {transferBusy ? 'Transferring…' : 'Transfer ownership'}
-                </button>
+                </Button>
               </div>
             </>
           </Modal>

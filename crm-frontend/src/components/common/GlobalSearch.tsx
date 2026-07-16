@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { Loader2, Search, Settings, Sparkles } from 'lucide-react';
 import { globalSearch, type SearchGroup } from '../../lib/api';
 import { recordPath } from '../../features/objects/recordRoutes';
 import { useAuth } from '../../lib/auth';
@@ -88,19 +89,36 @@ export default function GlobalSearch() {
 
   if (!isOpen) {
     return (
-      <button id="global-search-trigger" onClick={() => setIsOpen(true)} className="gsearch-trigger" aria-label="Open search">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" /></svg>
+      <button
+        id="global-search-trigger"
+        onClick={() => setIsOpen(true)}
+        aria-label="Open search"
+        className="inline-flex items-center gap-2 rounded-lg border border-input bg-background px-3 py-1.5 text-[13px] text-muted-foreground shadow-sm transition-colors hover:text-foreground hover:border-ring/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <Search aria-hidden className="h-3.5 w-3.5" />
         <span>Search everything…</span>
-        <kbd>⌘K</kbd>
+        <kbd className="ml-2 rounded border border-border bg-muted px-1.5 py-0.5 font-sans text-[11px]">⌘K</kbd>
       </button>
     );
   }
 
+  const groupHeaderClass =
+    'flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground';
+  const itemClass =
+    'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left no-underline transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+  const itemIconClass =
+    'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-sm';
+  const countClass =
+    'ml-auto rounded-full bg-muted px-2 text-[10px] font-medium text-muted-foreground';
+
   return (
-    <div className="gsearch-overlay" onClick={(e) => { if (e.target === e.currentTarget) setIsOpen(false); }}>
-      <div className="gsearch-modal">
-        <div className="gsearch-input-row">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6b7280" strokeWidth="2"><circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" /></svg>
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 px-4 pt-20 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget) setIsOpen(false); }}
+    >
+      <div className="w-full max-w-[560px] overflow-hidden rounded-2xl border border-border bg-card text-card-foreground shadow-2xl">
+        <div className="flex items-center gap-2.5 border-b border-border px-4 py-3.5">
+          <Search aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
           <input
             ref={inputRef}
             id="global-search-input"
@@ -108,32 +126,39 @@ export default function GlobalSearch() {
             placeholder="Search across every object…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            className="gsearch-input"
+            className="flex-1 bg-transparent text-[15px] text-foreground placeholder:text-muted-foreground focus:outline-none"
           />
-          {loading && <span className="gsearch-spinner" />}
-          <button onClick={() => setIsOpen(false)} className="gsearch-escape">ESC</button>
+          {loading && <Loader2 aria-hidden className="h-4 w-4 shrink-0 animate-spin text-primary" />}
+          <button
+            onClick={() => setIsOpen(false)}
+            className="rounded border border-border bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+          >
+            ESC
+          </button>
         </div>
 
-        <div className="gsearch-banner">
-          <span>✦</span>
+        <div className="flex items-center gap-2 border-b border-border bg-primary/5 px-4 py-2 text-xs text-primary">
+          <Sparkles aria-hidden className="h-3.5 w-3.5" />
           <span>Semantic + full-text search across all searchable objects</span>
         </div>
 
         {(totalHits > 0 || settingsHits.length > 0) && (
-          <div className="gsearch-results">
+          <div className="max-h-[420px] overflow-y-auto p-2">
             {settingsHits.length > 0 && (
-              <div className="gsearch-group">
-                <div className="gsearch-group-header">
-                  <span>⚙️</span>
+              <div className="mb-2">
+                <div className={groupHeaderClass}>
+                  <Settings aria-hidden className="h-3 w-3" />
                   <span>Settings</span>
-                  <span className="gsearch-group-count">{settingsHits.length}</span>
+                  <span className={countClass}>{settingsHits.length}</span>
                 </div>
-                <ul>
+                <ul className="m-0 list-none p-0">
                   {settingsHits.map((s) => (
                     <li key={s.path}>
-                      <a className="gsearch-item" href={s.externalTo ?? `/settings/${s.path}`}>
-                        <span className="gsearch-icon">⚙️</span>
-                        <span className="gsearch-item-name">{s.label}</span>
+                      <a className={itemClass} href={s.externalTo ?? `/settings/${s.path}`}>
+                        <span className={itemIconClass}>
+                          <Settings aria-hidden className="h-3.5 w-3.5 text-primary" />
+                        </span>
+                        <span className="flex-1 truncate text-[13px] font-medium text-foreground">{s.label}</span>
                       </a>
                     </li>
                   ))}
@@ -141,20 +166,24 @@ export default function GlobalSearch() {
               </div>
             )}
             {groups.map((g) => (
-              <div key={g.object} className="gsearch-group">
-                <div className="gsearch-group-header">
-                  <span>{g.icon}</span>
+              <div key={g.object} className="mb-2">
+                <div className={groupHeaderClass}>
+                  {/* g.icon is the object's user-chosen emoji — data, not chrome. */}
+                  <span aria-hidden>{g.icon}</span>
                   <span>{g.label_plural}</span>
-                  <span className="gsearch-group-count">{g.hits.length}</span>
+                  <span className={countClass}>{g.hits.length}</span>
                 </div>
-                <ul>
+                <ul className="m-0 list-none p-0">
                   {g.hits.map((h) => (
                     <li key={h.record.id}>
-                      <a className="gsearch-item" href={hrefFor(g.object, h.record.id)}>
-                        <span className="gsearch-icon">{g.icon}</span>
-                        <span className="gsearch-item-name">{h.record.display || '(untitled)'}</span>
+                      <a className={itemClass} href={hrefFor(g.object, h.record.id)}>
+                        <span aria-hidden className={itemIconClass}>{g.icon}</span>
+                        <span className="flex-1 truncate text-[13px] font-medium text-foreground">{h.record.display || '(untitled)'}</span>
                         {h.score ? (
-                          <span className="gsearch-score" title="Semantic similarity">
+                          <span
+                            className="whitespace-nowrap rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary"
+                            title="Semantic similarity"
+                          >
                             {Math.round(h.score * 100)}%
                           </span>
                         ) : null}
@@ -168,36 +197,9 @@ export default function GlobalSearch() {
         )}
 
         {searched && !loading && totalHits === 0 && settingsHits.length === 0 && (
-          <div className="gsearch-empty">No results for "{query}"</div>
+          <div className="p-5 text-center text-[13px] text-muted-foreground">No results for "{query}"</div>
         )}
       </div>
-
-      <style>{`
-        .gsearch-trigger { display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: var(--muted, #f3f4f6); border: 1px solid var(--border, #e5e7eb); border-radius: 8px; cursor: pointer; color: #6b7280; font-size: 13px; transition: all 0.15s; }
-        .gsearch-trigger:hover { border-color: #6366f1; color: #6366f1; }
-        .gsearch-trigger kbd { margin-left: 8px; padding: 1px 5px; background: var(--background, #fff); border: 1px solid var(--border, #e5e7eb); border-radius: 4px; font-size: 11px; }
-        .gsearch-overlay { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,0.4); backdrop-filter: blur(2px); display: flex; align-items: flex-start; justify-content: center; padding-top: 80px; animation: gsFade 0.15s ease; }
-        @keyframes gsFade { from { opacity: 0; } }
-        .gsearch-modal { width: 560px; background: var(--background, #fff); border-radius: 16px; box-shadow: 0 32px 80px rgba(0,0,0,0.25); overflow: hidden; animation: gsSlide 0.15s ease; }
-        @keyframes gsSlide { from { transform: translateY(-8px); opacity: 0; } }
-        .gsearch-input-row { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--border, #e5e7eb); }
-        .gsearch-input { flex: 1; border: none; outline: none; font-size: 15px; background: transparent; color: var(--foreground, #111); }
-        .gsearch-escape { padding: 2px 6px; background: var(--muted, #f3f4f6); border: 1px solid var(--border, #e5e7eb); border-radius: 4px; font-size: 11px; color: #6b7280; cursor: pointer; }
-        .gsearch-spinner { width: 14px; height: 14px; border: 2px solid #e5e7eb; border-top-color: #6366f1; border-radius: 50%; animation: gsSpin 0.6s linear infinite; flex-shrink: 0; }
-        @keyframes gsSpin { to { transform: rotate(360deg); } }
-        .gsearch-banner { display: flex; align-items: center; gap: 8px; padding: 8px 16px; background: linear-gradient(to right, #eef2ff, #faf5ff); font-size: 12px; color: #4f46e5; border-bottom: 1px solid #e0e7ff; }
-        .gsearch-results { padding: 8px; max-height: 420px; overflow-y: auto; }
-        .gsearch-group { margin-bottom: 8px; }
-        .gsearch-group-header { display: flex; align-items: center; gap: 6px; padding: 6px 10px; font-size: 11px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 0.04em; }
-        .gsearch-group-count { margin-left: auto; background: var(--muted, #f3f4f6); border-radius: 99px; padding: 0 7px; font-size: 10px; color: #9ca3af; }
-        .gsearch-group ul { list-style: none; margin: 0; padding: 0; }
-        .gsearch-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border-radius: 10px; background: transparent; cursor: pointer; text-align: left; text-decoration: none; transition: background 0.1s; }
-        .gsearch-item:hover { background: var(--muted, #f3f4f6); }
-        .gsearch-icon { width: 28px; height: 28px; border-radius: 8px; background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff; display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-size: 14px; }
-        .gsearch-item-name { flex: 1; font-size: 13px; font-weight: 500; color: var(--foreground, #111); }
-        .gsearch-score { padding: 2px 7px; background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff; border-radius: 99px; font-size: 10px; font-weight: 700; white-space: nowrap; }
-        .gsearch-empty { padding: 20px; text-align: center; color: #9ca3af; font-size: 13px; }
-      `}</style>
     </div>
   );
 }

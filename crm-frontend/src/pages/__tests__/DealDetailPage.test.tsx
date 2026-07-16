@@ -85,8 +85,8 @@ describe('DealDetailPage OLS gates', () => {
     expect(await screen.findByText('Move to stage')).toBeInTheDocument();
     // Non-terminal stages render as move buttons.
     expect(screen.getByRole('button', { name: 'Proposal' })).toBeInTheDocument();
-    expect(screen.getByText('🏆 Mark Won')).toBeInTheDocument();
-    expect(screen.getByText('💔 Mark Lost')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Mark Won' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Mark Lost' })).toBeInTheDocument();
   });
 
   it('replaces the stage selector with a static pill when edit is denied', async () => {
@@ -98,7 +98,7 @@ describe('DealDetailPage OLS gates', () => {
     // The interaction is gone…
     expect(screen.queryByText('Move to stage')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Proposal' })).not.toBeInTheDocument();
-    expect(screen.queryByText('🏆 Mark Won')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Mark Won' })).not.toBeInTheDocument();
     // …but the information stays: the current stage renders as a plain pill
     // ("Qualification" also appears in the header status pill).
     expect(screen.getByText('Stage')).toBeInTheDocument();

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { KeyRound, Loader2, Plus } from 'lucide-react';
+import { KeyRound, Plus } from 'lucide-react';
 import {
   listApiTokens, createApiToken, revokeApiToken, isTokenLive,
   ALL_API_TOKEN_SCOPES, API_TOKEN_SCOPE_LABELS, SCOPE_RECORDS_READ,
@@ -9,6 +9,7 @@ import {
 import { usePermissions } from '../../lib/auth';
 import { useConfirm } from '../../components/common/ConfirmDialog';
 import SecretReveal from '../../components/settings/SecretReveal';
+import { Badge, Button, EmptyState, Input, Label, Select, SpinnerBlock } from '@/components/ui';
 
 // ApiTokensSection (U6.5) — personal access tokens for scripts and integrations.
 //
@@ -136,23 +137,24 @@ export default function ApiTokensSection() {
           </p>
         </div>
         {!showForm && !secret && (
-          <button
+          <Button
+            size="sm"
             onClick={() => { setShowForm(true); setActionError(null); }}
             disabled={atLimit}
             title={atLimit ? `You've reached the limit of ${MAX_API_TOKENS_PER_USER} live tokens — revoke one first.` : undefined}
-            className="inline-flex items-center gap-1.5 shrink-0 px-3 py-1.5 text-sm rounded-lg bg-primary text-primary-foreground font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
+            className="shrink-0"
           >
-            <Plus className="w-4 h-4" /> New token
-          </button>
+            <Plus aria-hidden /> New token
+          </Button>
         )}
       </div>
 
       {actionError && (
-        <div className="rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-400">{actionError}</div>
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{actionError}</div>
       )}
 
       {atLimit && !secret && (
-        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-500">
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-600 dark:text-amber-400">
           You have {liveTokens.length} live tokens — the maximum is {MAX_API_TOKENS_PER_USER}. Revoke one to create another.
         </div>
       )}
@@ -170,18 +172,18 @@ export default function ApiTokensSection() {
 
       {/* Create form */}
       {showForm && (
-        <div className="rounded-lg border border-border p-4 space-y-4">
+        <div className="rounded-xl border border-border p-4 space-y-4">
           <div>
-            <label htmlFor="token-name" className="block text-xs font-medium text-muted-foreground mb-1">
+            <Label htmlFor="token-name" className="mb-1 block text-xs text-muted-foreground">
               What is this token for?
-            </label>
-            <input
+            </Label>
+            <Input
               id="token-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
               maxLength={120}
               placeholder="e.g. Nightly export script"
-              className="w-full max-w-sm px-3 py-2 bg-background border border-border rounded-lg text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+              className="max-w-sm"
             />
           </div>
 
@@ -196,7 +198,7 @@ export default function ApiTokensSection() {
                     type="checkbox"
                     checked={scopes.includes(s)}
                     onChange={() => toggleScope(s)}
-                    className="mt-0.5 rounded border-border"
+                    className="mt-0.5 rounded border-input"
                   />
                   <span>
                     {API_TOKEN_SCOPE_LABELS[s] ?? s}
@@ -208,54 +210,42 @@ export default function ApiTokensSection() {
           </fieldset>
 
           <div>
-            <label htmlFor="token-expiry" className="block text-xs font-medium text-muted-foreground mb-1">Expires</label>
-            <select
+            <Label htmlFor="token-expiry" className="mb-1 block text-xs text-muted-foreground">Expires</Label>
+            <Select
               id="token-expiry"
               value={expiryDays}
               onChange={(e) => setExpiryDays(Number(e.target.value))}
-              className="px-3 py-2 bg-background border border-border rounded-lg text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+              className="w-auto"
             >
               {EXPIRY_OPTIONS.map((o) => (
                 <option key={o.days} value={o.days}>{o.label}</option>
               ))}
-            </select>
+            </Select>
             {expiryDays === 0 && (
-              <p className="mt-1 text-xs text-amber-500">
+              <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
                 A token that never expires is a credential nobody remembers to rotate. Prefer a date.
               </p>
             )}
           </div>
 
           <div className="flex gap-2">
-            <button
-              onClick={submit}
-              disabled={creating || !name.trim() || scopes.length === 0}
-              className="px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-50"
-            >
+            <Button onClick={submit} disabled={creating || !name.trim() || scopes.length === 0}>
               {creating ? 'Creating…' : 'Create token'}
-            </button>
-            <button
-              onClick={resetForm}
-              disabled={creating}
-              className="px-3 py-2 border border-border rounded-lg text-sm hover:bg-accent transition-colors disabled:opacity-50"
-            >
+            </Button>
+            <Button variant="outline" onClick={resetForm} disabled={creating}>
               Cancel
-            </button>
+            </Button>
           </div>
         </div>
       )}
 
       {/* List */}
       {error ? (
-        <div className="rounded-md border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-400">{error}</div>
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">{error}</div>
       ) : loading ? (
-        <div className="flex items-center justify-center py-12">
-          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
-        </div>
+        <SpinnerBlock />
       ) : tokens.length === 0 ? (
-        <div className="rounded-md border border-border py-12 text-center text-sm text-muted-foreground">
-          You haven't created any API tokens.
-        </div>
+        <EmptyState icon={KeyRound} title="You haven't created any API tokens." />
       ) : (
         <div className="space-y-2">
           {tokens.map((t) => {
@@ -264,18 +254,14 @@ export default function ApiTokensSection() {
             return (
               <div
                 key={t.id}
-                className={`flex items-start justify-between gap-3 rounded-lg border border-border p-3 ${live ? '' : 'opacity-60'}`}
+                className={`flex items-start justify-between gap-3 rounded-xl border border-border p-3 ${live ? '' : 'opacity-60'}`}
               >
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-medium text-foreground">{t.name}</span>
                     <code className="font-mono text-xs text-muted-foreground">{t.prefix}…</code>
-                    {t.revoked_at && (
-                      <span className="rounded bg-red-500/10 px-2 py-0.5 text-[11px] font-medium text-red-400">Revoked</span>
-                    )}
-                    {expired && (
-                      <span className="rounded bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-500">Expired</span>
-                    )}
+                    {t.revoked_at && <Badge variant="destructive">Revoked</Badge>}
+                    {expired && <Badge variant="warning">Expired</Badge>}
                   </div>
                   <div className="mt-0.5 text-xs text-muted-foreground">
                     Created {fmtDate(t.created_at)} · {t.expires_at ? `expires ${fmtDate(t.expires_at)}` : 'never expires'} ·{' '}
@@ -294,13 +280,15 @@ export default function ApiTokensSection() {
                   </div>
                 </div>
                 {live && (
-                  <button
+                  <Button
+                    variant="outline"
+                    size="sm"
                     onClick={() => handleRevoke(t)}
                     disabled={busyId === t.id}
-                    className="shrink-0 rounded-md border border-border px-3 py-1.5 text-sm text-red-400 hover:bg-red-500/10 disabled:opacity-50"
+                    className="shrink-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
                   >
                     {busyId === t.id ? 'Revoking…' : 'Revoke'}
-                  </button>
+                  </Button>
                 )}
               </div>
             );

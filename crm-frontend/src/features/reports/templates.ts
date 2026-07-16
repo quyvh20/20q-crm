@@ -9,7 +9,6 @@ export interface ReportTemplate {
   name: string;
   description: string;
   objectSlug: string;
-  icon: string;
   config: ReportConfig;
 }
 
@@ -19,7 +18,6 @@ export const REPORT_TEMPLATES: ReportTemplate[] = [
     name: 'Pipeline by Stage',
     description: 'Open deal value in each pipeline stage.',
     objectSlug: 'deal',
-    icon: '📊',
     config: {
       chart: 'bar',
       filters: {
@@ -38,7 +36,6 @@ export const REPORT_TEMPLATES: ReportTemplate[] = [
     name: 'Revenue Won by Month',
     description: 'Closed-won deal value over time.',
     objectSlug: 'deal',
-    icon: '📈',
     config: {
       chart: 'line',
       filters: { op: 'AND', rules: [{ field: 'is_won', operator: 'eq', value: true }] },
@@ -51,7 +48,6 @@ export const REPORT_TEMPLATES: ReportTemplate[] = [
     name: 'Deals by Owner',
     description: 'How many deals each rep is carrying.',
     objectSlug: 'deal',
-    icon: '🧑‍💼',
     config: {
       chart: 'bar',
       group_by: { field: 'owner_user_id' },
@@ -63,7 +59,6 @@ export const REPORT_TEMPLATES: ReportTemplate[] = [
     name: 'New Contacts by Month',
     description: 'Contact growth over time.',
     objectSlug: 'contact',
-    icon: '👥',
     config: {
       chart: 'line',
       group_by: { field: 'created_at', bucket: 'month' },
@@ -75,7 +70,6 @@ export const REPORT_TEMPLATES: ReportTemplate[] = [
     name: 'Open Pipeline Value',
     description: 'Total value of all open deals, as one number.',
     objectSlug: 'deal',
-    icon: '💰',
     config: {
       chart: 'kpi',
       filters: {
@@ -93,7 +87,6 @@ export const REPORT_TEMPLATES: ReportTemplate[] = [
     name: 'Contacts by Company',
     description: 'Where your contacts are concentrated.',
     objectSlug: 'contact',
-    icon: '🏢',
     config: {
       chart: 'donut',
       group_by: { field: 'company' },

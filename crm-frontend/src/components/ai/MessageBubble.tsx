@@ -1,25 +1,38 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { Check, Copy } from 'lucide-react';
+import { Check, Copy, Sparkles } from 'lucide-react';
 import type { ChatMessage } from './chatTypes';
 
 interface Props {
   message: ChatMessage;
 }
 
+// Markdown descendant styling for assistant messages. ReactMarkdown renders raw
+// tags we can't put classes on directly, so the parent styles them through
+// arbitrary variants (token colors only — renders in both themes).
+const markdownClasses = [
+  '[&_p]:mt-0 [&_p]:mb-2.5 [&_p:last-child]:mb-0',
+  '[&_ul]:mb-2.5 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:mb-2.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:mb-0.5',
+  '[&_:is(h1,h2,h3,h4)]:mb-2 [&_:is(h1,h2,h3,h4)]:mt-4 [&_:is(h1,h2,h3,h4)]:font-bold [&_:is(h1,h2,h3,h4)]:text-foreground',
+  '[&_h1]:text-[1.3rem] [&_h2]:text-[1.15rem] [&_h3]:text-[1.05rem]',
+  '[&_table]:mb-3 [&_table]:w-full [&_table]:border-collapse [&_table]:overflow-hidden [&_table]:rounded-md [&_table]:border [&_table]:border-border',
+  '[&_th]:border [&_th]:border-border [&_th]:bg-muted/50 [&_th]:px-2.5 [&_th]:py-1.5 [&_th]:text-left [&_th]:text-[13px] [&_th]:font-semibold',
+  '[&_td]:border [&_td]:border-border [&_td]:px-2.5 [&_td]:py-1.5 [&_td]:text-left [&_td]:text-[13px]',
+  '[&_a]:font-medium [&_a]:text-primary [&_a]:no-underline hover:[&_a]:underline',
+].join(' ');
+
 export default function MessageBubble({ message }: Props) {
   const isUser = message.role === 'user';
 
   if (isUser) {
     return (
-      <div style={styles.userRow}>
-        <div style={styles.userBubble}>
+      <div className="mb-1.5 flex justify-end">
+        <div className="max-w-[80%] break-words rounded-2xl rounded-br-sm bg-primary px-3.5 py-2 text-[13px] font-medium leading-normal text-primary-foreground">
           {message.content}
         </div>
-        <style>{bubbleCSS}</style>
       </div>
     );
   }
@@ -28,9 +41,13 @@ export default function MessageBubble({ message }: Props) {
   if (!message.content) return null;
 
   return (
-    <div style={styles.assistantRow}>
-      <div style={styles.avatarDot}>✦</div>
-      <div style={styles.assistantBubble} className="ai-markdown-content">
+    <div className="mb-1.5 flex items-start gap-2">
+      <div className="mt-0.5 flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
+        <Sparkles aria-hidden className="h-3 w-3" />
+      </div>
+      <div
+        className={`ai-markdown-content min-w-0 flex-1 overflow-x-auto break-words rounded-2xl rounded-tl-sm bg-muted/60 px-3.5 py-2.5 text-sm leading-relaxed text-foreground ${markdownClasses}`}
+      >
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           components={{
@@ -41,7 +58,7 @@ export default function MessageBubble({ message }: Props) {
                 return <CodeBlock language={language} value={String(children).replace(/\n$/, '')} />;
               }
               return (
-                <code className={className} style={styles.inlineCode} {...props}>
+                <code className={`rounded bg-muted px-1 py-0.5 font-mono text-[0.9em] text-destructive ${className ?? ''}`} {...props}>
                   {children}
                 </code>
               );
@@ -51,7 +68,6 @@ export default function MessageBubble({ message }: Props) {
           {message.content}
         </ReactMarkdown>
       </div>
-      <style>{bubbleCSS}</style>
     </div>
   );
 }
@@ -70,11 +86,17 @@ function CodeBlock({ language, value }: { language: string, value: string }) {
   };
 
   return (
-    <div style={styles.codeBlockWrapper}>
-      <div style={styles.codeBlockHeader}>
-        <span style={styles.codeLanguage}>{language}</span>
-        <button onClick={handleCopy} style={styles.copyButton} title="Copy code">
-          {copied ? <Check size={13} color="#10b981" /> : <Copy size={13} color="#a1a1aa" />}
+    <div className="my-3 overflow-hidden rounded-lg border border-border">
+      {/* The header commits to the highlighter's dark theme, so its text uses
+          theme-neutral white opacities rather than palette hues. */}
+      <div className="flex items-center justify-between bg-black/90 px-3 py-1.5">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-white/60">{language}</span>
+        <button
+          onClick={handleCopy}
+          className="flex items-center gap-1 text-[11px] text-white/70 transition-colors hover:text-white"
+          title="Copy code"
+        >
+          {copied ? <Check aria-hidden className="h-[13px] w-[13px] text-emerald-500" /> : <Copy aria-hidden className="h-[13px] w-[13px]" />}
           {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
@@ -82,129 +104,11 @@ function CodeBlock({ language, value }: { language: string, value: string }) {
         style={vscDarkPlus}
         language={language}
         PreTag="div"
-        customStyle={{ margin: 0, borderRadius: '0 0 6px 6px', fontSize: 13, background: '#1e1e1e' }}
+        // Structural resets the highlighter only accepts via its style API.
+        customStyle={{ margin: 0, borderRadius: 0, fontSize: 13 }}
       >
         {value}
       </SyntaxHighlighter>
     </div>
   );
 }
-
-const styles: Record<string, React.CSSProperties> = {
-  userRow: {
-    display: 'flex',
-    justifyContent: 'flex-end',
-    marginBottom: 6,
-  },
-  userBubble: {
-    maxWidth: '80%',
-    background: 'linear-gradient(135deg, #f59e0b, #ef4444)',
-    color: '#fff',
-    borderRadius: '18px 18px 4px 18px',
-    padding: '8px 14px',
-    fontSize: 13,
-    fontWeight: 500,
-    lineHeight: 1.5,
-    wordBreak: 'break-word',
-  },
-  assistantRow: {
-    display: 'flex',
-    alignItems: 'flex-start',
-    gap: 8,
-    marginBottom: 6,
-  },
-  avatarDot: {
-    width: 22,
-    height: 22,
-    borderRadius: '50%',
-    background: 'linear-gradient(135deg, #f59e0b, #ef4444)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: 10,
-    color: '#fff',
-    flexShrink: 0,
-    marginTop: 2,
-  },
-  assistantBubble: {
-    flex: 1,
-    background: 'var(--bubble-bg, rgba(0,0,0,0.04))',
-    borderRadius: '4px 18px 18px 18px',
-    padding: '10px 14px',
-    fontSize: 14,
-    color: 'var(--foreground)',
-    lineHeight: 1.6,
-    wordBreak: 'break-word',
-    overflowX: 'auto',
-  },
-  placeholder: {
-    color: 'var(--muted-foreground)',
-    fontStyle: 'italic',
-  },
-  inlineCode: {
-    background: 'rgba(115, 115, 115, 0.15)',
-    padding: '2px 4px',
-    borderRadius: 4,
-    fontFamily: 'monospace',
-    fontSize: '0.9em',
-    color: '#ef4444',
-  },
-  codeBlockWrapper: {
-    margin: '12px 0',
-    borderRadius: 6,
-    overflow: 'hidden',
-    border: '1px solid #3f3f46',
-  },
-  codeBlockHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    background: '#2d2d2d',
-    padding: '6px 12px',
-  },
-  codeLanguage: {
-    color: '#a1a1aa',
-    fontSize: 11,
-    textTransform: 'uppercase',
-    fontWeight: 600,
-    letterSpacing: '0.05em',
-  },
-  copyButton: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 4,
-    background: 'transparent',
-    border: 'none',
-    color: '#a1a1aa',
-    fontSize: 11,
-    cursor: 'pointer',
-  },
-};
-
-const bubbleCSS = `
-  @keyframes fadeSlide {
-    from { opacity: 0; transform: translateY(6px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
-  
-  .ai-markdown-content p { margin-top: 0; margin-bottom: 10px; }
-  .ai-markdown-content p:last-child { margin-bottom: 0; }
-  .ai-markdown-content ul, .ai-markdown-content ol { padding-left: 20px; margin-bottom: 10px; }
-  .ai-markdown-content li { margin-bottom: 2px; }
-  .ai-markdown-content h1, .ai-markdown-content h2, .ai-markdown-content h3, .ai-markdown-content h4 { 
-    font-weight: 700; margin-top: 16px; margin-bottom: 8px; color: var(--foreground); 
-  }
-  .ai-markdown-content h1 { font-size: 1.3rem; }
-  .ai-markdown-content h2 { font-size: 1.15rem; }
-  .ai-markdown-content h3 { font-size: 1.05rem; }
-  .ai-markdown-content table { 
-    border-collapse: collapse; width: 100%; margin-bottom: 12px; 
-    border-radius: 6px; overflow: hidden; border: 1px solid var(--border);
-  }
-  .ai-markdown-content th, .ai-markdown-content td { 
-    border: 1px solid var(--border); padding: 6px 10px; font-size: 13px; text-align: left;
-  }
-  .ai-markdown-content th { background: rgba(0,0,0,0.03); font-weight: 600; }
-  .ai-markdown-content a { color: #f59e0b; text-decoration: none; font-weight: 500; }
-  .ai-markdown-content a:hover { text-decoration: underline; }
-`;

@@ -44,8 +44,9 @@ describe('RelatedLists', () => {
 
     await waitFor(() => expect(listRecordRelatedLists).toHaveBeenCalledWith('contact', 'p1'));
 
-    // Group heading + which field relates them.
-    expect(await screen.findByText('💰 Deals')).toBeInTheDocument();
+    // Group heading (icon chip + label) + which field relates them.
+    expect(await screen.findByText('Deals')).toBeInTheDocument();
+    expect(screen.getByText('💰')).toBeInTheDocument();
     expect(screen.getByText(/via Contact/)).toBeInTheDocument();
 
     // Each child record is a link to its own record page (deals route to /deals/:id).
@@ -69,7 +70,8 @@ describe('RelatedLists', () => {
 
     // The group title must not render; the empty state takes over.
     await waitFor(() => expect(listRecordRelatedLists).toHaveBeenCalled());
-    expect(screen.queryByText('💰 Deals')).not.toBeInTheDocument();
+    expect(screen.queryByText('Deals')).not.toBeInTheDocument();
+    expect(screen.queryByText('💰')).not.toBeInTheDocument();
     expect(await screen.findByText('No related records')).toBeInTheDocument();
   });
 });

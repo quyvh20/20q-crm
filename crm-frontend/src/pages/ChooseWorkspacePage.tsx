@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { useAuth } from '../lib/auth';
 import { getWorkspaces, type Workspace } from '../lib/api';
 import { useDocumentTitle } from '../lib/useDocumentTitle';
-import { Building2, Users, Check, Star, Loader2, LogOut, Ban, AlertTriangle, Plus } from 'lucide-react';
+import { Building2, Users, Check, Star, Loader2, LogOut, Ban, AlertTriangle, Plus, ArrowRight } from 'lucide-react';
+import { Button, Input } from '@/components/ui';
 
 /**
  * The R2 workspace chooser (P4). Shown when a user belongs to multiple active
@@ -75,15 +76,15 @@ export default function ChooseWorkspacePage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-4">
+    <div className="min-h-screen bg-muted/30 flex flex-col items-center justify-center px-4 py-10">
       <div className="w-full max-w-lg">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-white tracking-tight">Choose a workspace</h1>
-          <p className="text-slate-400 mt-2">You're a member of several workspaces. Pick one to continue.</p>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">Choose a workspace</h1>
+          <p className="text-sm text-muted-foreground mt-2">You're a member of several workspaces. Pick one to continue.</p>
         </div>
 
         {lostWorkspace && (
-          <div className="mb-4 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-sm flex items-start gap-2">
+          <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-600 dark:text-amber-400 flex items-start gap-2">
             <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
             <span>
               You no longer have access to <span className="font-semibold">{lostWorkspace}</span>. Choose another workspace to continue.
@@ -92,7 +93,7 @@ export default function ChooseWorkspacePage() {
         )}
 
         {error && (
-          <div className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
+          <div className="mb-4 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {error}
           </div>
         )}
@@ -106,17 +107,17 @@ export default function ChooseWorkspacePage() {
                 key={ws.org_id}
                 onClick={() => choose(ws.org_id)}
                 disabled={!!busyOrg}
-                className="w-full text-left group flex items-center gap-4 p-4 rounded-2xl bg-slate-800/50 border border-slate-700/50 hover:border-blue-500/50 hover:bg-slate-800 transition-all disabled:opacity-60"
+                className="w-full text-left group flex items-center gap-4 rounded-lg border border-border bg-card p-4 hover:bg-accent transition-colors disabled:opacity-60"
               >
-                <div className="w-11 h-11 rounded-xl bg-gradient-to-tr from-purple-500 to-blue-500 flex items-center justify-center shrink-0">
-                  <Building2 className="w-5 h-5 text-white" />
+                <div className="w-11 h-11 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+                  <Building2 className="w-5 h-5 text-primary" />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-white font-semibold truncate flex items-center gap-2">
+                  <p className="text-foreground font-semibold truncate flex items-center gap-2">
                     {ws.org_name}
-                    {isDefault && <Star className="w-3.5 h-3.5 text-yellow-400 fill-yellow-400" />}
+                    {isDefault && <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />}
                   </p>
-                  <p className="text-xs text-slate-400 capitalize flex items-center gap-2 mt-0.5">
+                  <p className="text-xs text-muted-foreground capitalize flex items-center gap-2 mt-0.5">
                     <span>{ws.role?.replace('_', ' ')}</span>
                     {typeof ws.member_count === 'number' && (
                       <span className="flex items-center gap-1">
@@ -127,9 +128,9 @@ export default function ChooseWorkspacePage() {
                   </p>
                 </div>
                 {busy ? (
-                  <Loader2 className="w-5 h-5 text-blue-400 animate-spin shrink-0" />
+                  <Loader2 className="w-5 h-5 text-primary animate-spin shrink-0" />
                 ) : (
-                  <span className="text-slate-600 group-hover:text-blue-400 transition-colors shrink-0">→</span>
+                  <ArrowRight aria-hidden="true" className="w-4 h-4 text-muted-foreground group-hover:text-primary transition-colors shrink-0" />
                 )}
               </button>
             );
@@ -141,25 +142,25 @@ export default function ChooseWorkspacePage() {
         <div className="mt-3">
           {creatingOpen ? (
             <form onSubmit={create} className="flex gap-2">
-              <input
+              <Input
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
                 placeholder="New workspace name"
                 aria-label="New workspace name"
                 autoFocus
-                className="flex-1 px-4 py-3 bg-slate-800/60 border border-slate-700 rounded-2xl text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors"
+                className="flex-1"
               />
-              <button type="submit" disabled={creating || !newName.trim()} className="px-4 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-semibold disabled:opacity-60 flex items-center gap-2">
-                {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Create'}
-              </button>
+              <Button type="submit" disabled={creating || !newName.trim()}>
+                {creating ? <Loader2 className="animate-spin" /> : 'Create'}
+              </Button>
             </form>
           ) : (
             <button
               onClick={() => setCreatingOpen(true)}
               disabled={!!busyOrg}
-              className="w-full flex items-center gap-4 p-4 rounded-2xl border border-dashed border-slate-700 text-slate-300 hover:border-blue-500/50 hover:text-white transition-all disabled:opacity-60"
+              className="w-full flex items-center gap-4 rounded-lg border border-dashed border-border p-4 text-muted-foreground hover:border-primary/50 hover:text-foreground transition-colors disabled:opacity-60"
             >
-              <div className="w-11 h-11 rounded-xl bg-slate-800 flex items-center justify-center shrink-0">
+              <div className="w-11 h-11 rounded-lg bg-muted flex items-center justify-center shrink-0">
                 <Plus className="w-5 h-5" />
               </div>
               <span className="font-medium">Create a new workspace</span>
@@ -171,34 +172,34 @@ export default function ChooseWorkspacePage() {
             but they can't enter it (contact an admin to be reinstated). */}
         {suspended.length > 0 && (
           <div className="mt-4 space-y-3">
-            <p className="text-xs uppercase tracking-wider text-slate-500 font-semibold px-1">No longer active</p>
+            <p className="text-xs uppercase tracking-wider text-muted-foreground font-semibold px-1">No longer active</p>
             {suspended.map(ws => (
               <div
                 key={ws.org_id}
                 aria-disabled="true"
                 title="Your membership here is suspended — ask a workspace admin to reinstate you."
-                className="w-full text-left flex items-center gap-4 p-4 rounded-2xl bg-slate-800/30 border border-slate-800 opacity-60 cursor-not-allowed"
+                className="w-full text-left flex items-center gap-4 rounded-lg border border-border bg-card p-4 opacity-60 cursor-not-allowed"
               >
-                <div className="w-11 h-11 rounded-xl bg-slate-700/60 flex items-center justify-center shrink-0">
-                  <Ban className="w-5 h-5 text-slate-400" />
+                <div className="w-11 h-11 rounded-lg bg-muted flex items-center justify-center shrink-0">
+                  <Ban className="w-5 h-5 text-muted-foreground" />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-slate-300 font-semibold truncate">{ws.org_name}</p>
-                  <p className="text-xs text-slate-500 capitalize mt-0.5">
+                  <p className="text-foreground font-semibold truncate">{ws.org_name}</p>
+                  <p className="text-xs text-muted-foreground capitalize mt-0.5">
                     {ws.role?.replace('_', ' ')} · Suspended
                   </p>
                 </div>
-                <span className="text-[11px] text-slate-500 shrink-0">Suspended</span>
+                <span className="text-[11px] text-muted-foreground shrink-0">Suspended</span>
               </div>
             ))}
           </div>
         )}
 
-        <label className="flex items-center gap-2 justify-center mt-6 text-sm text-slate-300 cursor-pointer select-none">
+        <label className="flex items-center gap-2 justify-center mt-6 text-sm text-foreground cursor-pointer select-none">
           <span
-            className={`w-4 h-4 rounded flex items-center justify-center border ${makeDefault ? 'bg-blue-500 border-blue-500' : 'border-slate-600'}`}
+            className={`w-4 h-4 rounded flex items-center justify-center border ${makeDefault ? 'bg-primary border-primary' : 'border-input'}`}
           >
-            {makeDefault && <Check className="w-3 h-3 text-white" />}
+            {makeDefault && <Check className="w-3 h-3 text-primary-foreground" />}
           </span>
           <input type="checkbox" className="sr-only" checked={makeDefault} onChange={e => setMakeDefault(e.target.checked)} />
           Make this my default workspace
@@ -206,7 +207,7 @@ export default function ChooseWorkspacePage() {
 
         <button
           onClick={() => logout()}
-          className="mx-auto mt-6 flex items-center gap-2 text-sm text-slate-500 hover:text-slate-300 transition-colors"
+          className="mx-auto mt-6 flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
         >
           <LogOut className="w-4 h-4" /> Sign out
         </button>

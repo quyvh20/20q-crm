@@ -14,11 +14,13 @@ import {
   type RecordLevel,
   type Tag,
 } from '../lib/api';
+import { ArrowLeft, Search } from 'lucide-react';
 import { ObjectDetailView, ObjectForm } from '../features/objects';
 import { listPath } from '../features/objects/recordRoutes';
 import ShareRecordModal from '../components/records/ShareRecordModal';
 import AccessDeniedPanel from '../components/common/AccessDeniedPanel';
 import Modal from '../components/common/Modal';
+import { Badge, Button, EmptyState, Skeleton } from '@/components/ui';
 import { usePermissions } from '../lib/auth';
 
 // ObjectRecordPage is the Salesforce-style, URL-addressable detail page for any
@@ -158,9 +160,9 @@ export default function ObjectRecordPage() {
 
   if (loading) {
     return (
-      <div className="max-w-6xl mx-auto">
-        <div style={{ height: 28, width: 200, background: '#f1f5f9', borderRadius: 8, marginBottom: 16 }} />
-        <div style={{ height: 360, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12 }} />
+      <div className="mx-auto w-full max-w-6xl">
+        <Skeleton className="mb-4 h-7 w-52" />
+        <Skeleton className="h-80 w-full rounded-xl" />
       </div>
     );
   }
@@ -173,52 +175,40 @@ export default function ObjectRecordPage() {
     // friendly panel, not a red error.
     const accessDenied = /your role can't|you don't have permission/i.test(error);
     return (
-      <div className="max-w-6xl mx-auto">
-        <button onClick={() => navigate(slug ? listPath(slug) : '/')} style={backLinkStyle}>← Back</button>
+      <div className="mx-auto w-full max-w-6xl">
+        <Button variant="ghost" size="sm" onClick={() => navigate(slug ? listPath(slug) : '/')} className="mb-4 -ml-2 text-muted-foreground">
+          <ArrowLeft aria-hidden /> Back
+        </Button>
         {accessDenied ? (
           <AccessDeniedPanel message={`Your role can't view ${slug ?? 'these'} records — ask an admin for access.`} />
         ) : (
-          <div style={{ padding: 40, textAlign: 'center', color: '#64748b', border: '2px dashed #e2e8f0', borderRadius: 12 }}>
-            <div style={{ fontSize: 32, marginBottom: 8 }}>🔍</div>
-            {error || 'Record not found.'}
-          </div>
+          <EmptyState icon={Search} title={error || 'Record not found.'} />
         )}
       </div>
     );
   }
 
   return (
-    <div className="max-w-6xl mx-auto">
+    <div className="mx-auto w-full max-w-6xl">
       {/* Back link */}
-      <button onClick={backToList} style={backLinkStyle}>
-        ← Back to {schema.label_plural}
-      </button>
+      <Button variant="ghost" size="sm" onClick={backToList} className="mb-4 -ml-2 text-muted-foreground">
+        <ArrowLeft aria-hidden /> Back to {schema.label_plural}
+      </Button>
 
       {/* Header section */}
-      <div
-        style={{
-          padding: '16px 0 32px 0',
-          marginBottom: 32,
-          display: 'flex',
-          alignItems: 'flex-start',
-          justifyContent: 'space-between',
-          gap: 16,
-          borderBottom: '2px solid #f1f5f9',
-        }}
-      >
-        <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div className="mb-8 flex items-start justify-between gap-4 border-b border-border pb-8 pt-4">
+        <div className="min-w-0">
+          <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            {/* schema.icon is the object's user-chosen emoji (data). */}
             <span>{schema.icon} {schema.label}</span>
             {record.number && (
-              <span style={{ background: '#f1f5f9', color: '#475569', borderRadius: 6, padding: '1px 8px', fontWeight: 700, letterSpacing: '0.04em' }}>
-                {record.number}
-              </span>
+              <Badge variant="secondary" className="font-semibold tracking-wide">{record.number}</Badge>
             )}
           </div>
-          <h1 style={{ fontSize: 24, fontWeight: 700, margin: 0, color: '#0f172a', wordBreak: 'break-word' }}>
+          <h1 className="break-words text-2xl font-semibold tracking-tight text-foreground">
             {record.display || 'Untitled'}
           </h1>
-          <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 6 }}>
+          <div className="mt-1.5 text-xs text-muted-foreground">
             Created {new Date(record.created_at).toLocaleDateString()}
             {record.updated_at && record.updated_at !== record.created_at && (
               <> · Updated {new Date(record.updated_at).toLocaleDateString()}</>
@@ -231,33 +221,26 @@ export default function ObjectRecordPage() {
                 row-level access — a record shared to you at 'view' is read-only
                 even when your role may edit the object. Unknown level ⇒ shown. */}
             {slug && canAccess(slug, 'edit') && effectiveLevel !== 'view' && (
-              <button
-                id="record-edit-btn"
-                onClick={() => setEditing(true)}
-                className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90"
-              >
+              <Button id="record-edit-btn" onClick={() => setEditing(true)}>
                 Edit
-              </button>
+              </Button>
             )}
             {/* Sharing a record is a 'manage' action — hidden for someone who
                 merely holds view/edit on it. */}
             {(effectiveLevel === undefined || effectiveLevel === 'manage') && (
-              <button
-                id="record-share-btn"
-                onClick={() => setSharing(true)}
-                className="rounded-lg border border-border bg-muted px-4 py-2 text-sm font-medium text-foreground hover:bg-accent"
-              >
+              <Button id="record-share-btn" variant="outline" onClick={() => setSharing(true)}>
                 Share
-              </button>
+              </Button>
             )}
             {slug && canAccess(slug, 'delete') && effectiveLevel !== 'view' && (
-              <button
+              <Button
                 id="record-delete-btn"
+                variant="outline"
                 onClick={() => setConfirmingDelete(true)}
-                className="rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-500/20 dark:text-red-400"
+                className="border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
               >
                 Delete
-              </button>
+              </Button>
             )}
           </div>
         )}
@@ -316,40 +299,27 @@ export default function ObjectRecordPage() {
         <>
           <div className="px-6 py-5 text-sm">
             {deleteError && (
-              <div className="mb-4 rounded-md bg-red-500/10 px-3 py-2 text-[13px] text-red-600 dark:text-red-400">{deleteError}</div>
+              <div className="mb-4 rounded-md bg-destructive/10 px-3 py-2 text-[13px] text-destructive">{deleteError}</div>
             )}
             This permanently removes <strong>{record.display || 'this record'}</strong>. This cannot be undone.
           </div>
-          <div className="flex gap-2 border-t px-6 py-4">
-            <button
-              onClick={closeDelete}
-              className="flex-1 rounded-md border border-border bg-muted px-3 py-2.5 text-sm font-medium hover:bg-accent"
-            >
+          <div className="flex gap-2 border-t border-border px-6 py-4">
+            <Button variant="outline" onClick={closeDelete} className="flex-1">
               Cancel
-            </button>
-            <button
+            </Button>
+            <Button
               id="record-delete-confirm-btn"
+              variant="destructive"
               onClick={handleDelete}
               disabled={deleting}
-              className="flex-1 rounded-md bg-red-600 px-3 py-2.5 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60"
+              className="flex-1"
             >
               {deleting ? 'Deleting…' : 'Delete'}
-            </button>
+            </Button>
           </div>
         </>
       </Modal>
     </div>
   );
 }
-
-const backLinkStyle = {
-  background: 'none',
-  border: 'none',
-  color: '#64748b',
-  cursor: 'pointer',
-  fontSize: 13,
-  fontWeight: 500,
-  padding: 0,
-  marginBottom: 16,
-};
 

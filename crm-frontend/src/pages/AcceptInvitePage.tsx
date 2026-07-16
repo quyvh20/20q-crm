@@ -6,6 +6,7 @@ import { prettyRole } from '../lib/roles';
 import { useDocumentTitle } from '../lib/useDocumentTitle';
 import LegalConsent from '../components/auth/LegalConsent';
 import { Mail, CheckCircle2, XCircle, ArrowRight, Loader2, Clock, Ban } from 'lucide-react';
+import { Button, Card, Input, Label, Spinner } from '@/components/ui';
 
 // AcceptInvitePage (U4): reads the invite's public metadata first so the invitee
 // sees "Join Acme as Sales Rep" (and their email) before committing, handles the
@@ -78,21 +79,13 @@ export default function AcceptInvitePage() {
     }
   };
 
-  const inputCls =
-    'w-full px-4 py-3 bg-neutral-800/50 border border-neutral-700 rounded-xl text-white placeholder-neutral-500 focus:outline-none focus:border-blue-500 transition-colors';
-  const labelCls = 'block text-sm font-medium text-neutral-300 mb-1.5';
-
   // One shared shell so every state renders inside the same card.
   const shell = (children: React.ReactNode) => (
-    <div className="min-h-screen bg-neutral-950 flex flex-col items-center justify-center p-4">
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute -top-[30%] -left-[10%] w-[70%] h-[70%] rounded-full bg-purple-900/20 blur-[120px]" />
-        <div className="absolute -bottom-[30%] -right-[10%] w-[70%] h-[70%] rounded-full bg-blue-900/20 blur-[120px]" />
-      </div>
-      <div className="relative z-10 w-full max-w-md animate-in fade-in slide-in-from-bottom-8 duration-700">
-        <div className="bg-neutral-900/80 backdrop-blur-xl border border-neutral-800/50 rounded-3xl p-8 shadow-2xl overflow-hidden relative">
+    <div className="min-h-screen bg-muted/30 flex flex-col items-center justify-center px-4 py-10">
+      <div className="w-full max-w-md animate-in fade-in slide-in-from-bottom-8 duration-700">
+        <Card className="p-8">
           {children}
-        </div>
+        </Card>
       </div>
     </div>
   );
@@ -100,8 +93,8 @@ export default function AcceptInvitePage() {
   if (previewLoading) {
     return shell(
       <div className="flex flex-col items-center py-8">
-        <Loader2 className="w-8 h-8 text-blue-400 animate-spin" />
-        <p className="text-neutral-400 mt-4">Loading your invitation…</p>
+        <Spinner size="lg" />
+        <p className="text-sm text-muted-foreground mt-4">Loading your invitation…</p>
       </div>,
     );
   }
@@ -111,22 +104,22 @@ export default function AcceptInvitePage() {
   if (deadStatus && deadStatus !== 'valid') {
     const config: Record<string, { icon: React.ReactNode; title: string; body: string; action?: () => void; actionLabel?: string }> = {
       invalid: {
-        icon: <XCircle className="w-8 h-8 text-red-400" />,
+        icon: <XCircle className="w-8 h-8 text-destructive" />,
         title: 'Invalid invitation',
         body: 'This link is broken or missing its invitation token. Ask whoever invited you to send a fresh link.',
       },
       expired: {
-        icon: <Clock className="w-8 h-8 text-amber-400" />,
+        icon: <Clock className="w-8 h-8 text-amber-600 dark:text-amber-400" />,
         title: 'This invitation has expired',
         body: `The invite${preview?.org_name ? ` to ${preview.org_name}` : ''} is no longer valid. Ask an admin to resend it — they can do that from their Members settings.`,
       },
       revoked: {
-        icon: <Ban className="w-8 h-8 text-red-400" />,
+        icon: <Ban className="w-8 h-8 text-destructive" />,
         title: 'This invitation was revoked',
         body: `This invite${preview?.org_name ? ` to ${preview.org_name}` : ''} is no longer active. If you think this is a mistake, ask an admin to invite you again.`,
       },
       accepted: {
-        icon: <CheckCircle2 className="w-8 h-8 text-green-400" />,
+        icon: <CheckCircle2 className="w-8 h-8 text-emerald-600 dark:text-emerald-400" />,
         title: 'Already accepted',
         body: 'This invitation has already been used. You can sign in with your account.',
         action: () => navigate('/login'),
@@ -136,12 +129,12 @@ export default function AcceptInvitePage() {
     const c = config[deadStatus] ?? config.invalid;
     return shell(
       <div className="flex flex-col items-center text-center">
-        <div className="w-16 h-16 bg-neutral-800/60 rounded-2xl flex items-center justify-center mb-5">{c.icon}</div>
-        <h1 className="text-2xl font-bold text-white mb-2">{c.title}</h1>
-        <p className="text-neutral-400 mb-6">{c.body}</p>
+        <div className="w-16 h-16 bg-muted rounded-xl flex items-center justify-center mb-5">{c.icon}</div>
+        <h1 className="text-lg font-semibold tracking-tight text-foreground mb-2">{c.title}</h1>
+        <p className="text-sm text-muted-foreground mb-6">{c.body}</p>
         <button
           onClick={c.action ?? (() => navigate('/login'))}
-          className="flex items-center gap-2 text-blue-400 hover:text-blue-300 transition-colors font-medium"
+          className="flex items-center gap-2 font-medium text-primary hover:underline"
         >
           {c.actionLabel ?? 'Go to sign in'} <ArrowRight className="w-4 h-4" />
         </button>
@@ -152,13 +145,13 @@ export default function AcceptInvitePage() {
   if (status === 'success') {
     return shell(
       <div className="animate-in fade-in zoom-in duration-500 flex flex-col items-center">
-        <div className="w-16 h-16 bg-green-500/20 rounded-full flex items-center justify-center mb-4 shadow-[0_0_30px_rgba(34,197,94,0.2)]">
-          <CheckCircle2 className="w-8 h-8 text-green-400" />
+        <div className="w-16 h-16 bg-emerald-500/10 rounded-full flex items-center justify-center mb-4">
+          <CheckCircle2 className="w-8 h-8 text-emerald-600 dark:text-emerald-400" />
         </div>
-        <h3 className="text-xl font-semibold text-white mb-2">
+        <h3 className="text-lg font-semibold tracking-tight text-foreground mb-2">
           {loggedIn ? `Welcome${preview?.org_name ? ` to ${preview.org_name}` : ''}!` : "You're in!"}
         </h3>
-        <p className="text-neutral-400 text-center">
+        <p className="text-sm text-muted-foreground text-center">
           {loggedIn ? 'Taking you in…' : 'Redirecting you to sign in…'}
         </p>
       </div>,
@@ -169,22 +162,22 @@ export default function AcceptInvitePage() {
   return shell(
     <>
       <div className="flex justify-center mb-6">
-        <div className="w-16 h-16 bg-gradient-to-tr from-purple-500 to-blue-500 rounded-2xl flex items-center justify-center shadow-lg transform rotate-3 hover:rotate-6 transition-transform">
-          <Mail className="w-8 h-8 text-white -rotate-3" />
+        <div className="w-16 h-16 bg-primary/10 rounded-xl flex items-center justify-center">
+          <Mail className="w-8 h-8 text-primary" />
         </div>
       </div>
 
-      <h1 className="text-2xl font-bold text-center text-white mb-2 tracking-tight">
-        Join <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple-300 to-blue-300">{preview?.org_name || 'the workspace'}</span>
+      <h1 className="text-lg font-semibold tracking-tight text-center text-foreground mb-2">
+        Join <span className="text-primary">{preview?.org_name || 'the workspace'}</span>
       </h1>
-      <p className="text-neutral-400 text-center mb-1">
-        You've been invited as <span className="font-semibold text-neutral-200">{prettyRole(preview?.role_name) || 'a member'}</span>.
+      <p className="text-sm text-muted-foreground text-center mb-1">
+        You've been invited as <span className="font-semibold text-foreground">{prettyRole(preview?.role_name) || 'a member'}</span>.
       </p>
       {/* An existing account gets no form fields, so the invited address is shown
           here. A NEW invitee sees it as a real (read-only) Email field inside the
           form below instead — see the password-manager note there. */}
       {hasAccount && preview?.email && (
-        <p className="text-neutral-500 text-center text-sm mb-6">{preview.email}</p>
+        <p className="text-sm text-muted-foreground text-center mb-6">{preview.email}</p>
       )}
 
       <form
@@ -194,7 +187,7 @@ export default function AcceptInvitePage() {
         {/* role="alert" so a rejected password (too short, mismatched) is
             announced rather than only appearing visually. */}
         {errorMessage && (
-          <div role="alert" className="bg-red-500/10 border border-red-500/20 rounded-xl p-3 flex gap-2 text-red-400 text-sm items-center animate-in slide-in-from-top-2">
+          <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 flex gap-2 text-sm text-destructive items-center animate-in slide-in-from-top-2">
             <XCircle className="w-4 h-4 shrink-0" />
             <span>{errorMessage}</span>
           </div>
@@ -203,7 +196,7 @@ export default function AcceptInvitePage() {
         {hasAccount ? (
           // Existing account: no password needed — accepting adds the workspace
           // and signs them in (control of the invite link is the auth factor).
-          <p className="text-sm text-neutral-400 text-center bg-neutral-800/40 rounded-xl p-3">
+          <p className="text-sm text-muted-foreground text-center bg-muted rounded-lg p-3">
             You already have an account with this email. Accepting will add this workspace and sign you in.
           </p>
         ) : (
@@ -215,15 +208,15 @@ export default function AcceptInvitePage() {
                 it against the wrong site. Read-only because the invite token, not
                 the user, decides which address is being claimed. */}
             <div>
-              <label htmlFor="invite-email" className={labelCls}>Email</label>
-              <input
+              <Label htmlFor="invite-email" className="mb-1.5">Email</Label>
+              <Input
                 id="invite-email"
                 name="email"
                 type="email"
                 autoComplete="username"
                 value={preview?.email ?? ''}
                 readOnly
-                className={`${inputCls} cursor-not-allowed opacity-80`}
+                className="cursor-not-allowed opacity-80"
               />
             </div>
 
@@ -233,46 +226,39 @@ export default function AcceptInvitePage() {
                 four anonymous boxes. */}
             <div className="flex gap-3">
               <div className="flex-1">
-                <label htmlFor="invite-first-name" className={labelCls}>First name</label>
-                <input id="invite-first-name" name="first_name" className={inputCls} placeholder="Jane" value={firstName} onChange={e => setFirstName(e.target.value)} autoComplete="given-name" />
+                <Label htmlFor="invite-first-name" className="mb-1.5">First name</Label>
+                <Input id="invite-first-name" name="first_name" placeholder="Jane" value={firstName} onChange={e => setFirstName(e.target.value)} autoComplete="given-name" />
               </div>
               <div className="flex-1">
-                <label htmlFor="invite-last-name" className={labelCls}>Last name</label>
-                <input id="invite-last-name" name="last_name" className={inputCls} placeholder="Doe" value={lastName} onChange={e => setLastName(e.target.value)} autoComplete="family-name" />
+                <Label htmlFor="invite-last-name" className="mb-1.5">Last name</Label>
+                <Input id="invite-last-name" name="last_name" placeholder="Doe" value={lastName} onChange={e => setLastName(e.target.value)} autoComplete="family-name" />
               </div>
             </div>
             <div>
-              <label htmlFor="invite-password" className={labelCls}>Create a password</label>
-              <input id="invite-password" name="new-password" className={inputCls} type="password" placeholder="Min. 8 characters" value={password} onChange={e => setPassword(e.target.value)} autoComplete="new-password" minLength={8} />
+              <Label htmlFor="invite-password" className="mb-1.5">Create a password</Label>
+              <Input id="invite-password" name="new-password" type="password" placeholder="Min. 8 characters" value={password} onChange={e => setPassword(e.target.value)} autoComplete="new-password" minLength={8} />
             </div>
             <div>
-              <label htmlFor="invite-confirm-password" className={labelCls}>Confirm password</label>
-              <input id="invite-confirm-password" name="confirm-password" className={inputCls} type="password" placeholder="Re-enter your password" value={confirm} onChange={e => setConfirm(e.target.value)} autoComplete="new-password" />
+              <Label htmlFor="invite-confirm-password" className="mb-1.5">Confirm password</Label>
+              <Input id="invite-confirm-password" name="confirm-password" type="password" placeholder="Re-enter your password" value={confirm} onChange={e => setConfirm(e.target.value)} autoComplete="new-password" />
             </div>
           </>
         )}
 
-        <button
-          type="submit"
-          disabled={status === 'loading'}
-          className="w-full relative group overflow-hidden rounded-xl bg-white text-neutral-950 font-semibold py-4 px-6 transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-70 disabled:hover:scale-100 mt-1"
-        >
-          <div className="absolute inset-0 bg-gradient-to-r from-purple-200/50 to-blue-200/50 opacity-0 group-hover:opacity-100 transition-opacity" />
-          <span className="relative flex items-center justify-center gap-2">
-            {status === 'loading' ? (
-              <><Loader2 className="w-5 h-5 animate-spin" /> Joining...</>
-            ) : (
-              <>{hasAccount ? 'Accept & continue' : 'Join workspace'} <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" /></>
-            )}
-          </span>
-        </button>
+        <Button type="submit" disabled={status === 'loading'} className="w-full mt-1">
+          {status === 'loading' ? (
+            <><Loader2 className="animate-spin" /> Joining...</>
+          ) : (
+            <>{hasAccount ? 'Accept & continue' : 'Join workspace'} <ArrowRight /></>
+          )}
+        </Button>
 
         {!hasAccount && (
           <button
             type="button"
             disabled={status === 'loading'}
             onClick={() => submit(false)}
-            className="w-full text-sm text-neutral-400 hover:text-neutral-200 transition-colors py-2 disabled:opacity-50"
+            className="w-full text-sm text-muted-foreground hover:text-foreground transition-colors py-2 disabled:opacity-50"
           >
             I'll sign in with Google instead
           </button>
@@ -282,7 +268,7 @@ export default function AcceptInvitePage() {
             BRAND-NEW invitee: someone who already has an account agreed to these
             terms when they created it, and re-asking on a workspace join would be
             noise. Covers both paths above (set a password, or defer to Google). */}
-        {!hasAccount && <LegalConsent className="mt-1 text-neutral-500" />}
+        {!hasAccount && <LegalConsent className="mt-1" />}
       </form>
     </>,
   );

@@ -1,15 +1,17 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import MDEditor from '@uiw/react-md-editor';
+import { Building2, Check, ClipboardList, Loader2, Package, Search, Settings, Target, X, type LucideIcon } from 'lucide-react';
 import { getKBSections, upsertKBSection, getKBAIPrompt, type KBEntry } from '../../lib/api';
 import Modal from '../common/Modal';
+import { Button, Input, Spinner } from '@/components/ui';
 
-const SECTIONS = [
-  { key: 'company', label: 'Company', icon: '🏢' },
-  { key: 'products', label: 'Products', icon: '📦' },
-  { key: 'playbook', label: 'Playbook', icon: '📋' },
-  { key: 'process', label: 'Process', icon: '⚙️' },
-  { key: 'competitors', label: 'Competitors', icon: '🎯' },
-] as const;
+const SECTIONS: { key: string; label: string; icon: LucideIcon }[] = [
+  { key: 'company', label: 'Company', icon: Building2 },
+  { key: 'products', label: 'Products', icon: Package },
+  { key: 'playbook', label: 'Playbook', icon: ClipboardList },
+  { key: 'process', label: 'Process', icon: Settings },
+  { key: 'competitors', label: 'Competitors', icon: Target },
+];
 
 export default function KnowledgeBase() {
   const [activeSection, setActiveSection] = useState<string>('company');
@@ -110,7 +112,7 @@ export default function KnowledgeBase() {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <div className="animate-spin h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full" />
+        <Spinner size="lg" />
       </div>
     );
   }
@@ -124,15 +126,12 @@ export default function KnowledgeBase() {
         <div>
           <h2 className="text-lg font-semibold">Business Knowledge Base</h2>
         </div>
-        <div className="rounded-md border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-400">
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
           {loadError} — editing is disabled so your existing content isn't overwritten.
         </div>
-        <button
-          onClick={loadSections}
-          className="px-4 py-2 text-sm font-medium rounded-lg border border-border hover:bg-accent transition-colors"
-        >
+        <Button variant="outline" onClick={loadSections}>
           Try again
-        </button>
+        </Button>
       </div>
     );
   }
@@ -147,60 +146,61 @@ export default function KnowledgeBase() {
             Teach your AI assistant about your company, products, and sales approach.
           </p>
         </div>
-        <button
-          onClick={handlePreviewPrompt}
-          className="px-4 py-2 text-sm font-medium rounded-lg bg-gradient-to-r from-indigo-500 to-purple-600 text-white hover:opacity-90 transition-opacity"
-        >
-          🔍 Preview AI Prompt
-        </button>
+        <Button onClick={handlePreviewPrompt}>
+          <Search aria-hidden /> Preview AI Prompt
+        </Button>
       </div>
 
       {/* Main layout */}
       <div className="flex gap-4 min-h-[500px]">
         {/* Section tabs (left) */}
         <div className="w-48 flex-shrink-0 space-y-1">
-          {SECTIONS.map(s => (
+          {SECTIONS.map(s => {
+            const Icon = s.icon;
+            return (
             <button
               key={s.key}
+              type="button"
               onClick={() => setActiveSection(s.key)}
-              className={`w-full text-left px-3 py-2.5 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${
+              className={`w-full text-left px-3 py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                 activeSection === s.key
-                  ? 'bg-blue-500/10 text-blue-500 border border-blue-500/30'
-                  : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+                  ? 'bg-primary/10 text-primary'
+                  : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
               }`}
             >
-              <span>{s.icon}</span>
+              <Icon aria-hidden className="h-4 w-4 shrink-0" />
               {s.label}
               {entries[s.key] && (
-                <span className="ml-auto w-2 h-2 rounded-full bg-green-400" title="Has content" />
+                <span className="ml-auto w-2 h-2 rounded-full bg-emerald-500" title="Has content" />
               )}
             </button>
-          ))}
+            );
+          })}
         </div>
 
         {/* Editor (right) */}
         <div className="flex-1 min-w-0 space-y-3">
           {/* Editor toolbar */}
           <div className="flex items-center justify-between">
-            <input
+            <Input
               value={title}
               onChange={e => setTitle(e.target.value)}
-              className="text-lg font-semibold bg-transparent border-none outline-none flex-1"
+              className="flex-1 border-none bg-transparent text-lg font-semibold shadow-none focus-visible:ring-0"
               placeholder="Section title"
             />
             <div className="flex items-center gap-3 text-sm">
               <span className="text-muted-foreground">~{tokenEstimate} tokens</span>
               {saveStatus === 'saving' && (
-                <span className="text-yellow-600 flex items-center gap-1">
-                  <span className="animate-spin h-3 w-3 border-2 border-yellow-600 border-t-transparent rounded-full" />
+                <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400">
+                  <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
                   Saving…
                 </span>
               )}
               {saveStatus === 'saved' && (
-                <span className="text-green-600">✓ Saved</span>
+                <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400"><Check className="h-3.5 w-3.5" aria-hidden /> Saved</span>
               )}
               {saveStatus === 'error' && (
-                <span className="text-red-500">✗ Error</span>
+                <span className="inline-flex items-center gap-1 text-destructive"><X className="h-3.5 w-3.5" aria-hidden /> Error</span>
               )}
             </div>
           </div>
@@ -223,7 +223,7 @@ export default function KnowledgeBase() {
       <Modal
         open={showPrompt}
         onClose={() => setShowPrompt(false)}
-        title="🤖 AI System Prompt Preview"
+        title="AI System Prompt Preview"
         size="3xl"
         padded={false}
       >
@@ -233,7 +233,7 @@ export default function KnowledgeBase() {
               {aiPrompt}
             </pre>
           </div>
-          <div className="px-6 py-3 border-t text-sm text-muted-foreground">
+          <div className="px-6 py-3 border-t border-border text-sm text-muted-foreground">
             This is exactly what the AI sees when it helps your team.
           </div>
         </>

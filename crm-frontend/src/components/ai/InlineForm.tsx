@@ -1,16 +1,27 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { Briefcase, User } from 'lucide-react';
 import type { FormPayload } from './chatTypes';
 import {
   createContact, createDeal, getStages, getFieldDefs, getContacts,
   getObjectDef, createObjectRecord,
   type PipelineStage, type CustomFieldDef, type Contact, type CustomObjectDef,
 } from '../../lib/api';
+import { Button } from '../ui/button';
+import { Spinner } from '../ui/spinner';
 
 interface Props {
   payload: FormPayload;
   onSuccess: (message: string) => void;
   onCancel: () => void;
 }
+
+// ── Shared presentation (token classes; `.ai-inline-form` stays as a marker
+//    class so host pages can constrain the form's width) ───────────────────────
+
+const formClass = 'ai-inline-form mb-3 mt-1 w-full overflow-hidden rounded-xl border border-border bg-card p-4 shadow-sm';
+const inputClass =
+  'w-full rounded-lg border border-input bg-background px-3 py-2 text-[13px] text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/20 data-[err="1"]:border-destructive data-[err="1"]:ring-2 data-[err="1"]:ring-destructive/10';
+const selectClass = `${inputClass} cursor-pointer`;
 
 // ── Contact Form ──────────────────────────────────────────────────────────────
 
@@ -66,28 +77,28 @@ function ContactForm({ payload, onSuccess, onCancel }: Props) {
     } finally { setLoading(false); }
   };
 
-  if (done) return <SuccessCard icon="👤" message={`Contact **${name}** created!`} />;
+  if (done) return <SuccessCard icon={<User aria-hidden className="h-[18px] w-[18px]" />} message={`Contact **${name}** created!`} />;
 
   return (
-    <form onSubmit={submit} className="ai-inline-form" noValidate>
-      <FormHeader icon="👤" title="New Contact" />
+    <form onSubmit={submit} className={formClass} noValidate>
+      <FormHeader icon={<User aria-hidden className="h-4 w-4 text-primary" />} title="New Contact" />
       <Field label="Full Name" required error={errors.name}>
-        <input className="ai-f-input" data-err={errors.name ? '1' : ''} value={name}
+        <input className={inputClass} data-err={errors.name ? '1' : ''} value={name}
           onChange={e => { setName(e.target.value); setErrors(p => ({ ...p, name: '' })); }}
           placeholder="Jane Smith" autoFocus />
       </Field>
       <Field label="Email" error={errors.email}>
-        <input className="ai-f-input" data-err={errors.email ? '1' : ''} type="email" value={email}
+        <input className={inputClass} data-err={errors.email ? '1' : ''} type="email" value={email}
           onChange={e => { setEmail(e.target.value); setErrors(p => ({ ...p, email: '' })); }}
           placeholder="jane@example.com" />
       </Field>
       <Field label="Phone">
-        <input className="ai-f-input" value={phone}
+        <input className={inputClass} value={phone}
           onChange={e => setPhone(e.target.value)} placeholder="+1 555 000 0000" />
       </Field>
       {fieldDefs.length > 0 && (
         <>
-          <div className="ai-f-divider"><span>Custom Fields</span></div>
+          <FormDivider>Custom Fields</FormDivider>
           {fieldDefs.map(def => (
             <CustomFieldInput key={def.key} def={def} value={customFields[def.key]}
               error={errors[`cf_${def.key}`]}
@@ -95,10 +106,9 @@ function ContactForm({ payload, onSuccess, onCancel }: Props) {
           ))}
         </>
       )}
-      {errors._form && <p className="ai-f-form-err">{errors._form}</p>}
+      {errors._form && <FormError>{errors._form}</FormError>}
       <FormActions loading={loading} onCancel={onCancel} submitLabel="Create Contact" />
       <div ref={formEndRef} />
-      <style>{formCSS}</style>
     </form>
   );
 }
@@ -177,32 +187,32 @@ function DealForm({ payload, onSuccess, onCancel }: Props) {
     } finally { setLoading(false); }
   };
 
-  if (done) return <SuccessCard icon="💼" message={`Deal **${title}** created!`} />;
+  if (done) return <SuccessCard icon={<Briefcase aria-hidden className="h-[18px] w-[18px]" />} message={`Deal **${title}** created!`} />;
 
   return (
-    <form onSubmit={submit} className="ai-inline-form" noValidate>
-      <FormHeader icon="💼" title="New Deal" />
+    <form onSubmit={submit} className={formClass} noValidate>
+      <FormHeader icon={<Briefcase aria-hidden className="h-4 w-4 text-primary" />} title="New Deal" />
       <Field label="Deal Title" required error={errors.title}>
-        <input className="ai-f-input" data-err={errors.title ? '1' : ''} value={title}
+        <input className={inputClass} data-err={errors.title ? '1' : ''} value={title}
           onChange={e => { setTitle(e.target.value); setErrors(p => ({ ...p, title: '' })); }}
           placeholder="e.g. Acme Corp - Enterprise" autoFocus />
       </Field>
-      <div className="ai-f-row">
+      <div className="flex gap-2.5 [&>div]:min-w-0 [&>div]:flex-1">
         <Field label="Value ($)" error={errors.value}>
-          <input className="ai-f-input" data-err={errors.value ? '1' : ''} type="number" min="0" value={value}
+          <input className={inputClass} data-err={errors.value ? '1' : ''} type="number" min="0" value={value}
             onChange={e => { setValue(e.target.value); setErrors(p => ({ ...p, value: '' })); }} placeholder="0" />
         </Field>
         <Field label="Probability (%)" error={errors.probability}>
-          <input className="ai-f-input" data-err={errors.probability ? '1' : ''} type="number" min="0" max="100"
+          <input className={inputClass} data-err={errors.probability ? '1' : ''} type="number" min="0" max="100"
             value={probability}
             onChange={e => { setProbability(e.target.value); setErrors(p => ({ ...p, probability: '' })); }} placeholder="20" />
         </Field>
       </div>
       <Field label="Contact">
-        <input className="ai-f-input" value={contactSearch}
+        <input className={inputClass} value={contactSearch}
           onChange={e => { setContactSearch(e.target.value); setContactId(''); }} placeholder="Search…" />
         {contacts.length > 0 && (
-          <select className="ai-f-select" value={contactId}
+          <select className={`${selectClass} mt-1.5`} value={contactId}
             onChange={e => {
               setContactId(e.target.value);
               const c = contacts.find(ct => ct.id === e.target.value);
@@ -219,14 +229,14 @@ function DealForm({ payload, onSuccess, onCancel }: Props) {
       </Field>
       {stages.length > 0 && (
         <Field label="Stage">
-          <select className="ai-f-select" value={stageId} onChange={e => setStageId(e.target.value)}>
+          <select className={selectClass} value={stageId} onChange={e => setStageId(e.target.value)}>
             {stages.map(st => <option key={st.id} value={st.id}>{st.name}</option>)}
           </select>
         </Field>
       )}
       {fieldDefs.length > 0 && (
         <>
-          <div className="ai-f-divider"><span>Custom Fields</span></div>
+          <FormDivider>Custom Fields</FormDivider>
           {fieldDefs.map(def => (
             <CustomFieldInput key={def.key} def={def} value={customFields[def.key]}
               error={errors[`cf_${def.key}`]}
@@ -234,10 +244,9 @@ function DealForm({ payload, onSuccess, onCancel }: Props) {
           ))}
         </>
       )}
-      {errors._form && <p className="ai-f-form-err">{errors._form}</p>}
+      {errors._form && <FormError>{errors._form}</FormError>}
       <FormActions loading={loading} onCancel={onCancel} submitLabel="Create Deal" />
       <div ref={formEndRef} />
-      <style>{formCSS}</style>
     </form>
   );
 }
@@ -250,9 +259,9 @@ function CustomFieldInput({ def, value, error, onChange }: {
   if (def.type === 'boolean') {
     return (
       <Field label={def.label} required={def.required} error={error}>
-        <label className="ai-f-checkbox-row">
-          <input type="checkbox" checked={!!value} onChange={e => onChange(e.target.checked)} />
-          <span>{value ? 'Yes' : 'No'}</span>
+        <label className="flex cursor-pointer items-center gap-2 py-1">
+          <input type="checkbox" className="h-4 w-4 cursor-pointer accent-primary" checked={!!value} onChange={e => onChange(e.target.checked)} />
+          <span className="text-[13px] text-foreground">{value ? 'Yes' : 'No'}</span>
         </label>
       </Field>
     );
@@ -260,7 +269,7 @@ function CustomFieldInput({ def, value, error, onChange }: {
   if (def.type === 'select') {
     return (
       <Field label={def.label} required={def.required} error={error}>
-        <select className="ai-f-select" value={(value as string) ?? ''} onChange={e => onChange(e.target.value || null)}>
+        <select className={selectClass} value={(value as string) ?? ''} onChange={e => onChange(e.target.value || null)}>
           <option value="">Select…</option>
           {def.options?.map(opt => <option key={opt} value={opt}>{opt}</option>)}
         </select>
@@ -270,7 +279,7 @@ function CustomFieldInput({ def, value, error, onChange }: {
   const typeMap: Record<string, string> = { text: 'text', number: 'number', date: 'date', url: 'url' };
   return (
     <Field label={def.label} required={def.required} error={error}>
-      <input className="ai-f-input" data-err={error ? '1' : ''}
+      <input className={inputClass} data-err={error ? '1' : ''}
         type={typeMap[def.type] || 'text'}
         value={value !== undefined && value !== null ? String(value) : ''}
         onChange={e => {
@@ -284,11 +293,11 @@ function CustomFieldInput({ def, value, error, onChange }: {
 
 // ── Shared sub-components ─────────────────────────────────────────────────────
 
-function FormHeader({ icon, title }: { icon: string; title: string }) {
+function FormHeader({ icon, title }: { icon: React.ReactNode; title: string }) {
   return (
-    <div className="ai-f-header">
-      <span className="ai-f-header-icon">{icon}</span>
-      <span className="ai-f-header-title">{title}</span>
+    <div className="mb-3.5 flex items-center gap-2.5 border-b border-border pb-3">
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-base">{icon}</span>
+      <span className="text-[15px] font-bold text-foreground">{title}</span>
     </div>
   );
 }
@@ -297,11 +306,27 @@ function Field({ label, required, error, children }: {
   label: string; required?: boolean; error?: string; children: React.ReactNode;
 }) {
   return (
-    <div className="ai-f-field">
-      <label className="ai-f-label">{label}{required && <span className="ai-f-req"> *</span>}</label>
+    <div className="mb-3">
+      <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+        {label}{required && <span className="text-destructive"> *</span>}
+      </label>
       {children}
-      {error && <p className="ai-f-field-err">{error}</p>}
+      {error && <p className="mt-1 text-[11px] font-medium text-destructive">{error}</p>}
     </div>
+  );
+}
+
+function FormDivider({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="my-3.5 flex items-center gap-2 before:h-px before:flex-1 before:bg-border after:h-px after:flex-1 after:bg-border">
+      <span className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">{children}</span>
+    </div>
+  );
+}
+
+function FormError({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="my-1.5 rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-xs text-destructive">{children}</p>
   );
 }
 
@@ -309,24 +334,23 @@ function FormActions({ loading, onCancel, submitLabel }: {
   loading: boolean; onCancel: () => void; submitLabel: string;
 }) {
   return (
-    <div className="ai-f-actions">
-      <button type="button" className="ai-f-cancel" onClick={onCancel} disabled={loading}>Cancel</button>
-      <button type="submit" className="ai-f-submit" disabled={loading}>
+    <div className="mt-3.5 flex justify-end gap-2 border-t border-border pt-3">
+      <Button type="button" variant="outline" size="sm" onClick={onCancel} disabled={loading}>Cancel</Button>
+      <Button type="submit" size="sm" disabled={loading}>
         {loading ? 'Saving…' : submitLabel}
-      </button>
+      </Button>
     </div>
   );
 }
 
-function SuccessCard({ icon, message }: { icon: string; message: string }) {
+function SuccessCard({ icon, message }: { icon: React.ReactNode; message: string }) {
   const parts = message.split(/\*\*(.*?)\*\*/g);
   return (
-    <div className="ai-f-success">
-      <span style={{ fontSize: 18 }}>{icon}</span>
-      <p>
+    <div className="mb-2 mt-1 flex items-center gap-2.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3">
+      <span className="shrink-0 text-emerald-600 dark:text-emerald-400">{icon}</span>
+      <p className="m-0 text-[13px] leading-normal text-foreground">
         {parts.map((p, i) => i % 2 === 1 ? <strong key={i}>{p}</strong> : p)}
       </p>
-      <style>{formCSS}</style>
     </div>
   );
 }
@@ -373,6 +397,8 @@ function CustomObjectForm({ payload, onSuccess, onCancel }: Props) {
   }, [loadingSchema]);
 
   const fields = objectDef?.fields || [];
+  // The registry stores each object's icon as an emoji string — that's data, so
+  // it renders as text here (unlike the hardcoded contact/deal icons above).
   const icon = objectDef?.icon || '📦';
   const label = objectDef?.label || slug;
 
@@ -409,30 +435,28 @@ function CustomObjectForm({ payload, onSuccess, onCancel }: Props) {
     } finally { setLoading(false); }
   };
 
-  if (done) return <SuccessCard icon={icon} message={`${label} **${displayName}** created!`} />;
+  if (done) return <SuccessCard icon={<span className="text-lg">{icon}</span>} message={`${label} **${displayName}** created!`} />;
 
   // Loading skeleton
   if (loadingSchema) {
     return (
-      <div className="ai-inline-form" style={{ textAlign: 'center', padding: '24px 16px' }}>
-        <div style={{ fontSize: 18, marginBottom: 8 }}>{icon}</div>
-        <p style={{ fontSize: 13, color: 'var(--muted-foreground)' }}>Loading {slug} schema…</p>
-        <style>{formCSS}</style>
+      <div className={`${formClass} flex justify-center px-4 py-6 text-center`}>
+        <Spinner label={`Loading ${slug} schema…`} />
       </div>
     );
   }
 
   return (
-    <form onSubmit={submit} className="ai-inline-form" noValidate>
-      <FormHeader icon={icon} title={`New ${label}`} />
+    <form onSubmit={submit} className={formClass} noValidate>
+      <FormHeader icon={<span className="text-base">{icon}</span>} title={`New ${label}`} />
       <Field label="Display Name" required error={errors.display_name}>
-        <input className="ai-f-input" data-err={errors.display_name ? '1' : ''} value={displayName}
+        <input className={inputClass} data-err={errors.display_name ? '1' : ''} value={displayName}
           onChange={e => { setDisplayName(e.target.value); setErrors(p => ({ ...p, display_name: '' })); }}
           placeholder={`Enter ${label.toLowerCase()} name`} autoFocus />
       </Field>
       {fields.length > 0 && (
         <>
-          <div className="ai-f-divider"><span>Fields</span></div>
+          <FormDivider>Fields</FormDivider>
           {fields.map(def => (
             <CustomFieldInput key={def.key} def={def} value={fieldValues[def.key]}
               error={errors[`f_${def.key}`]}
@@ -443,10 +467,9 @@ function CustomObjectForm({ payload, onSuccess, onCancel }: Props) {
           ))}
         </>
       )}
-      {errors._form && <p className="ai-f-form-err">{errors._form}</p>}
+      {errors._form && <FormError>{errors._form}</FormError>}
       <FormActions loading={loading} onCancel={onCancel} submitLabel={`Create ${label}`} />
       <div ref={formEndRef} />
-      <style>{formCSS}</style>
     </form>
   );
 }
@@ -459,176 +482,3 @@ export default function InlineForm(props: Props) {
   if (props.payload.form_type === 'custom_object') return <CustomObjectForm {...props} />;
   return null;
 }
-
-// ── CSS (class-based, scoped to .ai-inline-form) ─────────────────────────────
-
-const formCSS = `
-  .ai-inline-form {
-    background: var(--card, #fff);
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 16px;
-    padding: 16px 16px 18px;
-    margin: 4px 0 12px;
-    box-shadow: 0 2px 12px rgba(0,0,0,0.06);
-    animation: fadeSlide 0.22s ease;
-    overflow: hidden;
-  }
-  .ai-f-header {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-bottom: 14px;
-    padding-bottom: 12px;
-    border-bottom: 1px solid var(--border, #e5e7eb);
-  }
-  .ai-f-header-icon {
-    width: 32px; height: 32px;
-    border-radius: 8px;
-    background: linear-gradient(135deg, rgba(245,158,11,0.12), rgba(239,68,68,0.08));
-    display: flex; align-items: center; justify-content: center;
-    font-size: 16px; flex-shrink: 0;
-  }
-  .ai-f-header-title {
-    font-weight: 700; font-size: 15px;
-    color: var(--foreground, #111);
-  }
-  .ai-f-field {
-    margin-bottom: 12px;
-  }
-  .ai-f-label {
-    display: block;
-    font-size: 11px; font-weight: 600;
-    color: var(--muted-foreground, #6b7280);
-    margin-bottom: 4px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-  .ai-f-req { color: #ef4444; }
-  .ai-f-input {
-    width: 100%;
-    border: 1.5px solid var(--border, #e5e7eb);
-    border-radius: 10px;
-    padding: 8px 12px;
-    font-size: 13px;
-    background: var(--background, #f9fafb);
-    color: var(--foreground, #111);
-    box-sizing: border-box;
-    outline: none;
-    transition: border-color 0.15s, box-shadow 0.15s;
-    font-family: inherit;
-  }
-  .ai-f-input:focus {
-    border-color: #f59e0b;
-    box-shadow: 0 0 0 2px rgba(245,158,11,0.12);
-  }
-  .ai-f-input[data-err="1"] {
-    border-color: #ef4444;
-    box-shadow: 0 0 0 2px rgba(239,68,68,0.1);
-  }
-  .ai-f-select {
-    width: 100%;
-    border: 1.5px solid var(--border, #e5e7eb);
-    border-radius: 10px;
-    padding: 8px 12px;
-    font-size: 13px;
-    background: var(--background, #f9fafb);
-    color: var(--foreground, #111);
-    box-sizing: border-box;
-    outline: none;
-    cursor: pointer;
-    font-family: inherit;
-  }
-  .ai-f-select:focus {
-    border-color: #f59e0b;
-    box-shadow: 0 0 0 2px rgba(245,158,11,0.12);
-  }
-  .ai-f-row {
-    display: flex; gap: 10px;
-  }
-  .ai-f-row > .ai-f-field { flex: 1; min-width: 0; }
-  .ai-f-divider {
-    display: flex; align-items: center; gap: 8px;
-    margin: 14px 0 10px;
-  }
-  .ai-f-divider::before, .ai-f-divider::after {
-    content: ''; flex: 1; height: 1px;
-    background: var(--border, #e5e7eb);
-  }
-  .ai-f-divider span {
-    font-size: 9px; font-weight: 700;
-    color: var(--muted-foreground, #9ca3af);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-  }
-  .ai-f-field-err {
-    color: #ef4444; font-size: 11px;
-    margin: 3px 0 0; font-weight: 500;
-  }
-  .ai-f-form-err {
-    color: #ef4444; font-size: 12px;
-    margin: 6px 0; padding: 8px 12px;
-    background: rgba(239,68,68,0.06);
-    border-radius: 8px;
-    border: 1px solid rgba(239,68,68,0.15);
-  }
-  .ai-f-actions {
-    display: flex; gap: 8px;
-    justify-content: flex-end;
-    margin-top: 14px;
-    padding-top: 12px;
-    border-top: 1px solid var(--border, #e5e7eb);
-  }
-  .ai-f-cancel {
-    padding: 7px 14px; border-radius: 10px;
-    border: 1px solid var(--border, #e5e7eb);
-    background: transparent; cursor: pointer;
-    font-size: 12px; font-weight: 600;
-    color: var(--muted-foreground, #6b7280);
-    transition: all 0.15s;
-  }
-  .ai-f-cancel:hover {
-    background: var(--background, #f9fafb);
-    border-color: var(--foreground, #374151);
-    color: var(--foreground, #374151);
-  }
-  .ai-f-submit {
-    padding: 7px 18px; border-radius: 10px;
-    border: none;
-    background: linear-gradient(135deg, #f59e0b, #ef4444);
-    color: #fff; cursor: pointer;
-    font-size: 12px; font-weight: 700;
-    transition: all 0.15s;
-    box-shadow: 0 2px 8px rgba(245,158,11,0.25);
-  }
-  .ai-f-submit:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(245,158,11,0.35);
-  }
-  .ai-f-submit:disabled {
-    opacity: 0.7; cursor: not-allowed; transform: none;
-  }
-  .ai-f-success {
-    display: flex; align-items: center; gap: 10px;
-    border: 1px solid #22c55e;
-    border-radius: 14px;
-    padding: 12px 16px;
-    background: linear-gradient(135deg, rgba(34,197,94,0.08), rgba(16,185,129,0.04));
-    margin: 4px 0 8px;
-    animation: fadeSlide 0.22s ease;
-  }
-  .ai-f-success p {
-    margin: 0; font-size: 13px;
-    color: var(--foreground); line-height: 1.5;
-  }
-  .ai-f-checkbox-row {
-    display: flex; align-items: center; gap: 8px;
-    cursor: pointer; padding: 4px 0;
-  }
-  .ai-f-checkbox-row input {
-    width: 16px; height: 16px;
-    accent-color: #f59e0b; cursor: pointer;
-  }
-  .ai-f-checkbox-row span {
-    font-size: 13px; color: var(--foreground, #374151);
-  }
-`;

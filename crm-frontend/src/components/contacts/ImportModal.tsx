@@ -1,7 +1,9 @@
 import { useState, useCallback } from 'react';
 import { useDropzone } from 'react-dropzone';
+import { Upload, CircleX, Pencil, AlertTriangle } from 'lucide-react';
 import { importContacts, type ImportResult } from '../../lib/api';
 import Modal from '../common/Modal';
+import { Badge, Button } from '@/components/ui';
 
 interface ImportModalProps {
   onClose: () => void;
@@ -76,15 +78,15 @@ export default function ImportModal({ onClose, onSuccess }: ImportModalProps) {
               className={`
                 border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-all
                 ${isDragActive
-                  ? 'border-blue-500 bg-blue-500/5'
-                  : 'border-muted-foreground/20 hover:border-blue-500/50 hover:bg-muted/30'
+                  ? 'border-primary bg-primary/5'
+                  : 'border-muted-foreground/20 hover:border-primary/50 hover:bg-muted/30'
                 }
               `}
             >
               <input {...getInputProps()} />
               <div className="flex flex-col items-center gap-3">
-                <div className="h-12 w-12 rounded-full bg-blue-500/10 flex items-center justify-center">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-blue-500"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
+                <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center text-primary">
+                  <Upload aria-hidden className="h-6 w-6" />
                 </div>
                 {file ? (
                   <div>
@@ -125,31 +127,31 @@ export default function ImportModal({ onClose, onSuccess }: ImportModalProps) {
                 <button
                   id="conflict-mode-skip"
                   onClick={() => setConflictMode('skip')}
-                  className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border text-sm font-medium transition-all ${
+                  className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                     conflictMode === 'skip'
-                      ? 'border-blue-500 bg-blue-500/10 text-blue-600'
-                      : 'border-muted hover:border-muted-foreground/40 text-muted-foreground'
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-border hover:border-muted-foreground/40 text-muted-foreground'
                   }`}
                 >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>
+                  <CircleX aria-hidden className="h-[15px] w-[15px]" />
                   Skip duplicates
                 </button>
                 <button
                   id="conflict-mode-overwrite"
                   onClick={() => setConflictMode('overwrite')}
-                  className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border text-sm font-medium transition-all ${
+                  className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                     conflictMode === 'overwrite'
-                      ? 'border-amber-500 bg-amber-500/10 text-amber-600'
-                      : 'border-muted hover:border-muted-foreground/40 text-muted-foreground'
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-border hover:border-muted-foreground/40 text-muted-foreground'
                   }`}
                 >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                  <Pencil aria-hidden className="h-[15px] w-[15px]" />
                   Overwrite existing
                 </button>
               </div>
               {conflictMode === 'overwrite' && (
-                <p className="text-xs text-amber-500/80 mt-2 flex items-center gap-1">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                <p className="text-xs text-muted-foreground mt-2 flex items-center gap-1">
+                  <AlertTriangle aria-hidden className="h-3 w-3 shrink-0" />
                   Existing contacts with matching email will be updated with values from the file.
                 </p>
               )}
@@ -160,7 +162,7 @@ export default function ImportModal({ onClose, onSuccess }: ImportModalProps) {
               <div className="mt-4">
                 <div className="h-2 rounded-full bg-muted overflow-hidden">
                   <div
-                    className="h-full bg-gradient-to-r from-blue-500 to-purple-500 rounded-full transition-all duration-500"
+                    className="h-full bg-primary rounded-full transition-all duration-500"
                     style={{ width: `${progress}%` }}
                   />
                 </div>
@@ -170,43 +172,40 @@ export default function ImportModal({ onClose, onSuccess }: ImportModalProps) {
 
             {/* Error */}
             {error && (
-              <div className="mt-4 rounded-lg bg-red-500/10 border border-red-500/20 px-4 py-3 text-sm text-red-400">
+              <div className="mt-4 rounded-lg bg-destructive/10 border border-destructive/20 px-4 py-3 text-sm text-destructive">
                 {error}
               </div>
             )}
 
             {/* Actions */}
             <div className="flex gap-3 mt-6">
-              <button
-                onClick={onClose}
-                className="flex-1 px-4 py-2.5 rounded-lg border text-sm font-medium hover:bg-accent transition-colors"
-              >
+              <Button variant="outline" onClick={onClose} className="flex-1">
                 Cancel
-              </button>
-              <button
+              </Button>
+              <Button
                 onClick={handleUpload}
                 disabled={!file || isUploading}
-                className="flex-1 px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="flex-1"
               >
                 {isUploading ? 'Importing...' : 'Import'}
-              </button>
+              </Button>
             </div>
           </>
         ) : (
           /* Result summary */
           <div className="space-y-4">
             <div className="grid grid-cols-3 gap-3">
-              <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/20 p-4 text-center">
-                <p className="text-2xl font-bold text-emerald-400">{result.created}</p>
-                <p className="text-xs text-muted-foreground mt-1">Created</p>
+              <div className="rounded-xl border border-border bg-card p-4 text-center">
+                <p className="text-2xl font-bold text-foreground">{result.created}</p>
+                <Badge variant="success" className="mt-1">Created</Badge>
               </div>
-              <div className="rounded-xl bg-yellow-500/10 border border-yellow-500/20 p-4 text-center">
-                <p className="text-2xl font-bold text-yellow-400">{result.skipped}</p>
-                <p className="text-xs text-muted-foreground mt-1">Skipped</p>
+              <div className="rounded-xl border border-border bg-card p-4 text-center">
+                <p className="text-2xl font-bold text-foreground">{result.skipped}</p>
+                <Badge variant="warning" className="mt-1">Skipped</Badge>
               </div>
-              <div className="rounded-xl bg-red-500/10 border border-red-500/20 p-4 text-center">
-                <p className="text-2xl font-bold text-red-400">{result.errors}</p>
-                <p className="text-xs text-muted-foreground mt-1">Errors</p>
+              <div className="rounded-xl border border-border bg-card p-4 text-center">
+                <p className="text-2xl font-bold text-foreground">{result.errors}</p>
+                <Badge variant="destructive" className="mt-1">Errors</Badge>
               </div>
             </div>
 
@@ -214,17 +213,14 @@ export default function ImportModal({ onClose, onSuccess }: ImportModalProps) {
               <div className="rounded-lg bg-muted/30 border p-3 max-h-32 overflow-y-auto">
                 <p className="text-xs font-medium text-muted-foreground mb-2">Error Details</p>
                 {result.error_details.map((detail, i) => (
-                  <p key={i} className="text-xs text-red-400">{detail}</p>
+                  <p key={i} className="text-xs text-destructive">{detail}</p>
                 ))}
               </div>
             )}
 
-            <button
-              onClick={onClose}
-              className="w-full px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
-            >
+            <Button onClick={onClose} className="w-full">
               Done
-            </button>
+            </Button>
           </div>
         )}
       </>

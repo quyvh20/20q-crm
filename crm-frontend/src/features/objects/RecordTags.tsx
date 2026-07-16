@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { X } from 'lucide-react';
 import {
   listRecordTags,
   addRecordTag,
@@ -96,22 +97,31 @@ export default function RecordTags({ slug, recordId, prefetchedTags, prefetchedA
   const availableTags = allTags.filter((t) => !appliedTagIds.has(t.id));
 
   return (
-    <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: 16, marginTop: 8 }}>
+    <div className="mt-2 border-t border-border pt-4">
       {error && (
-        <div style={{ background: '#fef2f2', color: '#dc2626', padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>{error}</div>
+        <div className="mb-3 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>
       )}
-      <div style={{ fontSize: 12, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', marginBottom: 8 }}>Tags</div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
-        {tags.length === 0 && <span style={{ color: '#94a3b8', fontSize: 13 }}>No tags</span>}
+      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tags</div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {tags.length === 0 && <span className="text-sm text-muted-foreground">No tags</span>}
         {tags.map((t) => (
-          <span key={t.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: t.color || '#e2e8f0', color: '#fff', borderRadius: 12, padding: '2px 10px', fontSize: 12, fontWeight: 500 }}>
+          <span
+            key={t.id}
+            className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium ${
+              t.color ? '' : 'border-border bg-muted text-foreground'
+            }`}
+            // The chip's palette is the tag's own user-picked color — data, not chrome.
+            style={t.color ? { borderColor: t.color, color: t.color, background: `${t.color}1a` } : undefined}
+          >
             {t.name}
             {canEdit && (
               <button
                 onClick={() => handleRemoveTag(t.id)}
                 aria-label={`Remove tag ${t.name}`}
-                style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: 0 }}
-              >×</button>
+                className="rounded-full text-current transition-opacity hover:opacity-70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <X aria-hidden className="h-3 w-3" />
+              </button>
             )}
           </span>
         ))}
@@ -120,7 +130,7 @@ export default function RecordTags({ slug, recordId, prefetchedTags, prefetchedA
             value=""
             onChange={(e) => e.target.value && handleAddTag(e.target.value)}
             aria-label="Add tag"
-            style={{ border: '1px dashed #cbd5e1', borderRadius: 12, padding: '2px 8px', fontSize: 12, color: '#64748b', cursor: 'pointer', background: '#fff' }}
+            className="cursor-pointer rounded-full border border-dashed border-input bg-background px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <option value="">+ Add tag</option>
             {availableTags.map((t) => (

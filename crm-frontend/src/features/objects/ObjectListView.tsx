@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
+import { Check, LayoutGrid, List, Plus, Search, Sparkles, Upload, X } from 'lucide-react';
 import {
   getObjectSchema,
   listObjectRecordsUnified,
@@ -14,6 +15,23 @@ import { formatFieldValue } from './fieldHelpers';
 import ObjectForm from './ObjectForm';
 import ObjectKanban from './ObjectKanban';
 import ImportModal from '../../components/contacts/ImportModal';
+import Modal from '../../components/common/Modal';
+import {
+  Button,
+  EmptyState,
+  Input,
+  PageHeader,
+  Select,
+  Skeleton,
+  SpinnerBlock,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableShell,
+} from '@/components/ui';
 import { recordPath } from './recordRoutes';
 import { usePermissions } from '../../lib/auth';
 
@@ -274,55 +292,59 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
     Object.keys(filters).length > 0 || tagIds.length > 0 || semantic || !!search;
 
   if (!schema) {
-    return <div style={{ padding: 40, color: '#94a3b8', textAlign: 'center' }}>Loading...</div>;
+    return <SpinnerBlock label="Loading…" />;
   }
 
   const columns = schema.fields.slice(0, MAX_COLUMNS);
+  const emptyMessage = hasActiveFilters
+    ? `No ${schema.label_plural.toLowerCase()} match your filters.`
+    : canCreate
+      ? `No ${schema.label_plural.toLowerCase()} yet.`
+      : `No ${schema.label_plural.toLowerCase()} to show.`;
 
   return (
-    <div>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <div>
-          <h1 style={{ fontSize: 24, fontWeight: 700, margin: 0 }}>{schema.icon} {schema.label_plural}</h1>
-          <p style={{ color: '#64748b', marginTop: 4, fontSize: 14 }}>Manage your {schema.label_plural.toLowerCase()}</p>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          {stageField && (
-            <div style={{ display: 'inline-flex', border: '1px solid #d1d5db', borderRadius: 8, overflow: 'hidden' }}>
-              {(['table', 'board'] as const).map((v) => (
-                <button
-                  key={v}
-                  onClick={() => setView(v)}
-                  style={{
-                    padding: '8px 14px', fontSize: 13, fontWeight: 600, border: 'none', cursor: 'pointer',
-                    background: view === v ? '#3b82f6' : '#fff',
-                    color: view === v ? '#fff' : '#64748b',
-                  }}
-                >
-                  {v === 'table' ? 'Table' : 'Board'}
-                </button>
-              ))}
-            </div>
-          )}
-          {supportsImport && canCreate && (
-            <button
-              onClick={() => setShowImport(true)}
-              style={{ padding: '10px 16px', background: '#fff', color: '#334155', border: '1px solid #d1d5db', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 14 }}
-            >
-              Import
-            </button>
-          )}
-          {canCreate && (
-            <button
-              onClick={() => setPanel({ mode: 'create' })}
-              style={{ padding: '10px 20px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 14 }}
-            >
-              + Add {schema.label}
-            </button>
-          )}
-        </div>
-      </div>
+    <div className="mx-auto w-full max-w-6xl">
+      <PageHeader
+        title={
+          <span className="flex items-center gap-3">
+            <span aria-hidden className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted text-lg">
+              {schema.icon}
+            </span>
+            {schema.label_plural}
+          </span>
+        }
+        description={`Manage your ${schema.label_plural.toLowerCase()}`}
+        actions={
+          <>
+            {stageField && (
+              <div className="inline-flex items-center rounded-lg border border-input bg-background p-0.5 shadow-sm">
+                {(['table', 'board'] as const).map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setView(v)}
+                    className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                      view === v ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    {v === 'table' ? <List aria-hidden className="h-3.5 w-3.5" /> : <LayoutGrid aria-hidden className="h-3.5 w-3.5" />}
+                    {v === 'table' ? 'Table' : 'Board'}
+                  </button>
+                ))}
+              </div>
+            )}
+            {supportsImport && canCreate && (
+              <Button variant="outline" onClick={() => setShowImport(true)}>
+                <Upload aria-hidden /> Import
+              </Button>
+            )}
+            {canCreate && (
+              <Button onClick={() => setPanel({ mode: 'create' })}>
+                <Plus aria-hidden /> Add {schema.label}
+              </Button>
+            )}
+          </>
+        }
+      />
 
       {showImport && (
         <ImportModal
@@ -343,71 +365,67 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
       ) : (
       <>
       {/* Search + filters */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 16 }}>
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder={semantic && supportsSemantic ? `Describe the ${schema.label.toLowerCase()} you want…` : `Search ${schema.label_plural.toLowerCase()}...`}
-          style={{ width: 280, padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 14 }}
-        />
+      <div className="mb-4 flex flex-wrap items-center gap-2.5">
+        <div className="relative w-72 max-w-full">
+          <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={semantic && supportsSemantic ? `Describe the ${schema.label.toLowerCase()} you want…` : `Search ${schema.label_plural.toLowerCase()}...`}
+            className="pl-9"
+          />
+        </div>
 
         {supportsSemantic && (
-          <button
+          <Button
+            variant="outline"
             onClick={() => setSemantic((v) => !v)}
             title="Toggle AI semantic search"
-            style={{
-              padding: '8px 12px', borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: 'pointer',
-              border: semantic ? '1px solid #6366f1' : '1px solid #d1d5db',
-              background: semantic ? '#eef2ff' : '#fff',
-              color: semantic ? '#4f46e5' : '#64748b',
-            }}
+            className={semantic ? 'border-primary/40 bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary' : 'text-muted-foreground'}
           >
-            ✦ AI Search{semantic ? ' ON' : ''}
-          </button>
+            <Sparkles aria-hidden /> AI Search{semantic ? ' ON' : ''}
+          </Button>
         )}
 
         {/* One dropdown per filterable relation field (company, contact, …). */}
         {relationFields.map((f: ObjectFieldDescriptor) => (
-          <select
+          <Select
             key={f.key}
             value={filters[f.key] ?? ''}
             onChange={(e) => setFilter(f.key, e.target.value)}
-            style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 14, background: '#fff', maxWidth: 200 }}
+            className="w-auto min-w-[10rem] max-w-[13rem]"
           >
             <option value="">All {f.label}</option>
             {(relationOptions[f.key] ?? []).map((o) => (
               <option key={o.id} value={o.id}>{o.label}</option>
             ))}
-          </select>
+          </Select>
         ))}
 
         {hasActiveFilters && (
-          <button
-            onClick={clearFilters}
-            style={{ padding: '8px 12px', borderRadius: 6, fontSize: 13, border: '1px solid #d1d5db', background: '#fff', color: '#64748b', cursor: 'pointer' }}
-          >
-            Clear filters
-          </button>
+          <Button variant="ghost" onClick={clearFilters} className="text-muted-foreground">
+            <X aria-hidden /> Clear filters
+          </Button>
         )}
       </div>
 
-      {/* Tag filter chips */}
+      {/* Tag filter chips — border/tint take the tag's own color when active,
+          so the palette here is user data, not hardcoded chrome. */}
       {tags.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 16 }}>
+        <div className="mb-4 flex flex-wrap gap-1.5">
           {tags.map((t) => {
             const active = tagIds.includes(t.id);
             return (
               <button
                 key={t.id}
                 onClick={() => toggleTag(t.id)}
-                style={{
-                  padding: '4px 10px', borderRadius: 999, fontSize: 12, fontWeight: 500, cursor: 'pointer',
-                  border: active ? `1px solid ${t.color}` : '1px solid #e2e8f0',
-                  background: active ? `${t.color}20` : '#fff',
-                  color: active ? t.color : '#64748b',
-                }}
+                className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                  active ? '' : 'border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground'
+                }`}
+                style={active ? { borderColor: t.color, color: t.color, background: `${t.color}1a` } : undefined}
               >
-                {t.name}{active ? ' ✓' : ''}
+                {t.name}
+                {active && <Check aria-hidden className="h-3 w-3" />}
               </button>
             );
           })}
@@ -415,111 +433,103 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
       )}
 
       {/* Records table */}
-      <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden', background: '#fff' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead>
-            <tr style={{ borderBottom: '1px solid #e2e8f0', background: '#f8fafc' }}>
-              <th style={thStyle}>#</th>
-              <th style={thStyle}>Name</th>
+      {!loading && records.length === 0 ? (
+        <EmptyState
+          icon={Search}
+          title={emptyMessage}
+          description={
+            hasActiveFilters
+              ? 'Try adjusting or clearing your filters.'
+              : canCreate
+                ? `Click "Add ${schema.label}" to create one.`
+                : undefined
+          }
+        />
+      ) : (
+      <TableShell>
+        <Table>
+          <TableHeader>
+            <TableRow className="hover:bg-transparent">
+              <TableHead className="w-16">#</TableHead>
+              <TableHead>Name</TableHead>
               {columns.map((f) => (
-                <th key={f.key} style={thStyle}>{f.label}</th>
+                <TableHead key={f.key}>{f.label}</TableHead>
               ))}
-              <th style={thStyle}>Created</th>
-            </tr>
-          </thead>
-          <tbody>
+              <TableHead>Created</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {loading ? (
-              <tr><td colSpan={columns.length + 3} style={{ padding: 40, textAlign: 'center', color: '#94a3b8' }}>Loading...</td></tr>
-            ) : records.length === 0 ? (
-              <tr><td colSpan={columns.length + 3} style={{ padding: 40, textAlign: 'center', color: '#94a3b8' }}>
-                <div style={{ fontSize: 32, marginBottom: 8 }}>{schema.icon}</div>
-                {hasActiveFilters
-                  ? `No ${schema.label_plural.toLowerCase()} match your filters.`
-                  : canCreate
-                    ? `No ${schema.label_plural.toLowerCase()} yet. Click "+ Add ${schema.label}" to create one.`
-                    : `No ${schema.label_plural.toLowerCase()} to show.`}
-              </td></tr>
+              Array.from({ length: 5 }).map((_, i) => (
+                <TableRow key={i}>
+                  {Array.from({ length: columns.length + 3 }).map((_, j) => (
+                    <TableCell key={j}>
+                      <Skeleton className="h-4 w-full max-w-[10rem]" />
+                    </TableCell>
+                  ))}
+                </TableRow>
+              ))
             ) : (
               records.map((rec) => (
-                <tr
-                  key={rec.id}
-                  onClick={() => openRecord(rec)}
-                  style={{ borderBottom: '1px solid #f1f5f9', cursor: 'pointer' }}
-                >
-                  <td style={{ padding: '10px 12px', fontSize: 12, color: '#94a3b8', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                <TableRow key={rec.id} data-clickable="true" onClick={() => openRecord(rec)}>
+                  <TableCell className="whitespace-nowrap text-xs font-medium text-muted-foreground">
                     {rec.number || '—'}
-                  </td>
-                  <td style={{ padding: '10px 12px', fontWeight: 500 }}>
+                  </TableCell>
+                  <TableCell className="font-medium text-foreground">
                     {/* A real link so Cmd/Ctrl/middle-click opens the record in a
                         new tab (Salesforce-style); plain click is SPA navigation.
                         stopPropagation keeps the row's onClick from double-firing. */}
                     <Link
                       to={recordPath(slug, rec.id)}
                       onClick={(e) => e.stopPropagation()}
-                      style={{ color: 'inherit', textDecoration: 'none' }}
+                      className="text-inherit no-underline"
                     >
                       {rec.display || 'Untitled'}
                     </Link>
-                  </td>
+                  </TableCell>
                   {columns.map((f) => (
-                    <td key={f.key} style={{ padding: '10px 12px', fontSize: 13 }}>
+                    <TableCell key={f.key} className="text-[13px]">
                       {formatFieldValue(f, rec.fields[f.key], relationLabel(f, rec.fields[f.key]))}
-                    </td>
+                    </TableCell>
                   ))}
-                  <td style={{ padding: '10px 12px', fontSize: 13, color: '#64748b' }}>
+                  <TableCell className="text-[13px] text-muted-foreground">
                     {new Date(rec.created_at).toLocaleDateString()}
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))
             )}
-          </tbody>
-        </table>
-      </div>
+          </TableBody>
+        </Table>
+      </TableShell>
+      )}
 
       {/* Load more */}
       {nextCursor && (
-        <div style={{ display: 'flex', justifyContent: 'center', marginTop: 16 }}>
-          <button
-            onClick={loadMore}
-            disabled={loadingMore}
-            style={{ padding: '8px 18px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', cursor: loadingMore ? 'default' : 'pointer' }}
-          >
+        <div className="mt-4 flex justify-center">
+          <Button variant="outline" size="sm" onClick={loadMore} disabled={loadingMore}>
             {loadingMore ? 'Loading...' : 'Load more'}
-          </button>
+          </Button>
         </div>
       )}
 
-      <div style={{ marginTop: 8, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>
+      <p className="mt-3 text-center text-xs text-muted-foreground">
         Showing {records.length} {schema.label_plural.toLowerCase()}
-      </div>
+      </p>
       </>
       )}
 
-      {/* Create popup (view/edit/delete live on the record page now). A centered
-          modal — clicking the backdrop closes it; the inner box stops the click
-          from bubbling so clicks inside the form don't dismiss it. */}
-      {panel?.mode === 'create' && (
-        <div
-          onClick={closePanel}
-          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{ width: 480, maxWidth: '100%', maxHeight: '90vh', background: '#fff', borderRadius: 12, boxShadow: '0 20px 60px rgba(0,0,0,0.25)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
-          >
-            <ObjectForm schema={schema} onSaved={handleSaved} onCancel={closePanel} />
-          </div>
-        </div>
-      )}
+      {/* Create modal — the shared Radix Modal (focus trap, Escape, restore).
+          ObjectForm owns its chrome (title bar + footer), so the modal header
+          and body padding are turned off. */}
+      <Modal
+        open={panel?.mode === 'create'}
+        onClose={closePanel}
+        title={`New ${schema.label}`}
+        hideHeader
+        padded={false}
+      >
+        <ObjectForm schema={schema} onSaved={handleSaved} onCancel={closePanel} />
+      </Modal>
     </div>
   );
 }
-
-const thStyle = {
-  padding: '10px 12px',
-  textAlign: 'left' as const,
-  fontSize: 12,
-  fontWeight: 600,
-  color: '#64748b',
-  textTransform: 'uppercase' as const,
-};

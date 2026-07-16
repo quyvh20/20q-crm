@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { AlertTriangle, Check, Copy } from 'lucide-react';
+import { Button } from '@/components/ui';
 
 // SecretReveal is the one-time-secret surface (U6): the 2FA backup codes and a new
 // personal API token both exist in plaintext for exactly one render, and both need
@@ -80,7 +81,7 @@ export default function SecretReveal({
   return (
     <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 p-4 space-y-3">
       <div className="flex items-start gap-2">
-        <AlertTriangle className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" />
+        <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
         <div>
           <h3 className="text-sm font-semibold text-foreground">{title}</h3>
           <p className="text-xs text-muted-foreground mt-0.5">
@@ -111,36 +112,27 @@ export default function SecretReveal({
         </ul>
       )}
 
-      {copyError && <p className="text-xs text-red-400">{copyError}</p>}
+      {copyError && <p className="text-xs text-destructive">{copyError}</p>}
 
       <div className="flex flex-wrap items-center gap-3">
-        <button
-          type="button"
-          onClick={handleCopy}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-accent transition-colors"
-        >
-          {copied ? <Check className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5" />}
+        <Button type="button" variant="outline" size="sm" onClick={handleCopy}>
+          {copied ? <Check className="text-emerald-600 dark:text-emerald-400" /> : <Copy />}
           {copied ? 'Copied' : list.length > 1 ? 'Copy all' : 'Copy'}
-        </button>
+        </Button>
 
         <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
           <input
             type="checkbox"
             checked={acknowledged}
             onChange={(e) => setAcknowledged(e.target.checked)}
-            className="rounded border-border"
+            className="rounded border-input"
           />
           {acknowledgeLabel}
         </label>
 
-        <button
-          type="button"
-          onClick={onDone}
-          disabled={!acknowledged}
-          className="ml-auto rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:opacity-90 transition-opacity disabled:opacity-50"
-        >
+        <Button type="button" size="sm" onClick={onDone} disabled={!acknowledged} className="ml-auto">
           {doneLabel}
-        </button>
+        </Button>
       </div>
     </div>
   );

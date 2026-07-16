@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Mail, Plus, Pencil, Trash2, Send, FileText } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Mail, Plus, Pencil, Trash2, Send, FileText } from 'lucide-react';
 import { useEmailTemplates, useDeleteEmailTemplate, useTestSendEmailTemplate } from './queries';
 import { WorkflowsTabs } from './WorkflowsTabs';
 import { usePermissions } from '../../lib/auth';
 import AccessDeniedPanel from '../../components/common/AccessDeniedPanel';
+import { Button, EmptyState, PageHeader, SpinnerBlock } from '@/components/ui';
 import type { EmailTemplate } from './api';
 
 /** Email templates library (A5). Token-styled (consistent with the new builder),
@@ -22,17 +23,15 @@ export const EmailTemplatesPage: React.FC = () => {
 
   if (!loaded) {
     return (
-      <div className="mx-auto max-w-5xl px-4 py-8">
-        <div className="flex justify-center py-16">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-        </div>
+      <div className="mx-auto w-full max-w-6xl">
+        <SpinnerBlock label="Loading…" />
       </div>
     );
   }
 
   if (!can('workflows.manage')) {
     return (
-      <div className="mx-auto max-w-5xl px-4 py-8">
+      <div className="mx-auto w-full max-w-6xl">
         <AccessDeniedPanel capability="workflows.manage" what="email templates" />
       </div>
     );
@@ -70,13 +69,14 @@ const EmailTemplatesContent: React.FC = () => {
   };
 
   return (
-    <div className="mx-auto max-w-5xl px-4 py-8">
+    <div className="mx-auto w-full max-w-6xl">
       {toast && (
-        <div
-          className={`fixed right-4 top-4 z-50 flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium text-white shadow-lg ${
-            toast.type === 'error' ? 'bg-red-500/90' : 'bg-emerald-500/90'
-          }`}
-        >
+        <div className="fixed right-4 top-4 z-50 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm font-medium text-foreground shadow-lg">
+          {toast.type === 'error' ? (
+            <AlertCircle aria-hidden className="h-4 w-4 shrink-0 text-destructive" />
+          ) : (
+            <CheckCircle2 aria-hidden className="h-4 w-4 shrink-0 text-primary" />
+          )}
           {toast.msg}
         </div>
       )}
@@ -84,35 +84,29 @@ const EmailTemplatesContent: React.FC = () => {
       <WorkflowsTabs active="templates" />
 
       {/* Header */}
-      <div className="mb-6 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">Email Templates</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Reusable email content for your workflows' send-email actions</p>
-        </div>
-        <button
-          onClick={() => navigate('/workflows/email-templates/new')}
-          className="inline-flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90"
-        >
-          <Plus className="h-4 w-4" /> New template
-        </button>
-      </div>
+      <PageHeader
+        title="Email Templates"
+        description="Reusable email content for your workflows' send-email actions"
+        actions={
+          <Button onClick={() => navigate('/workflows/email-templates/new')}>
+            <Plus aria-hidden /> New template
+          </Button>
+        }
+      />
 
       {isLoading ? (
-        <div className="flex justify-center py-16">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-        </div>
+        <SpinnerBlock label="Loading…" />
       ) : templates.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-border py-16 text-center">
-          <Mail className="mx-auto mb-3 h-8 w-8 text-muted-foreground/60" />
-          <p className="mb-1 text-lg text-foreground">No email templates yet</p>
-          <p className="mb-4 text-sm text-muted-foreground">Create a template once and reuse it across workflows.</p>
-          <button
-            onClick={() => navigate('/workflows/email-templates/new')}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-          >
-            <Plus className="h-4 w-4" /> New template
-          </button>
-        </div>
+        <EmptyState
+          icon={Mail}
+          title="No email templates yet"
+          description="Create a template once and reuse it across workflows."
+          action={
+            <Button onClick={() => navigate('/workflows/email-templates/new')}>
+              <Plus aria-hidden /> New template
+            </Button>
+          }
+        />
       ) : (
         <div className="space-y-3">
           {templates.map((t) => (

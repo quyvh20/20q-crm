@@ -1,7 +1,10 @@
 import React, { useEffect, useState } from "react";
 import { NavLink, Link, useLocation, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Menu, X, UserRound, Shield, LogOut, ListChecks, BookOpen } from "lucide-react";
+import {
+  Menu, X, UserRound, Shield, LogOut, ListChecks, BookOpen,
+  LayoutDashboard, Users, Handshake, Mic, Sparkles, Zap, BarChart3, Share2, Settings,
+} from "lucide-react";
 import { useAuth } from "./lib/auth";
 import { getThemePreference, setThemePreference, type ThemePreference } from "./lib/theme";
 import GlobalSearch from "./components/common/GlobalSearch";
@@ -107,31 +110,42 @@ export default function AppLayout({ children, title }: AppLayoutProps) {
   // anchors — full page reload per click, 'Dashboard' hardcoded active). One
   // 'Settings' entry replaces the Settings/Members pair (U1 unified shell).
   const navItemClass = ({ isActive }: { isActive: boolean }) =>
-    `block px-3 py-2 rounded-md font-medium transition-colors ${
-      isActive ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+    `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+      isActive ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
     }`;
+  const navIconClass = "h-4 w-4 shrink-0";
+  const navSectionClass = "px-3 pt-5 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70";
 
   const sidebarContent = (
     <>
       <div className="h-16 border-b flex items-center px-4">
         <WorkspaceSwitcher />
       </div>
-      <div className="flex-1 p-4 overflow-y-auto">
-        <nav className="space-y-2">
-          <NavLink to="/" end className={navItemClass}>Dashboard</NavLink>
-          <NavLink to="/contacts" className={navItemClass}>Contacts</NavLink>
-          <NavLink to="/deals" className={navItemClass}>Deals</NavLink>
-          <NavLink to="/voice" className={navItemClass}>🎙 Voice Notes</NavLink>
-          <NavLink to="/ai" className={navItemClass}>✦ AI Assistant</NavLink>
-          <NavLink to="/workflows" className={navItemClass}>⚡ Automations</NavLink>
-          <NavLink to="/reports" className={navItemClass}>📊 Reports</NavLink>
-          <NavLink to="/shared-with-me" className={navItemClass}>🤝 Shared with me</NavLink>
+      <div className="flex-1 p-3 overflow-y-auto">
+        <nav className="space-y-0.5">
+          <NavLink to="/" end className={navItemClass}><LayoutDashboard aria-hidden className={navIconClass} />Dashboard</NavLink>
+
+          <p className={navSectionClass}>Records</p>
+          <NavLink to="/contacts" className={navItemClass}><Users aria-hidden className={navIconClass} />Contacts</NavLink>
+          <NavLink to="/deals" className={navItemClass}><Handshake aria-hidden className={navIconClass} />Deals</NavLink>
           {customObjects.map(obj => (
             <NavLink key={obj.slug} to={`/objects/${obj.slug}`} className={navItemClass}>
-              <span style={{ marginRight: 6 }}>{obj.icon}</span>{obj.label_plural}
+              {/* Custom-object icons are user-chosen emoji (data, not chrome) —
+                  boxed to the same footprint as the lucide icons so rows align. */}
+              <span aria-hidden className="flex h-4 w-4 shrink-0 items-center justify-center text-[13px] leading-none">{obj.icon}</span>
+              {obj.label_plural}
             </NavLink>
           ))}
-          <NavLink to="/settings" className={navItemClass}>Settings</NavLink>
+
+          <p className={navSectionClass}>Tools</p>
+          <NavLink to="/voice" className={navItemClass}><Mic aria-hidden className={navIconClass} />Voice Notes</NavLink>
+          <NavLink to="/ai" className={navItemClass}><Sparkles aria-hidden className={navIconClass} />AI Assistant</NavLink>
+          <NavLink to="/workflows" className={navItemClass}><Zap aria-hidden className={navIconClass} />Automations</NavLink>
+          <NavLink to="/reports" className={navItemClass}><BarChart3 aria-hidden className={navIconClass} />Reports</NavLink>
+          <NavLink to="/shared-with-me" className={navItemClass}><Share2 aria-hidden className={navIconClass} />Shared with me</NavLink>
+
+          <p className={navSectionClass}>Workspace</p>
+          <NavLink to="/settings" className={navItemClass}><Settings aria-hidden className={navIconClass} />Settings</NavLink>
         </nav>
         <div className="mt-4">
           <AIUsageWidget />
@@ -206,7 +220,7 @@ export default function AppLayout({ children, title }: AppLayoutProps) {
             >
               <Menu className="w-5 h-5" />
             </button>
-            <h1 className="text-xl font-bold tracking-tight">Guerrilla CRM</h1>
+            <h1 className="text-lg font-semibold tracking-tight">Guerrilla <span className="text-primary">CRM</span></h1>
           </div>
           <div className="flex flex-1 items-center gap-4">
             {/* P6: the global cross-object palette replaces the contact-only bar

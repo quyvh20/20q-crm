@@ -1,5 +1,7 @@
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { User } from 'lucide-react';
+import { Badge } from '@/components/ui';
 import type { Deal } from '../../lib/api';
 
 interface DealCardProps {
@@ -23,10 +25,10 @@ export default function DealCard({ deal, onClick }: DealCardProps) {
     opacity: isDragging ? 0.5 : 1,
   };
 
-  const probColor =
-    (deal.probability || 0) >= 70 ? 'text-emerald-500 bg-emerald-500/10' :
-    (deal.probability || 0) >= 30 ? 'text-amber-500 bg-amber-500/10' :
-    'text-red-400 bg-red-400/10';
+  const probVariant =
+    (deal.probability || 0) >= 70 ? 'success' :
+    (deal.probability || 0) >= 30 ? 'warning' :
+    'destructive';
 
   const contactName = deal.contact
     ? `${deal.contact.first_name} ${deal.contact.last_name}`
@@ -41,13 +43,13 @@ export default function DealCard({ deal, onClick }: DealCardProps) {
       onClick={onClick}
       className="bg-card border rounded-xl p-3.5 cursor-grab active:cursor-grabbing hover:shadow-md transition-shadow group"
     >
-      <p className="font-medium text-sm leading-tight mb-2 group-hover:text-blue-500 transition-colors truncate">
+      <p className="font-medium text-sm leading-tight mb-2 group-hover:text-primary transition-colors truncate">
         {deal.title}
       </p>
 
       {contactName && (
         <p className="text-xs text-muted-foreground truncate mb-1.5">
-          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="inline mr-1 -mt-0.5"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          <User aria-hidden className="inline mr-1 -mt-0.5 h-3 w-3" />
           {contactName}
         </p>
       )}
@@ -56,9 +58,9 @@ export default function DealCard({ deal, onClick }: DealCardProps) {
         <span className="text-sm font-semibold">
           ${(deal.value || 0).toLocaleString()}
         </span>
-        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${probColor}`}>
+        <Badge variant={probVariant} className="text-[10px] font-bold">
           {deal.probability || 0}%
-        </span>
+        </Badge>
       </div>
 
       {deal.expected_close_at && (
