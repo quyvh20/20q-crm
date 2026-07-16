@@ -113,7 +113,7 @@ func (a *contactAdapter) create(ctx context.Context, orgID uuid.UUID, fields map
 	if err != nil {
 		return nil, err
 	}
-	fireLifecycleEvent(a.emit, orgID, "contact_created", "contact", c.ID, contactAutomationMap(c))
+	fireLifecycleEvent(ctx, a.emit, orgID, "contact_created", "contact", c.ID, contactAutomationMap(c))
 	return contactToUniform(c), nil
 }
 
@@ -161,7 +161,7 @@ func (a *contactAdapter) update(ctx context.Context, orgID, id uuid.UUID, fields
 	if err != nil {
 		return nil, err
 	}
-	fireLifecycleEvent(a.emit, orgID, "contact_updated", "contact", c.ID, contactAutomationMap(c))
+	fireLifecycleEvent(ctx, a.emit, orgID, "contact_updated", "contact", c.ID, contactAutomationMap(c))
 	return contactToUniform(c), nil
 }
 
@@ -176,7 +176,7 @@ func (a *contactAdapter) delete(ctx context.Context, orgID, id uuid.UUID) error 
 	if snap != nil {
 		m = contactAutomationMap(snap)
 	}
-	fireLifecycleEvent(a.emit, orgID, "contact_deleted", "contact", id, m)
+	fireLifecycleEvent(ctx, a.emit, orgID, "contact_deleted", "contact", id, m)
 	return nil
 }
 
@@ -259,7 +259,7 @@ func (a *companyAdapter) create(ctx context.Context, orgID uuid.UUID, fields map
 	if err != nil {
 		return nil, err
 	}
-	fireLifecycleEvent(a.emit, orgID, "company_created", "company", c.ID, companyAutomationMap(c))
+	fireLifecycleEvent(ctx, a.emit, orgID, "company_created", "company", c.ID, companyAutomationMap(c))
 	return companyToUniform(c), nil
 }
 
@@ -281,7 +281,7 @@ func (a *companyAdapter) update(ctx context.Context, orgID, id uuid.UUID, fields
 	if err != nil {
 		return nil, err
 	}
-	fireLifecycleEvent(a.emit, orgID, "company_updated", "company", c.ID, companyAutomationMap(c))
+	fireLifecycleEvent(ctx, a.emit, orgID, "company_updated", "company", c.ID, companyAutomationMap(c))
 	return companyToUniform(c), nil
 }
 
@@ -294,7 +294,7 @@ func (a *companyAdapter) delete(ctx context.Context, orgID, id uuid.UUID) error 
 	if snap != nil {
 		m = companyAutomationMap(snap)
 	}
-	fireLifecycleEvent(a.emit, orgID, "company_deleted", "company", id, m)
+	fireLifecycleEvent(ctx, a.emit, orgID, "company_deleted", "company", id, m)
 	return nil
 }
 
@@ -404,7 +404,7 @@ func (a *dealAdapter) create(ctx context.Context, orgID uuid.UUID, fields map[st
 	if err != nil {
 		return nil, err
 	}
-	fireLifecycleEvent(a.emit, orgID, "deal_created", "deal", d.ID, dealAutomationMap(d))
+	fireLifecycleEvent(ctx, a.emit, orgID, "deal_created", "deal", d.ID, dealAutomationMap(d))
 	return dealToUniform(d), nil
 }
 
@@ -510,7 +510,7 @@ func (a *dealAdapter) update(ctx context.Context, orgID, id uuid.UUID, fields ma
 		if err != nil {
 			return nil, err
 		}
-		a.fireStageChanged(orgID, oldStageID, d)
+		a.fireStageChanged(ctx, orgID, oldStageID, d)
 	}
 	if d == nil { // empty payload — return current state unchanged
 		d, err = a.uc.GetByID(ctx, orgID, id)
@@ -522,7 +522,7 @@ func (a *dealAdapter) update(ctx context.Context, orgID, id uuid.UUID, fields ma
 	// on uniform-path edits. A pure stage move fires only deal_stage_changed
 	// (above), matching the legacy kanban — no double event for a stage change.
 	if nonStage {
-		fireLifecycleEvent(a.emit, orgID, "deal_updated", "deal", d.ID, dealAutomationMap(d))
+		fireLifecycleEvent(ctx, a.emit, orgID, "deal_updated", "deal", d.ID, dealAutomationMap(d))
 	}
 	return dealToUniform(d), nil
 }
@@ -531,7 +531,7 @@ func (a *dealAdapter) update(ctx context.Context, orgID, id uuid.UUID, fields ma
 // cutover) when a deal's stage actually moved, in the same payload shape the legacy
 // deal handler produced (deal map keyed by stage_id/contact_id/…). Fire-and-forget
 // with context.Background() so a cancelled request can't kill the async run.
-func (a *dealAdapter) fireStageChanged(orgID uuid.UUID, oldStageID *uuid.UUID, d *domain.Deal) {
+func (a *dealAdapter) fireStageChanged(ctx context.Context, orgID uuid.UUID, oldStageID *uuid.UUID, d *domain.Deal) {
 	if a.emit == nil || d == nil {
 		return
 	}
@@ -546,11 +546,9 @@ func (a *dealAdapter) fireStageChanged(orgID uuid.UUID, oldStageID *uuid.UUID, d
 		"deal":         dealAutomationMap(d),
 		"old_stage_id": uuidStr(oldStageID),
 		"new_stage_id": uuidStr(newStageID),
-		"trigger": map[string]any{
-			"type":   "deal_stage_changed",
-			"source": "crm_ui",
-		},
+		"trigger":      triggerMeta(ctx, "deal_stage_changed"),
 	}
+	markSuppressed(ctx, payload)
 	go a.emit(context.Background(), orgID, "deal_stage_changed", payload)
 }
 
@@ -561,18 +559,16 @@ func (a *dealAdapter) fireStageChanged(orgID uuid.UUID, oldStageID *uuid.UUID, d
 // request can't kill the async run (the inbound-webhook lesson). A double-fire
 // with a legacy handler emitter for the same write is absorbed by the engine's
 // per-minute idempotency key, so this is safe to run alongside them.
-func fireLifecycleEvent(emit domain.RecordEventEmitter, orgID uuid.UUID, eventType, slug string, entityID uuid.UUID, record map[string]any) {
+func fireLifecycleEvent(ctx context.Context, emit domain.RecordEventEmitter, orgID uuid.UUID, eventType, slug string, entityID uuid.UUID, record map[string]any) {
 	if emit == nil {
 		return
 	}
 	payload := map[string]any{
 		"entity_id": entityID.String(),
 		slug:        record,
-		"trigger": map[string]any{
-			"type":   eventType,
-			"source": "crm_ui",
-		},
+		"trigger":   triggerMeta(ctx, eventType),
 	}
+	markSuppressed(ctx, payload)
 	go emit(context.Background(), orgID, eventType, payload)
 }
 
@@ -685,7 +681,7 @@ func (a *dealAdapter) delete(ctx context.Context, orgID, id uuid.UUID) error {
 	if snap != nil {
 		m = dealAutomationMap(snap)
 	}
-	fireLifecycleEvent(a.emit, orgID, "deal_deleted", "deal", id, m)
+	fireLifecycleEvent(ctx, a.emit, orgID, "deal_deleted", "deal", id, m)
 	return nil
 }
 

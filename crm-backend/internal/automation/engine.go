@@ -316,6 +316,25 @@ func isInternalUpdate(payload map[string]any) bool {
 	return ok && internal
 }
 
+// isEnrollmentSuppressed reports whether the write that produced this event asked
+// for its workflow enrollment to be skipped (domain.WithAutomationSuppressed on
+// the write's context, stamped into the payload by the record-service emitters).
+//
+// Distinct from isInternalUpdate: that guards against engine-caused write loops,
+// this is a deliberate choice by the CALLER of the write path. Bulk and synthetic
+// writes need it — a lead-ads backfill of 500 historical leads, or an admin's test
+// lead, would otherwise enroll every record into every contact_created workflow
+// (the run idempotency key is per-entity-per-minute, so it absorbs none of it).
+//
+// Like the internal-update guard this skips run creation ONLY; the caller in
+// TriggerEvent still materializes date_field timers afterwards, because a
+// backfilled record's own future schedule is not what suppression is protecting
+// against — the enrollment storm is.
+func isEnrollmentSuppressed(payload map[string]any) bool {
+	s, ok := payload[domain.AutomationSuppressedPayloadKey].(bool)
+	return ok && s
+}
+
 func (e *Engine) triggerEventInternal(ctx context.Context, orgID uuid.UUID, eventType string, payload map[string]any) error {
 	// ── Infinite-loop guard ────────────────────────────────────────────
 	// If the event was caused by the automation engine itself (e.g. an
@@ -323,6 +342,17 @@ func (e *Engine) triggerEventInternal(ctx context.Context, orgID uuid.UUID, even
 	// prevent contact_updated → update_contact → contact_updated → ∞.
 	if isInternalUpdate(payload) {
 		e.logger.Debug("automation: skipping re-trigger (internal update)",
+			"event_type", eventType,
+			"org_id", orgID.String(),
+		)
+		return nil
+	}
+
+	// ── Enrollment suppression ─────────────────────────────────────────
+	// The write asked for no enrollment (backfill, test lead). Returning here
+	// leaves the caller's date_field materialization intact — by design.
+	if isEnrollmentSuppressed(payload) {
+		e.logger.Debug("automation: skipping enrollment (suppressed write)",
 			"event_type", eventType,
 			"org_id", orgID.String(),
 		)

@@ -271,9 +271,9 @@ func (s *recordService) Create(ctx context.Context, orgID, userID uuid.UUID, slu
 	uniform := customToUniform(slug, rec)
 	s.auditCreate(ctx, orgID, slug, uniform, in.Fields)
 	s.allocateAndSetNumber(ctx, orgID, slug, uniform)
-	s.fireEvent(orgID, slug+"_created", uniform) // automation sees the full record
-	s.indexRecord(ctx, orgID, slug, uniform)     // search index sees the full record
-	applyFieldMask(mask, uniform)                // strip only the response
+	s.fireEvent(ctx, orgID, slug+"_created", uniform) // automation sees the full record
+	s.indexRecord(ctx, orgID, slug, uniform)          // search index sees the full record
+	applyFieldMask(mask, uniform)                     // strip only the response
 	return uniform, nil
 }
 
@@ -343,10 +343,10 @@ func (s *recordService) Update(ctx context.Context, orgID uuid.UUID, slug string
 	}
 	uniform := customToUniform(slug, rec)
 	s.auditUpdate(ctx, orgID, slug, uniform, prior, in.Fields)
-	s.setRecordNumber(ctx, orgID, slug, uniform)  // keep the number on the edit echo
-	s.fireEvent(orgID, slug+"_updated", uniform) // automation sees the full record
-	s.indexRecord(ctx, orgID, slug, uniform)     // search index sees the full record
-	applyFieldMask(mask, uniform)                // strip only the response
+	s.setRecordNumber(ctx, orgID, slug, uniform)      // keep the number on the edit echo
+	s.fireEvent(ctx, orgID, slug+"_updated", uniform) // automation sees the full record
+	s.indexRecord(ctx, orgID, slug, uniform)          // search index sees the full record
+	applyFieldMask(mask, uniform)                     // strip only the response
 	return uniform, nil
 }
 
@@ -387,8 +387,8 @@ func (s *recordService) Delete(ctx context.Context, orgID uuid.UUID, slug string
 		return err
 	}
 	s.auditDelete(ctx, orgID, slug, id)
-	s.unindexRecord(ctx, orgID, slug, id)              // drop the record from the search index
-	s.fireEvent(orgID, slug+"_deleted", deletedSnapshot) // automation sees the deleted record (A2)
+	s.unindexRecord(ctx, orgID, slug, id)                     // drop the record from the search index
+	s.fireEvent(ctx, orgID, slug+"_deleted", deletedSnapshot) // automation sees the deleted record (A2)
 	return s.cascadeLinks(ctx, orgID, slug, id)
 }
 
@@ -636,7 +636,7 @@ func applyCustomDisplay(def *domain.CustomObjectDef, rec *domain.UniformRecord) 
 // inbound-webhook lesson). Only the custom-object write path calls this; system
 // objects keep their automation on the legacy pages until the workflow engine
 // cuts over (plan P7).
-func (s *recordService) fireEvent(orgID uuid.UUID, eventType string, rec *domain.UniformRecord) {
+func (s *recordService) fireEvent(ctx context.Context, orgID uuid.UUID, eventType string, rec *domain.UniformRecord) {
 	if s.emitEvent == nil {
 		return
 	}
@@ -650,12 +650,38 @@ func (s *recordService) fireEvent(orgID uuid.UUID, eventType string, rec *domain
 	payload := map[string]any{
 		"entity_id": rec.ID.String(),
 		rec.Object:  recordData,
-		"trigger": map[string]any{
-			"type":   eventType,
-			"source": "crm_ui",
-		},
+		"trigger":   triggerMeta(ctx, eventType),
 	}
+	markSuppressed(ctx, payload)
 	go s.emitEvent(context.Background(), orgID, eventType, payload)
+}
+
+// triggerMeta builds the "trigger" sub-map every automation payload carries. The
+// source names the channel the write came from, read off the context (see
+// domain.WithWriteSource) rather than hardcoded per emitter as it used to be.
+// Shared by all three emitters (fireEvent above; fireLifecycleEvent and
+// fireStageChanged in the _system sibling), which is why it takes ctx.
+//
+// Naming a source is opt-in per entry point, and no entry point does it yet: UI,
+// AI and automation-action writes all still resolve to domain.DefaultWriteSource
+// ("crm_ui"), exactly as before. Only the mechanism landed here — each caller
+// becomes distinguishable when its own entry point starts setting the source.
+func triggerMeta(ctx context.Context, eventType string) map[string]any {
+	return map[string]any{
+		"type":   eventType,
+		"source": domain.WriteSourceFromContext(ctx),
+	}
+}
+
+// markSuppressed stamps the enrollment-suppression flag onto a trigger payload
+// when the write asked for it (domain.WithAutomationSuppressed): the engine then
+// skips run creation but still arms date_field timers. The key is set ONLY when
+// true, so an ordinary write's payload keeps the exact shape it had before the
+// flag existed — no workflow, test, or stored trigger context sees a new key.
+func markSuppressed(ctx context.Context, payload map[string]any) {
+	if domain.IsAutomationSuppressed(ctx) {
+		payload[domain.AutomationSuppressedPayloadKey] = true
+	}
 }
 
 // ============================================================
