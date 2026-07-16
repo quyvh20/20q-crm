@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -13,8 +14,32 @@ import (
 	"crm-backend/internal/domain"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/xuri/excelize/v2"
 )
+
+// contactEmailUniqueIndex is the partial unique index behind contact email
+// dedupe: UNIQUE (org_id, email) WHERE email IS NOT NULL AND deleted_at IS NULL
+// (migrations/000003_contact_enhancements.up.sql).
+const contactEmailUniqueIndex = "idx_contacts_org_email"
+
+// isContactEmailConflict reports whether a repository error is specifically the
+// duplicate-contact-email unique violation.
+//
+// It matches on the CONSTRAINT NAME, not just SQLSTATE 23505: contacts could grow
+// another unique index later, and a constraint-blind check would silently report
+// that unrelated conflict as an email duplicate — which, for lead ingestion, means
+// taking the "update the existing contact" branch against the wrong row.
+//
+// Note gorm.ErrDuplicatedKey deliberately is NOT used: the shared DB is opened
+// without gorm's TranslateError, so that sentinel never fires here and any
+// errors.Is against it would be dead code that always reports false.
+func isContactEmailConflict(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) &&
+		pgErr.Code == "23505" &&
+		pgErr.ConstraintName == contactEmailUniqueIndex
+}
 
 type contactUseCase struct {
 	contactRepo domain.ContactRepository
@@ -85,6 +110,14 @@ func (uc *contactUseCase) Create(ctx context.Context, orgID uuid.UUID, input dom
 	}
 
 	if err := uc.contactRepo.Create(ctx, contact); err != nil {
+		// A duplicate email is the caller's problem, not a server fault: report it as
+		// itself (409) rather than the blanket 500 this used to return. Lead ingestion
+		// additionally DEPENDS on telling the two apart — its upsert loop recovers from
+		// a lost create race by re-matching and updating, which it cannot do if a
+		// duplicate is indistinguishable from a dead connection.
+		if isContactEmailConflict(err) {
+			return nil, domain.ErrContactEmailExists
+		}
 		return nil, domain.ErrInternal
 	}
 

@@ -666,6 +666,10 @@ type UpdateContactInput struct {
 type ContactRepository interface {
 	List(ctx context.Context, orgID uuid.UUID, f ContactFilter) ([]Contact, string, error)
 	GetByID(ctx context.Context, orgID, id uuid.UUID) (*Contact, error)
+	// FindByNormalizedEmail is the exact (case-insensitive) email lookup behind
+	// lead-ingestion dedupe. It is deliberately UNSCOPED — see the implementation
+	// — so treat its result as an existence check, not as a record to echo back.
+	FindByNormalizedEmail(ctx context.Context, orgID uuid.UUID, email string) (*Contact, error)
 	Create(ctx context.Context, c *Contact) error
 	Update(ctx context.Context, c *Contact) error
 	SoftDelete(ctx context.Context, orgID, id uuid.UUID) error

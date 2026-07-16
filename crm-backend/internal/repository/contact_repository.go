@@ -157,6 +157,45 @@ func (r *contactRepository) GetByID(ctx context.Context, orgID, id uuid.UUID) (*
 	return &contact, nil
 }
 
+// FindByNormalizedEmail returns the org's contact whose email matches `email`
+// case-insensitively, or (nil, nil) when there is none. It backs lead-ingestion
+// dedupe; the app had no exact-email lookup before (callers abused List(Q:…),
+// which is a to_tsvector full-text search and can match the wrong row).
+//
+// DELIBERATELY UNSCOPED — org filter only, no applyScopeFromCtx. Dedupe is not a
+// read of the caller's data: an own-scoped caller who cannot see a contact must
+// still not be allowed to create a second one with the same email. Scoping this
+// would silently turn every invisible contact into a duplicate. Callers must
+// therefore treat the result as an existence check, never as a record to echo
+// back to a user.
+//
+// Soft-deleted rows are excluded (gorm's DeletedAt), matching the partial unique
+// index that guards the column — so a lead whose contact was soft-deleted creates
+// a new row rather than resurrecting the old one.
+//
+// The ORDER BY is load-bearing, not cosmetic: the unique index is case-SENSITIVE
+// (raw email), so "Bob@x.com" and "bob@x.com" can already coexist and this
+// case-insensitive lookup can legitimately see several. Oldest-first makes the
+// pick deterministic instead of whatever Postgres returns first.
+func (r *contactRepository) FindByNormalizedEmail(ctx context.Context, orgID uuid.UUID, email string) (*domain.Contact, error) {
+	normalized := strings.ToLower(strings.TrimSpace(email))
+	if normalized == "" {
+		return nil, nil // a blank email matches nothing; the partial index ignores NULLs too
+	}
+	var contact domain.Contact
+	err := r.db.WithContext(ctx).
+		Where("org_id = ? AND LOWER(email) = ?", orgID, normalized).
+		Order("created_at ASC").
+		First(&contact).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &contact, nil
+}
+
 // ============================================================
 // Create
 // ============================================================

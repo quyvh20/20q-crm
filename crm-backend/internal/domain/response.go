@@ -105,6 +105,14 @@ var (
 	ErrForbidden             = NewAppError(http.StatusForbidden, "insufficient permissions")
 	ErrInternal              = NewAppError(http.StatusInternalServerError, "internal server error")
 	ErrContactNotFound       = NewAppError(http.StatusNotFound, "contact not found")
+	// ErrContactEmailExists is the (org_id, email) unique-index violation surfaced
+	// as itself instead of a blanket 500. Two callers need to tell it apart from a
+	// genuine DB failure: the REST API (a re-submitted email is the caller's
+	// mistake, 409, not ours) and lead ingestion, whose upsert loop recovers from
+	// it by re-matching and updating instead of failing the lead. Note the index is
+	// case-SENSITIVE and partial (email IS NOT NULL AND deleted_at IS NULL), so a
+	// case-variant or soft-deleted twin does not raise this.
+	ErrContactEmailExists = NewAppError(http.StatusConflict, "a contact with this email already exists")
 	ErrDealNotFound          = NewAppError(http.StatusNotFound, "deal not found")
 	ErrStageNotFound         = NewAppError(http.StatusNotFound, "pipeline stage not found")
 	ErrInvalidFile           = NewAppError(http.StatusBadRequest, "invalid file format, expected CSV or XLSX")
