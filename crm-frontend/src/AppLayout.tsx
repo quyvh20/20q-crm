@@ -228,8 +228,12 @@ export default function AppLayout({ children, title }: AppLayoutProps) {
             {/* Cross-object command-palette search (P7 — replaced the contact-only SearchBar). */}
             <GlobalSearch />
             <div className="flex-1" />
+            {/* The sidebar WorkspaceSwitcher already names the active workspace,
+                so showing it here too duplicated it on desktop. Scope this copy to
+                the tablet range (sm–md) where the sidebar is collapsed to a drawer
+                and the header is the only at-a-glance workspace indicator. */}
             {activeWorkspace && (
-              <span className="text-sm text-muted-foreground hidden sm:block">
+              <span className="text-sm text-muted-foreground hidden sm:block md:hidden">
                 {activeWorkspace.org_name}
               </span>
             )}
