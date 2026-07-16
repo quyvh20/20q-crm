@@ -7,6 +7,7 @@ import { Sparkles, Loader2, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { useDraftWorkflow } from '../../queries';
 import { useBuilderStore } from '../../store';
 import { localDraftFromPrompt } from '../localDraft';
+import { humanizeValidationErrors } from '../../validationMessages';
 import type { WorkflowEditContext } from '../../api';
 
 /** Snapshot the workflow currently on the canvas so the copilot edits it in place
@@ -84,7 +85,9 @@ export function CopilotPanel({ initialPrompt = '' }: { initialPrompt?: string })
   };
 
   const validation = draft.data?.validation;
-  const issues = validation?.errors ?? [];
+  // The backend validator speaks in ids ("deal_stage_changed requires 'to_stage'
+  // parameter"); translate to copy a user can act on, and say which node to open.
+  const issues = humanizeValidationErrors(validation?.errors ?? []);
   const hasIssues = validation?.valid === false && issues.length > 0;
 
   return (
@@ -156,7 +159,10 @@ export function CopilotPanel({ initialPrompt = '' }: { initialPrompt?: string })
           </div>
           <ul className="ml-5 list-disc space-y-0.5">
             {issues.slice(0, 6).map((e, i) => (
-              <li key={i}>{e.message}</li>
+              <li key={i}>
+                {e.location && <span className="font-medium">{e.location}: </span>}
+                {e.text}
+              </li>
             ))}
             {issues.length > 6 && (
               <li className="list-none text-amber-600/80 dark:text-amber-400/70">+{issues.length - 6} more…</li>

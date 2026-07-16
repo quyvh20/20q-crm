@@ -121,8 +121,29 @@ describe('CopilotPanel', () => {
     const errors = Array.from({ length: 7 }, (_, i) => ({ field: `f${i}`, message: `problem ${i}` }));
     mockMutation.data = { draft: { name: 'D', trigger: { type: 'contact_created' }, steps: [] }, validation: { valid: false, errors } };
     render(<CopilotPanel />);
-    expect(screen.getByText('problem 0')).toBeInTheDocument();
+    // Sentence-cased by the humanizer's fallback (unmapped field `f0`).
+    expect(screen.getByText('Problem 0')).toBeInTheDocument();
     expect(screen.getByText(/\+1 more/)).toBeInTheDocument();
+  });
+
+  it('renders validator jargon as human copy with the node to open', () => {
+    // Verbatim backend error (validator.go:252) — the panel must not leak
+    // 'deal_stage_changed' / 'to_stage' at the user.
+    useBuilderStore.getState().applyDraft({ trigger: { type: 'deal_stage_changed' }, steps: [] });
+    mockMutation.isSuccess = true;
+    mockMutation.data = {
+      draft: { name: 'D', trigger: { type: 'deal_stage_changed' }, steps: [] },
+      validation: {
+        valid: false,
+        errors: [{ field: 'trigger.params.to_stage', message: "deal_stage_changed requires 'to_stage' parameter" }],
+      },
+    };
+    render(<CopilotPanel />);
+
+    expect(screen.getByText(/needs a To Stage/i)).toBeInTheDocument();
+    expect(screen.getByText('Trigger:')).toBeInTheDocument();
+    const panel = screen.getByText(/review these on the canvas/i).closest('div')!.parentElement!;
+    expect(panel.textContent).not.toMatch(/deal_stage_changed|to_stage'|parameter/);
   });
 
   it('hides the success banner once no draft is pending (kept/undone)', () => {
