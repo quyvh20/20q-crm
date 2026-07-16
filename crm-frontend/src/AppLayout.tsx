@@ -151,30 +151,9 @@ export default function AppLayout({ children, title }: AppLayoutProps) {
           <AIUsageWidget />
         </div>
       </div>
-
-      {user && (
-        <div className="p-4 border-t">
-          <div className="flex items-center gap-3 mb-3">
-            {user.avatar_url ? (
-              <img src={user.avatar_url} alt="" className="h-8 w-8 rounded-full object-cover" />
-            ) : (
-              <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-sm font-medium">
-                {user.first_name?.[0]}{user.last_name?.[0]}
-              </div>
-            )}
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium truncate">{user.first_name} {user.last_name}</p>
-              <p className="text-xs text-muted-foreground truncate">{user.email}</p>
-            </div>
-          </div>
-          <button
-            onClick={logout}
-            className="w-full px-3 py-2 text-sm rounded-md border border-border hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
-          >
-            Sign out
-          </button>
-        </div>
-      )}
+      {/* No account/sign-out block here: the header avatar menu is the single
+          account surface (profile, security, theme, help, sign out). A footer
+          copy duplicated the identity + Sign out on desktop. */}
     </>
   );
 
