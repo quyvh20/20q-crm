@@ -265,6 +265,20 @@ func (e *Engine) materializeDateFieldTimers(ctx context.Context, orgID uuid.UUID
 			continue
 		}
 
+		// A silenced write (a test lead) arms nothing. Placed HERE, around the arm
+		// alone, rather than at the top of the function: both branches above CANCEL,
+		// and a cancel only ever disarms. Skipping the function wholesale would strand
+		// the very timer silence exists to prevent — the record's delete would stop
+		// cancelling it.
+		//
+		// Arming is also the only moment silence can be honored. fireTimerRun builds
+		// its run straight from the stored payload and consults no suppression
+		// predicate, so carrying the flag into timerPayload below would read like a
+		// fix and change nothing.
+		if isAutomationSilenced(payload) {
+			continue
+		}
+
 		timerPayload := map[string]any{
 			"entity_id": recordID,
 			slug:        payload[slug], // record snapshot for the run's eval context

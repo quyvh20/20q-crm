@@ -97,6 +97,23 @@ export function useDeleteSource() {
   });
 }
 
+/**
+ * useSendTestLead invalidates the delivery log ONLY.
+ *
+ * Not lists()/detail(): a test lead deliberately does not touch the source's
+ * last_used_at or clear its failure count, so refetching them would be a lie the
+ * cache tells for free. The invalidation set is the honesty decision, in code.
+ */
+export function useSendTestLead() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.sendTestLead(id),
+    onSuccess: (_res, id) => {
+      qc.invalidateQueries({ queryKey: integrationKeys.events(id) });
+    },
+  });
+}
+
 export function useMapping(id: string | undefined) {
   return useQuery({
     queryKey: integrationKeys.mapping(id ?? ''),

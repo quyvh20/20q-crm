@@ -548,7 +548,7 @@ func (a *dealAdapter) fireStageChanged(ctx context.Context, orgID uuid.UUID, old
 		"new_stage_id": uuidStr(newStageID),
 		"trigger":      triggerMeta(ctx, "deal_stage_changed"),
 	}
-	markSuppressed(ctx, payload)
+	markAutomationFlags(ctx, payload)
 	go a.emit(context.Background(), orgID, "deal_stage_changed", payload)
 }
 
@@ -568,7 +568,7 @@ func fireLifecycleEvent(ctx context.Context, emit domain.RecordEventEmitter, org
 		slug:        record,
 		"trigger":   triggerMeta(ctx, eventType),
 	}
-	markSuppressed(ctx, payload)
+	markAutomationFlags(ctx, payload)
 	go emit(context.Background(), orgID, eventType, payload)
 }
 

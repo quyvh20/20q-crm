@@ -76,6 +76,7 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, protected []gin.HandlerFunc
 		g.POST("/sources/:id/rotate-key", h.RotateKey)
 		g.GET("/sources/:id/events", h.ListEvents)
 		g.GET("/sources/:id/mapping", h.GetMapping)
+		g.POST("/sources/:id/test-lead", h.SendTestLead)
 	}
 }
 
@@ -512,6 +513,127 @@ func (h *Handler) ListEvents(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": out})
+}
+
+// testLeadResponse is what the admin learns from one click.
+//
+// Uncovered is as important as the rest: the test cannot exercise every field, and
+// a result that lists only successes reads as "everything works".
+type testLeadResponse struct {
+	RecordID    string   `json:"record_id"`
+	EventID     string   `json:"event_id"`
+	Outcome     string   `json:"outcome"`
+	Quarantined []string `json:"quarantined,omitempty"`
+	Note        string   `json:"note,omitempty"`
+	// Uncovered names fields this test could not exercise (a number/select target we
+	// will not guess a value for; phone, which a test lead never sends).
+	Uncovered []string `json:"uncovered,omitempty"`
+	// SourceStatus lets the UI warn that a disabled source is rejecting real traffic
+	// right now, even though this test just succeeded.
+	SourceStatus string `json:"source_status"`
+}
+
+// SendTestLead drives a synthetic lead through the real pipeline.
+//
+// It takes NO request body, deliberately: there must be no wire on which a caller
+// could hand us `is_test`, a payload, or an identity. Everything is server-built.
+func (h *Handler) SendTestLead(c *gin.Context) {
+	_, userID, ok := h.actor(c)
+	if !ok {
+		return
+	}
+	src, ok := h.loadSource(c)
+	if !ok {
+		return // soft-deleted sources 404 here for free (GORM's soft-delete scope)
+	}
+
+	// Re-authorize the CLICKING admin's own permission to write the target, with
+	// their real caller, before anything else happens.
+	//
+	// This is the control that stops integrations.manage from being a contact-write
+	// primitive. authorizeTarget otherwise runs only at source create and on a target
+	// change, and a test click is neither — so without this, a role granted
+	// "configure integrations" and no contact access could write contacts on demand,
+	// through a callerless actor that no OLS check ever sees.
+	//
+	// Before the ledger insert, too: a 403 afterwards would strand a `processing` row
+	// describing a delivery that never happened.
+	if !h.authorizeTarget(c, src.OrgID, src.TargetSlug) {
+		return
+	}
+
+	// Limited per source AND per user, so one admin cannot fan out across every
+	// source in the org. Amplification is already bounded by the stable test identity
+	// (one contact per source, forever), so this reuses the existing limiter rather
+	// than growing a second one.
+	if !h.allow(c, "test:s:"+src.ID.String()) || !h.allow(c, "test:u:"+userID.String()) {
+		return
+	}
+
+	fmap, err := ParseFieldMap(src.FieldMap)
+	if err != nil {
+		h.mgmtError(c, http.StatusInternalServerError, "this source's field mapping is unreadable")
+		return
+	}
+	allow, err := BuildAllowlist(c.Request.Context(), h.schema, src.OrgID, src.TargetSlug)
+	if err != nil {
+		h.mgmtError(c, http.StatusInternalServerError, "could not load this object's fields")
+		return
+	}
+	desc, err := h.schema.GetSchema(c.Request.Context(), src.OrgID, src.TargetSlug)
+	if err != nil || desc == nil {
+		h.mgmtError(c, http.StatusInternalServerError, "could not load this object's fields")
+		return
+	}
+
+	fields, uncovered, err := buildTestPayload(src, fmap, allow, desc)
+	if err != nil {
+		if appErr, ok := err.(*domain.AppError); ok {
+			h.mgmtError(c, appErr.Code, appErr.Message)
+			return
+		}
+		h.mgmtError(c, http.StatusInternalServerError, "could not build a test lead")
+		return
+	}
+
+	// The one human-initiated path into the callerless writer, so it is the one worth
+	// naming a user on: the ledger records the source but never a person.
+	h.logger.Info("integrations: test lead sent",
+		"source_id", src.ID.String(), "org_id", src.OrgID.String(), "user_id", userID.String())
+
+	lead := RawLead{
+		Fields:  fields,
+		Context: testLeadContext(),
+		// No ProviderEventID: a stable one would make the second click conflict on the
+		// dedupe index and replay click one's result — returning green having run none
+		// of the pipeline. Each click is an honest, separate delivery.
+		TestOrigin: TestOriginAdmin,
+	}
+	res, err := h.ingest.Ingest(c.Request.Context(), src, lead)
+	if err != nil {
+		if appErr, ok := err.(*domain.AppError); ok {
+			h.mgmtError(c, appErr.Code, appErr.Message)
+			return
+		}
+		h.logger.Error("integrations: test lead failed", "error", err, "source_id", src.ID.String())
+		h.mgmtError(c, http.StatusInternalServerError, "the test lead could not be processed")
+		return
+	}
+	if res.RecordID == uuid.Nil {
+		h.logger.Error("integrations: test lead returned no record", "source_id", src.ID.String())
+		h.mgmtError(c, http.StatusInternalServerError, "the test lead was not written")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": testLeadResponse{
+		RecordID:     res.RecordID.String(),
+		EventID:      res.EventID.String(),
+		Outcome:      res.Outcome,
+		Quarantined:  res.Quarantined,
+		Note:         res.Note,
+		Uncovered:    uncovered,
+		SourceStatus: src.Status,
+	}})
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

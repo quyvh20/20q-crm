@@ -6,6 +6,7 @@ import type {
   IntegrationEvent,
   LeadSource,
   MappingView,
+  TestLeadResult,
   UpdateSourceInput,
 } from './types';
 
@@ -82,6 +83,29 @@ export async function listEvents(id: string, limit = 50): Promise<IntegrationEve
   const json = await parseJsonSafe(res);
   if (!res.ok) throw apiError(res, json, 'Failed to load the delivery log');
   return asList<IntegrationEvent>(json.data);
+}
+
+/**
+ * sendTestLead drives a made-up lead through the real ingest pipeline.
+ *
+ * No body: the server builds the payload and the identity, so there is no wire on
+ * which a caller could hand it an identity or an is_test flag.
+ *
+ * No timeoutMs, deliberately. The server's ingest context is detached from the
+ * request, so aborting here would not stop the write — it would only hide it, and the
+ * admin's natural retry would then be a genuine second concurrent pipeline.
+ */
+export async function sendTestLead(id: string): Promise<TestLeadResult> {
+  const res = await apiFetch(`${BASE}/${id}/test-lead`, { method: 'POST' });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Failed to send the test lead');
+  const data = (json.data ?? {}) as Partial<TestLeadResult>;
+  return {
+    ...(data as TestLeadResult),
+    // Go marshals nil slices to null; a bare .map on either would white-screen.
+    quarantined: asList<string>(data.quarantined),
+    uncovered: asList<string>(data.uncovered),
+  };
 }
 
 export async function getMapping(id: string): Promise<MappingView> {

@@ -329,9 +329,31 @@ func isInternalUpdate(payload map[string]any) bool {
 // Like the internal-update guard this skips run creation ONLY; the caller in
 // TriggerEvent still materializes date_field timers afterwards, because a
 // backfilled record's own future schedule is not what suppression is protecting
-// against — the enrollment storm is.
+// against — the enrollment storm is. A write that needs the timers gone too is
+// SILENCED (see isAutomationSilenced), which implies this.
+//
+// The silence key is ORed in rather than relied upon upstream: domain's context
+// reader already derives suppression from silence, so the emitters stamp both keys
+// and this line is belt-and-braces. It costs one map lookup and removes the failure
+// where a hand-built payload (a test fixture, a future emitter) carries only the
+// stricter key and enrolls anyway — the more surprising direction of the two.
 func isEnrollmentSuppressed(payload map[string]any) bool {
 	s, ok := payload[domain.AutomationSuppressedPayloadKey].(bool)
+	return (ok && s) || isAutomationSilenced(payload)
+}
+
+// isAutomationSilenced reports whether the write that produced this event forbids
+// any trace of it reaching a human: no enrollment, and no date_field timer armed.
+//
+// Stricter than suppression, and needed because the two cases differ in kind. A
+// backfilled lead is a real person, so arming their close-date reminder is right. A
+// test lead describes nobody — a timer armed on it fires a real run days later and
+// pages a rep about a person who does not exist, long after the admin who clicked
+// "Send test lead" stopped connecting the two.
+//
+// Value-strict like isEnrollmentSuppressed: only a real bool true silences.
+func isAutomationSilenced(payload map[string]any) bool {
+	s, ok := payload[domain.AutomationSilencedPayloadKey].(bool)
 	return ok && s
 }
 

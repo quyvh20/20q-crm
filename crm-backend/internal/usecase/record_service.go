@@ -654,7 +654,7 @@ func (s *recordService) fireEvent(ctx context.Context, orgID uuid.UUID, eventTyp
 		rec.Object:  recordData,
 		"trigger":   triggerMeta(ctx, eventType),
 	}
-	markSuppressed(ctx, payload)
+	markAutomationFlags(ctx, payload)
 	go s.emitEvent(context.Background(), orgID, eventType, payload)
 }
 
@@ -675,14 +675,24 @@ func triggerMeta(ctx context.Context, eventType string) map[string]any {
 	}
 }
 
-// markSuppressed stamps the enrollment-suppression flag onto a trigger payload
-// when the write asked for it (domain.WithAutomationSuppressed): the engine then
-// skips run creation but still arms date_field timers. The key is set ONLY when
-// true, so an ordinary write's payload keeps the exact shape it had before the
-// flag existed — no workflow, test, or stored trigger context sees a new key.
-func markSuppressed(ctx context.Context, payload map[string]any) {
+// markAutomationFlags stamps the enrollment-suppression and silence flags onto a
+// trigger payload when the write asked for them. Suppression skips run creation but
+// still arms date_field timers; silence also stops the arming. Each key is set ONLY
+// when true, so an ordinary write's payload keeps the exact shape it had before the
+// flags existed — no workflow, test, or stored trigger context sees a new key.
+//
+// The two checks are independent statements, never an if/else chain. Silence
+// derives suppression (see domain.IsAutomationSuppressed), so a silenced write must
+// carry BOTH keys: the engine's enrollment guard reads only the suppression key, so
+// an `else if` here would emit a payload marked silenced-but-not-suppressed and
+// enroll every test lead — while looking, at this call site, like it had handled the
+// stricter case.
+func markAutomationFlags(ctx context.Context, payload map[string]any) {
 	if domain.IsAutomationSuppressed(ctx) {
 		payload[domain.AutomationSuppressedPayloadKey] = true
+	}
+	if domain.IsAutomationSilenced(ctx) {
+		payload[domain.AutomationSilencedPayloadKey] = true
 	}
 }
 

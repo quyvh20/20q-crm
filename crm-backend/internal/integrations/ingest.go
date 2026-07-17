@@ -43,11 +43,15 @@ type RawLead struct {
 	// ProviderEventID is the delivery's stable id across retries. Empty means the
 	// delivery cannot be deduped.
 	ProviderEventID string
-	// IsTest marks a lead that must traverse the whole pipeline without paging
-	// anyone. Server-derived only — never read off a caller's payload, or a leaked
-	// key becomes a way to file real leads that never reach sales.
-	IsTest bool
+	// TestOrigin names WHO called this a test (see the TestOrigin consts), or is
+	// empty for an ordinary lead. Never read off a caller's payload for the admin
+	// origin — a caller who could set it would be able to file real-looking leads
+	// that never page sales.
+	TestOrigin string
 }
+
+// IsTest reports whether this lead traverses the pipeline without reaching anyone.
+func (l RawLead) IsTest() bool { return l.TestOrigin != TestOriginNone }
 
 // IngestResult is what the caller reports back to the third party.
 type IngestResult struct {
@@ -95,13 +99,25 @@ func NewLeadIngestService(repo *Repository, records RecordWriter, matcher Contac
 // No domain.Caller is attached: a callerless context is a trusted in-process call,
 // so OLS/FLS do not constrain it. That is why the allowlist exists, and why a
 // source's target_slug is re-validated here rather than trusted from the row.
-func newIngestContext(source *LeadSource) (context.Context, context.CancelFunc) {
+func newIngestContext(source *LeadSource, lead RawLead) (context.Context, context.CancelFunc) {
 	ctx := domain.WithWriteSource(context.Background(), source.WriteSource())
 	// A lead is not a form submission: type-check every value it carries, but do
 	// not demand the org's required fields be present. A Facebook form cannot know
 	// about an org's required "Contract Value", and rejecting the lead over it
 	// would be the silent loss this whole subsystem exists to prevent.
 	ctx = domain.WithPartialWrite(ctx)
+	// A test lead is about nobody, so nothing about it may reach a human: no
+	// workflow enrollment, and no date_field timer armed to page a rep next week
+	// about a contact that does not exist. Silenced rather than merely suppressed —
+	// suppression would still arm the timer, and the UI's contact delete emits no
+	// cancellation, so it would outlive the record.
+	//
+	// Derived from the LEAD, never the source. A source-level property here would be
+	// the inverse failure and a far worse one: every real lead from that source
+	// would land unenrolled, silently, with a ledger that looks completely normal.
+	if lead.IsTest() {
+		ctx = domain.WithAutomationSilenced(ctx)
+	}
 	return context.WithTimeout(ctx, ingestTimeout)
 }
 
@@ -255,8 +271,20 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 		delete(fields, "email") // never write "" — it is a value, not an absence
 	}
 
+	// The synthetic identity must have survived the mapping. Checked here, after the
+	// map and the allowlist have had their say and before anything is matched or
+	// written, because those are exactly the steps that can delete it.
+	if err := assertTestIdentity(source, lead.TestOrigin, email); err != nil {
+		return nil, s.failEvent(ledgerCtx, event, err)
+	}
+	if lead.IsTest() {
+		if err := assertNoPhone(fields); err != nil {
+			return nil, s.failEvent(ledgerCtx, event, err)
+		}
+	}
+
 	// ── 3/4. Match, then create or update ────────────────────────────────
-	ictx, cancel := newIngestContext(source)
+	ictx, cancel := newIngestContext(source, lead)
 	defer cancel()
 
 	// Attribution: which channel produced this lead. Resolved through the org's
@@ -269,7 +297,7 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 		amap = nil
 	}
 
-	result, err := s.upsert(ictx, source, fields, email, amap, attr)
+	result, err := s.upsert(ictx, source, lead, fields, email, amap, attr)
 	if err != nil {
 		return nil, s.failEvent(ledgerCtx, event, err)
 	}
@@ -278,7 +306,7 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 	// On the ledger context: the record is already written, so losing this to a
 	// client hangup would strand the row and lose the attribution permanently.
 	event.Status = EventStatusProcessed
-	if lead.IsTest {
+	if lead.IsTest() {
 		event.Status = EventStatusTest
 	}
 	event.ResultSlug = source.TargetSlug
@@ -291,7 +319,15 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 	if err := s.repo.FinishEvent(ledgerCtx, event); err != nil {
 		return nil, err
 	}
-	_ = s.repo.TouchSourceUsed(ledgerCtx, source.ID) // best-effort; the lead is already written
+	// A test lead is not usage. TouchSourceUsed stamps last_used_at AND resets
+	// consecutive_failures, so letting the button call it would make a source that has
+	// never seen a real lead look live, and — worse, since a broken source is exactly
+	// when someone reaches for this button — would clear the error state L6 alerts on,
+	// on evidence from the one layer the test never touches. A diagnostic that
+	// silences its own alarm is worse than no diagnostic.
+	if !lead.IsTest() {
+		_ = s.repo.TouchSourceUsed(ledgerCtx, source.ID) // best-effort; the lead is already written
+	}
 
 	result.EventID = event.ID
 	result.Quarantined = quarantinedKeys
@@ -312,8 +348,8 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 // An AMBIGUOUS match (several contacts share the lead's phone) arrives here as
 // no match at all, by design: findMatch refuses to guess, so the lead becomes a new
 // contact and the reason is recorded on the delivery so a human can merge it.
-func (s *LeadIngestService) upsert(ctx context.Context, source *LeadSource, fields map[string]any, email string, amap AttributionMap, attr map[string]string) (*IngestResult, error) {
-	match, err := s.findMatch(ctx, source, fields, email)
+func (s *LeadIngestService) upsert(ctx context.Context, source *LeadSource, lead RawLead, fields map[string]any, email string, amap AttributionMap, attr map[string]string) (*IngestResult, error) {
+	match, err := s.resolveMatch(ctx, source, lead, fields, email)
 	if err != nil {
 		return nil, err
 	}
@@ -341,6 +377,20 @@ func (s *LeadIngestService) upsert(ctx context.Context, source *LeadSource, fiel
 	}
 
 	existing := match.Contact
+	// The one line where the pipeline commits to a pre-existing row — so the test
+	// lead's provenance is checked HERE, covering both the matched branch and the
+	// lost-email-race branch above (a 23505 proves only that SOME live row holds the
+	// address, not whose).
+	//
+	// Before the create_only return, not after: create_only writes nothing, but it
+	// still hands back the matched record's id as the test's result, and the UI
+	// deep-links it. "Here is your test lead" pointing at a real customer is the same
+	// failure as editing them, minus the edit.
+	if lead.IsTest() {
+		if err := assertTestProvenance(source, existing); err != nil {
+			return nil, err
+		}
+	}
 	if source.UpdatePolicy == UpdatePolicyCreateOnly {
 		return &IngestResult{RecordID: existing.ID, Outcome: OutcomeUpdated, Note: match.AmbiguityNote}, nil
 	}
@@ -357,6 +407,18 @@ func (s *LeadIngestService) upsert(ctx context.Context, source *LeadSource, fiel
 		return nil, err
 	}
 	return &IngestResult{RecordID: rec.ID, Outcome: OutcomeUpdated, Note: match.AmbiguityNote}, nil
+}
+
+// resolveMatch picks the matching strategy for this lead.
+//
+// A test lead does NOT use the source's match_fields — see findTestMatch. The
+// dispatch lives here, on the one path into matching, so there is no second route a
+// test lead could take into the real predicates.
+func (s *LeadIngestService) resolveMatch(ctx context.Context, source *LeadSource, lead RawLead, fields map[string]any, email string) (*MatchResult, error) {
+	if lead.IsTest() {
+		return s.findTestMatch(ctx, source)
+	}
+	return s.findMatch(ctx, source, fields, email)
 }
 
 // create writes a new record. first_name is synthesized HERE, on the create branch

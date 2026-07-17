@@ -118,6 +118,13 @@ const DefaultWriteSource = "crm_ui"
 // channel. Mirrors the engine's existing _internal_update convention.
 const AutomationSuppressedPayloadKey = "_suppressed"
 
+// AutomationSilencedPayloadKey is the stricter sibling of the suppression key: the
+// emitters stamp it when a write asked for silence, and the automation engine reads
+// it to skip date_field timer ARMING as well as enrollment. It lives here for the
+// same reasons as the suppression key — usecase must not import automation, and the
+// emitters detach onto context.Background() before handing off.
+const AutomationSilencedPayloadKey = "_silenced"
+
 // WithWriteSource names the channel a record write came from ("crm_ui",
 // "webhook_inbound", "integration:google_ads", …). RecordService's emitters stamp
 // it into the automation trigger payload as trigger.source, so a workflow can
@@ -196,8 +203,11 @@ type automationSuppressedCtxKey struct{}
 // suppressed write: a backfilled record's future schedule (its close-date
 // reminder) is not the thing being prevented — the enrollment storm is. So a
 // suppressed write is quiet, NOT silent: if the org has a date_field workflow on
-// the object, a timer arms now and fires a real run later. A caller that needs
-// true silence (rather than "don't stampede on import") needs more than this flag.
+// the object, a timer arms now and fires a real run later.
+//
+// Use this for a write about a REAL record that must not stampede (backfill,
+// import). A write about a record that describes NOBODY — a synthetic test lead —
+// wants WithAutomationSilenced instead.
 //
 // SCOPE — honored only on writes through RecordService, whose three emitters
 // consult it. The legacy delivery/http handlers (contact/deal/custom-object)
@@ -216,7 +226,51 @@ func WithAutomationSuppressed(ctx context.Context) context.Context {
 // IsAutomationSuppressed reports whether this write's events should skip workflow
 // enrollment. Read by the record service's emitters, which translate it into
 // AutomationSuppressedPayloadKey on the payload.
+//
+// Silence DERIVES suppression rather than duplicating it, and that direction is
+// deliberate. The two failures are not equally expensive: forgetting to honor
+// silence costs one stray timer, while forgetting to honor suppression costs an
+// enrollment storm. Deriving here means a caller cannot ask for silence and get a
+// stampede — the cheap mistake is the only one still available.
 func IsAutomationSuppressed(ctx context.Context) bool {
 	v, _ := ctx.Value(automationSuppressedCtxKey{}).(bool)
+	return v || IsAutomationSilenced(ctx)
+}
+
+// automationSilencedCtxKey is its own key, never a second value under the
+// suppression key: that reader discards the comma-ok, so a non-bool stored there
+// would read false and silently un-suppress the write.
+type automationSilencedCtxKey struct{}
+
+// WithAutomationSilenced marks a write that nothing may ever reach a human about.
+// Stricter than WithAutomationSuppressed: it skips workflow enrollment AND stops
+// date_field timers from arming.
+//
+// The distinction is about what the record IS, not about volume. A backfilled lead
+// is a real person whose close-date reminder should still fire, so it wants mere
+// suppression. A test lead describes nobody: there is no future to schedule, and a
+// timer armed on it pages a real rep about a person who does not exist.
+//
+// That failure is unrecoverable through the product, which is why this flag exists
+// rather than leaning on "just delete the test record". Cancellation is emitted by
+// RecordService.Delete alone; the UI's own contact delete
+// (DELETE /api/contacts/:id → contactUseCase.Delete) emits nothing at all, so the
+// timer outlives the record it describes and fires anyway. Nor can it be fixed
+// downstream: fireTimerRun creates the run straight from the stored timer payload
+// and consults no suppression predicate, so a flag propagated into that payload is
+// a no-op that reads like a fix. The only moment silence can be honored is before
+// the timer is armed.
+//
+// SCOPE — like suppression, honored only on writes through RecordService, whose
+// three emitters consult it. A new server-side writer must route through
+// RecordService to inherit it.
+func WithAutomationSilenced(ctx context.Context) context.Context {
+	return context.WithValue(ctx, automationSilencedCtxKey{}, true)
+}
+
+// IsAutomationSilenced reports whether this write's events should skip both
+// enrollment and date_field arming.
+func IsAutomationSilenced(ctx context.Context) bool {
+	v, _ := ctx.Value(automationSilencedCtxKey{}).(bool)
 	return v
 }

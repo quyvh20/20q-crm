@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Inbox, KeyRound, Trash2 } from 'lucide-react';
+import { ArrowLeft, Check, FlaskConical, Inbox, KeyRound, Minus, Trash2 } from 'lucide-react';
 import {
   Badge,
   Button,
@@ -23,6 +23,7 @@ import {
   useDeleteSource,
   useLeadSource,
   useRotateKey,
+  useSendTestLead,
   useSourceEvents,
   useUpdateSource,
 } from '../../features/integrations/queries';
@@ -30,6 +31,7 @@ import {
   UPDATE_POLICY_LABELS,
   type EventStatus,
   type IntegrationEvent,
+  type TestLeadResult,
 } from '../../features/integrations/types';
 
 // The detail page for one lead source: its config, and the delivery log that
@@ -45,6 +47,127 @@ const EVENT_VARIANT: Record<EventStatus, 'success' | 'secondary' | 'destructive'
   quarantined: 'warning',
 };
 
+// What the button actually exercised, enumerated from the real call graph — and what
+// it did not. Both lists are rendered with equal weight on purpose.
+//
+// The button is an in-process call: it skips the network, the capture key, and every
+// gate that hangs off them. That bypass is what makes it safe to hand an admin (no
+// credential in the browser, no public write path exercised from a session), so it is
+// not a flaw to engineer away — it is a boundary to publish. The dishonesty risk lives
+// entirely in the copy, which is why the second column is not decoration.
+const TEST_PROVED = [
+  'Your field mapping — the payload was keyed the way your provider keys it',
+  'Which fields are skipped, and why',
+  'Matching on email, and your update policy for an existing contact',
+  'Owner assignment and attribution (lead source, UTMs)',
+  'The contact write itself, and the delivery-log entry',
+];
+
+const TEST_NOT_PROVED = [
+  'Your capture key — this ran in-process, so it cannot tell you whether the outside world can reach you',
+  'The network path from your provider, and the rate and daily limits',
+  'Phone matching — a test lead never sends a phone number',
+];
+
+/** TestLeadPanel is the result of one click: what happened, and what it did not prove. */
+function TestLeadPanel({ result, onDismiss }: { result: TestLeadResult; onDismiss: () => void }) {
+  return (
+    <div className="rounded-xl border border-border bg-muted/30 p-4 space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <p className="text-sm font-medium text-foreground">
+            Test lead {result.outcome === 'created' ? 'created a contact' : 'updated your test contact'}
+          </p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            It went through the same pipeline your real leads take. No workflows were triggered.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Link
+            to={`/contacts/${result.record_id}`}
+            className="text-sm text-primary hover:underline whitespace-nowrap"
+          >
+            View contact
+          </Link>
+          <Button variant="ghost" size="sm" onClick={onDismiss}>
+            Dismiss
+          </Button>
+        </div>
+      </div>
+
+      {result.source_status !== 'active' && (
+        // The test does not use the capture key, so it succeeds on a source that is
+        // rejecting every real lead right now. Saying so is the whole price of
+        // letting an admin test before enabling.
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-300">
+          This source is <strong>{result.source_status}</strong>, so real leads sent to it are being
+          rejected right now. The test ran anyway, because it does not use your capture key.
+        </div>
+      )}
+
+      {result.note && (
+        <div className="rounded-lg border border-border bg-background p-3 text-xs text-foreground">
+          {result.note}
+        </div>
+      )}
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div>
+          <p className="text-xs font-medium text-foreground">What this proved</p>
+          <ul className="mt-1.5 space-y-1">
+            {TEST_PROVED.map((item) => (
+              <li key={item} className="flex gap-1.5 text-xs text-muted-foreground">
+                <Check className="w-3 h-3 mt-0.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                <span>{item}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div>
+          <p className="text-xs font-medium text-foreground">What this did not prove</p>
+          <ul className="mt-1.5 space-y-1">
+            {TEST_NOT_PROVED.map((item) => (
+              <li key={item} className="flex gap-1.5 text-xs text-muted-foreground">
+                <Minus className="w-3 h-3 mt-0.5 shrink-0" />
+                <span>{item}</span>
+              </li>
+            ))}
+            {(result.uncovered ?? []).map((item) => (
+              <li key={item} className="flex gap-1.5 text-xs text-muted-foreground">
+                <Minus className="w-3 h-3 mt-0.5 shrink-0" />
+                <span>{item} — not covered by this test</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+
+      {(result.quarantined ?? []).length > 0 && (
+        <p className="text-xs text-amber-700 dark:text-amber-400">
+          Recorded but not saved: {(result.quarantined ?? []).join(', ')}
+        </p>
+      )}
+
+      <p className="text-xs text-muted-foreground border-t border-border pt-3">
+        The contact this made is a <strong>real contact</strong> in your CRM — a workflow that
+        searches your contacts can still find it. Delete it from its contact page when you're done.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * eventLabel renders a delivery's result.
+ *
+ * A test delivery carries BOTH status='test' and outcome='created', and the outcome
+ * alone would render "created" — leaving a made-up lead indistinguishable from a real
+ * one in the log, with only the badge colour differing. The status has to lead.
+ */
+function eventLabel(ev: IntegrationEvent): string {
+  if (ev.status === 'test') return ev.outcome ? `test · ${ev.outcome}` : 'test';
+  return ev.outcome || ev.status;
+}
+
 export default function IntegrationSourceDetailSection() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -59,6 +182,21 @@ export default function IntegrationSourceDetailSection() {
   const [actionError, setActionError] = useState('');
   const [newKey, setNewKey] = useState<string | null>(null);
   const [inspecting, setInspecting] = useState<IntegrationEvent | null>(null);
+  const [testResult, setTestResult] = useState<TestLeadResult | null>(null);
+  const [testError, setTestError] = useState('');
+
+  const sendTestLead = useSendTestLead();
+
+  const handleTestLead = async () => {
+    if (!id) return;
+    setTestError('');
+    setTestResult(null);
+    try {
+      setTestResult(await sendTestLead.mutateAsync(id));
+    } catch (err) {
+      setTestError(err instanceof Error ? err.message : 'Failed to send the test lead');
+    }
+  };
 
   const handleRotate = async () => {
     if (!id || !source) return;
@@ -149,6 +287,12 @@ export default function IntegrationSourceDetailSection() {
               </div>
             </div>
             <div className="flex items-center gap-2">
+              {/* Disabled while in flight: the server's ingest is detached from the
+                  request, so a second click is a real second pipeline, not a retry. */}
+              <Button size="sm" onClick={handleTestLead} disabled={sendTestLead.isPending}>
+                <FlaskConical />
+                {sendTestLead.isPending ? 'Sending…' : 'Send test lead'}
+              </Button>
               <Button variant="outline" size="sm" onClick={handleRotate} disabled={rotateKey.isPending}>
                 <KeyRound />
                 {rotateKey.isPending ? 'Rotating…' : 'Rotate key'}
@@ -177,6 +321,15 @@ export default function IntegrationSourceDetailSection() {
               {actionError}
             </div>
           )}
+
+          {testError && (
+            <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+              <p className="font-medium">The test lead did not go through.</p>
+              <p className="mt-0.5">{testError}</p>
+            </div>
+          )}
+
+          {testResult && <TestLeadPanel result={testResult} onDismiss={() => setTestResult(null)} />}
 
           <div className="rounded-xl border border-border p-4">
             <dl className="grid gap-3 sm:grid-cols-2 text-sm">
@@ -240,7 +393,7 @@ export default function IntegrationSourceDetailSection() {
                         </TableCell>
                         <TableCell>
                           <Badge variant={EVENT_VARIANT[ev.status] ?? 'secondary'}>
-                            {ev.outcome || ev.status}
+                            {eventLabel(ev)}
                           </Badge>
                           {ev.note && (
                             <p className="text-xs text-muted-foreground mt-1 max-w-xs">{ev.note}</p>

@@ -16,9 +16,10 @@ vi.mock('../../../features/integrations/api', () => ({
   deleteSource: vi.fn(),
   rotateKey: vi.fn(),
   listEvents: vi.fn(),
+  sendTestLead: vi.fn(),
 }));
 
-import { getSource, listEvents, rotateKey } from '../../../features/integrations/api';
+import { getSource, listEvents, rotateKey, sendTestLead } from '../../../features/integrations/api';
 import IntegrationSourceDetailSection from '../IntegrationSourceDetailSection';
 
 const SOURCE: LeadSource = {
@@ -123,5 +124,70 @@ describe('IntegrationSourceDetailSection', () => {
     fireEvent.click(buttons[buttons.length - 1]);
 
     expect(await screen.findByTestId('secret-value')).toHaveTextContent('crm_lead_NEWKEY');
+  });
+
+  it('badges a test delivery as a test, not as a real one', async () => {
+    // The plan's own acceptance criterion. A test event carries BOTH status='test'
+    // and outcome='created', and rendering the outcome alone left a made-up lead
+    // looking identical to a real one in the log.
+    vi.mocked(listEvents).mockResolvedValue([
+      { ...EVENT, id: 'e2', status: 'test', outcome: 'created', quarantined_fields: {} },
+    ]);
+    renderDetail();
+
+    expect(await screen.findByText(/test · created/)).toBeInTheDocument();
+  });
+
+  it('says what the test proved AND what it did not', async () => {
+    // The second list is the load-bearing half: a result that shows only successes
+    // reads as "everything works", and this button cannot see the capture key, the
+    // network, or phone matching. Trimming it regresses the feature into the
+    // false-confidence artifact it exists not to be.
+    vi.mocked(sendTestLead).mockResolvedValue({
+      record_id: 'c9',
+      event_id: 'e2',
+      outcome: 'created',
+      uncovered: ['Contract Value (number)'],
+      source_status: 'active',
+    });
+    renderDetail();
+
+    fireEvent.click(await screen.findByRole('button', { name: /send test lead/i }));
+
+    expect(await screen.findByText('What this proved')).toBeInTheDocument();
+    expect(screen.getByText('What this did not prove')).toBeInTheDocument();
+    expect(screen.getByText(/never sends a phone number/i)).toBeInTheDocument();
+    expect(screen.getByText(/Contract Value \(number\)/)).toBeInTheDocument();
+    // The test contact is real, and an admin who does not know that will be
+    // surprised by it in their contact list.
+    expect(screen.getByText(/real contact/i)).toBeInTheDocument();
+  });
+
+  it('warns that a disabled source is still rejecting real leads', async () => {
+    // The test skips the capture key, so it succeeds while every real lead 401s.
+    // Without this line the button hands back false confidence.
+    vi.mocked(sendTestLead).mockResolvedValue({
+      record_id: 'c9',
+      event_id: 'e2',
+      outcome: 'created',
+      source_status: 'disabled',
+    });
+    renderDetail();
+
+    fireEvent.click(await screen.findByRole('button', { name: /send test lead/i }));
+
+    expect(await screen.findByText(/rejected right now/i)).toBeInTheDocument();
+  });
+
+  it('surfaces a refused test rather than failing silently', async () => {
+    vi.mocked(sendTestLead).mockRejectedValue(
+      new Error('this source maps its own "email" key onto a different field'),
+    );
+    renderDetail();
+
+    fireEvent.click(await screen.findByRole('button', { name: /send test lead/i }));
+
+    expect(await screen.findByText(/did not go through/i)).toBeInTheDocument();
+    expect(screen.getByText(/maps its own "email" key/)).toBeInTheDocument();
   });
 });

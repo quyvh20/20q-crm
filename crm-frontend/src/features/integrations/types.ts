@@ -92,6 +92,28 @@ export interface IntegrationEvent {
   processed_at?: string;
 }
 
+/**
+ * What one "Send test lead" click produced.
+ *
+ * `uncovered` is as load-bearing as the rest: a result that lists only successes
+ * reads as "everything works", and the test deliberately cannot exercise every field
+ * (no phone is ever sent; a select/number target gets no guessed value).
+ */
+export interface TestLeadResult {
+  record_id: string;
+  event_id: string;
+  outcome: EventOutcome;
+  /** Payload keys recorded but not written. */
+  quarantined?: string[];
+  /** A judgement the pipeline made on a delivery that still succeeded. */
+  note?: string;
+  /** Fields this test could not exercise, and why — rendered, never swallowed. */
+  uncovered?: string[];
+  /** So the UI can warn that a disabled source rejects real traffic right now, even
+   *  though this test — which does not use the capture key — just succeeded. */
+  source_status: LeadSourceStatus;
+}
+
 export interface CreateSourceInput {
   name: string;
   kind?: string;
