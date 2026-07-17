@@ -91,6 +91,7 @@ func buildTestPayload(source *LeadSource, fmap FieldMap, allow *Allowlist, desc 
 	sort.Strings(srcKeys)
 
 	seen := map[string]bool{}
+	uncoveredSeen := map[string]bool{} // a target named once, not once per source key that hit it
 	for _, srcKey := range srcKeys {
 		if srcKey == identityKey {
 			continue // already carries the identity
@@ -105,9 +106,22 @@ func buildTestPayload(source *LeadSource, fmap FieldMap, allow *Allowlist, desc 
 		if target == "" || !allow.Permits(target) {
 			continue // a broken mapping: save-time validation is where that surfaces
 		}
+		// A SECOND key targeting email is redundant, not uncovered: the identity is
+		// already placed, and testValueFor returns false for email as a "placed by the
+		// caller" sentinel — reporting it would tell the admin email was untested in
+		// the very panel whose other column says email matching WAS proved.
+		if target == "email" {
+			continue
+		}
 		v, ok := testValueFor(target, types[target])
 		if !ok {
-			uncovered = append(uncovered, describeField(target, types[target], desc))
+			// Named once per target. Two source keys onto one select would otherwise
+			// print the same "not covered" line twice — the repetition this file's phone
+			// note already calls out as a list people stop reading.
+			if !uncoveredSeen[target] {
+				uncovered = append(uncovered, describeField(target, types[target], desc))
+				uncoveredSeen[target] = true
+			}
 			continue
 		}
 		fields[srcKey] = v

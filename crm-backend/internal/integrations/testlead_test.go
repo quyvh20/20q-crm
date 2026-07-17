@@ -79,19 +79,34 @@ func TestBuildTestPayload_NeverSendsAPhone(t *testing.T) {
 	}
 	for _, m := range maps {
 		src := testSource(t, m, `["email","phone"]`)
-		fields, uncovered, err := buildPayload(t, src)
+		fmap, ferr := ParseFieldMap(src.FieldMap)
+		if ferr != nil {
+			t.Fatalf("ParseFieldMap(%s): %v", m, ferr)
+		}
+		fields, _, err := buildPayload(t, src)
 		if err != nil {
 			t.Fatalf("buildTestPayload(%s): %v", m, err)
 		}
-		for k := range fields {
+
+		// Assert in the TARGET key space, which is where the hazard lives and where
+		// production's assertNoPhone (ingest.go, on the post-mapping fields) actually
+		// runs. buildTestPayload returns a SOURCE-keyed payload — "Mobile", "Cell" —
+		// so checking it directly for a "phone" key can never fire, and would leave
+		// testValueFor's guard unpinned: deleting `target == "phone"` there would keep
+		// this test green while every phone-mapping source's button started 500ing.
+		mapped, _ := fmap.Apply(fields)
+		for k := range mapped {
 			if strings.EqualFold(k, "phone") {
-				t.Errorf("field_map %s produced a phone key — a test lead must never carry one", m)
+				t.Errorf("field_map %s mapped a value onto phone — a test lead must never carry one", m)
 			}
 		}
-		if err := assertNoPhone(fields); err != nil {
-			t.Errorf("assertNoPhone rejected its own payload for %s: %v", m, err)
+		if err := assertNoPhone(mapped); err != nil {
+			t.Errorf("assertNoPhone rejects the mapped payload for %s — the button would 500: %v", m, err)
 		}
-		_ = uncovered // phone's disclosure is the panel's standing one, not a per-source line
+		// Weaker second leg: the source-keyed payload too, for the identity-map case.
+		if err := assertNoPhone(fields); err != nil {
+			t.Errorf("assertNoPhone rejected the source-keyed payload for %s: %v", m, err)
+		}
 	}
 }
 
@@ -179,6 +194,46 @@ func TestBuildTestPayload_SkipsWhatItCannotSynthesize(t *testing.T) {
 	if !strings.Contains(strings.Join(uncovered, " "), "tier") {
 		t.Errorf("a skipped field must be reported as uncovered, never silently dropped: %v", uncovered)
 	}
+}
+
+// TestBuildTestPayload_UncoveredIsHonest pins two ways uncovered used to mislead:
+// it named email (which the test DOES exercise) whenever a second key targeted it,
+// and it repeated a target once per source key that hit it.
+func TestBuildTestPayload_UncoveredIsHonest(t *testing.T) {
+	t.Run("email is never reported uncovered", func(t *testing.T) {
+		// Two email questions — a real form shape. The first is the identity; the
+		// second must not be filed as "email not covered" while the panel's other
+		// column swears email matching was proved.
+		src := testSource(t, `{"Personal Email":{"target_key":"email"},"Work Email":{"target_key":"email"}}`, "")
+		_, uncovered, err := buildPayload(t, src)
+		if err != nil {
+			t.Fatalf("buildTestPayload: %v", err)
+		}
+		for _, u := range uncovered {
+			if strings.Contains(u, "email") {
+				t.Errorf("email must never be reported uncovered — the test always exercises it: %v", uncovered)
+			}
+		}
+	})
+
+	t.Run("a target is named at most once", func(t *testing.T) {
+		// Two keys onto one select. describeField is pure, so the naive append prints
+		// the identical line twice — a repeated disclosure and a duplicate React key.
+		src := testSource(t, `{"Plan A":{"target_key":"tier"},"Plan B":{"target_key":"tier"}}`, "")
+		_, uncovered, err := buildPayload(t, src)
+		if err != nil {
+			t.Fatalf("buildTestPayload: %v", err)
+		}
+		count := 0
+		for _, u := range uncovered {
+			if strings.Contains(u, "tier") {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Errorf("an unsynthesizable target must be named exactly once, got %d: %v", count, uncovered)
+		}
+	})
 }
 
 // TestBuildTestPayload_IsDeterministic: Go randomizes map iteration, and a payload

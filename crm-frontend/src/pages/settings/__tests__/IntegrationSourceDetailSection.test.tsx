@@ -165,7 +165,10 @@ describe('IntegrationSourceDetailSection', () => {
 
   it('warns that a disabled source is still rejecting real leads', async () => {
     // The test skips the capture key, so it succeeds while every real lead 401s.
-    // Without this line the button hands back false confidence.
+    // Without this line the button hands back false confidence. The warning reads the
+    // LIVE source status (the fixture), not the response snapshot — so that when the
+    // admin clicks Enable it clears instead of contradicting the now-green badge.
+    vi.mocked(getSource).mockResolvedValue({ ...SOURCE, status: 'disabled' });
     vi.mocked(sendTestLead).mockResolvedValue({
       record_id: 'c9',
       event_id: 'e2',
@@ -177,6 +180,42 @@ describe('IntegrationSourceDetailSection', () => {
     fireEvent.click(await screen.findByRole('button', { name: /send test lead/i }));
 
     expect(await screen.findByText(/rejected right now/i)).toBeInTheDocument();
+  });
+
+  it('does not warn when the live source is active, even if the test snapshot said disabled', async () => {
+    // The stale-snapshot bug: a source tested while disabled and then enabled must not
+    // keep insisting it is disabled. The badge (live) and this warning (live) must agree.
+    vi.mocked(getSource).mockResolvedValue({ ...SOURCE, status: 'active' });
+    vi.mocked(sendTestLead).mockResolvedValue({
+      record_id: 'c9',
+      event_id: 'e2',
+      outcome: 'created',
+      source_status: 'disabled', // stale snapshot from an earlier disabled moment
+    });
+    renderDetail();
+
+    fireEvent.click(await screen.findByRole('button', { name: /send test lead/i }));
+    await screen.findByText('What this proved');
+
+    expect(screen.queryByText(/rejected right now/i)).not.toBeInTheDocument();
+  });
+
+  it('says "matched" not "updated" when a repeat test wrote nothing', async () => {
+    // create_only (and a repeat click with nothing to fill) returns outcome=updated
+    // while writing nothing. Claiming an update would contradict the policy shown on
+    // the same screen; "matched" is true whether or not a write happened.
+    vi.mocked(sendTestLead).mockResolvedValue({
+      record_id: 'c9',
+      event_id: 'e2',
+      outcome: 'updated',
+      source_status: 'active',
+    });
+    renderDetail();
+
+    fireEvent.click(await screen.findByRole('button', { name: /send test lead/i }));
+
+    expect(await screen.findByText(/matched your existing test contact/i)).toBeInTheDocument();
+    expect(screen.queryByText(/updated your test contact/i)).not.toBeInTheDocument();
   });
 
   it('surfaces a refused test rather than failing silently', async () => {

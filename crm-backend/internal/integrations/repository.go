@@ -106,6 +106,20 @@ func (r *Repository) TouchSourceUsed(ctx context.Context, id uuid.UUID) error {
 
 // CountCreatedToday counts records this source has created since UTC midnight —
 // the daily cap's backstop. Indexed by (source_id, created_at).
+//
+// A test-lead create IS counted here, deliberately, and this is NOT the oversight it
+// looks like. The obvious "fix" — AND status <> 'test' — would fix a real but bounded
+// bug (an admin's first test click on a source sitting exactly at its cap costs one
+// real lead a 429 that day) by opening an unbounded one: L3's Google Ads capture
+// accepts a caller-supplied is_test on the wire (a leaked google_key's known abuse
+// path), and those deliveries also land as status='test'. A blanket status exclusion
+// would hand that forged flag cap-free record creation — the exact amplification the
+// cap exists to bound. The admin button cannot amplify (its identity is stable, so it
+// creates one contact per source, ever), so the residual cost of counting it is at
+// most one slot per source per test-contact lifetime; the forgeable path's cost is
+// unbounded. The cheap mistake is the one we keep. If L6 later needs test events off
+// this count, distinguish them by a PERSISTED origin (an unforgeable admin marker),
+// never by status.
 func (r *Repository) CountCreatedToday(ctx context.Context, sourceID uuid.UUID, now time.Time) (int64, error) {
 	midnight := now.UTC().Truncate(24 * time.Hour)
 	var n int64

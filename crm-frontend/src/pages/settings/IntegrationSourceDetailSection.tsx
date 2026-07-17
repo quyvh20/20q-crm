@@ -31,6 +31,7 @@ import {
   UPDATE_POLICY_LABELS,
   type EventStatus,
   type IntegrationEvent,
+  type LeadSourceStatus,
   type TestLeadResult,
 } from '../../features/integrations/types';
 
@@ -69,14 +70,33 @@ const TEST_NOT_PROVED = [
   'Phone matching — a test lead never sends a phone number',
 ];
 
-/** TestLeadPanel is the result of one click: what happened, and what it did not prove. */
-function TestLeadPanel({ result, onDismiss }: { result: TestLeadResult; onDismiss: () => void }) {
+/**
+ * TestLeadPanel is the result of one click: what happened, and what it did not prove.
+ *
+ * liveStatus is the source's CURRENT status, not result.source_status (a snapshot
+ * taken at test time). The "rejected right now" warning makes a present-tense claim
+ * about live state, so it must read live state — otherwise an admin who tests a
+ * disabled source and then clicks Enable is left with the badge reading "active" and
+ * this box still insisting the source is disabled.
+ */
+function TestLeadPanel({
+  result,
+  liveStatus,
+  onDismiss,
+}: {
+  result: TestLeadResult;
+  liveStatus: LeadSourceStatus;
+  onDismiss: () => void;
+}) {
   return (
     <div className="rounded-xl border border-border bg-muted/30 p-4 space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <p className="text-sm font-medium text-foreground">
-            Test lead {result.outcome === 'created' ? 'created a contact' : 'updated your test contact'}
+            {/* "matched" not "updated": create_only (and a repeat click that finds
+                nothing to fill) writes nothing yet still reports outcome=updated, so
+                claiming an update would contradict the policy shown below. */}
+            Test lead {result.outcome === 'created' ? 'created a contact' : 'matched your existing test contact'}
           </p>
           <p className="text-xs text-muted-foreground mt-0.5">
             It went through the same pipeline your real leads take. No workflows were triggered.
@@ -95,12 +115,12 @@ function TestLeadPanel({ result, onDismiss }: { result: TestLeadResult; onDismis
         </div>
       </div>
 
-      {result.source_status !== 'active' && (
+      {liveStatus !== 'active' && (
         // The test does not use the capture key, so it succeeds on a source that is
         // rejecting every real lead right now. Saying so is the whole price of
         // letting an admin test before enabling.
         <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-300">
-          This source is <strong>{result.source_status}</strong>, so real leads sent to it are being
+          This source is <strong>{liveStatus}</strong>, so real leads sent to it are being
           rejected right now. The test ran anyway, because it does not use your capture key.
         </div>
       )}
@@ -329,7 +349,13 @@ export default function IntegrationSourceDetailSection() {
             </div>
           )}
 
-          {testResult && <TestLeadPanel result={testResult} onDismiss={() => setTestResult(null)} />}
+          {testResult && (
+            <TestLeadPanel
+              result={testResult}
+              liveStatus={source.status}
+              onDismiss={() => setTestResult(null)}
+            />
+          )}
 
           <div className="rounded-xl border border-border p-4">
             <dl className="grid gap-3 sm:grid-cols-2 text-sm">
