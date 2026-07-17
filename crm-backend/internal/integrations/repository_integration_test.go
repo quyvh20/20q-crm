@@ -48,6 +48,7 @@ func newIntegrationsTestDB(t *testing.T) (*gorm.DB, func()) {
 		id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
 		org_id UUID NOT NULL,
 		email TEXT,
+		phone VARCHAR(50),
 		deleted_at TIMESTAMPTZ
 	)`).Error)
 
@@ -221,4 +222,46 @@ func TestFindSourceByTokenHash_OrgSoftDeleteRevokes(t *testing.T) {
 	found, err = repo.FindSourceByTokenHash(ctx, src.TokenHash)
 	require.NoError(t, err)
 	require.Nil(t, found, "a deleted workspace's capture key must stop resolving")
+}
+
+// TestNormalizePhone_MatchesTheSQLExpression is the guard for a silent drift.
+//
+// Phone matching only works because Go's normalizePhone and the SQL expression
+// behind idx_contacts_org_phone_digits produce IDENTICAL strings. If they ever
+// disagree, the query stops matching the index — dedupe quietly degrades to "never
+// matches" and every lead becomes a duplicate, with no error anywhere. A unit test
+// cannot catch that; only asking Postgres can.
+func TestNormalizePhone_MatchesTheSQLExpression(t *testing.T) {
+	db, cleanup := newIntegrationsTestDB(t)
+	defer cleanup()
+
+	for _, in := range []string{
+		"+1 (555) 123-4567",
+		"555.123.4567",
+		"  555 123 4567  ",
+		"+44 20 7946 0958",
+		"(0)20-7946-0958",
+		"",
+		"not a phone",
+	} {
+		var sqlOut string
+		require.NoError(t, db.Raw(`SELECT regexp_replace(?::text, '[^0-9]', '', 'g')`, in).Scan(&sqlOut).Error)
+		require.Equal(t, sqlOut, normalizePhone(in),
+			"Go and SQL must agree on %q — a drift silently stops dedupe using the index", in)
+	}
+}
+
+// TestPhoneDigitsIndexExists pins the index by name: without it every phone match
+// is a sequential scan of contacts, which is silent until the table is large.
+func TestPhoneDigitsIndexExists(t *testing.T) {
+	db, cleanup := newIntegrationsTestDB(t)
+	defer cleanup()
+	var n int64
+	require.NoError(t, db.Raw(`SELECT COUNT(*) FROM pg_indexes WHERE indexname = 'idx_contacts_org_phone_digits'`).Scan(&n).Error)
+	require.Equal(t, int64(1), n, "the shipped migration must create the phone-digits index")
+	// And it must NOT be unique: a shared phone is legitimate, so uniqueness would
+	// fail to build on real data and assert something untrue about people.
+	var unique bool
+	require.NoError(t, db.Raw(`SELECT i.indisunique FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = 'idx_contacts_org_phone_digits'`).Scan(&unique).Error)
+	require.False(t, unique, "the phone index must stay NON-unique")
 }

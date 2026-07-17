@@ -30,6 +30,9 @@ type RecordWriter interface {
 // implementation is deliberately unscoped — see ContactRepository.FindByNormalizedEmail.
 type ContactMatcher interface {
 	FindByNormalizedEmail(ctx context.Context, orgID uuid.UUID, email string) (*domain.Contact, error)
+	// FindByNormalizedPhone returns ALL matches — a shared phone is normal, so the
+	// caller must see ambiguity rather than be handed one row to merge into.
+	FindByNormalizedPhone(ctx context.Context, orgID uuid.UUID, digits string) ([]domain.Contact, error)
 }
 
 // RawLead is one inbound delivery, already parsed but not yet trusted.
@@ -55,6 +58,10 @@ type IngestResult struct {
 	// Quarantined names the payload keys that were recorded but NOT written, so an
 	// integrator learns at integration time instead of from missing data weeks on.
 	Quarantined []string
+	// Note explains a judgement call the pipeline made — today, a refusal to merge
+	// into an ambiguous phone match. Surfaced on the delivery so the decision is
+	// visible rather than looking like an unexplained duplicate.
+	Note string
 }
 
 // LeadIngestService is the one path every inbound lead takes, whatever channel it
@@ -235,10 +242,18 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 	// a concurrent duplicate actually raises 23505 and the upsert loop below can
 	// catch it. Skip this and "John@X.com" + "john@x.com" both insert silently.
 	email := normalizeEmail(stringOf(fields["email"]))
-	if email == "" {
-		return nil, s.failEvent(ledgerCtx, event, domain.NewAppError(422, "email is required"))
+	if email == "" && requiresEmail(source) {
+		// Without another way to match, an email-less lead can neither match nor
+		// conflict (the unique index is partial on email IS NOT NULL), so every
+		// resubmission would insert another row. Sources that match on phone lift
+		// this — that is what makes the phone-only Facebook shape safe to accept.
+		return nil, s.failEvent(ledgerCtx, event, domain.NewAppError(422, "email is required for this source"))
 	}
-	fields["email"] = email
+	if email != "" {
+		fields["email"] = email
+	} else {
+		delete(fields, "email") // never write "" — it is a value, not an absence
+	}
 
 	// ── 3/4. Match, then create or update ────────────────────────────────
 	ictx, cancel := newIngestContext(source)
@@ -269,6 +284,10 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 	event.ResultSlug = source.TargetSlug
 	event.ResultRecordID = &result.RecordID
 	event.Outcome = result.Outcome
+	// A judgement call the pipeline made (e.g. refusing to merge into an ambiguous
+	// phone match) belongs on the delivery, or the resulting duplicate looks like a
+	// bug rather than a decision. Note, not Error: this delivery SUCCEEDED.
+	event.Note = result.Note
 	if err := s.repo.FinishEvent(ledgerCtx, event); err != nil {
 		return nil, err
 	}
@@ -289,32 +308,41 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 //
 // This depends on contactUseCase.Create surfacing the conflict as
 // domain.ErrContactEmailExists instead of a blanket 500 — landed as a prerequisite.
+//
+// An AMBIGUOUS match (several contacts share the lead's phone) arrives here as
+// no match at all, by design: findMatch refuses to guess, so the lead becomes a new
+// contact and the reason is recorded on the delivery so a human can merge it.
 func (s *LeadIngestService) upsert(ctx context.Context, source *LeadSource, fields map[string]any, email string, amap AttributionMap, attr map[string]string) (*IngestResult, error) {
-	existing, err := s.matcher.FindByNormalizedEmail(ctx, source.OrgID, email)
+	match, err := s.findMatch(ctx, source, fields, email)
 	if err != nil {
 		return nil, err
 	}
 
-	if existing == nil {
+	if match.Contact == nil {
 		rec, cerr := s.create(ctx, source, fields, amap, attr)
 		if cerr == nil {
-			return &IngestResult{RecordID: rec.ID, Outcome: OutcomeCreated}, nil
+			return &IngestResult{RecordID: rec.ID, Outcome: OutcomeCreated, Note: match.AmbiguityNote}, nil
 		}
 		if !errors.Is(cerr, domain.ErrContactEmailExists) {
 			return nil, cerr
 		}
-		// Lost the race — re-read the winner and update it instead.
-		existing, err = s.matcher.FindByNormalizedEmail(ctx, source.OrgID, email)
-		if err != nil {
-			return nil, err
+		// Lost an email race — re-read the winner and update it instead. Note this
+		// guard exists only for email: the phone index cannot be UNIQUE (shared
+		// numbers are legitimate), so no 23505 is raised and two concurrent
+		// phone-only leads both insert. Documented, not silently pretended away.
+		existing, ferr := s.matcher.FindByNormalizedEmail(ctx, source.OrgID, email)
+		if ferr != nil {
+			return nil, ferr
 		}
 		if existing == nil {
 			return nil, cerr // conflicted but unfindable: report the original error
 		}
+		match = &MatchResult{Contact: existing, MatchedOn: MatchEmail}
 	}
 
+	existing := match.Contact
 	if source.UpdatePolicy == UpdatePolicyCreateOnly {
-		return &IngestResult{RecordID: existing.ID, Outcome: OutcomeUpdated}, nil
+		return &IngestResult{RecordID: existing.ID, Outcome: OutcomeUpdated, Note: match.AmbiguityNote}, nil
 	}
 	upd := s.updateFields(source, fields, existing)
 	// Last touch only: how this person FIRST reached us is a fact about the past,
@@ -322,13 +350,13 @@ func (s *LeadIngestService) upsert(ctx context.Context, source *LeadSource, fiel
 	// every customer came from "newsletter".
 	applyAttribution(upd, amap, attr, false)
 	if len(upd) == 0 {
-		return &IngestResult{RecordID: existing.ID, Outcome: OutcomeUpdated}, nil
+		return &IngestResult{RecordID: existing.ID, Outcome: OutcomeUpdated, Note: match.AmbiguityNote}, nil
 	}
 	rec, err := s.records.Update(ctx, source.OrgID, source.TargetSlug, existing.ID, domain.RecordWriteInput{Fields: upd})
 	if err != nil {
 		return nil, err
 	}
-	return &IngestResult{RecordID: rec.ID, Outcome: OutcomeUpdated}, nil
+	return &IngestResult{RecordID: rec.ID, Outcome: OutcomeUpdated, Note: match.AmbiguityNote}, nil
 }
 
 // create writes a new record. first_name is synthesized HERE, on the create branch

@@ -242,6 +242,9 @@ export default function IntegrationSourceDetailSection() {
                           <Badge variant={EVENT_VARIANT[ev.status] ?? 'secondary'}>
                             {ev.outcome || ev.status}
                           </Badge>
+                          {ev.note && (
+                            <p className="text-xs text-muted-foreground mt-1 max-w-xs">{ev.note}</p>
+                          )}
                         </TableCell>
                         <TableCell>
                           {ev.result_record_id ? (
@@ -288,6 +291,13 @@ export default function IntegrationSourceDetailSection() {
       >
         {inspecting && (
           <div className="space-y-4">
+            {inspecting.note && (
+              // Information, not a failure: this delivery worked, and the note
+              // explains a decision the pipeline made on purpose.
+              <div className="rounded-lg border border-border bg-muted/40 p-3 text-sm text-foreground">
+                {inspecting.note}
+              </div>
+            )}
             {inspecting.error && (
               <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
                 {inspecting.error}

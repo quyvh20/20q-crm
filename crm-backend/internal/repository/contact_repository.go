@@ -196,6 +196,45 @@ func (r *contactRepository) FindByNormalizedEmail(ctx context.Context, orgID uui
 	return &contact, nil
 }
 
+// FindByNormalizedPhone returns EVERY org contact whose phone reduces to the same
+// digits, oldest first. Backs lead-ingestion phone dedupe.
+//
+// It returns a SLICE, not a single row, and that is the whole point. A duplicate
+// email means one person; a duplicate PHONE routinely means several — spouses, a
+// company switchboard, a shared mobile, a recycled number. A First()-style lookup
+// would deterministically pick the oldest and let every later lead update THAT
+// row, silently merging distinct people into one contact (and under an overwrite
+// policy, letting one person's data destroy another's). Returning all matches lets
+// the caller SEE the ambiguity and refuse to guess.
+//
+// Matching is on digits only, computed by the same expression as the index
+// (idx_contacts_org_phone_digits) so the query is sargable, and mirrored by
+// integrations.normalizePhone in Go — the two must agree exactly or matching
+// silently stops using the index.
+//
+// Deliberately conservative: "+1 555 0100" and "555 0100" reduce to DIFFERENT
+// digit strings and will not match, because there is no per-org region to resolve
+// the country code with. That is a miss, which creates a duplicate — recoverable.
+// The alternative (guessing a country code) risks a wrong merge, which is not.
+//
+// Unscoped for the same reason as FindByNormalizedEmail: dedupe is an existence
+// check, not a read of the caller's data.
+func (r *contactRepository) FindByNormalizedPhone(ctx context.Context, orgID uuid.UUID, digits string) ([]domain.Contact, error) {
+	if digits == "" {
+		return nil, nil
+	}
+	var out []domain.Contact
+	err := r.db.WithContext(ctx).
+		Where("org_id = ? AND phone IS NOT NULL AND phone <> '' AND regexp_replace(phone, '[^0-9]', '', 'g') = ?", orgID, digits).
+		Order("created_at ASC").
+		Limit(10). // enough to prove ambiguity; nobody needs the 400th switchboard contact
+		Find(&out).Error
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ============================================================
 // Create
 // ============================================================
@@ -300,7 +339,6 @@ func (r *contactRepository) BulkCreate(ctx context.Context, contacts []domain.Co
 
 	return totalCreated, nil
 }
-
 
 // ============================================================
 // Count

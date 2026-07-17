@@ -1017,12 +1017,16 @@ func main() {
 				result_record_id   UUID,
 				outcome            VARCHAR(16),
 				error              TEXT,
+				note               TEXT,
 				created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 				processed_at       TIMESTAMPTZ
 			)`},
 			// Two dedupe indexes, not one: Postgres treats NULLs as DISTINCT, so a
 			// source-scoped index alone never fires for a provider webhook (which has
 			// a connection but no source yet) and every retry would duplicate.
+			// The table may predate this column on any install that booted an earlier
+			// build — CREATE TABLE IF NOT EXISTS never adds columns to an existing table.
+			{"events note column", `ALTER TABLE integration_events ADD COLUMN IF NOT EXISTS note TEXT`},
 			{"events source dedupe", `CREATE UNIQUE INDEX IF NOT EXISTS idx_integration_events_source_provider
 				ON integration_events(source_id, provider_event_id)
 				WHERE source_id IS NOT NULL AND provider_event_id IS NOT NULL`},
@@ -1044,6 +1048,18 @@ func main() {
 			// busiest table.
 			{"contacts lower(email) index", `CREATE INDEX IF NOT EXISTS idx_contacts_org_lower_email
 				ON contacts(org_id, LOWER(email)) WHERE deleted_at IS NULL`},
+			// Phone dedupe: a FUNCTIONAL index on digits rather than a stored column,
+			// so there is nothing to backfill (E.164 normalization is not a SQL
+			// expression) and it covers existing rows the moment it exists. The
+			// expression must stay identical to integrations.normalizePhone or matching
+			// silently stops using the index and starts disagreeing with itself.
+			//
+			// NON-unique, permanently: unlike an email, a shared phone is legitimate
+			// (spouses, a switchboard, a recycled number), so uniqueness here would be
+			// both unbuildable on real data and an assertion that isn't true.
+			{"contacts phone-digits index", `CREATE INDEX IF NOT EXISTS idx_contacts_org_phone_digits
+				ON contacts(org_id, regexp_replace(phone, '[^0-9]', '', 'g'))
+				WHERE phone IS NOT NULL AND phone <> '' AND deleted_at IS NULL`},
 		}
 		for _, g := range leadGuards {
 			if err := db.Exec(g.sql).Error; err != nil {

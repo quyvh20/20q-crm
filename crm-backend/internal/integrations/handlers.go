@@ -246,6 +246,7 @@ type sourceRequest struct {
 	DailyCap       int       `json:"daily_cap"`
 	Status         *string   `json:"status"`
 	FieldMap       *FieldMap `json:"field_map"`
+	MatchFields    []string  `json:"match_fields"`
 }
 
 // mappingView is everything the mapping UI needs, in one call: what this source
@@ -321,6 +322,16 @@ func (h *Handler) CreateSource(c *gin.Context) {
 		return
 	}
 
+	matchFields := req.MatchFields
+	if len(matchFields) == 0 {
+		matchFields = []string{MatchEmail}
+	}
+	if err := ValidateMatchFields(matchFields); err != nil {
+		h.mgmtError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	matchFieldsJSON, _ := json.Marshal(matchFields)
+
 	plaintext, hash, prefix, err := GenerateLeadKey()
 	if err != nil {
 		h.mgmtError(c, http.StatusInternalServerError, "could not mint key")
@@ -336,7 +347,7 @@ func (h *Handler) CreateSource(c *gin.Context) {
 		UpdatePolicy: req.UpdatePolicy,
 		// Set explicitly: GORM sends these columns on INSERT, so leaving them nil
 		// persists NULL/[] and silently defeats the column DEFAULT.
-		MatchFields:    datatypes.JSON(`["email"]`),
+		MatchFields:    matchFieldsJSON,
 		FieldMap:       datatypes.JSON(`{}`),
 		Config:         datatypes.JSON(`{}`),
 		DefaultOwnerID: owner,
@@ -424,6 +435,14 @@ func (h *Handler) UpdateSource(c *gin.Context) {
 		if !h.applyFieldMapUpdate(c, src, *req.FieldMap) {
 			return
 		}
+	}
+	if len(req.MatchFields) > 0 {
+		if err := ValidateMatchFields(req.MatchFields); err != nil {
+			h.mgmtError(c, http.StatusBadRequest, err.Error())
+			return
+		}
+		raw, _ := json.Marshal(req.MatchFields)
+		src.MatchFields = datatypes.JSON(raw)
 	}
 	if req.Status != nil {
 		switch *req.Status {

@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS integration_events (
     result_record_id   UUID,
     outcome            VARCHAR(16),
     error              TEXT,
+    note               TEXT,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     processed_at       TIMESTAMPTZ
 );
@@ -88,3 +89,16 @@ ALTER TABLE integration_events ENABLE ROW LEVEL SECURITY;
 -- leaving prod with no index at all while local tests pass.
 CREATE INDEX IF NOT EXISTS idx_contacts_org_lower_email
     ON contacts(org_id, LOWER(email)) WHERE deleted_at IS NULL;
+
+-- Phone dedupe (L2). A FUNCTIONAL index on the digits, not a stored
+-- phone_normalized column: E.164 normalization is not a SQL expression, so a column
+-- would need a Go backfill at boot to be usable on existing rows. This works on all
+-- data immediately, with nothing to backfill and nothing to keep in sync but the
+-- expression itself (mirrored by integrations.normalizePhone).
+--
+-- NON-unique, and it must stay that way: unlike an email, a shared phone is
+-- legitimate (spouses, a switchboard, a recycled number). Uniqueness here would
+-- both fail to build on real data and assert something false about people.
+CREATE INDEX IF NOT EXISTS idx_contacts_org_phone_digits
+    ON contacts(org_id, regexp_replace(phone, '[^0-9]', '', 'g'))
+    WHERE phone IS NOT NULL AND phone <> '' AND deleted_at IS NULL;

@@ -217,6 +217,11 @@ type IntegrationEvent struct {
 	Outcome        string     `gorm:"type:varchar(16)" json:"outcome,omitempty"`
 
 	Error string `gorm:"type:text" json:"error,omitempty"`
+	// Note explains a judgement the pipeline made on a delivery that SUCCEEDED —
+	// today, refusing to merge into a phone shared by several contacts. Separate
+	// from Error on purpose: a careful decision rendered in the UI's red error box
+	// reads as a failure, which is the opposite of what it is.
+	Note string `gorm:"type:text" json:"note,omitempty"`
 
 	CreatedAt   time.Time  `gorm:"index" json:"created_at"`
 	ProcessedAt *time.Time `json:"processed_at,omitempty"`

@@ -4,3 +4,4 @@ DROP TABLE IF EXISTS lead_sources;
 
 -- The contacts index lives on a table that survives, so a table DROP won't take it.
 DROP INDEX IF EXISTS idx_contacts_org_lower_email;
+DROP INDEX IF EXISTS idx_contacts_org_phone_digits;

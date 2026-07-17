@@ -84,6 +84,10 @@ export interface IntegrationEvent {
   result_record_id?: string;
   outcome?: EventOutcome;
   error?: string;
+  /** A judgement the pipeline made on a delivery that SUCCEEDED (e.g. refusing to
+   *  merge into a phone shared by several contacts). Not an error — rendering it
+   *  as one would read as a failure, which is the opposite of what it is. */
+  note?: string;
   created_at: string;
   processed_at?: string;
 }

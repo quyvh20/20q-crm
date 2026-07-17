@@ -124,8 +124,8 @@ type MemberDetail struct {
 	OwnedContacts int64         `json:"owned_contacts"`
 	OwnedDeals    int64         `json:"owned_deals"`
 	// OwnedCustom counts the custom-object records the member owns (U6.3).
-	OwnedCustom int64 `json:"owned_custom"`
-	Sessions      []SessionInfo `json:"sessions"`
+	OwnedCustom int64         `json:"owned_custom"`
+	Sessions    []SessionInfo `json:"sessions"`
 }
 
 // WorkspaceDetail is the Workspace General page payload (U4): the org's identity
@@ -624,10 +624,10 @@ type ContactFilter struct {
 	// CustomFilters matches custom (jsonb) fields exactly (custom_fields ->> key = value),
 	// powering reverse related lists for custom lookups on contacts.
 	CustomFilters map[string]string `form:"-"`
-	Cursor      string      `form:"cursor"`
-	Limit       int         `form:"limit"`
-	SortBy      string      `form:"sort_by"`    // "name", "created_at" (default)
-	SortOrder   string      `form:"sort_order"` // "asc" or "desc" (default)
+	Cursor        string            `form:"cursor"`
+	Limit         int               `form:"limit"`
+	SortBy        string            `form:"sort_by"`    // "name", "created_at" (default)
+	SortOrder     string            `form:"sort_order"` // "asc" or "desc" (default)
 }
 
 type ImportResult struct {
@@ -670,6 +670,11 @@ type ContactRepository interface {
 	// lead-ingestion dedupe. It is deliberately UNSCOPED — see the implementation
 	// — so treat its result as an existence check, not as a record to echo back.
 	FindByNormalizedEmail(ctx context.Context, orgID uuid.UUID, email string) (*Contact, error)
+	// FindByNormalizedPhone returns EVERY contact sharing a phone's digits. It
+	// returns a slice on purpose: unlike an email, a shared phone is normal
+	// (spouses, switchboards), so the caller must be able to see the ambiguity
+	// rather than be handed one arbitrary row to merge into. Also unscoped.
+	FindByNormalizedPhone(ctx context.Context, orgID uuid.UUID, digits string) ([]Contact, error)
 	Create(ctx context.Context, c *Contact) error
 	Update(ctx context.Context, c *Contact) error
 	SoftDelete(ctx context.Context, orgID, id uuid.UUID) error
@@ -808,13 +813,13 @@ type CreateDealInput struct {
 }
 
 type UpdateDealInput struct {
-	Title           *string    `json:"title"`
-	ContactID       *uuid.UUID `json:"contact_id"`
-	CompanyID       *uuid.UUID `json:"company_id"`
-	StageID         *uuid.UUID `json:"stage_id"`
-	Value           *float64   `json:"value"`
-	Probability     *int       `json:"probability"`
-	OwnerUserID     *uuid.UUID `json:"owner_user_id"`
+	Title       *string    `json:"title"`
+	ContactID   *uuid.UUID `json:"contact_id"`
+	CompanyID   *uuid.UUID `json:"company_id"`
+	StageID     *uuid.UUID `json:"stage_id"`
+	Value       *float64   `json:"value"`
+	Probability *int       `json:"probability"`
+	OwnerUserID *uuid.UUID `json:"owner_user_id"`
 	// ClearOwner unassigns the deal (U6.3) — see UpdateContactInput.
 	ClearOwner      bool    `json:"clear_owner"`
 	ExpectedCloseAt *string `json:"expected_close_at"`
@@ -972,9 +977,9 @@ type CreateFieldDefInput struct {
 }
 
 type UpdateFieldDefInput struct {
-	Label    *string  `json:"label"`
-	Type     *string  `json:"type"`
-	Options  []string `json:"options"`
+	Label   *string  `json:"label"`
+	Type    *string  `json:"type"`
+	Options []string `json:"options"`
 	// TargetSlug repoints a relation field's lookup target. Ignored for non-relation types.
 	TargetSlug *string `json:"target_slug"`
 	// ViaField/SourceField repoint a mirror field. Ignored for non-mirror types.
@@ -1139,4 +1144,3 @@ type VoiceNoteUseCase interface {
 	ApplyContactUpdates(ctx context.Context, orgID, id uuid.UUID) error
 	Delete(ctx context.Context, orgID, id uuid.UUID) error
 }
-
