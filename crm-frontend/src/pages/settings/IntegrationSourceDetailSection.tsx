@@ -17,6 +17,7 @@ import {
 import Modal from '../../components/common/Modal';
 import { useConfirm } from '../../components/common/ConfirmDialog';
 import SecretReveal from '../../components/settings/SecretReveal';
+import FieldMappingTable from './FieldMappingTable';
 import { DocumentTitle } from '../../lib/useDocumentTitle';
 import {
   useDeleteSource,
@@ -199,6 +200,8 @@ export default function IntegrationSourceDetailSection() {
               </div>
             </dl>
           </div>
+
+          <FieldMappingTable sourceId={source.id} />
 
           <div>
             <h3 className="text-sm font-medium text-foreground">Recent deliveries</h3>

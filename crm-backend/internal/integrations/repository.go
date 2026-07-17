@@ -165,6 +165,31 @@ func (r *Repository) FinishEvent(ctx context.Context, e *IntegrationEvent) error
 	return r.db.WithContext(ctx).Save(e).Error
 }
 
+// ObservedKeys returns the distinct top-level keys this source has actually sent,
+// newest deliveries first.
+//
+// This is what makes the mapping UI usable rather than a guessing game: the ledger
+// already records every payload verbatim, so we can show an admin the real field
+// names their provider uses instead of asking them to remember what Facebook calls
+// a question. It is also why raw_payload is stored unmapped — a key we could not
+// understand is exactly the key someone needs to map.
+func (r *Repository) ObservedKeys(ctx context.Context, orgID, sourceID uuid.UUID, sampleSize int) ([]string, error) {
+	if sampleSize <= 0 || sampleSize > 200 {
+		sampleSize = 50
+	}
+	var keys []string
+	err := r.db.WithContext(ctx).Raw(`
+		SELECT DISTINCT k FROM (
+			SELECT jsonb_object_keys(raw_payload) AS k
+			FROM integration_events
+			WHERE org_id = ? AND source_id = ?
+			ORDER BY created_at DESC
+			LIMIT ?
+		) t
+		ORDER BY k`, orgID, sourceID, sampleSize).Scan(&keys).Error
+	return keys, err
+}
+
 // ListEvents returns a source's recent deliveries, newest first — the ledger view.
 func (r *Repository) ListEvents(ctx context.Context, orgID uuid.UUID, sourceID *uuid.UUID, limit int) ([]IntegrationEvent, error) {
 	if limit <= 0 || limit > 200 {

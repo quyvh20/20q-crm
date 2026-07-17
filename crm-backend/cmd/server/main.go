@@ -1536,6 +1536,7 @@ func main() {
 			integrations.NewLeadIngestService(integrationsRepo, recordService, contactRepo, objectRegistryUC, orgSettingsUC),
 			permissionUC,
 			authRepo, // membership check for default_owner_id
+			objectRegistryUC,
 			integrationsLimiter,
 			autoLogger, // same slog handler the automation engine writes to
 		)

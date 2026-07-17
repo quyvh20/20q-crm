@@ -104,3 +104,36 @@ export interface UpdateSourceInput {
   daily_cap?: number;
   status?: LeadSourceStatus;
 }
+
+/** A transform applied to an inbound value before it is written. */
+export type Transform = '' | 'split_name' | 'lower' | 'trim';
+
+export const TRANSFORM_LABELS: Record<Transform, string> = {
+  '': 'Use as-is',
+  split_name: 'Split into first + last name',
+  lower: 'Lowercase it',
+  trim: 'Trim spaces',
+};
+
+export interface FieldMapEntry {
+  target_key: string;
+  transform?: Transform;
+}
+
+/** source_key -> entry. An EMPTY map means identity: keys pass through unchanged. */
+export type FieldMap = Record<string, FieldMapEntry>;
+
+export interface MappingTarget {
+  key: string;
+  label: string;
+  type: string;
+}
+
+/** Everything the mapping screen needs, in one call. */
+export interface MappingView {
+  /** The real keys this source has actually sent, read off the delivery log. */
+  observed: string[];
+  /** The fields a lead may be written into (ownership/relations never appear). */
+  target_fields: MappingTarget[];
+  field_map: FieldMap;
+}

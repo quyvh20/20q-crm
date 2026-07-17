@@ -2,8 +2,10 @@ import { apiFetch, parseJsonSafe, apiError } from '../../lib/api';
 import type {
   CreateSourceInput,
   CreatedLeadSource,
+  FieldMap,
   IntegrationEvent,
   LeadSource,
+  MappingView,
   UpdateSourceInput,
 } from './types';
 
@@ -80,4 +82,33 @@ export async function listEvents(id: string, limit = 50): Promise<IntegrationEve
   const json = await parseJsonSafe(res);
   if (!res.ok) throw apiError(res, json, 'Failed to load the delivery log');
   return asList<IntegrationEvent>(json.data);
+}
+
+export async function getMapping(id: string): Promise<MappingView> {
+  const res = await apiFetch(`${BASE}/${id}/mapping`);
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Failed to load the field mapping');
+  const data = (json.data ?? {}) as Partial<MappingView>;
+  // Go marshals nil slices to null; a bare .map on either would white-screen.
+  return {
+    observed: Array.isArray(data.observed) ? data.observed : [],
+    target_fields: Array.isArray(data.target_fields) ? data.target_fields : [],
+    field_map: data.field_map ?? {},
+  };
+}
+
+/**
+ * saveMapping stores the field map. The server validates it against the target
+ * object and returns per-source-key problems in `details` on a 400 — a mapping
+ * that can never work should fail here, in front of the admin, not silently
+ * quarantine every lead later.
+ */
+export async function saveMapping(id: string, field_map: FieldMap): Promise<LeadSource> {
+  const res = await apiFetch(`${BASE}/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ field_map }),
+  });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Failed to save the field mapping');
+  return json.data as LeadSource;
 }

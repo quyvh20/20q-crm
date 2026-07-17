@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as api from './api';
-import type { CreateSourceInput, IntegrationEvent, LeadSource, UpdateSourceInput } from './types';
+import type { CreateSourceInput, FieldMap, IntegrationEvent, LeadSource, UpdateSourceInput } from './types';
 
 // React-query layer, mirroring features/workflows/queries.ts: one exported key
 // factory with a lists() invalidation umbrella, plus hooks.
@@ -14,6 +14,7 @@ export const integrationKeys = {
   // invalidateQueries(detail(id)) after a rotate/disable would prefix-match and
   // refetch the whole delivery log too.
   events: (id: string) => [...integrationKeys.all, 'events', id] as const,
+  mapping: (id: string) => [...integrationKeys.all, 'mapping', id] as const,
 } as const;
 
 export function useLeadSources() {
@@ -92,6 +93,27 @@ export function useDeleteSource() {
       qc.removeQueries({ queryKey: integrationKeys.detail(id) });
       qc.removeQueries({ queryKey: integrationKeys.events(id) });
       qc.invalidateQueries({ queryKey: integrationKeys.lists() });
+    },
+  });
+}
+
+export function useMapping(id: string | undefined) {
+  return useQuery({
+    queryKey: integrationKeys.mapping(id ?? ''),
+    queryFn: () => api.getMapping(id as string),
+    enabled: Boolean(id),
+    refetchOnMount: 'always',
+  });
+}
+
+export function useSaveMapping() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, field_map }: { id: string; field_map: FieldMap }) =>
+      api.saveMapping(id, field_map),
+    onSuccess: (source: LeadSource) => {
+      qc.setQueryData(integrationKeys.detail(source.id), source);
+      qc.invalidateQueries({ queryKey: integrationKeys.mapping(source.id) });
     },
   });
 }

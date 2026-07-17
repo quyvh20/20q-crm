@@ -34,6 +34,7 @@ type Handler struct {
 	ingest  *LeadIngestService
 	authz   domain.RecordAuthorizer
 	members MemberChecker
+	schema  SchemaProvider
 	limiter *RateLimiter
 	logger  *slog.Logger
 }
@@ -41,14 +42,14 @@ type Handler struct {
 // NewHandler builds the handler. A nil authorizer panics rather than degrading:
 // the source-save OLS re-check is the only thing stopping integrations.manage from
 // becoming an org-wide write primitive, so it must not be optional.
-func NewHandler(repo *Repository, ingest *LeadIngestService, authz domain.RecordAuthorizer, members MemberChecker, limiter *RateLimiter, logger *slog.Logger) *Handler {
+func NewHandler(repo *Repository, ingest *LeadIngestService, authz domain.RecordAuthorizer, members MemberChecker, schema SchemaProvider, limiter *RateLimiter, logger *slog.Logger) *Handler {
 	if authz == nil {
 		panic("integrations: authorizer is required — the source-save OLS check is a security control")
 	}
 	if members == nil {
 		panic("integrations: member checker is required — default_owner_id validation is a security control")
 	}
-	return &Handler{repo: repo, ingest: ingest, authz: authz, members: members, limiter: limiter, logger: logger}
+	return &Handler{repo: repo, ingest: ingest, authz: authz, members: members, schema: schema, limiter: limiter, logger: logger}
 }
 
 // RegisterRoutes mounts the module's routes.
@@ -74,6 +75,7 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, protected []gin.HandlerFunc
 		g.DELETE("/sources/:id", h.DeleteSource)
 		g.POST("/sources/:id/rotate-key", h.RotateKey)
 		g.GET("/sources/:id/events", h.ListEvents)
+		g.GET("/sources/:id/mapping", h.GetMapping)
 	}
 }
 
@@ -236,13 +238,32 @@ func bearerToken(c *gin.Context) string {
 // ── Management ───────────────────────────────────────────────────────────────
 
 type sourceRequest struct {
-	Name           string  `json:"name"`
-	Kind           string  `json:"kind"`
-	TargetSlug     string  `json:"target_slug"`
-	UpdatePolicy   string  `json:"update_policy"`
-	DefaultOwnerID *string `json:"default_owner_id"`
-	DailyCap       int     `json:"daily_cap"`
-	Status         *string `json:"status"`
+	Name           string    `json:"name"`
+	Kind           string    `json:"kind"`
+	TargetSlug     string    `json:"target_slug"`
+	UpdatePolicy   string    `json:"update_policy"`
+	DefaultOwnerID *string   `json:"default_owner_id"`
+	DailyCap       int       `json:"daily_cap"`
+	Status         *string   `json:"status"`
+	FieldMap       *FieldMap `json:"field_map"`
+}
+
+// mappingView is everything the mapping UI needs, in one call: what this source
+// has actually SENT, what it can be mapped INTO, and the current map.
+type mappingView struct {
+	// Observed are the real keys seen in this source's recent deliveries. An admin
+	// maps from this list rather than recalling what their provider calls a field.
+	Observed []string `json:"observed"`
+	// TargetFields are the keys a lead may be written into (the allowlist — so
+	// ownership and relations never appear as options).
+	TargetFields []mappingTarget `json:"target_fields"`
+	FieldMap     FieldMap        `json:"field_map"`
+}
+
+type mappingTarget struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+	Type  string `json:"type"`
 }
 
 type sourceWithKey struct {
@@ -398,6 +419,11 @@ func (h *Handler) UpdateSource(c *gin.Context) {
 	}
 	if req.DailyCap > 0 {
 		src.DailyCap = req.DailyCap
+	}
+	if req.FieldMap != nil {
+		if !h.applyFieldMapUpdate(c, src, *req.FieldMap) {
+			return
+		}
 	}
 	if req.Status != nil {
 		switch *req.Status {
@@ -571,3 +597,72 @@ func (h *Handler) mgmtError(c *gin.Context, status int, msg string) {
 
 // compile-time assertion that the ingest service satisfies what the handler needs.
 var _ = context.Background
+
+// GetMapping returns everything the mapping UI needs in one call.
+//
+// The observed keys are the point. Without them an admin has to remember what
+// their provider calls a field and type it exactly — which is a guessing game they
+// lose silently, because a wrong source key simply never matches and the lead
+// quarantines. The ledger already knows the real names.
+func (h *Handler) GetMapping(c *gin.Context) {
+	src, ok := h.loadSource(c)
+	if !ok {
+		return
+	}
+	observed, err := h.repo.ObservedKeys(c.Request.Context(), src.OrgID, src.ID, 50)
+	if err != nil {
+		h.logger.Error("integrations: observed keys failed", "error", err, "source_id", src.ID.String())
+		observed = nil // a missing hint list must not deny the mapping screen
+	}
+	allow, err := BuildAllowlist(c.Request.Context(), h.schema, src.OrgID, src.TargetSlug)
+	if err != nil {
+		h.mgmtError(c, http.StatusInternalServerError, "could not load this object's fields")
+		return
+	}
+	desc, err := h.schema.GetSchema(c.Request.Context(), src.OrgID, src.TargetSlug)
+	if err != nil || desc == nil {
+		h.mgmtError(c, http.StatusInternalServerError, "could not load this object's fields")
+		return
+	}
+	targets := make([]mappingTarget, 0, len(desc.Fields))
+	for _, f := range desc.Fields {
+		// Only what a lead may actually be written into: the allowlist already
+		// excludes ownership and relations, so they can never be offered as options.
+		if !allow.Permits(f.Key) {
+			continue
+		}
+		targets = append(targets, mappingTarget{Key: f.Key, Label: f.Label, Type: f.Type})
+	}
+	fmap, err := ParseFieldMap(src.FieldMap)
+	if err != nil {
+		fmap = FieldMap{}
+	}
+	c.JSON(http.StatusOK, gin.H{"data": mappingView{Observed: observed, TargetFields: targets, FieldMap: fmap}})
+}
+
+// applyFieldMapUpdate validates and stores a source's mapping.
+//
+// Validated HERE, at save time, against the target object's writable keys — a
+// mapping that can never work must fail in front of the admin who wrote it, not
+// quarantine every lead at 3am with nobody watching.
+func (h *Handler) applyFieldMapUpdate(c *gin.Context, src *LeadSource, m FieldMap) bool {
+	allow, err := BuildAllowlist(c.Request.Context(), h.schema, src.OrgID, src.TargetSlug)
+	if err != nil {
+		h.mgmtError(c, http.StatusInternalServerError, "could not load this object's fields")
+		return false
+	}
+	if problems := ValidateFieldMap(m, allow); len(problems) > 0 {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+			"error":   "this mapping has problems",
+			"details": problems,
+		})
+		return false
+	}
+	raw, err := json.Marshal(m)
+	if err != nil {
+		h.mgmtError(c, http.StatusBadRequest, "invalid field map")
+		return false
+	}
+	src.FieldMap = datatypes.JSON(raw)
+	return true
+}
