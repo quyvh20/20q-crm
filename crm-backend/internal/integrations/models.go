@@ -50,6 +50,18 @@ var validUpdatePolicies = map[string]bool{
 	UpdatePolicyCreateOnly:    true,
 }
 
+// supportedTargets are the objects a lead source may write to.
+//
+// Restricted to system objects backed by an adapter. The custom-object write path
+// stamps CreatedBy = &userID and OwnerUserID = &userID, so the callerless ingest
+// actor (uuid.Nil) would write the all-zero UUID into a column with a FK to
+// users(id) — an insert that cannot succeed. Widening this needs that path to
+// accept a NULL creator first.
+var supportedTargets = map[string]bool{"contact": true}
+
+// IsSupportedTarget reports whether leads may be written to this object.
+func IsSupportedTarget(slug string) bool { return supportedTargets[slug] }
+
 // IsValidUpdatePolicy reports whether an update policy is known.
 func IsValidUpdatePolicy(p string) bool { return validUpdatePolicies[p] }
 

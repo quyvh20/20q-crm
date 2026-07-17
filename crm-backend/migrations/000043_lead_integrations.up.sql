@@ -77,6 +77,10 @@ CREATE INDEX IF NOT EXISTS idx_integration_events_source_created
 CREATE INDEX IF NOT EXISTS idx_integration_events_org_created
     ON integration_events(org_id, created_at DESC);
 
+-- RLS on, matching every other table in this schema.
+ALTER TABLE lead_sources ENABLE ROW LEVEL SECURITY;
+ALTER TABLE integration_events ENABLE ROW LEVEL SECURITY;
+
 -- The dedupe match index. NON-unique deliberately: the existing unique index is on
 -- raw (org_id, email) and is case-SENSITIVE, so case-variant duplicates are legal
 -- today and almost certainly exist. A UNIQUE index here would fail to build on any

@@ -61,18 +61,33 @@ func (r *Repository) SoftDeleteSource(ctx context.Context, orgID, id uuid.UUID) 
 	return r.db.WithContext(ctx).Where("org_id = ? AND id = ?", orgID, id).Delete(&LeadSource{}).Error
 }
 
-// FindSourceByTokenHash resolves a capture credential to its source.
+// FindSourceByTokenHash resolves a capture credential to its source, and only to
+// a source whose workspace still exists.
 //
-// Deliberately NOT org-scoped: the credential IS the org claim — there is no
-// caller to scope by. The returned source's OrgID is therefore the authority for
-// everything downstream, and callers must never take an org from the request.
-// Soft-deleted sources are excluded, so deleting a source revokes its key.
+// Deliberately NOT org-scoped by a caller: the credential IS the org claim —
+// there is no caller to scope by. The returned source's OrgID is therefore the
+// authority for everything downstream, and callers must never take an org from the
+// request.
+//
+// The organizations join is load-bearing, not decoration. Workspace deletion is a
+// SOFT delete, so the organizations row survives and the `ON DELETE CASCADE` on
+// lead_sources.org_id can never fire; the source row keeps status='active' and its
+// key would go on writing contacts — with billable side effects — into a workspace
+// the customer deleted. Nobody could stop it either: deletion evicts every member,
+// so no one can authenticate to reach the management API and disable the source.
+// The credential must not outlive the workspace.
+//
+// Soft-deleted sources are excluded too (gorm's DeletedAt), so retiring a source
+// revokes its key immediately.
 func (r *Repository) FindSourceByTokenHash(ctx context.Context, hash string) (*LeadSource, error) {
 	if hash == "" {
 		return nil, nil
 	}
 	var s LeadSource
-	err := r.db.WithContext(ctx).Where("token_hash = ?", hash).First(&s).Error
+	err := r.db.WithContext(ctx).
+		Joins("JOIN organizations o ON o.id = lead_sources.org_id AND o.deleted_at IS NULL").
+		Where("lead_sources.token_hash = ?", hash).
+		First(&s).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil

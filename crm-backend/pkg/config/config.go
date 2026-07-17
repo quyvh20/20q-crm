@@ -43,6 +43,12 @@ type Config struct {
 	// console. Server-to-server callers need no cookies, so pointing them straight
 	// at the API origin is correct.
 	PublicAPIBaseURL string `mapstructure:"PUBLIC_API_BASE_URL"`
+	// TrustedProxies is a comma-separated CIDR list of edge proxies whose
+	// X-Forwarded-For may be believed. EMPTY (the default) trusts none, so
+	// c.ClientIP() returns the unforgeable peer address. Gin's own default is the
+	// opposite -- trust everything -- which makes ClientIP() attacker-controlled and
+	// every rate limit keyed on it decorative.
+	TrustedProxies string `mapstructure:"TRUSTED_PROXIES"`
 
 	// Refresh-token cookie policy (P2). The refresh token moves out of
 	// localStorage into an httpOnly cookie. In production the frontend and API
@@ -103,6 +109,7 @@ func LoadConfig() (*Config, error) {
 	// in prod (no .env file) and every capture URL the UI renders is malformed.
 	// PADDLE_WEBHOOK_SECRET and TOTP_ENC_KEY are both live victims of exactly this.
 	viper.BindEnv("PUBLIC_API_BASE_URL")
+	viper.BindEnv("TRUSTED_PROXIES")
 	viper.BindEnv("COOKIE_SECURE")
 	viper.BindEnv("COOKIE_SAMESITE")
 	viper.BindEnv("COOKIE_DOMAIN")

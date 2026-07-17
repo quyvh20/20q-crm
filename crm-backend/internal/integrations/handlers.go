@@ -21,12 +21,19 @@ import (
 // anything larger is a mistake or an attack.
 const captureBodyLimit = 256 * 1024
 
+// MemberChecker resolves a user's membership in an org. Narrow port: integrations
+// needs only "is this person an active member here".
+type MemberChecker interface {
+	GetOrgUser(ctx context.Context, userID, orgID uuid.UUID) (*domain.OrgUser, error)
+}
+
 // Handler serves the integrations module's own routes — both the capability-gated
 // management API and the public capture endpoint.
 type Handler struct {
 	repo    *Repository
 	ingest  *LeadIngestService
 	authz   domain.RecordAuthorizer
+	members MemberChecker
 	limiter *RateLimiter
 	logger  *slog.Logger
 }
@@ -34,11 +41,14 @@ type Handler struct {
 // NewHandler builds the handler. A nil authorizer panics rather than degrading:
 // the source-save OLS re-check is the only thing stopping integrations.manage from
 // becoming an org-wide write primitive, so it must not be optional.
-func NewHandler(repo *Repository, ingest *LeadIngestService, authz domain.RecordAuthorizer, limiter *RateLimiter, logger *slog.Logger) *Handler {
+func NewHandler(repo *Repository, ingest *LeadIngestService, authz domain.RecordAuthorizer, members MemberChecker, limiter *RateLimiter, logger *slog.Logger) *Handler {
 	if authz == nil {
 		panic("integrations: authorizer is required — the source-save OLS check is a security control")
 	}
-	return &Handler{repo: repo, ingest: ingest, authz: authz, limiter: limiter, logger: logger}
+	if members == nil {
+		panic("integrations: member checker is required — default_owner_id validation is a security control")
+	}
+	return &Handler{repo: repo, ingest: ingest, authz: authz, members: members, limiter: limiter, logger: logger}
 }
 
 // RegisterRoutes mounts the module's routes.
@@ -130,10 +140,18 @@ func (h *Handler) CaptureLead(c *gin.Context) {
 		return
 	}
 
-	// The daily cap is the backstop that survives both limiters being wrong.
+	// The daily cap is the backstop that survives both limiters being wrong, so it
+	// fails CLOSED: a count we could not take is not evidence of headroom. Skipping
+	// the cap on error would make a DB blip the one moment the backstop is absent.
 	if source.DailyCap > 0 {
 		n, err := h.repo.CountCreatedToday(c.Request.Context(), source.ID, time.Now())
-		if err == nil && n >= int64(source.DailyCap) {
+		if err != nil {
+			h.logger.Error("integrations: daily cap check failed", "error", err, "source_id", source.ID.String())
+			c.Header("Retry-After", "60")
+			h.captureError(c, http.StatusServiceUnavailable, "could not verify capture limit; retry")
+			return
+		}
+		if n >= int64(source.DailyCap) {
 			c.Header("Retry-After", "3600")
 			h.captureError(c, http.StatusTooManyRequests, "daily capture limit reached for this source")
 			return
@@ -162,9 +180,21 @@ func (h *Handler) CaptureLead(c *gin.Context) {
 		return
 	}
 
-	out := captureResponse{Outcome: res.Outcome, EventID: res.EventID.String()}
-	if res.RecordID != uuid.Nil {
-		out.RecordID = res.RecordID.String()
+	// Never report success without a record. A 200 carrying an empty record_id is
+	// the response shape that turns any bug on this path into SILENT lead loss: the
+	// integrator's Make/Zapier scenario marks the lead delivered and moves on, and
+	// nobody finds out until someone asks where the leads went.
+	if res.RecordID == uuid.Nil {
+		h.logger.Error("integrations: ingest returned no record", "source_id", source.ID.String(), "event_id", res.EventID.String())
+		h.captureError(c, http.StatusInternalServerError, "lead was not written; retry")
+		return
+	}
+
+	out := captureResponse{
+		RecordID:    res.RecordID.String(),
+		Outcome:     res.Outcome,
+		EventID:     res.EventID.String(),
+		Quarantined: res.Quarantined,
 	}
 	c.JSON(http.StatusOK, gin.H{"data": out})
 }
@@ -246,6 +276,14 @@ func (h *Handler) CreateSource(c *gin.Context) {
 	if req.TargetSlug == "" {
 		req.TargetSlug = "contact"
 	}
+	if !IsSupportedTarget(req.TargetSlug) {
+		// Reject at CONFIGURATION time, not at ingest. Accepting a source that can
+		// never work means the admin's leads 4xx silently at 3am with no UI feedback,
+		// and the ingest-side guard exists only as defence in depth against a row
+		// edited by hand.
+		h.mgmtError(c, http.StatusBadRequest, "unsupported target object: "+req.TargetSlug+" (only contact is supported)")
+		return
+	}
 	if req.UpdatePolicy == "" {
 		req.UpdatePolicy = UpdatePolicyFillBlankOnly
 	}
@@ -257,7 +295,7 @@ func (h *Handler) CreateSource(c *gin.Context) {
 		return
 	}
 
-	owner, ok := h.parseOwner(c, req.DefaultOwnerID)
+	owner, ok := h.parseOwner(c, orgID, req.DefaultOwnerID)
 	if !ok {
 		return
 	}
@@ -340,6 +378,10 @@ func (h *Handler) UpdateSource(c *gin.Context) {
 		src.UpdatePolicy = req.UpdatePolicy
 	}
 	if req.TargetSlug != "" && req.TargetSlug != src.TargetSlug {
+		if !IsSupportedTarget(req.TargetSlug) {
+			h.mgmtError(c, http.StatusBadRequest, "unsupported target object: "+req.TargetSlug+" (only contact is supported)")
+			return
+		}
 		// Re-authorize on every target change, not just at create: otherwise a source
 		// created against a permitted object could be repointed at a forbidden one.
 		if !h.authorizeTarget(c, src.OrgID, req.TargetSlug) {
@@ -348,7 +390,7 @@ func (h *Handler) UpdateSource(c *gin.Context) {
 		src.TargetSlug = req.TargetSlug
 	}
 	if req.DefaultOwnerID != nil {
-		owner, ok := h.parseOwner(c, req.DefaultOwnerID)
+		owner, ok := h.parseOwner(c, src.OrgID, req.DefaultOwnerID)
 		if !ok {
 			return
 		}
@@ -492,13 +534,30 @@ func (h *Handler) authorizeTarget(c *gin.Context, orgID uuid.UUID, slug string) 
 	return true
 }
 
-func (h *Handler) parseOwner(c *gin.Context, raw *string) (*uuid.UUID, bool) {
+// parseOwner validates the source's default owner.
+//
+// Membership is checked, not assumed. Nothing downstream does it: contactUseCase
+// assigns OwnerUserID blindly, and the ingest write is callerless so no
+// authorization layer sees it either. An unchecked id means every lead from this
+// source lands owned by a stranger, a departed employee, or nobody — and an
+// unowned or foreign-owned contact is invisible to own-scoped reps, which is
+// exactly the silent lead-loss this platform exists to prevent.
+func (h *Handler) parseOwner(c *gin.Context, orgID uuid.UUID, raw *string) (*uuid.UUID, bool) {
 	if raw == nil || strings.TrimSpace(*raw) == "" {
 		return nil, true
 	}
 	id, err := uuid.Parse(*raw)
 	if err != nil {
 		h.mgmtError(c, http.StatusBadRequest, "invalid default_owner_id")
+		return nil, false
+	}
+	ou, err := h.members.GetOrgUser(c.Request.Context(), id, orgID)
+	if err != nil {
+		h.mgmtError(c, http.StatusInternalServerError, "could not verify the owner")
+		return nil, false
+	}
+	if ou == nil || ou.DeletedAt != nil || ou.Status != "active" {
+		h.mgmtError(c, http.StatusBadRequest, "default_owner_id must be an active member of this workspace")
 		return nil, false
 	}
 	return &id, true

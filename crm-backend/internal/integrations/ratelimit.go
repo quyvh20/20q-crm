@@ -2,20 +2,32 @@ package integrations
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 )
 
+// errUnexpectedScriptResult guards against the Redis script returning a shape we
+// did not expect. Treated like any other Redis error — fall through to the local
+// bucket, never to "allow".
+var errUnexpectedScriptResult = errors.New("integrations: unexpected rate-limit script result")
+
 // Rate-limit defaults for the public capture endpoint.
 const (
 	defaultCaptureLimit  = 120 // requests per window, per key
 	defaultCaptureWindow = time.Minute
 	// bucketIdleTTL is how long an unused in-process bucket survives a sweep.
-	// Without a sweep the map grows without bound on a public endpoint — the
-	// automation limiter's live defect, which is memory exhaustion by strangers.
 	bucketIdleTTL = 10 * time.Minute
+	// sweepInterval is deliberately a FRACTION of bucketIdleTTL. Using the idle TTL
+	// as its own tick interval makes reclamation hostage to the attack's duration:
+	// the sweeper would only ever collect entries idle for longer than the flood has
+	// been running — i.e. none of them, while it matters.
+	sweepInterval = bucketIdleTTL / 4
+	// defaultMaxBuckets caps the in-process map. A public endpoint takes keys from
+	// strangers, so the key space is not a bound — this is.
+	defaultMaxBuckets = 50_000
 )
 
 // RateLimiter throttles the public capture endpoint.
@@ -35,9 +47,10 @@ type RateLimiter struct {
 	limit  int
 	window time.Duration
 
-	mu      sync.Mutex
-	buckets map[string]*bucket
-	stop    chan struct{}
+	mu         sync.Mutex
+	buckets    map[string]*bucket
+	maxBuckets int
+	stop       chan struct{}
 }
 
 type bucket struct {
@@ -56,11 +69,12 @@ func NewRateLimiter(rc *redis.Client, limit int, window time.Duration) *RateLimi
 		window = defaultCaptureWindow
 	}
 	rl := &RateLimiter{
-		redis:   rc,
-		limit:   limit,
-		window:  window,
-		buckets: map[string]*bucket{},
-		stop:    make(chan struct{}),
+		redis:      rc,
+		limit:      limit,
+		window:     window,
+		buckets:    map[string]*bucket{},
+		maxBuckets: defaultMaxBuckets,
+		stop:       make(chan struct{}),
 	}
 	go rl.sweep()
 	return rl
@@ -84,24 +98,49 @@ func (rl *RateLimiter) Allow(ctx context.Context, key string) (bool, time.Durati
 	return rl.allowLocal(key)
 }
 
+// incrWindow increments a fixed-window counter and sets its TTL ATOMICALLY,
+// returning the new count and the window's remaining TTL.
+//
+// Atomic because the obvious two-step (INCR then EXPIRE) has a failure mode that
+// is permanent rather than transient: if the process dies — or the request context
+// is cancelled — between the two, the key survives with NO TTL. Nothing ever
+// repairs it, because the TTL is only ever set on the branch where INCR returns 1,
+// and INCR never returns 1 for an existing key again. The counter then climbs
+// forever and that key 429s for eternity, while TTL(-1) makes the endpoint
+// advertise a Retry-After that will never come true. A compensating DEL cannot save
+// it either: it would run on the same dead context that broke the EXPIRE.
+//
+// A script runs both commands in one round trip on Redis's single thread, so the
+// key cannot exist without its expiry.
+var incrWindow = redis.NewScript(`
+	local n = redis.call('INCR', KEYS[1])
+	if n == 1 then
+		redis.call('PEXPIRE', KEYS[1], ARGV[1])
+	end
+	local ttl = redis.call('PTTL', KEYS[1])
+	if ttl < 0 then
+		-- Defensive: a pre-existing TTL-less key from an older build. Re-arm it
+		-- rather than inheriting a permanent lockout.
+		redis.call('PEXPIRE', KEYS[1], ARGV[1])
+		ttl = tonumber(ARGV[1])
+	end
+	return {n, ttl}
+`)
+
 func (rl *RateLimiter) allowRedis(ctx context.Context, key string) (bool, time.Duration, error) {
 	rkey := "ratelimit:capture:" + key
-	n, err := rl.redis.Incr(ctx, rkey).Result()
+	res, err := incrWindow.Run(ctx, rl.redis, []string{rkey}, rl.window.Milliseconds()).Slice()
 	if err != nil {
 		return false, 0, err
 	}
-	if n == 1 {
-		// First hit of the window: set the TTL. If this fails the key would never
-		// expire and the caller would be throttled forever, so drop the key and let
-		// the local bucket decide this request.
-		if err := rl.redis.Expire(ctx, rkey, rl.window).Err(); err != nil {
-			rl.redis.Del(ctx, rkey)
-			return false, 0, err
-		}
+	if len(res) != 2 {
+		return false, 0, errUnexpectedScriptResult
 	}
+	n, _ := res[0].(int64)
+	ttlMS, _ := res[1].(int64)
 	if n > int64(rl.limit) {
-		ttl, err := rl.redis.TTL(ctx, rkey).Result()
-		if err != nil || ttl <= 0 {
+		ttl := time.Duration(ttlMS) * time.Millisecond
+		if ttl <= 0 {
 			ttl = rl.window
 		}
 		return false, ttl, nil
@@ -110,13 +149,35 @@ func (rl *RateLimiter) allowRedis(ctx context.Context, key string) (bool, time.D
 }
 
 // allowLocal is the in-process fallback: a fixed window, honestly named.
+//
+// It bounds the map's CARDINALITY, not just each entry's lifetime. Sweeping alone
+// does not bound anything an attacker controls: entries are inserted at line rate
+// and reclaimed only once idle, so steady-state size is insertion-rate × idle-TTL —
+// unbounded in the attacker's favour, and reached fastest on exactly the path this
+// fallback exists for (a Redis outage). At the cap we DENY unknown keys, which is
+// the same fail-closed posture as the rest of this type: an established caller's
+// bucket is already resident and keeps working, while a flood of unseen keys is
+// refused for free instead of being allocated.
 func (rl *RateLimiter) allowLocal(key string) (bool, time.Duration) {
 	now := time.Now()
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
 	b, ok := rl.buckets[key]
-	if !ok || now.After(b.resetsAt) {
+	if ok && now.After(b.resetsAt) {
+		// Window elapsed: reuse the entry rather than deleting and re-inserting.
+		b.count, b.resetsAt, b.seenAt = 1, now.Add(rl.window), now
+		return true, 0
+	}
+	if !ok {
+		if len(rl.buckets) >= rl.maxBuckets {
+			// Reclaim opportunistically before refusing — expired entries are dead
+			// weight the sweeper has not reached yet.
+			rl.evictExpiredLocked(now)
+			if len(rl.buckets) >= rl.maxBuckets {
+				return false, rl.window
+			}
+		}
 		// A fresh window. count starts at 1 — this request — rather than seeding
 		// limit-1 tokens, which is how the automation bucket ends up granting
 		// limit+1 the moment its limit is parameterized.
@@ -131,10 +192,20 @@ func (rl *RateLimiter) allowLocal(key string) (bool, time.Duration) {
 	return true, 0
 }
 
+// evictExpiredLocked drops entries whose window has already elapsed. Caller holds
+// the mutex.
+func (rl *RateLimiter) evictExpiredLocked(now time.Time) {
+	for k, b := range rl.buckets {
+		if now.After(b.resetsAt) {
+			delete(rl.buckets, k)
+		}
+	}
+}
+
 // sweep evicts idle buckets so a public endpoint cannot grow the map without
 // bound.
 func (rl *RateLimiter) sweep() {
-	t := time.NewTicker(bucketIdleTTL)
+	t := time.NewTicker(sweepInterval)
 	defer t.Stop()
 	for {
 		select {

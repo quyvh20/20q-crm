@@ -42,7 +42,7 @@ func newIntegrationsTestDB(t *testing.T) (*gorm.DB, func()) {
 
 	// FK prerequisites the migration expects to already exist.
 	require.NoError(t, db.Exec(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`).Error)
-	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS organizations (id UUID PRIMARY KEY DEFAULT uuid_generate_v4())`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS organizations (id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), deleted_at TIMESTAMPTZ)`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY DEFAULT uuid_generate_v4())`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS contacts (
 		id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -188,4 +188,37 @@ func TestFindSourceByTokenHash_SoftDeleteRevokes(t *testing.T) {
 	found, err = repo.FindSourceByTokenHash(ctx, src.TokenHash)
 	require.NoError(t, err)
 	require.Nil(t, found, "a deleted source's key must stop resolving")
+}
+
+// TestFindSourceByTokenHash_OrgSoftDeleteRevokes is the regression for the review's
+// highest-impact finding. Workspace deletion is a SOFT delete, so the organizations
+// row survives and the ON DELETE CASCADE on lead_sources.org_id can never fire: the
+// source stays status='active' and its key would go on writing contacts — with
+// billable side effects — into a workspace the customer deleted. Nobody could stop
+// it either, because deletion evicts every member, so no one can authenticate to
+// reach the management API and disable the source.
+func TestFindSourceByTokenHash_OrgSoftDeleteRevokes(t *testing.T) {
+	db, cleanup := newIntegrationsTestDB(t)
+	defer cleanup()
+	repo := NewRepository(db)
+	ctx := context.Background()
+	orgID := seedOrg(t, db)
+	src := seedSource(t, repo, orgID)
+
+	found, err := repo.FindSourceByTokenHash(ctx, src.TokenHash)
+	require.NoError(t, err)
+	require.NotNil(t, found, "a live workspace's key must resolve")
+
+	// Exactly what authRepository.SoftDeleteOrganization does.
+	require.NoError(t, db.Exec(`UPDATE organizations SET deleted_at = NOW() WHERE id = ?`, orgID).Error)
+
+	// The row is still there and still 'active' — which is the whole point: nothing
+	// about the SOURCE changed, so only an org-liveness check can catch this.
+	var surviving int64
+	require.NoError(t, db.Raw(`SELECT COUNT(*) FROM lead_sources WHERE id = ?`, src.ID).Scan(&surviving).Error)
+	require.Equal(t, int64(1), surviving, "soft delete leaves the source row; the FK cascade cannot fire")
+
+	found, err = repo.FindSourceByTokenHash(ctx, src.TokenHash)
+	require.NoError(t, err)
+	require.Nil(t, found, "a deleted workspace's capture key must stop resolving")
 }

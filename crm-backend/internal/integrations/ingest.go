@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -50,6 +52,9 @@ type IngestResult struct {
 	RecordID  uuid.UUID
 	Outcome   string
 	Duplicate bool
+	// Quarantined names the payload keys that were recorded but NOT written, so an
+	// integrator learns at integration time instead of from missing data weeks on.
+	Quarantined []string
 }
 
 // LeadIngestService is the one path every inbound lead takes, whatever channel it
@@ -87,17 +92,40 @@ func newIngestContext(source *LeadSource) (context.Context, context.CancelFunc) 
 	return context.WithTimeout(ctx, ingestTimeout)
 }
 
+// newLedgerContext returns a context for the ledger writes.
+//
+// The ledger must be at least as durable as the record write it describes. The
+// record write is deliberately detached from the request so a client hangup cannot
+// tear it in half — but if the ledger write is NOT, a third party closing the
+// connection mid-request leaves the contact written and the event stranded in
+// `processing` forever: attribution lost (this table is the only source-attribution
+// record), the customer's ledger showing a permanently in-flight row, and the daily
+// cap never incremented because it counts terminal outcomes.
+//
+// WithoutCancel rather than Background: this ctx never reaches Authorize, so
+// carrying the request's MarkHTTPTransport value is harmless here — unlike the
+// ingest write context, where it would trip the fail-open alarm.
+func newLedgerContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), ingestTimeout)
+}
+
 // Ingest runs one lead end-to-end: dedupe the delivery, filter it against the
 // allowlist, match or create, and record what happened.
 func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead RawLead) (*IngestResult, error) {
 	// ── 1. Dedupe the delivery ───────────────────────────────────────────
 	// Before any side effect: a provider redelivery must return the original
 	// result, not repeat it.
-	if source.TargetSlug != "contact" {
-		// Defence in depth against a row edited by hand: the custom-object path
-		// would write CreatedBy = uuid.Nil into a users(id) FK and crash.
-		return nil, domain.NewAppError(400, "unsupported target object: "+source.TargetSlug)
+	if !IsSupportedTarget(source.TargetSlug) {
+		// Defence in depth against a row edited by hand — the management API already
+		// rejects an unsupported target at configuration time.
+		return nil, domain.NewAppError(http.StatusBadRequest, "unsupported target object: "+source.TargetSlug)
 	}
+
+	// Every ledger write runs on this, never on the request context — see
+	// newLedgerContext. Established before the first insert so no exit path can
+	// fall back to a context the client can cancel.
+	ledgerCtx, ledgerCancel := newLedgerContext(ctx)
+	defer ledgerCancel()
 
 	var providerID *string
 	if lead.ProviderEventID != "" {
@@ -105,7 +133,7 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 		providerID = &id
 	}
 	raw, _ := json.Marshal(lead.Fields)
-	lctx, _ := json.Marshal(lead.Context)
+	ctxJSON, _ := json.Marshal(lead.Context)
 
 	event := &IntegrationEvent{
 		OrgID:           source.OrgID,
@@ -117,33 +145,64 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 		Status:     EventStatusProcessing,
 		Attempts:   1,
 		RawPayload: datatypes.JSON(raw),
-		Context:    datatypes.JSON(lctx),
+		Context:    datatypes.JSON(ctxJSON),
 	}
-	inserted, err := s.repo.InsertEventDeduped(ctx, event)
+	inserted, err := s.repo.InsertEventDeduped(ledgerCtx, event)
 	if err != nil {
 		return nil, err
 	}
 	if !inserted {
-		prior, ferr := s.repo.FindEventByProviderID(ctx, source.ID, lead.ProviderEventID)
+		prior, ferr := s.repo.FindEventByProviderID(ledgerCtx, source.ID, lead.ProviderEventID)
 		if ferr != nil {
 			return nil, ferr
 		}
 		if prior == nil { // lost a race with a concurrent identical delivery
-			return &IngestResult{Duplicate: true}, nil
+			return nil, domain.NewAppError(http.StatusConflict, "a delivery with this Idempotency-Key is in flight; retry shortly")
 		}
-		res := &IngestResult{EventID: prior.ID, Outcome: prior.Outcome, Duplicate: true}
-		if prior.ResultRecordID != nil {
-			res.RecordID = *prior.ResultRecordID
+		// Replay ONLY a terminal success. Deduping on mere existence would make
+		// Idempotency-Key — the documented way to make a retry SAFE — the very thing
+		// that makes it a permanent no-op: a first attempt that failed before the
+		// write (transient DB error, RecordService failure) would leave a `failed`
+		// row, and every retry would conflict on it and be told "200, already done"
+		// while no contact was ever written. A well-behaved Make/Zapier scenario
+		// retrying a 500 would lose the lead and never know.
+		switch prior.Status {
+		case EventStatusProcessed, EventStatusTest, EventStatusDuplicate:
+			if prior.ResultRecordID == nil {
+				// Terminal-success status with no record is a bookkeeping bug, not a
+				// success to replay; treat it as retryable rather than confirming a
+				// write that may not exist.
+				return nil, domain.NewAppError(http.StatusConflict, "a prior delivery with this Idempotency-Key is incomplete; retry shortly")
+			}
+			return &IngestResult{EventID: prior.ID, RecordID: *prior.ResultRecordID, Outcome: prior.Outcome, Duplicate: true}, nil
+		case EventStatusFailed:
+			// The prior attempt never wrote anything, so the key is free to reuse.
+			// Re-run the pipeline against the existing row instead of banking a
+			// phantom success.
+			event = prior
+			event.Status = EventStatusProcessing
+			event.Attempts = prior.Attempts + 1
+			event.Error = ""
+			event.RawPayload = datatypes.JSON(raw)
+			event.Context = datatypes.JSON(ctxJSON)
+		default:
+			// Still in flight (or stranded). Answer 409 so the caller retries rather
+			// than recording a success that may never happen.
+			return nil, domain.NewAppError(http.StatusConflict, "a delivery with this Idempotency-Key is in flight; retry shortly")
 		}
-		return res, nil
 	}
 
 	// ── 2. Allowlist ─────────────────────────────────────────────────────
-	allow, err := BuildAllowlist(ctx, s.schema, source.OrgID, source.TargetSlug)
+	allow, err := BuildAllowlist(ledgerCtx, s.schema, source.OrgID, source.TargetSlug)
 	if err != nil {
-		return nil, s.failEvent(ctx, event, err)
+		return nil, s.failEvent(ledgerCtx, event, err)
 	}
 	fields, quarantined := allow.Apply(lead.Fields)
+	quarantinedKeys := make([]string, 0, len(quarantined))
+	for k := range quarantined {
+		quarantinedKeys = append(quarantinedKeys, k)
+	}
+	sort.Strings(quarantinedKeys) // stable output; map order would churn the response
 	if len(quarantined) > 0 {
 		q, _ := json.Marshal(quarantined)
 		event.QuarantinedFields = datatypes.JSON(q)
@@ -156,7 +215,7 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 	// catch it. Skip this and "John@X.com" + "john@x.com" both insert silently.
 	email := normalizeEmail(stringOf(fields["email"]))
 	if email == "" {
-		return nil, s.failEvent(ctx, event, domain.NewAppError(422, "email is required"))
+		return nil, s.failEvent(ledgerCtx, event, domain.NewAppError(422, "email is required"))
 	}
 	fields["email"] = email
 
@@ -166,10 +225,12 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 
 	result, err := s.upsert(ictx, source, fields, email)
 	if err != nil {
-		return nil, s.failEvent(ctx, event, err)
+		return nil, s.failEvent(ledgerCtx, event, err)
 	}
 
 	// ── 7. Record the outcome ────────────────────────────────────────────
+	// On the ledger context: the record is already written, so losing this to a
+	// client hangup would strand the row and lose the attribution permanently.
 	event.Status = EventStatusProcessed
 	if lead.IsTest {
 		event.Status = EventStatusTest
@@ -177,12 +238,13 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 	event.ResultSlug = source.TargetSlug
 	event.ResultRecordID = &result.RecordID
 	event.Outcome = result.Outcome
-	if err := s.repo.FinishEvent(ctx, event); err != nil {
+	if err := s.repo.FinishEvent(ledgerCtx, event); err != nil {
 		return nil, err
 	}
-	_ = s.repo.TouchSourceUsed(ctx, source.ID) // best-effort; the lead is already written
+	_ = s.repo.TouchSourceUsed(ledgerCtx, source.ID) // best-effort; the lead is already written
 
 	result.EventID = event.ID
+	result.Quarantined = quarantinedKeys
 	return result, nil
 }
 

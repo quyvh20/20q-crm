@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -65,6 +66,34 @@ func main() {
 	// ── Phase 1: Start HTTP server immediately (healthcheck must respond fast) ──
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
+
+	// Proxy trust. gin's default is ForwardedByClientIP with EVERY proxy trusted,
+	// which makes c.ClientIP() return the LEFTMOST X-Forwarded-For entry — a value
+	// the client types. Every limiter keyed on ClientIP() is then keyed on
+	// attacker-chosen data: a caller rotating the XFF header mints a fresh bucket
+	// per request and is never throttled. That silently defeats the auth limiter and
+	// the public lead-capture limiter alike.
+	//
+	// TRUSTED_PROXIES is the operator's list of edge CIDRs to believe (Railway/
+	// Cloudflare). Unset — the safe default — trusts NOTHING, so ClientIP() falls
+	// back to the real peer address, which cannot be forged. Behind an edge that
+	// peer is the edge itself, so all callers share one bucket: coarse, but a real
+	// bound rather than a decorative one. Set TRUSTED_PROXIES in prod to get
+	// per-client limiting back.
+	if raw := strings.TrimSpace(cfg.TrustedProxies); raw != "" {
+		var cidrs []string
+		for _, p := range strings.Split(raw, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				cidrs = append(cidrs, p)
+			}
+		}
+		if err := router.SetTrustedProxies(cidrs); err != nil {
+			log.Fatal("invalid TRUSTED_PROXIES", zap.Error(err))
+		}
+		log.Info("Trusted proxies configured", zap.Strings("cidrs", cidrs))
+	} else if err := router.SetTrustedProxies(nil); err != nil {
+		log.Fatal("failed to clear trusted proxies", zap.Error(err))
+	}
 	router.MaxMultipartMemory = 500 << 20 // 500 MB
 
 	// Custom recovery middleware: return JSON on panic instead of gin's default HTML page.
@@ -1021,6 +1050,49 @@ func main() {
 				log.Error("lead integrations boot guard failed", zap.String("what", g.what), zap.Error(err))
 			}
 		}
+
+		// RLS on, matching every other table this app adds (api_tokens, notifications).
+		// The app enforces org scoping in SQL, so this is defence in depth — but a table
+		// that opts out silently is the one nobody notices is different.
+		db.Exec(`ALTER TABLE lead_sources ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`ALTER TABLE integration_events ENABLE ROW LEVEL SECURITY`)
+
+		// idx_contacts_org_email — the UNIQUE index lead ingestion's race guard is
+		// built on. It ships only in migrations/000003, which has NEVER run on prod
+		// (golang-migrate is dirty at v2 and start.sh swallows the failure), so prod
+		// most likely has no contact-email uniqueness at all. Without it the ingest
+		// upsert loop's 23505 recovery can never fire and two concurrent first-time
+		// leads BOTH insert — the duplicate-contact bug the loop exists to prevent,
+		// live in the only environment that matters.
+		//
+		// Promotion follows the uq_users_email_lower ritual above: prod data may
+		// already violate the constraint, and a bare CREATE UNIQUE INDEX would fail
+		// SILENTLY here (guards discard errors), leaving no index while local tests
+		// pass. So: probe pg_index.indisunique by name (not just the name, which a
+		// non-unique impostor could satisfy), and refuse to build over existing
+		// duplicates, loudly, rather than half-applying.
+		const uniqueContactEmailIndex = `SELECT EXISTS(SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = 'idx_contacts_org_email' AND i.indisunique)`
+		var hasUniqueContactEmail bool
+		db.Raw(uniqueContactEmailIndex).Scan(&hasUniqueContactEmail)
+		if !hasUniqueContactEmail {
+			// Same predicate as migrations/000003 — a narrower or wider one would not
+			// be the constraint the ingest loop assumes.
+			var contactEmailDups int64
+			db.Raw(`SELECT COUNT(*) FROM (
+				SELECT org_id, email FROM contacts
+				WHERE email IS NOT NULL AND deleted_at IS NULL
+				GROUP BY org_id, email HAVING COUNT(*) > 1
+			) d`).Scan(&contactEmailDups)
+			if contactEmailDups > 0 {
+				log.Error("contacts: duplicate (org_id, email) pairs exist — UNIQUE index skipped; lead ingestion's concurrent-duplicate guard is INACTIVE until they are merged",
+					zap.Int64("emails", contactEmailDups))
+			} else if err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_org_email
+				ON contacts(org_id, email) WHERE email IS NOT NULL AND deleted_at IS NULL`).Error; err != nil {
+				log.Error("contacts: failed to create idx_contacts_org_email", zap.Error(err))
+			} else {
+				log.Info("contacts: idx_contacts_org_email created (lead ingestion race guard active)")
+			}
+		}
 		log.Info("Lead integration tables ready")
 
 		log.Info("Seeding system roles...")
@@ -1463,6 +1535,7 @@ func main() {
 			integrationsRepo,
 			integrations.NewLeadIngestService(integrationsRepo, recordService, contactRepo, objectRegistryUC),
 			permissionUC,
+			authRepo, // membership check for default_owner_id
 			integrationsLimiter,
 			autoLogger, // same slog handler the automation engine writes to
 		)
