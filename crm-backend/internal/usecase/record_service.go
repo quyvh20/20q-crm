@@ -306,7 +306,7 @@ func (s *recordService) Update(ctx context.Context, orgID uuid.UUID, slug string
 	prior, _ := s.getInternal(ctx, orgID, slug, id)
 
 	if a, ok := s.systemAdapters[slug]; ok {
-		if err := s.validateSystemCustomFields(ctx, orgID, slug, in.Fields, a); err != nil {
+		if err := s.validateSystemCustomFieldsForUpdate(ctx, orgID, slug, in.Fields, prior, a); err != nil {
 			return nil, err
 		}
 		rec, err := a.update(ctx, orgID, id, in.Fields)
@@ -699,6 +699,49 @@ func (s *recordService) validateSystemCustomFields(ctx context.Context, orgID uu
 		return nil
 	}
 	raw, err := json.Marshal(custom)
+	if err != nil {
+		return domain.NewAppError(http.StatusBadRequest, "invalid custom field values")
+	}
+	return s.orgSettingsUC.ValidateCustomFields(ctx, orgID, slug, domain.JSON(raw))
+}
+
+// validateSystemCustomFieldsForUpdate validates a partial update against the
+// record's RESULTING state rather than the delta the request happens to carry.
+//
+// Validating the delta alone was a live bug. The uniform edit form PATCHes only
+// what the user changed, but fieldvalidate's required-check ranges over the ORG'S
+// DEFINITIONS, not over the payload — so a required custom field the user never
+// touched is absent from the delta while sitting on the row, and the edit 400s
+// with "custom_fields.<other> is required". Reproduced: an org with a required
+// `industry` could not save a change to `notes`, even though industry was stored.
+//
+// The custom-object path has merged-then-validated since it shipped, for exactly
+// this reason ("so a required-field check sees the whole record, not just the
+// delta"); the system-object branch never got the same treatment. This closes that.
+//
+// prior comes from getInternal, which does NOT apply the FLS mask, so an
+// FLS-hidden required field still counts as present — the merge base is the real
+// row, not the caller's view of it. A nil prior (load failed / not found) falls
+// back to validating the delta: the update itself is about to fail anyway, and
+// inventing an empty merge base would report the wrong error.
+//
+// Full CREATES keep using validateSystemCustomFields: a create has no prior state,
+// so enforcing required across the definition set is exactly right there.
+func (s *recordService) validateSystemCustomFieldsForUpdate(ctx context.Context, orgID uuid.UUID, slug string, fields map[string]interface{}, prior *domain.UniformRecord, a systemObjectAdapter) error {
+	custom := excludeKeys(fields, a.nativeKeys())
+	if len(custom) == 0 {
+		return nil // no custom keys — nothing this validator governs
+	}
+	if prior == nil {
+		return s.validateSystemCustomFields(ctx, orgID, slug, fields, a)
+	}
+	// Overlay the delta on the stored custom fields: validate the record as it will
+	// BE, not as the request describes it.
+	merged := excludeKeys(prior.Fields, a.nativeKeys())
+	for k, v := range custom {
+		merged[k] = v
+	}
+	raw, err := json.Marshal(merged)
 	if err != nil {
 		return domain.NewAppError(http.StatusBadRequest, "invalid custom field values")
 	}
