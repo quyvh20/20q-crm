@@ -56,15 +56,18 @@ type Allowlist struct {
 // owner_user_id; the registry does not). The registry is the side of that
 // disagreement that cannot silently widen what a stranger may write.
 //
-// L1 SCOPE — system fields only; custom fields are quarantined. Not a
-// simplification, a landmine: RecordService.validateSystemCustomFields
-// early-returns only when a payload carries ZERO custom keys. Send one, and
-// ValidateFields runs its required-check across the org's WHOLE definition set and
-// 400s the lead for every required custom field the third party did not send. So
-// one mapped custom key rejects the entire lead in any org with an unrelated
-// required field. L2's mapping engine owns custom fields and must call
-// ValidateValue per key rather than letting ValidateFields' required-loop near an
-// ingest payload.
+// Custom fields ARE writable as of L2 — they were quarantined in L1 only because
+// of a landmine that is now defused. RecordService.validateSystemCustomFields
+// early-returns only when a payload carries ZERO custom keys; send one and
+// ValidateFields ran its required-check across the org's WHOLE definition set,
+// 400ing the lead for every required custom field the third party never sent. One
+// mapped custom key would reject the entire lead in any org with an unrelated
+// required field. Two changes fixed that: RecordService.Update now validates the
+// MERGED record (a live UI bug in its own right), and a write marked
+// domain.WithPartialWrite type-checks values without demanding presence — which is
+// what an inbound lead needs, since a Facebook form cannot know about an org's
+// required "Contract Value" field and rejecting the lead over it would be exactly
+// the silent loss this subsystem exists to prevent.
 func BuildAllowlist(ctx context.Context, schema SchemaProvider, orgID uuid.UUID, slug string) (*Allowlist, error) {
 	desc, err := schema.GetSchema(ctx, orgID, slug)
 	if err != nil {
@@ -75,11 +78,8 @@ func BuildAllowlist(ctx context.Context, schema SchemaProvider, orgID uuid.UUID,
 	}
 	keys := map[string]bool{}
 	for _, f := range desc.Fields {
-		if !f.IsSystem {
-			continue // custom fields: L2
-		}
-		if f.Type == "relation" {
-			continue // needs a resolved UUID; a lead carries a name
+		if f.Type == "relation" || f.Type == "mirror" {
+			continue // a relation needs a resolved UUID; a lead carries a name
 		}
 		if blacklistedKeys[f.Key] {
 			continue
@@ -88,6 +88,9 @@ func BuildAllowlist(ctx context.Context, schema SchemaProvider, orgID uuid.UUID,
 	}
 	return &Allowlist{slug: slug, keys: keys}, nil
 }
+
+// Permits reports whether a field key may be written by an inbound lead.
+func (a *Allowlist) Permits(key string) bool { return a.keys[key] }
 
 // Keys returns the permitted field keys (test/diagnostic helper).
 func (a *Allowlist) Keys() []string {

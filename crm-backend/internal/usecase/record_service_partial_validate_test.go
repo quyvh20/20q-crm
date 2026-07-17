@@ -20,6 +20,13 @@ import (
 // required field absent from the delta reads as missing. The custom-object path
 // has merged-then-validated since it shipped; the system-object path never did.
 
+// GetFieldDefs on the recording fake — the partial-write path asks for the org's
+// defs to type-check per key. Returning none makes it a no-op, which is what the
+// presence-relaxation tests want: they assert the STRICT validator is not consulted.
+func (f *recordingSettingsUC) GetFieldDefs(_ context.Context, _ uuid.UUID, _ string) ([]domain.CustomFieldDef, error) {
+	return nil, nil
+}
+
 // Update on the contact fake — the sibling fakes declare Create/Delete/GetByID;
 // this is the first test in the package to exercise the contact UPDATE path.
 func (f *fakeContactUC) Update(_ context.Context, _, _ uuid.UUID, _ domain.UpdateContactInput) (*domain.Contact, error) {
@@ -163,4 +170,79 @@ func TestCreate_StillEnforcesRequiredAcrossDefs(t *testing.T) {
 	if err == nil {
 		t.Fatal("create must still enforce required custom fields across the definition set")
 	}
+}
+
+// ── Partial writes (domain.WithPartialWrite) ────────────────────────────────
+//
+// An inbound lead is not a form submission. An admin marking a custom field
+// "required" means "a human filling this in must provide it" — they cannot mean
+// "silently reject leads that lack it", which is what the required-check does,
+// because it ranges over the org's DEFINITIONS rather than the payload.
+
+// TestPartialWrite_CreateSkipsRequiredPresence pins the create path: a lead that
+// lacks the org's required custom field must still land.
+func TestPartialWrite_CreateSkipsRequiredPresence(t *testing.T) {
+	contact := &fakeContactUC{ret: &domain.Contact{ID: uuid.New(), FirstName: "Ada"}}
+	// The strict path would reject this write; the partial path must not consult it.
+	settings := &recordingSettingsUC{validateErr: domain.NewAppError(400, "custom_fields.industry is required")}
+	svc := NewRecordService(&fakeCustomObjUC{}, settings, contact, &fakeCompanyUC{}, &fakeDealUC{}, nil, nil, nil)
+
+	ctx := domain.WithPartialWrite(context.Background())
+	_, err := svc.Create(ctx, uuid.New(), uuid.New(), "contact", domain.RecordWriteInput{
+		Fields: map[string]interface{}{"first_name": "Ada", "lead_source": "integration:api"},
+	})
+	if err != nil {
+		t.Fatalf("a partial write must not be rejected for a missing required field: %v", err)
+	}
+}
+
+// TestPartialWrite_UpdateSkipsRequiredPresence is the regression for a bug found
+// by running it live: the partial-write branch existed on the create path but not
+// on the update path, so an ingested lead updating an existing contact still 400'd
+// with "custom_fields.industry is required". The merged view cannot rescue it —
+// merging supplies fields the RECORD has, and this record never had one.
+func TestPartialWrite_UpdateSkipsRequiredPresence(t *testing.T) {
+	svc, settings, id := contactWithCustom(t, map[string]any{"utm_source": "google"})
+	settings.validateErr = domain.NewAppError(400, "custom_fields.industry is required")
+
+	ctx := domain.WithPartialWrite(context.Background())
+	_, err := svc.Update(ctx, uuid.New(), "contact", id, domain.RecordWriteInput{
+		Fields: map[string]interface{}{"utm_source": "newsletter"},
+	})
+	if err != nil {
+		t.Fatalf("a partial update must not be rejected for a missing required field: %v", err)
+	}
+}
+
+// TestPartialWrite_StillTypeChecks pins that this relaxes PRESENCE only. A wrong
+// value is still wrong — otherwise the flag would be a validation bypass rather
+// than a statement about what kind of write this is.
+func TestPartialWrite_StillTypeChecks(t *testing.T) {
+	contact := &fakeContactUC{ret: &domain.Contact{ID: uuid.New(), FirstName: "Ada"}}
+	settings := &fieldDefSettingsUC{defs: []domain.CustomFieldDef{
+		{Key: "tier", Type: "select", EntityType: "contact", Options: []string{"gold", "silver"}},
+	}}
+	svc := NewRecordService(&fakeCustomObjUC{}, settings, contact, &fakeCompanyUC{}, &fakeDealUC{}, nil, nil, nil)
+
+	ctx := domain.WithPartialWrite(context.Background())
+	_, err := svc.Create(ctx, uuid.New(), uuid.New(), "contact", domain.RecordWriteInput{
+		Fields: map[string]interface{}{"first_name": "Ada", "tier": "platinum"}, // not an option
+	})
+	if err == nil {
+		t.Fatal("a partial write must still reject a value that violates its field's type")
+	}
+}
+
+// fieldDefSettingsUC serves real defs so the per-key validator has something to
+// check against (the recording fake returns none, which short-circuits).
+type fieldDefSettingsUC struct {
+	domain.OrgSettingsUseCase
+	defs []domain.CustomFieldDef
+}
+
+func (f *fieldDefSettingsUC) GetFieldDefs(_ context.Context, _ uuid.UUID, _ string) ([]domain.CustomFieldDef, error) {
+	return f.defs, nil
+}
+func (f *fieldDefSettingsUC) ValidateCustomFields(_ context.Context, _ uuid.UUID, _ string, _ domain.JSON) error {
+	return nil
 }

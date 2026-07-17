@@ -26,7 +26,7 @@ The platform landscape (researched + independently re-verified 2026-07): Google 
 |---|---|---|---|
 | L0 | RecordService event-context plumbing (write source + automation suppression) — pre-slice | BE only | **DONE** (unpushed; 8-finding review applied, mutation-proven tests, full Docker suite green) |
 | L1 | Lead Capture API (the universal port): L1.1 backend capture path, L1.2 Integrations settings UI | BE + FE | **DONE** (unpushed). L1.1 + a 23-finding review applied; L1.2 settings UI + delivery log shipped |
-| L2 | Field mapping, dedupe & routing hardening (mapping UI, phone match, attribution, update policies, test leads) | BE + FE | planned |
+| L2 | Field mapping, dedupe & routing hardening | BE + FE | **IN PROGRESS** — mapping engine + attribution DONE (backend, verified live). Remaining: mapping UI, phone dedupe, owner pool, test-lead flow, batch, consent, lead→deal |
 | L3 | Google Ads Lead Form webhooks (first native ad platform — zero gating) | BE + FE | planned |
 | L4 | Web-to-lead form embeds (hosted capture + snippet builder + anti-spam) | BE + FE | planned |
 | L5 | Provider connector framework + Facebook Lead Ads (OAuth connections, encrypted tokens, leadgen webhooks, per-form mapping, backfill) — plus the parallel Meta business-process track M | BE + FE | planned |

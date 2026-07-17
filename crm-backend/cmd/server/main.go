@@ -1533,7 +1533,7 @@ func main() {
 		integrationsLimiter := integrations.NewRateLimiter(redisClient, 0, 0)
 		integrationsHandler := integrations.NewHandler(
 			integrationsRepo,
-			integrations.NewLeadIngestService(integrationsRepo, recordService, contactRepo, objectRegistryUC),
+			integrations.NewLeadIngestService(integrationsRepo, recordService, contactRepo, objectRegistryUC, orgSettingsUC),
 			permissionUC,
 			authRepo, // membership check for default_owner_id
 			integrationsLimiter,

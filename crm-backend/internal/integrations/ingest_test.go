@@ -40,13 +40,18 @@ func buildTestAllowlist(t *testing.T) *Allowlist {
 	return a
 }
 
-// TestAllowlist_PermitsOnlyWritableSystemFields pins what a stranger may write.
-// This is the whole security control: ingestion writes callerless, so OLS returns
-// nil and the FLS mask is empty — RecordService writes whatever it is handed, and
-// nothing below this package rejects anything.
-func TestAllowlist_PermitsOnlyWritableSystemFields(t *testing.T) {
+// TestAllowlist_PermitsOnlyWritableFields pins what a stranger may write. This is
+// the whole security control: ingestion writes callerless, so OLS returns nil and
+// the FLS mask is empty — RecordService writes whatever it is handed, and nothing
+// below this package rejects anything.
+//
+// Custom fields joined the allowlist in L2: they were excluded in L1 only because
+// one custom key made RecordService demand every required custom field in the org.
+// That is fixed (merged validation + partial-write), so a mapped custom field is
+// now writable — and attribution depends on it.
+func TestAllowlist_PermitsOnlyWritableFields(t *testing.T) {
 	a := buildTestAllowlist(t)
-	want := map[string]bool{"first_name": true, "last_name": true, "email": true, "phone": true}
+	want := map[string]bool{"first_name": true, "last_name": true, "email": true, "phone": true, "tier": true}
 	got := map[string]bool{}
 	for _, k := range a.Keys() {
 		got[k] = true
@@ -102,15 +107,12 @@ func TestAllowlist_Apply(t *testing.T) {
 		}
 	})
 
-	t.Run("custom fields are quarantined in L1", func(t *testing.T) {
-		// Deliberate scope cut: one custom key makes RecordService demand EVERY
-		// required custom field in the org, 400ing the lead.
-		allowed, quarantined := a.Apply(map[string]any{"email": "a@b.com", "tier": "gold"})
-		if _, ok := allowed["tier"]; ok {
-			t.Error("custom fields are L2; they must not reach the write in L1")
-		}
-		if _, ok := quarantined["tier"]; !ok {
-			t.Error("a custom field must be recorded, not dropped — L2 will map it")
+	t.Run("custom fields are writable (L2)", func(t *testing.T) {
+		// L1 quarantined these; L2 admits them because the required-field trap that
+		// forced the exclusion is fixed. Attribution rides this path.
+		allowed, _ := a.Apply(map[string]any{"email": "a@b.com", "tier": "gold"})
+		if allowed["tier"] != "gold" {
+			t.Error("an org custom field must be writable now that the required-field trap is fixed")
 		}
 	})
 

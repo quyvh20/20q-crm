@@ -152,6 +152,37 @@ func WriteSourceFromContext(ctx context.Context) string {
 	return s
 }
 
+type partialWriteCtxKey struct{}
+
+// WithPartialWrite marks a write that is NOT a form submission, so form
+// completeness rules must not be applied to it.
+//
+// Concretely: an admin who marks a custom field "required" means "a human filling
+// this record in must provide it". They cannot plausibly mean "silently reject
+// inbound leads that lack it" — and that is what a required-field check does to an
+// ingested lead, because the check ranges over the org's DEFINITIONS, not over the
+// payload. A lead from a Facebook form cannot know about the org's required
+// "Contract Value" field, and rejecting it would be the one failure this whole
+// subsystem exists to prevent: a lead lost with nobody watching.
+//
+// It relaxes PRESENCE only. Every value the write DOES carry is still type-checked,
+// and the field allowlist still governs which keys may be written at all — so this
+// is not a validation bypass, it is the difference between "this value is wrong"
+// (still rejected) and "this record is incomplete" (not this write's problem).
+//
+// Server-side only. It is set by the lead-ingest service and by nothing reachable
+// from an HTTP payload; a caller who could set it could file records that skip the
+// org's own completeness rules.
+func WithPartialWrite(ctx context.Context) context.Context {
+	return context.WithValue(ctx, partialWriteCtxKey{}, true)
+}
+
+// IsPartialWrite reports whether required-field presence should be relaxed.
+func IsPartialWrite(ctx context.Context) bool {
+	v, _ := ctx.Value(partialWriteCtxKey{}).(bool)
+	return v
+}
+
 type automationSuppressedCtxKey struct{}
 
 // WithAutomationSuppressed marks a write whose automation events must not enroll

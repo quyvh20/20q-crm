@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"reflect"
 	"strconv"
 	"strings"
 
 	"crm-backend/internal/domain"
+	"crm-backend/internal/fieldvalidate"
 
 	"github.com/google/uuid"
 )
@@ -698,11 +700,51 @@ func (s *recordService) validateSystemCustomFields(ctx context.Context, orgID uu
 	if len(custom) == 0 {
 		return nil
 	}
+	if domain.IsPartialWrite(ctx) {
+		return s.validateCustomValuesOnly(ctx, orgID, slug, custom)
+	}
 	raw, err := json.Marshal(custom)
 	if err != nil {
 		return domain.NewAppError(http.StatusBadRequest, "invalid custom field values")
 	}
 	return s.orgSettingsUC.ValidateCustomFields(ctx, orgID, slug, domain.JSON(raw))
+}
+
+// validateCustomValuesOnly type-checks the values a write carries WITHOUT
+// enforcing that the org's required fields are present — the semantics a
+// non-form write needs (see domain.WithPartialWrite).
+//
+// It uses fieldvalidate.ValidateValue per key rather than ValidateFields, because
+// ValidateValue is presence-blind by contract ("A nil value always passes —
+// presence/required is handled by ValidateFields, not here") while ValidateFields
+// unconditionally runs a required-loop over the whole definition set. Every value
+// present is still checked exactly as strictly as a form write; only absence stops
+// being an error.
+func (s *recordService) validateCustomValuesOnly(ctx context.Context, orgID uuid.UUID, slug string, custom map[string]interface{}) error {
+	defs, err := s.orgSettingsUC.GetFieldDefs(ctx, orgID, slug)
+	if err != nil {
+		return err
+	}
+	if len(defs) == 0 {
+		return nil
+	}
+	byKey := make(map[string]domain.CustomFieldDef, len(defs))
+	for _, d := range defs {
+		byKey[d.Key] = d
+	}
+	for key, val := range custom {
+		def, ok := byKey[key]
+		if !ok {
+			// Unknown keys are the allowlist's business, not the validator's — and
+			// ValidateFields ignores them too, so this stays consistent with the
+			// strict path rather than inventing a new rejection here.
+			continue
+		}
+		if err := fieldvalidate.ValidateValue(def, val); err != nil {
+			return domain.NewAppError(http.StatusBadRequest, fmt.Sprintf("custom_fields.%s: %s", key, err.Error()))
+		}
+	}
+	return nil
 }
 
 // validateSystemCustomFieldsForUpdate validates a partial update against the
@@ -731,6 +773,13 @@ func (s *recordService) validateSystemCustomFieldsForUpdate(ctx context.Context,
 	custom := excludeKeys(fields, a.nativeKeys())
 	if len(custom) == 0 {
 		return nil // no custom keys — nothing this validator governs
+	}
+	// A non-form write relaxes presence entirely, so there is nothing to merge FOR:
+	// type-check the values it carries and stop. Without this branch an ingested
+	// lead updating an existing contact still 400s on the org's required fields —
+	// the merged view cannot supply a field the record never had.
+	if domain.IsPartialWrite(ctx) {
+		return s.validateCustomValuesOnly(ctx, orgID, slug, custom)
 	}
 	if prior == nil {
 		return s.validateSystemCustomFields(ctx, orgID, slug, fields, a)

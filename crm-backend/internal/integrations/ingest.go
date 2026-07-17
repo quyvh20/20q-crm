@@ -64,11 +64,12 @@ type LeadIngestService struct {
 	records RecordWriter
 	matcher ContactMatcher
 	schema  SchemaProvider
+	fields  FieldDefManager
 }
 
 // NewLeadIngestService builds the pipeline.
-func NewLeadIngestService(repo *Repository, records RecordWriter, matcher ContactMatcher, schema SchemaProvider) *LeadIngestService {
-	return &LeadIngestService{repo: repo, records: records, matcher: matcher, schema: schema}
+func NewLeadIngestService(repo *Repository, records RecordWriter, matcher ContactMatcher, schema SchemaProvider, fields FieldDefManager) *LeadIngestService {
+	return &LeadIngestService{repo: repo, records: records, matcher: matcher, schema: schema, fields: fields}
 }
 
 // newIngestContext builds the context every ingest write runs on. THE ONLY PLACE
@@ -89,6 +90,11 @@ func NewLeadIngestService(repo *Repository, records RecordWriter, matcher Contac
 // source's target_slug is re-validated here rather than trusted from the row.
 func newIngestContext(source *LeadSource) (context.Context, context.CancelFunc) {
 	ctx := domain.WithWriteSource(context.Background(), source.WriteSource())
+	// A lead is not a form submission: type-check every value it carries, but do
+	// not demand the org's required fields be present. A Facebook form cannot know
+	// about an org's required "Contract Value", and rejecting the lead over it
+	// would be the silent loss this whole subsystem exists to prevent.
+	ctx = domain.WithPartialWrite(ctx)
 	return context.WithTimeout(ctx, ingestTimeout)
 }
 
@@ -192,12 +198,27 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 		}
 	}
 
-	// ── 2. Allowlist ─────────────────────────────────────────────────────
+	// ── 2. Map, then allowlist ───────────────────────────────────────────
 	allow, err := BuildAllowlist(ledgerCtx, s.schema, source.OrgID, source.TargetSlug)
 	if err != nil {
 		return nil, s.failEvent(ledgerCtx, event, err)
 	}
-	fields, quarantined := allow.Apply(lead.Fields)
+
+	// Mapping runs FIRST: a source calls it "Work Email", we call it "email". It
+	// does not bypass the allowlist — a map pointing somewhere forbidden still gets
+	// quarantined below — so a hand-edited row cannot become a hole.
+	fmap, ferr := ParseFieldMap(source.FieldMap)
+	if ferr != nil {
+		return nil, s.failEvent(ledgerCtx, event, domain.NewAppError(http.StatusInternalServerError, "this source's field mapping is unreadable"))
+	}
+	incoming, mapFailures := fmap.Apply(lead.Fields)
+
+	fields, quarantined := allow.Apply(incoming)
+	// A mapping that could not be applied is quarantined like any other unusable
+	// key: recorded, visible, and never a reason to reject the lead.
+	for k, reason := range mapFailures {
+		quarantined[k] = reason
+	}
 	quarantinedKeys := make([]string, 0, len(quarantined))
 	for k := range quarantined {
 		quarantinedKeys = append(quarantinedKeys, k)
@@ -223,7 +244,17 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 	ictx, cancel := newIngestContext(source)
 	defer cancel()
 
-	result, err := s.upsert(ictx, source, fields, email)
+	// Attribution: which channel produced this lead. Resolved through the org's
+	// field map because a collision may have pushed a key under the crm_ prefix.
+	// A failure here must not cost the lead — attribution is worth a lot, but not
+	// as much as the lead itself.
+	attr := attributionValues(source, parseLeadContext(lead.Context))
+	amap, aerr := SeedAttributionFields(ictx, s.fields, source.OrgID, source.TargetSlug)
+	if aerr != nil {
+		amap = nil
+	}
+
+	result, err := s.upsert(ictx, source, fields, email, amap, attr)
 	if err != nil {
 		return nil, s.failEvent(ledgerCtx, event, err)
 	}
@@ -258,14 +289,14 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 //
 // This depends on contactUseCase.Create surfacing the conflict as
 // domain.ErrContactEmailExists instead of a blanket 500 — landed as a prerequisite.
-func (s *LeadIngestService) upsert(ctx context.Context, source *LeadSource, fields map[string]any, email string) (*IngestResult, error) {
+func (s *LeadIngestService) upsert(ctx context.Context, source *LeadSource, fields map[string]any, email string, amap AttributionMap, attr map[string]string) (*IngestResult, error) {
 	existing, err := s.matcher.FindByNormalizedEmail(ctx, source.OrgID, email)
 	if err != nil {
 		return nil, err
 	}
 
 	if existing == nil {
-		rec, cerr := s.create(ctx, source, fields)
+		rec, cerr := s.create(ctx, source, fields, amap, attr)
 		if cerr == nil {
 			return &IngestResult{RecordID: rec.ID, Outcome: OutcomeCreated}, nil
 		}
@@ -286,6 +317,10 @@ func (s *LeadIngestService) upsert(ctx context.Context, source *LeadSource, fiel
 		return &IngestResult{RecordID: existing.ID, Outcome: OutcomeUpdated}, nil
 	}
 	upd := s.updateFields(source, fields, existing)
+	// Last touch only: how this person FIRST reached us is a fact about the past,
+	// and rewriting it on every resubmission is how a CRM ends up reporting that
+	// every customer came from "newsletter".
+	applyAttribution(upd, amap, attr, false)
 	if len(upd) == 0 {
 		return &IngestResult{RecordID: existing.ID, Outcome: OutcomeUpdated}, nil
 	}
@@ -299,8 +334,10 @@ func (s *LeadIngestService) upsert(ctx context.Context, source *LeadSource, fiel
 // create writes a new record. first_name is synthesized HERE, on the create branch
 // only — the adapter 400s a blank one, but synthesizing on update would overwrite a
 // real name with "Lead" every time an email-only lead resubmitted.
-func (s *LeadIngestService) create(ctx context.Context, source *LeadSource, fields map[string]any) (*domain.UniformRecord, error) {
+func (s *LeadIngestService) create(ctx context.Context, source *LeadSource, fields map[string]any, amap AttributionMap, attr map[string]string) (*domain.UniformRecord, error) {
 	out := copyFields(fields)
+	// First touch: stamp everything, once.
+	applyAttribution(out, amap, attr, true)
 	if strings.TrimSpace(stringOf(out["first_name"])) == "" {
 		out["first_name"] = synthesizeFirstName(stringOf(fields["email"]))
 	}
