@@ -4,7 +4,7 @@ import { DocumentTitle } from '../../lib/useDocumentTitle';
 import { Skeleton } from '@/components/ui';
 import {
   Shield, Users, UsersRound, KeyRound, Boxes, Table2, EyeOff,
-  Target, Mail, Brain, ScrollText, MessageSquare, UserRound, Building2, Bell, type LucideIcon,
+  Target, Mail, Brain, ScrollText, MessageSquare, UserRound, Building2, Bell, Plug, type LucideIcon,
 } from 'lucide-react';
 
 // The unified settings shell (U1): ONE routed area, grouped into Personal vs
@@ -41,6 +41,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   { path: 'field-access', label: 'Field Access', icon: EyeOff, group: 'workspace', visible: (can) => can('roles.manage') },
   { path: 'objects', label: 'Objects & Fields', icon: Boxes, group: 'workspace', visible: (can) => can('objects.manage') },
   { path: 'pipeline', label: 'Pipeline', icon: Target, group: 'workspace', visible: (can) => can('pipeline.manage') },
+  { path: 'integrations', label: 'Integrations', icon: Plug, group: 'workspace', visible: (can) => can('integrations.manage') },
   { path: 'templates', label: 'Email Templates', icon: Mail, group: 'workspace', visible: (can) => can('workflows.manage'), externalTo: '/workflows/email-templates' },
   { path: 'knowledge', label: 'Knowledge Base', icon: Brain, group: 'workspace', visible: (can) => can('knowledge.manage') },
   { path: 'audit', label: 'Audit Log', icon: ScrollText, group: 'workspace', visible: (can) => can('audit.view') },

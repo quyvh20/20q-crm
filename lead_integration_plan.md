@@ -25,7 +25,7 @@ The platform landscape (researched + independently re-verified 2026-07): Google 
 | Phase | Name | Layer | Status |
 |---|---|---|---|
 | L0 | RecordService event-context plumbing (write source + automation suppression) — pre-slice | BE only | **DONE** (unpushed; 8-finding review applied, mutation-proven tests, full Docker suite green) |
-| L1 | Lead Capture API (the universal port): L1.1 backend capture path, L1.2 Integrations settings UI | BE + FE | **L1.1 DONE** (unpushed; recon forced 5 spec corrections — see below). L1.2 planned |
+| L1 | Lead Capture API (the universal port): L1.1 backend capture path, L1.2 Integrations settings UI | BE + FE | **DONE** (unpushed). L1.1 + a 23-finding review applied; L1.2 settings UI + delivery log shipped |
 | L2 | Field mapping, dedupe & routing hardening (mapping UI, phone match, attribution, update policies, test leads) | BE + FE | planned |
 | L3 | Google Ads Lead Form webhooks (first native ad platform — zero gating) | BE + FE | planned |
 | L4 | Web-to-lead form embeds (hosted capture + snippet builder + anti-spam) | BE + FE | planned |

@@ -18,6 +18,8 @@ import RoleDetailSection from './pages/settings/RoleDetailSection';
 import ProfileSection from './pages/settings/ProfileSection';
 import SecuritySection from './pages/settings/SecuritySection';
 import ApiTokensSection from './pages/settings/ApiTokensSection';
+import IntegrationsSection from './pages/settings/IntegrationsSection';
+import IntegrationSourceDetailSection from './pages/settings/IntegrationSourceDetailSection';
 import NotificationPreferencesSection from './pages/settings/NotificationPreferencesSection';
 import PipelineStagesManager from './components/settings/PipelineStagesManager';
 import ObjectsManager from './components/settings/ObjectsManager';
@@ -229,6 +231,10 @@ function App() {
               <Route path="field-access" element={<FieldSecurityManager />} />
               <Route path="objects" element={<ObjectsManager />} />
               <Route path="pipeline" element={<PipelineStagesManager />} />
+              <Route path="integrations" element={<IntegrationsSection />} />
+              {/* Flat sibling, matching roles/:id. The section entry above is what
+                  lets the deep-link guard through; this route owns its own tab title. */}
+              <Route path="integrations/:id" element={<IntegrationSourceDetailSection />} />
               <Route path="knowledge" element={<KnowledgeBase />} />
               <Route path="audit" element={<AuditLogViewer />} />
               <Route path="ai-logs" element={<ConversationLogPage />} />
