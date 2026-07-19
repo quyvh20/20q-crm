@@ -33,87 +33,10 @@ func (e *AssignUserExecutor) Execute(ctx context.Context, run *WorkflowRun, acti
 
 	strategy := getStringParam(action.Params, "strategy", evalCtx)
 
-	var assigneeID uuid.UUID
-
-	switch strategy {
-	case "specific":
-		userIDStr := getStringParam(action.Params, "user_id", evalCtx)
-		if userIDStr == "" {
-			return nil, fmt.Errorf("assign_user: user_id required for strategy=specific")
-		}
-		uid, err := uuid.Parse(userIDStr)
-		if err != nil {
-			return nil, fmt.Errorf("assign_user: invalid user_id: %w", err)
-		}
-		assigneeID = uid
-
-	case "round_robin":
-		pool := getStringSliceParam(action.Params, "pool", evalCtx)
-		if len(pool) == 0 {
-			return nil, fmt.Errorf("assign_user: pool required for strategy=round_robin")
-		}
-		// Simple round-robin: count existing assignments per pool member, pick least assigned
-		minCount := int64(-1)
-		for _, idStr := range pool {
-			uid, err := uuid.Parse(idStr)
-			if err != nil {
-				continue
-			}
-			var count int64
-			column := "owner_user_id"
-			table := entity + "s"
-			e.db.WithContext(ctx).
-				Table(table).
-				Where("org_id = ? AND "+column+" = ?", run.OrgID, uid).
-				Count(&count)
-
-			if minCount == -1 || count < minCount {
-				minCount = count
-				assigneeID = uid
-			}
-		}
-		if assigneeID == uuid.Nil {
-			return nil, fmt.Errorf("assign_user: no valid pool members")
-		}
-
-	case "least_loaded":
-		// Find the user in the org with the fewest assigned entities
-		column := "owner_user_id"
-		table := entity + "s"
-		var result struct {
-			OwnerUserID uuid.UUID `gorm:"column:owner_user_id"`
-			Count       int64     `gorm:"column:cnt"`
-		}
-		err := e.db.WithContext(ctx).
-			Table(table).
-			Select(column+" as owner_user_id, COUNT(*) as cnt").
-			Where("org_id = ? AND "+column+" IS NOT NULL", run.OrgID).
-			Group(column).
-			Order("cnt ASC").
-			Limit(1).
-			Scan(&result).Error
-		if err != nil || result.OwnerUserID == uuid.Nil {
-			// Fallback: just pick a random user from the org
-			var userID uuid.UUID
-			e.db.WithContext(ctx).
-				Table("users").
-				Select("id").
-				Where("org_id = ?", run.OrgID).
-				Limit(1).
-				Scan(&userID)
-			if userID == uuid.Nil {
-				return nil, fmt.Errorf("assign_user: no users found in org")
-			}
-			assigneeID = userID
-		} else {
-			assigneeID = result.OwnerUserID
-		}
-
-	default:
-		return nil, fmt.Errorf("assign_user: unknown strategy '%s'", strategy)
-	}
-
-	// Get entity ID from context
+	// Resolve and authorize the TARGET before choosing an assignee. Ordering is
+	// deliberate: round_robin consumes a rotation ticket, and a ticket spent on a run
+	// that was always going to fail (no record in context, caller can't edit it) is a
+	// turn silently skipped in someone's queue. Claim it as late as possible.
 	var entityID string
 	switch entity {
 	case "contact":
@@ -142,14 +65,98 @@ func (e *AssignUserExecutor) Execute(ctx context.Context, run *WorkflowRun, acti
 		return nil, err
 	}
 
+	table := entity + "s" // entity is validated above, so this is not injectable
+
+	var assigneeID uuid.UUID
+
+	switch strategy {
+	case "specific":
+		userIDStr := getStringParam(action.Params, "user_id", evalCtx)
+		if userIDStr == "" {
+			return nil, fmt.Errorf("assign_user: user_id required for strategy=specific")
+		}
+		parsed, perr := uuid.Parse(userIDStr)
+		if perr != nil {
+			return nil, fmt.Errorf("assign_user: invalid user_id: %w", perr)
+		}
+		// Deliberately NOT liveness-checked. A workflow pinned to one person is an
+		// explicit instruction, and suspension is routinely reversible (leave,
+		// investigation) — failing the run would turn a temporary absence into a
+		// broken automation. The pooled strategies below are the ones that promise
+		// distribution, so they are the ones that must verify who can receive it.
+		assigneeID = parsed
+
+	case "round_robin":
+		raw := getStringSliceParam(action.Params, "pool", evalCtx)
+		if len(raw) == 0 {
+			return nil, fmt.Errorf("assign_user: pool required for strategy=round_robin")
+		}
+		pool := make([]uuid.UUID, 0, len(raw))
+		for _, idStr := range raw {
+			if parsed, perr := uuid.Parse(idStr); perr == nil {
+				pool = append(pool, parsed)
+			}
+		}
+		pool = dedupeUUIDs(pool)
+		if len(pool) == 0 {
+			return nil, fmt.Errorf("assign_user: no valid pool members")
+		}
+
+		// Liveness first, so a rotation whose members have all left fails without
+		// spending a ticket.
+		live, lerr := activeMemberIDs(ctx, e.db, run.OrgID, pool)
+		if lerr != nil {
+			// Fail CLOSED — the opposite polarity to integrations/routing.go, on
+			// purpose. That path serves one-shot webhook deliveries where refusing
+			// means the lead exists nowhere, so it rotates unverified rather than
+			// lose it. An automation run is retried and shows up in run history, so
+			// here the safe move is to stop rather than risk handing the record to
+			// someone who has left, where it would look correctly assigned forever.
+			return nil, fmt.Errorf("assign_user: could not verify workspace membership for the pool: %w", lerr)
+		}
+
+		ticket, terr := nextAssignTicket(ctx, e.db, run.OrgID, run.WorkflowID, action.ID)
+		if terr != nil {
+			return nil, fmt.Errorf("assign_user: could not claim the next turn in the rotation: %w", terr)
+		}
+
+		picked, ok := pickFromPool(ticket, pool, live)
+		if !ok {
+			return nil, fmt.Errorf("assign_user: nobody in this step's pool is still an active member of the workspace — edit the workflow to pick current members")
+		}
+		assigneeID = picked
+
+	case "least_loaded":
+		var result struct {
+			OwnerUserID uuid.UUID `gorm:"column:owner_user_id"`
+			Count       int64     `gorm:"column:cnt"`
+		}
+		// Two org_id binds: the first scopes the counted records inside the LEFT
+		// JOIN, the second scopes the membership list itself.
+		if lerr := e.db.WithContext(ctx).
+			Raw(leastLoadedSQL(table, openRecordFilter(entity)), run.OrgID, run.OrgID).
+			Scan(&result).Error; lerr != nil {
+			return nil, fmt.Errorf("assign_user: least_loaded lookup failed: %w", lerr)
+		}
+		if result.OwnerUserID == uuid.Nil {
+			// No silent fallback. The previous version dropped to `users WHERE
+			// org_id = ?` here — the legacy denormalized column, which is a stale
+			// snapshot of a multi-org user's FIRST org — and could hand the record
+			// to someone with no membership here at all.
+			return nil, fmt.Errorf("assign_user: no active members in this workspace to assign to")
+		}
+		assigneeID = result.OwnerUserID
+
+	default:
+		return nil, fmt.Errorf("assign_user: unknown strategy '%s'", strategy)
+	}
+
 	// Update the entity's owner_user_id
-	table := entity + "s"
-	err = e.db.WithContext(ctx).
+	if uerr := e.db.WithContext(ctx).
 		Table(table).
 		Where("id = ? AND org_id = ?", uid, run.OrgID).
-		Update("owner_user_id", assigneeID).Error
-	if err != nil {
-		return nil, fmt.Errorf("assign_user: update error: %w", err)
+		Update("owner_user_id", assigneeID).Error; uerr != nil {
+		return nil, fmt.Errorf("assign_user: update error: %w", uerr)
 	}
 
 	// Attribute the reassignment to the workflow author in the audit trail (P8).

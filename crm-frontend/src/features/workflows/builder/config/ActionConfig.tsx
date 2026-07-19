@@ -478,7 +478,8 @@ const AssignParams: React.FC<ParamProps> = ({ action, setParam }) => {
             )}
           </div>
           <p className="text-xs text-muted-foreground mt-1">
-            Distributes evenly across selected users by existing assignment count.
+            Takes turns in order, one {String(action.params.entity || 'contact')} each. Anyone suspended or
+            removed from the workspace is skipped, and the remaining members share their turns evenly.
           </p>
           {pool.length === 0 && (
             <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">⚠ Select at least one user for round robin.</p>
@@ -490,8 +491,9 @@ const AssignParams: React.FC<ParamProps> = ({ action, setParam }) => {
       {strategy === 'least_loaded' && (
         <div className="rounded-lg bg-muted/40 border border-border px-3 py-2">
           <p className="text-xs text-muted-foreground">
-            Automatically assigns to the team member with the fewest{' '}
-            {String(action.params.entity || 'contact')}s in your org.
+            Automatically assigns to the active workspace member carrying the fewest open{' '}
+            {String(action.params.entity || 'contact')}s. Closed and deleted records don&apos;t count, so
+            someone with no {String(action.params.entity || 'contact')}s yet is picked first.
           </p>
         </div>
       )}

@@ -36,6 +36,7 @@ func (r *Repository) AutoMigrate() error {
 		&WorkflowOrgToken{},
 		&AutomationTimer{},
 		&EmailTemplate{},
+		&AssignCursor{},
 	); err != nil {
 		return err
 	}

@@ -136,6 +136,23 @@ type OrgUser struct {
 
 func (OrgUser) TableName() string { return "org_users" }
 
+// IsLive reports whether this membership may be handed work — assigned a record,
+// routed a lead, named as an owner.
+//
+// This is the Go half of ONE rule; repository.ActiveMemberSQL is the SQL half, and
+// repository's twin test pins them to the same fixtures. Change one and you must
+// change the other.
+//
+// A nil receiver means no membership row at all, which is the real signal that
+// someone has left: member removal HARD-deletes the org_users row rather than
+// tombstoning it. The DeletedAt leg is separate and still load-bearing — org-level
+// soft delete sets it — and must be written out by hand because OrgUser.DeletedAt is
+// a plain *time.Time, not gorm.DeletedAt, so GORM applies no soft-delete scope of
+// its own.
+func (ou *OrgUser) IsLive() bool {
+	return ou != nil && ou.DeletedAt == nil && ou.Status == StatusActive
+}
+
 type RefreshToken struct {
 	ID        uuid.UUID  `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
 	UserID    uuid.UUID  `gorm:"type:uuid;not null" json:"user_id"`
