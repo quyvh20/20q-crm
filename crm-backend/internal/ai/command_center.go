@@ -1607,9 +1607,20 @@ func (cc *CommandCenter) toolUpdateContact(ctx context.Context, orgID, contactID
 				cfMap[k] = v
 			}
 		}
+		// MERGE, never replace. The AI names only the fields it is changing, so a
+		// wholesale write deletes every custom field it did not mention — on a
+		// lead-integration contact that silently destroys lead_source and the utm_*
+		// values stamped at capture, attribution nobody can reconstruct. Worse, the
+		// audit stamp below records only the keys that were SET, so the deletion
+		// leaves no trace at all. Same rule the ObjectForm path uses (U7).
 		if len(cfMap) > 0 {
 			cfJSON, _ := json.Marshal(cfMap)
-			contact.CustomFields = cfJSON
+			merged, err := domain.MergeJSONBlob(contact.CustomFields, domain.JSON(cfJSON))
+			if err != nil {
+				out, _ := json.Marshal(map[string]any{"error": "Failed to update contact: " + err.Error()})
+				return out
+			}
+			contact.CustomFields = merged
 		}
 	}
 
