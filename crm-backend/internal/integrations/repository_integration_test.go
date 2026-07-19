@@ -52,9 +52,27 @@ func newIntegrationsTestDB(t *testing.T) (*gorm.DB, func()) {
 		deleted_at TIMESTAMPTZ
 	)`).Error)
 
-	b, err := os.ReadFile(filepath.Join("..", "..", "migrations", "000043_lead_integrations.up.sql"))
-	require.NoError(t, err, "read migration 000043")
-	require.NoError(t, db.Exec(string(b)).Error, "the shipped migration must be valid SQL")
+	// org_users backs the owner-routing liveness check (000044's feature, not its
+	// schema) — the real table lives in an earlier migration this harness does not run.
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS org_users (
+		user_id UUID NOT NULL,
+		org_id UUID NOT NULL,
+		status VARCHAR(50) NOT NULL DEFAULT 'active',
+		deleted_at TIMESTAMPTZ,
+		PRIMARY KEY (user_id, org_id)
+	)`).Error)
+
+	// Applied in order, so the tests validate the SHIPPED SQL rather than a
+	// hand-rolled approximation — including that 000044's ALTERs actually apply to
+	// the table 000043 created.
+	for _, m := range []string{
+		"000043_lead_integrations.up.sql",
+		"000044_lead_owner_pool.up.sql",
+	} {
+		b, err := os.ReadFile(filepath.Join("..", "..", "migrations", m))
+		require.NoError(t, err, "read migration %s", m)
+		require.NoError(t, db.Exec(string(b)).Error, "the shipped migration %s must be valid SQL", m)
+	}
 
 	return db, func() { _ = pg.Terminate(ctx) }
 }

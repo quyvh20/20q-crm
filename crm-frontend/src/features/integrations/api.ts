@@ -29,18 +29,34 @@ function asList<T>(data: unknown): T[] {
   return Array.isArray(data) ? (data as T[]) : [];
 }
 
+/**
+ * asSource normalizes a source's array fields.
+ *
+ * Go marshals a nil slice to `null`, so owner_pool arrives null for every source
+ * created before rotations existed — and a bare `.map` on it white-screens the whole
+ * settings page under the app-wide error boundary. This repo has shipped that bug.
+ */
+function asSource(raw: unknown): LeadSource {
+  const s = (raw ?? {}) as LeadSource;
+  return {
+    ...s,
+    owner_pool: Array.isArray(s.owner_pool) ? s.owner_pool : [],
+    owner_pool_inactive: Array.isArray(s.owner_pool_inactive) ? s.owner_pool_inactive : [],
+  };
+}
+
 export async function listSources(): Promise<LeadSource[]> {
   const res = await apiFetch(BASE);
   const json = await parseJsonSafe(res);
   if (!res.ok) throw apiError(res, json, 'Failed to load lead sources');
-  return asList<LeadSource>(json.data);
+  return asList<LeadSource>(json.data).map(asSource);
 }
 
 export async function getSource(id: string): Promise<LeadSource> {
   const res = await apiFetch(`${BASE}/${id}`);
   const json = await parseJsonSafe(res);
   if (!res.ok) throw apiError(res, json, 'Failed to load the lead source');
-  return json.data as LeadSource;
+  return asSource(json.data);
 }
 
 /**
@@ -53,14 +69,14 @@ export async function createSource(input: CreateSourceInput): Promise<CreatedLea
   const json = await parseJsonSafe(res);
   if (!res.ok) throw apiError(res, json, 'Failed to create the lead source');
   const { plaintext_key: key, ...source } = json.data as LeadSource & { plaintext_key: string };
-  return { source: source as LeadSource, plaintext_key: key };
+  return { source: asSource(source), plaintext_key: key };
 }
 
 export async function updateSource(id: string, input: UpdateSourceInput): Promise<LeadSource> {
   const res = await apiFetch(`${BASE}/${id}`, { method: 'PATCH', body: JSON.stringify(input) });
   const json = await parseJsonSafe(res);
   if (!res.ok) throw apiError(res, json, 'Failed to update the lead source');
-  return json.data as LeadSource;
+  return asSource(json.data);
 }
 
 export async function deleteSource(id: string): Promise<void> {
@@ -75,7 +91,7 @@ export async function rotateKey(id: string): Promise<CreatedLeadSource> {
   const json = await parseJsonSafe(res);
   if (!res.ok) throw apiError(res, json, 'Failed to rotate the key');
   const { plaintext_key: key, ...source } = json.data as LeadSource & { plaintext_key: string };
-  return { source: source as LeadSource, plaintext_key: key };
+  return { source: asSource(source), plaintext_key: key };
 }
 
 export async function listEvents(id: string, limit = 50): Promise<IntegrationEvent[]> {
@@ -134,5 +150,5 @@ export async function saveMapping(id: string, field_map: FieldMap): Promise<Lead
   });
   const json = await parseJsonSafe(res);
   if (!res.ok) throw apiError(res, json, 'Failed to save the field mapping');
-  return json.data as LeadSource;
+  return asSource(json.data);
 }

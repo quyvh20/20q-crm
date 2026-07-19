@@ -18,6 +18,7 @@ import Modal from '../../components/common/Modal';
 import { useConfirm } from '../../components/common/ConfirmDialog';
 import SecretReveal from '../../components/settings/SecretReveal';
 import FieldMappingTable from './FieldMappingTable';
+import OwnerRoutingCard from './OwnerRoutingCard';
 import { DocumentTitle } from '../../lib/useDocumentTitle';
 import {
   useDeleteSource,
@@ -61,6 +62,7 @@ const TEST_PROVED = [
   'Which fields are skipped, and why',
   'Matching on email, and your update policy for an existing contact',
   'Owner assignment and attribution (lead source, UTMs)',
+  'Who the next real lead goes to — a test does not consume anyone’s turn in the rotation',
   'The contact write itself, and the delivery-log entry',
 ];
 
@@ -379,6 +381,8 @@ export default function IntegrationSourceDetailSection() {
               </div>
             </dl>
           </div>
+
+          <OwnerRoutingCard source={source} />
 
           <FieldMappingTable sourceId={source.id} />
 

@@ -3,6 +3,7 @@ package domain
 import (
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 type APIResponse struct {
@@ -86,13 +87,22 @@ type ReassignmentRequiredError struct {
 	Contacts int64
 	Deals    int64
 	Custom   int64
+	// RoutingSources names lead sources that still send NEW leads to this member.
+	// Reassigning their existing records says nothing about future ones, so an admin
+	// who is not told this removes the person and then quietly loses the leads that
+	// keep arriving for them.
+	RoutingSources []string
 }
 
 func (e *ReassignmentRequiredError) Error() string {
+	msg := fmt.Sprintf("this member still owns %d contact(s) and %d deal(s) — transfer them to another member or leave them unassigned", e.Contacts, e.Deals)
 	if e.Custom > 0 {
-		return fmt.Sprintf("this member still owns %d contact(s), %d deal(s) and %d other record(s) — transfer them to another member or leave them unassigned", e.Contacts, e.Deals, e.Custom)
+		msg = fmt.Sprintf("this member still owns %d contact(s), %d deal(s) and %d other record(s) — transfer them to another member or leave them unassigned", e.Contacts, e.Deals, e.Custom)
 	}
-	return fmt.Sprintf("this member still owns %d contact(s) and %d deal(s) — transfer them to another member or leave them unassigned", e.Contacts, e.Deals)
+	if len(e.RoutingSources) > 0 {
+		msg += fmt.Sprintf(". They will also be removed from the lead rotation on: %s", strings.Join(e.RoutingSources, ", "))
+	}
+	return msg
 }
 
 var (

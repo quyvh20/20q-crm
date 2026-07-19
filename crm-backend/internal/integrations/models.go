@@ -141,6 +141,23 @@ type LeadSource struct {
 	// legacy-webhook bug this platform exists to fix.
 	DefaultOwnerID *uuid.UUID `gorm:"type:uuid" json:"default_owner_id,omitempty"`
 
+	// owner_pool and owner_cursor are DELIBERATELY ABSENT from this struct. Do not
+	// add them "for the UI" — the management API returns the pool through a separate
+	// view type, and both columns are read and written only by targeted SQL in
+	// repository.go. Two independent traps make that a rule rather than a preference:
+	//
+	//  1. UpdateSource is db.Save(s), which writes every mapped column from a struct
+	//     read at the start of the request. A mapped owner_cursor means an admin
+	//     renaming a source writes back the cursor as it stood at page load —
+	//     rewinding the rotation by however many leads landed in between, silently,
+	//     with no failing test.
+	//  2. The boot-guard loop LOGS a failed ALTER and boots anyway. A mapped
+	//     owner_pool whose guard failed would be named in FindSourceByTokenHash's
+	//     SELECT, and every capture request in every org would 500 on a missing
+	//     column — a routing column taking down lead capture platform-wide. Unmapped,
+	//     the same failure breaks one advisory statement and routing degrades to
+	//     default_owner_id.
+
 	Config datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'" json:"config"`
 
 	Status              string     `gorm:"type:varchar(16);not null;default:active" json:"status"`

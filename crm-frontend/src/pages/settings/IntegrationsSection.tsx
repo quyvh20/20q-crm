@@ -18,6 +18,7 @@ import {
   TableShell,
 } from '@/components/ui';
 import SecretReveal from '../../components/settings/SecretReveal';
+import OwnerPicker from '../../components/records/OwnerPicker';
 import { useCreateSource, useLeadSources } from '../../features/integrations/queries';
 import {
   UPDATE_POLICY_HELP,
@@ -55,6 +56,11 @@ export default function IntegrationsSection() {
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState('');
   const [policy, setPolicy] = useState<UpdatePolicy>('fill_blank_only');
+  // Routing is a REQUIRED choice, not a default. Creating a source that silently
+  // produces unowned contacts is the failure this whole platform opens by naming —
+  // an unowned contact is invisible to every own-scoped rep.
+  const [routing, setRouting] = useState<'' | 'owner' | 'unassigned'>('');
+  const [owner, setOwner] = useState<string | null>(null);
   const [actionError, setActionError] = useState('');
   // The one-time key lives HERE, in component state, and nowhere else — never in
   // the query cache, a URL, or a log.
@@ -67,11 +73,14 @@ export default function IntegrationsSection() {
       const { plaintext_key } = await createSource.mutateAsync({
         name: name.trim(),
         update_policy: policy,
+        default_owner_id: routing === 'owner' ? owner : null,
       });
       setNewKey(plaintext_key);
       setShowForm(false);
       setName('');
       setPolicy('fill_blank_only');
+      setRouting('');
+      setOwner(null);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to create the lead source');
     }
@@ -155,10 +164,49 @@ export default function IntegrationsSection() {
                 <p className="text-xs text-muted-foreground">{UPDATE_POLICY_HELP[policy]}</p>
               </div>
 
+              <div className="space-y-1.5">
+                <Label htmlFor="source-routing">Who gets these leads</Label>
+                <Select
+                  id="source-routing"
+                  value={routing}
+                  onChange={(e) => setRouting(e.target.value as '' | 'owner' | 'unassigned')}
+                >
+                  <option value="">Choose…</option>
+                  <option value="owner">Assign them to someone</option>
+                  <option value="unassigned">Leave them unassigned</option>
+                </Select>
+                {routing === 'owner' && (
+                  <div className="pt-1">
+                    <OwnerPicker id="source-owner" value={owner} onChange={setOwner} />
+                  </div>
+                )}
+                {routing === 'unassigned' && (
+                  <p className="text-xs text-amber-700 dark:text-amber-400">
+                    Reps who only see their own records will not see these leads. You can set up a
+                    rotation later from the source's page.
+                  </p>
+                )}
+                {routing === '' && (
+                  <p className="text-xs text-muted-foreground">
+                    Leads that land on nobody are the easiest ones to lose, so this is a required
+                    choice.
+                  </p>
+                )}
+              </div>
+
               <div className="flex items-center gap-2">
                 {/* type="submit" is explicit: Button defaults to type="button", so
                     without it the form silently never submits. */}
-                <Button type="submit" size="sm" disabled={createSource.isPending || !name.trim()}>
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={
+                    createSource.isPending ||
+                    !name.trim() ||
+                    routing === '' ||
+                    (routing === 'owner' && !owner)
+                  }
+                >
                   {createSource.isPending ? 'Creating…' : 'Create source'}
                 </Button>
                 <Button type="button" variant="ghost" size="sm" onClick={() => setShowForm(false)}>

@@ -31,7 +31,15 @@ export interface LeadSource {
   match_fields: string[];
   field_map: Record<string, unknown>;
   update_policy: UpdatePolicy;
+  /** The single owner, and the fallback when a rotation is configured but nobody in
+   *  it is available. */
   default_owner_id?: string;
+  /** The rotation, in order — order IS the rotation, so it is rendered and editable. */
+  owner_pool: string[];
+  /** Pool members who can no longer receive leads, computed SERVER-side. Never
+   *  derive this by intersecting with a member list: a failed member fetch would
+   *  then badge a healthy rotation as dead. */
+  owner_pool_inactive?: string[];
   config: Record<string, unknown>;
   status: LeadSourceStatus;
   consecutive_failures: number;
@@ -112,6 +120,12 @@ export interface TestLeadResult {
   /** So the UI can warn that a disabled source rejects real traffic right now, even
    *  though this test — which does not use the capture key — just succeeded. */
   source_status: LeadSourceStatus;
+  /** The rep this test lead landed on. Empty means unowned, which is itself the
+   *  finding — the panel claims the test proves owner assignment, so it shows the
+   *  answer rather than asserting the category. */
+  assigned_owner_id?: string;
+  /** Routing problems (an unowned lead) said to the admin who clicked. */
+  warnings?: string[];
 }
 
 export interface CreateSourceInput {
@@ -120,6 +134,8 @@ export interface CreateSourceInput {
   target_slug?: string;
   update_policy?: UpdatePolicy;
   default_owner_id?: string | null;
+  /** An explicit [] turns a rotation off; omitting the key leaves it alone. */
+  owner_pool?: string[];
   daily_cap?: number;
 }
 
@@ -127,6 +143,8 @@ export interface UpdateSourceInput {
   name?: string;
   update_policy?: UpdatePolicy;
   default_owner_id?: string | null;
+  /** An explicit [] turns a rotation off; omitting the key leaves it alone. */
+  owner_pool?: string[];
   daily_cap?: number;
   status?: LeadSourceStatus;
 }

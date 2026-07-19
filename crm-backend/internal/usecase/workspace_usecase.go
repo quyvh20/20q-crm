@@ -41,6 +41,11 @@ type offboardStore interface {
 	ReassignOwnedRecords(ctx context.Context, orgID, fromUserID, toUserID uuid.UUID) error
 	UnassignOwnedRecords(ctx context.Context, orgID, userID uuid.UUID) error
 	RevokeUserGrants(ctx context.Context, orgID, userID uuid.UUID) error
+	// RoutingSourceNames names lead sources that still send NEW leads to this member.
+	// Reassigning their existing records says nothing about future ones, so without
+	// this an admin removes someone and then quietly loses the leads still arriving
+	// for them.
+	RoutingSourceNames(ctx context.Context, orgID, userID uuid.UUID) ([]string, error)
 }
 
 // groupMembershipReader resolves which groups a member belongs to, for the
@@ -1169,11 +1174,20 @@ func (uc *workspaceUseCase) RemoveMember(ctx context.Context, orgID uuid.UUID, t
 			return domain.ErrInternal
 		}
 	}
+	// Named up front so both the "which strategy?" prompt and the default branch can
+	// disclose it: the rotation is future traffic, which no reassignment strategy
+	// covers.
+	var routingSources []string
+	if uc.offboard != nil {
+		if names, rerr := uc.offboard.RoutingSourceNames(ctx, orgID, targetUserID); rerr == nil {
+			routingSources = names
+		}
+	}
 	if ownedContacts+ownedDeals+ownedCustom > 0 {
 		switch input.Strategy {
 		case "transfer":
 			if input.ReassignToUserID == nil {
-				return &domain.ReassignmentRequiredError{Contacts: ownedContacts, Deals: ownedDeals, Custom: ownedCustom}
+				return &domain.ReassignmentRequiredError{Contacts: ownedContacts, Deals: ownedDeals, Custom: ownedCustom, RoutingSources: routingSources}
 			}
 			newOwner := *input.ReassignToUserID
 			if newOwner == targetUserID {
@@ -1194,7 +1208,7 @@ func (uc *workspaceUseCase) RemoveMember(ctx context.Context, orgID uuid.UUID, t
 				return domain.ErrInternal
 			}
 		default:
-			return &domain.ReassignmentRequiredError{Contacts: ownedContacts, Deals: ownedDeals, Custom: ownedCustom}
+			return &domain.ReassignmentRequiredError{Contacts: ownedContacts, Deals: ownedDeals, Custom: ownedCustom, RoutingSources: routingSources}
 		}
 	}
 

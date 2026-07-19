@@ -21,10 +21,17 @@ import (
 // anything larger is a mistake or an attack.
 const captureBodyLimit = 256 * 1024
 
-// MemberChecker resolves a user's membership in an org. Narrow port: integrations
-// needs only "is this person an active member here".
+// MemberChecker resolves membership in an org. Narrow port: integrations needs only
+// "may this person be handed a lead".
 type MemberChecker interface {
 	GetOrgUser(ctx context.Context, userID, orgID uuid.UUID) (*domain.OrgUser, error)
+	// ActiveMemberIDs answers the same question for MANY users in one round trip —
+	// owner routing checks a whole pool per lead, on the public capture path, where
+	// N point lookups (each of which Preloads Role) would be the wrong shape.
+	//
+	// An error means UNKNOWN, never "nobody is active": callers must fail OPEN, or a
+	// DB blip unowns real leads.
+	ActiveMemberIDs(ctx context.Context, orgID uuid.UUID, userIDs []uuid.UUID) (map[uuid.UUID]bool, error)
 }
 
 // Handler serves the integrations module's own routes — both the capability-gated
@@ -248,6 +255,50 @@ type sourceRequest struct {
 	Status         *string   `json:"status"`
 	FieldMap       *FieldMap `json:"field_map"`
 	MatchFields    []string  `json:"match_fields"`
+	// OwnerPool is a POINTER so an explicit [] can clear a rotation. A plain slice
+	// makes "cleared" and "not mentioned" the same value, which is why match_fields
+	// above cannot be emptied once set.
+	OwnerPool *[]string `json:"owner_pool"`
+}
+
+// sourceView is a LeadSource plus the routing config that deliberately does not
+// live on the model (see the note on LeadSource). The API shape stays stable; the
+// storage decision stays invisible to the frontend.
+type sourceView struct {
+	*LeadSource
+	OwnerPool []string `json:"owner_pool"`
+	// OwnerPoolInactive names pool members who can no longer receive leads, computed
+	// server-side. The UI must not derive this by intersecting with a member list: a
+	// failed member fetch would then badge a healthy rotation as dead.
+	OwnerPoolInactive []string `json:"owner_pool_inactive,omitempty"`
+}
+
+// viewOf decorates a source with its rotation. Best-effort: routing config that
+// cannot be read must not deny the whole management screen.
+func (h *Handler) viewOf(c *gin.Context, src *LeadSource, withLiveness bool) sourceView {
+	v := sourceView{LeadSource: src, OwnerPool: []string{}}
+	raw, err := h.repo.GetOwnerPool(c.Request.Context(), src.OrgID, src.ID)
+	if err != nil {
+		h.logger.Error("integrations: could not read owner pool", "error", err, "source_id", src.ID.String())
+		return v
+	}
+	ids := parsePoolUUIDs(raw)
+	for _, id := range ids {
+		v.OwnerPool = append(v.OwnerPool, id.String())
+	}
+	if !withLiveness || len(ids) == 0 {
+		return v
+	}
+	live, err := h.members.ActiveMemberIDs(c.Request.Context(), src.OrgID, ids)
+	if err != nil {
+		return v // unknown, not "all dead" — never badge on a failed lookup
+	}
+	for _, id := range ids {
+		if !live[id] {
+			v.OwnerPoolInactive = append(v.OwnerPoolInactive, id.String())
+		}
+	}
+	return v
 }
 
 // mappingView is everything the mapping UI needs, in one call: what this source
@@ -269,9 +320,25 @@ type mappingTarget struct {
 }
 
 type sourceWithKey struct {
-	*LeadSource
+	sourceView
 	// PlaintextKey is populated exactly once, at creation or rotation.
 	PlaintextKey string `json:"plaintext_key,omitempty"`
+}
+
+// ownerString renders an optional owner id for a response.
+func ownerString(id *uuid.UUID) string {
+	if id == nil {
+		return ""
+	}
+	return id.String()
+}
+
+// orEmpty lets a nil pointer-slice be measured without a branch at each call site.
+func orEmpty(p *[]string) *[]string {
+	if p == nil {
+		return &[]string{}
+	}
+	return p
 }
 
 // CreateSource mints a source and returns its key once.
@@ -322,6 +389,17 @@ func (h *Handler) CreateSource(c *gin.Context) {
 	if !ok {
 		return
 	}
+	var pool datatypes.JSON = datatypes.JSON(`[]`)
+	if req.OwnerPool != nil {
+		if pool, ok = h.parseOwnerPool(c, orgID, *req.OwnerPool); !ok {
+			return
+		}
+	}
+	// Configuring who owns captured records is an ownership write, so it needs the
+	// caller's own permission to make one — ingest writes callerless and checks nothing.
+	if (owner != nil || len(*orEmpty(req.OwnerPool)) > 0) && !h.authorizeOwnerWrite(c, orgID, req.TargetSlug) {
+		return
+	}
 
 	matchFields := req.MatchFields
 	if len(matchFields) == 0 {
@@ -363,7 +441,15 @@ func (h *Handler) CreateSource(c *gin.Context) {
 		h.mgmtError(c, http.StatusInternalServerError, "could not create source")
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"data": sourceWithKey{LeadSource: src, PlaintextKey: plaintext}})
+	// The rotation is written separately — it is not a column on the model, and a
+	// failure here must not orphan the source that was just created with its key.
+	if err := h.repo.SetOwnerPool(c.Request.Context(), orgID, src.ID, pool); err != nil {
+		h.logger.Error("integrations: could not save the rotation", "error", err, "source_id", src.ID.String())
+	}
+	c.JSON(http.StatusCreated, gin.H{"data": sourceWithKey{
+		sourceView:   h.viewOf(c, src, false),
+		PlaintextKey: plaintext,
+	}})
 }
 
 // ListSources returns the org's sources.
@@ -380,13 +466,14 @@ func (h *Handler) ListSources(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": out})
 }
 
-// GetSource returns one source.
+// GetSource returns one source, including its rotation and which of its members
+// can no longer receive leads.
 func (h *Handler) GetSource(c *gin.Context) {
 	src, ok := h.loadSource(c)
 	if !ok {
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": src})
+	c.JSON(http.StatusOK, gin.H{"data": h.viewOf(c, src, true)})
 }
 
 // UpdateSource edits a source's mutable config.
@@ -423,11 +510,27 @@ func (h *Handler) UpdateSource(c *gin.Context) {
 		src.TargetSlug = req.TargetSlug
 	}
 	if req.DefaultOwnerID != nil {
+		if !h.authorizeOwnerWrite(c, src.OrgID, src.TargetSlug) {
+			return
+		}
 		owner, ok := h.parseOwner(c, src.OrgID, req.DefaultOwnerID)
 		if !ok {
 			return
 		}
 		src.DefaultOwnerID = owner
+	}
+	// Resolved before the model save so a rejected rotation does not leave the other
+	// edits half-applied.
+	var newPool *datatypes.JSON
+	if req.OwnerPool != nil {
+		if !h.authorizeOwnerWrite(c, src.OrgID, src.TargetSlug) {
+			return
+		}
+		pool, ok := h.parseOwnerPool(c, src.OrgID, *req.OwnerPool)
+		if !ok {
+			return
+		}
+		newPool = &pool
 	}
 	if req.DailyCap > 0 {
 		src.DailyCap = req.DailyCap
@@ -464,7 +567,13 @@ func (h *Handler) UpdateSource(c *gin.Context) {
 		h.mgmtError(c, http.StatusInternalServerError, "could not update source")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": src})
+	if newPool != nil {
+		if err := h.repo.SetOwnerPool(c.Request.Context(), src.OrgID, src.ID, *newPool); err != nil {
+			h.mgmtError(c, http.StatusInternalServerError, "could not save the rotation")
+			return
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"data": h.viewOf(c, src, true)})
 }
 
 // DeleteSource retires a source (soft — the ledger outlives it).
@@ -497,7 +606,10 @@ func (h *Handler) RotateKey(c *gin.Context) {
 		h.mgmtError(c, http.StatusInternalServerError, "could not rotate key")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": sourceWithKey{LeadSource: src, PlaintextKey: plaintext}})
+	c.JSON(http.StatusOK, gin.H{"data": sourceWithKey{
+		sourceView:   h.viewOf(c, src, false),
+		PlaintextKey: plaintext,
+	}})
 }
 
 // ListEvents returns a source's recent deliveries.
@@ -531,6 +643,12 @@ type testLeadResponse struct {
 	// SourceStatus lets the UI warn that a disabled source is rejecting real traffic
 	// right now, even though this test just succeeded.
 	SourceStatus string `json:"source_status"`
+	// AssignedOwnerID names the rep this lead landed on — the panel claims the test
+	// proves owner assignment, so it has to show the answer rather than assert the
+	// category. Nil means the lead is unowned, which is itself the finding.
+	AssignedOwnerID string `json:"assigned_owner_id,omitempty"`
+	// Warnings carries routing problems (an unowned lead) to the admin who clicked.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // SendTestLead drives a synthetic lead through the real pipeline.
@@ -626,13 +744,15 @@ func (h *Handler) SendTestLead(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"data": testLeadResponse{
-		RecordID:     res.RecordID.String(),
-		EventID:      res.EventID.String(),
-		Outcome:      res.Outcome,
-		Quarantined:  res.Quarantined,
-		Note:         res.Note,
-		Uncovered:    uncovered,
-		SourceStatus: src.Status,
+		RecordID:        res.RecordID.String(),
+		EventID:         res.EventID.String(),
+		Outcome:         res.Outcome,
+		Quarantined:     res.Quarantined,
+		Note:            res.Note,
+		Uncovered:       uncovered,
+		SourceStatus:    src.Status,
+		AssignedOwnerID: ownerString(res.OwnerID),
+		Warnings:        res.Warnings,
 	}})
 }
 
@@ -723,11 +843,77 @@ func (h *Handler) parseOwner(c *gin.Context, orgID uuid.UUID, raw *string) (*uui
 		h.mgmtError(c, http.StatusInternalServerError, "could not verify the owner")
 		return nil, false
 	}
-	if ou == nil || ou.DeletedAt != nil || ou.Status != "active" {
+	if !IsLiveMember(ou) {
 		h.mgmtError(c, http.StatusBadRequest, "default_owner_id must be an active member of this workspace")
 		return nil, false
 	}
 	return &id, true
+}
+
+// parseOwnerPool validates a rotation at save time.
+//
+// Same liveness bar as parseOwner, plus shape rules a pool needs and a single owner
+// does not. Errors NAME the offending id: a rotation that silently drops a member is
+// how leads quietly stop reaching someone.
+func (h *Handler) parseOwnerPool(c *gin.Context, orgID uuid.UUID, raw []string) (datatypes.JSON, bool) {
+	if len(raw) == 0 {
+		return datatypes.JSON(`[]`), true // an explicit empty list turns rotation off
+	}
+	if len(raw) > maxOwnerPool {
+		h.mgmtError(c, http.StatusBadRequest,
+			"a rotation can hold at most "+strconv.Itoa(maxOwnerPool)+" people")
+		return nil, false
+	}
+	seen := map[uuid.UUID]bool{}
+	ids := make([]uuid.UUID, 0, len(raw))
+	for _, s := range raw {
+		id, err := uuid.Parse(strings.TrimSpace(s))
+		if err != nil {
+			h.mgmtError(c, http.StatusBadRequest, "invalid user id in the rotation: "+s)
+			return nil, false
+		}
+		if seen[id] {
+			// A duplicate is not harmless: it would silently double that person's share
+			// of every cycle, which is never what an admin meant by adding them twice.
+			h.mgmtError(c, http.StatusBadRequest, "the same person appears twice in the rotation")
+			return nil, false
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+
+	live, err := h.members.ActiveMemberIDs(c.Request.Context(), orgID, ids)
+	if err != nil {
+		// Save time fails CLOSED — the opposite of ingest. Here an admin is watching and
+		// can retry; there, refusing would cost a lead.
+		h.mgmtError(c, http.StatusInternalServerError, "could not verify the rotation's members")
+		return nil, false
+	}
+	for _, id := range ids {
+		if !live[id] {
+			h.mgmtError(c, http.StatusBadRequest,
+				"everyone in the rotation must be an active member of this workspace ("+id.String()+" is not)")
+			return nil, false
+		}
+	}
+	out, _ := json.Marshal(raw)
+	return datatypes.JSON(out), true
+}
+
+// authorizeOwnerWrite gates configuring ownership on the caller's own permission to
+// write the owner field.
+//
+// Without it, integrations.manage would be an ownership-assignment primitive: ingest
+// writes callerless, so nothing downstream checks whether this admin may set
+// owner_user_id on the target object. automation's assign_user gates the identical
+// write on the same mask; integrations gated nothing until now.
+func (h *Handler) authorizeOwnerWrite(c *gin.Context, orgID uuid.UUID, slug string) bool {
+	mask := h.authz.FieldMask(c.Request.Context(), orgID, slug)
+	if !mask.CanWrite("owner_user_id") {
+		h.mgmtError(c, http.StatusForbidden, "you do not have permission to assign the owner of "+slug+" records")
+		return false
+	}
+	return true
 }
 
 // mgmtError writes the management API's error envelope, matching what the

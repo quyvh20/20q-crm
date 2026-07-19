@@ -1060,6 +1060,38 @@ func main() {
 			{"contacts phone-digits index", `CREATE INDEX IF NOT EXISTS idx_contacts_org_phone_digits
 				ON contacts(org_id, regexp_replace(phone, '[^0-9]', '', 'g'))
 				WHERE phone IS NOT NULL AND phone <> '' AND deleted_at IS NULL`},
+
+			// L2 owner routing. CREATE TABLE IF NOT EXISTS above never adds columns to a
+			// table that already exists, so every install that booted an earlier build
+			// needs these ALTERs. Metadata-only on PG11+ (non-volatile DEFAULT), so no
+			// table rewrite and none of the lock cost the contacts indexes above carry.
+			//
+			// A failure here is survivable ONLY because none of these columns is mapped
+			// onto a GORM struct: this loop logs and boots on, and an unmapped column
+			// that doesn't exist fails one raw statement (routing degrades to
+			// default_owner_id). Mapped, GORM would name owner_pool in
+			// FindSourceByTokenHash's SELECT and every capture request in every org would
+			// 500 — a routing column taking down lead capture platform-wide.
+			{"lead_sources owner_pool", `ALTER TABLE lead_sources
+				ADD COLUMN IF NOT EXISTS owner_pool JSONB NOT NULL DEFAULT '[]'::jsonb`},
+			// A monotonic ticket counter, never an index into the array: an index points
+			// out of range the moment the pool shrinks, and every implementation then
+			// clamps — the clamp is where the fairness skew hides. BIGINT because a
+			// wrapped negative ticket makes `ticket % n` negative and panics on the slice
+			// index, and a panic on the capture path is silent lead loss.
+			{"lead_sources owner_cursor", `ALTER TABLE lead_sources
+				ADD COLUMN IF NOT EXISTS owner_cursor BIGINT NOT NULL DEFAULT 0`},
+			// lead_sources is now written up to twice per lead (cursor bump, then
+			// TouchSourceUsed). HOT updates keep the token_hash UNIQUE index — probed on
+			// EVERY capture request — free of new entries only while the heap page has
+			// room, and the default fillfactor of 100 leaves none.
+			{"lead_sources fillfactor", `ALTER TABLE lead_sources SET (fillfactor = 90)`},
+			// Binds the rotation ticket to the DELIVERY, not the attempt. Ingest
+			// deliberately re-runs the pipeline against a prior `failed` row on an
+			// Idempotency-Key retry, so without this a failure-correlated retry pattern
+			// takes a second ticket every time and one rep silently receives everything.
+			{"events assigned_owner_id", `ALTER TABLE integration_events
+				ADD COLUMN IF NOT EXISTS assigned_owner_id UUID`},
 		}
 		for _, g := range leadGuards {
 			if err := db.Exec(g.sql).Error; err != nil {
@@ -1547,11 +1579,20 @@ func main() {
 		// redisClient may be nil; the limiter then runs entirely in-process. It never
 		// degrades to "allow" — see integrations.RateLimiter.
 		integrationsLimiter := integrations.NewRateLimiter(redisClient, 0, 0)
+		// Membership reads for owner routing: the single-user check the source-save path
+		// already used, plus the batched liveness check every routed lead makes. Wraps
+		// authRepo rather than widening domain.AuthRepository, whose many methods are
+		// stubbed by hand in several test fakes.
+		integrationsMembers := repository.NewOrgMemberReader(db, authRepo)
 		integrationsHandler := integrations.NewHandler(
 			integrationsRepo,
-			integrations.NewLeadIngestService(integrationsRepo, recordService, contactRepo, objectRegistryUC, orgSettingsUC),
+			integrations.NewLeadIngestService(
+				integrationsRepo, recordService, contactRepo, objectRegistryUC, orgSettingsUC,
+				integrationsMembers, // owner-pool liveness
+				autoLogger,          // routing degradations are invisible otherwise: the write still succeeds
+			),
 			permissionUC,
-			authRepo, // membership check for default_owner_id
+			integrationsMembers, // membership check for default_owner_id + owner_pool
 			objectRegistryUC,
 			integrationsLimiter,
 			autoLogger, // same slog handler the automation engine writes to

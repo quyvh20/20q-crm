@@ -33,6 +33,14 @@ func (stubMembers) GetOrgUser(_ context.Context, userID, orgID uuid.UUID) (*doma
 	return &domain.OrgUser{UserID: userID, OrgID: orgID, Status: "active"}, nil
 }
 
+func (stubMembers) ActiveMemberIDs(_ context.Context, _ uuid.UUID, ids []uuid.UUID) (map[uuid.UUID]bool, error) {
+	out := map[uuid.UUID]bool{}
+	for _, id := range ids {
+		out[id] = true
+	}
+	return out, nil
+}
+
 // TestSendTestLead_RequiresTheCallersOwnWritePermission is the security control this
 // endpoint turns on, and the package's first negative authz test.
 //

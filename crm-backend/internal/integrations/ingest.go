@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -66,6 +67,12 @@ type IngestResult struct {
 	// into an ambiguous phone match. Surfaced on the delivery so the decision is
 	// visible rather than looking like an unexplained duplicate.
 	Note string
+	// Warnings are said to the CALLER, at integration time. A lead nobody owns must
+	// not be discoverable only by someone reading the ledger weeks later.
+	Warnings []string
+	// OwnerID is who the lead was routed to (nil = unowned). Reported so a test lead
+	// can name the rep, and persisted so a retry reuses it.
+	OwnerID *uuid.UUID
 }
 
 // LeadIngestService is the one path every inbound lead takes, whatever channel it
@@ -76,11 +83,16 @@ type LeadIngestService struct {
 	matcher ContactMatcher
 	schema  SchemaProvider
 	fields  FieldDefManager
+	// members answers "may this person be handed a lead" for owner routing.
+	members MemberChecker
+	// logger surfaces routing degradations. A lead that lands unowned, or a rotation
+	// that could not be read, is invisible otherwise — the write still succeeds.
+	logger *slog.Logger
 }
 
 // NewLeadIngestService builds the pipeline.
-func NewLeadIngestService(repo *Repository, records RecordWriter, matcher ContactMatcher, schema SchemaProvider, fields FieldDefManager) *LeadIngestService {
-	return &LeadIngestService{repo: repo, records: records, matcher: matcher, schema: schema, fields: fields}
+func NewLeadIngestService(repo *Repository, records RecordWriter, matcher ContactMatcher, schema SchemaProvider, fields FieldDefManager, members MemberChecker, logger *slog.Logger) *LeadIngestService {
+	return &LeadIngestService{repo: repo, records: records, matcher: matcher, schema: schema, fields: fields, members: members, logger: logger}
 }
 
 // newIngestContext builds the context every ingest write runs on. THE ONLY PLACE
@@ -297,9 +309,23 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 		amap = nil
 	}
 
-	result, err := s.upsert(ictx, source, lead, fields, email, amap, attr)
+	// A prior attempt on this same delivery already picked a rep. Reuse it rather
+	// than taking a second ticket: the ticket belongs to the DELIVERY, not the
+	// attempt. Without this, a form where every other lead fails would hand one rep
+	// 100% of the contacts while the ledger looked green.
+	priorOwner, perr := s.repo.GetEventAssignedOwner(ledgerCtx, event.ID)
+	if perr != nil {
+		s.logf("integrations: could not read prior routing", "event_id", event.ID.String(), "error", perr)
+	}
+
+	result, err := s.upsert(ictx, source, lead, fields, email, amap, attr, priorOwner)
 	if err != nil {
 		return nil, s.failEvent(ledgerCtx, event, err)
+	}
+	// Persisted BEFORE the outcome, so a crash between here and FinishEvent still
+	// leaves the retry able to reuse the same rep.
+	if serr := s.repo.SetEventAssignedOwner(ledgerCtx, event.ID, result.OwnerID); serr != nil {
+		s.logf("integrations: could not record routing", "event_id", event.ID.String(), "error", serr)
 	}
 
 	// ── 7. Record the outcome ────────────────────────────────────────────
@@ -348,16 +374,31 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 // An AMBIGUOUS match (several contacts share the lead's phone) arrives here as
 // no match at all, by design: findMatch refuses to guess, so the lead becomes a new
 // contact and the reason is recorded on the delivery so a human can merge it.
-func (s *LeadIngestService) upsert(ctx context.Context, source *LeadSource, lead RawLead, fields map[string]any, email string, amap AttributionMap, attr map[string]string) (*IngestResult, error) {
+func (s *LeadIngestService) upsert(ctx context.Context, source *LeadSource, lead RawLead, fields map[string]any, email string, amap AttributionMap, attr map[string]string, priorOwner *uuid.UUID) (*IngestResult, error) {
 	match, err := s.resolveMatch(ctx, source, lead, fields, email)
 	if err != nil {
 		return nil, err
 	}
 
 	if match.Contact == nil {
-		rec, cerr := s.create(ctx, source, fields, amap, attr)
+		// The rotation ticket is taken HERE, at the only place ownership is ever
+		// stamped — not in Ingest. Resolving earlier would be this feature's worst
+		// bug: a source whose traffic is 90% resubmissions would burn 90% of its
+		// turns on leads that never get an owner, and the rotation would degenerate
+		// into noise while looking perfectly healthy.
+		own := s.resolveOwner(ctx, source, lead, priorOwner)
+		rec, cerr := s.create(ctx, source, fields, amap, attr, own.OwnerID)
 		if cerr == nil {
-			return &IngestResult{RecordID: rec.ID, Outcome: OutcomeCreated, Note: match.AmbiguityNote}, nil
+			return &IngestResult{
+				RecordID: rec.ID,
+				Outcome:  OutcomeCreated,
+				// Both notes can be real at once: an ambiguous-phone lead arrives as
+				// no-match WITH a note and then creates. Overwriting either way deletes a
+				// disclosure someone needs.
+				Note:     joinNotes(match.AmbiguityNote, own.Note),
+				Warnings: warningsOf(own),
+				OwnerID:  own.OwnerID,
+			}, nil
 		}
 		if !errors.Is(cerr, domain.ErrContactEmailExists) {
 			return nil, cerr
@@ -424,18 +465,19 @@ func (s *LeadIngestService) resolveMatch(ctx context.Context, source *LeadSource
 // create writes a new record. first_name is synthesized HERE, on the create branch
 // only — the adapter 400s a blank one, but synthesizing on update would overwrite a
 // real name with "Lead" every time an email-only lead resubmitted.
-func (s *LeadIngestService) create(ctx context.Context, source *LeadSource, fields map[string]any, amap AttributionMap, attr map[string]string) (*domain.UniformRecord, error) {
+func (s *LeadIngestService) create(ctx context.Context, source *LeadSource, fields map[string]any, amap AttributionMap, attr map[string]string, owner *uuid.UUID) (*domain.UniformRecord, error) {
 	out := copyFields(fields)
 	// First touch: stamp everything, once.
 	applyAttribution(out, amap, attr, true)
 	if strings.TrimSpace(stringOf(out["first_name"])) == "" {
 		out["first_name"] = synthesizeFirstName(stringOf(fields["email"]))
 	}
-	// Ownership comes from config, never the wire. Stamped only here: on update the
-	// adapter reads a present owner_user_id as an instruction, and a null one as
-	// UNASSIGN. An unowned contact is invisible to own-scoped reps.
-	if source.DefaultOwnerID != nil {
-		out["owner_user_id"] = source.DefaultOwnerID.String()
+	// Ownership comes from config, never the wire, and is resolved by the caller
+	// (see resolveOwner). Stamped only here: on update the adapter reads a present
+	// owner_user_id as an instruction, and a null one as UNASSIGN. An unowned contact
+	// is invisible to own-scoped reps.
+	if owner != nil {
+		out["owner_user_id"] = owner.String()
 	}
 	// userID is uuid.Nil: the contact path never reads it (only the custom-object
 	// path does, which is why target_slug is restricted to contact).

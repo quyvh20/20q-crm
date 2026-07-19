@@ -362,7 +362,7 @@ func TestUpsert_TestLeadRefusesToTouchARealContact(t *testing.T) {
 			src.UpdatePolicy = policy
 			lead := RawLead{TestOrigin: TestOriginAdmin}
 
-			_, err := svc.upsert(context.Background(), src, lead, map[string]any{}, testLeadEmail(src), nil, nil)
+			_, err := svc.upsert(context.Background(), src, lead, map[string]any{}, testLeadEmail(src), nil, nil, nil)
 
 			if err == nil {
 				// create_only writes nothing, but still hands back the matched id as the
@@ -387,7 +387,7 @@ func TestUpsert_TestLeadUpdatesItsOwnPriorContact(t *testing.T) {
 	svc := &LeadIngestService{matcher: &stubMatcher{byEmail: prior}, records: w}
 
 	res, err := svc.upsert(context.Background(), src, RawLead{TestOrigin: TestOriginAdmin},
-		map[string]any{"first_name": "Test"}, mine, nil, nil)
+		map[string]any{"first_name": "Test"}, mine, nil, nil, nil)
 
 	if err != nil {
 		t.Fatalf("a test lead must be able to update its own prior contact: %v", err)

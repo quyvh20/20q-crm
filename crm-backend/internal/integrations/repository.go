@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -127,6 +128,175 @@ func (r *Repository) CountCreatedToday(ctx context.Context, sourceID uuid.UUID, 
 		Where("source_id = ? AND created_at >= ? AND outcome = ?", sourceID, midnight, OutcomeCreated).
 		Count(&n).Error
 	return n, err
+}
+
+// ── Owner routing ────────────────────────────────────────────────────────────
+//
+// owner_pool, owner_cursor and integration_events.assigned_owner_id are read and
+// written ONLY by the targeted statements below — none of them is a field on the
+// GORM models. See the note on LeadSource for why that is load-bearing rather than
+// stylistic.
+
+// ownerTicketSQL claims the next place in a source's rotation.
+//
+// ONE statement does three jobs: it takes a unique ticket under a row lock, returns
+// the pool so no second read is needed, and — via the array predicates — performs NO
+// WRITE AT ALL for a source with no rotation configured, which is ~every source.
+//
+// Postgres row-locks lead_sources for this statement's duration, so a second
+// concurrent lead blocks and then reads the committed value: no two leads can take
+// the same ticket. A read-modify-write in Go could not do this (both would read the
+// same cursor), and this stays correct across replicas because the DB holds the
+// state. Nothing is held across the RecordService write — a SELECT ... FOR UPDATE
+// spanning that would serialize a source's entire pipeline behind its slowest
+// contact write, inside a 30s ingest timeout.
+//
+// RETURNING the PRE-increment value so the first lead lands on pool[0], mirroring
+// record_number_repository.go's `RETURNING next_seq - 1`.
+const ownerTicketSQL = `
+	UPDATE lead_sources
+	   SET owner_cursor = owner_cursor + 1
+	 WHERE id = ? AND org_id = ? AND deleted_at IS NULL
+	   AND jsonb_typeof(owner_pool) = 'array'
+	   AND jsonb_array_length(owner_pool) > 0
+	RETURNING owner_cursor - 1 AS ticket, owner_pool`
+
+type ownerTicketRow struct {
+	Ticket    int64          `gorm:"column:ticket"`
+	OwnerPool datatypes.JSON `gorm:"column:owner_pool"`
+}
+
+// NextOwnerTicket takes this lead's turn. pooled=false means the source has no
+// rotation (and no row was written).
+//
+// Never wrap this in a transaction that also spans the record write, and never
+// decrement on failure: a burned ticket costs one rep one turn, whereas a
+// "rollback" reintroduces the race the atomic bump exists to kill.
+func (r *Repository) NextOwnerTicket(ctx context.Context, orgID, sourceID uuid.UUID) (int64, datatypes.JSON, bool, error) {
+	var row ownerTicketRow
+	res := r.db.WithContext(ctx).Raw(ownerTicketSQL, sourceID, orgID).Scan(&row)
+	if res.Error != nil {
+		return 0, nil, false, res.Error
+	}
+	if res.RowsAffected == 0 {
+		return 0, nil, false, nil // no rotation configured
+	}
+	return row.Ticket, row.OwnerPool, true, nil
+}
+
+// PeekOwnerTicket reads the next turn WITHOUT consuming it — the test-lead path.
+//
+// A synthetic lead must be able to report which rep a real lead would land on
+// without spending that rep's turn on a contact the admin is told to delete.
+func (r *Repository) PeekOwnerTicket(ctx context.Context, orgID, sourceID uuid.UUID) (int64, datatypes.JSON, bool, error) {
+	var row ownerTicketRow
+	res := r.db.WithContext(ctx).Raw(`
+		SELECT owner_cursor AS ticket, owner_pool
+		  FROM lead_sources
+		 WHERE id = ? AND org_id = ? AND deleted_at IS NULL
+		   AND jsonb_typeof(owner_pool) = 'array'
+		   AND jsonb_array_length(owner_pool) > 0`, sourceID, orgID).Scan(&row)
+	if res.Error != nil {
+		return 0, nil, false, res.Error
+	}
+	if res.RowsAffected == 0 {
+		return 0, nil, false, nil
+	}
+	return row.Ticket, row.OwnerPool, true, nil
+}
+
+// SetEventAssignedOwner records which rep this DELIVERY was routed to, so an
+// Idempotency-Key retry reuses the answer instead of taking a second ticket.
+// Best-effort: losing it costs retry fidelity, never the lead.
+func (r *Repository) SetEventAssignedOwner(ctx context.Context, eventID uuid.UUID, owner *uuid.UUID) error {
+	if owner == nil {
+		return nil
+	}
+	return r.db.WithContext(ctx).Exec(
+		`UPDATE integration_events SET assigned_owner_id = ? WHERE id = ?`, *owner, eventID).Error
+}
+
+// GetEventAssignedOwner reads back a prior attempt's routing decision.
+func (r *Repository) GetEventAssignedOwner(ctx context.Context, eventID uuid.UUID) (*uuid.UUID, error) {
+	var ids []uuid.UUID
+	if err := r.db.WithContext(ctx).Raw(
+		`SELECT assigned_owner_id FROM integration_events WHERE id = ? AND assigned_owner_id IS NOT NULL`,
+		eventID).Scan(&ids).Error; err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return &ids[0], nil
+}
+
+// GetOwnerPool reads one source's rotation.
+func (r *Repository) GetOwnerPool(ctx context.Context, orgID, sourceID uuid.UUID) (datatypes.JSON, error) {
+	var raw []datatypes.JSON
+	if err := r.db.WithContext(ctx).Raw(
+		`SELECT owner_pool FROM lead_sources WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
+		sourceID, orgID).Scan(&raw).Error; err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return datatypes.JSON(`[]`), nil
+	}
+	return raw[0], nil
+}
+
+// SetOwnerPool replaces a source's rotation. Targeted UPDATE rather than a model
+// save: UpdateSource writes every mapped column, so routing config must not travel
+// through it.
+func (r *Repository) SetOwnerPool(ctx context.Context, orgID, sourceID uuid.UUID, pool datatypes.JSON) error {
+	return r.db.WithContext(ctx).Exec(
+		`UPDATE lead_sources SET owner_pool = ?, updated_at = NOW() WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
+		pool, sourceID, orgID).Error
+}
+
+// PoolsForOrg returns every source's rotation in the org, keyed by source id — one
+// query for the list view rather than one per row.
+func (r *Repository) PoolsForOrg(ctx context.Context, orgID uuid.UUID) (map[uuid.UUID]datatypes.JSON, error) {
+	type row struct {
+		ID        uuid.UUID      `gorm:"column:id"`
+		OwnerPool datatypes.JSON `gorm:"column:owner_pool"`
+	}
+	var rows []row
+	if err := r.db.WithContext(ctx).Raw(
+		`SELECT id, owner_pool FROM lead_sources WHERE org_id = ? AND deleted_at IS NULL`, orgID).
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[uuid.UUID]datatypes.JSON, len(rows))
+	for _, r := range rows {
+		out[r.ID] = r.OwnerPool
+	}
+	return out, nil
+}
+
+// SourcesRoutingTo names the sources that would send new leads to this person —
+// what an offboarding admin needs to see before removing them.
+func (r *Repository) SourcesRoutingTo(ctx context.Context, orgID, userID uuid.UUID) ([]string, error) {
+	var names []string
+	err := r.db.WithContext(ctx).Raw(`
+		SELECT name FROM lead_sources
+		 WHERE org_id = ? AND deleted_at IS NULL
+		   AND (default_owner_id = ? OR owner_pool @> ?::jsonb)
+		 ORDER BY name`, orgID, userID, `"`+userID.String()+`"`).Scan(&names).Error
+	return names, err
+}
+
+// RemoveFromOwnerPools prunes a departing member from every rotation in the org.
+//
+// Removal, not suspension: a suspension is reversible and the rotation already skips
+// it, but a removed member's id would silently re-arm if they were ever re-invited
+// (org_users' PK is (user_id, org_id), so a re-invite flips the same row back to
+// active).
+func (r *Repository) RemoveFromOwnerPools(ctx context.Context, orgID, userID uuid.UUID) error {
+	return r.db.WithContext(ctx).Exec(`
+		UPDATE lead_sources
+		   SET owner_pool = owner_pool - ?, updated_at = NOW()
+		 WHERE org_id = ? AND deleted_at IS NULL AND owner_pool @> ?::jsonb`,
+		userID.String(), orgID, `"`+userID.String()+`"`).Error
 }
 
 // ── Events ───────────────────────────────────────────────────────────────────

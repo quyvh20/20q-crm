@@ -92,6 +92,23 @@ func (r *OffboardRepository) UnassignOwnedRecords(ctx context.Context, orgID, us
 	})
 }
 
+// RoutingSourceNames names the lead sources that would send NEW leads to this
+// member — as the single owner, or as part of a rotation.
+//
+// Offboarding otherwise only reasons about records the member ALREADY owns, which
+// says nothing about the ones still arriving. An admin who reassigns a departing
+// rep's contacts and hears nothing about their three live rotations discovers the
+// gap when a customer asks why nobody called back.
+func (r *OffboardRepository) RoutingSourceNames(ctx context.Context, orgID, userID uuid.UUID) ([]string, error) {
+	var names []string
+	err := r.db.WithContext(ctx).Raw(`
+		SELECT name FROM lead_sources
+		 WHERE org_id = ? AND deleted_at IS NULL
+		   AND (default_owner_id = ? OR owner_pool @> ?::jsonb)
+		 ORDER BY name`, orgID, userID, `"`+userID.String()+`"`).Scan(&names).Error
+	return names, err
+}
+
 // RevokeUserGrants deletes the member's org-scoped access grants: record shares
 // granted TO them, report shares targeting them as a user, and their group
 // memberships. Without this, removing then re-inviting a member silently restored
@@ -120,7 +137,23 @@ func (r *OffboardRepository) RevokeUserGrants(ctx context.Context, orgID, userID
 			Update("revoked_at", time.Now()).Error; err != nil {
 			return err
 		}
-		return tx.Where("org_id = ? AND user_id = ?", orgID, userID).
-			Delete(&domain.UserGroupMember{}).Error
+		if err := tx.Where("org_id = ? AND user_id = ?", orgID, userID).
+			Delete(&domain.UserGroupMember{}).Error; err != nil {
+			return err
+		}
+		// Lead-source rotations, for exactly the reason above: a departed member left
+		// in a pool silently re-arms if they are ever re-invited, because org_users'
+		// primary key is (user_id, org_id) and a re-invite flips that same row back to
+		// active. Removal prunes; SUSPENSION deliberately does not, because a
+		// suspension is reversible and routing already skips a suspended member.
+		//
+		// Raw SQL rather than the integrations repository: usecase and repository must
+		// not depend on that package, and `owner_pool - ?` is jsonb array element
+		// removal, which leaves an admin's ordering otherwise intact.
+		return tx.Exec(`
+			UPDATE lead_sources
+			   SET owner_pool = owner_pool - ?, updated_at = NOW()
+			 WHERE org_id = ? AND deleted_at IS NULL AND owner_pool @> ?::jsonb`,
+			userID.String(), orgID, `"`+userID.String()+`"`).Error
 	})
 }

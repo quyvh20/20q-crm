@@ -31,6 +31,7 @@ const SOURCE: LeadSource = {
   target_slug: 'contact',
   match_fields: ['email'],
   field_map: {},
+  owner_pool: [],
   update_policy: 'fill_blank_only',
   config: {},
   status: 'active',

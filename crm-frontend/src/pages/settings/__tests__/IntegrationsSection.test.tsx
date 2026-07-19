@@ -31,6 +31,7 @@ const SOURCE: LeadSource = {
   target_slug: 'contact',
   match_fields: ['email'],
   field_map: {},
+  owner_pool: [],
   update_policy: 'fill_blank_only',
   config: {},
   status: 'active',
@@ -94,6 +95,9 @@ describe('IntegrationsSection', () => {
     // state's call to action); either opens the same form.
     fireEvent.click((await screen.findAllByRole('button', { name: /new source/i }))[0]);
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Website form' } });
+    // Routing is a required choice — a source that silently produces unowned
+    // contacts is the failure this platform exists to prevent.
+    fireEvent.change(screen.getByLabelText('Who gets these leads'), { target: { value: 'unassigned' } });
     fireEvent.click(screen.getByRole('button', { name: /create source/i }));
 
     // The key, once.
@@ -119,6 +123,7 @@ describe('IntegrationsSection', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /new source/i }));
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'dupe' } });
+    fireEvent.change(screen.getByLabelText('Who gets these leads'), { target: { value: 'unassigned' } });
     fireEvent.click(screen.getByRole('button', { name: /create source/i }));
 
     // An action error must not replace the page: the admin needs to still see what
@@ -155,5 +160,31 @@ describe('Integrations settings registration', () => {
     expect(defaultSectionPath((c: string) => c === 'org.settings' || c === 'integrations.manage')).toBe('general');
     // An integrations-only admin still gets a page they can use.
     expect(defaultSectionPath((c: string) => c === 'integrations.manage')).toBe('integrations');
+  });
+
+  it('will not create a source until routing is chosen', async () => {
+    // The live defect this closes: the form used to send only {name, update_policy},
+    // so every source created through the UI produced unowned contacts — invisible to
+    // every own-scoped rep.
+    vi.mocked(listSources).mockResolvedValue([]);
+    renderSection();
+
+    fireEvent.click((await screen.findAllByRole('button', { name: /new source/i }))[0]);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Website form' } });
+
+    expect(screen.getByRole('button', { name: /create source/i })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText('Who gets these leads'), { target: { value: 'unassigned' } });
+    expect(screen.getByRole('button', { name: /create source/i })).toBeEnabled();
+  });
+
+  it('says out loud that unassigned leads are invisible to own-scoped reps', async () => {
+    vi.mocked(listSources).mockResolvedValue([]);
+    renderSection();
+
+    fireEvent.click((await screen.findAllByRole('button', { name: /new source/i }))[0]);
+    fireEvent.change(screen.getByLabelText('Who gets these leads'), { target: { value: 'unassigned' } });
+
+    expect(screen.getByText(/will not see these leads/i)).toBeInTheDocument();
   });
 });
