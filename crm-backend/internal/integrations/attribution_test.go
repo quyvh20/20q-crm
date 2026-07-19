@@ -2,7 +2,9 @@ package integrations
 
 import (
 	"context"
+	"net/url"
 	"testing"
+	"unicode/utf8"
 
 	"crm-backend/internal/domain"
 
@@ -153,6 +155,61 @@ func TestApplyAttribution_FirstVsLastTouch(t *testing.T) {
 		}
 		if _, ok := out["lead_source"]; ok {
 			t.Error("must not write the canonical name when it was sidestepped")
+		}
+	})
+}
+
+func TestTruncate(t *testing.T) {
+	t.Run("a multi-byte rune straddling the limit is dropped, not split", func(t *testing.T) {
+		// "😀" is 4 bytes (U+1F600), so the cut at 4 lands two bytes into it.
+		// Byte-slicing would yield an invalid sequence that renders as U+FFFD with
+		// no error — silent corruption of the customer's attribution data.
+		got := truncate("ab😀", 4)
+		if got != "ab" {
+			t.Errorf("expected the straddling rune dropped whole, got %q (% x)", got, got)
+		}
+		if !utf8.ValidString(got) {
+			t.Errorf("truncate produced invalid UTF-8: % x", got)
+		}
+	})
+
+	t.Run("a rune ending exactly on the limit is kept", func(t *testing.T) {
+		if got := truncate("ab😀", 6); got != "ab😀" {
+			t.Errorf("nothing to cut at the exact length, got %q", got)
+		}
+		if got := truncate("😀x", 4); got != "😀" {
+			t.Errorf("a rune ending exactly on the boundary survives, got %q", got)
+		}
+	})
+
+	t.Run("the ceiling stays a BYTE ceiling", func(t *testing.T) {
+		// The columns behind these values count bytes, so the result must never
+		// exceed n even though the cut is rune-aligned.
+		for _, n := range []int{1, 2, 3, 4, 5, 6, 7} {
+			if got := truncate("日本語テスト", n); len(got) > n {
+				t.Errorf("truncate(_, %d) returned %d bytes: %q", n, len(got), got)
+			} else if !utf8.ValidString(got) {
+				t.Errorf("truncate(_, %d) produced invalid UTF-8: % x", n, got)
+			}
+		}
+	})
+
+	t.Run("a whole CJK campaign name survives the live 255-byte path", func(t *testing.T) {
+		vals := attributionValues(
+			&LeadSource{Name: "Site", Kind: "api"},
+			LeadContext{PageURL: "https://x.test/?utm_campaign=" + url.QueryEscape("日本語キャンペーン")},
+		)
+		if vals["utm_campaign"] != "日本語キャンペーン" {
+			t.Errorf("a short CJK campaign must pass through intact, got %q", vals["utm_campaign"])
+		}
+	})
+
+	t.Run("shorter than the limit is returned unchanged", func(t *testing.T) {
+		if got := truncate("plain", 255); got != "plain" {
+			t.Errorf("got %q", got)
+		}
+		if got := truncate("", 255); got != "" {
+			t.Errorf("got %q", got)
 		}
 	})
 }

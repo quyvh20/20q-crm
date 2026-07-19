@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/url"
 	"strings"
+	"unicode/utf8"
 
 	"crm-backend/internal/domain"
 
@@ -214,9 +215,20 @@ var lastTouchKeys = map[string]bool{
 	"referrer_url": true,
 }
 
+// truncate cuts to at most n BYTES, at a rune boundary.
+//
+// The byte ceiling is the real bound — these values back varchar(255)/varchar(500)
+// columns, which count bytes — but byte-slicing mid-rune turns a multi-byte
+// character into U+FFFD with no error. A CJK or emoji campaign name would arrive
+// mangled in the customer's attribution data and nothing would report it, so the
+// cut backs off to the last complete rune at or below n.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n]
+	out := s[:n]
+	for len(out) > 0 && !utf8.ValidString(out) {
+		out = out[:len(out)-1]
+	}
+	return out
 }
