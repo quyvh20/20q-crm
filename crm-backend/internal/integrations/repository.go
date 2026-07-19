@@ -150,6 +150,74 @@ func (r *Repository) ReapStrandedEvents(ctx context.Context, grace time.Duration
 	return res.RowsAffected, res.Error
 }
 
+// SetEventConsent records the verbatim consent envelope on a delivery.
+//
+// Targeted UPDATE rather than a model save: the column is unmapped, and FinishEvent's
+// db.Save runs AFTER this — a mapped-but-unset field would blank the envelope on
+// every successful delivery, which is the silent discard this column exists to fix,
+// reintroduced one layer down.
+//
+// Returns RowsAffected so a no-op cannot pass silently. A best-effort write that
+// cannot report failure is the original defect wearing an UPDATE.
+func (r *Repository) SetEventConsent(ctx context.Context, eventID uuid.UUID, raw []byte) (int64, error) {
+	if len(raw) == 0 {
+		return 0, nil
+	}
+	res := r.db.WithContext(ctx).Exec(
+		`UPDATE integration_events SET consent = ?::jsonb WHERE id = ?`, string(raw), eventID)
+	return res.RowsAffected, res.Error
+}
+
+// consentTombstone is what replaces an erased envelope.
+//
+// NOT null and NOT '{}': either would make the ledger assert that no consent was
+// ever obtained, which is a different — and false — claim than "consent was obtained
+// and the record of it was erased on request".
+const consentTombstone = `{"_crm":{"redacted":true,"enforced":false}}`
+
+// RedactForRecord strips the personal data this pipeline stored about one contact.
+//
+// The ledger row and its status survive — the delivery history is what the customer
+// needs to answer "what happened to this lead" — but everything the subject
+// themselves supplied goes. Contact-keyed, which is why consent is only ever written
+// on deliveries that produced a record: an envelope on a row with no
+// result_record_id could never be reached by this.
+func (r *Repository) RedactForRecord(ctx context.Context, orgID, recordID uuid.UUID) error {
+	return r.db.WithContext(ctx).Exec(`
+		UPDATE integration_events
+		   SET raw_payload = '{}'::jsonb,
+		       context     = '{}'::jsonb,
+		       consent     = CASE WHEN consent IS NULL THEN NULL ELSE ?::jsonb END
+		 WHERE org_id = ? AND result_record_id = ?`,
+		consentTombstone, orgID, recordID).Error
+}
+
+// ConsentForEvents reads the envelopes for a page of deliveries in one query.
+//
+// Separate from ListEvents so a missing column degrades the consent display rather
+// than the ledger: the delivery log is how a customer answers "what happened to this
+// lead", and it must survive a boot guard that did not run.
+func (r *Repository) ConsentForEvents(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]datatypes.JSON, error) {
+	out := map[uuid.UUID]datatypes.JSON{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	type row struct {
+		ID      uuid.UUID      `gorm:"column:id"`
+		Consent datatypes.JSON `gorm:"column:consent"`
+	}
+	var rows []row
+	if err := r.db.WithContext(ctx).Raw(
+		`SELECT id, consent FROM integration_events WHERE id IN ? AND consent IS NOT NULL`, ids).
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, x := range rows {
+		out[x.ID] = x.Consent
+	}
+	return out, nil
+}
+
 // GetBatchEnrollAutomation reports whether batch deliveries for this source may
 // enrol workflows. Read through a targeted statement, never the model — see the
 // unmapped-column note on LeadSource.

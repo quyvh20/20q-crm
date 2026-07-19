@@ -99,6 +99,10 @@ export interface IntegrationEvent {
    *  merge into a phone shared by several contacts). Not an error — rendering it
    *  as one would read as a failure, which is the opposite of what it is. */
   note?: string;
+  /** The verbatim consent envelope this delivery carried, if any. RECORDED, not
+   *  enforced — nothing in the app consults it before sending. Absent when none was
+   *  sent; carries `_crm.redacted` once the contact has been deleted. */
+  consent?: Record<string, unknown> | null;
   created_at: string;
   processed_at?: string;
 }

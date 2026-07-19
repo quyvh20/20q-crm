@@ -179,6 +179,48 @@ function TestLeadPanel({
   );
 }
 
+
+/**
+ * ConsentBlock shows the consent a delivery carried — and, just as importantly, what
+ * that record does NOT do.
+ *
+ * Nothing in this app consults a stored consent value before sending an email or
+ * enrolling a workflow. Recording a legal basis while acting on none of it is a
+ * compliance illusion unless the product says so plainly, so the disclosure is part
+ * of the feature rather than a caption on it. A customer who believes they have
+ * opt-out enforcement they do not have is the failure this copy exists to prevent.
+ */
+function ConsentBlock({ consent }: { consent: Record<string, unknown> }) {
+  const meta = (consent._crm ?? {}) as Record<string, unknown>;
+  const redacted = meta.redacted === true;
+
+  return (
+    <div className="space-y-1.5">
+      <p className="text-xs font-medium text-foreground">Consent as reported by the source</p>
+      {redacted ? (
+        <p className="text-xs text-muted-foreground">
+          This was erased when the contact was deleted. The delivery is kept so the log still
+          explains what happened; what the person supplied is gone.
+        </p>
+      ) : (
+        <>
+          <pre className="w-full overflow-x-auto rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs">
+            {JSON.stringify(consent, null, 2)}
+          </pre>
+          <p className="text-xs text-amber-700 dark:text-amber-400">
+            Recorded only — nothing in this CRM checks it before sending. It is evidence of what
+            the source told us, not an opt-out list, and no email or workflow is filtered by it.
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Kept with this delivery until you delete the contact, which erases it. There is no
+            automatic deletion yet.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
 /**
  * eventLabel renders a delivery's result.
  *
@@ -496,6 +538,7 @@ export default function IntegrationSourceDetailSection() {
                 </pre>
               </div>
             )}
+            {inspecting.consent && <ConsentBlock consent={inspecting.consent} />}
             <div className="space-y-1.5">
               <p className="text-xs font-medium text-foreground">What was sent</p>
               <pre className="w-full overflow-x-auto rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs">

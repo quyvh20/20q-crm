@@ -1098,6 +1098,20 @@ func main() {
 			// for the same reason as owner_pool — see the note on LeadSource.
 			{"lead_sources batch_enroll_automation", `ALTER TABLE lead_sources
 				ADD COLUMN IF NOT EXISTS batch_enroll_automation BOOLEAN NOT NULL DEFAULT FALSE`},
+			// L2 consent envelope. Nullable with no default so NULL (never sent), an
+			// object (sent) and a tombstone (erased) stay distinguishable — writing '{}'
+			// on erasure would make the ledger falsely assert no consent was obtained.
+			//
+			// Survivable if it fails ONLY because the column is unmapped: this loop logs
+			// and boots on, so a missing column costs one advisory UPDATE (the lead still
+			// lands, the caller is warned) instead of appearing in three separate
+			// INSERT/UPDATE column lists and taking down capture platform-wide.
+			{"events consent column", `ALTER TABLE integration_events
+				ADD COLUMN IF NOT EXISTS consent JSONB`},
+			// Erasure is contact-keyed and result_record_id was unindexed, so redacting a
+			// deleted contact's ledger rows would scan the whole table.
+			{"events result index", `CREATE INDEX IF NOT EXISTS idx_integration_events_result
+				ON integration_events(org_id, result_record_id) WHERE result_record_id IS NOT NULL`},
 		}
 		for _, g := range leadGuards {
 			if err := db.Exec(g.sql).Error; err != nil {
@@ -1582,6 +1596,16 @@ func main() {
 			delivery.RequireTwoFactorSatisfied(),
 		}
 		integrationsRepo := integrations.NewRepository(db)
+		// Deleting a contact must erase what the lead ledger stored about them — the raw
+		// payload, the capture context, and the consent envelope. The ledger deliberately
+		// outlives its source, so nothing else would ever remove it, and a consent record
+		// that survives the person it describes is the failure a consent feature must not
+		// have. Wired here because usecase must not import integrations.
+		if setter, ok := contactUseCase.(interface {
+			SetLeadLedgerRedactor(usecase.LeadLedgerRedactor)
+		}); ok {
+			setter.SetLeadLedgerRedactor(integrationsRepo)
+		}
 		// redisClient may be nil; the limiter then runs entirely in-process. It never
 		// degrades to "allow" — see integrations.RateLimiter.
 		integrationsLimiter := integrations.NewRateLimiter(redisClient, 0, 0)

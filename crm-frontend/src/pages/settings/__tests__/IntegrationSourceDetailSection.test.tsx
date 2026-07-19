@@ -231,4 +231,45 @@ describe('IntegrationSourceDetailSection', () => {
     expect(await screen.findByText(/did not go through/i)).toBeInTheDocument();
     expect(screen.getByText(/maps its own "email" key/)).toBeInTheDocument();
   });
+
+  it('shows a recorded consent envelope and says plainly that nothing enforces it', async () => {
+    // The compliance illusion is the risk this feature carries: no send path in the
+    // app consults consent, so a customer could believe they have opt-out enforcement
+    // they do not have. The disclosure is part of the feature, not a caption.
+    vi.mocked(listEvents).mockResolvedValue([
+      {
+        ...EVENT,
+        id: 'e3',
+        consent: { basis: 'consent', text: 'I agree to be contacted', _crm: { enforced: false } },
+      },
+    ]);
+    renderDetail();
+    fireEvent.click(await screen.findByRole('button', { name: /details/i }));
+
+    expect(await screen.findByText('Consent as reported by the source')).toBeInTheDocument();
+    expect(screen.getByText(/nothing in this CRM checks it before sending/i)).toBeInTheDocument();
+    expect(screen.getByText(/not an opt-out list/i)).toBeInTheDocument();
+    // Retention is stated truthfully — there is no prune job yet.
+    expect(screen.getByText(/no automatic deletion yet/i)).toBeInTheDocument();
+  });
+
+  it('reports an erased consent record without pretending none was given', async () => {
+    // A blanked record would assert that no consent was ever obtained, which is a
+    // different and false claim from "it was obtained and later erased on request".
+    vi.mocked(listEvents).mockResolvedValue([
+      { ...EVENT, id: 'e4', consent: { _crm: { redacted: true, enforced: false } } },
+    ]);
+    renderDetail();
+    fireEvent.click(await screen.findByRole('button', { name: /details/i }));
+
+    expect(await screen.findByText(/erased when the contact was deleted/i)).toBeInTheDocument();
+  });
+
+  it('shows no consent section when the delivery carried none', async () => {
+    renderDetail();
+    fireEvent.click(await screen.findByRole('button', { name: /details/i }));
+    await screen.findByText('What was sent');
+
+    expect(screen.queryByText('Consent as reported by the source')).not.toBeInTheDocument();
+  });
 });

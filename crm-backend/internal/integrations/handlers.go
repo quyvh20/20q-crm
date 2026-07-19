@@ -112,6 +112,14 @@ type captureResponse struct {
 	// Quarantined names keys the payload sent that were not written. Returned so an
 	// integrator finds out at integration time, not from missing data weeks later.
 	Quarantined []string `json:"quarantined,omitempty"`
+	// Warnings say what the pipeline could not do, at integration time. This route
+	// discarded IngestResult.Warnings entirely until now — so the unowned-lead warning
+	// and every consent parse problem went nowhere on the endpoint carrying all the
+	// traffic. A warning nobody receives is the same defect as not raising one.
+	Warnings []string `json:"warnings,omitempty"`
+	// ConsentRecorded reports whether a consent envelope was stored on this delivery.
+	// Absent when none was sent.
+	ConsentRecorded bool `json:"consent_recorded,omitempty"`
 }
 
 // CaptureLead is the public port: POST /api/capture/leads, Bearer crm_lead_…
@@ -211,10 +219,12 @@ func (h *Handler) CaptureLead(c *gin.Context) {
 	}
 
 	out := captureResponse{
-		RecordID:    res.RecordID.String(),
-		Outcome:     res.Outcome,
-		EventID:     res.EventID.String(),
-		Quarantined: res.Quarantined,
+		RecordID:        res.RecordID.String(),
+		Outcome:         res.Outcome,
+		EventID:         res.EventID.String(),
+		Quarantined:     res.Quarantined,
+		Warnings:        res.Warnings,
+		ConsentRecorded: len(req.Consent) > 0 && !hasConsentFailure(res.Warnings),
 	}
 	c.JSON(http.StatusOK, gin.H{"data": out})
 }
@@ -482,6 +492,18 @@ func (h *Handler) allow(c *gin.Context, key string) bool {
 // races across every request in the process.
 func (h *Handler) captureError(c *gin.Context, status int, msg string) {
 	c.AbortWithStatusJSON(status, gin.H{"error": msg})
+}
+
+// hasConsentFailure reports whether consent was sent but could not be stored, so the
+// response never claims a record that does not exist.
+func hasConsentFailure(warnings []string) bool {
+	for _, w := range warnings {
+		if strings.Contains(w, "could not be recorded") || strings.Contains(w, "too large to store") ||
+			strings.Contains(w, "could not be stored") {
+			return true
+		}
+	}
+	return false
 }
 
 func bearerToken(c *gin.Context) string {
@@ -878,6 +900,22 @@ func (h *Handler) ListEvents(c *gin.Context) {
 	if err != nil {
 		h.mgmtError(c, http.StatusInternalServerError, "could not list events")
 		return
+	}
+	// Consent rides a second targeted read so a boot guard that never ran degrades the
+	// consent display rather than the ledger — the delivery log is how a customer
+	// answers "what happened to this lead" and must survive a missing column.
+	ids := make([]uuid.UUID, 0, len(out))
+	for i := range out {
+		ids = append(ids, out[i].ID)
+	}
+	if consents, cerr := h.repo.ConsentForEvents(c.Request.Context(), ids); cerr != nil {
+		h.logger.Error("integrations: could not read consent", "error", cerr, "source_id", src.ID.String())
+	} else {
+		for i := range out {
+			if env, ok := consents[out[i].ID]; ok {
+				out[i].Consent = env
+			}
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"data": out})
 }

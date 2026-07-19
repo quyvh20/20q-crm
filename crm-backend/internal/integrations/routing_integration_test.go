@@ -204,3 +204,88 @@ func TestEventAssignedOwner_SurvivesForARetry(t *testing.T) {
 	require.NotNil(t, got, "a retry must be able to reuse the first attempt's rep")
 	assert.Equal(t, owner, *got)
 }
+
+// ── Consent (DB-backed) ──────────────────────────────────────────────────────
+
+// TestConsent_StoredAndErasable is the invariant the storage ordering exists for.
+//
+// Erasure is contact-keyed, so an envelope must only ever exist on a delivery that
+// produced a record — otherwise no erasure request could reach it. And erasure must
+// leave a TOMBSTONE rather than NULL: a blanked row would make the ledger assert that
+// no consent was ever obtained, which is a different and false claim.
+func TestConsent_StoredAndErasable(t *testing.T) {
+	db, cleanup := newIntegrationsTestDB(t)
+	defer cleanup()
+	repo := NewRepository(db)
+	ctx := context.Background()
+	orgID := seedOrg(t, db)
+	src := seedSource(t, repo, orgID)
+
+	recordID := uuid.New()
+	require.NoError(t, db.Exec(`INSERT INTO contacts (id, org_id, email) VALUES (?, ?, ?)`,
+		recordID, orgID, "subject@customer-example.com").Error)
+
+	ev := &IntegrationEvent{OrgID: orgID, SourceID: &src.ID, Status: EventStatusProcessing, Attempts: 1}
+	_, err := repo.InsertEventDeduped(ctx, ev)
+	require.NoError(t, err)
+	ev.ResultRecordID = &recordID
+	ev.Status = EventStatusProcessed
+	require.NoError(t, repo.FinishEvent(ctx, ev))
+
+	rec := parseConsent(map[string]any{
+		"basis": "consent", "text": "I agree to be contacted", "captured_at": "2026-07-19T10:04:00Z",
+	})
+	n, err := repo.SetEventConsent(ctx, ev.ID, rec.Envelope)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), n, "the envelope must land on exactly one delivery")
+
+	stored, err := repo.ConsentForEvents(ctx, []uuid.UUID{ev.ID})
+	require.NoError(t, err)
+	require.Contains(t, string(stored[ev.ID]), "I agree to be contacted", "stored verbatim")
+
+	// FinishEvent runs AFTER the consent write in the real pipeline; prove a later
+	// Save cannot blank it (this is why the column is unmapped).
+	require.NoError(t, repo.FinishEvent(ctx, ev))
+	after, err := repo.ConsentForEvents(ctx, []uuid.UUID{ev.ID})
+	require.NoError(t, err)
+	require.Contains(t, string(after[ev.ID]), "I agree", "a later FinishEvent must not erase the envelope")
+
+	// Erasure: the subject asks to be forgotten.
+	require.NoError(t, repo.RedactForRecord(ctx, orgID, recordID))
+
+	var raw, ctxCol, consent string
+	require.NoError(t, db.Raw(`SELECT raw_payload::text, context::text, COALESCE(consent::text,'NULL') FROM integration_events WHERE id = ?`, ev.ID).
+		Row().Scan(&raw, &ctxCol, &consent))
+
+	assert.Equal(t, "{}", raw, "the payload the subject supplied must be gone")
+	assert.Equal(t, "{}", ctxCol, "the capture context must be gone")
+	assert.NotContains(t, consent, "I agree", "the consent wording must be gone")
+	assert.Contains(t, consent, "redacted", "a tombstone, not NULL — the ledger must not claim consent was never obtained")
+
+	// The delivery itself survives: it is how a customer answers "what happened to
+	// this lead" long after the person is gone.
+	var status string
+	require.NoError(t, db.Raw(`SELECT status FROM integration_events WHERE id = ?`, ev.ID).Row().Scan(&status))
+	assert.Equal(t, EventStatusProcessed, status)
+}
+
+// TestConsent_NeverStoredWithoutARecord: an envelope on a row with no
+// result_record_id is PII that contact-keyed erasure can never reach.
+func TestConsent_NeverStoredWithoutARecord(t *testing.T) {
+	db, cleanup := newIntegrationsTestDB(t)
+	defer cleanup()
+	repo := NewRepository(db)
+	ctx := context.Background()
+	orgID := seedOrg(t, db)
+	src := seedSource(t, repo, orgID)
+
+	// A delivery that failed before producing a record — the shape failEvent leaves.
+	ev := &IntegrationEvent{OrgID: orgID, SourceID: &src.ID, Status: EventStatusFailed, Attempts: 1}
+	_, err := repo.InsertEventDeduped(ctx, ev)
+	require.NoError(t, err)
+
+	var n int64
+	require.NoError(t, db.Raw(`SELECT COUNT(*) FROM integration_events
+		WHERE consent IS NOT NULL AND result_record_id IS NULL`).Scan(&n).Error)
+	assert.Zero(t, n, "consent on a record-less delivery is unerasable PII")
+}

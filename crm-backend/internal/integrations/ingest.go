@@ -335,6 +335,10 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 		}
 	}
 
+	// Parsed before the write so a malformed envelope is warned about on the same
+	// response as the lead itself. It never gates the lead — see parseConsent.
+	consent := parseConsent(lead.Consent)
+
 	// ── 3/4. Match, then create or update ────────────────────────────────
 	ictx, cancel := newIngestContext(source, lead, s.writeTimeoutFor(lead))
 	defer cancel()
@@ -367,6 +371,22 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 	if serr := s.repo.SetEventAssignedOwner(ledgerCtx, event.ID, result.OwnerID); serr != nil {
 		s.logf("integrations: could not record routing", "event_id", event.ID.String(), "error", serr)
 	}
+
+	// Consent is written HERE — after the record exists — and nowhere else.
+	//
+	// Erasure is contact-keyed, so an envelope stored before the write would survive
+	// on a failed delivery whose result_record_id is NULL, where no erasure request
+	// could ever reach it. Writing it here means every consent record in the table is
+	// reachable by the person it describes. The cost is deliberate: a lead that fails
+	// to write loses its envelope, which is right — consent about someone who never
+	// became a contact proves nothing and would be unerasable.
+	if len(consent.Envelope) > 0 {
+		if n, cerr := s.repo.SetEventConsent(ledgerCtx, event.ID, consent.Envelope); cerr != nil || n == 0 {
+			s.logf("integrations: could not record consent", "event_id", event.ID.String(), "error", cerr)
+			consent.Warnings = append(consent.Warnings, "consent was sent but could not be recorded on this delivery")
+		}
+	}
+	result.Warnings = append(result.Warnings, consent.Warnings...)
 
 	// ── 7. Record the outcome ────────────────────────────────────────────
 	// On the ledger context: the record is already written, so losing this to a

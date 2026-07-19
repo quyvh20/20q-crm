@@ -248,6 +248,15 @@ type IntegrationEvent struct {
 
 	CreatedAt   time.Time  `gorm:"index" json:"created_at"`
 	ProcessedAt *time.Time `json:"processed_at,omitempty"`
+
+	// Consent is the verbatim envelope the delivery carried, and is DELIBERATELY
+	// UNMAPPED (`gorm:"-"`). Three sites enumerate every mapped column —
+	// InsertEventDeduped's Create, InsertRefusedEvents' Create, and FinishEvent's
+	// Save — so a mapped column whose boot guard failed would 500 every capture in
+	// every org. Worse: FinishEvent runs AFTER the out-of-band consent write, so a
+	// mapped-but-unset field would blank the envelope on every success. Written by
+	// SetEventConsent, read by ConsentForEvents.
+	Consent datatypes.JSON `gorm:"-" json:"consent,omitempty"`
 }
 
 // TableName pins the table.

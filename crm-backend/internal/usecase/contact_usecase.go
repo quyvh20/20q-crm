@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"log"
 	"encoding/csv"
 	"errors"
 	"fmt"
@@ -45,7 +46,24 @@ type contactUseCase struct {
 	contactRepo domain.ContactRepository
 	queue       domain.EmbeddingQueue
 	embedSvc    *ai.EmbeddingService
+	// ledgerRedactor strips the personal data the lead-capture ledger holds about a
+	// contact when that contact is deleted. Nil-tolerant: unset in unit tests and in
+	// any build without the integrations module.
+	ledgerRedactor LeadLedgerRedactor
 }
+
+// LeadLedgerRedactor erases what the inbound-lead ledger stored about one contact —
+// the raw payload it arrived in, its capture context, and its consent envelope.
+//
+// The ledger deliberately outlives the source that fed it, so nothing else would
+// ever remove this. A consent record that survives the person it describes is the
+// failure a consent feature must not have.
+type LeadLedgerRedactor interface {
+	RedactForRecord(ctx context.Context, orgID, recordID uuid.UUID) error
+}
+
+// SetLeadLedgerRedactor wires the ledger erasure hook. Called once at startup.
+func (uc *contactUseCase) SetLeadLedgerRedactor(r LeadLedgerRedactor) { uc.ledgerRedactor = r }
 
 func NewContactUseCase(repo domain.ContactRepository, queue domain.EmbeddingQueue, embedSvc ...*ai.EmbeddingService) domain.ContactUseCase {
 	uc := &contactUseCase{contactRepo: repo, queue: queue}
@@ -214,6 +232,15 @@ func (uc *contactUseCase) Update(ctx context.Context, orgID, id uuid.UUID, input
 func (uc *contactUseCase) Delete(ctx context.Context, orgID, id uuid.UUID) error {
 	if err := uc.contactRepo.SoftDelete(ctx, orgID, id); err != nil {
 		return domain.ErrContactNotFound
+	}
+	// Erase what the lead ledger holds about this person. Best-effort: the contact is
+	// already gone, and failing the delete would leave the customer unable to honour a
+	// deletion request at all. The ledger ROW survives (the delivery history is what
+	// answers "what happened to this lead"); only what the subject supplied is removed.
+	if uc.ledgerRedactor != nil {
+		if err := uc.ledgerRedactor.RedactForRecord(ctx, orgID, id); err != nil {
+			log.Printf("contact delete: could not redact the lead ledger for %s: %v", id, err)
+		}
 	}
 	return nil
 }
