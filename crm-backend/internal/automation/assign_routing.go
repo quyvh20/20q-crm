@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"crm-backend/internal/repository"
+
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
@@ -19,38 +21,19 @@ import (
 // same problem for inbound lead capture. See the fail-closed note on
 // nextAssignTicket for why the two differ where they differ.
 
-// activeMemberSQL is this package's liveness rule, hoisted out of the two inline
-// copies that already encode it (handlers.go, handlers_email_templates.go).
+// activeMemberIDs answers "which of these people may be handed work right now",
+// returning a set for O(1) lookup during the pick.
 //
-// Both halves matter and they catch different exits:
-//   - status = 'active' excludes a SUSPENDED member, whose row survives intact.
-//   - deleted_at IS NULL is belt-and-braces. RemoveMember hard-deletes the row
-//     (workspace_usecase.go), so a removed member usually has no row to match at
-//     all; the column is still set by org-level soft delete.
+// The rule itself lives in repository.ActiveMemberIDs — one copy, shared with lead
+// capture's owner routing, twinned with domain.OrgUser.IsLive. It is reached through
+// this thin alias rather than called directly so the pick logic below reads in this
+// package's own vocabulary, and so a future port injection changes one line.
 //
-// This is the strictest predicate in the codebase and the one the automation
-// package already used to build the pool picker's user list. That agreement is the
-// point: the builder UI must not offer a person the executor would then refuse.
-const activeMemberSQL = `SELECT user_id FROM org_users
-	WHERE org_id = ? AND user_id IN ? AND status = 'active' AND deleted_at IS NULL`
-
-// activeMemberIDs answers "which of these people may be handed work right now" in
-// one round trip, returning a set for O(1) lookup during the pick.
+// The agreement matters beyond deduplication: the builder's pool picker lists org
+// members with this same predicate (handlers.go), so the UI cannot offer a person
+// the executor would then refuse.
 func activeMemberIDs(ctx context.Context, db *gorm.DB, orgID uuid.UUID, userIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
-	live := make(map[uuid.UUID]bool, len(userIDs))
-	if len(userIDs) == 0 {
-		// Postgres rejects `IN ()`. An empty probe is a legitimate caller state
-		// (an empty pool), not an error.
-		return live, nil
-	}
-	var ids []uuid.UUID
-	if err := db.WithContext(ctx).Raw(activeMemberSQL, orgID, userIDs).Scan(&ids).Error; err != nil {
-		return nil, err
-	}
-	for _, id := range ids {
-		live[id] = true
-	}
-	return live, nil
+	return repository.ActiveMemberIDs(ctx, db, orgID, userIDs)
 }
 
 // dedupeUUIDs collapses repeats while preserving first-seen order.
