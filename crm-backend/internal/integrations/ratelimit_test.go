@@ -128,3 +128,60 @@ func TestRateLimiter_ResidentKeyKeepsWorkingAtCap(t *testing.T) {
 		t.Error("an established caller must keep working while the cap refuses strangers")
 	}
 }
+
+// ── Weighted charging (batch) ────────────────────────────────────────────────
+
+// TestAllowN_ChargesTheFullCost pins the property the batch endpoint depends on: a
+// batch of N must cost what N single requests cost. Charging 1 for 100 would leave
+// every bound on this endpoint meaning 100x less than it says.
+func TestAllowN_ChargesTheFullCost(t *testing.T) {
+	rl := NewRateLimiter(nil, 10, time.Minute)
+	defer rl.Close()
+
+	if ok, _ := rl.AllowN(context.Background(), "k", 10); !ok {
+		t.Fatal("a cost exactly at the limit must be admitted")
+	}
+	if ok, _ := rl.Allow(context.Background(), "k"); ok {
+		t.Error("the window is spent — one more request must be refused")
+	}
+}
+
+// TestAllowN_RollingWindowChargesCost is the site a half-patch leaves behind: the
+// rollover branch hardcoded count=1, which is the steady-state path for a caller
+// sending one batch per window.
+func TestAllowN_RollingWindowChargesCost(t *testing.T) {
+	rl := NewRateLimiter(nil, 10, 20*time.Millisecond)
+	defer rl.Close()
+	ctx := context.Background()
+
+	rl.AllowN(ctx, "k", 5)
+	time.Sleep(30 * time.Millisecond) // window elapses
+
+	if ok, _ := rl.AllowN(ctx, "k", 10); !ok {
+		t.Fatal("a fresh window must admit a full-cost batch")
+	}
+	if ok, _ := rl.Allow(ctx, "k"); ok {
+		t.Error("the rolled-over window must have been charged 10, not 1")
+	}
+}
+
+// TestAllowN_OverLimitCostIsRefused: a batch larger than any window could admit must
+// be refused rather than admitted and then half-processed.
+func TestAllowN_OverLimitCostIsRefused(t *testing.T) {
+	rl := NewRateLimiter(nil, 10, time.Minute)
+	defer rl.Close()
+
+	if ok, _ := rl.AllowN(context.Background(), "fresh", 11); ok {
+		t.Error("a cost above the limit must be refused on a fresh key")
+	}
+}
+
+// TestLimit_ReportsTheCeiling — the batch handler refuses an oversized batch by
+// naming this number, instead of charging for it and then 429ing.
+func TestLimit_ReportsTheCeiling(t *testing.T) {
+	rl := NewRateLimiter(nil, 42, time.Minute)
+	defer rl.Close()
+	if rl.Limit() != 42 {
+		t.Errorf("Limit() = %d, want 42", rl.Limit())
+	}
+}

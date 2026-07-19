@@ -49,6 +49,14 @@ type RawLead struct {
 	// origin — a caller who could set it would be able to file real-looking leads
 	// that never page sales.
 	TestOrigin string
+	// DeliveryMode names WHICH ROUTE this arrived on, set by the handler from the
+	// route itself and never from the body. It decides workflow enrollment for batch
+	// deliveries, so a wire-settable value would let a leaked key file real leads
+	// that page nobody.
+	DeliveryMode string
+	// EnrollAutomation lifts the source's opt-in for batch deliveries. Meaningless
+	// for the direct route, which always enrols.
+	EnrollAutomation bool
 }
 
 // IsTest reports whether this lead traverses the pipeline without reaching anyone.
@@ -111,7 +119,7 @@ func NewLeadIngestService(repo *Repository, records RecordWriter, matcher Contac
 // No domain.Caller is attached: a callerless context is a trusted in-process call,
 // so OLS/FLS do not constrain it. That is why the allowlist exists, and why a
 // source's target_slug is re-validated here rather than trusted from the row.
-func newIngestContext(source *LeadSource, lead RawLead) (context.Context, context.CancelFunc) {
+func newIngestContext(source *LeadSource, lead RawLead, writeTimeout time.Duration) (context.Context, context.CancelFunc) {
 	ctx := domain.WithWriteSource(context.Background(), source.WriteSource())
 	// A lead is not a form submission: type-check every value it carries, but do
 	// not demand the org's required fields be present. A Facebook form cannot know
@@ -130,7 +138,18 @@ func newIngestContext(source *LeadSource, lead RawLead) (context.Context, contex
 	if lead.IsTest() {
 		ctx = domain.WithAutomationSilenced(ctx)
 	}
-	return context.WithTimeout(ctx, ingestTimeout)
+	// A batch is a bulk delivery: 100 recovered leads would otherwise enrol 100
+	// contacts into every contact_created workflow at once, and the engine's
+	// per-entity-per-minute idempotency absorbs none of it (a welcome-email blast to
+	// stale leads is the failure mode). SUPPRESSED, not silenced — these are real
+	// people, so their own future date_field reminders should still arm.
+	//
+	// An INDEPENDENT if, never an else: a test lead delivered by batch must stay
+	// silenced, which is the stricter of the two.
+	if lead.DeliveryMode == DeliveryBatch && !lead.EnrollAutomation {
+		ctx = domain.WithAutomationSuppressed(ctx)
+	}
+	return context.WithTimeout(ctx, writeTimeout)
 }
 
 // newLedgerContext returns a context for the ledger writes.
@@ -146,8 +165,29 @@ func newIngestContext(source *LeadSource, lead RawLead) (context.Context, contex
 // WithoutCancel rather than Background: this ctx never reaches Authorize, so
 // carrying the request's MarkHTTPTransport value is harmless here — unlike the
 // ingest write context, where it would trip the fail-open alarm.
-func newLedgerContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), ingestTimeout)
+// The ledger deadline is deliberately LONGER than the write's: it is armed FIRST
+// and every ledger call hangs against it, so if it expired first a slow write would
+// make post-write bookkeeping fail systematically — stranding rows at `processing`,
+// which is the exact state the reaper exists to clean up.
+func newLedgerContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
+}
+
+// writeTimeoutFor bounds one record write. A batch gives each item a shorter slice
+// so a single slow write cannot eat the whole request budget.
+func (s *LeadIngestService) writeTimeoutFor(lead RawLead) time.Duration {
+	if lead.DeliveryMode == DeliveryBatch {
+		return batchWriteTimeout
+	}
+	return ingestTimeout
+}
+
+// ledgerTimeoutFor bounds one delivery's bookkeeping.
+func (s *LeadIngestService) ledgerTimeoutFor(lead RawLead) time.Duration {
+	if lead.DeliveryMode == DeliveryBatch {
+		return batchLedgerTimeout
+	}
+	return ingestTimeout
 }
 
 // Ingest runs one lead end-to-end: dedupe the delivery, filter it against the
@@ -165,7 +205,7 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 	// Every ledger write runs on this, never on the request context — see
 	// newLedgerContext. Established before the first insert so no exit path can
 	// fall back to a context the client can cancel.
-	ledgerCtx, ledgerCancel := newLedgerContext(ctx)
+	ledgerCtx, ledgerCancel := newLedgerContext(ctx, s.ledgerTimeoutFor(lead))
 	defer ledgerCancel()
 
 	var providerID *string
@@ -296,7 +336,7 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 	}
 
 	// ── 3/4. Match, then create or update ────────────────────────────────
-	ictx, cancel := newIngestContext(source, lead)
+	ictx, cancel := newIngestContext(source, lead, s.writeTimeoutFor(lead))
 	defer cancel()
 
 	// Attribution: which channel produced this lead. Resolved through the org's

@@ -15,7 +15,7 @@ import (
 
 func TestNewIngestContext_RealLeadIsNeverSilenced(t *testing.T) {
 	src := testSource(t, "", "")
-	ctx, cancel := newIngestContext(src, RawLead{Fields: map[string]any{"email": "real@customer.com"}})
+	ctx, cancel := newIngestContext(src, RawLead{Fields: map[string]any{"email": "real@customer.com"}}, ingestTimeout)
 	defer cancel()
 
 	if domain.IsAutomationSilenced(ctx) {
@@ -34,7 +34,7 @@ func TestNewIngestContext_RealLeadIsNeverSilenced(t *testing.T) {
 
 func TestNewIngestContext_TestLeadIsSilenced(t *testing.T) {
 	src := testSource(t, "", "")
-	ctx, cancel := newIngestContext(src, RawLead{TestOrigin: TestOriginAdmin})
+	ctx, cancel := newIngestContext(src, RawLead{TestOrigin: TestOriginAdmin}, ingestTimeout)
 	defer cancel()
 
 	if !domain.IsAutomationSilenced(ctx) {
@@ -53,9 +53,9 @@ func TestNewIngestContext_TestLeadIsSilenced(t *testing.T) {
 func TestNewIngestContext_SilenceComesFromTheLeadNotTheSource(t *testing.T) {
 	src := testSource(t, "", "")
 
-	testCtx, cancelTest := newIngestContext(src, RawLead{TestOrigin: TestOriginAdmin})
+	testCtx, cancelTest := newIngestContext(src, RawLead{TestOrigin: TestOriginAdmin}, ingestTimeout)
 	defer cancelTest()
-	realCtx, cancelReal := newIngestContext(src, RawLead{Fields: map[string]any{"email": "real@customer.com"}})
+	realCtx, cancelReal := newIngestContext(src, RawLead{Fields: map[string]any{"email": "real@customer.com"}}, ingestTimeout)
 	defer cancelReal()
 
 	if !domain.IsAutomationSilenced(testCtx) || domain.IsAutomationSilenced(realCtx) {
@@ -73,7 +73,7 @@ func TestIngestContext_IsDetachedFromTheRequest(t *testing.T) {
 	reqCancelled, cancel := context.WithCancel(req)
 	cancel() // the third party hung up mid-request
 
-	ctx, cancelIngest := newIngestContext(src, RawLead{})
+	ctx, cancelIngest := newIngestContext(src, RawLead{}, ingestTimeout)
 	defer cancelIngest()
 
 	if domain.IsHTTPTransport(ctx) {

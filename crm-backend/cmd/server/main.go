@@ -1092,6 +1092,12 @@ func main() {
 			// takes a second ticket every time and one rep silently receives everything.
 			{"events assigned_owner_id", `ALTER TABLE integration_events
 				ADD COLUMN IF NOT EXISTS assigned_owner_id UUID`},
+			// L2 batch. Positive polarity defaulting FALSE so the absent value is the
+			// safe one: a recovery batch does not enrol 100 contacts into every
+			// contact_created workflow unless an admin opted in. Unmapped on the struct
+			// for the same reason as owner_pool — see the note on LeadSource.
+			{"lead_sources batch_enroll_automation", `ALTER TABLE lead_sources
+				ADD COLUMN IF NOT EXISTS batch_enroll_automation BOOLEAN NOT NULL DEFAULT FALSE`},
 		}
 		for _, g := range leadGuards {
 			if err := db.Exec(g.sql).Error; err != nil {
@@ -1579,6 +1585,13 @@ func main() {
 		// redisClient may be nil; the limiter then runs entirely in-process. It never
 		// degrades to "allow" — see integrations.RateLimiter.
 		integrationsLimiter := integrations.NewRateLimiter(redisClient, 0, 0)
+		// The batch endpoint charges BOTH buckets the full item count, which is what
+		// stops a 100-item request from costing what one lead costs. That makes the IP
+		// bucket bite 100x sooner for callers sharing egress — a corporate NAT, or
+		// Make/Zapier's own outbound addresses — so its ceiling is raised deliberately
+		// rather than bought by undercharging the bucket. The per-KEY limit stays at the
+		// default, which is what bounds a single compromised credential.
+		integrationsIPLimiter := integrations.NewRateLimiter(redisClient, 1200, 0)
 		// Membership reads for owner routing: the single-user check the source-save path
 		// already used, plus the batched liveness check every routed lead makes. Wraps
 		// authRepo rather than widening domain.AuthRepository, whose many methods are
@@ -1595,8 +1608,14 @@ func main() {
 			integrationsMembers, // membership check for default_owner_id + owner_pool
 			objectRegistryUC,
 			integrationsLimiter,
+			integrationsIPLimiter,
 			autoLogger, // same slog handler the automation engine writes to
 		)
+		// A delivery whose process died mid-write stays at `processing`, and the replay
+		// switch then answers 409 to every retry — turning the Idempotency-Key into the
+		// thing that makes the lead permanently unrecoverable. The reaper releases them.
+		go integrations.StartReaper(context.Background(), integrationsRepo, autoLogger)
+
 		integrationsHandler.RegisterRoutes(router,
 			integrationsProtected,
 			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },

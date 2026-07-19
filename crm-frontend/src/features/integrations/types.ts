@@ -40,6 +40,9 @@ export interface LeadSource {
    *  derive this by intersecting with a member list: a failed member fetch would
    *  then badge a healthy rotation as dead. */
   owner_pool_inactive?: string[];
+  /** Whether BATCH deliveries may trigger workflows. Off by default: 100 recovered
+   *  leads would otherwise enrol 100 contacts into every contact_created workflow. */
+  batch_enroll_automation: boolean;
   config: Record<string, unknown>;
   status: LeadSourceStatus;
   consecutive_failures: number;
@@ -136,6 +139,7 @@ export interface CreateSourceInput {
   default_owner_id?: string | null;
   /** An explicit [] turns a rotation off; omitting the key leaves it alone. */
   owner_pool?: string[];
+  /** An explicit 0 CLEARS the cap; omitting the key leaves it alone. */
   daily_cap?: number;
 }
 
@@ -145,7 +149,9 @@ export interface UpdateSourceInput {
   default_owner_id?: string | null;
   /** An explicit [] turns a rotation off; omitting the key leaves it alone. */
   owner_pool?: string[];
+  /** An explicit 0 CLEARS the cap; omitting the key leaves it alone. */
   daily_cap?: number;
+  batch_enroll_automation?: boolean;
   status?: LeadSourceStatus;
 }
 

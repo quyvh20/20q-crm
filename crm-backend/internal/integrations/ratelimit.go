@@ -89,13 +89,30 @@ func (rl *RateLimiter) Close() { close(rl.stop) }
 // in-process bucket. It never returns "allowed" because the infrastructure is
 // unavailable.
 func (rl *RateLimiter) Allow(ctx context.Context, key string) (bool, time.Duration) {
+	return rl.AllowN(ctx, key, 1)
+}
+
+// Limit reports the per-window ceiling, so a caller can refuse a batch larger than
+// any single window could ever admit instead of charging for it and then 429ing.
+func (rl *RateLimiter) Limit() int { return rl.limit }
+
+// AllowN charges `cost` against the key's window.
+//
+// A batch of N leads must cost what N single requests cost. Charging 1 for a
+// 100-item batch would leave every bound on this endpoint meaning 100x less than
+// it says — the limiter is the outer bound on records created, workflows enrolled
+// and billable email sent.
+func (rl *RateLimiter) AllowN(ctx context.Context, key string, cost int) (bool, time.Duration) {
+	if cost <= 0 {
+		cost = 1
+	}
 	if rl.redis != nil {
-		if ok, retry, err := rl.allowRedis(ctx, key); err == nil {
+		if ok, retry, err := rl.allowRedis(ctx, key, cost); err == nil {
 			return ok, retry
 		}
 		// Redis errored — fall through to the local bucket, NOT to allow.
 	}
-	return rl.allowLocal(key)
+	return rl.allowLocalN(key, cost)
 }
 
 // incrWindow increments a fixed-window counter and sets its TTL ATOMICALLY,
@@ -113,8 +130,11 @@ func (rl *RateLimiter) Allow(ctx context.Context, key string) (bool, time.Durati
 // A script runs both commands in one round trip on Redis's single thread, so the
 // key cannot exist without its expiry.
 var incrWindow = redis.NewScript(`
-	local n = redis.call('INCR', KEYS[1])
-	if n == 1 then
+	local n = redis.call('INCRBY', KEYS[1], ARGV[2])
+	if n == tonumber(ARGV[2]) then
+		-- INCRBY on a MISSING key returns exactly the amount, so this still means
+		-- "fresh key" — the test must move with the increment or a batch-sized first
+		-- charge leaves the key with no TTL and 429s that caller forever.
 		redis.call('PEXPIRE', KEYS[1], ARGV[1])
 	end
 	local ttl = redis.call('PTTL', KEYS[1])
@@ -127,9 +147,9 @@ var incrWindow = redis.NewScript(`
 	return {n, ttl}
 `)
 
-func (rl *RateLimiter) allowRedis(ctx context.Context, key string) (bool, time.Duration, error) {
+func (rl *RateLimiter) allowRedis(ctx context.Context, key string, cost int) (bool, time.Duration, error) {
 	rkey := "ratelimit:capture:" + key
-	res, err := incrWindow.Run(ctx, rl.redis, []string{rkey}, rl.window.Milliseconds()).Slice()
+	res, err := incrWindow.Run(ctx, rl.redis, []string{rkey}, rl.window.Milliseconds(), cost).Slice()
 	if err != nil {
 		return false, 0, err
 	}
@@ -158,7 +178,7 @@ func (rl *RateLimiter) allowRedis(ctx context.Context, key string) (bool, time.D
 // the same fail-closed posture as the rest of this type: an established caller's
 // bucket is already resident and keeps working, while a flood of unseen keys is
 // refused for free instead of being allocated.
-func (rl *RateLimiter) allowLocal(key string) (bool, time.Duration) {
+func (rl *RateLimiter) allowLocalN(key string, cost int) (bool, time.Duration) {
 	now := time.Now()
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
@@ -166,8 +186,12 @@ func (rl *RateLimiter) allowLocal(key string) (bool, time.Duration) {
 	b, ok := rl.buckets[key]
 	if ok && now.After(b.resetsAt) {
 		// Window elapsed: reuse the entry rather than deleting and re-inserting.
-		b.count, b.resetsAt, b.seenAt = 1, now.Add(rl.window), now
-		return true, 0
+		// Charges COST, not 1 — this is the steady-state path for any recurring
+		// caller, so hardcoding 1 here would let a caller timing one batch per window
+		// pay for a single lead, on exactly the Redis-outage path this fallback exists
+		// for.
+		b.count, b.resetsAt, b.seenAt = cost, now.Add(rl.window), now
+		return cost <= rl.limit, 0
 	}
 	if !ok {
 		if len(rl.buckets) >= rl.maxBuckets {
@@ -181,14 +205,17 @@ func (rl *RateLimiter) allowLocal(key string) (bool, time.Duration) {
 		// A fresh window. count starts at 1 — this request — rather than seeding
 		// limit-1 tokens, which is how the automation bucket ends up granting
 		// limit+1 the moment its limit is parameterized.
-		rl.buckets[key] = &bucket{count: 1, resetsAt: now.Add(rl.window), seenAt: now}
-		return true, 0
+		rl.buckets[key] = &bucket{count: cost, resetsAt: now.Add(rl.window), seenAt: now}
+		return cost <= rl.limit, 0
 	}
 	b.seenAt = now
-	if b.count >= rl.limit {
+	// Charge THEN check, matching the Redis path (which INCRBYs before comparing) —
+	// otherwise the two halves disagree about the boundary and a Redis blip silently
+	// changes the effective limit.
+	b.count += cost
+	if b.count > rl.limit {
 		return false, time.Until(b.resetsAt)
 	}
-	b.count++
 	return true, 0
 }
 

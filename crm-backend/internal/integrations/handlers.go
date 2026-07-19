@@ -43,20 +43,28 @@ type Handler struct {
 	members MemberChecker
 	schema  SchemaProvider
 	limiter *RateLimiter
-	logger  *slog.Logger
+	// ipLimiter is a SEPARATE bucket with its own ceiling. Both are charged the full
+	// batch cost, and shared-egress callers (a corporate NAT, Make/Zapier's outbound
+	// IPs) need more headroom than a single credential does — so the difference is a
+	// number someone chose, not one bought by undercharging.
+	ipLimiter *RateLimiter
+	logger    *slog.Logger
 }
 
 // NewHandler builds the handler. A nil authorizer panics rather than degrading:
 // the source-save OLS re-check is the only thing stopping integrations.manage from
 // becoming an org-wide write primitive, so it must not be optional.
-func NewHandler(repo *Repository, ingest *LeadIngestService, authz domain.RecordAuthorizer, members MemberChecker, schema SchemaProvider, limiter *RateLimiter, logger *slog.Logger) *Handler {
+func NewHandler(repo *Repository, ingest *LeadIngestService, authz domain.RecordAuthorizer, members MemberChecker, schema SchemaProvider, limiter, ipLimiter *RateLimiter, logger *slog.Logger) *Handler {
 	if authz == nil {
 		panic("integrations: authorizer is required — the source-save OLS check is a security control")
 	}
 	if members == nil {
 		panic("integrations: member checker is required — default_owner_id validation is a security control")
 	}
-	return &Handler{repo: repo, ingest: ingest, authz: authz, members: members, schema: schema, limiter: limiter, logger: logger}
+	if ipLimiter == nil {
+		ipLimiter = limiter
+	}
+	return &Handler{repo: repo, ingest: ingest, authz: authz, members: members, schema: schema, limiter: limiter, ipLimiter: ipLimiter, logger: logger}
 }
 
 // RegisterRoutes mounts the module's routes.
@@ -70,6 +78,8 @@ func NewHandler(repo *Repository, ingest *LeadIngestService, authz domain.Record
 func (h *Handler) RegisterRoutes(router *gin.Engine, protected []gin.HandlerFunc, requireCap func(string) gin.HandlerFunc) {
 	// Public: no auth middleware. Authenticates itself with the source credential.
 	router.POST("/api/capture/leads", h.CaptureLead)
+	// The recovery port: up to 100 leads, one result each.
+	router.POST("/api/capture/leads/batch", h.CaptureLeadBatch)
 
 	g := router.Group("/api/integrations")
 	g.Use(protected...)
@@ -209,9 +219,242 @@ func (h *Handler) CaptureLead(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": out})
 }
 
-// allow applies one rate-limit key, writing 429 + Retry-After when exceeded.
-func (h *Handler) allow(c *gin.Context, key string) bool {
-	ok, retry := h.limiter.Allow(c.Request.Context(), key)
+// CaptureLeadBatch is the recovery port: POST /api/capture/leads/batch.
+//
+// Up to 100 leads, each with its own result, and a batch of N costs exactly what N
+// single requests cost on every existing bound.
+func (h *Handler) CaptureLeadBatch(c *gin.Context) {
+	key := bearerToken(c)
+	if !IsLeadKey(key) {
+		h.captureError(c, http.StatusUnauthorized, "invalid capture key")
+		return
+	}
+	hash := HashLeadKey(key)
+
+	// STAGE ONE of the charge, before the DB is touched — byte-identical to the
+	// single endpoint's reasoning. N is unknowable until the body is parsed, so
+	// deferring the ENTIRE charge until after the lookup would hand back the
+	// DB-amplifier hole that ordering exists to close.
+	if !h.allowN(c, "k:"+hash, 1) || !h.allowN(c, "ip:"+c.ClientIP(), 1) {
+		return
+	}
+
+	source, err := h.repo.FindSourceByTokenHash(c.Request.Context(), hash)
+	if err != nil {
+		h.logger.Error("integrations: source lookup failed", "error", err)
+		h.captureError(c, http.StatusInternalServerError, "lookup failed")
+		return
+	}
+	if source == nil || !source.IsLive() {
+		h.captureError(c, http.StatusUnauthorized, "invalid capture key")
+		return
+	}
+
+	// Read one byte past the cap so an oversized body is an explicit 413 rather than
+	// surfacing as a confusing "body must be a JSON object" after silent truncation.
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, batchBodyLimit+1))
+	if err != nil {
+		h.captureError(c, http.StatusBadRequest, "could not read body")
+		return
+	}
+	if len(body) > batchBodyLimit {
+		h.captureError(c, http.StatusRequestEntityTooLarge, "batch body exceeds 1MB")
+		return
+	}
+	if k := strings.TrimSpace(c.GetHeader("Idempotency-Key")); k != "" {
+		// Rejected rather than ignored: silently dropping a safety header is how an
+		// integrator believes their retry is safe when it is not, and finds out from
+		// duplicates behind a green 200.
+		h.captureError(c, http.StatusBadRequest,
+			"Idempotency-Key is not honoured on the batch endpoint; give each item its own idempotency_key")
+		return
+	}
+	var req batchRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		h.captureError(c, http.StatusBadRequest, "body must be a JSON object")
+		return
+	}
+	if len(req.Items) == 0 {
+		h.captureError(c, http.StatusUnprocessableEntity, "items is required")
+		return
+	}
+	// Clamped by the limiter's own window: admitting a batch no window could ever
+	// charge would guarantee a 429 after the caller had already paid to serialize it.
+	maxItems := maxBatchItems
+	if lim := h.limiter.Limit(); lim < maxItems {
+		maxItems = lim
+	}
+	if len(req.Items) > maxItems {
+		h.captureError(c, http.StatusUnprocessableEntity,
+			"a batch may carry at most "+strconv.Itoa(maxItems)+" items (this request carried "+strconv.Itoa(len(req.Items))+")")
+		return
+	}
+
+	// STAGE TWO: charge the remaining N-1. Over the limit refuses the WHOLE batch —
+	// a prefix-accept splits on state the caller cannot see, so the same batch
+	// retried would stop at a different place every time and no client could tell
+	// where to resume.
+	if rest := len(req.Items) - 1; rest > 0 {
+		if !h.allowN(c, "k:"+hash, rest) || !h.allowN(c, "ip:"+c.ClientIP(), rest) {
+			return
+		}
+	}
+
+	h.runBatch(c, source, req.Items)
+}
+
+// runBatch processes items strictly in order.
+//
+// Sequential, not a worker pool, and that is load-bearing: item k must see item
+// k-1's write, or two rows sharing an email create two contacts. The same ordering
+// is what makes the per-item daily-cap headroom meaningful.
+func (h *Handler) runBatch(c *gin.Context, source *LeadSource, items []batchItem) {
+	batchID := newBatchID()
+	results := prescan(items)
+	deadline := time.Now().Add(batchBudget)
+
+	enroll, err := h.repo.GetBatchEnrollAutomation(c.Request.Context(), source.OrgID, source.ID)
+	if err != nil {
+		// Unreadable config must not decide to page 100 reps. Fall back to the safe
+		// value, which is the column's own default.
+		h.logger.Error("integrations: could not read batch enrollment setting", "error", err, "source_id", source.ID.String())
+		enroll = false
+	}
+
+	// Headroom is read ONCE up front and decremented as records are actually
+	// created; a cap we could not read fails the whole batch closed, mirroring the
+	// single endpoint ("a count we could not take is not evidence of headroom").
+	remaining := int64(-1) // -1 = uncapped
+	if source.DailyCap > 0 {
+		used, cerr := h.repo.CountCreatedToday(c.Request.Context(), source.ID, time.Now())
+		if cerr != nil {
+			h.logger.Error("integrations: daily cap check failed", "error", cerr, "source_id", source.ID.String())
+			c.Header("Retry-After", "60")
+			h.captureError(c, http.StatusServiceUnavailable, "could not verify capture limit; retry")
+			return
+		}
+		remaining = int64(source.DailyCap) - used
+		if remaining <= 0 {
+			c.Header("Retry-After", "3600")
+			h.captureError(c, http.StatusTooManyRequests, "daily capture limit reached for this source")
+			return
+		}
+	}
+
+	var refused []*IntegrationEvent
+	processed := 0
+
+	for i := range items {
+		if !pending(results[i]) {
+			continue // prescan already decided this row
+		}
+		switch {
+		case c.Request.Context().Err() != nil:
+			refuse(&results[i], CodeClientDisconnect, "the connection closed before this item was attempted")
+			refused = append(refused, refusedEvent(source, items[i], results[i], batchID))
+			continue
+		case time.Now().After(deadline):
+			refuse(&results[i], CodeBatchDeadline, "this batch ran out of time before reaching this item; resend it")
+			refused = append(refused, refusedEvent(source, items[i], results[i], batchID))
+			continue
+		case remaining == 0:
+			refuse(&results[i], CodeDailyCapReached, "this source's daily capture limit was reached partway through the batch")
+			refused = append(refused, refusedEvent(source, items[i], results[i], batchID))
+			continue
+		}
+
+		// Re-read the cap periodically so concurrent batches converge on the truth
+		// rather than each spending the same headroom.
+		if remaining > 0 && processed > 0 && processed%capRecheckInterval == 0 {
+			if used, cerr := h.repo.CountCreatedToday(c.Request.Context(), source.ID, time.Now()); cerr == nil {
+				remaining = int64(source.DailyCap) - used
+			} else {
+				refuse(&results[i], CodeCapUnverified, "could not re-verify this source's daily limit; resend this item")
+				refused = append(refused, refusedEvent(source, items[i], results[i], batchID))
+				continue
+			}
+			if remaining <= 0 {
+				refuse(&results[i], CodeDailyCapReached, "this source's daily capture limit was reached partway through the batch")
+				refused = append(refused, refusedEvent(source, items[i], results[i], batchID))
+				continue
+			}
+		}
+
+		lead := RawLead{
+			Fields:           items[i].Fields,
+			Context:          batchContext(items[i].Context, batchID),
+			Consent:          items[i].Consent,
+			ProviderEventID:  results[i].IdempotencyKey,
+			DeliveryMode:     DeliveryBatch,
+			EnrollAutomation: enroll,
+		}
+		res, ierr := h.ingest.Ingest(c.Request.Context(), source, lead)
+		processed++
+
+		if ierr != nil {
+			results[i].Status, results[i].Retryable = ItemError, true
+			results[i].Code = CodeRejected
+			results[i].Message = ierr.Error()
+			if appErr, ok := ierr.(*domain.AppError); ok {
+				// A validation refusal is the caller's to fix; retrying it unchanged
+				// just fails again.
+				results[i].Retryable = appErr.Code >= 500 || appErr.Code == http.StatusConflict
+			}
+			continue
+		}
+		applyResult(&results[i], res)
+		if remaining > 0 && consumedHeadroom(res) {
+			remaining--
+		}
+	}
+
+	// Evidence for every refusal, in one insert. Best-effort: the caller already has
+	// the truth in their envelope, so a bookkeeping failure must not fail the batch.
+	if err := h.repo.InsertRefusedEvents(c.Request.Context(), refused); err != nil {
+		h.logger.Error("integrations: could not record refused items", "error", err, "source_id", source.ID.String())
+	}
+
+	succeeded, failed := 0, 0
+	for _, r := range results {
+		if r.Status == ItemOK || r.Status == ItemDuplicate {
+			succeeded++
+		} else {
+			failed++
+		}
+	}
+	// Only stamp usage when the batch was clean: a run that failed 99 of 100 must not
+	// reset this source's failure signal and report itself healthy.
+	if failed == 0 {
+		_ = h.repo.TouchSourceUsed(c.Request.Context(), source.ID)
+	}
+
+	status := http.StatusOK
+	if failed > 0 {
+		// 207, never a flat 200 over failures. This codebase already holds that a 200
+		// carrying an empty record_id is "the response shape that turns any bug on this
+		// path into SILENT lead loss" — a 2xx over 99 failures is that at scale. The
+		// header exists because Make and Zapier sail past any 2xx without reading the
+		// body.
+		status = http.StatusMultiStatus
+		c.Header("X-Lead-Batch-Failed", strconv.Itoa(failed))
+	}
+	c.JSON(status, gin.H{"data": batchResponse{
+		BatchID:   batchID,
+		Received:  len(items),
+		Succeeded: succeeded,
+		Failed:    failed,
+		Results:   results,
+	}})
+}
+
+// allowN applies one weighted rate-limit key, writing 429 + Retry-After when
+// exceeded.
+func (h *Handler) allowN(c *gin.Context, key string, cost int) bool {
+	lim := h.limiter
+	if strings.HasPrefix(key, "ip:") {
+		lim = h.ipLimiter
+	}
+	ok, retry := lim.AllowN(c.Request.Context(), key, cost)
 	if ok {
 		return true
 	}
@@ -223,6 +466,12 @@ func (h *Handler) allow(c *gin.Context, key string) bool {
 	h.captureError(c, http.StatusTooManyRequests, "rate limit exceeded")
 	return false
 }
+
+// allow applies one rate-limit key, writing 429 + Retry-After when exceeded.
+func (h *Handler) allow(c *gin.Context, key string) bool {
+	return h.allowN(c, key, 1)
+}
+
 
 // captureError writes the public endpoint's error envelope.
 //
@@ -251,7 +500,10 @@ type sourceRequest struct {
 	TargetSlug     string    `json:"target_slug"`
 	UpdatePolicy   string    `json:"update_policy"`
 	DefaultOwnerID *string   `json:"default_owner_id"`
-	DailyCap       int       `json:"daily_cap"`
+	// DailyCap is a POINTER so an explicit 0 can CLEAR the cap. A plain int makes
+	// "cleared" and "not mentioned" the same value, which is why this setting was
+	// one-way until now.
+	DailyCap       *int      `json:"daily_cap"`
 	Status         *string   `json:"status"`
 	FieldMap       *FieldMap `json:"field_map"`
 	MatchFields    []string  `json:"match_fields"`
@@ -430,8 +682,11 @@ func (h *Handler) CreateSource(c *gin.Context) {
 		FieldMap:       datatypes.JSON(`{}`),
 		Config:         datatypes.JSON(`{}`),
 		DefaultOwnerID: owner,
-		DailyCap:       req.DailyCap,
+		DailyCap:       defaultDailyCap,
 		Status:         SourceStatusActive,
+	}
+	if req.DailyCap != nil && *req.DailyCap >= 0 {
+		src.DailyCap = *req.DailyCap
 	}
 	if userID != uuid.Nil {
 		src.CreatedBy = &userID
@@ -532,8 +787,8 @@ func (h *Handler) UpdateSource(c *gin.Context) {
 		}
 		newPool = &pool
 	}
-	if req.DailyCap > 0 {
-		src.DailyCap = req.DailyCap
+	if req.DailyCap != nil && *req.DailyCap >= 0 {
+		src.DailyCap = *req.DailyCap
 	}
 	if req.FieldMap != nil {
 		if !h.applyFieldMapUpdate(c, src, *req.FieldMap) {
@@ -843,7 +1098,7 @@ func (h *Handler) parseOwner(c *gin.Context, orgID uuid.UUID, raw *string) (*uui
 		h.mgmtError(c, http.StatusInternalServerError, "could not verify the owner")
 		return nil, false
 	}
-	if !IsLiveMember(ou) {
+	if !ou.IsLive() {
 		h.mgmtError(c, http.StatusBadRequest, "default_owner_id must be an active member of this workspace")
 		return nil, false
 	}

@@ -170,6 +170,12 @@ type LeadSource struct {
 	// workflows, so an unbounded window is a cost bomb, not just noise. 0 = unset.
 	DailyCap int `gorm:"not null;default:0" json:"daily_cap"`
 
+	// BatchEnrollAutomation is UNMAPPED for the same reason owner_pool is (see above):
+	// a mapped column whose boot guard failed would be named in
+	// FindSourceByTokenHash's SELECT and 500 every capture request in every org.
+	// Populated by a targeted read.
+	BatchEnrollAutomation bool `gorm:"-" json:"batch_enroll_automation"`
+
 	// CreatedBy is a POINTER so it can be NULL. A plain uuid.UUID makes GORM send
 	// the zero UUID on every insert, which violates the users(id) FK — the column
 	// is nullable precisely so a source can outlive the admin who made it (ON
@@ -246,3 +252,13 @@ type IntegrationEvent struct {
 
 // TableName pins the table.
 func (IntegrationEvent) TableName() string { return "integration_events" }
+
+// defaultDailyCap bounds a NEW source's daily record creation.
+//
+// Non-zero on purpose. The cap is described as "the backstop that survives both
+// limiters being wrong", but it defaulted to 0 (unlimited) and no UI ever wrote it,
+// so the branch guarding it had never executed in production. ~2 leads a minute
+// sustained is far above any legitimate small-business source and far below what a
+// leaked key could otherwise spend on records, workflow runs and billable email.
+// Raisable in one click, and the 429 names the limit so an admin knows what to change.
+const defaultDailyCap = 1000

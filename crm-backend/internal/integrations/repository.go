@@ -130,6 +130,62 @@ func (r *Repository) CountCreatedToday(ctx context.Context, sourceID uuid.UUID, 
 	return n, err
 }
 
+// ReapStrandedEvents releases deliveries whose process died mid-write.
+//
+// A row left at `processing` is not just untidy — the replay switch reads it as
+// "still in flight" and answers 409 to every retry, so the Idempotency-Key becomes
+// the thing that makes the lead permanently unrecoverable. Moving it to `failed` is
+// what lets Ingest's failed-row branch re-run the pipeline against it.
+//
+// `result_record_id IS NULL` is load-bearing: a row that already produced a record
+// must never be re-run, or the retry writes the same lead twice.
+func (r *Repository) ReapStrandedEvents(ctx context.Context, grace time.Duration) (int64, error) {
+	res := r.db.WithContext(ctx).Exec(`
+		UPDATE integration_events
+		   SET status = ?, error = ?, processed_at = NOW()
+		 WHERE status = ? AND result_record_id IS NULL AND created_at < ?`,
+		EventStatusFailed,
+		"this delivery was interrupted before it finished (the server restarted or crashed); retrying the same Idempotency-Key will re-run it",
+		EventStatusProcessing, time.Now().Add(-grace))
+	return res.RowsAffected, res.Error
+}
+
+// GetBatchEnrollAutomation reports whether batch deliveries for this source may
+// enrol workflows. Read through a targeted statement, never the model — see the
+// unmapped-column note on LeadSource.
+func (r *Repository) GetBatchEnrollAutomation(ctx context.Context, orgID, sourceID uuid.UUID) (bool, error) {
+	var out []bool
+	if err := r.db.WithContext(ctx).Raw(
+		`SELECT batch_enroll_automation FROM lead_sources WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
+		sourceID, orgID).Scan(&out).Error; err != nil {
+		return false, err
+	}
+	if len(out) == 0 {
+		return false, nil
+	}
+	return out[0], nil
+}
+
+// SetBatchEnrollAutomation stores the toggle.
+func (r *Repository) SetBatchEnrollAutomation(ctx context.Context, orgID, sourceID uuid.UUID, on bool) error {
+	return r.db.WithContext(ctx).Exec(
+		`UPDATE lead_sources SET batch_enroll_automation = ?, updated_at = NOW() WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
+		on, sourceID, orgID).Error
+}
+
+// InsertRefusedEvents records deliveries the batch declined to attempt (daily cap
+// exhausted, budget spent, client hung up) in one multi-row insert.
+//
+// Refusals must leave evidence. Without a ledger row an integrator who reads the
+// per-item envelope and an admin who reads the delivery log see different histories,
+// and "we never received it" becomes unanswerable.
+func (r *Repository) InsertRefusedEvents(ctx context.Context, events []*IntegrationEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	return r.db.WithContext(ctx).Create(&events).Error
+}
+
 // ── Owner routing ────────────────────────────────────────────────────────────
 //
 // owner_pool, owner_cursor and integration_events.assigned_owner_id are read and

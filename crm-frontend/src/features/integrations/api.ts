@@ -42,6 +42,7 @@ function asSource(raw: unknown): LeadSource {
     ...s,
     owner_pool: Array.isArray(s.owner_pool) ? s.owner_pool : [],
     owner_pool_inactive: Array.isArray(s.owner_pool_inactive) ? s.owner_pool_inactive : [],
+    batch_enroll_automation: Boolean(s.batch_enroll_automation),
   };
 }
 

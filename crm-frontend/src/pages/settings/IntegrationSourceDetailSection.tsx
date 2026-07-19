@@ -19,6 +19,7 @@ import { useConfirm } from '../../components/common/ConfirmDialog';
 import SecretReveal from '../../components/settings/SecretReveal';
 import FieldMappingTable from './FieldMappingTable';
 import OwnerRoutingCard from './OwnerRoutingCard';
+import DeliveryLimitsCard from './DeliveryLimitsCard';
 import { DocumentTitle } from '../../lib/useDocumentTitle';
 import {
   useDeleteSource,
@@ -373,16 +374,13 @@ export default function IntegrationSourceDetailSection() {
                 <dt className="text-xs text-muted-foreground">Matched on</dt>
                 <dd className="text-foreground mt-0.5">{source.match_fields.join(', ')}</dd>
               </div>
-              <div>
-                <dt className="text-xs text-muted-foreground">Daily limit</dt>
-                <dd className="text-foreground mt-0.5">
-                  {source.daily_cap > 0 ? `${source.daily_cap} new contacts/day` : 'None'}
-                </dd>
-              </div>
+
             </dl>
           </div>
 
           <OwnerRoutingCard source={source} />
+
+          <DeliveryLimitsCard source={source} />
 
           <FieldMappingTable sourceId={source.id} />
 

@@ -40,6 +40,7 @@ const SOURCE: LeadSource = {
   match_fields: ['email'],
   field_map: {},
   owner_pool: [],
+  batch_enroll_automation: false,
   update_policy: 'fill_blank_only',
   config: {},
   status: 'active',

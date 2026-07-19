@@ -56,7 +56,7 @@ func TestSendTestLead_RequiresTheCallersOwnWritePermission(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	authz := &denyingAuthorizer{}
 	h := NewHandler(nil, nil, authz, stubMembers{}, contactSchema(),
-		NewRateLimiter(nil, 0, 0), slog.New(slog.NewTextHandler(io.Discard, nil)))
+		NewRateLimiter(nil, 0, 0), nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	// Stand in for loadSource: the route's own lookup needs a DB, and what is under
 	// test is the authorization decision, not the fetch.
@@ -91,5 +91,5 @@ func TestNewHandler_PanicsWithoutAnAuthorizer(t *testing.T) {
 			t.Fatal("NewHandler must panic on a nil authorizer rather than run without the OLS check")
 		}
 	}()
-	NewHandler(nil, nil, nil, stubMembers{}, contactSchema(), nil, nil)
+	NewHandler(nil, nil, nil, stubMembers{}, contactSchema(), nil, nil, nil)
 }
