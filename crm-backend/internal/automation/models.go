@@ -129,6 +129,26 @@ type AutomationTimer struct {
 
 func (AutomationTimer) TableName() string { return "automation_timers" }
 
+// AssignCursor persists one assign_user step's place in its round-robin rotation.
+//
+// This row is the entire difference between real rotation and a load heuristic that
+// merely resembles one: without somewhere durable to remember whose turn it was, a
+// stateless picker can only infer fairness from record counts, and counts freeze the
+// moment someone stops receiving work.
+//
+// The primary key is (org_id, workflow_id, action_id) — action_id because one
+// workflow may hold several assign_user steps, each owed its own independent turn
+// order. It is also the conflict target of the atomic UPSERT in nextAssignTicket.
+type AssignCursor struct {
+	OrgID      uuid.UUID `gorm:"type:uuid;primaryKey" json:"org_id"`
+	WorkflowID uuid.UUID `gorm:"type:uuid;primaryKey" json:"workflow_id"`
+	ActionID   string    `gorm:"size:255;primaryKey" json:"action_id"`
+	Ticket     int64     `gorm:"not null;default:0" json:"ticket"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+func (AssignCursor) TableName() string { return "automation_assign_cursors" }
+
 // --- JSON payload spec types ---
 
 // TriggerSpec represents the trigger configuration for a workflow.
