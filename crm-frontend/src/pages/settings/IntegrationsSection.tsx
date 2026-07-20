@@ -56,7 +56,7 @@ export default function IntegrationsSection() {
 
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState('');
-  const [kind, setKind] = useState<'api' | 'google_ads'>('api');
+  const [kind, setKind] = useState<'api' | 'google_ads' | 'form_embed'>('api');
   const [policy, setPolicy] = useState<UpdatePolicy>('fill_blank_only');
   // Routing is a REQUIRED choice, not a default. Creating a source that silently
   // produces unowned contacts is the failure this whole platform opens by naming —
@@ -193,11 +193,18 @@ export default function IntegrationsSection() {
                 <Select
                   id="source-kind"
                   value={kind}
-                  onChange={(e) => setKind(e.target.value as 'api' | 'google_ads')}
+                  onChange={(e) => setKind(e.target.value as 'api' | 'google_ads' | 'form_embed')}
                 >
                   <option value="api">A tool that sends leads to a key (Make, Zapier, your own code)</option>
                   <option value="google_ads">A Google Ads lead form</option>
+                  <option value="form_embed">A form on my own website</option>
                 </Select>
+                {kind === 'form_embed' && (
+                  <p className="text-xs text-muted-foreground">
+                    You'll get a snippet to paste into your page. Nothing is accepted until you
+                    name the website it runs on — a new form turns every browser away.
+                  </p>
+                )}
                 {kind === 'google_ads' && (
                   <p className="text-xs text-muted-foreground">
                     You'll get a webhook URL and a key to paste into Google's lead form editor —

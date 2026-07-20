@@ -4,6 +4,7 @@ import type {
   CreatedLeadSource,
   DealConfig,
   FieldMap,
+  FormConfig,
   IntegrationEvent,
   LeadSource,
   MappingView,
@@ -49,8 +50,25 @@ function asSource(raw: unknown): LeadSource {
     owner_pool: Array.isArray(s.owner_pool) ? s.owner_pool : [],
     owner_pool_inactive: Array.isArray(s.owner_pool_inactive) ? s.owner_pool_inactive : [],
     batch_enroll_automation: Boolean(s.batch_enroll_automation),
-    config: { ...config, deal: asDealConfig(config.deal) },
+    config: { ...config, deal: asDealConfig(config.deal), form: asFormConfig(config.form) },
     deal_stage_missing: Boolean(s.deal_stage_missing),
+    // Go marshals a nil slice to null; an empty list is meaningful here (it denies
+    // every browser origin) so it must coerce to [] rather than stay undefined.
+    allowed_origins: Array.isArray(s.allowed_origins) ? s.allowed_origins : [],
+    turnstile_configured: Boolean(s.turnstile_configured),
+  };
+}
+
+/** asFormConfig gives the card a shape it can render without optional-chaining
+ *  through every field. */
+function asFormConfig(raw: unknown): FormConfig {
+  const f = (raw ?? {}) as FormConfig;
+  return {
+    enabled: Boolean(f.enabled),
+    fields: Array.isArray(f.fields) ? f.fields : [],
+    honeypot: typeof f.honeypot === 'string' ? f.honeypot : undefined,
+    thank_you: typeof f.thank_you === 'string' ? f.thank_you : undefined,
+    turnstile_site_key: typeof f.turnstile_site_key === 'string' ? f.turnstile_site_key : undefined,
   };
 }
 

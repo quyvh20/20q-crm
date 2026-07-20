@@ -228,7 +228,13 @@ func (h *Handler) CaptureGoogleAds(c *gin.Context) {
 	// is, is not the caller's business. `error` status is deliberately NOT here: it
 	// is a badge, and refusing traffic while flagged would drop leads unledgered
 	// during the exact window someone is fixing the source.
-	if source == nil || !source.IsLive() {
+	// The kind gate matters because public_token is ONE global namespace across
+	// kinds. Without it, a form-embed token — which is public by construction,
+	// sitting in the page source of a customer's website — POSTed here would resolve
+	// a real source, fail the key check it can never pass, and plant an alarming
+	// "the webhook key Google sent did not match" row in that org's ledger. Anyone
+	// who viewed source could manufacture those.
+	if source == nil || !source.IsLive() || source.Kind != KindGoogleAds {
 		googleError(c, http.StatusUnauthorized, "unknown webhook URL")
 		return
 	}

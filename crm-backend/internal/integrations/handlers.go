@@ -54,8 +54,14 @@ type Handler struct {
 	// option can be enabled — the ingest side re-checks too, but only save time can
 	// tell the admin.
 	stages StageReader
+	// http is the outbound client for provider verification calls (Turnstile).
+	// Nil-tolerant: httpClient() supplies a bounded default, and a test injects one.
+	http   *http.Client
 	logger *slog.Logger
 }
+
+// WithHTTPClient overrides the outbound client used for provider verification.
+func (h *Handler) WithHTTPClient(c *http.Client) *Handler { h.http = c; return h }
 
 // NewHandler builds the handler. A nil authorizer panics rather than degrading:
 // the source-save OLS re-check is the only thing stopping integrations.manage from
@@ -89,6 +95,19 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, protected []gin.HandlerFunc
 	// Google Ads lead-form webhook (L3): the URL token names the source, the
 	// google_key in the body corroborates it.
 	router.POST("/api/capture/google-ads/:public_token", h.CaptureGoogleAds)
+	// Form embeds (L4): posted by a visitor's BROWSER from the customer's own site.
+	// Both routes carry formCORS, which is where the origin check, the rate-limit
+	// charge and the CORS headers all live — main.go skips the global CORS handler
+	// for this prefix, so nothing else supplies them.
+	//
+	// The OPTIONS route is not optional: Content-Type: application/json is not a
+	// CORS-safelisted value, so every submit preflights, and gin answers an
+	// unregistered OPTIONS with a bare 404 carrying no CORS headers — invisible to
+	// curl and to same-origin tests, and a total failure in a real browser.
+	router.POST(FormCapturePrefix+"/:public_token", h.formCORS, h.CaptureForm)
+	router.OPTIONS(FormCapturePrefix+"/:public_token", h.formCORS, func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
 
 	g := router.Group("/api/integrations")
 	g.Use(protected...)
@@ -560,6 +579,14 @@ type sourceRequest struct {
 	// Deal is a POINTER for the same tri-state reason as OwnerPool: absent leaves the
 	// setting alone, present replaces it wholesale.
 	Deal *dealConfigRequest `json:"deal"`
+	// Form is the form_embed definition. Same tri-state rule.
+	Form *FormConfig `json:"form"`
+	// AllowedOrigins is the browser origin allowlist. A POINTER so an explicit []
+	// can clear it (which denies every browser) and an absent key leaves it alone.
+	AllowedOrigins *[]string `json:"allowed_origins"`
+	// TurnstileSecret is WRITE-ONLY: it is never returned by any endpoint, so the
+	// only way it can be set is here, and an empty string clears it.
+	TurnstileSecret *string `json:"turnstile_secret"`
 }
 
 // dealConfigRequest is the wire shape of the "also create a deal" option.
@@ -670,6 +697,10 @@ type sourceView struct {
 	// that fetch failed. Deals still land (in the first stage) — this is the badge
 	// that stops that from being a silent re-filing.
 	DealStageMissing bool `json:"deal_stage_missing,omitempty"`
+	// TurnstileConfigured reports whether a bot-check secret is set, WITHOUT
+	// revealing it. The secret goes to Cloudflare in plaintext so it cannot be
+	// hashed; never returning it is the whole of its protection.
+	TurnstileConfigured bool `json:"turnstile_configured,omitempty"`
 }
 
 // viewOf decorates a source with its rotation. Best-effort: routing config that
@@ -681,11 +712,22 @@ func (h *Handler) viewOf(c *gin.Context, src *LeadSource, withLiveness bool) sou
 	if enroll, err := h.repo.GetBatchEnrollAutomation(c.Request.Context(), src.OrgID, src.ID); err == nil {
 		v.BatchEnrollAutomation = enroll
 	}
-	// Same rule for the google_ads URL token — without this, the setup panel would
-	// render a webhook URL with a blank where the token goes.
-	if src.Kind == KindGoogleAds && src.PublicToken == "" {
+	// Same rule for the URL token — without this, the setup panel would render a
+	// webhook URL (or a form snippet) with a blank where the token goes.
+	if (src.Kind == KindGoogleAds || src.Kind == KindFormEmbed) && src.PublicToken == "" {
 		if tok, err := h.repo.GetPublicToken(c.Request.Context(), src.OrgID, src.ID); err == nil {
 			src.PublicToken = tok
+		}
+	}
+	if src.Kind == KindFormEmbed {
+		if origins, err := h.repo.GetAllowedOrigins(c.Request.Context(), src.OrgID, src.ID); err == nil {
+			src.AllowedOrigins = origins
+		}
+		// Whether a bot check is configured, never the key itself — it is sent
+		// verbatim to Cloudflare, so it cannot be hashed, and "never serialize it" is
+		// the only protection it has.
+		if on, err := h.repo.HasTurnstileSecret(c.Request.Context(), src.OrgID, src.ID); err == nil {
+			v.TurnstileConfigured = on
 		}
 	}
 	v.DealStageMissing = h.dealStageMissing(c, src, withLiveness)
@@ -952,6 +994,26 @@ func (h *Handler) CreateSource(c *gin.Context) {
 	// but UNLIKE the rotation, a failure here is fatal: a google_ads source with no
 	// public_token is a webhook nobody can ever call, handed to the admin with a
 	// green 201. Delete the half-made source and say so.
+	// A form embed with no token is a form nobody can ever post to — the same fatal
+	// shape as a google_ads source with no webhook URL, so the same handling.
+	if req.Kind == KindFormEmbed {
+		pub, perr := GeneratePublicToken()
+		if perr == nil {
+			perr = h.repo.SetPublicToken(c.Request.Context(), orgID, src.ID, pub)
+		}
+		if perr != nil {
+			h.logger.Error("integrations: could not mint form token", "error", perr, "source_id", src.ID.String())
+			_ = h.repo.SoftDeleteSource(c.Request.Context(), orgID, src.ID)
+			h.mgmtError(c, http.StatusInternalServerError, "could not create source")
+			return
+		}
+		src.PublicToken = pub
+		// The allowlist starts EMPTY, which denies every browser origin. That is the
+		// deliberate default: a form that accepted any site the moment it was created
+		// would be the fail-open this feature most easily produces. The UI shows the
+		// source as not-ready until an origin is added.
+	}
+
 	googleKey := ""
 	if req.Kind == KindGoogleAds {
 		pub, perr := GeneratePublicToken()
@@ -1069,6 +1131,26 @@ func (h *Handler) UpdateSource(c *gin.Context) {
 		}
 		newDeal = &cfg
 	}
+	// Resolved before the save, applied after it — the same shape as the rotation
+	// and the deal option, and for the same reason: these live outside the model's
+	// Save, so a rejected one must not leave the rest half-applied.
+	var newForm *FormConfig
+	if req.Form != nil {
+		if err := ValidateFormConfig(*req.Form); err != nil {
+			h.mgmtError(c, http.StatusBadRequest, err.Error())
+			return
+		}
+		newForm = req.Form
+	}
+	var newOrigins *[]string
+	if req.AllowedOrigins != nil {
+		origins, err := ValidateAllowedOrigins(*req.AllowedOrigins)
+		if err != nil {
+			h.mgmtError(c, http.StatusBadRequest, err.Error())
+			return
+		}
+		newOrigins = &origins
+	}
 	if req.FieldMap != nil {
 		if !h.applyFieldMapUpdate(c, src, *req.FieldMap) {
 			return
@@ -1128,6 +1210,28 @@ func (h *Handler) UpdateSource(c *gin.Context) {
 	if req.BatchEnrollAutomation != nil {
 		if err := h.repo.SetBatchEnrollAutomation(c.Request.Context(), src.OrgID, src.ID, *req.BatchEnrollAutomation); err != nil {
 			h.mgmtError(c, http.StatusInternalServerError, "could not save the bulk-delivery setting")
+			return
+		}
+	}
+	if newForm != nil {
+		if err := h.repo.SetFormConfig(c.Request.Context(), src.OrgID, src.ID, *newForm); err != nil {
+			h.mgmtError(c, http.StatusInternalServerError, "could not save the form")
+			return
+		}
+		if merged, err := MergeFormConfig(src.Config, *newForm); err == nil {
+			src.Config = merged
+		}
+	}
+	if newOrigins != nil {
+		if err := h.repo.SetAllowedOrigins(c.Request.Context(), src.OrgID, src.ID, *newOrigins); err != nil {
+			h.mgmtError(c, http.StatusInternalServerError, "could not save the allowed websites")
+			return
+		}
+		src.AllowedOrigins = *newOrigins
+	}
+	if req.TurnstileSecret != nil {
+		if err := h.repo.SetTurnstileSecret(c.Request.Context(), src.OrgID, src.ID, *req.TurnstileSecret); err != nil {
+			h.mgmtError(c, http.StatusInternalServerError, "could not save the bot-check key")
 			return
 		}
 	}

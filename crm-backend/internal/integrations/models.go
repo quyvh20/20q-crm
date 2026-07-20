@@ -25,10 +25,15 @@ const (
 	// KindGoogleAds is a Google Ads lead-form webhook (L3): the advertiser pastes a
 	// URL + key into the form editor, Google POSTs each lead. No OAuth, no app.
 	KindGoogleAds = "google_ads"
+	// KindFormEmbed is a form on the customer's OWN website (L4), posting straight
+	// from the visitor's browser. The first kind with no secret of any sort: its
+	// token is in the page source by construction, so everything that bounds it is
+	// a nuisance filter, not an authentication check.
+	KindFormEmbed = "form_embed"
 )
 
 // validKinds is the kind allowlist. Later phases append their own.
-var validKinds = map[string]bool{KindAPI: true, KindGoogleAds: true}
+var validKinds = map[string]bool{KindAPI: true, KindGoogleAds: true, KindFormEmbed: true}
 
 // IsValidKind reports whether a source kind is known.
 func IsValidKind(k string) bool { return validKinds[k] }
@@ -190,6 +195,18 @@ type LeadSource struct {
 	// SQL; empty for every other kind. The google_key's hash is deliberately not on
 	// the struct at all — nothing should ever serialize it.
 	PublicToken string `gorm:"-" json:"public_token,omitempty"`
+
+	// AllowedOrigins is the browser origins a form_embed source accepts submissions
+	// from. UNMAPPED like the rest, and deliberately NOT inside the `config` blob
+	// where the form's other settings live: that parser is documented never to fail
+	// (missing, junk and half-written all mean "disabled"), which is right for a
+	// naming template and wrong for an allowlist, where unreadable must be
+	// distinguishable from empty and the two have OPPOSITE outcomes — empty denies
+	// every browser origin, unreadable refuses the request entirely.
+	//
+	// Hydrated for the management UI only; the capture path reads it through its own
+	// targeted statement.
+	AllowedOrigins []string `gorm:"-" json:"allowed_origins,omitempty"`
 
 	// CreatedBy is a POINTER so it can be NULL. A plain uuid.UUID makes GORM send
 	// the zero UUID on every insert, which violates the users(id) FK — the column

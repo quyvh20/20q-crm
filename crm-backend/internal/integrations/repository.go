@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -357,6 +358,156 @@ func (r *Repository) FindSourceByPublicToken(ctx context.Context, token string) 
 	}
 	out[0].PublicToken = token // hydrate the unmapped display field
 	return &out[0], nil
+}
+
+// ── form_embed (L4) ──────────────────────────────────────────────────────────
+
+// FormSource is a source plus the form_embed columns the struct does not carry.
+type FormSource struct {
+	LeadSource
+	// AllowedOriginsRaw is the stored JSON array. Kept raw so the caller can tell a
+	// READ FAILURE apart from an EMPTY LIST — the two have opposite outcomes and
+	// collapsing them is how this feature would fail open.
+	AllowedOriginsRaw datatypes.JSON
+}
+
+// FindFormSourceByPublicToken resolves a form-embed URL token to its source.
+//
+// A sibling of FindSourceByPublicToken rather than a widening of it: that one
+// names google_key_hash and this one names allowed_origins, and keeping the two
+// SELECTs disjoint is what keeps a failed boot guard scoped to one kind's route
+// instead of both. Same two load-bearing joins — the organizations join (workspace
+// deletion is soft and evicts every member, so nobody could disable the source)
+// and the explicit deleted_at IS NULL (raw SQL bypasses GORM's soft-delete scope).
+func (r *Repository) FindFormSourceByPublicToken(ctx context.Context, token string) (*FormSource, error) {
+	if token == "" {
+		return nil, nil
+	}
+	var out []FormSource
+	err := r.db.WithContext(ctx).Raw(
+		`SELECT lead_sources.*, COALESCE(lead_sources.allowed_origins, '[]'::jsonb) AS allowed_origins_raw
+		   FROM lead_sources
+		   JOIN organizations o ON o.id = lead_sources.org_id AND o.deleted_at IS NULL
+		  WHERE lead_sources.public_token = ? AND lead_sources.deleted_at IS NULL
+		  LIMIT 1`, token).Scan(&out).Error
+	if err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	out[0].PublicToken = token
+	return &out[0], nil
+}
+
+// AllowedOrigins decodes the stored list. The error is NOT swallowed: on this one
+// setting, "we could not read the allowlist" must not degrade to "the allowlist is
+// empty" (which would look like a deliberate deny and send an admin hunting) nor
+// to "allow everything" (a hole). The caller refuses the request and says why.
+func (f *FormSource) AllowedOriginList() ([]string, error) {
+	if len(f.AllowedOriginsRaw) == 0 {
+		return nil, nil
+	}
+	var out []string
+	if err := json.Unmarshal(f.AllowedOriginsRaw, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SetAllowedOrigins stores a form source's browser origin allowlist.
+func (r *Repository) SetAllowedOrigins(ctx context.Context, orgID, sourceID uuid.UUID, origins []string) error {
+	raw, err := json.Marshal(origins)
+	if err != nil {
+		return err
+	}
+	return r.db.WithContext(ctx).Exec(
+		`UPDATE lead_sources SET allowed_origins = ?::jsonb, updated_at = NOW()
+		  WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
+		string(raw), sourceID, orgID).Error
+}
+
+// GetAllowedOrigins hydrates the management view.
+func (r *Repository) GetAllowedOrigins(ctx context.Context, orgID, sourceID uuid.UUID) ([]string, error) {
+	var out []string
+	var raw []string
+	if err := r.db.WithContext(ctx).Raw(
+		`SELECT COALESCE(allowed_origins, '[]'::jsonb)::text FROM lead_sources
+		  WHERE id = ? AND org_id = ? AND deleted_at IS NULL`, sourceID, orgID).Scan(&raw).Error; err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if err := json.Unmarshal([]byte(raw[0]), &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GetTurnstileSecret reads the private half of a source's Turnstile pair.
+//
+// Its own targeted read, and never part of any struct or view: it is sent verbatim
+// to Cloudflare so it cannot be hashed, which makes "never serialize it" the only
+// protection it has. The management API reports whether one is set, never its value.
+func (r *Repository) GetTurnstileSecret(ctx context.Context, orgID, sourceID uuid.UUID) (string, error) {
+	var out []string
+	if err := r.db.WithContext(ctx).Raw(
+		`SELECT COALESCE(turnstile_secret, '') FROM lead_sources
+		  WHERE id = ? AND org_id = ? AND deleted_at IS NULL`, sourceID, orgID).Scan(&out).Error; err != nil {
+		return "", err
+	}
+	if len(out) == 0 {
+		return "", nil
+	}
+	return out[0], nil
+}
+
+// SetTurnstileSecret stores or clears the private key. Write-only by design.
+func (r *Repository) SetTurnstileSecret(ctx context.Context, orgID, sourceID uuid.UUID, secret string) error {
+	var val any
+	if strings.TrimSpace(secret) == "" {
+		val = nil // an explicit clear, distinguishable from "never set"
+	} else {
+		val = secret
+	}
+	return r.db.WithContext(ctx).Exec(
+		`UPDATE lead_sources SET turnstile_secret = ?, updated_at = NOW()
+		  WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
+		val, sourceID, orgID).Error
+}
+
+// HasTurnstileSecret reports whether one is configured, without revealing it.
+func (r *Repository) HasTurnstileSecret(ctx context.Context, orgID, sourceID uuid.UUID) (bool, error) {
+	s, err := r.GetTurnstileSecret(ctx, orgID, sourceID)
+	return strings.TrimSpace(s) != "", err
+}
+
+// SetPublicToken stores a source's URL token without touching any credential.
+//
+// Separate from SetGoogleCredentials deliberately: that one writes google_key_hash
+// too, so calling it with an empty hash would stamp '' (not NULL) on a form source
+// — harmless only by accident, since the google route happens to test for "".
+func (r *Repository) SetPublicToken(ctx context.Context, orgID, sourceID uuid.UUID, token string) error {
+	return r.db.WithContext(ctx).Exec(
+		`UPDATE lead_sources SET public_token = ?, updated_at = NOW()
+		  WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
+		token, sourceID, orgID).Error
+}
+
+// SetFormConfig writes ONE key inside a source's config blob — jsonb_set, so the
+// deal option living next door survives.
+func (r *Repository) SetFormConfig(ctx context.Context, orgID, sourceID uuid.UUID, cfg FormConfig) error {
+	body, err := json.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	return r.db.WithContext(ctx).Exec(
+		`UPDATE lead_sources
+		    SET config = jsonb_set(COALESCE(config, '{}'::jsonb), '{form}', ?::jsonb, true),
+		        updated_at = NOW()
+		  WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
+		string(body), sourceID, orgID).Error
 }
 
 // GetPublicToken hydrates a source view's public_token (empty for non-google kinds).

@@ -22,6 +22,7 @@ import OwnerRoutingCard from './OwnerRoutingCard';
 import DeliveryLimitsCard from './DeliveryLimitsCard';
 import LeadDealCard from './LeadDealCard';
 import GoogleAdsSetupCard from './GoogleAdsSetupCard';
+import FormEmbedSetupCard from './FormEmbedSetupCard';
 import { DocumentTitle } from '../../lib/useDocumentTitle';
 import {
   useDeleteSource,
@@ -398,7 +399,7 @@ export default function IntegrationSourceDetailSection() {
             <div className="flex items-center gap-2">
               {/* google_ads has no button: Google's own "Send test data" IS the
                   test path, and it arrives in the log below badged `test`. */}
-              {source.kind !== 'google_ads' && (
+              {source.kind === 'api' && (
                 <Button size="sm" onClick={handleTestLead} disabled={sendTestLead.isPending}>
                   <FlaskConical />
                   {sendTestLead.isPending ? 'Sending…' : 'Send test lead'}
@@ -467,6 +468,8 @@ export default function IntegrationSourceDetailSection() {
           </div>
 
           {source.kind === 'google_ads' && <GoogleAdsSetupCard source={source} />}
+
+          {source.kind === 'form_embed' && <FormEmbedSetupCard source={source} />}
 
           <OwnerRoutingCard source={source} />
 

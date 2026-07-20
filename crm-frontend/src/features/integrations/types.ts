@@ -24,7 +24,30 @@ export const UPDATE_POLICY_HELP: Record<UpdatePolicy, string> = {
 export const KIND_LABELS: Record<string, string> = {
   api: 'Capture API',
   google_ads: 'Google Ads',
+  form_embed: 'Website form',
 };
+
+/** One field a form_embed source collects. */
+export interface FormField {
+  name: string;
+  label: string;
+  type: string;
+  required: boolean;
+}
+
+/** A form_embed source's definition. Lives in config.form. */
+export interface FormConfig {
+  enabled: boolean;
+  fields?: FormField[];
+  /** The invisible field a bot fills and a human never sees. */
+  honeypot?: string;
+  thank_you?: string;
+  /** The PUBLIC half of a Turnstile pair — it goes in the page, so it lives here.
+   *  The secret half is write-only and never returned. */
+  turnstile_site_key?: string;
+}
+
+export const FORM_FIELD_TYPES = ['text', 'email', 'tel', 'textarea'] as const;
 
 export function kindLabel(kind: string): string {
   return KIND_LABELS[kind] ?? kind;
@@ -57,9 +80,13 @@ export interface LeadSource {
   /** The google_ads webhook URL's source identifier. Not a secret (the google_key
    *  is) — but only present on google_ads sources. */
   public_token?: string;
-  /** Source-scoped settings that are not columns. `deal` is the only key today;
-   *  L3/L5 add source-kind config beside it. */
-  config: { deal?: DealConfig } & Record<string, unknown>;
+  /** Source-scoped settings that are not columns, one key per feature. */
+  config: { deal?: DealConfig; form?: FormConfig } & Record<string, unknown>;
+  /** Browser origins a form_embed source accepts submissions from. EMPTY denies
+   *  every browser — the deliberate default for a new form. */
+  allowed_origins?: string[];
+  /** Whether a Turnstile secret is set. The key itself is never returned. */
+  turnstile_configured?: boolean;
   /** The configured deal stage has been deleted since it was chosen. Computed
    *  SERVER-side, like owner_pool_inactive — deriving it here would badge a healthy
    *  source the moment a stage fetch failed. */
@@ -219,6 +246,11 @@ export interface UpdateSourceInput {
   batch_enroll_automation?: boolean;
   /** Omitting the key leaves the option alone; sending one replaces it wholesale. */
   deal?: DealConfig;
+  form?: FormConfig;
+  /** An explicit [] denies every browser origin. */
+  allowed_origins?: string[];
+  /** Write-only: never returned, and "" clears it. */
+  turnstile_secret?: string;
   status?: LeadSourceStatus;
 }
 

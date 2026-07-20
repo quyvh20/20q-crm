@@ -143,7 +143,7 @@ func main() {
 		)
 	})
 
-	router.Use(cors.New(cors.Config{
+	globalCORS := cors.New(cors.Config{
 		AllowOrigins: delivery.AllowedOrigins(cfg.FrontendURL),
 		AllowMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders: []string{"Origin", "Content-Type", "Accept", "Authorization", "X-CSRF-Token", "X-Request-ID"},
@@ -156,7 +156,31 @@ func main() {
 		ExposeHeaders:    []string{"Content-Length", "X-Request-ID"},
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
-	}))
+	})
+
+	// Form embeds (L4) run on the CUSTOMER'S origin, which is by definition not in
+	// AllowedOrigins — so the global handler would AbortWithStatus(403) them before
+	// the route ever ran. They therefore get their own credentials-FREE handler,
+	// mounted per-route in the integrations module.
+	//
+	// A SKIP, not a widening, and the difference is the whole security story. The
+	// global config sets AllowCredentials: true, and gin-contrib/cors bakes
+	// "Access-Control-Allow-Credentials: true" into its header maps at CONSTRUCTION
+	// — there is no per-request way to turn it off. So widening this config to admit
+	// customer origins (via AllowOriginWithContextFunc, which is additive-only and
+	// receives no path context) would tell those origins they may send the victim's
+	// ambient cookies to this API and READ THE RESPONSE — a cross-origin read of
+	// authenticated CRM data on every route in the app. Echoing an arbitrary origin
+	// is exactly the form that is dangerous; a bare "*" cannot do this, because
+	// browsers reject "*" with credentials.
+	//
+	// `return` is a pass-through: gin's Next() loop advances when a handler returns.
+	router.Use(func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, integrations.FormCapturePrefix) {
+			return
+		}
+		globalCORS(c)
+	})
 
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
@@ -1124,6 +1148,19 @@ func main() {
 				ON lead_sources(public_token) WHERE public_token IS NOT NULL`},
 			{"lead_sources google_key_hash", `ALTER TABLE lead_sources
 				ADD COLUMN IF NOT EXISTS google_key_hash VARCHAR(64)`},
+			// L4 form embeds. allowed_origins is the browser origins a form accepts
+			// submissions from — UNMAPPED, and deliberately NOT inside the config blob
+			// where the form's other settings live: that parser cannot fail by design,
+			// and an allowlist needs "unreadable" to be distinguishable from "empty"
+			// because the two must have opposite outcomes. No DEFAULT, so a NULL (guard
+			// never ran) reads differently from '[]' (admin allowed nothing yet).
+			{"lead_sources allowed_origins", `ALTER TABLE lead_sources
+				ADD COLUMN IF NOT EXISTS allowed_origins JSONB`},
+			// The PRIVATE half of a Turnstile pair. Sent verbatim to Cloudflare's
+			// siteverify, so it cannot be hashed; never serialized to any response —
+			// the management API reports only whether one is configured.
+			{"lead_sources turnstile_secret", `ALTER TABLE lead_sources
+				ADD COLUMN IF NOT EXISTS turnstile_secret TEXT`},
 		}
 		for _, g := range leadGuards {
 			if err := db.Exec(g.sql).Error; err != nil {
