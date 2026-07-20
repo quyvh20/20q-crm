@@ -43,7 +43,13 @@ export interface LeadSource {
   /** Whether BATCH deliveries may trigger workflows. Off by default: 100 recovered
    *  leads would otherwise enrol 100 contacts into every contact_created workflow. */
   batch_enroll_automation: boolean;
-  config: Record<string, unknown>;
+  /** Source-scoped settings that are not columns. `deal` is the only key today;
+   *  L3/L5 add source-kind config beside it. */
+  config: { deal?: DealConfig } & Record<string, unknown>;
+  /** The configured deal stage has been deleted since it was chosen. Computed
+   *  SERVER-side, like owner_pool_inactive — deriving it here would badge a healthy
+   *  source the moment a stage fetch failed. */
+  deal_stage_missing?: boolean;
   status: LeadSourceStatus;
   consecutive_failures: number;
   last_used_at?: string;
@@ -53,6 +59,41 @@ export interface LeadSource {
   updated_at: string;
   disabled_at?: string;
 }
+
+/**
+ * The per-source "also create a deal" option.
+ *
+ * A deal is created only when the lead produces a NEW contact. That is not a
+ * simplification — the daily cap counts contact creates, so a deal on the matched
+ * path would have no backstop at all. A returning customer is matched, logged, and
+ * the delivery says so.
+ */
+export interface DealConfig {
+  enabled: boolean;
+  /** Which stage new deals start in. Won/lost stages are refused: deal creation
+   *  does not derive is_won/is_lost, so one would sit in the won column reporting
+   *  the opposite. */
+  stage_id?: string;
+  /** Title template over a CLOSED token vocabulary — see DEAL_NAME_TOKENS. */
+  name_template?: string;
+}
+
+/**
+ * The tokens a deal name template may use. Closed on purpose: an open vocabulary
+ * would let a title reference fields the admin cannot read, and a deal title
+ * outlives an erasure request. Mirrors dealNameTokens in the Go package.
+ */
+export const DEAL_NAME_TOKENS = [
+  'full_name',
+  'first_name',
+  'last_name',
+  'email',
+  'company',
+  'source_name',
+  'date',
+] as const;
+
+export const DEFAULT_DEAL_NAME_TEMPLATE = '{{full_name}} — {{source_name}}';
 
 /**
  * A source plus its plaintext key, returned ONLY by create and rotate.
@@ -91,6 +132,8 @@ export interface IntegrationEvent {
   context: Record<string, unknown>;
   /** Keys the payload carried that were recorded but deliberately NOT written. */
   quarantined_fields: Record<string, unknown>;
+  /** The object the delivery wrote — 'contact' today. The delivery log links
+   *  through this, never a hardcoded path. */
   result_slug?: string;
   result_record_id?: string;
   outcome?: EventOutcome;
@@ -156,6 +199,8 @@ export interface UpdateSourceInput {
   /** An explicit 0 CLEARS the cap; omitting the key leaves it alone. */
   daily_cap?: number;
   batch_enroll_automation?: boolean;
+  /** Omitting the key leaves the option alone; sending one replaces it wholesale. */
+  deal?: DealConfig;
   status?: LeadSourceStatus;
 }
 

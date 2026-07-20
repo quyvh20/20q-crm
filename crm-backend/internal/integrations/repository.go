@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -30,8 +31,36 @@ func (r *Repository) CreateSource(ctx context.Context, s *LeadSource) error {
 
 // UpdateSource saves a source's mutable fields. It is org-guarded by the caller's
 // prior GetSource, and Save writes by primary key.
+//
+// `config` is OMITTED and written only by SetDealConfig's targeted jsonb_set. The
+// column is mapped (it has been in the CREATE TABLE since the table existed, so
+// unlike an ALTER-added column it can never be missing from the capture path's
+// SELECT), but a wholesale Save of it would be a read-modify-write of a blob that
+// several features are about to share: L3 and L5 put source-kind config beside the
+// deal key, and two admins editing different settings would then silently delete
+// each other's. Closing that before the connectors that trigger it exist is cheaper
+// than diagnosing it afterwards.
 func (r *Repository) UpdateSource(ctx context.Context, s *LeadSource) error {
-	return r.db.WithContext(ctx).Save(s).Error
+	return r.db.WithContext(ctx).Omit("config").Save(s).Error
+}
+
+// SetDealConfig writes ONE key inside a source's config blob.
+//
+// jsonb_set rather than a whole-blob write, for the reason on UpdateSource: this
+// must not disturb keys it does not own. Advisory — a failure degrades this one
+// setting and is reported to the admin who made it, never to a lead.
+func (r *Repository) SetDealConfig(ctx context.Context, orgID, sourceID uuid.UUID, cfg DealConfig) error {
+	body, err := json.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	return r.db.WithContext(ctx).Exec(
+		`UPDATE lead_sources
+		    SET config = jsonb_set(COALESCE(config, '{}'::jsonb), '{deal}', ?::jsonb, true),
+		        updated_at = NOW()
+		  WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
+		string(body), sourceID, orgID,
+	).Error
 }
 
 // GetSource returns one source by id within an org, or (nil, nil) when absent.

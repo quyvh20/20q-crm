@@ -2,6 +2,7 @@ import { apiFetch, parseJsonSafe, apiError } from '../../lib/api';
 import type {
   CreateSourceInput,
   CreatedLeadSource,
+  DealConfig,
   FieldMap,
   IntegrationEvent,
   LeadSource,
@@ -38,11 +39,30 @@ function asList<T>(data: unknown): T[] {
  */
 function asSource(raw: unknown): LeadSource {
   const s = (raw ?? {}) as LeadSource;
+  // `config` is jsonb and can legitimately be null on a row written before the
+  // column had a default. Reading config.deal off null throws, and a throw in a
+  // query's select white-screens the settings page — the same failure asSource
+  // already exists to prevent for owner_pool.
+  const config = (s.config ?? {}) as LeadSource['config'];
   return {
     ...s,
     owner_pool: Array.isArray(s.owner_pool) ? s.owner_pool : [],
     owner_pool_inactive: Array.isArray(s.owner_pool_inactive) ? s.owner_pool_inactive : [],
     batch_enroll_automation: Boolean(s.batch_enroll_automation),
+    config: { ...config, deal: asDealConfig(config.deal) },
+    deal_stage_missing: Boolean(s.deal_stage_missing),
+  };
+}
+
+/** asDealConfig gives the card a shape it can render without optional chaining
+ *  through every field. Absent, null and junk all mean "off", matching the Go
+ *  parser's polarity. */
+function asDealConfig(raw: unknown): DealConfig {
+  const d = (raw ?? {}) as DealConfig;
+  return {
+    enabled: Boolean(d.enabled),
+    stage_id: typeof d.stage_id === 'string' ? d.stage_id : undefined,
+    name_template: typeof d.name_template === 'string' ? d.name_template : undefined,
   };
 }
 

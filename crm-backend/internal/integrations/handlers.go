@@ -48,13 +48,17 @@ type Handler struct {
 	// IPs) need more headroom than a single credential does — so the difference is a
 	// number someone chose, not one bought by undercharging.
 	ipLimiter *RateLimiter
-	logger    *slog.Logger
+	// stages validates the deal option's stage at SAVE time. Required whenever that
+	// option can be enabled — the ingest side re-checks too, but only save time can
+	// tell the admin.
+	stages StageReader
+	logger *slog.Logger
 }
 
 // NewHandler builds the handler. A nil authorizer panics rather than degrading:
 // the source-save OLS re-check is the only thing stopping integrations.manage from
 // becoming an org-wide write primitive, so it must not be optional.
-func NewHandler(repo *Repository, ingest *LeadIngestService, authz domain.RecordAuthorizer, members MemberChecker, schema SchemaProvider, limiter, ipLimiter *RateLimiter, logger *slog.Logger) *Handler {
+func NewHandler(repo *Repository, ingest *LeadIngestService, authz domain.RecordAuthorizer, members MemberChecker, schema SchemaProvider, stages StageReader, limiter, ipLimiter *RateLimiter, logger *slog.Logger) *Handler {
 	if authz == nil {
 		panic("integrations: authorizer is required — the source-save OLS check is a security control")
 	}
@@ -64,7 +68,7 @@ func NewHandler(repo *Repository, ingest *LeadIngestService, authz domain.Record
 	if ipLimiter == nil {
 		ipLimiter = limiter
 	}
-	return &Handler{repo: repo, ingest: ingest, authz: authz, members: members, schema: schema, limiter: limiter, ipLimiter: ipLimiter, logger: logger}
+	return &Handler{repo: repo, ingest: ingest, authz: authz, members: members, schema: schema, stages: stages, limiter: limiter, ipLimiter: ipLimiter, logger: logger}
 }
 
 // RegisterRoutes mounts the module's routes.
@@ -120,6 +124,11 @@ type captureResponse struct {
 	// ConsentRecorded reports whether a consent envelope was stored on this delivery.
 	// Absent when none was sent.
 	ConsentRecorded bool `json:"consent_recorded,omitempty"`
+	// DealID is the opportunity this lead also produced, when the source asks for one.
+	// Returned so a Make/Zapier scenario can chain onto the deal without a second
+	// lookup. Absent when the source makes no deals, or when this lead matched an
+	// existing contact (see the note on the delivery).
+	DealID string `json:"deal_id,omitempty"`
 }
 
 // CaptureLead is the public port: POST /api/capture/leads, Bearer crm_lead_…
@@ -225,6 +234,9 @@ func (h *Handler) CaptureLead(c *gin.Context) {
 		Quarantined:     res.Quarantined,
 		Warnings:        res.Warnings,
 		ConsentRecorded: len(req.Consent) > 0 && !hasConsentFailure(res.Warnings),
+	}
+	if res.DealID != nil {
+		out.DealID = res.DealID.String()
 	}
 	c.JSON(http.StatusOK, gin.H{"data": out})
 }
@@ -533,6 +545,107 @@ type sourceRequest struct {
 	// makes "cleared" and "not mentioned" the same value, which is why match_fields
 	// above cannot be emptied once set.
 	OwnerPool *[]string `json:"owner_pool"`
+	// BatchEnrollAutomation was MISSING from this struct until now, which made the
+	// toggle decorative in both directions: gin silently dropped the key the UI sent,
+	// the setter had no callers, and viewOf never hydrated it, so a GET always said
+	// false. Batch suppression was therefore permanently on and the documented opt-in
+	// unreachable. A pointer, so absent means "leave it alone".
+	BatchEnrollAutomation *bool `json:"batch_enroll_automation"`
+	// Deal is a POINTER for the same tri-state reason as OwnerPool: absent leaves the
+	// setting alone, present replaces it wholesale.
+	Deal *dealConfigRequest `json:"deal"`
+}
+
+// dealConfigRequest is the wire shape of the "also create a deal" option.
+type dealConfigRequest struct {
+	Enabled      bool    `json:"enabled"`
+	StageID      *string `json:"stage_id"`
+	NameTemplate string  `json:"name_template"`
+}
+
+// parseDealConfig validates the deal option and returns what to store.
+//
+// Fails CLOSED, the opposite polarity to ingest — the rule parseOwnerPool states:
+// here an admin is watching and can retry, so a bad stage or a misspelled token is
+// worth a 400; at ingest, refusing would cost a lead.
+func (h *Handler) parseDealConfig(c *gin.Context, orgID uuid.UUID, targetSlug string, req dealConfigRequest) (DealConfig, bool) {
+	if !req.Enabled {
+		// Storing the disabled shape rather than deleting the key keeps the admin's
+		// stage and template so re-enabling does not make them retype it.
+		cfg := DealConfig{NameTemplate: strings.TrimSpace(req.NameTemplate)}
+		if req.StageID != nil {
+			if id, err := uuid.Parse(strings.TrimSpace(*req.StageID)); err == nil {
+				cfg.StageID = &id
+			}
+		}
+		return cfg, true
+	}
+
+	// Enabling this makes the source write DEALS, callerless, forever. Ingest never
+	// runs OLS, so without this check `integrations.manage` alone would become a
+	// standing permission to create records on an object the admin may not be allowed
+	// to touch — the exact hole the target_slug re-check exists to close, one object
+	// over.
+	if !h.authorizeTarget(c, orgID, dealSlug) {
+		return DealConfig{}, false
+	}
+	// A deal inherits the contact's rep, so configuring it is an ownership write too.
+	if !h.authorizeOwnerWrite(c, orgID, dealSlug) {
+		return DealConfig{}, false
+	}
+
+	if req.StageID == nil || strings.TrimSpace(*req.StageID) == "" {
+		h.mgmtError(c, http.StatusBadRequest, "choose the stage new deals should start in")
+		return DealConfig{}, false
+	}
+	stageID, err := uuid.Parse(strings.TrimSpace(*req.StageID))
+	if err != nil {
+		h.mgmtError(c, http.StatusBadRequest, "that stage id is not valid")
+		return DealConfig{}, false
+	}
+	stage, ok := h.liveStage(c, orgID, stageID)
+	if !ok {
+		return DealConfig{}, false
+	}
+	// A won/lost stage is refused rather than allowed-with-a-warning because deal
+	// creation does NOT derive is_won/is_lost/closed_at — only ChangeStage does — so
+	// a deal created into "Closed Won" sits in the won column reporting is_won=false.
+	// Wrong in the board and wrong in the forecast, in opposite directions.
+	if stage.IsWon || stage.IsLost {
+		h.mgmtError(c, http.StatusBadRequest, "new deals cannot start in a won or lost stage")
+		return DealConfig{}, false
+	}
+
+	tpl := strings.TrimSpace(req.NameTemplate)
+	if tpl == "" {
+		tpl = DefaultDealNameTemplate
+	}
+	if err := ValidateDealNameTemplate(tpl); err != nil {
+		h.mgmtError(c, http.StatusBadRequest, err.Error())
+		return DealConfig{}, false
+	}
+	_ = targetSlug // the deal is a second write beside the target, never the target itself
+	return DealConfig{Enabled: true, StageID: &stageID, NameTemplate: tpl}, true
+}
+
+// liveStage resolves a stage id within the org, rejecting one that is gone.
+func (h *Handler) liveStage(c *gin.Context, orgID, stageID uuid.UUID) (*domain.PipelineStage, bool) {
+	if h.stages == nil {
+		h.mgmtError(c, http.StatusInternalServerError, "the pipeline is unavailable")
+		return nil, false
+	}
+	stages, err := h.stages.List(c.Request.Context(), orgID)
+	if err != nil {
+		h.mgmtError(c, http.StatusInternalServerError, "could not read the pipeline")
+		return nil, false
+	}
+	for i := range stages {
+		if stages[i].ID == stageID {
+			return &stages[i], true
+		}
+	}
+	h.mgmtError(c, http.StatusBadRequest, "that stage no longer exists")
+	return nil, false
 }
 
 // sourceView is a LeadSource plus the routing config that deliberately does not
@@ -545,12 +658,24 @@ type sourceView struct {
 	// server-side. The UI must not derive this by intersecting with a member list: a
 	// failed member fetch would then badge a healthy rotation as dead.
 	OwnerPoolInactive []string `json:"owner_pool_inactive,omitempty"`
+	// DealStageMissing reports that the configured deal stage has been deleted since
+	// it was chosen. Server-computed for the same reason as OwnerPoolInactive: a UI
+	// that derived it from a stage list would badge a healthy source dead whenever
+	// that fetch failed. Deals still land (in the first stage) — this is the badge
+	// that stops that from being a silent re-filing.
+	DealStageMissing bool `json:"deal_stage_missing,omitempty"`
 }
 
 // viewOf decorates a source with its rotation. Best-effort: routing config that
 // cannot be read must not deny the whole management screen.
 func (h *Handler) viewOf(c *gin.Context, src *LeadSource, withLiveness bool) sourceView {
 	v := sourceView{LeadSource: src, OwnerPool: []string{}}
+	// Hydrated here because the column is unmapped. Omitting this is what made the
+	// toggle read as permanently off no matter what was stored.
+	if enroll, err := h.repo.GetBatchEnrollAutomation(c.Request.Context(), src.OrgID, src.ID); err == nil {
+		v.BatchEnrollAutomation = enroll
+	}
+	v.DealStageMissing = h.dealStageMissing(c, src, withLiveness)
 	raw, err := h.repo.GetOwnerPool(c.Request.Context(), src.OrgID, src.ID)
 	if err != nil {
 		h.logger.Error("integrations: could not read owner pool", "error", err, "source_id", src.ID.String())
@@ -573,6 +698,32 @@ func (h *Handler) viewOf(c *gin.Context, src *LeadSource, withLiveness bool) sou
 		}
 	}
 	return v
+}
+
+// dealStageMissing reports whether this source's configured deal stage is gone.
+//
+// Never badges on a failed lookup — the owner_pool_inactive rule, one setting over:
+// a stage list we could not read is not evidence the stage was deleted, and telling
+// an admin their pipeline is broken because of a DB blip sends them to fix a
+// healthy source.
+func (h *Handler) dealStageMissing(c *gin.Context, src *LeadSource, withLiveness bool) bool {
+	if !withLiveness || h.stages == nil {
+		return false
+	}
+	cfg := ParseDealConfig(src.Config)
+	if !cfg.Enabled || cfg.StageID == nil {
+		return false
+	}
+	stages, err := h.stages.List(c.Request.Context(), src.OrgID)
+	if err != nil {
+		return false
+	}
+	for i := range stages {
+		if stages[i].ID == *cfg.StageID {
+			return false
+		}
+	}
+	return true
 }
 
 // mappingView is everything the mapping UI needs, in one call: what this source
@@ -685,6 +836,20 @@ func (h *Handler) CreateSource(c *gin.Context) {
 	}
 	matchFieldsJSON, _ := json.Marshal(matchFields)
 
+	// Resolved BEFORE the key is minted so a rejected deal option cannot leave a
+	// source (and a live credential) behind that the admin did not mean to create.
+	dealCfg := DealConfig{}
+	if req.Deal != nil {
+		if dealCfg, ok = h.parseDealConfig(c, orgID, req.TargetSlug, *req.Deal); !ok {
+			return
+		}
+	}
+	configJSON, cerr := MergeDealConfig(datatypes.JSON(`{}`), dealCfg)
+	if cerr != nil {
+		h.mgmtError(c, http.StatusInternalServerError, "could not save the deal option")
+		return
+	}
+
 	plaintext, hash, prefix, err := GenerateLeadKey()
 	if err != nil {
 		h.mgmtError(c, http.StatusInternalServerError, "could not mint key")
@@ -702,7 +867,7 @@ func (h *Handler) CreateSource(c *gin.Context) {
 		// persists NULL/[] and silently defeats the column DEFAULT.
 		MatchFields:    matchFieldsJSON,
 		FieldMap:       datatypes.JSON(`{}`),
-		Config:         datatypes.JSON(`{}`),
+		Config:         configJSON,
 		DefaultOwnerID: owner,
 		DailyCap:       defaultDailyCap,
 		Status:         SourceStatusActive,
@@ -812,6 +977,17 @@ func (h *Handler) UpdateSource(c *gin.Context) {
 	if req.DailyCap != nil && *req.DailyCap >= 0 {
 		src.DailyCap = *req.DailyCap
 	}
+	// Resolved before the save, applied after it — the same shape as the rotation,
+	// and for the same reason: config lives outside the model's Save (see
+	// UpdateSource in the repository) so a rejected option must not half-apply.
+	var newDeal *DealConfig
+	if req.Deal != nil {
+		cfg, ok := h.parseDealConfig(c, src.OrgID, src.TargetSlug, *req.Deal)
+		if !ok {
+			return
+		}
+		newDeal = &cfg
+	}
 	if req.FieldMap != nil {
 		if !h.applyFieldMapUpdate(c, src, *req.FieldMap) {
 			return
@@ -847,6 +1023,21 @@ func (h *Handler) UpdateSource(c *gin.Context) {
 	if newPool != nil {
 		if err := h.repo.SetOwnerPool(c.Request.Context(), src.OrgID, src.ID, *newPool); err != nil {
 			h.mgmtError(c, http.StatusInternalServerError, "could not save the rotation")
+			return
+		}
+	}
+	if newDeal != nil {
+		if err := h.repo.SetDealConfig(c.Request.Context(), src.OrgID, src.ID, *newDeal); err != nil {
+			h.mgmtError(c, http.StatusInternalServerError, "could not save the deal option")
+			return
+		}
+		if merged, err := MergeDealConfig(src.Config, *newDeal); err == nil {
+			src.Config = merged // so the response shows what was just stored
+		}
+	}
+	if req.BatchEnrollAutomation != nil {
+		if err := h.repo.SetBatchEnrollAutomation(c.Request.Context(), src.OrgID, src.ID, *req.BatchEnrollAutomation); err != nil {
+			h.mgmtError(c, http.StatusInternalServerError, "could not save the bulk-delivery setting")
 			return
 		}
 	}
@@ -1034,6 +1225,14 @@ func (h *Handler) SendTestLead(c *gin.Context) {
 		h.logger.Error("integrations: test lead returned no record", "source_id", src.ID.String())
 		h.mgmtError(c, http.StatusInternalServerError, "the test lead was not written")
 		return
+	}
+
+	// A deal-creating source makes NO deal for a test lead, and the panel says so
+	// here rather than letting a green result imply otherwise. `uncovered` is the
+	// right channel: it already exists to stop a test from reading as "everything
+	// works" when parts of the pipeline were deliberately not exercised.
+	if ParseDealConfig(src.Config).Enabled {
+		uncovered = append(uncovered, "deal creation — a real lead would also open a deal; test leads never do, because a test deal would count in your forecast and could not be told apart from a real one")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"data": testLeadResponse{

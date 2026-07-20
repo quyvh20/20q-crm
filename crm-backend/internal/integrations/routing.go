@@ -3,8 +3,7 @@ package integrations
 import (
 	"context"
 	"encoding/json"
-
-	"crm-backend/internal/domain"
+	"strings"
 
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
@@ -22,15 +21,11 @@ import (
 // where that gets caught rather than at 3am when every lead lands on a stranger.
 const maxOwnerPool = 25
 
-// IsLiveMember reports whether a person may be handed a lead — the Go twin of
-// repository.activeMemberSQL. One rule in two languages; change one and you must
-// change the other, which is why a shared fixture set tests both.
-//
-// A nil OrgUser means no membership row at all (removal hard-deletes it), which is
-// the real signal that someone has left.
-func IsLiveMember(ou *domain.OrgUser) bool {
-	return ou != nil && ou.DeletedAt == nil && ou.Status == "active"
-}
+// The Go half of the liveness rule is domain.OrgUser.IsLive, twinned with
+// repository.ActiveMemberSQL and pinned to a shared fixture set in
+// repository/member_liveness_test.go. This package used to carry its own copy;
+// "may this person be handed a lead" and "may this person be handed a record" are
+// the same question, and answering it twice is how the two drift.
 
 // parsePoolUUIDs decodes a stored owner_pool.
 //
@@ -205,15 +200,17 @@ func (s *LeadIngestService) logf(msg string, args ...any) {
 // no-match WITH a note and then creates. Overwriting either way deletes a
 // disclosure — one turns a duplicate contact from an unexplained bug into a
 // documented decision, the other is the only signal a lead is unowned.
-func joinNotes(a, b string) string {
-	switch {
-	case a == "":
-		return b
-	case b == "":
-		return a
-	default:
-		return a + "; " + b
+// Variadic because a deal-creating delivery can carry three at once — an ambiguous
+// phone match, a stage that no longer exists, and the deal it made anyway. Empty
+// notes are skipped rather than joined into a run of separators.
+func joinNotes(notes ...string) string {
+	kept := make([]string, 0, len(notes))
+	for _, n := range notes {
+		if n != "" {
+			kept = append(kept, n)
+		}
 	}
+	return strings.Join(kept, "; ")
 }
 
 // warningsOf lifts a routing decision's caller-facing warning into the result.

@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+	"gorm.io/datatypes"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -284,4 +285,61 @@ func TestPhoneDigitsIndexExists(t *testing.T) {
 	var unique bool
 	require.NoError(t, db.Raw(`SELECT i.indisunique FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = 'idx_contacts_org_phone_digits'`).Scan(&unique).Error)
 	require.False(t, unique, "the phone index must stay NON-unique")
+}
+
+// TestSetDealConfig_PreservesSiblingKeys pins the reason UpdateSource omits
+// `config` and this writes through jsonb_set instead of replacing the blob.
+//
+// L3 (google_ads) and L5 (facebook) will store source-kind config in the same
+// column. A whole-blob write here would delete theirs the first time an admin
+// toggled the deal checkbox — silently, with a 200.
+func TestSetDealConfig_PreservesSiblingKeys(t *testing.T) {
+	db, cleanup := newIntegrationsTestDB(t)
+	defer cleanup()
+	repo := NewRepository(db)
+	ctx := context.Background()
+	orgID := seedOrg(t, db)
+	src := seedSource(t, repo, orgID)
+
+	require.NoError(t, db.Exec(
+		`UPDATE lead_sources SET config = '{"google_ads":{"customer_id":"123-456"}}'::jsonb WHERE id = ?`,
+		src.ID).Error)
+
+	stage := uuid.New()
+	require.NoError(t, repo.SetDealConfig(ctx, orgID, src.ID,
+		DealConfig{Enabled: true, StageID: &stage, NameTemplate: "{{full_name}}"}))
+
+	reloaded, err := repo.GetSource(ctx, orgID, src.ID)
+	require.NoError(t, err)
+	require.Contains(t, string(reloaded.Config), "123-456", "a sibling config key was destroyed")
+
+	cfg := ParseDealConfig(reloaded.Config)
+	require.True(t, cfg.Enabled)
+	require.Equal(t, stage, *cfg.StageID)
+}
+
+// TestUpdateSource_DoesNotClobberConfig is the other half: the model Save must
+// leave the blob alone entirely, because the struct it saves was read at the start
+// of the request and may be stale by the time it writes.
+func TestUpdateSource_DoesNotClobberConfig(t *testing.T) {
+	db, cleanup := newIntegrationsTestDB(t)
+	defer cleanup()
+	repo := NewRepository(db)
+	ctx := context.Background()
+	orgID := seedOrg(t, db)
+	src := seedSource(t, repo, orgID)
+
+	stage := uuid.New()
+	require.NoError(t, repo.SetDealConfig(ctx, orgID, src.ID, DealConfig{Enabled: true, StageID: &stage}))
+
+	// A stale in-memory struct — exactly what a concurrent PATCH holds.
+	src.Config = datatypes.JSON(`{}`)
+	src.Name = "renamed"
+	require.NoError(t, repo.UpdateSource(ctx, src))
+
+	reloaded, err := repo.GetSource(ctx, orgID, src.ID)
+	require.NoError(t, err)
+	require.Equal(t, "renamed", reloaded.Name, "the rename must still apply")
+	require.True(t, ParseDealConfig(reloaded.Config).Enabled,
+		"renaming a source must not switch its deal option off")
 }

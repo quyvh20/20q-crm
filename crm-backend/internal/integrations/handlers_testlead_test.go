@@ -55,7 +55,7 @@ func (stubMembers) ActiveMemberIDs(_ context.Context, _ uuid.UUID, ids []uuid.UU
 func TestSendTestLead_RequiresTheCallersOwnWritePermission(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	authz := &denyingAuthorizer{}
-	h := NewHandler(nil, nil, authz, stubMembers{}, contactSchema(),
+	h := NewHandler(nil, nil, authz, stubMembers{}, contactSchema(), nil,
 		NewRateLimiter(nil, 0, 0), nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	// Stand in for loadSource: the route's own lookup needs a DB, and what is under
@@ -91,5 +91,5 @@ func TestNewHandler_PanicsWithoutAnAuthorizer(t *testing.T) {
 			t.Fatal("NewHandler must panic on a nil authorizer rather than run without the OLS check")
 		}
 	}()
-	NewHandler(nil, nil, nil, stubMembers{}, contactSchema(), nil, nil, nil)
+	NewHandler(nil, nil, nil, stubMembers{}, contactSchema(), nil, nil, nil, nil)
 }

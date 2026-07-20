@@ -20,6 +20,7 @@ import SecretReveal from '../../components/settings/SecretReveal';
 import FieldMappingTable from './FieldMappingTable';
 import OwnerRoutingCard from './OwnerRoutingCard';
 import DeliveryLimitsCard from './DeliveryLimitsCard';
+import LeadDealCard from './LeadDealCard';
 import { DocumentTitle } from '../../lib/useDocumentTitle';
 import {
   useDeleteSource,
@@ -233,6 +234,36 @@ function eventLabel(ev: IntegrationEvent): string {
   return ev.outcome || ev.status;
 }
 
+/**
+ * Where a delivery's record lives.
+ *
+ * Routed through result_slug rather than a hardcoded /contacts/ path. The slug has
+ * always been on the ledger row for exactly this, and hardcoding it meant the link
+ * would silently point at a contact page for anything that was not a contact —
+ * already wrong for any other target slug, not only for deals.
+ */
+function recordPath(slug: string | undefined, id: string): string {
+  switch (slug) {
+    case 'deal':
+      return `/deals/${id}`;
+    case 'company':
+      return `/companies/${id}`;
+    default:
+      return `/contacts/${id}`;
+  }
+}
+
+function recordLabel(slug: string | undefined): string {
+  switch (slug) {
+    case 'deal':
+      return 'View deal';
+    case 'company':
+      return 'View company';
+    default:
+      return 'View contact';
+  }
+}
+
 export default function IntegrationSourceDetailSection() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -424,6 +455,8 @@ export default function IntegrationSourceDetailSection() {
 
           <DeliveryLimitsCard source={source} />
 
+          <LeadDealCard source={source} />
+
           <FieldMappingTable sourceId={source.id} />
 
           <div>
@@ -472,10 +505,10 @@ export default function IntegrationSourceDetailSection() {
                         <TableCell>
                           {ev.result_record_id ? (
                             <Link
-                              to={`/contacts/${ev.result_record_id}`}
+                              to={recordPath(ev.result_slug, ev.result_record_id)}
                               className="text-primary hover:underline"
                             >
-                              View contact
+                              {recordLabel(ev.result_slug)}
                             </Link>
                           ) : (
                             <span className="text-muted-foreground">—</span>

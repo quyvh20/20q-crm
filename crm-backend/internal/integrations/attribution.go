@@ -214,9 +214,14 @@ var lastTouchKeys = map[string]bool{
 	"referrer_url": true,
 }
 
+// truncate bounds an attribution value.
+//
+// Delegates to the rune-safe cut rather than slicing bytes. It used to do
+// `return s[:n]`, which severs a multi-byte rune mid-sequence; json.Marshal then
+// REPLACES the invalid bytes with U+FFFD instead of erroring, so a utm_campaign
+// carrying an accent or a CJK character silently became a different string that
+// never grouped with its siblings in a report. Silent, and invisible until someone
+// asked why one campaign had two rows.
 func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n]
+	return truncateRunes(s, n)
 }

@@ -1626,11 +1626,13 @@ func main() {
 			integrations.NewLeadIngestService(
 				integrationsRepo, recordService, contactRepo, objectRegistryUC, orgSettingsUC,
 				integrationsMembers, // owner-pool liveness
+				stageRepo,           // re-checks the configured deal stage: deleting one is a SOFT delete, so a stale id keeps satisfying the FK
 				autoLogger,          // routing degradations are invisible otherwise: the write still succeeds
 			),
 			permissionUC,
 			integrationsMembers, // membership check for default_owner_id + owner_pool
 			objectRegistryUC,
+			stageRepo, // save-time validation of the deal option's stage
 			integrationsLimiter,
 			integrationsIPLimiter,
 			autoLogger, // same slog handler the automation engine writes to

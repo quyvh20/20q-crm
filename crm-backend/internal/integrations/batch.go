@@ -121,6 +121,8 @@ type batchItemResult struct {
 	Quarantined []string `json:"quarantined,omitempty"`
 	Note        string   `json:"note,omitempty"`
 	Warnings    []string `json:"warnings,omitempty"`
+	// DealID is the opportunity this row also produced, when the source asks for one.
+	DealID string `json:"deal_id,omitempty"`
 }
 
 type batchResponse struct {
@@ -194,6 +196,9 @@ func applyResult(r *batchItemResult, res *IngestResult) {
 	r.Quarantined = res.Quarantined
 	r.Note = res.Note
 	r.Warnings = res.Warnings
+	if res.DealID != nil {
+		r.DealID = res.DealID.String()
+	}
 }
 
 // consumedHeadroom reports whether this delivery actually created a record, and so

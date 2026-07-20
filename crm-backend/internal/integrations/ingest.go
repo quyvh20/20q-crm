@@ -81,6 +81,15 @@ type IngestResult struct {
 	// OwnerID is who the lead was routed to (nil = unowned). Reported so a test lead
 	// can name the rep, and persisted so a retry reuses it.
 	OwnerID *uuid.UUID
+	// DealID is the opportunity this lead also produced, when the source asked for
+	// one. Reported to the caller so a Make/Zapier scenario can chain onto it.
+	DealID *uuid.UUID
+	// Fields are the values actually WRITTEN on the create branch, read back off the
+	// persisted record. Set there and only there — it exists to name a deal after the
+	// contact it points at, and the create branch is the only branch that makes one.
+	// (create() synthesizes first_name for email-only leads, and the field map can
+	// rename or drop keys, so the inbound payload is the wrong source for this.)
+	Fields map[string]any
 }
 
 // LeadIngestService is the one path every inbound lead takes, whatever channel it
@@ -93,14 +102,17 @@ type LeadIngestService struct {
 	fields  FieldDefManager
 	// members answers "may this person be handed a lead" for owner routing.
 	members MemberChecker
+	// stages answers "is the configured deal stage still real". Nil-tolerant: a
+	// source with no deal option never consults it.
+	stages StageReader
 	// logger surfaces routing degradations. A lead that lands unowned, or a rotation
 	// that could not be read, is invisible otherwise — the write still succeeds.
 	logger *slog.Logger
 }
 
 // NewLeadIngestService builds the pipeline.
-func NewLeadIngestService(repo *Repository, records RecordWriter, matcher ContactMatcher, schema SchemaProvider, fields FieldDefManager, members MemberChecker, logger *slog.Logger) *LeadIngestService {
-	return &LeadIngestService{repo: repo, records: records, matcher: matcher, schema: schema, fields: fields, members: members, logger: logger}
+func NewLeadIngestService(repo *Repository, records RecordWriter, matcher ContactMatcher, schema SchemaProvider, fields FieldDefManager, members MemberChecker, stages StageReader, logger *slog.Logger) *LeadIngestService {
+	return &LeadIngestService{repo: repo, records: records, matcher: matcher, schema: schema, fields: fields, members: members, stages: stages, logger: logger}
 }
 
 // newIngestContext builds the context every ingest write runs on. THE ONLY PLACE
@@ -256,10 +268,19 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 				return nil, domain.NewAppError(http.StatusConflict, "a prior delivery with this Idempotency-Key is incomplete; retry shortly")
 			}
 			return &IngestResult{EventID: prior.ID, RecordID: *prior.ResultRecordID, Outcome: prior.Outcome, Duplicate: true}, nil
-		case EventStatusFailed:
+		case EventStatusFailed, EventStatusQuarantined:
 			// The prior attempt never wrote anything, so the key is free to reuse.
 			// Re-run the pipeline against the existing row instead of banking a
 			// phantom success.
+			//
+			// `quarantined` belongs here with `failed`, and leaving it out was a live
+			// lead-loss bug in the endpoint whose entire purpose is recovery: a batch
+			// item refused for running out of the 40s budget is written quarantined
+			// with its idempotency key, is told `retryable: true` and "resend it" —
+			// and the resend then conflicted on that key, fell to the default arm, and
+			// got 409 "in flight; retry shortly" forever. The reaper never released it
+			// either, since it only touches `processing`. A row that is rejected
+			// BEFORE any write is by definition safe to re-run.
 			event = prior
 			event.Status = EventStatusProcessing
 			event.Attempts = prior.Attempts + 1
@@ -372,6 +393,13 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 		s.logf("integrations: could not record routing", "event_id", event.ID.String(), "error", serr)
 	}
 
+	// The lead may also be an opportunity. Runs HERE — after the contact exists (the
+	// deal links it) and before FinishEvent (so the delivery records what it made) —
+	// and on ictx, never ledgerCtx: the deal write must inherit the same silencing
+	// and suppression marks the contact write ran under, or a batch of 100 recovered
+	// leads fires 100 deal_created workflows the contact half deliberately did not.
+	s.maybeCreateDeal(ictx, source, lead, result, attr)
+
 	// Consent is written HERE — after the record exists — and nowhere else.
 	//
 	// Erasure is contact-keyed, so an envelope stored before the write would survive
@@ -452,6 +480,7 @@ func (s *LeadIngestService) upsert(ctx context.Context, source *LeadSource, lead
 			return &IngestResult{
 				RecordID: rec.ID,
 				Outcome:  OutcomeCreated,
+				Fields:   rec.Fields,
 				// Both notes can be real at once: an ambiguous-phone lead arrives as
 				// no-match WITH a note and then creates. Overwriting either way deletes a
 				// disclosure someone needs.
