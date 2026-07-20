@@ -27,41 +27,19 @@ func NewOrgMemberReader(db *gorm.DB, auth domain.AuthRepository) *OrgMemberReade
 	return &OrgMemberReader{AuthRepository: auth, db: db}
 }
 
-// activeMemberSQL is the SQL twin of integrations.IsLiveMember. The two encode one
-// rule — "may this person be handed a lead" — in two languages, so they are named
-// as twins in both places and tested against one shared fixture set.
-//
-// `deleted_at IS NULL` is written out by hand deliberately: OrgUser.DeletedAt is a
-// plain *time.Time, NOT gorm.DeletedAt, so GORM applies no soft-delete scope and an
-// omitted leg would silently match soft-deleted rows. The real protection against a
-// removed member is row ABSENCE (member removal hard-deletes the org_users row);
-// this leg is cheap defence and keeps the two twins textually parallel.
-const activeMemberSQL = `SELECT user_id FROM org_users
-	WHERE org_id = ? AND user_id IN ? AND status = 'active' AND deleted_at IS NULL`
-
 // ActiveMemberIDs returns which of the given users are live members of the org, in
 // ONE round trip.
 //
-// Batched rather than N GetOrgUser calls because this runs on the public capture hot
-// path: GetOrgUser Preloads Role, so N members would cost 2N queries plus N role
-// hydrations nobody reads. org_users' primary key is (user_id, org_id), so the
-// IN-list is one index probe per id.
+// The rule and the query live in member_liveness.go, shared with automation's
+// assignment routing and twinned with domain.OrgUser.IsLive. This method exists to
+// satisfy integrations.MemberChecker, which is a port over a struct rather than a
+// bare function — it is the binding, not a second implementation.
 //
-// ERROR CONTRACT — the caller must fail OPEN. A returned error means "unknown", NOT
-// "nobody is active": treating a DB blip as a dead pool would unown real leads, and
-// an unowned contact is invisible to own-scoped reps. Do not "simplify" a caller
-// into `if err != nil { return nil }`.
+// ERROR CONTRACT — for THIS caller (lead capture) an error means "unknown" and the
+// caller must fail OPEN: treating a DB blip as a dead pool would unown real leads,
+// and an unowned contact is invisible to own-scoped reps. Do not "simplify" a caller
+// into `if err != nil { return nil }`. Automation's assignment path deliberately
+// takes the opposite polarity; see member_liveness.go.
 func (r *OrgMemberReader) ActiveMemberIDs(ctx context.Context, orgID uuid.UUID, userIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
-	out := map[uuid.UUID]bool{}
-	if len(userIDs) == 0 {
-		return out, nil
-	}
-	var ids []uuid.UUID
-	if err := r.db.WithContext(ctx).Raw(activeMemberSQL, orgID, userIDs).Scan(&ids).Error; err != nil {
-		return nil, err
-	}
-	for _, id := range ids {
-		out[id] = true
-	}
-	return out, nil
+	return ActiveMemberIDs(ctx, r.db, orgID, userIDs)
 }

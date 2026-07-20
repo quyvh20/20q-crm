@@ -3,9 +3,6 @@ package integrations
 import (
 	"strings"
 	"testing"
-	"time"
-
-	"crm-backend/internal/domain"
 
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
@@ -148,27 +145,10 @@ func TestNonNegMod(t *testing.T) {
 	}
 }
 
-// TestIsLiveMember pins the Go half of the liveness rule. Its SQL twin
-// (repository.activeMemberSQL) must agree — the two are checked against the same
-// four cases so they cannot drift into disagreeing about who may receive a lead.
-func TestIsLiveMember(t *testing.T) {
-	now := time.Now()
-	cases := []struct {
-		name string
-		ou   *domain.OrgUser
-		want bool
-	}{
-		{"active member", &domain.OrgUser{Status: "active"}, true},
-		{"suspended", &domain.OrgUser{Status: "suspended"}, false},
-		{"soft-deleted", &domain.OrgUser{Status: "active", DeletedAt: &now}, false},
-		{"no membership row at all", nil, false},
-	}
-	for _, c := range cases {
-		if got := IsLiveMember(c.ou); got != c.want {
-			t.Errorf("%s: IsLiveMember = %v, want %v", c.name, got, c.want)
-		}
-	}
-}
+// The liveness rule's tests moved with the rule: repository/member_liveness_test.go
+// runs both halves (domain.OrgUser.IsLive and repository.ActiveMemberSQL) through
+// one fixture set, and covers three states this package's copy did not — invited,
+// status-deleted, and suspended-AND-soft-deleted.
 
 // TestParsePoolUUIDs_DegradesRatherThanFails: routing config being wrong is not a
 // reason to drop a customer's lead.
