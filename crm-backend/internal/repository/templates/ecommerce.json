@@ -5,26 +5,151 @@
   "description": "DTC orders, wholesale enquiries and returns for an online store — an Orders object carrying channel and fulfilment status, and a pipeline that closes when the order ships.",
   "icon": "🛒",
   "sort_order": 90,
-  "spec_version": 1,
+  "spec_version": 2,
   "ai_context": "You are a CRM assistant for an online store selling direct to consumers and, on enquiry, to wholesale and corporate buyers. Contacts are shoppers, subscribers and wholesale buyers; companies are resellers, marketplaces, distributors and corporate gifting accounts. A deal is a wholesale, bulk or corporate enquiry being worked from first message to a fulfilled order — everyday DTC purchases live on the Order object, not the pipeline. Never invent order numbers, tracking links, stock availability or delivery dates: use only what is recorded on the order or the deal.",
   "pipeline_stages": [
-    { "name": "Enquiry Received", "position": 0, "color": "#6366F1", "is_won": false, "is_lost": false },
-    { "name": "Qualified", "position": 1, "color": "#3B82F6", "is_won": false, "is_lost": false },
-    { "name": "Samples Sent", "position": 2, "color": "#8B5CF6", "is_won": false, "is_lost": false },
-    { "name": "Quote Sent", "position": 3, "color": "#F59E0B", "is_won": false, "is_lost": false },
-    { "name": "Awaiting Payment", "position": 4, "color": "#F97316", "is_won": false, "is_lost": false },
-    { "name": "Fulfilled", "position": 5, "color": "#10B981", "is_won": true, "is_lost": false },
-    { "name": "Lost", "position": 6, "color": "#EF4444", "is_won": false, "is_lost": true }
+    {
+      "name": "Enquiry Received",
+      "position": 0,
+      "color": "#6366F1",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Qualified",
+      "position": 1,
+      "color": "#3B82F6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Samples Sent",
+      "position": 2,
+      "color": "#8B5CF6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Quote Sent",
+      "position": 3,
+      "color": "#F59E0B",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Awaiting Payment",
+      "position": 4,
+      "color": "#F97316",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Fulfilled",
+      "position": 5,
+      "color": "#10B981",
+      "is_won": true,
+      "is_lost": false
+    },
+    {
+      "name": "Lost",
+      "position": 6,
+      "color": "#EF4444",
+      "is_won": false,
+      "is_lost": true
+    }
   ],
   "custom_field_defs": [
-    { "entity_type": "contact", "key": "acquisition_channel", "label": "Acquisition Channel", "type": "select", "options": ["Own Store", "Amazon", "eBay", "Etsy", "TikTok Shop", "Wholesale Portal", "Paid Social", "Organic Search", "Referral"], "required": false, "position": 0 },
-    { "entity_type": "contact", "key": "aov", "label": "Average Order Value", "type": "number", "required": false, "position": 1 },
-    { "entity_type": "contact", "key": "total_orders", "label": "Total Orders", "type": "number", "required": false, "position": 2 },
-    { "entity_type": "contact", "key": "email_subscriber", "label": "Email Subscriber", "type": "boolean", "required": false, "position": 3 },
-    { "entity_type": "company", "key": "buyer_type", "label": "Buyer Type", "type": "select", "options": ["Independent Retailer", "Marketplace Seller", "Distributor", "Dropshipper", "Subscription Box", "Corporate Gifting"], "required": false, "position": 0 },
-    { "entity_type": "company", "key": "ships_to_country", "label": "Ships To (Country)", "type": "text", "required": false, "position": 1 },
-    { "entity_type": "deal", "key": "fulfilment_status", "label": "Fulfilment Status", "type": "select", "options": ["Not started", "Awaiting stock", "Picking", "Shipped", "Delivered", "Returned"], "required": false, "position": 0 },
-    { "entity_type": "deal", "key": "discount_code", "label": "Discount Code", "type": "text", "required": false, "position": 1 }
+    {
+      "entity_type": "contact",
+      "key": "acquisition_channel",
+      "label": "Acquisition Channel",
+      "type": "select",
+      "options": [
+        "Own Store",
+        "Amazon",
+        "eBay",
+        "Etsy",
+        "TikTok Shop",
+        "Wholesale Portal",
+        "Paid Social",
+        "Organic Search",
+        "Referral"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "contact",
+      "key": "aov",
+      "label": "Average Order Value",
+      "type": "number",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "contact",
+      "key": "total_orders",
+      "label": "Total Orders",
+      "type": "number",
+      "required": false,
+      "position": 2
+    },
+    {
+      "entity_type": "contact",
+      "key": "email_subscriber",
+      "label": "Email Subscriber",
+      "type": "boolean",
+      "required": false,
+      "position": 3
+    },
+    {
+      "entity_type": "company",
+      "key": "buyer_type",
+      "label": "Buyer Type",
+      "type": "select",
+      "options": [
+        "Independent Retailer",
+        "Marketplace Seller",
+        "Distributor",
+        "Dropshipper",
+        "Subscription Box",
+        "Corporate Gifting"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "company",
+      "key": "ships_to_country",
+      "label": "Ships To (Country)",
+      "type": "text",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "deal",
+      "key": "fulfilment_status",
+      "label": "Fulfilment Status",
+      "type": "select",
+      "options": [
+        "Not started",
+        "Awaiting stock",
+        "Picking",
+        "Shipped",
+        "Delivered",
+        "Returned"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "deal",
+      "key": "discount_code",
+      "label": "Discount Code",
+      "type": "text",
+      "required": false,
+      "position": 1
+    }
   ],
   "object_defs": [
     {
@@ -34,15 +159,97 @@
       "icon": "📦",
       "searchable": true,
       "fields": [
-        { "key": "order_number", "label": "Order Number", "type": "text", "required": true, "position": 0 },
-        { "key": "order_date", "label": "Order Date", "type": "date", "required": false, "position": 1 },
-        { "key": "channel", "label": "Channel", "type": "select", "options": ["Own Store", "Amazon", "eBay", "Etsy", "TikTok Shop", "Wholesale Portal", "Phone / Manual"], "required": false, "position": 2 },
-        { "key": "order_total", "label": "Order Total", "type": "number", "required": false, "position": 3 },
-        { "key": "items_count", "label": "Items", "type": "number", "required": false, "position": 4 },
-        { "key": "fulfilment_status", "label": "Fulfilment Status", "type": "select", "options": ["Unfulfilled", "Awaiting stock", "Picked", "Shipped", "Delivered", "Returned", "Refunded"], "required": false, "position": 5 },
-        { "key": "tracking_url", "label": "Tracking Link", "type": "url", "required": false, "position": 6 },
-        { "key": "return_reason", "label": "Return Reason", "type": "select", "options": ["None", "Wrong size or fit", "Damaged in transit", "Not as described", "Changed mind", "Arrived late", "Faulty"], "required": false, "position": 7 },
-        { "key": "customer", "label": "Customer", "type": "relation", "target_slug": "contact", "required": false, "position": 8 }
+        {
+          "key": "order_number",
+          "label": "Order Number",
+          "type": "text",
+          "required": true,
+          "position": 0
+        },
+        {
+          "key": "order_date",
+          "label": "Order Date",
+          "type": "date",
+          "required": false,
+          "position": 1
+        },
+        {
+          "key": "channel",
+          "label": "Channel",
+          "type": "select",
+          "options": [
+            "Own Store",
+            "Amazon",
+            "eBay",
+            "Etsy",
+            "TikTok Shop",
+            "Wholesale Portal",
+            "Phone / Manual"
+          ],
+          "required": false,
+          "position": 2
+        },
+        {
+          "key": "order_total",
+          "label": "Order Total",
+          "type": "number",
+          "required": false,
+          "position": 3
+        },
+        {
+          "key": "items_count",
+          "label": "Items",
+          "type": "number",
+          "required": false,
+          "position": 4
+        },
+        {
+          "key": "fulfilment_status",
+          "label": "Fulfilment Status",
+          "type": "select",
+          "options": [
+            "Unfulfilled",
+            "Awaiting stock",
+            "Picked",
+            "Shipped",
+            "Delivered",
+            "Returned",
+            "Refunded"
+          ],
+          "required": false,
+          "position": 5
+        },
+        {
+          "key": "tracking_url",
+          "label": "Tracking Link",
+          "type": "url",
+          "required": false,
+          "position": 6
+        },
+        {
+          "key": "return_reason",
+          "label": "Return Reason",
+          "type": "select",
+          "options": [
+            "None",
+            "Wrong size or fit",
+            "Damaged in transit",
+            "Not as described",
+            "Changed mind",
+            "Arrived late",
+            "Faulty"
+          ],
+          "required": false,
+          "position": 7
+        },
+        {
+          "key": "customer",
+          "label": "Customer",
+          "type": "relation",
+          "target_slug": "contact",
+          "required": false,
+          "position": 8
+        }
       ]
     }
   ],
@@ -52,7 +259,9 @@
       "name": "Reply to a new enquiry the same day",
       "description": "Online buyers message three or four stores at once — the first useful reply usually takes the order.",
       "activation": "auto",
-      "trigger": { "type": "contact_created" },
+      "trigger": {
+        "type": "contact_created"
+      },
       "steps": [
         {
           "type": "action",
@@ -77,6 +286,33 @@
               "activity_type": "note",
               "title": "New contact captured for {{org.name}}",
               "body": "Set Acquisition Channel and Email Subscriber before this record reaches a campaign. If it is a wholesale or corporate enquiry, create a company, set Buyer Type, and open a deal at Enquiry Received."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "won_handover",
+      "name": "Follow up a fulfilled order",
+      "description": "Fires the moment a deal reaches Fulfilled — the point where work is won and something has to happen next.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "Fulfilled"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Check the delivery landed and ask {{contact.first_name}} for a product review",
+              "priority": "medium",
+              "due_in_days": 5
             }
           }
         }

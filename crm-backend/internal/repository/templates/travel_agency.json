@@ -5,7 +5,7 @@
   "description": "Enquiry to booking for a travel agency or tour operator — dated departures, per-booking references, and a pipeline that ends when the balance is paid.",
   "icon": "✈️",
   "sort_order": 230,
-  "spec_version": 1,
+  "spec_version": 2,
   "ai_context": "You are a CRM assistant for a travel agency / tour operator. Contacts are travellers, the person organising a group, or trade partners such as DMCs and resellers; a deal is one trip being sold to one party, from first enquiry to a fully paid booking. Bookings hang off dated departures, so dates, party size and payment deadlines matter more than anything else. Never invent flight numbers, hotel names, prices, visa rules or supplier reference numbers you were not given — quote only what is on the record.",
   "pipeline_stages": [
     {
@@ -343,6 +343,33 @@
               "title": "Re-confirm held options and payment deadlines on {{deal.title}}",
               "priority": "medium",
               "due_in_days": 1
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "won_handover",
+      "name": "Prepare a booked trip",
+      "description": "Fires the moment a deal reaches Booked — the point where work is won and something has to happen next.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "Booked"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Send {{contact.first_name}} the final itinerary and check passport and visa requirements",
+              "priority": "high",
+              "due_in_days": 3
             }
           }
         }

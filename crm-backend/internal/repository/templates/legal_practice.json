@@ -5,7 +5,7 @@
   "description": "Intake, conflict checks and engagement letters, with a Matter object that carries the practice area, fee and court date after the retainer clears.",
   "icon": "⚖️",
   "sort_order": 170,
-  "spec_version": 1,
+  "spec_version": 2,
   "ai_context": "You are a CRM assistant for a law firm. Contacts are clients, opposing parties, witnesses, experts and referral sources; a deal is a prospective engagement that closes when the client signs the engagement letter and the retainer funds clear, after which the work itself is tracked as a Matter. Never give legal advice, never cite statutes or case law, and never state or calculate a limitation period, filing deadline or court date that is not already recorded on the record. If someone asks a substantive legal question, say it needs the responsible lawyer.",
   "pipeline_stages": [
     {
@@ -314,6 +314,33 @@
             "params": {
               "title": "Update the file note and fee estimate for {{deal.title}}",
               "priority": "medium",
+              "due_in_days": 2
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "won_handover",
+      "name": "Open the matter once the retainer lands",
+      "description": "Fires the moment a deal reaches Retainer Received — the point where work is won and something has to happen next.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "Retainer Received"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Open the matter file for {{deal.title}} and send {{contact.first_name}} the client care letter",
+              "priority": "high",
               "due_in_days": 2
             }
           }

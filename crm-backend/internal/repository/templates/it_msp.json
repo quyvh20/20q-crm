@@ -5,7 +5,7 @@
   "description": "Managed service agreements from the first network assessment to a countersigned SLA, with a Contracts object that tracks tier, endpoint count and renewal date.",
   "icon": "🔧",
   "sort_order": 50,
-  "spec_version": 1,
+  "spec_version": 2,
   "ai_context": "You are a CRM assistant for an IT managed service provider (MSP). Contacts are business owners, IT managers and office managers at client and prospect companies; a company is the account you support and a deal is one managed-services agreement being sold or renewed. Pricing is almost always per endpoint or per user with a monthly recurring value and an SLA tier. Never invent SLA response times, endpoint counts, licence positions or audit findings — if the number is not in the record, ask for it.",
   "pipeline_stages": [
     {
@@ -307,6 +307,33 @@
               "activity_type": "note",
               "title": "Stage change on {{deal.title}}",
               "body": "Record what moved this deal: assessment findings shared, SLA tier agreed, redlines returned, or a blocker. Note the next decision date and who owns it on the client side."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "won_handover",
+      "name": "Onboard a signed client",
+      "description": "Fires the moment a deal reaches Contract Signed — the point where work is won and something has to happen next.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "Contract Signed"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Kick off onboarding for {{contact.first_name}}: asset audit, agent rollout, SLA walkthrough",
+              "priority": "high",
+              "due_in_days": 3
             }
           }
         }

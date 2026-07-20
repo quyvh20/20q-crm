@@ -5,26 +5,160 @@
   "description": "Trade accounts and repeat shoppers for a bricks-and-mortar store — a Product Lines object, store and account-type fields, and a pipeline that ends at the opening order.",
   "icon": "🛍️",
   "sort_order": 80,
-  "spec_version": 1,
+  "spec_version": 2,
   "ai_context": "You are a CRM assistant for a bricks-and-mortar retailer that also sells wholesale to trade accounts. Contacts are individual shoppers, loyalty members, and the buyers who place orders on behalf of a stockist; companies are the stockists, distributors and hospitality accounts themselves. A deal is one trade or wholesale order being negotiated, from first enquiry through the line sheet and pro forma to the opening order being placed. Never invent stock levels, wholesale prices, RRPs or minimum order quantities — quote only what is recorded on the product line or the deal.",
   "pipeline_stages": [
-    { "name": "New Enquiry", "position": 0, "color": "#6366F1", "is_won": false, "is_lost": false },
-    { "name": "Trade Application", "position": 1, "color": "#3B82F6", "is_won": false, "is_lost": false },
-    { "name": "Line Sheet Sent", "position": 2, "color": "#8B5CF6", "is_won": false, "is_lost": false },
-    { "name": "Showroom or Samples", "position": 3, "color": "#F59E0B", "is_won": false, "is_lost": false },
-    { "name": "Pro Forma Sent", "position": 4, "color": "#F97316", "is_won": false, "is_lost": false },
-    { "name": "Opening Order Placed", "position": 5, "color": "#10B981", "is_won": true, "is_lost": false },
-    { "name": "Lost", "position": 6, "color": "#EF4444", "is_won": false, "is_lost": true }
+    {
+      "name": "New Enquiry",
+      "position": 0,
+      "color": "#6366F1",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Trade Application",
+      "position": 1,
+      "color": "#3B82F6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Line Sheet Sent",
+      "position": 2,
+      "color": "#8B5CF6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Showroom or Samples",
+      "position": 3,
+      "color": "#F59E0B",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Pro Forma Sent",
+      "position": 4,
+      "color": "#F97316",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Opening Order Placed",
+      "position": 5,
+      "color": "#10B981",
+      "is_won": true,
+      "is_lost": false
+    },
+    {
+      "name": "Lost",
+      "position": 6,
+      "color": "#EF4444",
+      "is_won": false,
+      "is_lost": true
+    }
   ],
   "custom_field_defs": [
-    { "entity_type": "contact", "key": "customer_type", "label": "Customer Type", "type": "select", "options": ["Retail Customer", "Trade / Wholesale Buyer", "Loyalty Member", "Staff", "Online Only"], "required": false, "position": 0 },
-    { "entity_type": "contact", "key": "home_store", "label": "Home Store", "type": "text", "required": false, "position": 1 },
-    { "entity_type": "contact", "key": "loyalty_tier", "label": "Loyalty Tier", "type": "select", "options": ["None", "Bronze", "Silver", "Gold", "VIP"], "required": false, "position": 2 },
-    { "entity_type": "contact", "key": "marketing_opt_in", "label": "Marketing Opt-in", "type": "boolean", "required": false, "position": 3 },
-    { "entity_type": "company", "key": "account_type", "label": "Account Type", "type": "select", "options": ["Independent Retailer", "Chain / Multi-site", "Department Store", "Online Reseller", "Distributor", "Hospitality"], "required": false, "position": 0 },
-    { "entity_type": "company", "key": "payment_terms", "label": "Payment Terms", "type": "select", "options": ["Pro forma", "Card on order", "Net 14", "Net 30", "Net 60"], "required": false, "position": 1 },
-    { "entity_type": "deal", "key": "season", "label": "Season", "type": "select", "options": ["Spring/Summer", "Autumn/Winter", "Core / All year", "Christmas", "Clearance"], "required": false, "position": 0 },
-    { "entity_type": "deal", "key": "requested_delivery", "label": "Requested Delivery", "type": "date", "required": false, "position": 1 }
+    {
+      "entity_type": "contact",
+      "key": "customer_type",
+      "label": "Customer Type",
+      "type": "select",
+      "options": [
+        "Retail Customer",
+        "Trade / Wholesale Buyer",
+        "Loyalty Member",
+        "Staff",
+        "Online Only"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "contact",
+      "key": "home_store",
+      "label": "Home Store",
+      "type": "text",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "contact",
+      "key": "loyalty_tier",
+      "label": "Loyalty Tier",
+      "type": "select",
+      "options": [
+        "None",
+        "Bronze",
+        "Silver",
+        "Gold",
+        "VIP"
+      ],
+      "required": false,
+      "position": 2
+    },
+    {
+      "entity_type": "contact",
+      "key": "marketing_opt_in",
+      "label": "Marketing Opt-in",
+      "type": "boolean",
+      "required": false,
+      "position": 3
+    },
+    {
+      "entity_type": "company",
+      "key": "account_type",
+      "label": "Account Type",
+      "type": "select",
+      "options": [
+        "Independent Retailer",
+        "Chain / Multi-site",
+        "Department Store",
+        "Online Reseller",
+        "Distributor",
+        "Hospitality"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "company",
+      "key": "payment_terms",
+      "label": "Payment Terms",
+      "type": "select",
+      "options": [
+        "Pro forma",
+        "Card on order",
+        "Net 14",
+        "Net 30",
+        "Net 60"
+      ],
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "deal",
+      "key": "season",
+      "label": "Season",
+      "type": "select",
+      "options": [
+        "Spring/Summer",
+        "Autumn/Winter",
+        "Core / All year",
+        "Christmas",
+        "Clearance"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "deal",
+      "key": "requested_delivery",
+      "label": "Requested Delivery",
+      "type": "date",
+      "required": false,
+      "position": 1
+    }
   ],
   "object_defs": [
     {
@@ -34,15 +168,93 @@
       "icon": "🏷️",
       "searchable": true,
       "fields": [
-        { "key": "name", "label": "Line Name", "type": "text", "required": true, "position": 0 },
-        { "key": "sku_prefix", "label": "SKU Prefix", "type": "text", "required": false, "position": 1 },
-        { "key": "category", "label": "Category", "type": "select", "options": ["Apparel", "Footwear", "Accessories", "Homeware", "Gifts", "Food & Drink", "Seasonal"], "required": false, "position": 2 },
-        { "key": "season", "label": "Season", "type": "select", "options": ["Spring/Summer", "Autumn/Winter", "Core / All year", "Christmas", "Clearance"], "required": false, "position": 3 },
-        { "key": "wholesale_price", "label": "Wholesale Price", "type": "number", "required": false, "position": 4 },
-        { "key": "rrp", "label": "RRP", "type": "number", "required": false, "position": 5 },
-        { "key": "moq", "label": "Minimum Order Qty", "type": "number", "required": false, "position": 6 },
-        { "key": "stock_status", "label": "Stock Status", "type": "select", "options": ["In stock", "Low stock", "On order", "Pre-order", "Discontinued"], "required": false, "position": 7 },
-        { "key": "supplier", "label": "Supplier", "type": "relation", "target_slug": "company", "required": false, "position": 8 }
+        {
+          "key": "name",
+          "label": "Line Name",
+          "type": "text",
+          "required": true,
+          "position": 0
+        },
+        {
+          "key": "sku_prefix",
+          "label": "SKU Prefix",
+          "type": "text",
+          "required": false,
+          "position": 1
+        },
+        {
+          "key": "category",
+          "label": "Category",
+          "type": "select",
+          "options": [
+            "Apparel",
+            "Footwear",
+            "Accessories",
+            "Homeware",
+            "Gifts",
+            "Food & Drink",
+            "Seasonal"
+          ],
+          "required": false,
+          "position": 2
+        },
+        {
+          "key": "season",
+          "label": "Season",
+          "type": "select",
+          "options": [
+            "Spring/Summer",
+            "Autumn/Winter",
+            "Core / All year",
+            "Christmas",
+            "Clearance"
+          ],
+          "required": false,
+          "position": 3
+        },
+        {
+          "key": "wholesale_price",
+          "label": "Wholesale Price",
+          "type": "number",
+          "required": false,
+          "position": 4
+        },
+        {
+          "key": "rrp",
+          "label": "RRP",
+          "type": "number",
+          "required": false,
+          "position": 5
+        },
+        {
+          "key": "moq",
+          "label": "Minimum Order Qty",
+          "type": "number",
+          "required": false,
+          "position": 6
+        },
+        {
+          "key": "stock_status",
+          "label": "Stock Status",
+          "type": "select",
+          "options": [
+            "In stock",
+            "Low stock",
+            "On order",
+            "Pre-order",
+            "Discontinued"
+          ],
+          "required": false,
+          "position": 7
+        },
+        {
+          "key": "supplier",
+          "label": "Supplier",
+          "type": "relation",
+          "target_slug": "company",
+          "required": false,
+          "position": 8
+        }
       ]
     }
   ],
@@ -52,7 +264,9 @@
       "name": "Triage every new customer record",
       "description": "Decides early whether a new name is a retail shopper or a trade buyer, because the two get completely different follow-up.",
       "activation": "auto",
-      "trigger": { "type": "contact_created" },
+      "trigger": {
+        "type": "contact_created"
+      },
       "steps": [
         {
           "type": "action",
@@ -77,6 +291,33 @@
               "activity_type": "note",
               "title": "New customer added to {{org.name}}",
               "body": "Set Customer Type, Home Store and Marketing Opt-in before this record is used in any campaign. Trade buyers also need an Account Type and Payment Terms on the company record."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "won_handover",
+      "name": "Support an opening order",
+      "description": "Fires the moment a deal reaches Opening Order Placed — the point where work is won and something has to happen next.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "Opening Order Placed"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Confirm the delivery date and schedule the merchandising visit for {{contact.first_name}}",
+              "priority": "medium",
+              "due_in_days": 5
             }
           }
         }

@@ -181,6 +181,86 @@ func TestValidateTemplateFileCatchesBadContent(t *testing.T) {
 	}
 }
 
+// Every template should act on its own won stage. Winning the work is the moment
+// something has to happen next, and it is the step people most often forget — a
+// template that installs a pipeline but nothing to fire at the end of it is doing
+// half the job.
+func TestEveryTemplateActsOnItsWonStage(t *testing.T) {
+	files, err := loadTemplateFiles()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	for i := range files {
+		tf := files[i]
+		if len(tf.PipelineStages) == 0 {
+			continue
+		}
+		var won string
+		for _, s := range tf.PipelineStages {
+			if s.IsWon {
+				won = s.Name
+			}
+		}
+		found := false
+		for _, w := range tf.Workflows {
+			if w.Trigger.Type != "deal_stage_changed" {
+				continue
+			}
+			var p struct {
+				ToStage string `json:"to_stage"`
+			}
+			if len(w.Trigger.Params) > 0 {
+				_ = json.Unmarshal(w.Trigger.Params, &p)
+			}
+			if declaresStage([]domain.TemplateStage{{Name: won}}, p.ToStage) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s: no automation fires on its won stage (%q)", tf.Slug, won)
+		}
+	}
+}
+
+// A named stage is resolved against the org's stages at APPLY time, so a typo
+// would fail the workflow in front of the customer rather than at build time.
+func TestValidateTemplateFileRejectsUnknownStageName(t *testing.T) {
+	tf := templateFile{
+		Slug: "ok", Name: "X", SpecVersion: 1,
+		PipelineStages: []domain.TemplateStage{
+			{Name: "Open", Position: 0},
+			{Name: "Won", Position: 1, IsWon: true},
+		},
+		Workflows: []domain.TemplateWorkflow{{
+			Key: "k", Name: "N", Activation: "auto",
+			Trigger: domain.TemplateTrigger{
+				Type:   "deal_stage_changed",
+				Params: domain.JSON(`{"to_stage":"Clsoed Won"}`), // typo
+			},
+			Steps: domain.JSON(`[{"type":"action","id":"s1"}]`),
+		}},
+	}
+	if err := ValidateTemplateFile(&tf); err == nil {
+		t.Error("a to_stage naming a stage the template does not define must be rejected")
+	}
+
+	// The wildcard and a real stage name both stay valid.
+	for _, ok := range []string{"*", "Won", "  won  "} {
+		good := tf
+		good.Workflows = []domain.TemplateWorkflow{{
+			Key: "k", Name: "N", Activation: "auto",
+			Trigger: domain.TemplateTrigger{
+				Type:   "deal_stage_changed",
+				Params: domain.JSON(`{"to_stage":"` + ok + `"}`),
+			},
+			Steps: domain.JSON(`[{"type":"action","id":"s1"}]`),
+		}}
+		if err := ValidateTemplateFile(&good); err != nil {
+			t.Errorf("to_stage %q should be accepted, got %v", ok, err)
+		}
+	}
+}
+
 func TestValidateTemplateFileAcceptsRelationToSiblingObject(t *testing.T) {
 	tf := templateFile{
 		Slug: "ok", Name: "X", SpecVersion: 1,

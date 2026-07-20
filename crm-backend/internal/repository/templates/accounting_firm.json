@@ -5,7 +5,7 @@
   "description": "New-client onboarding through to a signed engagement letter, with an Engagement object that carries the service, fee and filing deadline for each period of work.",
   "icon": "📊",
   "sort_order": 190,
-  "spec_version": 1,
+  "spec_version": 2,
   "ai_context": "You are a CRM assistant for an accounting and bookkeeping practice. Contacts are business owners, directors, office managers and their bookkeepers; a deal is a prospective client engagement that closes when the engagement letter is signed, and the recurring work itself is tracked as an Engagement with its own fee and filing deadline. Never give tax advice, never compute a tax liability, and never assert a filing deadline or threshold that is not already recorded — dates and rules vary by jurisdiction, entity type and year. Route substantive questions to the responsible accountant.",
   "pipeline_stages": [
     {
@@ -329,6 +329,33 @@
               "title": "Confirm scope, fee and deadlines on {{deal.title}}",
               "priority": "medium",
               "due_in_days": 2
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "won_handover",
+      "name": "Start the client off when they are onboarded",
+      "description": "Fires the moment a deal reaches Client Onboarded — the point where work is won and something has to happen next.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "Client Onboarded"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Set up {{contact.first_name}} in the practice software and confirm their first filing deadline",
+              "priority": "high",
+              "due_in_days": 3
             }
           }
         }

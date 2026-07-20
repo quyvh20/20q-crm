@@ -5,7 +5,7 @@
   "description": "Proposals, SOWs and billable engagements — an Engagements object tracking day rate, days sold against days delivered, plus a pipeline that treats \"no decision\" as the real competitor.",
   "icon": "🧭",
   "sort_order": 40,
-  "spec_version": 1,
+  "spec_version": 2,
   "ai_context": "You are a CRM assistant for a management consulting practice — independent consultants or a small firm selling advisory and delivery work. A contact is a client-side executive, sponsor or procurement lead; a deal is one opportunity moving from first conversation to a signed statement of work; the Engagement object is the sold work, carrying sponsor, day rate, days sold versus days delivered and status. Never invent day rates, availability, client names, references or claims of prior results; if a rate or a date is not on the record, say it is not recorded.",
   "pipeline_stages": [
     {
@@ -308,6 +308,33 @@
               "activity_type": "note",
               "title": "Stage change on {{deal.title}}",
               "body": "Confirm three things: the outcome the client is buying, the number of billable days it now takes, and who signs. If the scope grew and the days did not, that is a discount nobody agreed to."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "won_handover",
+      "name": "Kick off a live engagement",
+      "description": "Fires the moment a deal reaches Signed — Engagement Live — the point where work is won and something has to happen next.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "Signed — Engagement Live"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Book the kickoff workshop and confirm the delivery team for {{deal.title}}",
+              "priority": "high",
+              "due_in_days": 3
             }
           }
         }

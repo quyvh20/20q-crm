@@ -5,7 +5,7 @@
   "description": "Patient enquiries, insurance checks and appointments for a private clinic, with an Appointments object and a pipeline that ends at discharge.",
   "icon": "🩺",
   "sort_order": 110,
-  "spec_version": 1,
+  "spec_version": 2,
   "ai_context": "You are a CRM assistant for a private healthcare clinic. Contacts are patients and referrers; a deal represents one episode of care, from first enquiry through consultation and treatment to discharge. Help with scheduling, insurance paperwork, referral follow-up and administrative reminders only. Never give clinical advice, never suggest a diagnosis, medication or treatment, and never invent a patient's medical history, test results, insurance authorisation or clinician availability — if it is not in the record, say so and ask the clinic.",
   "pipeline_stages": [
     {
@@ -307,6 +307,33 @@
               "title": "Admin check on {{deal.title}} — next appointment booked, pre-authorisation valid, fee estimate sent",
               "priority": "medium",
               "due_in_days": 2
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "won_handover",
+      "name": "Close the loop on discharge",
+      "description": "Fires the moment a deal reaches Discharged — the point where work is won and something has to happen next.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "Discharged"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Send {{contact.first_name}} the discharge summary and book any follow-up",
+              "priority": "high",
+              "due_in_days": 3
             }
           }
         }

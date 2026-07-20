@@ -5,7 +5,7 @@
   "description": "Enquiry-to-enrolment pipeline for a tutoring centre or training provider, with Courses and Enrolments tracked as their own records.",
   "icon": "🎓",
   "sort_order": 200,
-  "spec_version": 1,
+  "spec_version": 2,
   "ai_context": "You are a CRM assistant for a tutoring centre / training provider. A contact is normally the fee payer — a parent or guardian, an adult learner, or a corporate L&D buyer — and the student named on the record may be a different person. A deal is one enrolment decision for one student, running from first enquiry through a level assessment and trial lesson to signed enrolment and paid fees. Courses and enrolments are separate records; never invent a course code, timetable slot, tutor name, exam board or fee you were not given.",
   "pipeline_stages": [
     {
@@ -390,6 +390,33 @@
               "activity_type": "note",
               "title": "Enrolment stage updated: {{deal.title}}",
               "body": "Stage changed. Record what was agreed — the tutor assigned, the timetable slot, the fee quoted, and anything the family still has to decide."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "won_handover",
+      "name": "Welcome a newly enrolled student",
+      "description": "Fires the moment a deal reaches Enrolled — the point where work is won and something has to happen next.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "Enrolled"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Send {{contact.first_name}} the joining pack and confirm their first lesson time",
+              "priority": "high",
+              "due_in_days": 2
             }
           }
         }

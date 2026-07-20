@@ -5,7 +5,7 @@
   "description": "Scoped builds and retainers from first enquiry to a signed statement of work, with a Projects object tracking stack, scope, contracted hours and launch date.",
   "icon": "💻",
   "sort_order": 70,
-  "spec_version": 1,
+  "spec_version": 2,
   "ai_context": "You are a CRM assistant for a web and software development studio. Contacts are founders, marketing leads, product managers and CTOs at client companies, and a deal is one engagement being sold — a fixed-scope build, a discovery sprint, or an ongoing retainer. Delivery lives in the Projects object, which carries the stack, scope summary, contracted hours and launch date. Never invent estimates, hourly rates, timelines or technical commitments; if scope is unclear, say so and recommend a paid discovery instead of guessing a number.",
   "pipeline_stages": [
     {
@@ -329,6 +329,33 @@
               "activity_type": "note",
               "title": "Stage change on {{deal.title}}",
               "body": "Note anything that moved the estimate: features added or cut, integrations discovered, content or design dependencies on the client side, and any change to the launch date. Assumptions that are not written down become your problem at delivery."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "won_handover",
+      "name": "Kick off a signed project",
+      "description": "Fires the moment a deal reaches Signed — the point where work is won and something has to happen next.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "Signed"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Book the kickoff with {{contact.first_name}} and collect content, access and brand assets",
+              "priority": "high",
+              "due_in_days": 3
             }
           }
         }

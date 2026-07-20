@@ -5,7 +5,7 @@
   "description": "Retainers and project work — a Campaigns object for channels, budgets and deliverables, plus a new-business pipeline that runs from brief through pitch to a booked kickoff.",
   "icon": "📣",
   "sort_order": 30,
-  "spec_version": 1,
+  "spec_version": 2,
   "ai_context": "You are a CRM assistant for a marketing and creative agency that sells monthly retainers and one-off projects. A contact is a client-side marketer, founder or procurement lead; a deal is one piece of new business — a retainer or a project — and the Campaign object is the work itself once it is sold, carrying channel, budget, dates, KPI and deliverables. Never invent campaign results, media spend, performance numbers, rate cards or client names for case studies; if a figure is not on the record, say it is not recorded.",
   "pipeline_stages": [
     {
@@ -328,6 +328,33 @@
               "activity_type": "note",
               "title": "Stage change on {{deal.title}}",
               "body": "What did the client respond to, what did they push back on, and what is the committed next step and date? If we lost, record whether it was price, chemistry, credentials or timing."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "won_handover",
+      "name": "Run the kickoff on a won account",
+      "description": "Fires the moment a deal reaches Won — Kickoff Booked — the point where work is won and something has to happen next.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "Won — Kickoff Booked"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Run the kickoff with {{contact.first_name}}: goals, access and reporting cadence",
+              "priority": "high",
+              "due_in_days": 3
             }
           }
         }

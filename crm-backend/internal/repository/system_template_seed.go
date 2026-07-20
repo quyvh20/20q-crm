@@ -220,7 +220,8 @@ func ValidateTemplateFile(tf *templateFile) error {
 		// to that org's stage id; a raw id is meaningless in a shared template.
 		if w.Trigger.Type == "deal_stage_changed" {
 			var p struct {
-				ToStage string `json:"to_stage"`
+				ToStage   string `json:"to_stage"`
+				FromStage string `json:"from_stage"`
 			}
 			if len(w.Trigger.Params) > 0 {
 				_ = json.Unmarshal(w.Trigger.Params, &p)
@@ -228,9 +229,35 @@ func ValidateTemplateFile(tf *templateFile) error {
 			if strings.TrimSpace(p.ToStage) == "" {
 				return fmt.Errorf("workflow %q: deal_stage_changed needs trigger.params.to_stage (\"*\" for any stage, or a stage name)", w.Key)
 			}
+			// A named stage is resolved to that org's stage id at apply time, and an
+			// unresolvable name fails the workflow THERE — in front of the customer.
+			// Since a template installs its own stages, the name has to be one of them.
+			for _, ref := range []struct{ field, value string }{
+				{"to_stage", p.ToStage}, {"from_stage", p.FromStage},
+			} {
+				if ref.value == "" || ref.value == "*" {
+					continue
+				}
+				if !declaresStage(tf.PipelineStages, ref.value) {
+					return fmt.Errorf("workflow %q: %s names stage %q, which this template does not define",
+						w.Key, ref.field, ref.value)
+				}
+			}
 		}
 	}
 	return nil
+}
+
+// declaresStage reports whether the template defines a stage of this name, using
+// the same case-insensitive, space-trimmed match the apply engine resolves with.
+func declaresStage(stages []domain.TemplateStage, name string) bool {
+	want := strings.ToLower(strings.TrimSpace(name))
+	for _, s := range stages {
+		if strings.ToLower(strings.TrimSpace(s.Name)) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func validateTemplateFieldShape(key, label, fieldType string, options []string, targetSlug string) error {

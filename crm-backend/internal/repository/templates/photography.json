@@ -5,7 +5,7 @@
   "description": "Enquiry to delivered gallery for a photo or video studio, with a Shoots object holding the package, shoot date, location and delivery deadline.",
   "icon": "📷",
   "sort_order": 220,
-  "spec_version": 1,
+  "spec_version": 2,
   "ai_context": "You are a CRM assistant for a photography and videography studio. A contact is the person booking and paying — a couple, a family, or a marketing or brand buyer commissioning commercial work — and for commercial jobs the person on set is often not the person who signed. A deal is one commission from enquiry through quote and retainer to the shoot and the delivered gallery. Shoot dates, call times, locations and delivery deadlines live on Shoot records; never invent a date, location, price, turnaround time or usage licence you were not given, and never promise availability you have not checked against the calendar.",
   "pipeline_stages": [
     {
@@ -322,6 +322,33 @@
               "activity_type": "note",
               "title": "Booking stage updated: {{deal.title}}",
               "body": "Stage changed. Record what was agreed — shoot date and call time, location, package and hours, number of edited images, usage licence, and the delivery date promised."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "won_handover",
+      "name": "Follow up a delivered gallery",
+      "description": "Fires the moment a deal reaches Gallery Delivered — the point where work is won and something has to happen next.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "Gallery Delivered"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Ask {{contact.first_name}} for a review and offer the print or album options",
+              "priority": "medium",
+              "due_in_days": 5
             }
           }
         }

@@ -5,7 +5,7 @@
   "description": "Donor and grant fundraising on a moves-management pipeline, with Campaigns and Grants objects and giving history on every supporter.",
   "icon": "🤝",
   "sort_order": 250,
-  "spec_version": 1,
+  "spec_version": 2,
   "ai_context": "You are a CRM assistant for a nonprofit. Contacts are supporters — individual donors, major donors, volunteers, trustees and foundation programme officers — and a deal is a single gift or grant application being worked, from identifying the prospect through the ask to the money arriving. Companies are foundations, corporate sponsors and funding bodies. Never invent giving amounts, wealth-screening estimates, restrictions on a gift, or grant deadlines and eligibility rules; and never draft an ask that promises how a donation will be used unless that restriction is recorded on the deal.",
   "pipeline_stages": [
     {
@@ -383,6 +383,33 @@
               "title": "Plan the next move on {{deal.title}} — who asks, for how much, by when",
               "priority": "medium",
               "due_in_days": 3
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "won_handover",
+      "name": "Steward a received gift",
+      "description": "Fires the moment a deal reaches Gift Received — the point where work is won and something has to happen next.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "Gift Received"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Thank {{contact.first_name}} personally and add them to the stewardship plan",
+              "priority": "high",
+              "due_in_days": 2
             }
           }
         }

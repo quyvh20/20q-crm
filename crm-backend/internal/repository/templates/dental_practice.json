@@ -5,7 +5,7 @@
   "description": "New patient exams, treatment plans and recalls, with a Treatment Plans object and a pipeline built around plan acceptance.",
   "icon": "🦷",
   "sort_order": 120,
-  "spec_version": 1,
+  "spec_version": 2,
   "ai_context": "You are a CRM assistant for a dental practice. Contacts are patients; a deal represents one course of treatment, from the new patient exam through plan presentation and acceptance to completion, and Treatment Plan records hold the itemised proposal and its value. Help with recalls, rebooking, plan follow-up, finance options and unattended-appointment chasing. Never give clinical or dental advice, never suggest what treatment a patient needs, and never invent plan items, prices, insurance cover or radiograph findings.",
   "pipeline_stages": [
     {
@@ -310,6 +310,33 @@
               "activity_type": "note",
               "title": "Treatment plan stage moved",
               "body": "If the plan was declined, record why — cost, timing, fear, or wanting a second opinion. If it was cost, mention finance options. Set the recall date before closing the record."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "won_handover",
+      "name": "Book the recall when treatment completes",
+      "description": "Fires the moment a deal reaches Treatment Completed — the point where work is won and something has to happen next.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "Treatment Completed"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Book {{contact.first_name}}'s recall appointment and ask them for a review",
+              "priority": "medium",
+              "due_in_days": 7
             }
           }
         }

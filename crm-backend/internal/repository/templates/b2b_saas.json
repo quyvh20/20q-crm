@@ -5,7 +5,7 @@
   "description": "Subscription software sold to businesses — a Subscriptions object tracking MRR, plan tier and renewal, plus a pipeline that includes the security review that actually stalls these deals.",
   "icon": "☁️",
   "sort_order": 20,
-  "spec_version": 1,
+  "spec_version": 2,
   "ai_context": "You are a CRM assistant for a B2B SaaS company selling subscription software to other businesses. A contact is one person inside a buying committee — champion, economic buyer, technical evaluator, security or procurement — and a deal is one account's path to a signed subscription, usually with several contacts attached. The Subscription object holds the commercial reality after signature: plan, MRR, seats, renewal date and churn risk. Never invent pricing, discount authority, contract terms, SLAs, security certifications or product roadmap dates; if a number is not in the record, say it is not recorded.",
   "pipeline_stages": [
     {
@@ -325,6 +325,33 @@
               "activity_type": "note",
               "title": "Stage change on {{deal.title}}",
               "body": "Record what moved this deal: who said yes, what the next commitment is, and the date it is committed for. If nothing changed on the buyer's side, the stage should not have moved."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "won_handover",
+      "name": "Hand a won deal to onboarding",
+      "description": "Fires the moment a deal reaches Closed Won — the point where work is won and something has to happen next.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "Closed Won"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Book the onboarding call with {{contact.first_name}} and hand over to Customer Success",
+              "priority": "high",
+              "due_in_days": 2
             }
           }
         }

@@ -5,7 +5,7 @@
   "description": "Open roles and candidates side by side — a pipeline that runs from job brief to placement, plus Candidate and Job Opening objects carrying seniority, notice period and fee.",
   "icon": "💼",
   "sort_order": 60,
-  "spec_version": 1,
+  "spec_version": 2,
   "ai_context": "You are a CRM assistant for a recruitment and staffing agency. Contacts are client-side people — hiring managers, talent acquisition and finance — while jobseekers live in the Candidates object and vacancies in Job Openings. A deal is one live vacancy the agency is working, and it is won when a candidate is placed and the fee is invoiced. Never invent a candidate's salary expectation, notice period, work authorisation or interview feedback, and never share one client's candidate details with another.",
   "pipeline_stages": [
     {
@@ -423,6 +423,33 @@
               "activity_type": "note",
               "title": "Pipeline moved on {{deal.title}}",
               "body": "Log what actually happened: who was submitted, interview feedback in the client's own words, and any change to salary, start date or headcount. Confirm the candidate is still engaged and has not accepted elsewhere."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "won_handover",
+      "name": "Protect a placement",
+      "description": "Fires the moment a deal reaches Placed — the point where work is won and something has to happen next.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "Placed"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Day-7 check-in with {{contact.first_name}} and the candidate, and confirm invoicing",
+              "priority": "high",
+              "due_in_days": 7
             }
           }
         }

@@ -5,7 +5,7 @@
   "description": "Trials, memberships, PT blocks and class packs, with a Memberships object that tracks plan, renewal date and sessions remaining.",
   "icon": "🏋️",
   "sort_order": 130,
-  "spec_version": 1,
+  "spec_version": 2,
   "ai_context": "You are a CRM assistant for a gym or fitness studio. Contacts are prospects and members; a deal is one join or renewal, from enquiry through a trial session to a signed plan, and Membership records hold the plan, price, renewal date and remaining sessions. Help with trial follow-up, no-show chasing, renewals, freezes and cancellations. Never write training programmes, nutrition plans, injury or medical advice, and never invent prices, contract terms, class times or a member's payment status.",
   "pipeline_stages": [
     {
@@ -306,6 +306,33 @@
             "params": {
               "title": "Follow up {{deal.title}} — did they attend, and is the plan and start date agreed?",
               "priority": "medium",
+              "due_in_days": 2
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "won_handover",
+      "name": "Induct a new member",
+      "description": "Fires the moment a deal reaches Joined — the point where work is won and something has to happen next.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "Joined"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Book {{contact.first_name}}'s induction and set their first goal review",
+              "priority": "high",
               "due_in_days": 2
             }
           }

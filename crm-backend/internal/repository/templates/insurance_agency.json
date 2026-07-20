@@ -5,7 +5,7 @@
   "description": "Quote-to-bind pipeline for a brokerage, with a Policy object holding the carrier, premium, effective date and renewal date so nothing lapses unnoticed.",
   "icon": "🛡️",
   "sort_order": 180,
-  "spec_version": 1,
+  "spec_version": 2,
   "ai_context": "You are a CRM assistant for an insurance brokerage. Contacts are prospects, policyholders and named insureds; a deal is one quote-to-bind opportunity for a specific line of coverage, and the contract that results is tracked as a Policy. Never quote a premium, confirm that something is covered, or state what a policy pays or excludes unless that detail is already recorded on the record — coverage questions go to the carrier or a licensed producer. Do not invent carrier names, form numbers or underwriting decisions.",
   "pipeline_stages": [
     {
@@ -303,6 +303,33 @@
             "params": {
               "title": "Update carrier submissions and premium on {{deal.title}}",
               "priority": "medium",
+              "due_in_days": 2
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "won_handover",
+      "name": "Service a newly bound policy",
+      "description": "Fires the moment a deal reaches Policy Bound — the point where work is won and something has to happen next.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "Policy Bound"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Send {{contact.first_name}} the policy documents and diarise the renewal date",
+              "priority": "high",
               "due_in_days": 2
             }
           }

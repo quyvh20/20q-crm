@@ -5,26 +5,158 @@
   "description": "Table bookings, catering enquiries and private events — Bookings and Menu Packages objects that track covers, dietary needs and the date the diary is held.",
   "icon": "🍽️",
   "sort_order": 100,
-  "spec_version": 1,
+  "spec_version": 2,
   "ai_context": "You are a CRM assistant for a restaurant that also sells private dining, venue hire and off-site catering. Contacts are diners, regulars, event organisers and corporate bookers; companies are the businesses, agencies and hotels that book on their behalf. A deal is one event or catering enquiry worked from first contact to a confirmed, deposit-paid booking in the diary — ordinary table reservations live on the Booking object, not the pipeline. Never invent availability, per-head prices, menu contents or allergen information: state only what is recorded on the booking or the menu package, and route any allergy question to the kitchen.",
   "pipeline_stages": [
-    { "name": "Enquiry", "position": 0, "color": "#6366F1", "is_won": false, "is_lost": false },
-    { "name": "Availability Checked", "position": 1, "color": "#3B82F6", "is_won": false, "is_lost": false },
-    { "name": "Menu & Quote Sent", "position": 2, "color": "#8B5CF6", "is_won": false, "is_lost": false },
-    { "name": "Site Visit or Tasting", "position": 3, "color": "#F59E0B", "is_won": false, "is_lost": false },
-    { "name": "Deposit Invoiced", "position": 4, "color": "#F97316", "is_won": false, "is_lost": false },
-    { "name": "Confirmed in Diary", "position": 5, "color": "#10B981", "is_won": true, "is_lost": false },
-    { "name": "Lost", "position": 6, "color": "#EF4444", "is_won": false, "is_lost": true }
+    {
+      "name": "Enquiry",
+      "position": 0,
+      "color": "#6366F1",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Availability Checked",
+      "position": 1,
+      "color": "#3B82F6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Menu & Quote Sent",
+      "position": 2,
+      "color": "#8B5CF6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Site Visit or Tasting",
+      "position": 3,
+      "color": "#F59E0B",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Deposit Invoiced",
+      "position": 4,
+      "color": "#F97316",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Confirmed in Diary",
+      "position": 5,
+      "color": "#10B981",
+      "is_won": true,
+      "is_lost": false
+    },
+    {
+      "name": "Lost",
+      "position": 6,
+      "color": "#EF4444",
+      "is_won": false,
+      "is_lost": true
+    }
   ],
   "custom_field_defs": [
-    { "entity_type": "contact", "key": "guest_type", "label": "Guest Type", "type": "select", "options": ["Diner", "Regular", "Event Organiser", "Corporate Booker", "Wedding Client", "Press / Influencer", "Supplier"], "required": false, "position": 0 },
-    { "entity_type": "contact", "key": "dietary_notes", "label": "Dietary Requirements", "type": "text", "required": false, "position": 1 },
-    { "entity_type": "contact", "key": "seating_preference", "label": "Seating Preference", "type": "select", "options": ["No preference", "Booth", "Window", "Bar", "Terrace", "Private room", "Away from music"], "required": false, "position": 2 },
-    { "entity_type": "contact", "key": "vip", "label": "VIP", "type": "boolean", "required": false, "position": 3 },
-    { "entity_type": "company", "key": "account_type", "label": "Account Type", "type": "select", "options": ["Corporate", "Wedding / Private", "Event Agency", "Hotel Concierge", "Charity", "Supplier"], "required": false, "position": 0 },
-    { "entity_type": "deal", "key": "event_date", "label": "Event Date", "type": "date", "required": false, "position": 0 },
-    { "entity_type": "deal", "key": "covers", "label": "Covers", "type": "number", "required": false, "position": 1 },
-    { "entity_type": "deal", "key": "service", "label": "Service", "type": "select", "options": ["Lunch", "Dinner", "Brunch", "Canapé Reception", "Full Venue Hire", "Off-site Catering"], "required": false, "position": 2 }
+    {
+      "entity_type": "contact",
+      "key": "guest_type",
+      "label": "Guest Type",
+      "type": "select",
+      "options": [
+        "Diner",
+        "Regular",
+        "Event Organiser",
+        "Corporate Booker",
+        "Wedding Client",
+        "Press / Influencer",
+        "Supplier"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "contact",
+      "key": "dietary_notes",
+      "label": "Dietary Requirements",
+      "type": "text",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "contact",
+      "key": "seating_preference",
+      "label": "Seating Preference",
+      "type": "select",
+      "options": [
+        "No preference",
+        "Booth",
+        "Window",
+        "Bar",
+        "Terrace",
+        "Private room",
+        "Away from music"
+      ],
+      "required": false,
+      "position": 2
+    },
+    {
+      "entity_type": "contact",
+      "key": "vip",
+      "label": "VIP",
+      "type": "boolean",
+      "required": false,
+      "position": 3
+    },
+    {
+      "entity_type": "company",
+      "key": "account_type",
+      "label": "Account Type",
+      "type": "select",
+      "options": [
+        "Corporate",
+        "Wedding / Private",
+        "Event Agency",
+        "Hotel Concierge",
+        "Charity",
+        "Supplier"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "deal",
+      "key": "event_date",
+      "label": "Event Date",
+      "type": "date",
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "deal",
+      "key": "covers",
+      "label": "Covers",
+      "type": "number",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "deal",
+      "key": "service",
+      "label": "Service",
+      "type": "select",
+      "options": [
+        "Lunch",
+        "Dinner",
+        "Brunch",
+        "Canapé Reception",
+        "Full Venue Hire",
+        "Off-site Catering"
+      ],
+      "required": false,
+      "position": 2
+    }
   ],
   "object_defs": [
     {
@@ -34,15 +166,94 @@
       "icon": "📅",
       "searchable": true,
       "fields": [
-        { "key": "booking_date", "label": "Booking Date", "type": "date", "required": true, "position": 0 },
-        { "key": "service_time", "label": "Time", "type": "text", "required": false, "position": 1 },
-        { "key": "covers", "label": "Covers", "type": "number", "required": true, "position": 2 },
-        { "key": "booking_type", "label": "Booking Type", "type": "select", "options": ["Table Reservation", "Private Dining", "Full Venue Hire", "Off-site Catering", "Tasting"], "required": false, "position": 3 },
-        { "key": "status", "label": "Status", "type": "select", "options": ["Enquiry", "Provisional", "Confirmed", "Seated", "Completed", "No-show", "Cancelled"], "required": false, "position": 4 },
-        { "key": "room", "label": "Room", "type": "select", "options": ["Main Dining Room", "Private Room", "Terrace", "Bar", "Chef's Table", "Off-site"], "required": false, "position": 5 },
-        { "key": "dietary_notes", "label": "Dietary & Allergen Notes", "type": "text", "required": false, "position": 6 },
-        { "key": "deposit_paid", "label": "Deposit Paid", "type": "number", "required": false, "position": 7 },
-        { "key": "guest", "label": "Lead Guest", "type": "relation", "target_slug": "contact", "required": false, "position": 8 }
+        {
+          "key": "booking_date",
+          "label": "Booking Date",
+          "type": "date",
+          "required": true,
+          "position": 0
+        },
+        {
+          "key": "service_time",
+          "label": "Time",
+          "type": "text",
+          "required": false,
+          "position": 1
+        },
+        {
+          "key": "covers",
+          "label": "Covers",
+          "type": "number",
+          "required": true,
+          "position": 2
+        },
+        {
+          "key": "booking_type",
+          "label": "Booking Type",
+          "type": "select",
+          "options": [
+            "Table Reservation",
+            "Private Dining",
+            "Full Venue Hire",
+            "Off-site Catering",
+            "Tasting"
+          ],
+          "required": false,
+          "position": 3
+        },
+        {
+          "key": "status",
+          "label": "Status",
+          "type": "select",
+          "options": [
+            "Enquiry",
+            "Provisional",
+            "Confirmed",
+            "Seated",
+            "Completed",
+            "No-show",
+            "Cancelled"
+          ],
+          "required": false,
+          "position": 4
+        },
+        {
+          "key": "room",
+          "label": "Room",
+          "type": "select",
+          "options": [
+            "Main Dining Room",
+            "Private Room",
+            "Terrace",
+            "Bar",
+            "Chef's Table",
+            "Off-site"
+          ],
+          "required": false,
+          "position": 5
+        },
+        {
+          "key": "dietary_notes",
+          "label": "Dietary & Allergen Notes",
+          "type": "text",
+          "required": false,
+          "position": 6
+        },
+        {
+          "key": "deposit_paid",
+          "label": "Deposit Paid",
+          "type": "number",
+          "required": false,
+          "position": 7
+        },
+        {
+          "key": "guest",
+          "label": "Lead Guest",
+          "type": "relation",
+          "target_slug": "contact",
+          "required": false,
+          "position": 8
+        }
       ]
     },
     {
@@ -52,12 +263,56 @@
       "icon": "📜",
       "searchable": true,
       "fields": [
-        { "key": "name", "label": "Package Name", "type": "text", "required": true, "position": 0 },
-        { "key": "price_per_head", "label": "Price Per Head", "type": "number", "required": false, "position": 1 },
-        { "key": "courses", "label": "Courses", "type": "number", "required": false, "position": 2 },
-        { "key": "min_covers", "label": "Minimum Covers", "type": "number", "required": false, "position": 3 },
-        { "key": "service_style", "label": "Service Style", "type": "select", "options": ["Set Menu", "Family Style", "Buffet", "Canapés", "Bowl Food", "Tasting Menu"], "required": false, "position": 4 },
-        { "key": "allergen_sheet", "label": "Allergen Sheet", "type": "url", "required": false, "position": 5 }
+        {
+          "key": "name",
+          "label": "Package Name",
+          "type": "text",
+          "required": true,
+          "position": 0
+        },
+        {
+          "key": "price_per_head",
+          "label": "Price Per Head",
+          "type": "number",
+          "required": false,
+          "position": 1
+        },
+        {
+          "key": "courses",
+          "label": "Courses",
+          "type": "number",
+          "required": false,
+          "position": 2
+        },
+        {
+          "key": "min_covers",
+          "label": "Minimum Covers",
+          "type": "number",
+          "required": false,
+          "position": 3
+        },
+        {
+          "key": "service_style",
+          "label": "Service Style",
+          "type": "select",
+          "options": [
+            "Set Menu",
+            "Family Style",
+            "Buffet",
+            "Canapés",
+            "Bowl Food",
+            "Tasting Menu"
+          ],
+          "required": false,
+          "position": 4
+        },
+        {
+          "key": "allergen_sheet",
+          "label": "Allergen Sheet",
+          "type": "url",
+          "required": false,
+          "position": 5
+        }
       ]
     }
   ],
@@ -67,7 +322,9 @@
       "name": "Call an enquiry back the same day",
       "description": "Event enquiries go out to three venues at once and the diary date is gone within days — this books the callback the moment the contact is created.",
       "activation": "auto",
-      "trigger": { "type": "contact_created" },
+      "trigger": {
+        "type": "contact_created"
+      },
       "steps": [
         {
           "type": "action",
@@ -92,6 +349,33 @@
               "activity_type": "note",
               "title": "New enquiry logged at {{org.name}}",
               "body": "Check the diary before promising anything. Hold the date as Provisional on a booking record, set Guest Type, and put every allergy in Dietary & Allergen Notes in the guest's own words — never paraphrase an allergy."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "won_handover",
+      "name": "Confirm the details of a booking",
+      "description": "Fires the moment a deal reaches Confirmed in Diary — the point where work is won and something has to happen next.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "Confirmed in Diary"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Confirm final covers, dietary needs and timings with {{contact.first_name}}",
+              "priority": "high",
+              "due_in_days": 3
             }
           }
         }

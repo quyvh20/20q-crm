@@ -5,7 +5,7 @@
   "description": "Enquiry to proposal to delivered event, with an Events object holding the date, venue, guest count and budget.",
   "icon": "🎉",
   "sort_order": 210,
-  "spec_version": 1,
+  "spec_version": 2,
   "ai_context": "You are a CRM assistant for an events and wedding planning agency. A contact is the person paying for and deciding on the event — a couple, a private host, or a corporate marketing or EA buyer — and there is often a second decision-maker on the same enquiry. A deal is one event from first enquiry through site visit and proposal to a signed contract and the day itself. Event dates, venues, guest counts and budgets are held on Event records; never invent a date, venue, supplier, headcount or price you were not given, and never imply availability you have not checked.",
   "pipeline_stages": [
     {
@@ -315,6 +315,33 @@
               "activity_type": "note",
               "title": "Event stage updated: {{deal.title}}",
               "body": "Stage changed. Record what was agreed — venue, date, headcount, package, and the next deadline the client owes us (deposit, final numbers, menu choices)."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "won_handover",
+      "name": "Wrap up a delivered event",
+      "description": "Fires the moment a deal reaches Event Delivered — the point where work is won and something has to happen next.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "Event Delivered"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Send {{contact.first_name}} the wrap-up and photos, and ask for a testimonial",
+              "priority": "medium",
+              "due_in_days": 5
             }
           }
         }
