@@ -1406,6 +1406,34 @@ func main() {
 				log.Info("contacts: idx_contacts_org_email created (lead ingestion race guard active)")
 			}
 		}
+
+		// Contact search indexes. Both are GIN over a to_tsvector expression, and both
+		// must stay character-identical to the expressions in contactRepository.List —
+		// Postgres matches an expression index structurally, so a stray COALESCE or a
+		// different config name here means the index exists, is maintained on every
+		// write, and is never used by the query it was built for.
+		for _, g := range []struct{ what, sql string }{
+			// Backs the company-name arm of contact search. companies.name is NOT NULL,
+			// so no COALESCE — in the index or the query.
+			{"companies fulltext index", `CREATE INDEX IF NOT EXISTS idx_companies_fulltext
+				ON companies USING GIN (to_tsvector('simple', name))`},
+			// NOT new, and that is the point: idx_contacts_fulltext ships only in
+			// migrations/000003 — the same migration whose OTHER index had to be promoted
+			// to a boot guard just above because it never ran on prod. So the index behind
+			// the name/email half of contact search has almost certainly never existed in
+			// production, and every contact search there has been a sequential scan over
+			// contacts. Cheap to assert, so assert it rather than assume.
+			{"contacts fulltext index", `CREATE INDEX IF NOT EXISTS idx_contacts_fulltext
+				ON contacts USING GIN (to_tsvector('simple', first_name || ' ' || last_name || ' ' || COALESCE(email, '')))`},
+		} {
+			// Builds take an ACCESS EXCLUSIVE lock for their duration (CONCURRENTLY cannot
+			// run on the boot path) — the same trade the contacts indexes above already
+			// make, and a no-op on every boot after the first.
+			if err := db.Exec(g.sql).Error; err != nil {
+				log.Error("contact search index boot guard failed", zap.String("what", g.what), zap.Error(err))
+			}
+		}
+
 		log.Info("Lead integration tables ready")
 
 		log.Info("Seeding system roles...")

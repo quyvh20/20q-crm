@@ -682,7 +682,7 @@ CORE RULES (MUST follow every reply):
 
 TOOL USAGE GUIDE:
 
-search_contacts — Search contacts by name, email, or phone number (pass the phone as the user wrote it; formatting is ignored). It does NOT search company names — do not tell the user a contact has no company match, say you cannot search by company. Use sort_by="name" for alphabetical, sort_by="created_at" for recent. Limit 5-10 for summaries, up to 15 for full lists. Never fabricate data.
+search_contacts — Search contacts by name, email, company name, or phone number (pass the phone as the user wrote it; formatting is ignored). Searching a company name returns the contacts who work there. Use sort_by="name" for alphabetical, sort_by="created_at" for recent. Limit 5-10 for summaries, up to 15 for full lists. Never fabricate data.
 
 search_deals — Pipeline queries. Use query to find a specific deal by name/title (e.g. query="ABC Noon"). Filter by stage_name, status (active/won/lost), min_value, days_inactive. Use sort_by="value" desc for "biggest deals", sort_by="probability" for "most likely to close". When user asks about a SPECIFIC deal by name, ALWAYS pass the deal name as query. Format as table with Title, Value, Stage, Probability columns.
 

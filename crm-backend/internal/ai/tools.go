@@ -34,7 +34,7 @@ var allCRMTools = []Tool{
 		Params: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"query":      map[string]any{"type": "string", "description": "search terms: name, email, or phone number (any formatting). Company names are NOT searchable here."},
+				"query":      map[string]any{"type": "string", "description": "search terms: name, email, company name, or phone number (any formatting)."},
 				"limit":      map[string]any{"type": "integer", "description": "max results (default 10, max 15)"},
 				"sort_by":    map[string]any{"type": "string", "enum": []string{"created_at", "name"}, "description": "field to sort by"},
 				"sort_order": map[string]any{"type": "string", "enum": []string{"asc", "desc"}, "description": "asc or desc (default desc)"},

@@ -108,28 +108,54 @@ func (r *contactRepository) List(ctx context.Context, orgID uuid.UUID, f domain.
 		Preload("Tags").
 		Preload("Owner")
 
-	// Full-text search over name + email, OR'd with a digits match when the term
-	// looks like a phone number. The tsvector deliberately does not index phone
-	// (formatting makes it useless as a text token), so before this branch existed
-	// searching "501-222-7363" tokenized into terms the vector could never contain
-	// and returned zero rows for a contact that was sitting right there.
+	// Full-text search over name + email, OR'd with the related company's name, and
+	// with a digits match when the term looks like a phone number. The tsvector
+	// deliberately does not index phone (formatting makes it useless as a text
+	// token), so before that branch existed searching "501-222-7363" tokenized into
+	// terms the vector could never contain and returned zero rows for a contact that
+	// was sitting right there.
 	if f.Q != "" {
 		const textMatch = "to_tsvector('simple', contacts.first_name || ' ' || contacts.last_name || ' ' || COALESCE(contacts.email, '')) @@ plainto_tsquery('simple', ?)"
+
+		// "Everyone at Acme" is a contact search users expect to work, but the company
+		// name lives on another table and so cannot join the contacts tsvector.
+		//
+		// A subquery rather than a JOIN: the relation is many-to-one so a join would
+		// need no DISTINCT today, but it would still fight Preload("Company") and widen
+		// the select list, and this file already spells "contact matches a related row"
+		// this way — see the TagIDs filter below.
+		//
+		// Same tokenizer as the name/email half, so one term behaves consistently
+		// across both: "Acme" finds Acme Corporation, and a prefix like "Acm" finds
+		// neither. org_id is not redundant despite company_id already being org-local —
+		// it lets the planner cut the company scan to one org before the GIN probe.
+		// deleted_at IS NULL has to be written out: GORM's soft-delete clause does not
+		// reach inside a raw subquery, so without it a deleted company would go on
+		// matching its contacts.
+		const companyMatch = `contacts.company_id IN (
+			SELECT c.id FROM companies c
+			WHERE c.org_id = ? AND c.deleted_at IS NULL
+			  AND to_tsvector('simple', c.name) @@ plainto_tsquery('simple', ?)
+		)`
+
+		// The company arm is unscoped by design. Every contact row returned still goes
+		// through applyScopeFromCtx above, so this widens which of the caller's OWN
+		// contacts match — never which contacts they see. The company name it matches
+		// on is already Preloaded onto those same rows.
+		cond := r.db.Where(textMatch, f.Q).Or(companyMatch, orgID, f.Q)
 
 		if variants := phoneSearchVariants(f.Q); len(variants) > 0 {
 			// The digits expression is character-identical to idx_contacts_org_phone_digits
 			// (and to integrations.normalizePhone) so this stays sargable — see
 			// FindByNormalizedPhone. GORM's soft-delete clause supplies the
 			// deleted_at IS NULL the partial index also requires.
-			query = query.Where(
-				r.db.Where(textMatch, f.Q).Or(
-					"contacts.phone IS NOT NULL AND contacts.phone <> '' AND regexp_replace(contacts.phone, '[^0-9]', '', 'g') IN ?",
-					variants,
-				),
+			cond = cond.Or(
+				"contacts.phone IS NOT NULL AND contacts.phone <> '' AND regexp_replace(contacts.phone, '[^0-9]', '', 'g') IN ?",
+				variants,
 			)
-		} else {
-			query = query.Where(textMatch, f.Q)
 		}
+
+		query = query.Where(cond)
 	}
 
 	// Filters
