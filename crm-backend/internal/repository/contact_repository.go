@@ -46,6 +46,53 @@ func decodeCursor(s string) (cursorData, error) {
 	return c, nil
 }
 
+// phoneSearchVariants decides whether a search term is a phone number and, if so,
+// returns the digit strings worth matching it against. An empty result means "this
+// is not a phone number, search it as text".
+//
+// A term qualifies only when it is ENTIRELY digits and phone punctuation, with at
+// least minPhoneSearchDigits digits. Both halves matter: the punctuation check keeps
+// "Suite 500" and "Level 3 Support" out (they'd otherwise reduce to stray digits),
+// and the length floor keeps a 3-digit term from matching half the org.
+//
+// Unlike FindByNormalizedPhone — which is dedupe and stays deliberately strict
+// because a wrong match there MERGES two people — this is search, where a wrong
+// match only shows an extra row the user can ignore. That asymmetry is why the
+// leading-1 variant below is safe here and would not be safe there. Do not
+// "harmonize" the two.
+func phoneSearchVariants(q string) []string {
+	digits := make([]rune, 0, len(q))
+	for _, r := range q {
+		switch {
+		case r >= '0' && r <= '9':
+			digits = append(digits, r)
+		case r == ' ' || r == '+' || r == '-' || r == '(' || r == ')' || r == '.':
+			// phone punctuation — allowed, contributes nothing
+		default:
+			return nil // a letter (or anything else) means this is a text search
+		}
+	}
+	if len(digits) < minPhoneSearchDigits {
+		return nil
+	}
+
+	d := string(digits)
+	out := []string{d}
+	// Stored numbers are raw user input, so the same line lives in the DB both with
+	// and without a US country code. Matching both forms is two index lookups.
+	switch {
+	case len(d) == 11 && d[0] == '1':
+		out = append(out, d[1:])
+	case len(d) == 10:
+		out = append(out, "1"+d)
+	}
+	return out
+}
+
+// minPhoneSearchDigits mirrors integrations.minPhoneDigits: shorter than this and a
+// "phone" is really just a number the user typed.
+const minPhoneSearchDigits = 7
+
 // ============================================================
 // List — cursor pagination + full-text search
 // ============================================================
@@ -61,12 +108,28 @@ func (r *contactRepository) List(ctx context.Context, orgID uuid.UUID, f domain.
 		Preload("Tags").
 		Preload("Owner")
 
-	// Full-text search
+	// Full-text search over name + email, OR'd with a digits match when the term
+	// looks like a phone number. The tsvector deliberately does not index phone
+	// (formatting makes it useless as a text token), so before this branch existed
+	// searching "501-222-7363" tokenized into terms the vector could never contain
+	// and returned zero rows for a contact that was sitting right there.
 	if f.Q != "" {
-		query = query.Where(
-			"to_tsvector('simple', contacts.first_name || ' ' || contacts.last_name || ' ' || COALESCE(contacts.email, '')) @@ plainto_tsquery('simple', ?)",
-			f.Q,
-		)
+		const textMatch = "to_tsvector('simple', contacts.first_name || ' ' || contacts.last_name || ' ' || COALESCE(contacts.email, '')) @@ plainto_tsquery('simple', ?)"
+
+		if variants := phoneSearchVariants(f.Q); len(variants) > 0 {
+			// The digits expression is character-identical to idx_contacts_org_phone_digits
+			// (and to integrations.normalizePhone) so this stays sargable — see
+			// FindByNormalizedPhone. GORM's soft-delete clause supplies the
+			// deleted_at IS NULL the partial index also requires.
+			query = query.Where(
+				r.db.Where(textMatch, f.Q).Or(
+					"contacts.phone IS NOT NULL AND contacts.phone <> '' AND regexp_replace(contacts.phone, '[^0-9]', '', 'g') IN ?",
+					variants,
+				),
+			)
+		} else {
+			query = query.Where(textMatch, f.Q)
+		}
 	}
 
 	// Filters
