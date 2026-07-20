@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -586,12 +587,62 @@ func (cc *CommandCenter) Execute(
 		)
 
 		replyContent := finalResp.Content
+		// Two independent truncation signals, because neither alone is reliable:
+		// the provider's own finish_reason, and a markdown link left hanging open.
+		// The legacy Workers AI format reports no finish_reason at all, so without
+		// the second check a truncated reply on that path would still slip through
+		// intact — and a dangling link is never legitimate output regardless of
+		// what the provider claims.
+		if finalResp.StopReason == finishReasonLength || unclosedLinkTail.MatchString(replyContent) {
+			replyContent = finalizeTruncatedReply(replyContent)
+		}
 		events <- CommandEvent{Type: "response", Message: replyContent, Done: true}
 		events <- CommandEvent{Type: "done", Done: true}
 		cc.persistAssistant(req.SessionID, replyContent)
 	}()
 
 	return events, nil
+}
+
+// truncationNotice tells the user the answer is incomplete. Without it a capped
+// reply is indistinguishable from a finished one, so the user trusts a partial
+// list as though it were the whole result.
+const truncationNotice = "_This answer was cut short before it finished, so it may be incomplete. Ask me to continue, or narrow the request (a smaller limit or an extra filter) to get the full result._"
+
+// unclosedLinkTail matches a markdown link left hanging open at the very end of
+// the text — "[ABC OK](#203f05b4-30ac-4c14-b53f-" with no closing paren. A
+// complete "[X](#id)" never matches, because the character class cannot consume
+// the closing paren it would have to cross to reach end-of-text.
+var unclosedLinkTail = regexp.MustCompile(`\[[^\]\n]*\]\([^)\n]*$`)
+
+// finalizeTruncatedReply cleans up a reply the model ran out of budget mid-way
+// through, then appends truncationNotice.
+//
+// The summary directive makes the model embed record UUIDs as markdown links, so
+// a reply cut off inside one leaks the raw "[Name](#partial-uuid" into the chat —
+// markdown refuses to parse an unclosed link and renders it verbatim, which is
+// what the user sees. Strip that fragment, drop the row it leaves behind if
+// nothing but table scaffolding remains, and say plainly that the answer is
+// incomplete.
+func finalizeTruncatedReply(content string) string {
+	out := unclosedLinkTail.ReplaceAllString(strings.TrimRight(content, " \t\r\n"), "")
+
+	// A stripped fragment can leave "| " — an empty table row that renders as a
+	// blank line inside the table. Peel those back to the last line with content.
+	lines := strings.Split(out, "\n")
+	for len(lines) > 0 {
+		if strings.Trim(lines[len(lines)-1], "|- \t\r") == "" {
+			lines = lines[:len(lines)-1]
+			continue
+		}
+		break
+	}
+
+	out = strings.TrimRight(strings.Join(lines, "\n"), " \t\r\n")
+	if out == "" {
+		return truncationNotice
+	}
+	return out + "\n\n" + truncationNotice
 }
 
 // buildRolePrompt creates a concise, access-scoped system prompt. P7: the persona
@@ -682,7 +733,7 @@ CORE RULES (MUST follow every reply):
 
 TOOL USAGE GUIDE:
 
-search_contacts — Search contacts by name, email, company name, or phone number (pass the phone as the user wrote it; formatting is ignored). Searching a company name returns the contacts who work there. Use sort_by="name" for alphabetical, sort_by="created_at" for recent. Limit 5-10 for summaries, up to 15 for full lists. Never fabricate data.
+search_contacts — Search contacts by name, email, company name, or phone number (pass the phone as the user wrote it; formatting is ignored). Searching a company name returns the contacts who work there. When you cannot answer a question, say so and STOP: never pad the answer with records from an earlier turn that did not match what was asked, and never present them under a heading implying they did. An honest "I can't look that up" is the complete answer. Use sort_by="name" for alphabetical, sort_by="created_at" for recent. Limit 5-10 for summaries, up to 15 for full lists. Never fabricate data.
 
 search_deals — Pipeline queries. Use query to find a specific deal by name/title (e.g. query="ABC Noon"). Filter by stage_name, status (active/won/lost), min_value, days_inactive. Use sort_by="value" desc for "biggest deals", sort_by="probability" for "most likely to close". When user asks about a SPECIFIC deal by name, ALWAYS pass the deal name as query. Format as table with Title, Value, Stage, Probability columns.
 

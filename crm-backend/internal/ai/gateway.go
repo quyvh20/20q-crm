@@ -768,12 +768,21 @@ func (g *AIGateway) callCFWorkersBounded(ctx context.Context, task AITask, model
 	//   {"id":"...","choices":[{"message":{"content":"..."}}],"usage":{"prompt_tokens":N,"completion_tokens":M}}
 	// Older Workers AI models return legacy format:
 	//   {"result":{"response":"...","usage":{"prompt_tokens":N,"completion_tokens":M}}}
-	responseText, inputTokens, outputTokens := parseCFResponse(resp)
+	responseText, inputTokens, outputTokens, finishReason := parseCFResponse(resp)
 
 	if responseText == "" {
 		g.logger.Warn("CF Workers AI returned empty response",
 			zap.String("model", model),
 			zap.String("raw_response", string(resp[:min(len(resp), 500)])),
+		)
+	}
+
+	if finishReason == finishReasonLength {
+		g.logger.Warn("CF Workers AI response hit the output cap",
+			zap.String("model", model),
+			zap.String("task", string(task)),
+			zap.Int("max_tokens", maxTokens),
+			zap.Int("output_tokens", outputTokens),
 		)
 	}
 
@@ -783,8 +792,13 @@ func (g *AIGateway) callCFWorkersBounded(ctx context.Context, task AITask, model
 		Provider:     string(providerCFWorkers),
 		InputTokens:  inputTokens,
 		OutputTokens: outputTokens,
+		StopReason:   finishReason,
 	}, nil
 }
+
+// finishReasonLength is the OpenAI-compatible signal that generation stopped
+// because it ran out of output budget, not because the model was done.
+const finishReasonLength = "length"
 
 // buildOpenAIMessages converts internal Message structs to OpenAI-compatible format.
 func buildOpenAIMessages(messages []Message) []map[string]interface{} {
@@ -835,13 +849,19 @@ func buildOpenAIMessages(messages []Message) []map[string]interface{} {
 }
 
 // parseCFResponse handles both OpenAI-compatible and legacy Workers AI response formats.
-func parseCFResponse(data []byte) (content string, inputTokens, outputTokens int) {
+// finishReason is returned so callers can tell a complete answer from one the
+// token cap cut off mid-sentence. Dropping it made truncation invisible: a reply
+// that stopped halfway through a record link reached the user looking exactly
+// like a finished one. Empty when the provider does not report it (the legacy
+// Workers AI format has no equivalent field).
+func parseCFResponse(data []byte) (content string, inputTokens, outputTokens int, finishReason string) {
 	// Try OpenAI-compatible format first (used by hosted/pinned models)
 	var oaiResp struct {
 		Choices []struct {
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Usage struct {
 			PromptTokens     int `json:"prompt_tokens"`
@@ -849,7 +869,7 @@ func parseCFResponse(data []byte) (content string, inputTokens, outputTokens int
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(data, &oaiResp); err == nil && len(oaiResp.Choices) > 0 && oaiResp.Choices[0].Message.Content != "" {
-		return oaiResp.Choices[0].Message.Content, oaiResp.Usage.PromptTokens, oaiResp.Usage.CompletionTokens
+		return oaiResp.Choices[0].Message.Content, oaiResp.Usage.PromptTokens, oaiResp.Usage.CompletionTokens, oaiResp.Choices[0].FinishReason
 	}
 
 	// Fallback: legacy Workers AI format
@@ -870,10 +890,10 @@ func parseCFResponse(data []byte) (content string, inputTokens, outputTokens int
 			b, _ := json.Marshal(v)
 			content = string(b)
 		}
-		return content, cfResp.Result.Usage.PromptTokens, cfResp.Result.Usage.CompletionTokens
+		return content, cfResp.Result.Usage.PromptTokens, cfResp.Result.Usage.CompletionTokens, ""
 	}
 
-	return "", 0, 0
+	return "", 0, 0, ""
 }
 
 
