@@ -30,10 +30,16 @@ const (
 	// token is in the page source by construction, so everything that bounds it is
 	// a nuisance filter, not an authentication check.
 	KindFormEmbed = "form_embed"
+	// KindFacebookForm is one Facebook lead form on a connected page (L5). It has NO
+	// token or public_token — the connection is the credential and the delivery
+	// arrives on the app-level leadgen webhook, not a per-source URL. It is resolved
+	// by (connection_id, provider form id, stored in config.facebook.form_id), never
+	// created through the generic New-source flow (L5.4 owns its creation).
+	KindFacebookForm = "facebook_form"
 )
 
 // validKinds is the kind allowlist. Later phases append their own.
-var validKinds = map[string]bool{KindAPI: true, KindGoogleAds: true, KindFormEmbed: true}
+var validKinds = map[string]bool{KindAPI: true, KindGoogleAds: true, KindFormEmbed: true, KindFacebookForm: true}
 
 // IsValidKind reports whether a source kind is known.
 func IsValidKind(k string) bool { return validKinds[k] }

@@ -43,6 +43,33 @@ type Config struct {
 	// console. Server-to-server callers need no cookies, so pointing them straight
 	// at the API origin is correct.
 	PublicAPIBaseURL string `mapstructure:"PUBLIC_API_BASE_URL"`
+	// IntegrationEncKey is the key-encryption keyring that seals third-party
+	// provider credentials at rest (L5). Format is a comma-separated list of
+	// `version:base64key` entries; a bare 32-byte base64 key is read as version
+	// 1. See internal/integrations/envelope.
+	//
+	// It has NO default, and that is the point. A default would make the key
+	// resolve to a known value and mask its own absence, which is how
+	// TOTP_ENC_KEY ended up deriving every stored 2FA secret from JWT_SECRET in
+	// production. There is deliberately no fallback to any other secret either:
+	// rotating an unrelated signing key would then silently orphan every stored
+	// provider credential, with no version bump to detect it and no recovery.
+	IntegrationEncKey string `mapstructure:"INTEGRATION_ENC_KEY"`
+	// Facebook Lead Ads provider (L5.2). All optional: when FacebookAppID is empty
+	// the provider is not registered and every /connect for it 404s — which is the
+	// state of every deployment until the Meta app exists. No defaults (secrets),
+	// and each needs its own BindEnv below or it silently reads "" in production
+	// (the PADDLE_WEBHOOK_SECRET / TOTP_ENC_KEY failure — the config test enforces
+	// this).
+	FacebookAppID string `mapstructure:"FACEBOOK_APP_ID"`
+	FacebookAppSecret string `mapstructure:"FACEBOOK_APP_SECRET"`
+	// FacebookWebhookVerifyToken authenticates the GET hub.challenge handshake on
+	// the app-level leadgen webhook (L5.3).
+	FacebookWebhookVerifyToken string `mapstructure:"FACEBOOK_WEBHOOK_VERIFY_TOKEN"`
+	// FacebookLoginConfigID selects Facebook Login for Business (Business
+	// Integration System User tokens that survive employee departure). Empty falls
+	// back to the classic scope flow.
+	FacebookLoginConfigID string `mapstructure:"FACEBOOK_LOGIN_CONFIG_ID"`
 	// TrustedProxies is a comma-separated CIDR list of edge proxies whose
 	// X-Forwarded-For may be believed. EMPTY (the default) trusts none, so
 	// c.ClientIP() returns the unforgeable peer address. Gin's own default is the
@@ -109,6 +136,11 @@ func LoadConfig() (*Config, error) {
 	// in prod (no .env file) and every capture URL the UI renders is malformed.
 	// PADDLE_WEBHOOK_SECRET and TOTP_ENC_KEY are both live victims of exactly this.
 	viper.BindEnv("PUBLIC_API_BASE_URL")
+	viper.BindEnv("INTEGRATION_ENC_KEY")
+	viper.BindEnv("FACEBOOK_APP_ID")
+	viper.BindEnv("FACEBOOK_APP_SECRET")
+	viper.BindEnv("FACEBOOK_WEBHOOK_VERIFY_TOKEN")
+	viper.BindEnv("FACEBOOK_LOGIN_CONFIG_ID")
 	viper.BindEnv("TRUSTED_PROXIES")
 	viper.BindEnv("COOKIE_SECURE")
 	viper.BindEnv("COOKIE_SAMESITE")
@@ -140,7 +172,22 @@ func LoadConfig() (*Config, error) {
 	viper.SetDefault("COOKIE_SAMESITE", "lax")
 	viper.SetDefault("COOKIE_SECURE", false)
 	viper.SetDefault("MAIL_FROM", "noreply@twentyq.io")
+	// The Railway origin third parties reach us on. A default matters here in a
+	// way it does not for most config: this value is pasted into Google Ads,
+	// Meta and every customer's website, and it has to byte-match what is
+	// registered in a provider console. An empty base yields the RELATIVE string
+	// "/api/integrations/facebook/callback", which providers reject and which
+	// passes unit tests silently.
+	//
+	// Four places now hardcode this deployment's topology and must move
+	// together: here, crm-frontend/functions/api/[[path]].ts (DEFAULT_BACKEND),
+	// the pages.dev origin in delivery/http/middleware.go, and GOOGLE_REDIRECT_URL
+	// below — plus the Google Ads and Meta consoles, which are outside the repo.
+	viper.SetDefault("PUBLIC_API_BASE_URL", "https://20q-crm-production.up.railway.app")
 	// No default for APP_ENV: absence must mean "production" (fail closed).
+	// No default for INTEGRATION_ENC_KEY: see the field comment — a default
+	// would mask the key's own absence, which is the failure it exists to
+	// prevent.
 
 	if err := viper.ReadInConfig(); err != nil {
 		log.Printf("No .env file found or error reading it, relying on environment variables: %v", err)

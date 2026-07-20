@@ -158,7 +158,11 @@ func newIngestContext(source *LeadSource, lead RawLead, writeTimeout time.Durati
 	//
 	// An INDEPENDENT if, never an else: a test lead delivered by batch must stay
 	// silenced, which is the stricter of the two.
-	if lead.DeliveryMode == DeliveryBatch && !lead.EnrollAutomation {
+	//
+	// Backfill (L5.4) is bulk too: importing 500 historical leads must not enrol 500
+	// contacts into every contact_created workflow, so it suppresses by the same rule
+	// unless the admin explicitly opted to enrol.
+	if isBulkDelivery(lead.DeliveryMode) && !lead.EnrollAutomation {
 		ctx = domain.WithAutomationSuppressed(ctx)
 	}
 	return context.WithTimeout(ctx, writeTimeout)
@@ -188,7 +192,7 @@ func newLedgerContext(ctx context.Context, timeout time.Duration) (context.Conte
 // writeTimeoutFor bounds one record write. A batch gives each item a shorter slice
 // so a single slow write cannot eat the whole request budget.
 func (s *LeadIngestService) writeTimeoutFor(lead RawLead) time.Duration {
-	if lead.DeliveryMode == DeliveryBatch {
+	if isBulkDelivery(lead.DeliveryMode) {
 		return batchWriteTimeout
 	}
 	return ingestTimeout
@@ -196,7 +200,7 @@ func (s *LeadIngestService) writeTimeoutFor(lead RawLead) time.Duration {
 
 // ledgerTimeoutFor bounds one delivery's bookkeeping.
 func (s *LeadIngestService) ledgerTimeoutFor(lead RawLead) time.Duration {
-	if lead.DeliveryMode == DeliveryBatch {
+	if isBulkDelivery(lead.DeliveryMode) {
 		return batchLedgerTimeout
 	}
 	return ingestTimeout
@@ -294,6 +298,36 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 		}
 	}
 
+	return s.processEvent(ledgerCtx, source, lead, event)
+}
+
+// IngestClaimed processes a webhook delivery whose event row the async worker has
+// ALREADY inserted (as pending, at receipt) and claimed (pending→processing). It
+// is the async counterpart to Ingest: it never inserts or dedupes the event —
+// that happened at webhook receipt and claim — it stamps the fetched payload onto
+// the row and runs the shared processing core. The fetched field_data becomes the
+// ledger's raw payload (the receipt only had the leadgen id), and the resolved
+// source is stamped so the delivery log can name it.
+func (s *LeadIngestService) IngestClaimed(ctx context.Context, source *LeadSource, lead RawLead, event *IntegrationEvent) (*IngestResult, error) {
+	ledgerCtx, ledgerCancel := newLedgerContext(ctx, s.ledgerTimeoutFor(lead))
+	defer ledgerCancel()
+	if !IsSupportedTarget(source.TargetSlug) {
+		return nil, s.failEvent(ledgerCtx, event, domain.NewAppError(http.StatusBadRequest, "unsupported target object: "+source.TargetSlug))
+	}
+	raw, _ := json.Marshal(lead.Fields)
+	ctxJSON, _ := json.Marshal(lead.Context)
+	event.RawPayload = datatypes.JSON(raw)
+	event.Context = datatypes.JSON(ctxJSON)
+	event.SourceID = &source.ID
+	return s.processEvent(ledgerCtx, source, lead, event)
+}
+
+// processEvent runs the map → match → create/update → attribute → deal → consent
+// → finish core against an event row the caller has ALREADY acquired — inserted
+// as `processing` (sync Ingest) or claimed from `pending` (async IngestClaimed).
+// It never inserts or dedupes; keeping the acquisition out of here is what lets
+// one body serve both channels without a worker ever re-running the dedupe switch.
+func (s *LeadIngestService) processEvent(ledgerCtx context.Context, source *LeadSource, lead RawLead, event *IntegrationEvent) (*IngestResult, error) {
 	// ── 2. Map, then allowlist ───────────────────────────────────────────
 	allow, err := BuildAllowlist(ledgerCtx, s.schema, source.OrgID, source.TargetSlug)
 	if err != nil {
@@ -440,6 +474,13 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 	// ── 7. Record the outcome ────────────────────────────────────────────
 	// On the ledger context: the record is already written, so losing this to a
 	// client hangup would strand the row and lose the attribution permanently.
+	//
+	// Clear any error a PRIOR attempt left on this row: the async worker re-claims a
+	// re-pended event whose Error was stamped by RependEvent/the reaper (Error is a
+	// mapped column, hydrated by ClaimPendingEvents' RETURNING *), and a `processed`
+	// row carrying a stale error reads as a failed delivery in the UI's red box.
+	// Error means failure, Note means success — a success must own neither the other's.
+	event.Error = ""
 	event.Status = EventStatusProcessed
 	if lead.IsTest() {
 		event.Status = EventStatusTest

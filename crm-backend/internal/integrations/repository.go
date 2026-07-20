@@ -30,6 +30,15 @@ func (r *Repository) CreateSource(ctx context.Context, s *LeadSource) error {
 	return r.db.WithContext(ctx).Create(s).Error
 }
 
+// CreateConnectionSource inserts a connection-backed source (facebook_form) that
+// has NO bearer credential — it is resolved by connection_id + form_id, never a
+// token. token_hash/token_prefix are omitted so token_hash stays NULL: Postgres
+// treats NULLs as distinct on its UNIQUE index, whereas the empty string every
+// such source would otherwise carry collides across the second one.
+func (r *Repository) CreateConnectionSource(ctx context.Context, s *LeadSource) error {
+	return r.db.WithContext(ctx).Omit("token_hash", "token_prefix").Create(s).Error
+}
+
 // UpdateSource saves a source's mutable fields. It is org-guarded by the caller's
 // prior GetSource, and Save writes by primary key.
 //
@@ -198,24 +207,183 @@ func (r *Repository) CountCreatedToday(ctx context.Context, sourceID uuid.UUID, 
 	return n, err
 }
 
-// ReapStrandedEvents releases deliveries whose process died mid-write.
+// ReapStrandedEvents releases deliveries whose process died mid-write. Two arms,
+// split by HOW the row is recovered — which is decided by claimed_at:
 //
-// A row left at `processing` is not just untidy — the replay switch reads it as
-// "still in flight" and answers 409 to every retry, so the Idempotency-Key becomes
-// the thing that makes the lead permanently unrecoverable. Moving it to `failed` is
-// what lets Ingest's failed-row branch re-run the pipeline against it.
+//   - SYNC deliveries (the capture API) are inserted directly as `processing` with
+//     claimed_at NULL; there is a CLIENT who retries, so a stranded one goes to
+//     `failed` and Ingest's failed-row branch re-runs it on the next retry of the
+//     same Idempotency-Key. Left at `processing`, the replay switch would answer
+//     409 forever — the key becoming what makes the lead unrecoverable.
+//   - ASYNC deliveries (provider webhooks, L5) are claimed from `pending` and carry
+//     claimed_at; there is NO client to retry — the async worker is the only thing
+//     that will ever touch them again — so a stranded one goes BACK to `pending`
+//     to be re-claimed, UNLESS it has already used its attempt budget, in which
+//     case it fails (a poison delivery that crashes the worker each claim must not
+//     loop pending→processing→pending forever).
 //
-// `result_record_id IS NULL` is load-bearing: a row that already produced a record
-// must never be re-run, or the retry writes the same lead twice.
+// `result_record_id IS NULL` is load-bearing on both arms: a row that already
+// produced a record must never be re-run, or the retry writes the same lead twice.
 func (r *Repository) ReapStrandedEvents(ctx context.Context, grace time.Duration) (int64, error) {
-	res := r.db.WithContext(ctx).Exec(`
+	cutoff := time.Now().Add(-grace)
+	var total int64
+
+	// Async, budget remaining → re-claimable.
+	rep := r.db.WithContext(ctx).Exec(`
+		UPDATE integration_events
+		   SET status = ?, claimed_at = NULL, error = ?
+		 WHERE status = ? AND result_record_id IS NULL
+		   AND claimed_at IS NOT NULL AND claimed_at < ? AND attempts < ?`,
+		EventStatusPending,
+		"this delivery was interrupted before it finished (the server restarted or crashed); it will be retried",
+		EventStatusProcessing, cutoff, maxWebhookAttempts)
+	if rep.Error != nil {
+		return total, rep.Error
+	}
+	total += rep.RowsAffected
+
+	// Async, budget exhausted → failed.
+	af := r.db.WithContext(ctx).Exec(`
 		UPDATE integration_events
 		   SET status = ?, error = ?, processed_at = NOW()
-		 WHERE status = ? AND result_record_id IS NULL AND created_at < ?`,
+		 WHERE status = ? AND result_record_id IS NULL
+		   AND claimed_at IS NOT NULL AND claimed_at < ? AND attempts >= ?`,
+		EventStatusFailed,
+		"this delivery could not be processed after repeated attempts (the fetch kept failing or the worker kept dying)",
+		EventStatusProcessing, cutoff, maxWebhookAttempts)
+	if af.Error != nil {
+		return total, af.Error
+	}
+	total += af.RowsAffected
+
+	// Sync → failed (a client retries via its Idempotency-Key).
+	sf := r.db.WithContext(ctx).Exec(`
+		UPDATE integration_events
+		   SET status = ?, error = ?, processed_at = NOW()
+		 WHERE status = ? AND result_record_id IS NULL
+		   AND claimed_at IS NULL AND created_at < ?`,
 		EventStatusFailed,
 		"this delivery was interrupted before it finished (the server restarted or crashed); retrying the same Idempotency-Key will re-run it",
-		EventStatusProcessing, time.Now().Add(-grace))
-	return res.RowsAffected, res.Error
+		EventStatusProcessing, cutoff)
+	if sf.Error != nil {
+		return total, sf.Error
+	}
+	total += sf.RowsAffected
+	return total, nil
+}
+
+// ClaimPendingEvents atomically claims up to `limit` pending webhook deliveries
+// for the async worker: pending → processing, attempts++, claimed_at stamped.
+//
+// FOR UPDATE SKIP LOCKED in the inner select is what lets several worker replicas
+// run concurrently and each grab a DISJOINT set — a locked (already-claimed-in-
+// this-transaction) row is skipped rather than blocked on. RETURNING the claimed
+// rows means no second read. Ordered by created_at so the oldest delivery is
+// processed first.
+func (r *Repository) ClaimPendingEvents(ctx context.Context, limit int) ([]IntegrationEvent, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	var out []IntegrationEvent
+	err := r.db.WithContext(ctx).Raw(`
+		UPDATE integration_events
+		   SET status = ?, claimed_at = NOW(), attempts = attempts + 1
+		 WHERE id IN (
+		   SELECT id FROM integration_events
+		    WHERE status = ?
+		    ORDER BY created_at
+		    LIMIT ?
+		    FOR UPDATE SKIP LOCKED
+		 )
+		RETURNING *`,
+		EventStatusProcessing, EventStatusPending, limit).Scan(&out).Error
+	return out, err
+}
+
+// RependEvent returns a claimed event to `pending` for a later retry — the async
+// worker's response to a RETRYABLE fetch failure that still has attempt budget.
+// Targeted, clears claimed_at so the reaper's grace does not immediately re-touch
+// it, and records the transient reason.
+func (r *Repository) RependEvent(ctx context.Context, eventID uuid.UUID, note string) error {
+	// processed_at is cleared too: a write-path retry re-pends a row that IngestClaimed
+	// already ran through failEvent (which stamps processed_at), and a `pending` row
+	// carrying a processed_at reads as a finished delivery in the ledger.
+	return r.db.WithContext(ctx).Exec(`
+		UPDATE integration_events SET status = ?, claimed_at = NULL, processed_at = NULL, error = ?
+		 WHERE id = ?`, EventStatusPending, note, eventID).Error
+}
+
+// SetSourceConnection stamps a source's connection_id (an ALTER-added column
+// deliberately not on the LeadSource struct — see the migration). Targeted UPDATE,
+// org-scoped.
+func (r *Repository) SetSourceConnection(ctx context.Context, orgID, sourceID, connID uuid.UUID) error {
+	return r.db.WithContext(ctx).Exec(
+		`UPDATE lead_sources SET connection_id = ?, updated_at = NOW() WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
+		connID, sourceID, orgID).Error
+}
+
+// SourceConnectionID reads a source's connection_id (uuid.Nil when unset). The
+// column is unmapped on the struct, so it is read by targeted SQL; the NOT NULL
+// filter avoids scanning a NULL into a non-pointer uuid.
+func (r *Repository) SourceConnectionID(ctx context.Context, orgID, sourceID uuid.UUID) (uuid.UUID, error) {
+	var out []uuid.UUID
+	if err := r.db.WithContext(ctx).Raw(
+		`SELECT connection_id FROM lead_sources WHERE id = ? AND org_id = ? AND deleted_at IS NULL AND connection_id IS NOT NULL`,
+		sourceID, orgID).Scan(&out).Error; err != nil {
+		return uuid.Nil, err
+	}
+	if len(out) == 0 {
+		return uuid.Nil, nil
+	}
+	return out[0], nil
+}
+
+// EnabledFormIDs maps each provider form id that already has a facebook_form source
+// on this connection to that source's id — so the form picker can show which forms
+// are enabled and enabling is idempotent (re-enabling returns the existing source
+// rather than creating a duplicate).
+func (r *Repository) EnabledFormIDs(ctx context.Context, orgID, connID uuid.UUID) (map[string]uuid.UUID, error) {
+	type row struct {
+		ID     uuid.UUID `gorm:"column:id"`
+		FormID string    `gorm:"column:form_id"`
+	}
+	var rows []row
+	if err := r.db.WithContext(ctx).Raw(`
+		SELECT id, config->'facebook'->>'form_id' AS form_id
+		  FROM lead_sources
+		 WHERE org_id = ? AND connection_id = ? AND kind = ? AND deleted_at IS NULL
+		   AND config->'facebook'->>'form_id' IS NOT NULL`,
+		orgID, connID, KindFacebookForm).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[string]uuid.UUID, len(rows))
+	for _, x := range rows {
+		out[x.FormID] = x.ID
+	}
+	return out, nil
+}
+
+// FindFacebookFormSource resolves the facebook_form lead source for a connection +
+// provider form id, or (nil, nil) when the form has not been enabled (L5.4 creates
+// these rows). The form id lives in config.facebook.form_id — config is inside the
+// original CREATE TABLE, so unlike an ALTER-added column it cannot be missing where
+// the table exists. GORM adds `deleted_at IS NULL`.
+func (r *Repository) FindFacebookFormSource(ctx context.Context, connectionID uuid.UUID, formID string) (*LeadSource, error) {
+	if formID == "" {
+		return nil, nil
+	}
+	var s LeadSource
+	err := r.db.WithContext(ctx).
+		Where("connection_id = ? AND kind = ? AND config->'facebook'->>'form_id' = ?",
+			connectionID, KindFacebookForm, formID).
+		First(&s).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &s, nil
 }
 
 // SetEventConsent records the verbatim consent envelope on a delivery.

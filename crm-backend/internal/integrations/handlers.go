@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"crm-backend/internal/domain"
@@ -56,12 +57,25 @@ type Handler struct {
 	stages StageReader
 	// http is the outbound client for provider verification calls (Turnstile).
 	// Nil-tolerant: httpClient() supplies a bounded default, and a test injects one.
-	http   *http.Client
-	logger *slog.Logger
+	http *http.Client
+	// connections gives the backfill action access to a provider connection's
+	// decrypted credentials + adapter (L5.4). Nil-tolerant: the backfill route
+	// answers 503 when provider connections are not wired.
+	connections *ConnectionService
+	// backfillInFlight guards against two concurrent backfills of the same source —
+	// dedupe already makes a re-run correct, this just avoids doubling the Graph calls.
+	backfillInFlight sync.Map
+	logger           *slog.Logger
 }
 
 // WithHTTPClient overrides the outbound client used for provider verification.
 func (h *Handler) WithHTTPClient(c *http.Client) *Handler { h.http = c; return h }
+
+// WithConnections wires the provider-connection service used by the backfill
+// action. Set after both are built (main.go), so it is a setter rather than a
+// constructor arg — keeping NewHandler's signature (and its many test call sites)
+// unchanged.
+func (h *Handler) WithConnections(cs *ConnectionService) *Handler { h.connections = cs; return h }
 
 // NewHandler builds the handler. A nil authorizer panics rather than degrading:
 // the source-save OLS re-check is the only thing stopping integrations.manage from
@@ -123,6 +137,8 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, protected []gin.HandlerFunc
 		g.GET("/sources/:id/events", h.ListEvents)
 		g.GET("/sources/:id/mapping", h.GetMapping)
 		g.POST("/sources/:id/test-lead", h.SendTestLead)
+		// Import a facebook_form source's historical leads (L5.4).
+		g.POST("/sources/:id/backfill", h.Backfill)
 	}
 }
 
@@ -867,6 +883,13 @@ func (h *Handler) CreateSource(c *gin.Context) {
 		h.mgmtError(c, http.StatusBadRequest, "unknown source kind: "+req.Kind)
 		return
 	}
+	if req.Kind == KindFacebookForm {
+		// A facebook_form source is bound to a connection + a provider form id; it has
+		// no token and cannot be created from the generic New-source flow. It is created
+		// by enabling a form on its connection (POST /connections/:id/forms).
+		h.mgmtError(c, http.StatusBadRequest, "Facebook forms are added from their connection, not here")
+		return
+	}
 	if req.TargetSlug == "" {
 		req.TargetSlug = "contact"
 	}
@@ -1255,6 +1278,14 @@ func (h *Handler) DeleteSource(c *gin.Context) {
 func (h *Handler) RotateKey(c *gin.Context) {
 	src, ok := h.loadSource(c)
 	if !ok {
+		return
+	}
+	// A facebook_form source has NO bearer key — its credential is the connection,
+	// and it is resolved only by (connection_id, form_id). Minting a token_hash for
+	// it would give it a second, unintended capture-API ingress (FindSourceByToken
+	// Hash has no kind filter). Reject, symmetric to RotateGoogleKey's kind guard.
+	if src.Kind == KindFacebookForm {
+		h.mgmtError(c, http.StatusBadRequest, "this source has no bearer key to rotate — its credential is the Facebook connection")
 		return
 	}
 	plaintext, hash, prefix, err := GenerateLeadKey()

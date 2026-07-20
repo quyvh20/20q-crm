@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"crm-backend/internal/automation"
 	"crm-backend/internal/domain"
 	"crm-backend/internal/integrations"
+	"crm-backend/internal/integrations/envelope"
 	"crm-backend/internal/repository"
 	"crm-backend/internal/usecase"
 	"crm-backend/internal/worker"
@@ -47,6 +49,14 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to load config", zap.Error(err))
 	}
+
+	// Provider credential encryption (L5). Resolved HERE, immediately after the
+	// config load, and deliberately not beside the integrations wiring ~1700
+	// lines below: the HTTP server and /health start in a goroutine a few dozen
+	// lines down, so a fatal raised late crash-loops AFTER the platform has
+	// already recorded a healthy deploy — which is the shape that turns a
+	// missing variable into a silent rollback nobody attributes to it.
+	integrationCodec := buildIntegrationCodec(cfg, log)
 
 	if cfg.SentryDSN != "" {
 		err := sentry.Init(sentry.ClientOptions{
@@ -1161,6 +1171,90 @@ func main() {
 			// the management API reports only whether one is configured.
 			{"lead_sources turnstile_secret", `ALTER TABLE lead_sources
 				ADD COLUMN IF NOT EXISTS turnstile_secret TEXT`},
+
+			// ── L5.1 provider connector framework ──────────────────────────
+			// Mirrors migrations/000049_lead_provider_connections.up.sql; that
+			// file is what a fresh install and the Docker harness run, this is
+			// what prod runs. Both must agree.
+			{"integration_connections", `CREATE TABLE IF NOT EXISTS integration_connections (
+				id                       UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+				org_id                   UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+				provider                 VARCHAR(32) NOT NULL,
+				external_account_id      VARCHAR(255) NOT NULL,
+				external_account_label   VARCHAR(255) NOT NULL DEFAULT '',
+				encrypted_credentials    TEXT NOT NULL,
+				key_version              INT NOT NULL DEFAULT 0,
+				webhook_secret_encrypted TEXT,
+				status                   VARCHAR(32) NOT NULL DEFAULT 'connected',
+				cursor                   JSONB NOT NULL DEFAULT '{}'::jsonb,
+				config                   JSONB NOT NULL DEFAULT '{}'::jsonb,
+				last_synced_at           TIMESTAMPTZ,
+				last_error               TEXT,
+				consecutive_failures     INT NOT NULL DEFAULT 0,
+				created_by               UUID,
+				created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				deleted_at               TIMESTAMPTZ
+			)`},
+			{"integration_connections org index", `CREATE INDEX IF NOT EXISTS idx_integration_connections_org
+				ON integration_connections(org_id) WHERE deleted_at IS NULL`},
+			{"integration_connections account unique", `CREATE UNIQUE INDEX IF NOT EXISTS uix_integration_connections_org_account
+				ON integration_connections(org_id, provider, external_account_id)
+				WHERE deleted_at IS NULL`},
+			// The exclusive page->workspace claim. Releasing it on disconnect is
+			// what lets a customer move a page between workspaces; see the
+			// migration for why deleted_at is in the predicate.
+			{"integration_connections claim", `CREATE UNIQUE INDEX IF NOT EXISTS uix_integration_connections_claim
+				ON integration_connections(provider, external_account_id)
+				WHERE deleted_at IS NULL AND status IN ('connected', 'degraded', 'error')`},
+
+			{"integration_oauth_states", `CREATE TABLE IF NOT EXISTS integration_oauth_states (
+				id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+				state_hash    VARCHAR(64) NOT NULL UNIQUE,
+				org_id        UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+				user_id       UUID NOT NULL,
+				provider      VARCHAR(32) NOT NULL,
+				return_to     TEXT NOT NULL DEFAULT '',
+				code_verifier TEXT,
+				key_version   INT NOT NULL DEFAULT 0,
+				expires_at    TIMESTAMPTZ NOT NULL,
+				consumed_at   TIMESTAMPTZ,
+				created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			)`},
+			{"integration_oauth_states expiry index", `CREATE INDEX IF NOT EXISTS idx_integration_oauth_states_expiry
+				ON integration_oauth_states(expires_at) WHERE consumed_at IS NULL`},
+
+			{"integration_pending_connections", `CREATE TABLE IF NOT EXISTS integration_pending_connections (
+				id                   UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+				org_id               UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+				user_id              UUID NOT NULL,
+				provider             VARCHAR(32) NOT NULL,
+				encrypted_token      TEXT NOT NULL,
+				key_version          INT NOT NULL DEFAULT 0,
+				candidate_accounts   JSONB NOT NULL DEFAULT '[]'::jsonb,
+				selection_token_hash VARCHAR(64) NOT NULL UNIQUE,
+				expires_at           TIMESTAMPTZ NOT NULL,
+				consumed_at          TIMESTAMPTZ,
+				created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			)`},
+			{"integration_pending_connections expiry index", `CREATE INDEX IF NOT EXISTS idx_integration_pending_expiry
+				ON integration_pending_connections(expires_at) WHERE consumed_at IS NULL`},
+
+			// Which connection a provider-backed source belongs to. UNMAPPED on
+			// the LeadSource struct — the owner_pool rule: FindSourceByTokenHash
+			// selects lead_sources.*, so a mapped column whose ALTER failed here
+			// would 500 every capture request in every org, while unmapped it
+			// breaks only the provider route that reads it explicitly.
+			{"lead_sources connection_id", `ALTER TABLE lead_sources
+				ADD COLUMN IF NOT EXISTS connection_id UUID`},
+			{"lead_sources connection index", `CREATE INDEX IF NOT EXISTS idx_lead_sources_connection
+				ON lead_sources(connection_id) WHERE connection_id IS NOT NULL AND deleted_at IS NULL`},
+			// One facebook_form source per (connection, form id) — the backstop for the
+			// enable-form idempotency race (L5.4). Partial on deleted_at so re-enable is
+			// an ordinary insert.
+			{"lead_sources conn form unique", `CREATE UNIQUE INDEX IF NOT EXISTS uix_lead_sources_conn_form
+				ON lead_sources (connection_id, (config->'facebook'->>'form_id'))
+				WHERE kind = 'facebook_form' AND deleted_at IS NULL`},
 		}
 		for _, g := range leadGuards {
 			if err := db.Exec(g.sql).Error; err != nil {
@@ -1170,9 +1264,15 @@ func main() {
 
 		// RLS on, matching every other table this app adds (api_tokens, notifications).
 		// The app enforces org scoping in SQL, so this is defence in depth — but a table
-		// that opts out silently is the one nobody notices is different.
+		// that opts out silently is the one nobody notices is different. The three L5.1
+		// tables are the MOST sensitive of the set (they hold envelope-sealed provider
+		// credentials, PKCE verifiers and exchanged tokens), so they least of all should
+		// be the ones that silently differ.
 		db.Exec(`ALTER TABLE lead_sources ENABLE ROW LEVEL SECURITY`)
 		db.Exec(`ALTER TABLE integration_events ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`ALTER TABLE integration_connections ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`ALTER TABLE integration_oauth_states ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`ALTER TABLE integration_pending_connections ENABLE ROW LEVEL SECURITY`)
 
 		// ── Industry starter templates ───────────────────────────────────
 		// system_templates and org_settings both originate in migration 000002 —
@@ -1795,14 +1895,17 @@ func main() {
 		// authRepo rather than widening domain.AuthRepository, whose many methods are
 		// stubbed by hand in several test fakes.
 		integrationsMembers := repository.NewOrgMemberReader(db, authRepo)
+		// Extracted to a variable (was inline) so the async webhook processor (L5.3)
+		// shares the very same ingest pipeline the sync capture routes use.
+		integrationsIngest := integrations.NewLeadIngestService(
+			integrationsRepo, recordService, contactRepo, objectRegistryUC, orgSettingsUC,
+			integrationsMembers, // owner-pool liveness
+			stageRepo,           // re-checks the configured deal stage: deleting one is a SOFT delete, so a stale id keeps satisfying the FK
+			autoLogger,          // routing degradations are invisible otherwise: the write still succeeds
+		)
 		integrationsHandler := integrations.NewHandler(
 			integrationsRepo,
-			integrations.NewLeadIngestService(
-				integrationsRepo, recordService, contactRepo, objectRegistryUC, orgSettingsUC,
-				integrationsMembers, // owner-pool liveness
-				stageRepo,           // re-checks the configured deal stage: deleting one is a SOFT delete, so a stale id keeps satisfying the FK
-				autoLogger,          // routing degradations are invisible otherwise: the write still succeeds
-			),
+			integrationsIngest,
 			permissionUC,
 			integrationsMembers, // membership check for default_owner_id + owner_pool
 			objectRegistryUC,
@@ -1820,6 +1923,64 @@ func main() {
 			integrationsProtected,
 			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
 		)
+
+		// ── L5.1 provider connector framework ────────────────────────────
+		// The registry holds the provider adapters that have shipped. It stays EMPTY
+		// (and every /connect a clean 404) until a provider is BOTH built and
+		// configured — which keeps a deployment that has set no provider env vars
+		// booting without INTEGRATION_ENC_KEY (buildIntegrationCodec's "no provider
+		// configured" branch).
+		integrationsRegistry := integrations.NewRegistry()
+		// L5.2 Facebook Lead Ads. Registered only when the app credentials are set;
+		// an unset FACEBOOK_APP_ID leaves it unregistered (dormant). When it IS set,
+		// providerCredentialEnvSet reports it, so buildIntegrationCodec (Phase 1)
+		// already refused to boot a production-like env that lacks INTEGRATION_ENC_KEY.
+		if cfg.FacebookAppID != "" && cfg.FacebookAppSecret != "" {
+			integrationsRegistry.Register(integrations.NewFacebookProvider(
+				cfg.FacebookAppID, cfg.FacebookAppSecret, cfg.FacebookLoginConfigID,
+				integrations.NewHTTPClient(nil),
+			))
+			log.Info("Facebook Lead Ads provider registered")
+		}
+		integrationsConnSvc := integrations.NewConnectionService(
+			integrationsRepo,
+			integrationCodec, // resolved in Phase 1 (top of main); this is its first consumer
+			integrationsRegistry,
+			cfg.PublicAPIBaseURL, // provider redirect_uri origin — never c.Request.Host
+			cfg.FrontendURL,      // where the browser lands after the OAuth callback
+			autoLogger,
+		)
+		// The startup canary: prove the configured INTEGRATION_ENC_KEY actually opens
+		// the provider credentials already at rest. It must run HERE — after the DB and
+		// the connection boot guards — because buildIntegrationCodec (Phase 1, before
+		// the DB) can only check that the key PARSES, not that it is the key the stored
+		// rows were sealed under. A rotated Railway variable or a keyring entry dropped
+		// during a paste is caught now, at deploy, rather than on the first admin's
+		// Connect click days later. A clean or unconfigured install is a no-op pass.
+		if err := integrationsConnSvc.Canary(context.Background()); err != nil {
+			log.Fatal("Provider credential encryption canary failed", zap.Error(err))
+		}
+		// The source handler's backfill action needs a connection's creds+adapter.
+		integrationsHandler.WithConnections(integrationsConnSvc)
+		integrations.NewConnectionHandler(integrationsRepo, integrationsConnSvc, permissionUC, objectRegistryUC, autoLogger).
+			RegisterRoutes(router,
+				integrationsProtected,
+				func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
+			)
+		// A short sweep of consumed/expired OAuth state and pending-connection rows,
+		// so the two custody tables do not grow without bound. Advisory — every
+		// consume already re-checks expiry, so a lingering row is harmless.
+		go integrations.StartOAuthArtifactSweeper(context.Background(), integrationsRepo, autoLogger)
+
+		// ── L5.3 Facebook leadgen webhook + async processor ───────────────
+		// The PUBLIC webhook endpoint (GET verify handshake + POST signed receipt)
+		// and the async worker that claims pending deliveries, fetches each lead from
+		// Graph, and runs it through the shared ingest pipeline. Both are harmless when
+		// Facebook is unconfigured: the endpoint's provider lookup misses and acks, and
+		// the processor finds no pending rows to claim.
+		integrations.NewWebhookHandler(integrationsRepo, integrationsConnSvc, cfg.FacebookWebhookVerifyToken, integrationsIPLimiter, autoLogger).
+			RegisterRoutes(router)
+		go integrations.StartWebhookProcessor(context.Background(), integrationsRepo, integrationsConnSvc, integrationsIngest, autoLogger)
 
 		// Wire schema cache invalidation: when stages, tags, custom fields,
 		// or custom object defs change, the workflow schema cache is purged
@@ -1909,4 +2070,81 @@ func sanitizeRequestID(s string) string {
 		}
 	}
 	return s
+}
+
+// providerCredentialEnvSet reports whether any third-party provider is
+// configured — i.e. whether this deployment is in a position to store an
+// encrypted credential at all.
+//
+// Adding a provider means adding its env var here. That is the coupling: a
+// provider configured without INTEGRATION_ENC_KEY refuses to boot, so the
+// failure is a startup message naming the missing variable rather than a
+// runtime error the first time an admin clicks Connect.
+func providerCredentialEnvSet(cfg *config.Config) []string {
+	var configured []string
+	// Facebook (L5.2): once its app credentials are set, this deployment can store
+	// an encrypted page token, so INTEGRATION_ENC_KEY becomes mandatory in a
+	// production-like environment. The condition MATCHES the registration condition
+	// below (id AND secret) on purpose — reporting it on the id alone would refuse
+	// to boot for a provider that will never register (registration needs both), so
+	// a half-set config would crash-loop over a key it does not actually need yet.
+	if cfg.FacebookAppID != "" && cfg.FacebookAppSecret != "" {
+		configured = append(configured, "FACEBOOK_APP_ID")
+	}
+	return configured
+}
+
+// buildIntegrationCodec resolves INTEGRATION_ENC_KEY into the envelope codec
+// used to seal provider credentials.
+//
+// The three outcomes are deliberately not symmetric:
+//
+//   - MALFORMED is always fatal, in every environment. A key that fails to
+//     parse is a typo, and booting past it would mean every credential write
+//     fails at runtime instead of at deploy time, where somebody is watching.
+//   - ABSENT with a provider configured is fatal in production-like
+//     environments, following the RESEND_API_KEY precedent below — including
+//     its devLike allowlist rather than an `== "production"` match, because
+//     APP_ENV is unset on prod today and a string match on it fails OPEN.
+//   - ABSENT with no provider configured returns a nil codec. That is the
+//     current state of every existing deployment, and it must keep booting: the
+//     connect routes answer 503 with an actionable message, and nothing else in
+//     the app touches the codec.
+//
+// A nil *envelope.Codec is a valid value — every method on it returns
+// ErrNotConfigured — so callers do not need a nil check to stay safe.
+func buildIntegrationCodec(cfg *config.Config, log *zap.Logger) *envelope.Codec {
+	configured := providerCredentialEnvSet(cfg)
+
+	ring, err := envelope.ParseKeyring(cfg.IntegrationEncKey)
+	switch {
+	case err == nil:
+		// Do not log the versions at Info on every boot without saying what
+		// they are for; an operator reading this line during an incident needs
+		// to know a rotation is half-applied.
+		log.Info("Provider credential encryption is configured",
+			zap.Ints("key_versions", ring.Versions()),
+			zap.Int("sealing_under", ring.Primary()))
+		return envelope.NewCodec(ring)
+
+	case errors.Is(err, envelope.ErrNoKeys):
+		devLike := cfg.AppEnv == "development" || cfg.AppEnv == "test"
+		if len(configured) > 0 && !devLike {
+			log.Fatal("INTEGRATION_ENC_KEY is not set, but provider credentials are configured (" +
+				strings.Join(configured, ", ") + ") and this is a production-like environment " +
+				"(APP_ENV is not development/test): refusing to boot, because provider access tokens would be stored " +
+				"unencrypted or not at all. Generate one with `openssl rand -base64 32` and set INTEGRATION_ENC_KEY.")
+		}
+		log.Warn("INTEGRATION_ENC_KEY is not set: connecting a third-party provider account will be refused. " +
+			"Generate one with `openssl rand -base64 32`. This is expected for deployments that do not use provider connections.")
+		return nil
+
+	default:
+		// Never zap.Error(err) blind here — ParseKeyring's messages are written
+		// to be material-free precisely so this line can be logged, but the
+		// Fatal is what matters: a malformed key must not reach runtime.
+		log.Fatal("INTEGRATION_ENC_KEY is set but could not be parsed: " + err.Error() +
+			". Expected a base64-encoded 32-byte key, optionally as a comma-separated `version:key` keyring.")
+		return nil
+	}
 }

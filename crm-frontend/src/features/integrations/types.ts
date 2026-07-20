@@ -25,6 +25,7 @@ export const KIND_LABELS: Record<string, string> = {
   api: 'Capture API',
   google_ads: 'Google Ads',
   form_embed: 'Website form',
+  facebook_form: 'Facebook form',
 };
 
 /** One field a form_embed source collects. */
@@ -285,4 +286,60 @@ export interface MappingView {
   /** The fields a lead may be written into (ownership/relations never appear). */
   target_fields: MappingTarget[];
   field_map: FieldMap;
+}
+
+// ── Provider connections (L5.2) ──────────────────────────────────────────────
+// Mirror crm-backend/internal/integrations connections.go / provider.go.
+
+/** A provider the deployment can connect (has a shipped adapter AND is configured,
+ *  AND provider-credential encryption is set up — the backend omits providers the
+ *  codec cannot serve, so an empty list means "no connect button to show"). */
+export interface ProviderInfo {
+  key: string;
+  label: string;
+  supports_webhooks: boolean;
+  uses_pkce: boolean;
+}
+
+export type ConnectionStatus = 'connected' | 'degraded' | 'error' | 'revoked' | 'disconnected';
+
+/** One OAuth'd provider account (a Facebook page). Never carries a token — the
+ *  backend view type has no credential field. */
+export interface Connection {
+  id: string;
+  provider: string;
+  external_account_id: string;
+  external_account_label: string;
+  status: ConnectionStatus;
+  /** Whether provider-side delivery is active (a page subscribed to leadgen). A
+   *  connection can be `connected` yet unsubscribed — healthy-looking but silent. */
+  subscribed: boolean;
+  last_error?: string;
+  consecutive_failures: number;
+  created_at: string;
+  updated_at: string;
+  last_synced_at?: string;
+}
+
+/** A candidate account in the picker — id + label only, never a token. */
+export interface AccountChoice {
+  id: string;
+  label: string;
+  meta?: Record<string, unknown>;
+}
+
+/** The account-picker payload: the provider plus its token-free candidates. */
+export interface PendingCandidates {
+  provider: string;
+  accounts: AccountChoice[];
+}
+
+/** One provider lead form in the enable-a-form picker (L5.4), with whether it is
+ *  already enabled (has a facebook_form source) and that source's id. */
+export interface ProviderForm {
+  id: string;
+  name: string;
+  status?: string;
+  enabled: boolean;
+  source_id?: string;
 }

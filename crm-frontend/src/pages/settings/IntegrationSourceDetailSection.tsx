@@ -23,6 +23,7 @@ import DeliveryLimitsCard from './DeliveryLimitsCard';
 import LeadDealCard from './LeadDealCard';
 import GoogleAdsSetupCard from './GoogleAdsSetupCard';
 import FormEmbedSetupCard from './FormEmbedSetupCard';
+import FacebookFormCard from './FacebookFormCard';
 import { DocumentTitle } from '../../lib/useDocumentTitle';
 import {
   useDeleteSource,
@@ -330,11 +331,18 @@ export default function IntegrationSourceDetailSection() {
     // Warn when the source is live: the external side (a Make scenario, a website
     // form) has no idea we deleted this and will just start failing.
     const recentlyUsed = Boolean(source.last_used_at);
+    // facebook_form is keyless and webhook-fed: deleting it does not break a "sender"
+    // (Facebook keeps posting to the connection; those leads are simply dropped), so
+    // its copy must not talk about a key or the sender getting errors.
+    const body =
+      source.kind === 'facebook_form'
+        ? 'This stops importing leads from this Facebook form. Facebook is not notified — its leads for this form will simply stop being recorded. The delivery log is kept.'
+        : recentlyUsed
+          ? 'This key has been receiving leads. Deleting it stops them immediately, and whatever is sending them will start getting errors. The delivery log is kept.'
+          : 'The key stops working immediately. The delivery log is kept.';
     const ok = await confirm({
       title: `Delete ${source.name}?`,
-      body: recentlyUsed
-        ? 'This key has been receiving leads. Deleting it stops them immediately, and whatever is sending them will start getting errors. The delivery log is kept.'
-        : 'The key stops working immediately. The delivery log is kept.',
+      body,
       confirmLabel: 'Delete source',
     });
     if (!ok) return;
@@ -391,9 +399,12 @@ export default function IntegrationSourceDetailSection() {
                   {source.status}
                 </Badge>
                 <Badge variant="secondary">{kindLabel(source.kind)}</Badge>
-                <code className="font-mono text-xs text-muted-foreground">
-                  {source.token_prefix}…
-                </code>
+                {/* facebook_form has no bearer key — the connection is the credential. */}
+                {source.kind !== 'facebook_form' && (
+                  <code className="font-mono text-xs text-muted-foreground">
+                    {source.token_prefix}…
+                  </code>
+                )}
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -405,10 +416,14 @@ export default function IntegrationSourceDetailSection() {
                   {sendTestLead.isPending ? 'Sending…' : 'Send test lead'}
                 </Button>
               )}
-              <Button variant="outline" size="sm" onClick={handleRotate} disabled={rotateKey.isPending}>
-                <KeyRound />
-                {rotateKey.isPending ? 'Rotating…' : 'Rotate key'}
-              </Button>
+              {/* facebook_form has no bearer key to rotate — its credential is the
+                  connection, rotated by reconnecting the account. */}
+              {source.kind !== 'facebook_form' && (
+                <Button variant="outline" size="sm" onClick={handleRotate} disabled={rotateKey.isPending}>
+                  <KeyRound />
+                  {rotateKey.isPending ? 'Rotating…' : 'Rotate key'}
+                </Button>
+              )}
               <Button variant="outline" size="sm" onClick={handleToggle} disabled={updateSource.isPending}>
                 {source.status === 'active' ? 'Disable' : 'Enable'}
               </Button>
@@ -470,6 +485,8 @@ export default function IntegrationSourceDetailSection() {
           {source.kind === 'google_ads' && <GoogleAdsSetupCard source={source} />}
 
           {source.kind === 'form_embed' && <FormEmbedSetupCard source={source} />}
+
+          {source.kind === 'facebook_form' && <FacebookFormCard source={source} />}
 
           <OwnerRoutingCard source={source} />
 

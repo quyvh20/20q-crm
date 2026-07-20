@@ -22,11 +22,24 @@ import (
 // on every existing bound. If it did not, shipping this endpoint would silently
 // redefine every limit that protects the single one.
 
-// Delivery modes. Set from the ROUTE, never from a payload.
+// Delivery modes. Set from the ROUTE (or the server-side backfill executor),
+// never from a payload.
 const (
 	DeliveryDirect = ""
 	DeliveryBatch  = "batch"
+	// DeliveryBackfill is a provider historical import (L5.4). It shares batch's
+	// BULK semantics — automation suppressed unless the admin opts in — because
+	// importing 500 historical leads must not enrol 500 contacts into every
+	// contact_created workflow. Kept distinct from DeliveryBatch so the ledger and
+	// any future per-mode tuning can tell a public batch POST from a backfill.
+	DeliveryBackfill = "backfill"
 )
+
+// isBulkDelivery reports whether a delivery mode carries bulk semantics — the ones
+// that suppress automation by default and take the shorter per-item write budget.
+func isBulkDelivery(mode string) bool {
+	return mode == DeliveryBatch || mode == DeliveryBackfill
+}
 
 const (
 	// maxBatchItems is the spec's ceiling, further clamped by the limiter's window:

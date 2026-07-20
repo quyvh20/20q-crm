@@ -30,6 +30,18 @@ const (
 	reapGrace = 10 * time.Minute
 	// reapInterval is how often we look. Cheap: a partial index covers the scan.
 	reapInterval = 5 * time.Minute
+
+	// oauthSweepInterval is how often expired OAuth custody rows are purged, and
+	// oauthSweepRetain is how long past expiry/consumption a row is kept — a small
+	// grace so a diagnosis can still read a just-expired attempt.
+	oauthSweepInterval = 30 * time.Minute
+	oauthSweepRetain   = 1 * time.Hour
+
+	// maxWebhookAttempts bounds how many times an async provider delivery (L5) is
+	// tried before it is given up as failed — the plan's "≤3 attempts". Shared by
+	// the async webhook processor (which fails a delivery whose fetch keeps erroring)
+	// and the reaper (which stops re-claiming a delivery that keeps stranding).
+	maxWebhookAttempts = 3
 )
 
 // StartReaper runs the stranded-delivery sweep until ctx is cancelled.
@@ -52,6 +64,24 @@ func StartReaper(ctx context.Context, repo *Repository, logger *slog.Logger) {
 				// Loud on purpose: a stranded delivery means a process died mid-write, and
 				// the count is the only signal anyone gets that it happened.
 				logger.Warn("integrations: released stranded deliveries for retry", "count", n)
+			}
+		}
+	}
+}
+
+// StartOAuthArtifactSweeper purges consumed/expired OAuth state and pending
+// connection rows until ctx is cancelled. Advisory-only (every consume re-checks
+// expiry), so a failed sweep is logged and retried on the next tick, never fatal.
+func StartOAuthArtifactSweeper(ctx context.Context, repo *Repository, logger *slog.Logger) {
+	t := time.NewTicker(oauthSweepInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := repo.PurgeExpiredOAuthArtifacts(ctx, oauthSweepRetain); err != nil && logger != nil {
+				logger.Error("integrations: purging expired OAuth artifacts failed", "error", err)
 			}
 		}
 	}

@@ -19,6 +19,7 @@ import {
 } from '@/components/ui';
 import SecretReveal from '../../components/settings/SecretReveal';
 import OwnerPicker from '../../components/records/OwnerPicker';
+import ProviderConnections from './ProviderConnections';
 import { useCreateSource, useLeadSources } from '../../features/integrations/queries';
 import {
   UPDATE_POLICY_HELP,
@@ -104,6 +105,11 @@ export default function IntegrationsSection() {
           revoke one without touching the others.
         </p>
       </div>
+
+      {/* Provider connections (L5.2): OAuth'd ad-platform accounts (Facebook pages),
+          separate from the per-key sources below. Self-contained — its own queries,
+          loading and the account-picker interstitial. */}
+      <ProviderConnections />
 
       {/* The one-time secrets. Rendered above the list so they cannot be missed.
           A google_ads source shows its GOOGLE key here — the value the advertiser
@@ -323,9 +329,15 @@ export default function IntegrationsSection() {
                           <span className="text-xs text-muted-foreground">{kindLabel(s.kind)}</span>
                         </TableCell>
                         <TableCell>
-                          <code className="font-mono text-xs text-muted-foreground">
-                            {s.token_prefix}…
-                          </code>
+                          {/* facebook_form has no bearer key — the connection is the
+                              credential, so show a neutral placeholder, not a bare "…". */}
+                          {s.kind === 'facebook_form' ? (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          ) : (
+                            <code className="font-mono text-xs text-muted-foreground">
+                              {s.token_prefix}…
+                            </code>
+                          )}
                         </TableCell>
                         <TableCell>
                           <Badge variant={STATUS_VARIANT[s.status]}>{s.status}</Badge>
