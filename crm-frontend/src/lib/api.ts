@@ -965,6 +965,71 @@ export interface CustomObjectRecord {
 }
 
 // ============================================================
+// Industry starter templates
+// ============================================================
+
+/** Catalog row. Carries counts, not the spec — the picker renders 25 of these. */
+export interface SystemTemplateSummary {
+  slug: string;
+  name: string;
+  category: string;
+  description: string;
+  icon: string;
+  sort_order: number;
+  stage_count: number;
+  object_count: number;
+  field_count: number;
+  workflow_count: number;
+  has_kb: boolean;
+  applied: boolean;
+}
+
+export interface TemplateApplyItem {
+  /** pipeline_stage | object_def | field_def | kb_section | workflow | org_settings | schema */
+  kind: string;
+  key: string;
+  /** created | skipped | failed | needs_review */
+  status: string;
+  reason?: string;
+  id?: string;
+  error?: string;
+}
+
+export interface TemplateApplyResult {
+  template_slug: string;
+  /** applied | partial | already_applied | failed */
+  status: string;
+  spec_version: number;
+  items: TemplateApplyItem[];
+  warnings?: string[];
+}
+
+export async function listTemplates(): Promise<SystemTemplateSummary[]> {
+  const res = await apiFetch('/api/templates');
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Failed to fetch templates');
+  return (json.data || []) as SystemTemplateSummary[];
+}
+
+/**
+ * Applies a template. Resolves for BOTH a full and a partial apply — a partial
+ * means the schema install succeeded and only optional extras (a KB section, an
+ * automation) failed, so the caller shows the per-item report rather than an
+ * error. Only a genuine failure, where nothing was installed, rejects.
+ */
+export async function applyTemplate(slug: string): Promise<TemplateApplyResult> {
+  const res = await apiFetch(`/api/templates/${slug}/apply`, { method: 'POST' });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) {
+    // The backend sends the partial report alongside the error; prefer it so the
+    // user is told WHAT failed instead of just "something did".
+    if (json?.data?.items) return json.data as TemplateApplyResult;
+    throw apiError(res, json, 'Failed to apply template');
+  }
+  return json.data as TemplateApplyResult;
+}
+
+// ============================================================
 // Custom Object Definition API
 // ============================================================
 

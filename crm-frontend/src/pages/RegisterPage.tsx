@@ -5,6 +5,7 @@ import { useAuth } from '../lib/auth';
 import { useDocumentTitle } from '../lib/useDocumentTitle';
 import LegalConsent from '../components/auth/LegalConsent';
 import { Button, Card, Input, Label } from '@/components/ui';
+import { markTemplatePickerPending } from '../features/onboarding/templatePickerHandoff';
 
 const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8080' : '');
 
@@ -39,6 +40,9 @@ export default function RegisterPage() {
     setLoading(true);
     try {
       await register(form);
+      // Signing up creates a workspace, so this IS the creation step — arm the
+      // starter-template picker for the dashboard the user is about to land on.
+      markTemplatePickerPending();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Registration failed');
     } finally {

@@ -5,6 +5,7 @@ import { prettyRole } from '../lib/roles';
 import { useDocumentTitle } from '../lib/useDocumentTitle';
 import { Inbox, LogOut, Loader2, ArrowRight, Building2 } from 'lucide-react';
 import { Button, Input } from '@/components/ui';
+import { markTemplatePickerPending } from '../features/onboarding/templatePickerHandoff';
 
 /**
  * The R2 zero-membership dead-end (P4). A user who authenticates but belongs to
@@ -67,6 +68,10 @@ export default function NoWorkspacePage() {
     setError('');
     try {
       await createWorkspace({ name: name.trim() });
+      // A brand-new workspace is exactly where a starter template pays off, so
+      // arm the picker to open once we land. Not done on the accept-invitation
+      // path above: that workspace is already someone else's, configured.
+      markTemplatePickerPending();
       // saveAuth switched the active org; go to the app.
       window.location.assign('/');
     } catch (err) {

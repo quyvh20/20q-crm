@@ -206,13 +206,24 @@ describe('SetupChecklist — capability gating', () => {
     await waitFor(() => expect(container).toBeEmptyDOMElement());
   });
 
-  it('offers the template action only to someone who can manage objects', async () => {
+  // Gated on org.settings, matching POST /api/templates/:slug/apply. It was
+  // objects.manage back when a template only created objects; a template now also
+  // installs pipeline stages, knowledge base and automations, and a gate looser
+  // than the endpoint's would show a button whose every click 403s.
+  it('offers the template action only to someone who can manage workspace settings', async () => {
+    renderCard();
+    await screen.findByText('Set up your workspace');
+    expect(screen.queryByText('Start from a template')).not.toBeInTheDocument();
+
+    // objects.manage alone is no longer enough.
+    cleanup();
+    caps = new Set([...ALL_CAPS, 'objects.manage']);
     renderCard();
     await screen.findByText('Set up your workspace');
     expect(screen.queryByText('Start from a template')).not.toBeInTheDocument();
 
     cleanup();
-    caps = new Set([...ALL_CAPS, 'objects.manage']);
+    caps = new Set([...ALL_CAPS, 'org.settings']);
     renderCard();
     expect(await screen.findByText('Start from a template')).toBeInTheDocument();
   });

@@ -13,6 +13,8 @@ import { PageHeader } from '../../components/ui/page-header';
 import { Skeleton } from '../../components/ui/skeleton';
 import ReportChart from './charts/ReportChart';
 import SetupChecklist from '../onboarding/SetupChecklist';
+import StarterTemplateModal from '../onboarding/StarterTemplateModal';
+import { consumeTemplatePickerPending } from '../onboarding/templatePickerHandoff';
 
 // The home page: every user's own grid of pinned reports. Each widget runs its
 // report through the normal run endpoint, so two users pinning the same shared
@@ -25,6 +27,11 @@ export default function DashboardPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [adding, setAdding] = useState(false);
+  // Read-and-clear in the initialiser so it runs exactly once per mount, before
+  // first paint — a useEffect would flash the dashboard first, and React 18's
+  // StrictMode double-invokes effects, which would consume the flag on the first
+  // pass and leave the second with nothing to show.
+  const [showTemplatePicker, setShowTemplatePicker] = useState(consumeTemplatePickerPending);
 
   const { data: widgets = [], isLoading } = useQuery<DashboardWidget[]>({
     queryKey: ['dashboard-widgets'],
@@ -55,6 +62,26 @@ export default function DashboardPage() {
   return (
     <div className="mx-auto w-full max-w-6xl space-y-6">
       <SetupChecklist />
+
+      {/* The creation-step template picker. It opens here rather than on the
+          create-workspace pages because all of those finish with a hard
+          window.location.assign('/') — and none of them are wrapped in AppLayout,
+          so a modal there would render with no app shell behind it. By the time we
+          land, saveAuth has already installed the NEW workspace's token, so the
+          picker is operating on the right org.
+
+          Deliberately skippable. The blocking full-screen wizard this replaces was
+          retired for good reason: it demanded a decision from someone who had been
+          in the product for ten seconds, and vanished forever once dismissed. This
+          one is a normal dismissable modal, and the same picker stays permanently
+          reachable from the setup checklist above. */}
+      {showTemplatePicker && (
+        <StarterTemplateModal
+          open
+          surface="creation"
+          onClose={() => setShowTemplatePicker(false)}
+        />
+      )}
 
       <PageHeader
         className="mb-0"

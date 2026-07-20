@@ -35,7 +35,11 @@ export default function SetupChecklist() {
   const { steps, doneCount, allDone, loading } = useSetupChecklist();
   const [showTemplates, setShowTemplates] = useState(false);
 
-  const canTemplates = can('objects.manage');
+  // Matches the apply endpoint's own gate (org.settings). It used to be
+  // objects.manage, which was right when a template only created objects; a
+  // template now installs pipeline stages, knowledge base and automations too, and
+  // a mismatch here shows a button whose every click 403s.
+  const canTemplates = can('org.settings');
   const canKB = can('knowledge.manage');
 
   // `onboarding_completed` is the server flag the retired wizard set. Honoring it
@@ -140,7 +144,7 @@ export default function SetupChecklist() {
           </button>
           <p className="px-2 text-xs text-muted-foreground">
             {canTemplates
-              ? 'Create the objects and fields for your industry in one click — real estate or B2B SaaS.'
+              ? 'Set up the pipeline, fields and knowledge base for your industry in one click — 25 to choose from.'
               : 'Tell the AI assistant what you sell and how you talk, so its answers fit your business.'}
           </p>
         </div>

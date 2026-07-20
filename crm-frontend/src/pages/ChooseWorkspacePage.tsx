@@ -4,6 +4,7 @@ import { getWorkspaces, type Workspace } from '../lib/api';
 import { useDocumentTitle } from '../lib/useDocumentTitle';
 import { Building2, Users, Check, Star, Loader2, LogOut, Ban, AlertTriangle, Plus, ArrowRight } from 'lucide-react';
 import { Button, Input } from '@/components/ui';
+import { markTemplatePickerPending } from '../features/onboarding/templatePickerHandoff';
 
 /**
  * The R2 workspace chooser (P4). Shown when a user belongs to multiple active
@@ -34,6 +35,9 @@ export default function ChooseWorkspacePage() {
     setError('');
     try {
       await createWorkspace({ name: newName.trim() });
+      // Arm the starter-template picker for the load we are about to trigger —
+      // in-memory state does not survive a hard navigation.
+      markTemplatePickerPending();
       window.location.assign('/');
     } catch (err: any) {
       setError(err?.message || 'Could not create the workspace.');

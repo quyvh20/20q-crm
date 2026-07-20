@@ -20,15 +20,20 @@ interface KBQuickFillFormProps {
   skipLabel?: string;
 }
 
+// Keyed on the SERVER template slugs (/api/templates), not the two ids the old
+// hardcoded modal used ('real-estate', 'saas') — those matched nothing once the
+// catalog moved to the backend, so every template silently fell through to
+// `default`. Templates without an entry here still fall through by design; the
+// default copy is deliberately generic rather than wrong.
 const PLACEHOLDERS = {
-  'real-estate': {
+  real_estate: {
     company: 'e.g. Prestige Realty',
     industry: 'e.g. Real Estate Brokerage',
     usp: 'e.g. Top 1% in sales volume, exclusive luxury listings',
     products: 'e.g. - Buyer representation: 3% commission\n- Listing services: 2.5% commission, full marketing suite',
     objection: 'e.g. "Commission is too high" → We sell homes 14 days faster on average and for 2% more money.',
   },
-  saas: {
+  b2b_saas: {
     company: 'e.g. CloudFlow SaaS',
     industry: 'e.g. B2B SaaS',
     usp: 'e.g. 10x cheaper than the incumbent, AI-native',
