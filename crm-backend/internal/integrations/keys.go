@@ -52,6 +52,41 @@ func HashLeadKey(plaintext string) string {
 // IsLeadKey reports whether a bearer credential is a lead-capture key.
 func IsLeadKey(s string) bool { return strings.HasPrefix(s, LeadKeyPrefix) }
 
+// GoogleKeyPrefix marks a google_ads webhook key. Distinct from LeadKeyPrefix on
+// purpose: IsLeadKey gates the bearer capture path, and a google_key pasted into a
+// Bearer header must fail there rather than half-work. The two credentials also
+// authenticate different things — the bearer key IS the request's authority, while
+// the google_key only corroborates a source already named by the URL's public
+// token.
+const GoogleKeyPrefix = "crm_gads_"
+
+// GenerateGoogleKey mints the key an advertiser pastes beside the webhook URL.
+// Same shape as GenerateLeadKey: plaintext shown exactly once, SHA-256 stored.
+// Google documents no length or charset limit on the key field (their FAQ blesses
+// "123"), so the full-entropy form fits.
+func GenerateGoogleKey() (plaintext, hash string, err error) {
+	b := make([]byte, 32)
+	if _, err = rand.Read(b); err != nil {
+		return "", "", err
+	}
+	plaintext = GoogleKeyPrefix + base64.RawURLEncoding.EncodeToString(b)
+	return plaintext, HashLeadKey(plaintext), nil
+}
+
+// GeneratePublicToken mints the URL-path identifier of a google_ads source.
+//
+// 16 bytes, not 32: this is an ADDRESS, not a credential — the google_key is the
+// secret. It is random anyway because a guessable path invites drive-by probing,
+// and it must be generated (never user-chosen) so it cannot collide meaningfully
+// or embed anything an org would mind appearing in Google's config UI.
+func GeneratePublicToken() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
 // leadKeyPrefixOf builds the display hint: enough to recognize a key in a list,
 // useless to anyone who steals the list.
 func leadKeyPrefixOf(plaintext string) string {

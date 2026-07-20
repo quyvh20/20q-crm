@@ -3,9 +3,11 @@ package integrations
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -84,6 +86,9 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, protected []gin.HandlerFunc
 	router.POST("/api/capture/leads", h.CaptureLead)
 	// The recovery port: up to 100 leads, one result each.
 	router.POST("/api/capture/leads/batch", h.CaptureLeadBatch)
+	// Google Ads lead-form webhook (L3): the URL token names the source, the
+	// google_key in the body corroborates it.
+	router.POST("/api/capture/google-ads/:public_token", h.CaptureGoogleAds)
 
 	g := router.Group("/api/integrations")
 	g.Use(protected...)
@@ -95,6 +100,7 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, protected []gin.HandlerFunc
 		g.PATCH("/sources/:id", h.UpdateSource)
 		g.DELETE("/sources/:id", h.DeleteSource)
 		g.POST("/sources/:id/rotate-key", h.RotateKey)
+		g.POST("/sources/:id/rotate-google-key", h.RotateGoogleKey)
 		g.GET("/sources/:id/events", h.ListEvents)
 		g.GET("/sources/:id/mapping", h.GetMapping)
 		g.POST("/sources/:id/test-lead", h.SendTestLead)
@@ -675,6 +681,13 @@ func (h *Handler) viewOf(c *gin.Context, src *LeadSource, withLiveness bool) sou
 	if enroll, err := h.repo.GetBatchEnrollAutomation(c.Request.Context(), src.OrgID, src.ID); err == nil {
 		v.BatchEnrollAutomation = enroll
 	}
+	// Same rule for the google_ads URL token — without this, the setup panel would
+	// render a webhook URL with a blank where the token goes.
+	if src.Kind == KindGoogleAds && src.PublicToken == "" {
+		if tok, err := h.repo.GetPublicToken(c.Request.Context(), src.OrgID, src.ID); err == nil {
+			src.PublicToken = tok
+		}
+	}
 	v.DealStageMissing = h.dealStageMissing(c, src, withLiveness)
 	raw, err := h.repo.GetOwnerPool(c.Request.Context(), src.OrgID, src.ID)
 	if err != nil {
@@ -748,6 +761,11 @@ type sourceWithKey struct {
 	sourceView
 	// PlaintextKey is populated exactly once, at creation or rotation.
 	PlaintextKey string `json:"plaintext_key,omitempty"`
+	// GoogleKey is the second one-time secret a google_ads source carries — the
+	// value the advertiser pastes beside the webhook URL. Shown at creation and
+	// google-key rotation only; the bearer PlaintextKey above still exists for
+	// these sources because the batch recovery endpoint authenticates with it.
+	GoogleKey string `json:"google_key,omitempty"`
 }
 
 // ownerString renders an optional owner id for a response.
@@ -764,6 +782,25 @@ func orEmpty(p *[]string) *[]string {
 		return &[]string{}
 	}
 	return p
+}
+
+// validateSeedFieldMap runs a kind's seeded map through the same validation an
+// admin-saved one gets. Returns an error rather than writing a response shape —
+// the caller decides how to say "our own seed is broken".
+func (h *Handler) validateSeedFieldMap(c *gin.Context, orgID uuid.UUID, targetSlug string, m FieldMap) error {
+	allow, err := BuildAllowlist(c.Request.Context(), h.schema, orgID, targetSlug)
+	if err != nil {
+		return err
+	}
+	if problems := ValidateFieldMap(m, allow); len(problems) > 0 {
+		keys := make([]string, 0, len(problems))
+		for k, v := range problems {
+			keys = append(keys, k+": "+v)
+		}
+		sort.Strings(keys)
+		return domain.NewAppError(http.StatusInternalServerError, "seed map invalid: "+strings.Join(keys, "; "))
+	}
+	return nil
 }
 
 // CreateSource mints a source and returns its key once.
@@ -829,6 +866,14 @@ func (h *Handler) CreateSource(c *gin.Context) {
 	matchFields := req.MatchFields
 	if len(matchFields) == 0 {
 		matchFields = []string{MatchEmail}
+		// google_ads defaults to email+phone: phone-only lead forms are common, and
+		// under email-only matching requiresEmail would 422 every such lead —
+		// permanently, because Google never retries a 4xx. Phone matching is the L2
+		// machinery built for exactly this provider shape. An explicit request
+		// still wins.
+		if req.Kind == KindGoogleAds {
+			matchFields = []string{MatchEmail, MatchPhone}
+		}
 	}
 	if err := ValidateMatchFields(matchFields); err != nil {
 		h.mgmtError(c, http.StatusBadRequest, err.Error())
@@ -855,6 +900,21 @@ func (h *Handler) CreateSource(c *gin.Context) {
 		h.mgmtError(c, http.StatusInternalServerError, "could not mint key")
 		return
 	}
+	// A google_ads source starts with Google's standard columns pre-mapped, so the
+	// advertiser's first test exercises a real mapping instead of the identity
+	// passthrough. Validated like any admin-saved map — a seed that broke the rules
+	// would be a bug worth failing loudly on, not shipping.
+	fieldMapJSON := datatypes.JSON(`{}`)
+	if req.Kind == KindGoogleAds {
+		seed := googleSeedFieldMap()
+		if err := h.validateSeedFieldMap(c, orgID, req.TargetSlug, seed); err != nil {
+			h.logger.Error("integrations: google seed field map invalid", "error", err)
+			h.mgmtError(c, http.StatusInternalServerError, "could not seed the field mapping")
+			return
+		}
+		raw, _ := json.Marshal(seed)
+		fieldMapJSON = datatypes.JSON(raw)
+	}
 	src := &LeadSource{
 		OrgID:        orgID,
 		Kind:         req.Kind,
@@ -866,7 +926,7 @@ func (h *Handler) CreateSource(c *gin.Context) {
 		// Set explicitly: GORM sends these columns on INSERT, so leaving them nil
 		// persists NULL/[] and silently defeats the column DEFAULT.
 		MatchFields:    matchFieldsJSON,
-		FieldMap:       datatypes.JSON(`{}`),
+		FieldMap:       fieldMapJSON,
 		Config:         configJSON,
 		DefaultOwnerID: owner,
 		DailyCap:       defaultDailyCap,
@@ -888,9 +948,30 @@ func (h *Handler) CreateSource(c *gin.Context) {
 	if err := h.repo.SetOwnerPool(c.Request.Context(), orgID, src.ID, pool); err != nil {
 		h.logger.Error("integrations: could not save the rotation", "error", err, "source_id", src.ID.String())
 	}
+	// The google_ads credentials are written separately too (unmapped columns) —
+	// but UNLIKE the rotation, a failure here is fatal: a google_ads source with no
+	// public_token is a webhook nobody can ever call, handed to the admin with a
+	// green 201. Delete the half-made source and say so.
+	googleKey := ""
+	if req.Kind == KindGoogleAds {
+		pub, perr := GeneratePublicToken()
+		gk, ghash, kerr := GenerateGoogleKey()
+		if perr == nil && kerr == nil {
+			perr = h.repo.SetGoogleCredentials(c.Request.Context(), orgID, src.ID, pub, ghash)
+		}
+		if perr != nil || kerr != nil {
+			h.logger.Error("integrations: could not mint google credentials", "error", errors.Join(perr, kerr), "source_id", src.ID.String())
+			_ = h.repo.SoftDeleteSource(c.Request.Context(), orgID, src.ID)
+			h.mgmtError(c, http.StatusInternalServerError, "could not create source")
+			return
+		}
+		src.PublicToken = pub
+		googleKey = gk
+	}
 	c.JSON(http.StatusCreated, gin.H{"data": sourceWithKey{
 		sourceView:   h.viewOf(c, src, false),
 		PlaintextKey: plaintext,
+		GoogleKey:    googleKey,
 	}})
 }
 
@@ -1004,6 +1085,9 @@ func (h *Handler) UpdateSource(c *gin.Context) {
 	if req.Status != nil {
 		switch *req.Status {
 		case SourceStatusActive:
+			// Mutating the struct keeps the response honest; the actual write is the
+			// targeted SetSourceStatus below — Save omits these columns because the
+			// capture path writes them concurrently (see UpdateSource in the repo).
 			src.Status = SourceStatusActive
 			src.DisabledAt = nil
 			src.ConsecutiveFailures = 0
@@ -1019,6 +1103,12 @@ func (h *Handler) UpdateSource(c *gin.Context) {
 	if err := h.repo.UpdateSource(c.Request.Context(), src); err != nil {
 		h.mgmtError(c, http.StatusInternalServerError, "could not update source")
 		return
+	}
+	if req.Status != nil {
+		if err := h.repo.SetSourceStatus(c.Request.Context(), src.OrgID, src.ID, src.Status); err != nil {
+			h.mgmtError(c, http.StatusInternalServerError, "could not update source status")
+			return
+		}
 	}
 	if newPool != nil {
 		if err := h.repo.SetOwnerPool(c.Request.Context(), src.OrgID, src.ID, *newPool); err != nil {
@@ -1077,6 +1167,39 @@ func (h *Handler) RotateKey(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": sourceWithKey{
 		sourceView:   h.viewOf(c, src, false),
 		PlaintextKey: plaintext,
+	}})
+}
+
+// RotateGoogleKey mints a new google_key for a google_ads source, invalidating
+// the old one immediately. The public_token — the pasted URL — deliberately does
+// NOT rotate with it: the point of a key rotation is that the advertiser swaps
+// one field in Google's editor, not two.
+//
+// The loss window is real and stated to the admin by the UI: every real lead
+// arriving between "rotate here" and "paste there" is 401d, and Google never
+// retries a 4xx. Those leads land as failed ledger rows (the mismatch handler
+// writes them), replayable through the batch endpoint once the new key is in.
+func (h *Handler) RotateGoogleKey(c *gin.Context) {
+	src, ok := h.loadSource(c)
+	if !ok {
+		return
+	}
+	if src.Kind != KindGoogleAds {
+		h.mgmtError(c, http.StatusBadRequest, "this source has no Google webhook key")
+		return
+	}
+	plaintext, hash, err := GenerateGoogleKey()
+	if err != nil {
+		h.mgmtError(c, http.StatusInternalServerError, "could not mint key")
+		return
+	}
+	if err := h.repo.SetGoogleKeyHash(c.Request.Context(), src.OrgID, src.ID, hash); err != nil {
+		h.mgmtError(c, http.StatusInternalServerError, "could not rotate key")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": sourceWithKey{
+		sourceView: h.viewOf(c, src, false),
+		GoogleKey:  plaintext,
 	}})
 }
 

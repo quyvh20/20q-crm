@@ -71,6 +71,7 @@ func newIntegrationsTestDB(t *testing.T) (*gorm.DB, func()) {
 		"000044_lead_owner_pool.up.sql",
 		"000045_lead_batch.up.sql",
 		"000046_lead_consent.up.sql",
+		"000047_lead_google_ads.up.sql",
 	} {
 		b, err := os.ReadFile(filepath.Join("..", "..", "migrations", m))
 		require.NoError(t, err, "read migration %s", m)

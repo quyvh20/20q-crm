@@ -21,6 +21,7 @@ import FieldMappingTable from './FieldMappingTable';
 import OwnerRoutingCard from './OwnerRoutingCard';
 import DeliveryLimitsCard from './DeliveryLimitsCard';
 import LeadDealCard from './LeadDealCard';
+import GoogleAdsSetupCard from './GoogleAdsSetupCard';
 import { DocumentTitle } from '../../lib/useDocumentTitle';
 import {
   useDeleteSource,
@@ -32,6 +33,7 @@ import {
 } from '../../features/integrations/queries';
 import {
   UPDATE_POLICY_LABELS,
+  kindLabel,
   type EventStatus,
   type IntegrationEvent,
   type LeadSourceStatus,
@@ -374,21 +376,34 @@ export default function IntegrationSourceDetailSection() {
             <div>
               <h2 className="text-lg font-semibold text-foreground">{source.name}</h2>
               <div className="flex items-center gap-2 mt-1">
-                <Badge variant={source.status === 'active' ? 'success' : 'secondary'}>
+                {/* `error` renders destructive HERE, on the page where the admin
+                    acts — a gray badge on a broken source is how nobody notices. */}
+                <Badge
+                  variant={
+                    source.status === 'active'
+                      ? 'success'
+                      : source.status === 'error'
+                        ? 'destructive'
+                        : 'secondary'
+                  }
+                >
                   {source.status}
                 </Badge>
+                <Badge variant="secondary">{kindLabel(source.kind)}</Badge>
                 <code className="font-mono text-xs text-muted-foreground">
                   {source.token_prefix}…
                 </code>
               </div>
             </div>
             <div className="flex items-center gap-2">
-              {/* Disabled while in flight: the server's ingest is detached from the
-                  request, so a second click is a real second pipeline, not a retry. */}
-              <Button size="sm" onClick={handleTestLead} disabled={sendTestLead.isPending}>
-                <FlaskConical />
-                {sendTestLead.isPending ? 'Sending…' : 'Send test lead'}
-              </Button>
+              {/* google_ads has no button: Google's own "Send test data" IS the
+                  test path, and it arrives in the log below badged `test`. */}
+              {source.kind !== 'google_ads' && (
+                <Button size="sm" onClick={handleTestLead} disabled={sendTestLead.isPending}>
+                  <FlaskConical />
+                  {sendTestLead.isPending ? 'Sending…' : 'Send test lead'}
+                </Button>
+              )}
               <Button variant="outline" size="sm" onClick={handleRotate} disabled={rotateKey.isPending}>
                 <KeyRound />
                 {rotateKey.isPending ? 'Rotating…' : 'Rotate key'}
@@ -450,6 +465,8 @@ export default function IntegrationSourceDetailSection() {
 
             </dl>
           </div>
+
+          {source.kind === 'google_ads' && <GoogleAdsSetupCard source={source} />}
 
           <OwnerRoutingCard source={source} />
 
@@ -572,6 +589,18 @@ export default function IntegrationSourceDetailSection() {
               </div>
             )}
             {inspecting.consent && <ConsentBlock consent={inspecting.consent} />}
+            {Object.keys(inspecting.context ?? {}).length > 0 && (
+              <div className="space-y-1.5">
+                <p className="text-xs font-medium text-foreground">Delivery context</p>
+                <p className="text-xs text-muted-foreground">
+                  Where this lead came from — for Google Ads deliveries, the campaign and click
+                  ids Google sent alongside it.
+                </p>
+                <pre className="w-full overflow-x-auto rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs">
+                  {JSON.stringify(inspecting.context, null, 2)}
+                </pre>
+              </div>
+            )}
             <div className="space-y-1.5">
               <p className="text-xs font-medium text-foreground">What was sent</p>
               <pre className="w-full overflow-x-auto rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs">

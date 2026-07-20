@@ -40,8 +40,32 @@ func (r *Repository) CreateSource(ctx context.Context, s *LeadSource) error {
 // deal key, and two admins editing different settings would then silently delete
 // each other's. Closing that before the connectors that trigger it exist is cheaper
 // than diagnosing it afterwards.
+// status, consecutive_failures, last_used_at and disabled_at are omitted for the
+// owner_cursor reason one shelf over: they are MACHINE-written (TouchSourceUsed,
+// IncrementSourceFailure) while this Save writes a struct read at page load, so an
+// admin renaming a source mid-failure-storm would silently un-flip an error badge
+// or wipe the counter. Status transitions go through SetSourceStatus.
 func (r *Repository) UpdateSource(ctx context.Context, s *LeadSource) error {
-	return r.db.WithContext(ctx).Omit("config").Save(s).Error
+	return r.db.WithContext(ctx).
+		Omit("config", "status", "consecutive_failures", "last_used_at", "disabled_at").
+		Save(s).Error
+}
+
+// SetSourceStatus applies an admin's explicit enable/disable, resetting the
+// failure counter on enable so a recovered source starts clean. Targeted, never
+// Save — see UpdateSource.
+func (r *Repository) SetSourceStatus(ctx context.Context, orgID, sourceID uuid.UUID, status string) error {
+	if status == SourceStatusActive {
+		return r.db.WithContext(ctx).Exec(
+			`UPDATE lead_sources
+			    SET status = ?, disabled_at = NULL, consecutive_failures = 0, updated_at = NOW()
+			  WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
+			status, sourceID, orgID).Error
+	}
+	return r.db.WithContext(ctx).Exec(
+		`UPDATE lead_sources SET status = ?, disabled_at = NOW(), updated_at = NOW()
+		  WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
+		status, sourceID, orgID).Error
 }
 
 // SetDealConfig writes ONE key inside a source's config blob.
@@ -127,11 +151,25 @@ func (r *Repository) FindSourceByTokenHash(ctx context.Context, hash string) (*L
 	return &s, nil
 }
 
-// TouchSourceUsed stamps last_used_at and resets the failure counter. Best-effort:
-// a failure here must never fail a lead that was already written.
+// TouchSourceUsed stamps last_used_at, resets the failure counter, and un-flips a
+// source that had tripped to 'error'. Best-effort: a failure here must never fail
+// a lead that was already written.
+//
+// The un-flip is what makes `error` a SELF-HEALING badge rather than a gate. The
+// alternative — refusing traffic while flagged — was designed and rejected: a
+// refusal answered before the body is read leaves NO ledger row, so when Google's
+// (undocumented, finite) retry budget expires the lead is gone without a trace,
+// and the source can never demonstrate recovery because nothing is ever attempted.
+// A transient blip would brick the source until a human noticed, with L6 alerting
+// not yet built. Processed-normally-but-flagged loses nothing and heals itself.
+// Deliberately never touches 'disabled': that is an admin's explicit choice.
 func (r *Repository) TouchSourceUsed(ctx context.Context, id uuid.UUID) error {
-	return r.db.WithContext(ctx).Model(&LeadSource{}).Where("id = ?", id).
-		Updates(map[string]any{"last_used_at": time.Now(), "consecutive_failures": 0}).Error
+	return r.db.WithContext(ctx).Exec(
+		`UPDATE lead_sources
+		    SET last_used_at = NOW(),
+		        consecutive_failures = 0,
+		        status = CASE WHEN status = 'error' THEN 'active' ELSE status END
+		  WHERE id = ?`, id).Error
 }
 
 // CountCreatedToday counts records this source has created since UTC midnight —
@@ -268,6 +306,123 @@ func (r *Repository) SetBatchEnrollAutomation(ctx context.Context, orgID, source
 	return r.db.WithContext(ctx).Exec(
 		`UPDATE lead_sources SET batch_enroll_automation = ?, updated_at = NOW() WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
 		on, sourceID, orgID).Error
+}
+
+// ── google_ads credentials (L3) ──────────────────────────────────────────────
+//
+// public_token and google_key_hash are ALTER-added columns and therefore unmapped
+// (see LeadSource). Everything below names them ONLY in targeted statements, so a
+// failed boot guard breaks the google_ads route alone — never the bearer capture
+// path every org depends on.
+
+// GoogleSource is a source plus the google_ads credential columns the struct
+// deliberately does not carry.
+type GoogleSource struct {
+	LeadSource
+	GoogleKeyHash string
+}
+
+// FindSourceByPublicToken resolves a google_ads webhook URL to its source.
+//
+// The same two revocation properties as FindSourceByTokenHash, for the same
+// reasons: the organizations join keeps a deleted workspace's URL dead (workspace
+// deletion is soft, evicts every member, and nobody could disable the source), and
+// deleted_at IS NULL — explicit, because raw SQL bypasses GORM's soft-delete scope
+// — revokes a retired source immediately.
+//
+// NOT org-scoped: the token is the org claim, and the returned OrgID is the
+// authority for everything downstream.
+//
+// Deliberately NO status filter: the handler must tell `error` (503 — Google keeps
+// retrying while the admin fixes it) apart from revoked (401 — Google should
+// stop), and a WHERE clause would collapse both into "not found".
+func (r *Repository) FindSourceByPublicToken(ctx context.Context, token string) (*GoogleSource, error) {
+	if token == "" {
+		return nil, nil
+	}
+	var out []GoogleSource
+	// lead_sources.* never NAMES a column, so it survives any failed guard; only
+	// google_key_hash is named, which is exactly the blast radius we want.
+	err := r.db.WithContext(ctx).Raw(
+		`SELECT lead_sources.*, lead_sources.google_key_hash
+		   FROM lead_sources
+		   JOIN organizations o ON o.id = lead_sources.org_id AND o.deleted_at IS NULL
+		  WHERE lead_sources.public_token = ? AND lead_sources.deleted_at IS NULL
+		  LIMIT 1`, token).Scan(&out).Error
+	if err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	out[0].PublicToken = token // hydrate the unmapped display field
+	return &out[0], nil
+}
+
+// GetPublicToken hydrates a source view's public_token (empty for non-google kinds).
+func (r *Repository) GetPublicToken(ctx context.Context, orgID, sourceID uuid.UUID) (string, error) {
+	var out []string
+	if err := r.db.WithContext(ctx).Raw(
+		`SELECT COALESCE(public_token, '') FROM lead_sources WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
+		sourceID, orgID).Scan(&out).Error; err != nil {
+		return "", err
+	}
+	if len(out) == 0 {
+		return "", nil
+	}
+	return out[0], nil
+}
+
+// SetGoogleCredentials stores a google_ads source's URL token and key hash.
+// Targeted UPDATE, never Save: rotation must not ride a struct read at page load.
+func (r *Repository) SetGoogleCredentials(ctx context.Context, orgID, sourceID uuid.UUID, publicToken, keyHash string) error {
+	return r.db.WithContext(ctx).Exec(
+		`UPDATE lead_sources SET public_token = ?, google_key_hash = ?, updated_at = NOW()
+		  WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
+		publicToken, keyHash, sourceID, orgID).Error
+}
+
+// SetGoogleKeyHash rotates only the key, leaving the pasted URL valid — the point
+// of rotation: the advertiser swaps one field in Google's editor, not two.
+func (r *Repository) SetGoogleKeyHash(ctx context.Context, orgID, sourceID uuid.UUID, keyHash string) error {
+	return r.db.WithContext(ctx).Exec(
+		`UPDATE lead_sources SET google_key_hash = ?, updated_at = NOW()
+		  WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
+		keyHash, sourceID, orgID).Error
+}
+
+// errorFlipThreshold is how many CONSECUTIVE post-auth processing failures flip a
+// source to status='error'. High enough that one poisoned lead retried by Google
+// does not immediately kill a healthy source, low enough that a genuinely broken
+// source flips within one retry storm. L6 alerts on the flip.
+const errorFlipThreshold = 10
+
+// IncrementSourceFailure counts one processing failure and reports whether this
+// increment flipped the source to 'error'.
+//
+// ONE atomic statement, deliberately: the column is mapped nowhere and a Go
+// read-modify-write would race concurrent deliveries. The flip only ever moves
+// active→error — it must not resurrect a source an admin disabled.
+//
+// Callers must invoke this ONLY on post-key-verification failures. Pre-auth
+// failures (unknown token, bad key, rate limit) are attacker-forgeable, and
+// counting them would let anyone who read the URL off a landing page flip a
+// healthy source into refusing Google's real traffic.
+func (r *Repository) IncrementSourceFailure(ctx context.Context, sourceID uuid.UUID) (flipped bool, err error) {
+	var out []bool
+	err = r.db.WithContext(ctx).Raw(
+		`UPDATE lead_sources
+		    SET consecutive_failures = consecutive_failures + 1,
+		        status = CASE WHEN consecutive_failures + 1 >= ? AND status = 'active'
+		                      THEN 'error' ELSE status END,
+		        updated_at = NOW()
+		  WHERE id = ? AND deleted_at IS NULL
+		  RETURNING status = 'error' AND consecutive_failures = ?`,
+		errorFlipThreshold, sourceID, errorFlipThreshold).Scan(&out).Error
+	if err != nil || len(out) == 0 {
+		return false, err
+	}
+	return out[0], nil
 }
 
 // InsertRefusedEvents records deliveries the batch declined to attempt (daily cap

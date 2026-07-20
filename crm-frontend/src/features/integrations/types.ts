@@ -19,6 +19,17 @@ export const UPDATE_POLICY_HELP: Record<UpdatePolicy, string> = {
   create_only: 'Re-submissions are logged and otherwise ignored.',
 };
 
+/** Source kinds. `api` is the generic capture key; `google_ads` is the webhook an
+ *  advertiser pastes into Google's lead-form editor. */
+export const KIND_LABELS: Record<string, string> = {
+  api: 'Capture API',
+  google_ads: 'Google Ads',
+};
+
+export function kindLabel(kind: string): string {
+  return KIND_LABELS[kind] ?? kind;
+}
+
 /** One inbound channel: a credential, where its leads land, and how they merge. */
 export interface LeadSource {
   id: string;
@@ -43,6 +54,9 @@ export interface LeadSource {
   /** Whether BATCH deliveries may trigger workflows. Off by default: 100 recovered
    *  leads would otherwise enrol 100 contacts into every contact_created workflow. */
   batch_enroll_automation: boolean;
+  /** The google_ads webhook URL's source identifier. Not a secret (the google_key
+   *  is) — but only present on google_ads sources. */
+  public_token?: string;
   /** Source-scoped settings that are not columns. `deal` is the only key today;
    *  L3/L5 add source-kind config beside it. */
   config: { deal?: DealConfig } & Record<string, unknown>;
@@ -105,6 +119,10 @@ export const DEFAULT_DEAL_NAME_TEMPLATE = '{{full_name}} — {{source_name}}';
 export interface CreatedLeadSource {
   source: LeadSource;
   plaintext_key: string;
+  /** The second one-time secret a google_ads source carries — the value pasted
+   *  beside the webhook URL in Google's form editor. Never cached; lives in
+   *  component state and dies with it, exactly like plaintext_key. */
+  google_key?: string;
 }
 
 export type EventStatus =

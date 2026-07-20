@@ -131,6 +131,22 @@ func (s *LeadIngestService) findMatch(ctx context.Context, source *LeadSource, f
 				return nil, err
 			}
 			if len(matches) == 1 {
+				// A single phone match is a merge ONLY when the identities agree. If the
+				// lead carries an email, the email arm above already ran and found
+				// nothing — so if the matched contact holds a DIFFERENT email, these are
+				// two people sharing a handset (a receptionist's desk line, a family
+				// number), and merging would silently absorb a new person into a
+				// stranger's record. Same doctrine as the multi-match refusal below: a
+				// visible duplicate beats a silent wrong merge. The enrichment case (the
+				// matched contact has NO email yet) still merges — that is the phone-only
+				// shape this matching exists for.
+				if email != "" && existingEmailDiffers(&matches[0], email) {
+					return &MatchResult{
+						Ambiguous: true,
+						AmbiguityNote: "this phone number is on an existing contact with a different email, " +
+							"so a new contact was created rather than merged",
+					}, nil
+				}
 				return &MatchResult{Contact: &matches[0], MatchedOn: MatchPhone}, nil
 			}
 			if len(matches) > 1 {
@@ -147,6 +163,16 @@ func (s *LeadIngestService) findMatch(ctx context.Context, source *LeadSource, f
 }
 
 // itoa avoids importing strconv for one call site.
+// existingEmailDiffers reports whether a contact holds a non-blank email that is
+// not the lead's. Blank means "no identity conflict": filling it in is enrichment.
+func existingEmailDiffers(c *domain.Contact, leadEmail string) bool {
+	if c.Email == nil {
+		return false
+	}
+	have := normalizeEmail(*c.Email)
+	return have != "" && have != normalizeEmail(leadEmail)
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"

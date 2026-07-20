@@ -22,10 +22,13 @@ import (
 // DROP+ADD guard pair on every boot. App-level validation keeps the option open.
 const (
 	KindAPI = "api" // generic capture API (Make/Zapier/custom) — the only L1 kind
+	// KindGoogleAds is a Google Ads lead-form webhook (L3): the advertiser pastes a
+	// URL + key into the form editor, Google POSTs each lead. No OAuth, no app.
+	KindGoogleAds = "google_ads"
 )
 
 // validKinds is the kind allowlist. Later phases append their own.
-var validKinds = map[string]bool{KindAPI: true}
+var validKinds = map[string]bool{KindAPI: true, KindGoogleAds: true}
 
 // IsValidKind reports whether a source kind is known.
 func IsValidKind(k string) bool { return validKinds[k] }
@@ -176,6 +179,18 @@ type LeadSource struct {
 	// Populated by a targeted read.
 	BatchEnrollAutomation bool `gorm:"-" json:"batch_enroll_automation"`
 
+	// PublicToken is the URL-path identifier of a google_ads source (L3): it names
+	// the source in the webhook URL the advertiser pastes into Google's form editor.
+	// NOT a secret — the google_key is the credential; this is only an address —
+	// but still random, because a guessable address invites drive-by probing.
+	//
+	// UNMAPPED like the two above: the column is ALTER-added, so a mapped copy whose
+	// boot guard failed would take down the existing capture path for every org.
+	// Unmapped, that failure breaks google_ads sources only. Hydrated by targeted
+	// SQL; empty for every other kind. The google_key's hash is deliberately not on
+	// the struct at all — nothing should ever serialize it.
+	PublicToken string `gorm:"-" json:"public_token,omitempty"`
+
 	// CreatedBy is a POINTER so it can be NULL. A plain uuid.UUID makes GORM send
 	// the zero UUID on every insert, which violates the users(id) FK — the column
 	// is nullable precisely so a source can outlive the admin who made it (ON
@@ -195,8 +210,14 @@ type LeadSource struct {
 func (LeadSource) TableName() string { return "lead_sources" }
 
 // IsLive reports whether a source may accept traffic.
+//
+// `error` is deliberately LIVE. It is a badge ("recent deliveries failed — look"),
+// not a gate: refusing traffic while flagged would 401 the bearer/batch endpoints
+// — the documented recovery path for exactly the rows that accumulate during an
+// error — with a message telling the integrator to rotate a healthy credential.
+// Only an admin's explicit disable (or deletion) revokes.
 func (s *LeadSource) IsLive() bool {
-	return s.Status == SourceStatusActive && s.DeletedAt.Time.IsZero()
+	return s.Status != SourceStatusDisabled && s.DeletedAt.Time.IsZero()
 }
 
 // WriteSource is the trigger.source value leads from this source carry.

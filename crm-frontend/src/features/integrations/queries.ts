@@ -83,6 +83,18 @@ export function useRotateKey() {
   });
 }
 
+/** Same non-optimistic rule as useRotateKey, for the same reason. */
+export function useRotateGoogleKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.rotateGoogleKey(id),
+    onSuccess: ({ source }) => {
+      qc.setQueryData(integrationKeys.detail(source.id), source);
+      qc.invalidateQueries({ queryKey: integrationKeys.lists() });
+    },
+  });
+}
+
 export function useDeleteSource() {
   const qc = useQueryClient();
   return useMutation({

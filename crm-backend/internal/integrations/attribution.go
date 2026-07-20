@@ -138,13 +138,21 @@ func createTextField(ctx context.Context, mgr FieldDefManager, orgID uuid.UUID, 
 type LeadContext struct {
 	PageURL  string
 	Referrer string
+	// GclID is a DIRECTLY-supplied Google click id (the google_ads webhook sends
+	// it as a discrete field, not inside a page URL for the query parser to find).
+	GclID string
 }
 
 // parseLeadContext reads the context object the capture API accepts.
 func parseLeadContext(raw map[string]any) LeadContext {
+	gcl := strings.TrimSpace(stringOf(raw["gcl_id"]))
+	if gcl == "" {
+		gcl = strings.TrimSpace(stringOf(raw["gclid"])) // accept either spelling
+	}
 	return LeadContext{
 		PageURL:  strings.TrimSpace(stringOf(raw["page_url"])),
 		Referrer: strings.TrimSpace(stringOf(raw["referrer"])),
+		GclID:    gcl,
 	}
 }
 
@@ -164,6 +172,12 @@ func attributionValues(source *LeadSource, lctx LeadContext) map[string]string {
 	if lctx.Referrer != "" {
 		out["referrer_url"] = truncate(lctx.Referrer, 500)
 	}
+	// A discrete gcl_id wins over one parsed out of page_url below: the discrete
+	// value is what the ad platform itself asserted, not what a landing page's
+	// query string happened to still carry.
+	if lctx.GclID != "" {
+		out["gclid"] = truncate(lctx.GclID, 255)
+	}
 	if lctx.PageURL == "" {
 		return out
 	}
@@ -173,6 +187,9 @@ func attributionValues(source *LeadSource, lctx LeadContext) map[string]string {
 	}
 	q := u.Query()
 	for _, k := range []string{"utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "gclid", "fbclid"} {
+		if _, taken := out[k]; taken {
+			continue // a discrete value (gcl_id above) outranks a page-URL leftover
+		}
 		if v := strings.TrimSpace(q.Get(k)); v != "" {
 			out[k] = truncate(v, 255)
 		}

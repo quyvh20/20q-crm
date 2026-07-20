@@ -1112,6 +1112,18 @@ func main() {
 			// deleted contact's ledger rows would scan the whole table.
 			{"events result index", `CREATE INDEX IF NOT EXISTS idx_integration_events_result
 				ON integration_events(org_id, result_record_id) WHERE result_record_id IS NOT NULL`},
+			// L3 google_ads. Both UNMAPPED on the struct (see LeadSource): a failed
+			// guard here breaks the google_ads route only, never the bearer capture
+			// path. public_token is the webhook URL's source identifier (not a secret —
+			// the key is); google_key_hash is SHA-256 of the key Google posts in the
+			// body. Partial-unique: every non-google row is NULL, and uniqueness is
+			// what makes a URL resolve to at most one source.
+			{"lead_sources public_token", `ALTER TABLE lead_sources
+				ADD COLUMN IF NOT EXISTS public_token VARCHAR(64)`},
+			{"lead_sources public_token index", `CREATE UNIQUE INDEX IF NOT EXISTS idx_lead_sources_public_token
+				ON lead_sources(public_token) WHERE public_token IS NOT NULL`},
+			{"lead_sources google_key_hash", `ALTER TABLE lead_sources
+				ADD COLUMN IF NOT EXISTS google_key_hash VARCHAR(64)`},
 		}
 		for _, g := range leadGuards {
 			if err := db.Exec(g.sql).Error; err != nil {

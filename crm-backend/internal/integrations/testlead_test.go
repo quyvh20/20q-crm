@@ -278,10 +278,15 @@ func TestAssertTestIdentity(t *testing.T) {
 	if err := assertTestIdentity(src, TestOriginAdmin, ""); err == nil {
 		t.Fatal("an identity dropped by the mapping must abort — on a phone-matching source it would match something real")
 	}
-	// An L3 provider test carries a real payload we did not build, so it has no
-	// synthetic identity to assert.
-	if err := assertTestIdentity(src, TestOriginProvider, "real.person@customer.com"); err != nil {
-		t.Errorf("a provider-declared test must not be held to our identity: %v", err)
+	// A provider test's identity is COERCED to the synthetic address in Ingest
+	// before this assertion runs, so a provider-origin email that is NOT synthetic
+	// here means the coercion was deleted or reordered — the assertion is that
+	// invariant's backstop, not a payload check.
+	if err := assertTestIdentity(src, TestOriginProvider, testLeadEmail(src)); err != nil {
+		t.Errorf("a coerced provider test must pass: %v", err)
+	}
+	if err := assertTestIdentity(src, TestOriginProvider, "real.person@customer.com"); err == nil {
+		t.Fatal("a provider test reaching the assertion uncoerced is a broken pipeline invariant, not a payload preference")
 	}
 	if err := assertTestIdentity(src, TestOriginNone, "real.person@customer.com"); err != nil {
 		t.Errorf("a real lead must not be held to the test identity: %v", err)

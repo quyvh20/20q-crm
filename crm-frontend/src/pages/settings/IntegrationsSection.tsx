@@ -23,6 +23,7 @@ import { useCreateSource, useLeadSources } from '../../features/integrations/que
 import {
   UPDATE_POLICY_HELP,
   UPDATE_POLICY_LABELS,
+  kindLabel,
   type LeadSource,
   type LeadSourceStatus,
   type UpdatePolicy,
@@ -55,6 +56,7 @@ export default function IntegrationsSection() {
 
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState('');
+  const [kind, setKind] = useState<'api' | 'google_ads'>('api');
   const [policy, setPolicy] = useState<UpdatePolicy>('fill_blank_only');
   // Routing is a REQUIRED choice, not a default. Creating a source that silently
   // produces unowned contacts is the failure this whole platform opens by naming —
@@ -62,22 +64,29 @@ export default function IntegrationsSection() {
   const [routing, setRouting] = useState<'' | 'owner' | 'unassigned'>('');
   const [owner, setOwner] = useState<string | null>(null);
   const [actionError, setActionError] = useState('');
-  // The one-time key lives HERE, in component state, and nowhere else — never in
-  // the query cache, a URL, or a log.
+  // The one-time secrets live HERE, in component state, and nowhere else — never
+  // in the query cache, a URL, or a log. google_ads sources mint TWO: the bearer
+  // key (batch recovery authenticates with it) and the Google webhook key.
   const [newKey, setNewKey] = useState<string | null>(null);
+  const [newGoogleKey, setNewGoogleKey] = useState<string | null>(null);
+  const [newSourceId, setNewSourceId] = useState<string | null>(null);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     setActionError('');
     try {
-      const { plaintext_key } = await createSource.mutateAsync({
+      const { source, plaintext_key, google_key } = await createSource.mutateAsync({
         name: name.trim(),
+        kind,
         update_policy: policy,
         default_owner_id: routing === 'owner' ? owner : null,
       });
       setNewKey(plaintext_key);
+      setNewGoogleKey(google_key ?? null);
+      setNewSourceId(source.id);
       setShowForm(false);
       setName('');
+      setKind('api');
       setPolicy('fill_blank_only');
       setRouting('');
       setOwner(null);
@@ -96,16 +105,47 @@ export default function IntegrationsSection() {
         </p>
       </div>
 
-      {/* The one-time key. Rendered above the list so it cannot be missed. */}
-      {newKey && (
+      {/* The one-time secrets. Rendered above the list so they cannot be missed.
+          A google_ads source shows its GOOGLE key here — the value the advertiser
+          actually pastes — and points at the source page for the URL beside it.
+          The bearer key still exists (batch recovery uses it) but showing two
+          secrets at once buries the one that matters. */}
+      {newGoogleKey ? (
         <SecretReveal
-          title="Your capture key"
-          description="This is the only time you'll see it — copy it now. Paste it into the tool that will send you leads; the setup steps are below."
-          value={newKey}
-          onDone={() => setNewKey(null)}
+          title="Your Google webhook key"
+          description={
+            <>
+              This is the only time you&apos;ll see it — copy it now. Paste it into Google&apos;s
+              form editor next to the webhook URL, which is waiting on{' '}
+              {newSourceId ? (
+                <Link className="underline" to={`/settings/integrations/${newSourceId}`}>
+                  the source&apos;s page
+                </Link>
+              ) : (
+                'the source&apos;s page'
+              )}
+              .
+            </>
+          }
+          value={newGoogleKey}
+          onDone={() => {
+            setNewGoogleKey(null);
+            setNewKey(null);
+          }}
         />
+      ) : (
+        <>
+          {newKey && (
+            <SecretReveal
+              title="Your capture key"
+              description="This is the only time you'll see it — copy it now. Paste it into the tool that will send you leads; the setup steps are below."
+              value={newKey}
+              onDone={() => setNewKey(null)}
+            />
+          )}
+          {newKey && <SetupRecipe apiKey={newKey} />}
+        </>
       )}
-      {newKey && <SetupRecipe apiKey={newKey} />}
 
       {actionError && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
@@ -146,6 +186,25 @@ export default function IntegrationsSection() {
                 <p className="text-xs text-muted-foreground">
                   Something you'll recognize later — it's how this key is identified in the list.
                 </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="source-kind">Where do these leads come from?</Label>
+                <Select
+                  id="source-kind"
+                  value={kind}
+                  onChange={(e) => setKind(e.target.value as 'api' | 'google_ads')}
+                >
+                  <option value="api">A tool that sends leads to a key (Make, Zapier, your own code)</option>
+                  <option value="google_ads">A Google Ads lead form</option>
+                </Select>
+                {kind === 'google_ads' && (
+                  <p className="text-xs text-muted-foreground">
+                    You'll get a webhook URL and a key to paste into Google's lead form editor —
+                    no Google app or login needed. Leads from the form arrive as they're
+                    submitted.
+                  </p>
+                )}
               </div>
 
               <div className="space-y-1.5">
@@ -236,6 +295,7 @@ export default function IntegrationsSection() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Name</TableHead>
+                      <TableHead>Type</TableHead>
                       <TableHead>Key</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead>Last lead</TableHead>
@@ -251,6 +311,9 @@ export default function IntegrationsSection() {
                           >
                             {s.name}
                           </Link>
+                        </TableCell>
+                        <TableCell>
+                          <span className="text-xs text-muted-foreground">{kindLabel(s.kind)}</span>
                         </TableCell>
                         <TableCell>
                           <code className="font-mono text-xs text-muted-foreground">

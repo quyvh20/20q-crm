@@ -89,8 +89,11 @@ export async function createSource(input: CreateSourceInput): Promise<CreatedLea
   const res = await apiFetch(BASE, { method: 'POST', body: JSON.stringify(input) });
   const json = await parseJsonSafe(res);
   if (!res.ok) throw apiError(res, json, 'Failed to create the lead source');
-  const { plaintext_key: key, ...source } = json.data as LeadSource & { plaintext_key: string };
-  return { source: asSource(source), plaintext_key: key };
+  // BOTH one-time secrets are destructured off before the source object goes
+  // anywhere a query cache could keep it.
+  const { plaintext_key: key, google_key: gkey, ...source } =
+    json.data as LeadSource & { plaintext_key: string; google_key?: string };
+  return { source: asSource(source), plaintext_key: key, google_key: gkey };
 }
 
 export async function updateSource(id: string, input: UpdateSourceInput): Promise<LeadSource> {
@@ -111,8 +114,24 @@ export async function rotateKey(id: string): Promise<CreatedLeadSource> {
   const res = await apiFetch(`${BASE}/${id}/rotate-key`, { method: 'POST' });
   const json = await parseJsonSafe(res);
   if (!res.ok) throw apiError(res, json, 'Failed to rotate the key');
-  const { plaintext_key: key, ...source } = json.data as LeadSource & { plaintext_key: string };
-  return { source: asSource(source), plaintext_key: key };
+  const { plaintext_key: key, google_key: gkey, ...source } =
+    json.data as LeadSource & { plaintext_key: string; google_key?: string };
+  return { source: asSource(source), plaintext_key: key, google_key: gkey };
+}
+
+/**
+ * rotateGoogleKey mints a new Google webhook key. The pasted URL stays valid —
+ * the advertiser swaps ONE field in Google's editor. Every real lead arriving
+ * between rotating here and pasting there is rejected (Google never retries a
+ * 4xx), which is why the card that calls this says so out loud.
+ */
+export async function rotateGoogleKey(id: string): Promise<CreatedLeadSource> {
+  const res = await apiFetch(`${BASE}/${id}/rotate-google-key`, { method: 'POST' });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Failed to rotate the Google key');
+  const { plaintext_key: key, google_key: gkey, ...source } =
+    json.data as LeadSource & { plaintext_key: string; google_key?: string };
+  return { source: asSource(source), plaintext_key: key, google_key: gkey };
 }
 
 export async function listEvents(id: string, limit = 50): Promise<IntegrationEvent[]> {

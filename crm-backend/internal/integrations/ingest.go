@@ -325,6 +325,27 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 		event.QuarantinedFields = datatypes.JSON(q)
 	}
 
+	// A PROVIDER test (Google's "Send test data") carries a real payload we did not
+	// build — sample values, a documented dummy phone, an email like
+	// test@example.com. The payload has now done its one job (exercising the real
+	// field map above; unmapped questions are already quarantined and observable),
+	// so its IDENTITY is replaced before anything can be matched or written:
+	//
+	//   - email is COERCED to the synthetic address, not asserted. Without this the
+	//     advertiser's SECOND test click hard-fails: click 1 creates a contact with
+	//     Google's sample email, click 2 misses findTestMatch (which looks only for
+	//     the synthetic address), collides with the UNIQUE (org_id, email) index,
+	//     and the provenance guard then refuses the winner because test@example.com
+	//     is not ours. Coerced, every click converges on one flagged test contact
+	//     per source — the admin button's exact shape.
+	//   - phone is STRIPPED, not asserted (the admin path 500s on a phone; a
+	//     provider test must not, or every phone-bearing form fails setup with a red
+	//     error in Google's UI). Google's dummy number must never become a
+	//     phone-matchable value on the test contact: match_fields includes phone for
+	//     these sources, so a stored dummy would be a magnet for any later lead
+	//     carrying the same digits.
+	coerceProviderTestIdentity(source, lead.TestOrigin, fields)
+
 	// Normalize the match key BEFORE the write so it agrees with the unique index.
 	// The index is on raw (org_id, email) — case-SENSITIVE — while matching is
 	// case-insensitive. Writing the normalized form is what makes the two agree, so

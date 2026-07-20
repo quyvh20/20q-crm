@@ -261,10 +261,15 @@ func assertNoPhone(fields map[string]any) error {
 // a phone-matching source (requiresEmail == false) the lead would then run with no
 // identity at all and match on something real.
 //
-// Only admin-origin tests are asserted: an L3 provider test carries a real payload we
-// did not build, so it has no synthetic identity to check.
+// Every test origin is asserted, but for different reasons. An ADMIN test's
+// identity is server-built and the field map sits between build and here, so a
+// mismatch means the mapping rewrites the address and the test cannot run safely —
+// a 422 the admin must fix. A PROVIDER test's identity is COERCED in Ingest right
+// before this runs (the payload is Google's, not ours), so a mismatch there is not
+// a config problem but a broken invariant in our own pipeline; asserting it keeps
+// the coercion from being silently deleted by a future refactor.
 func assertTestIdentity(source *LeadSource, origin, email string) error {
-	if origin != TestOriginAdmin {
+	if origin == TestOriginNone {
 		return nil
 	}
 	if email != testLeadEmail(source) {
@@ -272,6 +277,33 @@ func assertTestIdentity(source *LeadSource, origin, email string) error {
 			"this source's field mapping rewrites the test lead's own address, so the test cannot run safely. Fix the mapping, then test.")
 	}
 	return nil
+}
+
+// coerceProviderTestIdentity rewrites a PROVIDER test's identity to the synthetic
+// address and strips its phone, in place. No-op for every other origin.
+//
+// The payload has done its one job by the time this runs — exercising the real
+// field map, with unmapped questions quarantined and observable — so nothing of
+// diagnostic value is lost, and two failures become impossible instead of
+// unlikely:
+//
+//   - Convergence. Google's sample email (test@example.com) would create a contact
+//     on click 1 and then hard-fail click 2: findTestMatch looks only for the
+//     synthetic address, the create collides with the UNIQUE (org_id, email)
+//     index, and the provenance guard refuses the winner because it is not ours.
+//     The advertiser's second "Send test data" would show a red error forever.
+//     Coerced, every click converges on one flagged test contact per source.
+//   - Phone magnetism. Google's documented dummy number, stored on a test contact
+//     of a phone-matching source, would be a standing match target for any later
+//     lead carrying the same digits. Stripped — not asserted, as the admin path
+//     does, because a provider test must not fail over a field Google always
+//     sends for phone-bearing forms.
+func coerceProviderTestIdentity(source *LeadSource, origin string, fields map[string]any) {
+	if origin != TestOriginProvider {
+		return
+	}
+	fields["email"] = testLeadEmail(source)
+	delete(fields, "phone")
 }
 
 // findTestMatch resolves a test lead to its own prior test contact — and to nothing
