@@ -9,7 +9,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, objectRegistryHandler *ObjectRegistryHandler, recordHandler *RecordHandler, permissionHandler *PermissionHandler, searchHandler *SearchHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, voiceHandler *VoiceHandler, layoutHandler *ObjectLayoutHandler, roleHandler *RoleHandler, roleAccessHandler *RoleAccessHandler, auditHandler *AuditHandler, reportHandler *ReportHandler, reportShareHandler *ReportShareHandler, reportCommentHandler *ReportCommentHandler, dashboardHandler *DashboardHandler, groupHandler *UserGroupHandler, notificationHandler *NotificationHandler, apiTokenHandler *APITokenHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository, apiTokenRepo domain.APITokenRepository, permissionUC domain.PermissionUseCase) {
+func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, objectRegistryHandler *ObjectRegistryHandler, recordHandler *RecordHandler, permissionHandler *PermissionHandler, searchHandler *SearchHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, voiceHandler *VoiceHandler, layoutHandler *ObjectLayoutHandler, roleHandler *RoleHandler, roleAccessHandler *RoleAccessHandler, auditHandler *AuditHandler, reportHandler *ReportHandler, reportShareHandler *ReportShareHandler, reportCommentHandler *ReportCommentHandler, dashboardHandler *DashboardHandler, groupHandler *UserGroupHandler, notificationHandler *NotificationHandler, apiTokenHandler *APITokenHandler, templateHandler *SystemTemplateHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository, apiTokenRepo domain.APITokenRepository, permissionUC domain.PermissionUseCase) {
 	// Mark every request context as HTTP-originated so the permission engine can
 	// flag a callerless HTTP call reaching Authorize (a route mounted outside
 	// AuthMiddleware) instead of silently treating it as a trusted in-process
@@ -293,6 +293,22 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			groups.DELETE("/:id", cap(domain.CapGroupsManage), groupHandler.Delete)
 			groups.POST("/:id/members", cap(domain.CapGroupsManage), groupHandler.AddMember)
 			groups.DELETE("/:id/members/:userId", cap(domain.CapGroupsManage), groupHandler.RemoveMember)
+		}
+
+		// Industry starter templates. Reads are open to any member — the picker has
+		// to render for whoever is setting the workspace up, and the catalog is
+		// global, non-sensitive content. Apply installs schema (pipeline, objects,
+		// fields, automations), so it takes org.settings, whose own doc comment
+		// scopes it to "org-level settings/templates".
+		//
+		// "/applied" is a static segment registered next to "/:slug"; gin matches
+		// static before param, so it can never be swallowed as a slug.
+		templates := protected.Group("/templates")
+		{
+			templates.GET("", templateHandler.List)
+			templates.GET("/applied", templateHandler.ListApplied)
+			templates.GET("/:slug", templateHandler.Get)
+			templates.POST("/:slug/apply", cap(domain.CapOrgSettings), templateHandler.Apply)
 		}
 
 		// Data CRUD is now Object-Level Security-driven (default seed reproduces the

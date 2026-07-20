@@ -1,0 +1,93 @@
+{
+  "slug": "home_services",
+  "name": "Home Services",
+  "category": "services",
+  "description": "Call-outs, quotes and recurring maintenance for plumbing, electrical, HVAC and cleaning firms — a Jobs object with the service address, and a pipeline that only closes once the job is done and invoiced.",
+  "icon": "🔧",
+  "sort_order": 150,
+  "spec_version": 1,
+  "ai_context": "You are a CRM assistant for a home services business — plumbing, electrical, heating and air conditioning, drainage or cleaning. Contacts are householders, landlords, letting agents and facilities managers; a deal is one piece of work from the first call through the visit and quote to a completed, invoiced job. Jobs hold the service address, the appointment and what was actually done on site. Never invent a price, a call-out fee, an appointment time or a part number, and never promise a same-day slot you have not been told is free.",
+  "pipeline_stages": [
+    { "name": "New Enquiry", "position": 0, "color": "#6366F1", "is_won": false, "is_lost": false },
+    { "name": "Visit Booked", "position": 1, "color": "#3B82F6", "is_won": false, "is_lost": false },
+    { "name": "On Site / Diagnosed", "position": 2, "color": "#8B5CF6", "is_won": false, "is_lost": false },
+    { "name": "Quote Sent", "position": 3, "color": "#F59E0B", "is_won": false, "is_lost": false },
+    { "name": "Work Scheduled", "position": 4, "color": "#F97316", "is_won": false, "is_lost": false },
+    { "name": "Completed & Invoiced", "position": 5, "color": "#10B981", "is_won": true, "is_lost": false },
+    { "name": "Lost", "position": 6, "color": "#EF4444", "is_won": false, "is_lost": true }
+  ],
+  "custom_field_defs": [
+    { "entity_type": "contact", "key": "property_type", "label": "Property Type", "type": "select", "options": ["House", "Apartment", "Rental / Tenanted", "Commercial premises", "Communal / Block"], "required": false, "position": 0 },
+    { "entity_type": "contact", "key": "access_notes", "label": "Access Notes", "type": "text", "required": false, "position": 1 },
+    { "entity_type": "contact", "key": "service_plan", "label": "Service Plan", "type": "select", "options": ["None", "Annual boiler service", "Annual safety certificate", "Quarterly HVAC service", "Monthly cleaning", "Ad-hoc only"], "required": false, "position": 2 },
+    { "entity_type": "company", "key": "account_type", "label": "Account Type", "type": "select", "options": ["Domestic", "Letting agent", "Facilities management", "Commercial site", "Housing association"], "required": false, "position": 0 },
+    { "entity_type": "deal", "key": "job_type", "label": "Job Type", "type": "select", "options": ["Plumbing", "Electrical", "Heating / HVAC", "Drainage", "Appliance install", "Cleaning", "Emergency call-out"], "required": false, "position": 0 },
+    { "entity_type": "deal", "key": "service_address", "label": "Service Address", "type": "text", "required": false, "position": 1 },
+    { "entity_type": "deal", "key": "callout_fee", "label": "Call-Out Fee", "type": "number", "required": false, "position": 2 },
+    { "entity_type": "deal", "key": "urgency", "label": "Urgency", "type": "select", "options": ["Emergency - same day", "Urgent - within 48 hours", "Routine", "Planned / scheduled"], "required": false, "position": 3 }
+  ],
+  "object_defs": [
+    {
+      "slug": "job",
+      "label": "Job",
+      "label_plural": "Jobs",
+      "icon": "🧰",
+      "searchable": true,
+      "fields": [
+        { "key": "summary", "label": "Job Summary", "type": "text", "required": true, "position": 0 },
+        { "key": "service_address", "label": "Service Address", "type": "text", "required": false, "position": 1 },
+        { "key": "job_type", "label": "Job Type", "type": "select", "options": ["Plumbing", "Electrical", "Heating / HVAC", "Drainage", "Appliance install", "Cleaning", "Other"], "required": false, "position": 2 },
+        { "key": "status", "label": "Status", "type": "select", "options": ["Unassigned", "Scheduled", "Engineer en route", "In progress", "Awaiting parts", "Complete", "Return visit needed"], "required": false, "position": 3 },
+        { "key": "scheduled_for", "label": "Scheduled For", "type": "date", "required": false, "position": 4 },
+        { "key": "customer", "label": "Customer", "type": "relation", "target_slug": "contact", "required": false, "position": 5 },
+        { "key": "labour_hours", "label": "Labour Hours", "type": "number", "required": false, "position": 6 },
+        { "key": "parts_cost", "label": "Parts Cost", "type": "number", "required": false, "position": 7 },
+        { "key": "next_service_due", "label": "Next Service Due", "type": "date", "required": false, "position": 8 }
+      ]
+    }
+  ],
+  "automation_rules": [
+    {
+      "key": "callback_new_enquiry",
+      "name": "Call the enquiry back the same day",
+      "description": "In home services the first firm to answer usually gets the job — this raises the callback task as soon as a contact is created.",
+      "activation": "auto",
+      "trigger": { "type": "contact_created" },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Call {{contact.first_name}} back and book the visit",
+              "priority": "high",
+              "due_in_days": 1
+            }
+          }
+        },
+        {
+          "type": "action",
+          "id": "s2",
+          "action": {
+            "id": "s2",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "New job enquiry",
+              "body": "Enquiry from {{contact.first_name}} {{contact.last_name}} ({{contact.email}}). Capture on the call: full service address, what the fault is and when it started, whether anyone will be home, access details such as parking, key safe, gate code and pets, and confirm the call-out fee before booking a slot."
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "kb_templates": {
+    "company": "## About us\n\nWe are a [plumbing / electrical / HVAC / cleaning] firm covering [towns and postcodes]. Replace this with how many engineers you run, your working hours, and whether you take genuine out-of-hours emergency calls.\n\n## Credentials\n\nList the registrations customers check — [trade registration numbers], [public liability cover], [DBS or background checks], [manufacturer approvals].\n\n## Contact\n\nOffice number, emergency number, and the hours each one is actually answered.",
+    "products": "## What we do\n\n- [Repairs and emergency call-outs]\n- [Installations and replacements]\n- [Annual services and safety certificates]\n- [Maintenance contracts for landlords and agents]\n\n## What we charge\n\nState your call-out fee and what it includes, your hourly or half-day rate, out-of-hours and weekend uplifts, and how parts are charged. Say clearly whether the call-out fee is credited against the job.",
+    "playbook": "## On the enquiry call\n\n1. What is the fault, and when did it start? Any water, gas or power risk right now?\n2. Full service address, and who will be there to let the engineer in.\n3. Access — parking, key safe, gate code, pets, stairs or lift.\n4. Confirm the call-out fee and the arrival window before you book.\n\n## After the visit\n\nQuote the same day while it is fresh. Follow up any quote over [amount] with a call within two working days — quotes left to email alone go quiet.\n\n## Turning a job into a customer\n\nEvery completed job gets a next service due date. That date is the cheapest lead you will ever get.",
+    "process": "## From call to invoice\n\n1. **New Enquiry** — the call is logged with the fault, the address and the access details.\n2. **Visit Booked** — engineer and arrival window confirmed with the customer.\n3. **On Site / Diagnosed** — the fault is known and the work needed is written down.\n4. **Quote Sent** — priced work sent, with parts and labour separated.\n5. **Work Scheduled** — quote accepted, slot booked, parts ordered.\n6. **Completed & Invoiced** — job done, signed off, invoiced, and the next service date set.\n\nAn enquiry that goes cold or picks another firm moves to **Lost** with the reason.",
+    "competitors": "## Why customers pick us\n\nReplace with what is actually true for you — [we answer the phone in person], [same-day emergency cover], [fixed price agreed before we start, no surprise bill], [tidy engineers who take their mess with them], [work guaranteed for [period]].\n\n## Who we lose to\n\nUsually [a cheaper sole trader], [whoever could come sooner], or [the manufacturer's own service plan]. Speed of answer beats price more often than people admit."
+  }
+}

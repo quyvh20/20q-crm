@@ -1,0 +1,338 @@
+{
+  "slug": "photography",
+  "name": "Photography & Video",
+  "category": "creative",
+  "description": "Enquiry to delivered gallery for a photo or video studio, with a Shoots object holding the package, shoot date, location and delivery deadline.",
+  "icon": "📷",
+  "sort_order": 220,
+  "spec_version": 1,
+  "ai_context": "You are a CRM assistant for a photography and videography studio. A contact is the person booking and paying — a couple, a family, or a marketing or brand buyer commissioning commercial work — and for commercial jobs the person on set is often not the person who signed. A deal is one commission from enquiry through quote and retainer to the shoot and the delivered gallery. Shoot dates, call times, locations and delivery deadlines live on Shoot records; never invent a date, location, price, turnaround time or usage licence you were not given, and never promise availability you have not checked against the calendar.",
+  "pipeline_stages": [
+    {
+      "name": "Enquiry",
+      "position": 0,
+      "color": "#6366F1",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Consultation Booked",
+      "position": 1,
+      "color": "#3B82F6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Quote Sent",
+      "position": 2,
+      "color": "#8B5CF6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Booked — Retainer Paid",
+      "position": 3,
+      "color": "#F59E0B",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Shoot Complete",
+      "position": 4,
+      "color": "#F97316",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "In Post-Production",
+      "position": 5,
+      "color": "#84CC16",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Gallery Delivered",
+      "position": 6,
+      "color": "#10B981",
+      "is_won": true,
+      "is_lost": false
+    },
+    {
+      "name": "Lost",
+      "position": 7,
+      "color": "#EF4444",
+      "is_won": false,
+      "is_lost": true
+    }
+  ],
+  "custom_field_defs": [
+    {
+      "entity_type": "contact",
+      "key": "shoot_interest",
+      "label": "Shoot Interest",
+      "type": "select",
+      "options": [
+        "Wedding",
+        "Portrait",
+        "Family",
+        "Newborn",
+        "Headshots",
+        "Branding",
+        "Product",
+        "Event",
+        "Real estate",
+        "Video"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "contact",
+      "key": "how_heard",
+      "label": "How They Heard of Us",
+      "type": "select",
+      "options": [
+        "Instagram",
+        "Google",
+        "Referral from past client",
+        "Vendor referral",
+        "Wedding fair",
+        "Repeat client"
+      ],
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "contact",
+      "key": "instagram_handle",
+      "label": "Instagram Handle",
+      "type": "text",
+      "required": false,
+      "position": 2
+    },
+    {
+      "entity_type": "deal",
+      "key": "shoot_date",
+      "label": "Shoot Date",
+      "type": "date",
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "deal",
+      "key": "package_price",
+      "label": "Package Price",
+      "type": "number",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "deal",
+      "key": "retainer_paid",
+      "label": "Retainer Paid",
+      "type": "boolean",
+      "required": false,
+      "position": 2
+    },
+    {
+      "entity_type": "deal",
+      "key": "usage_licence",
+      "label": "Usage Licence",
+      "type": "select",
+      "options": [
+        "Personal use",
+        "Social media only",
+        "Full commercial",
+        "Editorial",
+        "Print advertising"
+      ],
+      "required": false,
+      "position": 3
+    },
+    {
+      "entity_type": "deal",
+      "key": "delivery_due",
+      "label": "Delivery Due",
+      "type": "date",
+      "required": false,
+      "position": 4
+    }
+  ],
+  "object_defs": [
+    {
+      "slug": "shoot",
+      "label": "Shoot",
+      "label_plural": "Shoots",
+      "icon": "🎬",
+      "searchable": true,
+      "fields": [
+        {
+          "key": "title",
+          "label": "Shoot Name",
+          "type": "text",
+          "required": true,
+          "position": 0
+        },
+        {
+          "key": "shoot_date",
+          "label": "Shoot Date",
+          "type": "date",
+          "required": true,
+          "position": 1
+        },
+        {
+          "key": "shoot_type",
+          "label": "Shoot Type",
+          "type": "select",
+          "options": [
+            "Wedding",
+            "Engagement",
+            "Portrait",
+            "Family",
+            "Newborn",
+            "Headshots",
+            "Branding",
+            "Product",
+            "Event",
+            "Real estate",
+            "Video"
+          ],
+          "required": false,
+          "position": 2
+        },
+        {
+          "key": "package",
+          "label": "Package",
+          "type": "select",
+          "options": [
+            "Mini session",
+            "Half day",
+            "Full day",
+            "Two days",
+            "Multi-day",
+            "Custom"
+          ],
+          "required": false,
+          "position": 3
+        },
+        {
+          "key": "location",
+          "label": "Location",
+          "type": "text",
+          "required": false,
+          "position": 4
+        },
+        {
+          "key": "call_time",
+          "label": "Call Time",
+          "type": "text",
+          "required": false,
+          "position": 5
+        },
+        {
+          "key": "delivery_due",
+          "label": "Delivery Due",
+          "type": "date",
+          "required": false,
+          "position": 6
+        },
+        {
+          "key": "status",
+          "label": "Status",
+          "type": "select",
+          "options": [
+            "Scheduled",
+            "Shot",
+            "Culling",
+            "Editing",
+            "Delivered",
+            "Cancelled"
+          ],
+          "required": false,
+          "position": 7
+        },
+        {
+          "key": "client",
+          "label": "Client",
+          "type": "relation",
+          "target_slug": "contact",
+          "required": false,
+          "position": 8
+        }
+      ]
+    }
+  ],
+  "automation_rules": [
+    {
+      "key": "enquiry_send_pricing",
+      "name": "Get pricing to a new enquiry within a day",
+      "description": "Most photography enquiries book whoever replies first with a real price — a day's silence loses the date to someone else.",
+      "activation": "auto",
+      "trigger": {
+        "type": "contact_created"
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Reply to {{contact.first_name}} — check the date, send the pricing guide, offer two call slots",
+              "priority": "high",
+              "due_in_days": 1
+            }
+          }
+        },
+        {
+          "type": "action",
+          "id": "s2",
+          "action": {
+            "id": "s2",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "New shoot enquiry",
+              "body": "Capture before quoting: shoot type, date and whether it is fixed, location, hours of coverage needed, how the images will be used (personal or commercial), and their budget range."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "shoot_stage_note",
+      "name": "Keep a running history on every commission",
+      "description": "Writes a timeline note whenever a booking moves stage, so the retainer, deliverables and turnaround promised are all in one place at edit time.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "*"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "Booking stage updated: {{deal.title}}",
+              "body": "Stage changed. Record what was agreed — shoot date and call time, location, package and hours, number of edited images, usage licence, and the delivery date promised."
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "kb_templates": {
+    "company": "## About us\n\nWe are a photography and video studio based in [your city], shooting [your specialisms]. Replace this with your style in one honest sentence, how long you have been shooting, and the work you most want more of.\n\n## Practicalities\n\n- Studio address, or note that you shoot on location only\n- Travel policy and mileage or day rate outside [radius]\n- Public liability insurance and cover amount — venues and brands will ask for the certificate\n- Backup policy: dual card slots, offsite copies, and how long you retain files",
+    "products": "## Packages\n\n- **Mini session** — [n] minutes, [n] edited images, [price]\n- **Half day** — [n] hours coverage, [n] edited images, [price]\n- **Full day** — up to [n] hours, [n] edited images, [price]\n- **Wedding collections** — [price] to [price], second shooter [price]\n- **Commercial day rate** — [price], licence quoted separately\n\n## Terms\n\nRetainer of [amount or %] to hold a date, non-refundable. Balance due [n] days before the shoot. Turnaround: sneak peek in [n] days, full gallery in [n] weeks. Extra edits [price] each; rush delivery [price].",
+    "playbook": "## Qualifying an enquiry\n\n1. Date and whether it is fixed — check the calendar before you reply with anything.\n2. Shoot type, location, and hours of coverage actually needed.\n3. How the images will be used. Personal versus commercial is the difference between a session fee and a licence.\n4. Deliverables they expect — number of edited images, prints, album, raw files (say no to raws, and say why).\n5. Budget range, before you build a quote.\n\n## Consultation to booking\n\nShow a full gallery from one similar shoot, not a highlight reel of twenty. Quote a package, not an hourly rate. Close on the retainer: the date is not held until it is paid.",
+    "process": "## From enquiry to delivered gallery\n\n1. **Enquiry** — log the contact, date, shoot type and how they found you.\n2. **Consultation Booked** — call or coffee; confirm style, coverage and expectations.\n3. **Quote Sent** — package, deliverables, licence and turnaround in writing.\n4. **Booked — Retainer Paid** — contract signed and retainer received; only now is the date held.\n5. **Shoot Complete** — cards backed up twice before you leave the location.\n6. **In Post-Production** — cull, edit, and send the sneak peek to keep them warm.\n7. **Gallery Delivered** — balance settled, gallery sent, and ask for the review while they are still excited.",
+    "competitors": "## Why clients book us\n\nReplace with your genuine differentiators. What actually decides it: a consistent style they can see across full galleries, a turnaround you have never missed, being easy to be around on the day, and proper insurance and backups.\n\n## Common comparisons\n\n- **Cheaper newer shooters** — real price pressure; compete on consistency and on delivering when you said you would, not on price.\n- **Large studio chains** — brand reassurance, but the photographer is assigned and unknown until the day.\n- **A guest with a good camera** — free, and the reason a lot of clients come back the following year for a reshoot."
+  }
+}

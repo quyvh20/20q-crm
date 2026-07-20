@@ -389,12 +389,34 @@ type CustomObjectRecord struct {
 	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
+// SystemTemplate is a global (NOT org-scoped) industry starter template. Rows are
+// seeded at boot from internal/repository/templates/*.json — see SeedSystemTemplates.
+//
+// The 2022-era columns (PipelineStages/CustomFieldDefs/AutomationRules) survive by
+// name only: their original seed payloads were unapplyable against today's schemas
+// (bare stage-name strings, field types that no longer exist, an automation_rules
+// column that was never even populated). See the type comments on the spec structs
+// in system_template.go for the shapes actually parsed out of them now.
+//
+// ObjectDefs is new: custom objects are the single most valuable thing a template
+// can install and there was no column able to express them.
 type SystemTemplate struct {
 	ID              uuid.UUID `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
 	Slug            string    `gorm:"size:100;uniqueIndex;not null" json:"slug"`
 	Name            string    `gorm:"size:255;not null" json:"name"`
+	Category        string    `gorm:"size:50;not null;default:'general'" json:"category"`
+	Description     string    `gorm:"type:text;not null;default:''" json:"description"`
+	Icon            string    `gorm:"size:16;not null;default:''" json:"icon"`
+	SortOrder       int       `gorm:"not null;default:100" json:"sort_order"`
+	IsActive        bool      `gorm:"not null;default:true" json:"is_active"`
+	// SpecVersion is the content revision, recorded on the application ledger so an
+	// org's install can be compared against what the template says today. It does
+	// NOT gate the boot seeder's upsert — see the note on SeedSystemTemplates for
+	// why gating on it silently preserved broken 2022 rows.
+	SpecVersion     int       `gorm:"not null;default:1" json:"spec_version"`
 	PipelineStages  JSON      `gorm:"type:jsonb;default:'[]'" json:"pipeline_stages"`
 	CustomFieldDefs JSON      `gorm:"type:jsonb;default:'[]'" json:"custom_field_defs"`
+	ObjectDefs      JSON      `gorm:"type:jsonb;default:'[]'" json:"object_defs"`
 	AIContext       *string   `gorm:"type:text" json:"ai_context,omitempty"`
 	AutomationRules JSON      `gorm:"type:jsonb;default:'[]'" json:"automation_rules"`
 	KBTemplates     JSON      `gorm:"type:jsonb;default:'{}'" json:"kb_templates"`

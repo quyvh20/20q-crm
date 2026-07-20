@@ -1,0 +1,108 @@
+{
+  "slug": "construction",
+  "name": "Construction & Contracting",
+  "category": "trades",
+  "description": "Enquiries, site surveys, take-offs and tenders — a Projects register, a variation log, and a pipeline that closes on a signed contract rather than on a hopeful quote.",
+  "icon": "🏗️",
+  "sort_order": 140,
+  "spec_version": 1,
+  "ai_context": "You are a CRM assistant for a construction and contracting firm. Contacts are homeowners, architects, quantity surveyors, site managers and main contractors; a company is usually a client, a subcontractor or a supplier. A deal is one job being priced — from first enquiry through the site survey and take-off to a signed contract — and it is won when the contract is signed, not when the build finishes. Never invent quoted figures, planning or permit references, retention percentages or programme dates; if a price or start date is not recorded, say so and ask.",
+  "pipeline_stages": [
+    { "name": "Enquiry", "position": 0, "color": "#6366F1", "is_won": false, "is_lost": false },
+    { "name": "Site Visit Booked", "position": 1, "color": "#3B82F6", "is_won": false, "is_lost": false },
+    { "name": "Take-Off & Estimate", "position": 2, "color": "#8B5CF6", "is_won": false, "is_lost": false },
+    { "name": "Tender Submitted", "position": 3, "color": "#F59E0B", "is_won": false, "is_lost": false },
+    { "name": "Post-Tender Negotiation", "position": 4, "color": "#F97316", "is_won": false, "is_lost": false },
+    { "name": "Contract Signed", "position": 5, "color": "#10B981", "is_won": true, "is_lost": false },
+    { "name": "Not Awarded", "position": 6, "color": "#EF4444", "is_won": false, "is_lost": true }
+  ],
+  "custom_field_defs": [
+    { "entity_type": "contact", "key": "contact_role", "label": "Role on the Job", "type": "select", "options": ["Homeowner", "Architect", "Quantity Surveyor", "Main Contractor", "Developer", "Property Manager", "Building Control"], "required": false, "position": 0 },
+    { "entity_type": "contact", "key": "site_mobile", "label": "On-Site Mobile", "type": "text", "required": false, "position": 1 },
+    { "entity_type": "company", "key": "company_type", "label": "Company Type", "type": "select", "options": ["Client", "Main Contractor", "Subcontractor", "Supplier", "Architect / Consultant"], "required": false, "position": 0 },
+    { "entity_type": "company", "key": "insurance_expiry", "label": "Liability Insurance Expiry", "type": "date", "required": false, "position": 1 },
+    { "entity_type": "deal", "key": "quote_value", "label": "Quoted Value", "type": "number", "required": false, "position": 0 },
+    { "entity_type": "deal", "key": "work_type", "label": "Type of Works", "type": "select", "options": ["New Build", "Extension", "Renovation", "Fit-Out", "Groundworks", "Roofing", "Mechanical & Electrical", "Maintenance"], "required": false, "position": 1 },
+    { "entity_type": "deal", "key": "start_on_site", "label": "Target Start on Site", "type": "date", "required": false, "position": 2 },
+    { "entity_type": "deal", "key": "permit_status", "label": "Planning / Permit Status", "type": "select", "options": ["Not required", "Applied for", "Approved", "Approved with conditions", "Refused"], "required": false, "position": 3 }
+  ],
+  "object_defs": [
+    {
+      "slug": "project",
+      "label": "Project",
+      "label_plural": "Projects",
+      "icon": "🧱",
+      "searchable": true,
+      "fields": [
+        { "key": "site_address", "label": "Site Address", "type": "text", "required": true, "position": 0 },
+        { "key": "project_type", "label": "Project Type", "type": "select", "options": ["New Build", "Extension", "Renovation", "Fit-Out", "Groundworks", "Roofing", "Maintenance"], "required": false, "position": 1 },
+        { "key": "contract_value", "label": "Contract Value", "type": "number", "required": false, "position": 2 },
+        { "key": "site_status", "label": "Site Status", "type": "select", "options": ["Pre-Construction", "Mobilising", "In Progress", "Snagging", "Practically Complete", "On Hold"], "required": false, "position": 3 },
+        { "key": "start_date", "label": "Start on Site", "type": "date", "required": false, "position": 4 },
+        { "key": "completion_date", "label": "Practical Completion", "type": "date", "required": false, "position": 5 },
+        { "key": "permit_reference", "label": "Planning / Permit Reference", "type": "text", "required": false, "position": 6 },
+        { "key": "client", "label": "Client", "type": "relation", "target_slug": "company", "required": false, "position": 7 },
+        { "key": "site_contact", "label": "Site Contact", "type": "relation", "target_slug": "contact", "required": false, "position": 8 }
+      ]
+    },
+    {
+      "slug": "variation",
+      "label": "Variation",
+      "label_plural": "Variations",
+      "icon": "📝",
+      "searchable": false,
+      "fields": [
+        { "key": "title", "label": "Variation", "type": "text", "required": true, "position": 0 },
+        { "key": "project", "label": "Project", "type": "relation", "target_slug": "project", "required": false, "position": 1 },
+        { "key": "value", "label": "Value", "type": "number", "required": false, "position": 2 },
+        { "key": "status", "label": "Status", "type": "select", "options": ["Proposed", "Submitted", "Approved", "Rejected", "Invoiced"], "required": false, "position": 3 },
+        { "key": "reason", "label": "Reason", "type": "select", "options": ["Client change", "Design change", "Unforeseen site condition", "Statutory requirement", "Error or omission"], "required": false, "position": 4 },
+        { "key": "raised_on", "label": "Raised On", "type": "date", "required": false, "position": 5 }
+      ]
+    }
+  ],
+  "automation_rules": [
+    {
+      "key": "new_enquiry_site_visit",
+      "name": "Book a site visit on every new enquiry",
+      "description": "Nothing should be priced from a drawing alone — this books the survey the moment an enquiry lands.",
+      "activation": "auto",
+      "trigger": { "type": "contact_created" },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Book a site visit with {{contact.first_name}} {{contact.last_name}}",
+              "priority": "high",
+              "due_in_days": 2
+            }
+          }
+        },
+        {
+          "type": "action",
+          "id": "s2",
+          "action": {
+            "id": "s2",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "New enquiry logged",
+              "body": "Enquiry from {{contact.first_name}} {{contact.last_name}} ({{contact.email}}). Before the survey, confirm: scope of works, full site address and access for plant, budget range, target start on site, and whether planning or permits have been applied for."
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "kb_templates": {
+    "company": "## About us\n\nWe are a [general contractor / specialist trade — groundworks, M&E, fit-out] working across [region]. Replace this with the trades you self-deliver, the trades you subcontract, and the contract values you are geared up for.\n\n## Credentials\n\nList the things clients ask for before they let you on site — [public liability cover], [employer's liability], [accreditations and licence numbers], [health & safety policy].\n\n## Contact\n\nOffice address, out-of-hours number, and the email address tenders should be sent to.",
+    "products": "## What we build\n\n- [New build]\n- [Extensions and structural alterations]\n- [Renovation and fit-out]\n- [Groundworks and drainage]\n- [Reactive maintenance and small works]\n\n## How we price\n\nState your typical contract range, whether you work fixed-price, cost-plus or to a schedule of rates, your deposit and stage-payment terms, and the retention you accept.",
+    "playbook": "## Qualifying an enquiry\n\n1. Scope — what exactly is being built, and is there a drawing or spec?\n2. Site — address, access, existing structure, services already on site.\n3. Money — budget range, and who is actually paying.\n4. Permissions — planning, building regs or permits applied for? Approved?\n5. Programme — target start on site and any fixed completion date.\n\n## Before you price it\n\nWalk the site. A take-off from a drawing alone is where margin disappears — note ground conditions, access for plant and anything the drawing does not show.\n\n## After the tender goes in\n\nChase at seven days. Ask where you sat on price, not just whether you won.",
+    "process": "## From enquiry to contract\n\n1. **Enquiry** — log who asked, what they want built and where.\n2. **Site Visit Booked** — survey before anything is priced.\n3. **Take-Off & Estimate** — measure and price materials, labour, plant and preliminaries.\n4. **Tender Submitted** — quote issued with scope, exclusions and a validity period.\n5. **Post-Tender Negotiation** — clarifications, value engineering, programme.\n6. **Contract Signed** — contract and deposit in place; open a Project record and hand over to site.\n\nAnything that does not land goes to **Not Awarded** with the reason — price, programme or scope. Every change once on site goes on the Variation register the day it is raised, not at final account.",
+    "competitors": "## Why clients pick us\n\nReplace with your genuine edge — [we survey within 48 hours], [fixed price with a written exclusions list so variations are not a surprise], [directly employed trades rather than agency labour], [snagging closed out within two weeks of completion].\n\n## Who we lose to\n\nBe honest: [the cheapest number], [a larger firm with more resource], [someone the client already knows]. Write down how you answer each of those on a call."
+  }
+}

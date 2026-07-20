@@ -114,6 +114,10 @@ var (
 	ErrTokenExpired          = NewAppError(http.StatusUnauthorized, "token has expired")
 	ErrForbidden             = NewAppError(http.StatusForbidden, "insufficient permissions")
 	ErrInternal              = NewAppError(http.StatusInternalServerError, "internal server error")
+	// ErrTemplateNotFound also covers a template that exists but is retired
+	// (is_active = false): a retired template is not offerable, and saying so would
+	// leak the catalog's history for no benefit.
+	ErrTemplateNotFound = NewAppError(http.StatusNotFound, "template not found")
 	ErrContactNotFound       = NewAppError(http.StatusNotFound, "contact not found")
 	// ErrContactEmailExists is the (org_id, email) unique-index violation surfaced
 	// as itself instead of a blanket 500. Two callers need to tell it apart from a

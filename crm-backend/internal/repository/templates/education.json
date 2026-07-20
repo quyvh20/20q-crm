@@ -1,0 +1,406 @@
+{
+  "slug": "education",
+  "name": "Tutoring & Training",
+  "category": "education",
+  "description": "Enquiry-to-enrolment pipeline for a tutoring centre or training provider, with Courses and Enrolments tracked as their own records.",
+  "icon": "🎓",
+  "sort_order": 200,
+  "spec_version": 1,
+  "ai_context": "You are a CRM assistant for a tutoring centre / training provider. A contact is normally the fee payer — a parent or guardian, an adult learner, or a corporate L&D buyer — and the student named on the record may be a different person. A deal is one enrolment decision for one student, running from first enquiry through a level assessment and trial lesson to signed enrolment and paid fees. Courses and enrolments are separate records; never invent a course code, timetable slot, tutor name, exam board or fee you were not given.",
+  "pipeline_stages": [
+    {
+      "name": "New Enquiry",
+      "position": 0,
+      "color": "#6366F1",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Needs & Level Assessment",
+      "position": 1,
+      "color": "#3B82F6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Trial Lesson Booked",
+      "position": 2,
+      "color": "#8B5CF6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Trial Attended",
+      "position": 3,
+      "color": "#F59E0B",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Fee Quote Sent",
+      "position": 4,
+      "color": "#F97316",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Enrolled",
+      "position": 5,
+      "color": "#10B981",
+      "is_won": true,
+      "is_lost": false
+    },
+    {
+      "name": "Lost",
+      "position": 6,
+      "color": "#EF4444",
+      "is_won": false,
+      "is_lost": true
+    }
+  ],
+  "custom_field_defs": [
+    {
+      "entity_type": "contact",
+      "key": "student_name",
+      "label": "Student Name",
+      "type": "text",
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "contact",
+      "key": "relationship",
+      "label": "Relationship to Student",
+      "type": "select",
+      "options": [
+        "Parent / Guardian",
+        "Student (self)",
+        "School",
+        "Corporate L&D",
+        "Other"
+      ],
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "contact",
+      "key": "current_level",
+      "label": "Current Level",
+      "type": "select",
+      "options": [
+        "Primary",
+        "Lower Secondary",
+        "Upper Secondary / GCSE",
+        "A-Level / IB",
+        "Undergraduate",
+        "Adult / Professional"
+      ],
+      "required": false,
+      "position": 2
+    },
+    {
+      "entity_type": "contact",
+      "key": "subjects_of_interest",
+      "label": "Subjects of Interest",
+      "type": "text",
+      "required": false,
+      "position": 3
+    },
+    {
+      "entity_type": "deal",
+      "key": "tuition_fee",
+      "label": "Tuition Fee",
+      "type": "number",
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "deal",
+      "key": "sessions_per_week",
+      "label": "Sessions per Week",
+      "type": "number",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "deal",
+      "key": "payment_plan",
+      "label": "Payment Plan",
+      "type": "select",
+      "options": [
+        "Pay upfront",
+        "Per term",
+        "Monthly",
+        "Per session",
+        "Employer invoiced"
+      ],
+      "required": false,
+      "position": 2
+    },
+    {
+      "entity_type": "deal",
+      "key": "start_date",
+      "label": "Intended Start Date",
+      "type": "date",
+      "required": false,
+      "position": 3
+    }
+  ],
+  "object_defs": [
+    {
+      "slug": "course",
+      "label": "Course",
+      "label_plural": "Courses",
+      "icon": "📚",
+      "searchable": true,
+      "fields": [
+        {
+          "key": "title",
+          "label": "Course Title",
+          "type": "text",
+          "required": true,
+          "position": 0
+        },
+        {
+          "key": "subject",
+          "label": "Subject",
+          "type": "select",
+          "options": [
+            "Mathematics",
+            "English",
+            "Science",
+            "Physics",
+            "Chemistry",
+            "Biology",
+            "Languages",
+            "Coding & IT",
+            "Business",
+            "Exam Preparation",
+            "Other"
+          ],
+          "required": false,
+          "position": 1
+        },
+        {
+          "key": "level",
+          "label": "Level",
+          "type": "select",
+          "options": [
+            "Primary",
+            "Lower Secondary",
+            "Upper Secondary / GCSE",
+            "A-Level / IB",
+            "Undergraduate",
+            "Adult / Professional"
+          ],
+          "required": false,
+          "position": 2
+        },
+        {
+          "key": "format",
+          "label": "Format",
+          "type": "select",
+          "options": [
+            "One-to-one",
+            "Small group",
+            "Classroom",
+            "Online live",
+            "Self-paced"
+          ],
+          "required": false,
+          "position": 3
+        },
+        {
+          "key": "tuition_fee",
+          "label": "Tuition Fee",
+          "type": "number",
+          "required": false,
+          "position": 4
+        },
+        {
+          "key": "sessions_total",
+          "label": "Total Sessions",
+          "type": "number",
+          "required": false,
+          "position": 5
+        },
+        {
+          "key": "start_date",
+          "label": "Start Date",
+          "type": "date",
+          "required": false,
+          "position": 6
+        },
+        {
+          "key": "end_date",
+          "label": "End Date",
+          "type": "date",
+          "required": false,
+          "position": 7
+        },
+        {
+          "key": "tutor",
+          "label": "Lead Tutor",
+          "type": "relation",
+          "target_slug": "contact",
+          "required": false,
+          "position": 8
+        }
+      ]
+    },
+    {
+      "slug": "enrolment",
+      "label": "Enrolment",
+      "label_plural": "Enrolments",
+      "icon": "📝",
+      "searchable": true,
+      "fields": [
+        {
+          "key": "student",
+          "label": "Student",
+          "type": "relation",
+          "target_slug": "contact",
+          "required": true,
+          "position": 0
+        },
+        {
+          "key": "course",
+          "label": "Course",
+          "type": "relation",
+          "target_slug": "course",
+          "required": true,
+          "position": 1
+        },
+        {
+          "key": "enrolled_on",
+          "label": "Enrolled On",
+          "type": "date",
+          "required": false,
+          "position": 2
+        },
+        {
+          "key": "status",
+          "label": "Status",
+          "type": "select",
+          "options": [
+            "Enrolled",
+            "Attending",
+            "On hold",
+            "Completed",
+            "Withdrawn"
+          ],
+          "required": false,
+          "position": 3
+        },
+        {
+          "key": "attendance_pct",
+          "label": "Attendance %",
+          "type": "number",
+          "required": false,
+          "position": 4
+        },
+        {
+          "key": "fee_paid",
+          "label": "Fee Paid",
+          "type": "number",
+          "required": false,
+          "position": 5
+        },
+        {
+          "key": "payment_status",
+          "label": "Payment Status",
+          "type": "select",
+          "options": [
+            "Unpaid",
+            "Deposit paid",
+            "Paid in full",
+            "Overdue",
+            "Refunded"
+          ],
+          "required": false,
+          "position": 6
+        },
+        {
+          "key": "progress_notes",
+          "label": "Progress Notes",
+          "type": "text",
+          "required": false,
+          "position": 7
+        }
+      ]
+    }
+  ],
+  "automation_rules": [
+    {
+      "key": "enquiry_book_trial",
+      "name": "Chase a new enquiry into a trial lesson",
+      "description": "Parents enquire at three centres on the same evening — whoever books the trial first usually gets the enrolment.",
+      "activation": "auto",
+      "trigger": {
+        "type": "contact_created"
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Call {{contact.first_name}} — confirm subject and level, then book a trial lesson",
+              "priority": "high",
+              "due_in_days": 1
+            }
+          }
+        },
+        {
+          "type": "action",
+          "id": "s2",
+          "action": {
+            "id": "s2",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "New tutoring enquiry",
+              "body": "Enquiry received. Capture the student's name, year group, target exam or exam board, current grade, and the days and times they can attend before quoting a fee."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "enrolment_stage_note",
+      "name": "Keep a stage history on every enrolment",
+      "description": "Writes a timeline note each time an enrolment deal moves, so whoever picks the family up next can see where they got to.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "*"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "Enrolment stage updated: {{deal.title}}",
+              "body": "Stage changed. Record what was agreed — the tutor assigned, the timetable slot, the fee quoted, and anything the family still has to decide."
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "kb_templates": {
+    "company": "## About us\n\nWe are a tutoring centre serving [your town / catchment area]. Replace this with who you are, the year groups and exam boards you cover, and how long you have been teaching.\n\n## Centre details\n\n- Address and parking / drop-off arrangements\n- Opening hours, including which evenings and weekend slots run\n- Safeguarding and DBS policy in one line, plus who parents should ask for\n\n## Term dates\n\nList your term start and end dates and any weeks you close.",
+    "products": "## What we teach\n\n- **One-to-one tuition** — [subjects], [fee] per hour\n- **Small group classes** — max [n] students, [fee] per session\n- **Exam preparation** — [GCSE / A-Level / IB / SAT], intensive courses in the [n] weeks before papers\n- **Holiday intensives and catch-up courses**\n\n## Fees and terms\n\nState your session length, minimum commitment (per term / per block of [n] sessions), payment plans you accept, and your cancellation notice period.",
+    "playbook": "## Qualifying an enquiry\n\n1. Who is the student — year group, school, current grade, and target grade.\n2. Subject and exam board. Get the board right; a wrong-board tutor loses the family in week two.\n3. What has already been tried, and what is not working.\n4. Availability — which evenings and weekend slots actually work for them.\n5. Budget and whether they want one-to-one or a group.\n\n## Converting a trial\n\nCall the parent within 24 hours of the trial. Lead with one specific observation about the student's work, name the gap you would close first, and propose a concrete timetable slot and start date.",
+    "process": "## From enquiry to enrolment\n\n1. **New Enquiry** — log the contact, the student's name and the subject they want.\n2. **Needs & Level Assessment** — placement test or diagnostic call; confirm level and exam board.\n3. **Trial Lesson Booked** — a named tutor, a date and a time in the diary.\n4. **Trial Attended** — tutor feedback captured while it is fresh.\n5. **Fee Quote Sent** — sessions per week, fee, payment plan and start date in writing.\n6. **Enrolled** — enrolment form signed and first payment received; create the Enrolment record against the Course.",
+    "competitors": "## Why families choose us\n\nReplace with your genuine differentiators. The ones that actually decide it in tutoring are: tutors who know the specific exam board, small and stable group sizes, measured progress the parent can see, and the same tutor every week rather than a rota.\n\n## Common comparisons\n\n- **Online marketplaces** — cheaper per hour, but no continuity and no one accountable for the grade.\n- **Big chain centres** — recognisable brand, larger classes, less flexibility on timetable.\n- **Private freelance tutors** — flexible and personal, but no cover when the tutor is ill and no progress reporting."
+  }
+}

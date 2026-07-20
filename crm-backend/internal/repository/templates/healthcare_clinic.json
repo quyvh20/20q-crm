@@ -1,0 +1,323 @@
+{
+  "slug": "healthcare_clinic",
+  "name": "Healthcare Clinic",
+  "category": "health",
+  "description": "Patient enquiries, insurance checks and appointments for a private clinic, with an Appointments object and a pipeline that ends at discharge.",
+  "icon": "🩺",
+  "sort_order": 110,
+  "spec_version": 1,
+  "ai_context": "You are a CRM assistant for a private healthcare clinic. Contacts are patients and referrers; a deal represents one episode of care, from first enquiry through consultation and treatment to discharge. Help with scheduling, insurance paperwork, referral follow-up and administrative reminders only. Never give clinical advice, never suggest a diagnosis, medication or treatment, and never invent a patient's medical history, test results, insurance authorisation or clinician availability — if it is not in the record, say so and ask the clinic.",
+  "pipeline_stages": [
+    {
+      "name": "New Enquiry",
+      "position": 0,
+      "color": "#6366F1",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Triage & Eligibility",
+      "position": 1,
+      "color": "#3B82F6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Consultation Booked",
+      "position": 2,
+      "color": "#8B5CF6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Consultation Attended",
+      "position": 3,
+      "color": "#F59E0B",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Treatment Plan Proposed",
+      "position": 4,
+      "color": "#F97316",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Treatment Underway",
+      "position": 5,
+      "color": "#EA580C",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Discharged",
+      "position": 6,
+      "color": "#10B981",
+      "is_won": true,
+      "is_lost": false
+    },
+    {
+      "name": "Did Not Proceed",
+      "position": 7,
+      "color": "#EF4444",
+      "is_won": false,
+      "is_lost": true
+    }
+  ],
+  "custom_field_defs": [
+    {
+      "entity_type": "contact",
+      "key": "referral_source",
+      "label": "Referral Source",
+      "type": "select",
+      "options": [
+        "GP referral",
+        "Consultant referral",
+        "Self-referral",
+        "Insurer directory",
+        "Website enquiry",
+        "Word of mouth",
+        "Returning patient"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "contact",
+      "key": "date_of_birth",
+      "label": "Date of Birth",
+      "type": "date",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "contact",
+      "key": "payer",
+      "label": "Payer",
+      "type": "select",
+      "options": [
+        "Self-pay",
+        "Private medical insurance",
+        "Employer scheme",
+        "Public health scheme"
+      ],
+      "required": false,
+      "position": 2
+    },
+    {
+      "entity_type": "contact",
+      "key": "policy_number",
+      "label": "Policy / Membership Number",
+      "type": "text",
+      "required": false,
+      "position": 3
+    },
+    {
+      "entity_type": "contact",
+      "key": "registered_gp",
+      "label": "Registered GP Practice",
+      "type": "text",
+      "required": false,
+      "position": 4
+    },
+    {
+      "entity_type": "deal",
+      "key": "treatment_type",
+      "label": "Treatment Type",
+      "type": "select",
+      "options": [
+        "Consultation only",
+        "Diagnostics / imaging",
+        "Minor procedure",
+        "Surgery",
+        "Physiotherapy course",
+        "Ongoing management"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "deal",
+      "key": "preauth_code",
+      "label": "Insurer Pre-Authorisation Code",
+      "type": "text",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "deal",
+      "key": "estimated_fee",
+      "label": "Estimated Fee",
+      "type": "number",
+      "required": false,
+      "position": 2
+    }
+  ],
+  "object_defs": [
+    {
+      "slug": "appointment",
+      "label": "Appointment",
+      "label_plural": "Appointments",
+      "icon": "📅",
+      "searchable": true,
+      "fields": [
+        {
+          "key": "scheduled_for",
+          "label": "Date & Time",
+          "type": "date",
+          "required": true,
+          "position": 0
+        },
+        {
+          "key": "patient",
+          "label": "Patient",
+          "type": "relation",
+          "target_slug": "contact",
+          "required": false,
+          "position": 1
+        },
+        {
+          "key": "appointment_type",
+          "label": "Appointment Type",
+          "type": "select",
+          "options": [
+            "Initial consultation",
+            "Follow-up",
+            "Diagnostic / imaging",
+            "Procedure",
+            "Physiotherapy session",
+            "Telehealth"
+          ],
+          "required": false,
+          "position": 2
+        },
+        {
+          "key": "clinician",
+          "label": "Clinician",
+          "type": "text",
+          "required": false,
+          "position": 3
+        },
+        {
+          "key": "site",
+          "label": "Site / Room",
+          "type": "text",
+          "required": false,
+          "position": 4
+        },
+        {
+          "key": "status",
+          "label": "Status",
+          "type": "select",
+          "options": [
+            "Booked",
+            "Confirmed",
+            "Attended",
+            "DNA (did not attend)",
+            "Cancelled by patient",
+            "Cancelled by clinic",
+            "Rescheduled"
+          ],
+          "required": false,
+          "position": 5
+        },
+        {
+          "key": "duration_minutes",
+          "label": "Duration (minutes)",
+          "type": "number",
+          "required": false,
+          "position": 6
+        },
+        {
+          "key": "episode",
+          "label": "Episode of Care",
+          "type": "relation",
+          "target_slug": "deal",
+          "required": false,
+          "position": 7
+        },
+        {
+          "key": "reception_notes",
+          "label": "Reception Notes",
+          "type": "text",
+          "required": false,
+          "position": 8
+        }
+      ]
+    }
+  ],
+  "automation_rules": [
+    {
+      "key": "new_patient_enquiry_callback",
+      "name": "Call a new enquiry back the next working day",
+      "description": "Patients who wait more than a day for a callback usually book somewhere else. This queues the call and stamps the enquiry on the timeline.",
+      "activation": "auto",
+      "trigger": {
+        "type": "contact_created"
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Call {{contact.first_name}} {{contact.last_name}} — confirm reason for enquiry, payer and preferred clinician",
+              "priority": "high",
+              "due_in_days": 1
+            }
+          }
+        },
+        {
+          "type": "action",
+          "id": "s2",
+          "action": {
+            "id": "s2",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "New patient enquiry received",
+              "body": "Enquiry logged for {{contact.first_name}}. Before booking: confirm date of birth, referral source, payer and policy number, and whether a GP or consultant referral letter is on file. Do not record clinical detail here — it belongs in the clinical system."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "episode_stage_admin_check",
+      "name": "Tidy the paperwork whenever an episode moves stage",
+      "description": "Every stage change is a moment where an appointment, an authorisation code or an invoice can be left hanging. This creates the admin check.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "*"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Admin check on {{deal.title}} — next appointment booked, pre-authorisation valid, fee estimate sent",
+              "priority": "medium",
+              "due_in_days": 2
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "kb_templates": {
+    "company": "## About the clinic\n\n[Clinic name] is a private [specialty, e.g. orthopaedic / dermatology / general practice] clinic in [location], established [year].\n\n- Clinicians: [names and specialties]\n- Sites: [addresses]\n- Regulator / registration number: [e.g. CQC, HIQA, state board]\n\n## Reception\n\nPhone [number], email [address]. Opening hours [hours]. Out-of-hours enquiries go to [where].",
+    "products": "## Services and typical fees\n\n| Service | Duration | Self-pay fee |\n| --- | --- | --- |\n| Initial consultation | [30 min] | [amount] |\n| Follow-up | [15 min] | [amount] |\n| [Procedure] | [time] | [amount] |\n\n## Payers we are recognised by\n\n[List insurers and scheme numbers.] Self-pay patients are quoted in writing before booking. Quote fees from this table only — never estimate a price that is not listed here.",
+    "playbook": "## Taking an enquiry\n\n1. Capture name, date of birth, phone, email and how they heard about us.\n2. Ask what they would like to be seen about — record it in the patient's own words, no interpretation.\n3. Confirm payer: self-pay, insurer (name, policy number, pre-authorisation code) or scheme.\n4. Ask whether a GP or consultant referral letter exists — some insurers will not settle without one.\n5. Offer the first two available slots with the right clinician; do not hold a slot for more than 24 hours.\n\n## Boundaries\n\nReception and CRM staff never triage symptoms, advise on urgency or discuss results. Anything clinical goes to a clinician the same day; anything urgent goes to emergency services.",
+    "process": "## From enquiry to discharge\n\n1. **New Enquiry** — patient or referrer makes contact; capture details and reason for enquiry.\n2. **Triage & Eligibility** — a clinician confirms we are the right service; payer, policy and referral letter checked.\n3. **Consultation Booked** — slot confirmed in writing with fee estimate and cancellation policy.\n4. **Consultation Attended** — patient seen; DNAs go back to New Enquiry for one rebooking attempt.\n5. **Treatment Plan Proposed** — plan and costs sent, insurer pre-authorisation requested if needed.\n6. **Treatment Underway** — appointments scheduled and invoiced as they happen.\n7. **Discharged** — course of care complete, discharge letter sent to the patient and their GP.\n8. **Did Not Proceed** — record the reason: cost, waiting time, insurer declined, referred elsewhere.",
+    "competitors": "## Where patients go instead\n\n- The public system — free but slower; our honest advantage is waiting time and continuity with one named clinician.\n- [Competing private clinic] — [their strength, their weakness].\n- [Hospital outpatient department] — broader services, less personal.\n\nCompete on speed to first appointment, transparent written pricing and the seniority of the clinician the patient actually sees. Never disparage another provider and never claim a clinical outcome."
+  }
+}

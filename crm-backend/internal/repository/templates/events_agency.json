@@ -1,0 +1,331 @@
+{
+  "slug": "events_agency",
+  "name": "Events & Wedding Planning",
+  "category": "services",
+  "description": "Enquiry to proposal to delivered event, with an Events object holding the date, venue, guest count and budget.",
+  "icon": "🎉",
+  "sort_order": 210,
+  "spec_version": 1,
+  "ai_context": "You are a CRM assistant for an events and wedding planning agency. A contact is the person paying for and deciding on the event — a couple, a private host, or a corporate marketing or EA buyer — and there is often a second decision-maker on the same enquiry. A deal is one event from first enquiry through site visit and proposal to a signed contract and the day itself. Event dates, venues, guest counts and budgets are held on Event records; never invent a date, venue, supplier, headcount or price you were not given, and never imply availability you have not checked.",
+  "pipeline_stages": [
+    {
+      "name": "New Enquiry",
+      "position": 0,
+      "color": "#6366F1",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Discovery Call",
+      "position": 1,
+      "color": "#3B82F6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Venue Site Visit",
+      "position": 2,
+      "color": "#8B5CF6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Proposal Sent",
+      "position": 3,
+      "color": "#F59E0B",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Contract & Deposit",
+      "position": 4,
+      "color": "#F97316",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "In Production",
+      "position": 5,
+      "color": "#84CC16",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Event Delivered",
+      "position": 6,
+      "color": "#10B981",
+      "is_won": true,
+      "is_lost": false
+    },
+    {
+      "name": "Lost",
+      "position": 7,
+      "color": "#EF4444",
+      "is_won": false,
+      "is_lost": true
+    }
+  ],
+  "custom_field_defs": [
+    {
+      "entity_type": "contact",
+      "key": "enquirer_type",
+      "label": "Enquirer Type",
+      "type": "select",
+      "options": [
+        "Couple",
+        "Private host",
+        "Corporate",
+        "Agency / Partner",
+        "Supplier"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "contact",
+      "key": "partner_name",
+      "label": "Partner / Co-decision Maker",
+      "type": "text",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "contact",
+      "key": "how_heard",
+      "label": "How They Heard of Us",
+      "type": "select",
+      "options": [
+        "Instagram",
+        "Referral from past client",
+        "Venue recommendation",
+        "Supplier referral",
+        "Wedding fair",
+        "Google",
+        "Repeat client"
+      ],
+      "required": false,
+      "position": 2
+    },
+    {
+      "entity_type": "deal",
+      "key": "event_date",
+      "label": "Event Date",
+      "type": "date",
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "deal",
+      "key": "guest_count",
+      "label": "Guest Count",
+      "type": "number",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "deal",
+      "key": "budget",
+      "label": "Client Budget",
+      "type": "number",
+      "required": false,
+      "position": 2
+    },
+    {
+      "entity_type": "deal",
+      "key": "event_type",
+      "label": "Event Type",
+      "type": "select",
+      "options": [
+        "Wedding",
+        "Corporate event",
+        "Conference",
+        "Product launch",
+        "Private party",
+        "Gala / Awards",
+        "Other"
+      ],
+      "required": false,
+      "position": 3
+    },
+    {
+      "entity_type": "deal",
+      "key": "planning_package",
+      "label": "Planning Package",
+      "type": "select",
+      "options": [
+        "Full planning",
+        "Partial planning",
+        "On-the-day coordination",
+        "Design only",
+        "Venue sourcing only"
+      ],
+      "required": false,
+      "position": 4
+    }
+  ],
+  "object_defs": [
+    {
+      "slug": "event",
+      "label": "Event",
+      "label_plural": "Events",
+      "icon": "📅",
+      "searchable": true,
+      "fields": [
+        {
+          "key": "title",
+          "label": "Event Name",
+          "type": "text",
+          "required": true,
+          "position": 0
+        },
+        {
+          "key": "event_date",
+          "label": "Event Date",
+          "type": "date",
+          "required": true,
+          "position": 1
+        },
+        {
+          "key": "event_type",
+          "label": "Event Type",
+          "type": "select",
+          "options": [
+            "Wedding",
+            "Corporate event",
+            "Conference",
+            "Product launch",
+            "Private party",
+            "Gala / Awards",
+            "Other"
+          ],
+          "required": false,
+          "position": 2
+        },
+        {
+          "key": "venue_name",
+          "label": "Venue",
+          "type": "text",
+          "required": false,
+          "position": 3
+        },
+        {
+          "key": "venue_address",
+          "label": "Venue Address",
+          "type": "text",
+          "required": false,
+          "position": 4
+        },
+        {
+          "key": "guest_count",
+          "label": "Guest Count",
+          "type": "number",
+          "required": false,
+          "position": 5
+        },
+        {
+          "key": "budget",
+          "label": "Budget",
+          "type": "number",
+          "required": false,
+          "position": 6
+        },
+        {
+          "key": "status",
+          "label": "Status",
+          "type": "select",
+          "options": [
+            "Planning",
+            "Confirmed",
+            "In production",
+            "Delivered",
+            "Postponed",
+            "Cancelled"
+          ],
+          "required": false,
+          "position": 7
+        },
+        {
+          "key": "client",
+          "label": "Client",
+          "type": "relation",
+          "target_slug": "contact",
+          "required": false,
+          "position": 8
+        }
+      ]
+    }
+  ],
+  "automation_rules": [
+    {
+      "key": "enquiry_first_response",
+      "name": "Answer an event enquiry the same day",
+      "description": "Event enquiries go to four planners at once and the date is the scarce thing — first credible reply usually gets the call.",
+      "activation": "auto",
+      "trigger": {
+        "type": "contact_created"
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Reply to {{contact.first_name}} — confirm the date is open and offer two call slots",
+              "priority": "high",
+              "due_in_days": 1
+            }
+          }
+        },
+        {
+          "type": "action",
+          "id": "s2",
+          "action": {
+            "id": "s2",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "New event enquiry",
+              "body": "Before quoting, capture: event date and whether it is fixed, guest count, venue (booked or still searching), realistic budget, and who else is deciding."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "event_stage_note",
+      "name": "Keep a running history on every event",
+      "description": "Writes a timeline note whenever an event deal moves stage, so a handover to the on-the-day coordinator has the full story.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "*"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "Event stage updated: {{deal.title}}",
+              "body": "Stage changed. Record what was agreed — venue, date, headcount, package, and the next deadline the client owes us (deposit, final numbers, menu choices)."
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "kb_templates": {
+    "company": "## About us\n\nWe are an events and wedding planning agency based in [your city], working across [regions you cover]. Replace this with your story, the number of events you deliver a year, and the kind of work you are known for.\n\n## Practicalities\n\n- Studio address and consultation hours\n- Travel policy and any charge for events outside [radius]\n- Public liability insurance and cover amount — venues will ask\n- Preferred and approved supplier lists you hold",
+    "products": "## Our packages\n\n- **Full planning** — from concept to the day itself, typically [%] of budget or [fee]\n- **Partial planning** — you have made a start, we take it from [milestone], [fee]\n- **On-the-day coordination** — [fee], booked from [n] weeks out\n- **Design only** — styling, floorplan and moodboard, [fee]\n- **Venue sourcing** — [fee] or commission-based\n\n## What is not included\n\nBe explicit: supplier costs, venue hire, overtime beyond [hours], and travel or accommodation for the team.",
+    "playbook": "## Qualifying an enquiry\n\n1. Date — fixed, or flexible? A flexible date changes everything about what you can offer.\n2. Venue — booked, shortlisted, or nothing yet.\n3. Guest count, and whether that number is a hope or a list.\n4. Budget. Ask for a range and check whether it includes venue and catering; most enquirers quote a figure that does not.\n5. Who else decides — partner, parents paying, or a marketing director signing off.\n\n## Proposal follow-up\n\nCall three working days after sending. Do not ask whether they read it — ask which of the two directions they preferred, and hold the date for [n] days in writing.",
+    "process": "## From enquiry to the day itself\n\n1. **New Enquiry** — log the contact, date, venue status and rough headcount.\n2. **Discovery Call** — 30 minutes on vision, budget reality and decision-makers.\n3. **Venue Site Visit** — walk the space, note load-in, power, wet-weather plan and curfew.\n4. **Proposal Sent** — two costed directions, timeline and payment schedule.\n5. **Contract & Deposit** — signed contract and deposit received; the date is now held.\n6. **In Production** — supplier bookings, run sheet, final numbers and rehearsal.\n7. **Event Delivered** — event run, final invoice settled; ask for photos and a review while it is fresh.",
+    "competitors": "## Why clients choose us\n\nReplace with your genuine differentiators. What usually decides it: venues you have actually worked before, suppliers who answer your calls, a run sheet that survives contact with a real wedding day, and one named person on site.\n\n## Common comparisons\n\n- **Venue in-house coordinator** — included in the venue fee, but works for the venue, not for the client, and stops at the venue's edges.\n- **A friend or family member coordinating** — free, and reliably the reason something goes wrong at 4pm.\n- **Larger agencies** — deep resources, but the person who pitched is rarely the person on site."
+  }
+}

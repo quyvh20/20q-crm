@@ -1,0 +1,324 @@
+{
+  "slug": "consulting",
+  "name": "Management Consulting",
+  "category": "services",
+  "description": "Proposals, SOWs and billable engagements — an Engagements object tracking day rate, days sold against days delivered, plus a pipeline that treats \"no decision\" as the real competitor.",
+  "icon": "🧭",
+  "sort_order": 40,
+  "spec_version": 1,
+  "ai_context": "You are a CRM assistant for a management consulting practice — independent consultants or a small firm selling advisory and delivery work. A contact is a client-side executive, sponsor or procurement lead; a deal is one opportunity moving from first conversation to a signed statement of work; the Engagement object is the sold work, carrying sponsor, day rate, days sold versus days delivered and status. Never invent day rates, availability, client names, references or claims of prior results; if a rate or a date is not on the record, say it is not recorded.",
+  "pipeline_stages": [
+    {
+      "name": "Initial Conversation",
+      "position": 0,
+      "color": "#6366F1",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Qualified Opportunity",
+      "position": 1,
+      "color": "#3B82F6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Scoping Workshop",
+      "position": 2,
+      "color": "#8B5CF6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Proposal Submitted",
+      "position": 3,
+      "color": "#F59E0B",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "SOW Negotiation",
+      "position": 4,
+      "color": "#F97316",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Signed — Engagement Live",
+      "position": 5,
+      "color": "#10B981",
+      "is_won": true,
+      "is_lost": false
+    },
+    {
+      "name": "Lost / No Decision",
+      "position": 6,
+      "color": "#EF4444",
+      "is_won": false,
+      "is_lost": true
+    }
+  ],
+  "custom_field_defs": [
+    {
+      "entity_type": "contact",
+      "key": "seniority",
+      "label": "Seniority",
+      "type": "select",
+      "options": [
+        "C-Suite",
+        "VP / Director",
+        "Head of Function",
+        "Manager",
+        "Programme / PMO"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "contact",
+      "key": "relationship_origin",
+      "label": "How We Know Them",
+      "type": "select",
+      "options": [
+        "Personal network",
+        "Client referral",
+        "Past client",
+        "Speaking or writing",
+        "Partner firm",
+        "Cold outreach"
+      ],
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "company",
+      "key": "sector",
+      "label": "Sector",
+      "type": "text",
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "company",
+      "key": "headcount",
+      "label": "Headcount",
+      "type": "number",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "company",
+      "key": "procurement_route",
+      "label": "Procurement Route",
+      "type": "select",
+      "options": [
+        "Direct engagement",
+        "Preferred supplier list",
+        "Framework agreement",
+        "Public tender"
+      ],
+      "required": false,
+      "position": 2
+    },
+    {
+      "entity_type": "deal",
+      "key": "day_rate",
+      "label": "Day Rate",
+      "type": "number",
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "deal",
+      "key": "estimated_days",
+      "label": "Estimated Billable Days",
+      "type": "number",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "deal",
+      "key": "fee_model",
+      "label": "Fee Model",
+      "type": "select",
+      "options": [
+        "Day rate",
+        "Fixed fee",
+        "Monthly retainer",
+        "Outcome / success fee"
+      ],
+      "required": false,
+      "position": 2
+    }
+  ],
+  "object_defs": [
+    {
+      "slug": "engagement",
+      "label": "Engagement",
+      "label_plural": "Engagements",
+      "icon": "📋",
+      "searchable": true,
+      "fields": [
+        {
+          "key": "engagement_name",
+          "label": "Engagement Name",
+          "type": "text",
+          "required": true,
+          "position": 0
+        },
+        {
+          "key": "client",
+          "label": "Client",
+          "type": "relation",
+          "target_slug": "company",
+          "required": false,
+          "position": 1
+        },
+        {
+          "key": "sponsor",
+          "label": "Executive Sponsor",
+          "type": "relation",
+          "target_slug": "contact",
+          "required": false,
+          "position": 2
+        },
+        {
+          "key": "status",
+          "label": "Status",
+          "type": "select",
+          "options": [
+            "Scoping",
+            "Mobilising",
+            "In Delivery",
+            "On Hold",
+            "Closing",
+            "Complete"
+          ],
+          "required": false,
+          "position": 3
+        },
+        {
+          "key": "day_rate",
+          "label": "Day Rate",
+          "type": "number",
+          "required": false,
+          "position": 4
+        },
+        {
+          "key": "days_sold",
+          "label": "Days Sold",
+          "type": "number",
+          "required": false,
+          "position": 5
+        },
+        {
+          "key": "days_delivered",
+          "label": "Days Delivered",
+          "type": "number",
+          "required": false,
+          "position": 6
+        },
+        {
+          "key": "start_date",
+          "label": "Start Date",
+          "type": "date",
+          "required": false,
+          "position": 7
+        },
+        {
+          "key": "end_date",
+          "label": "End Date",
+          "type": "date",
+          "required": false,
+          "position": 8
+        }
+      ]
+    }
+  ],
+  "automation_rules": [
+    {
+      "key": "new_contact_exploratory",
+      "name": "Book the exploratory call on a new contact",
+      "description": "Consulting work comes from conversations, and a warm introduction goes cold in a fortnight. This books the exploratory call and prompts you to record where the relationship came from.",
+      "activation": "auto",
+      "trigger": {
+        "type": "contact_created"
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Book a 30-minute exploratory call with {{contact.first_name}} {{contact.last_name}}",
+              "priority": "high",
+              "due_in_days": 2
+            }
+          }
+        },
+        {
+          "type": "action",
+          "id": "s2",
+          "action": {
+            "id": "s2",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "New relationship to qualify",
+              "body": "Record how we came to know {{contact.first_name}}, who introduced us, what problem they raised, and whether they hold a budget or need a sponsor who does."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "scope_and_rate_review",
+      "name": "Re-check scope, days and rate on every stage change",
+      "description": "Proposals drift between the scoping workshop and the SOW. This fires on each stage change so the days and the rate on the deal still match what was last discussed.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "*"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Refresh the scope, day count and rate on {{deal.title}}",
+              "priority": "medium",
+              "due_in_days": 3
+            }
+          }
+        },
+        {
+          "type": "action",
+          "id": "s2",
+          "action": {
+            "id": "s2",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "Stage change on {{deal.title}}",
+              "body": "Confirm three things: the outcome the client is buying, the number of billable days it now takes, and who signs. If the scope grew and the days did not, that is a discount nobody agreed to."
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "kb_templates": {
+    "company": "## About us\n\nWe are a [independent consultant / boutique practice] working on [strategy, operations, transformation, data, change] for [sector]. Replace this with the problems you are hired to solve, not your job titles.\n\n## The basics\n\n- Practice of [size]; associates available for [types of work]\n- Typical engagement: [length] and [day range]\n- Sectors we know properly: [list]\n- Insurance, accreditations and vendor onboarding we already hold: [PI cover, frameworks, PSL memberships]",
+    "products": "## How we sell work\n\n- **Diagnostic / assessment** — [x] days, fixed fee [amount]. Often the front door to a larger engagement.\n- **Delivery engagement** — day rate [amount], typically [x–y] days per month.\n- **Advisory retainer** — [amount] per month for [x] days plus call-off access.\n- **Interim / embedded** — [x] days per week for [duration] at [rate].\n\n## Standard commercial terms\n\nPayment [14/30] days. Expenses at cost, agreed in advance. Cancellation inside [x] working days is chargeable. Rate reviewed annually.",
+    "playbook": "## Qualifying an opportunity\n\n1. Whose problem is it, and what happens to them personally if it is not solved?\n2. Is there a budget, or only an interest? Ask which cost centre it comes from.\n3. Who signs, and has that person met us?\n4. Why now — a board deadline, a regulator, a new leader, a failed prior attempt?\n5. Have they used consultants before, and how did it end?\n\n## Writing a proposal that gets signed\n\n- Lead with the outcome and the decision it enables, not the methodology.\n- Show days and rate transparently. Hidden day counts get negotiated hardest.\n- Name what is out of scope explicitly — it is the single best protection against scope creep.\n- Include the first two weeks in detail. Sponsors buy the start they can picture.\n\n## Protecting utilisation\n\nTrack days delivered against days sold on every live engagement. Over-delivery is invisible until the year-end numbers, and by then it is a habit.",
+    "process": "## From conversation to signed SOW\n\n1. **Initial Conversation** — an introduction or enquiry; log where it came from.\n2. **Qualified Opportunity** — a real problem, a plausible budget and a named sponsor.\n3. **Scoping Workshop** — a working session with the client to define the outcome, the constraints and the shape of the work. Charge for this where you can.\n4. **Proposal Submitted** — outcome, approach, days, rate and out-of-scope in writing to the sponsor.\n5. **SOW Negotiation** — legal, procurement, rates and terms. Expect this to take longer than the sale did.\n6. **Signed — Engagement Live** — SOW executed. Create the Engagement record with sponsor, day rate, days sold and dates, then track days delivered against it.\n\nMost losses are **Lost / No Decision** rather than a loss to a named firm. Record which of the two it was — a no-decision is usually a sponsor problem, and it is often winnable later.",
+    "competitors": "## Who we come up against\n\n- **The large firms** — brand, bench depth and procurement pre-approval. We win on the seniority of who actually does the work and the absence of a leverage model.\n- **Other independents and boutiques** — usually genuine competition on merit. Differentiate on the specific sector pattern you have seen before.\n- **Their own team** — the most common alternative. The honest answer is often that they could do it, but not while also doing their day jobs, and not without the outside view.\n- **No decision** — the real competitor. It wins whenever the cost of the status quo has never been quantified.\n\nProof that travels: a comparable client, the situation before, what changed, and how long it took."
+  }
+}

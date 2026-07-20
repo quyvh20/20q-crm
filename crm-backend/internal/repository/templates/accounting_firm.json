@@ -1,0 +1,345 @@
+{
+  "slug": "accounting_firm",
+  "name": "Accounting & Bookkeeping",
+  "category": "finance",
+  "description": "New-client onboarding through to a signed engagement letter, with an Engagement object that carries the service, fee and filing deadline for each period of work.",
+  "icon": "📊",
+  "sort_order": 190,
+  "spec_version": 1,
+  "ai_context": "You are a CRM assistant for an accounting and bookkeeping practice. Contacts are business owners, directors, office managers and their bookkeepers; a deal is a prospective client engagement that closes when the engagement letter is signed, and the recurring work itself is tracked as an Engagement with its own fee and filing deadline. Never give tax advice, never compute a tax liability, and never assert a filing deadline or threshold that is not already recorded — dates and rules vary by jurisdiction, entity type and year. Route substantive questions to the responsible accountant.",
+  "pipeline_stages": [
+    {
+      "name": "New Enquiry",
+      "position": 0,
+      "color": "#6366F1",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Discovery Call",
+      "position": 1,
+      "color": "#3B82F6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Books Review",
+      "position": 2,
+      "color": "#8B5CF6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Proposal Sent",
+      "position": 3,
+      "color": "#F59E0B",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Engagement Letter Sent",
+      "position": 4,
+      "color": "#F97316",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Client Onboarded",
+      "position": 5,
+      "color": "#10B981",
+      "is_won": true,
+      "is_lost": false
+    },
+    {
+      "name": "Lost",
+      "position": 6,
+      "color": "#EF4444",
+      "is_won": false,
+      "is_lost": true
+    }
+  ],
+  "custom_field_defs": [
+    {
+      "entity_type": "contact",
+      "key": "client_role",
+      "label": "Role at Client",
+      "type": "select",
+      "options": [
+        "Owner / Director",
+        "CFO / Finance Lead",
+        "Office Manager",
+        "In-house Bookkeeper",
+        "Outgoing Accountant",
+        "Referral Source"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "company",
+      "key": "entity_form",
+      "label": "Entity Type",
+      "type": "select",
+      "options": [
+        "Sole Trader",
+        "Partnership",
+        "LLC",
+        "S-Corp",
+        "C-Corp",
+        "Limited Company",
+        "Nonprofit"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "company",
+      "key": "fiscal_year_end",
+      "label": "Fiscal Year End",
+      "type": "date",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "company",
+      "key": "bookkeeping_software",
+      "label": "Bookkeeping Software",
+      "type": "select",
+      "options": [
+        "QuickBooks Online",
+        "Xero",
+        "Sage",
+        "FreshBooks",
+        "Wave",
+        "Spreadsheets",
+        "Desktop / legacy",
+        "None"
+      ],
+      "required": false,
+      "position": 2
+    },
+    {
+      "entity_type": "company",
+      "key": "prior_accountant",
+      "label": "Previous Accountant",
+      "type": "text",
+      "required": false,
+      "position": 3
+    },
+    {
+      "entity_type": "deal",
+      "key": "service_type",
+      "label": "Service Wanted",
+      "type": "select",
+      "options": [
+        "Bookkeeping",
+        "Payroll",
+        "Tax Preparation",
+        "Tax Planning",
+        "Year-End Accounts",
+        "VAT / Sales Tax",
+        "Audit",
+        "CFO Advisory",
+        "Company Formation"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "deal",
+      "key": "annual_fee",
+      "label": "Annual Fee",
+      "type": "number",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "deal",
+      "key": "billing_frequency",
+      "label": "Billing Frequency",
+      "type": "select",
+      "options": [
+        "Monthly",
+        "Quarterly",
+        "Annual",
+        "One-off"
+      ],
+      "required": false,
+      "position": 2
+    }
+  ],
+  "object_defs": [
+    {
+      "slug": "engagement",
+      "label": "Engagement",
+      "label_plural": "Engagements",
+      "icon": "🧾",
+      "searchable": true,
+      "fields": [
+        {
+          "key": "engagement_name",
+          "label": "Engagement",
+          "type": "text",
+          "required": true,
+          "position": 0
+        },
+        {
+          "key": "service_type",
+          "label": "Service",
+          "type": "select",
+          "options": [
+            "Bookkeeping",
+            "Payroll",
+            "Tax Preparation",
+            "Tax Planning",
+            "Year-End Accounts",
+            "VAT / Sales Tax",
+            "Audit",
+            "CFO Advisory",
+            "Company Formation"
+          ],
+          "required": false,
+          "position": 1
+        },
+        {
+          "key": "period_covered",
+          "label": "Period Covered",
+          "type": "text",
+          "required": false,
+          "position": 2
+        },
+        {
+          "key": "fee",
+          "label": "Fee",
+          "type": "number",
+          "required": false,
+          "position": 3
+        },
+        {
+          "key": "fee_basis",
+          "label": "Fee Basis",
+          "type": "select",
+          "options": [
+            "Fixed fee",
+            "Hourly",
+            "Monthly retainer",
+            "Value-based"
+          ],
+          "required": false,
+          "position": 4
+        },
+        {
+          "key": "filing_deadline",
+          "label": "Filing Deadline",
+          "type": "date",
+          "required": false,
+          "position": 5
+        },
+        {
+          "key": "engagement_status",
+          "label": "Status",
+          "type": "select",
+          "options": [
+            "Not Started",
+            "Records Requested",
+            "In Progress",
+            "In Review",
+            "Awaiting Client Approval",
+            "Filed",
+            "Closed"
+          ],
+          "required": false,
+          "position": 6
+        },
+        {
+          "key": "client_company",
+          "label": "Client",
+          "type": "relation",
+          "target_slug": "company",
+          "required": false,
+          "position": 7
+        },
+        {
+          "key": "preparer",
+          "label": "Preparer",
+          "type": "text",
+          "required": false,
+          "position": 8
+        }
+      ]
+    }
+  ],
+  "automation_rules": [
+    {
+      "key": "new_enquiry_records_request",
+      "name": "Get the records request out on day one",
+      "description": "Nothing can be scoped or priced until the last set of accounts and the current ledger are in hand, so the request goes out immediately.",
+      "activation": "auto",
+      "trigger": {
+        "type": "contact_created"
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Send {{contact.first_name}} the onboarding checklist and records request",
+              "priority": "high",
+              "due_in_days": 1
+            }
+          }
+        },
+        {
+          "type": "action",
+          "id": "s2",
+          "action": {
+            "id": "s2",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "New enquiry — records to collect",
+              "body": "Ask for: last filed accounts and tax return, current bookkeeping file access, bank and card statements for the open period, payroll register, entity type and fiscal year end, and permission to contact the previous accountant."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "stage_move_scope_check",
+      "name": "Re-check scope and fee on every stage move",
+      "description": "Fires on any deal stage change so the proposed service, fee and filing deadline stay aligned with what was actually agreed.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "*"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Confirm scope, fee and deadlines on {{deal.title}}",
+              "priority": "medium",
+              "due_in_days": 2
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "kb_templates": {
+    "company": "## About the practice\n\n[Practice name] is a [size]-person accounting and bookkeeping firm in [city], serving [client profile — e.g. owner-managed businesses under $5m turnover, trades, e-commerce, professional services].\n\n## Credentials\n\n[CPA / CA / ACCA / EA registrations, licence numbers, professional body membership, PI insurance.]\n\n## Contact\n\nOffice address, phone, client portal URL, and who to reach during filing season.",
+    "products": "## Services and typical fees\n\n- **Monthly bookkeeping** — [from $X/month, banded by transaction volume].\n- **Payroll** — [from $X/month plus $Y per employee].\n- **Year-end accounts & corporate return** — [from $X].\n- **Personal tax return** — [from $X; add-ons for rental, foreign income, capital gains].\n- **VAT / sales tax filings** — [per return or included in bookkeeping].\n- **CFO advisory** — [monthly retainer band].\n\nOut-of-scope work is quoted before it starts, never billed as a surprise.",
+    "playbook": "## Discovery call\n\n1. Entity type, fiscal year end, and which jurisdictions they file in.\n2. What software they use and whether the books are actually reconciled.\n3. What is outstanding — unfiled returns, late payroll, unreconciled bank accounts, notices from the tax authority.\n4. Why they are leaving their current accountant. It usually tells you what to promise.\n5. Transaction volume and headcount — these drive the fee more than anything else.\n\n## Pricing rule\n\nPrice from the books review, not the discovery call. Clean-up of prior periods is a separate one-off fee.",
+    "process": "## Enquiry to onboarded client\n\n1. **New Enquiry** — capture entity type, year end and the services they think they need.\n2. **Discovery Call** — understand the current state, jurisdictions and anything overdue.\n3. **Books Review** — get access to the file, check reconciliations, size the clean-up. Do not quote before this.\n4. **Proposal Sent** — scoped services, fee, billing frequency and what is excluded.\n5. **Engagement Letter Sent** — letter, terms and AML / identity checks issued.\n6. **Client Onboarded** — letter signed, ID verified, software access granted, prior accountant handover requested. Create the Engagement records and their filing deadlines here.\n7. **Lost** — record why: price, stayed with incumbent, went in-house, or we declined the risk.",
+    "competitors": "## Where we win\n\nAgainst [national online bookkeeping service] we win on having a named accountant who knows the business. Against [local sole practitioner] we win on capacity and on not disappearing during filing season.\n\n## Where we lose\n\nWe lose on price to offshore bookkeeping and to software-only providers. When that happens, say plainly what a $[x]/month service does not include — reconciliation review, advisory, and someone accountable for the filing."
+  }
+}

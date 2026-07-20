@@ -1,0 +1,341 @@
+{
+  "slug": "b2b_saas",
+  "name": "B2B SaaS",
+  "category": "software",
+  "description": "Subscription software sold to businesses — a Subscriptions object tracking MRR, plan tier and renewal, plus a pipeline that includes the security review that actually stalls these deals.",
+  "icon": "☁️",
+  "sort_order": 20,
+  "spec_version": 1,
+  "ai_context": "You are a CRM assistant for a B2B SaaS company selling subscription software to other businesses. A contact is one person inside a buying committee — champion, economic buyer, technical evaluator, security or procurement — and a deal is one account's path to a signed subscription, usually with several contacts attached. The Subscription object holds the commercial reality after signature: plan, MRR, seats, renewal date and churn risk. Never invent pricing, discount authority, contract terms, SLAs, security certifications or product roadmap dates; if a number is not in the record, say it is not recorded.",
+  "pipeline_stages": [
+    {
+      "name": "Inbound Qualified",
+      "position": 0,
+      "color": "#6366F1",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Discovery",
+      "position": 1,
+      "color": "#3B82F6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Demo Delivered",
+      "position": 2,
+      "color": "#8B5CF6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Trial / POC",
+      "position": 3,
+      "color": "#A855F7",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Proposal Sent",
+      "position": 4,
+      "color": "#F59E0B",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Security & Procurement",
+      "position": 5,
+      "color": "#F97316",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Closed Won",
+      "position": 6,
+      "color": "#10B981",
+      "is_won": true,
+      "is_lost": false
+    },
+    {
+      "name": "Closed Lost",
+      "position": 7,
+      "color": "#EF4444",
+      "is_won": false,
+      "is_lost": true
+    }
+  ],
+  "custom_field_defs": [
+    {
+      "entity_type": "contact",
+      "key": "buying_role",
+      "label": "Buying Role",
+      "type": "select",
+      "options": [
+        "Champion",
+        "Economic Buyer",
+        "Technical Evaluator",
+        "Security / IT",
+        "Procurement",
+        "End User"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "contact",
+      "key": "lead_source",
+      "label": "Lead Source",
+      "type": "select",
+      "options": [
+        "Inbound demo request",
+        "Product-led signup",
+        "Content / SEO",
+        "Outbound sequence",
+        "Partner referral",
+        "Event / conference"
+      ],
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "company",
+      "key": "employee_count",
+      "label": "Employee Count",
+      "type": "number",
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "company",
+      "key": "icp_fit",
+      "label": "ICP Fit",
+      "type": "select",
+      "options": [
+        "Strong",
+        "Moderate",
+        "Poor"
+      ],
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "company",
+      "key": "current_stack",
+      "label": "Tools They Use Today",
+      "type": "text",
+      "required": false,
+      "position": 2
+    },
+    {
+      "entity_type": "deal",
+      "key": "new_mrr",
+      "label": "New MRR",
+      "type": "number",
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "deal",
+      "key": "seats",
+      "label": "Seats",
+      "type": "number",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "deal",
+      "key": "contract_term_months",
+      "label": "Contract Term (months)",
+      "type": "number",
+      "required": false,
+      "position": 2
+    }
+  ],
+  "object_defs": [
+    {
+      "slug": "subscription",
+      "label": "Subscription",
+      "label_plural": "Subscriptions",
+      "icon": "🔁",
+      "searchable": true,
+      "fields": [
+        {
+          "key": "plan_tier",
+          "label": "Plan Tier",
+          "type": "select",
+          "options": [
+            "Free",
+            "Starter",
+            "Growth",
+            "Business",
+            "Enterprise"
+          ],
+          "required": true,
+          "position": 0
+        },
+        {
+          "key": "account",
+          "label": "Account",
+          "type": "relation",
+          "target_slug": "company",
+          "required": false,
+          "position": 1
+        },
+        {
+          "key": "status",
+          "label": "Status",
+          "type": "select",
+          "options": [
+            "Trialing",
+            "Active",
+            "Past Due",
+            "Paused",
+            "Churned"
+          ],
+          "required": false,
+          "position": 2
+        },
+        {
+          "key": "mrr",
+          "label": "MRR",
+          "type": "number",
+          "required": false,
+          "position": 3
+        },
+        {
+          "key": "seats",
+          "label": "Licensed Seats",
+          "type": "number",
+          "required": false,
+          "position": 4
+        },
+        {
+          "key": "billing_period",
+          "label": "Billing Period",
+          "type": "select",
+          "options": [
+            "Monthly",
+            "Quarterly",
+            "Annual",
+            "Multi-year"
+          ],
+          "required": false,
+          "position": 5
+        },
+        {
+          "key": "trial_ends_on",
+          "label": "Trial Ends",
+          "type": "date",
+          "required": false,
+          "position": 6
+        },
+        {
+          "key": "renewal_date",
+          "label": "Renewal Date",
+          "type": "date",
+          "required": false,
+          "position": 7
+        },
+        {
+          "key": "churn_risk",
+          "label": "Churn Risk",
+          "type": "select",
+          "options": [
+            "Green",
+            "Amber",
+            "Red"
+          ],
+          "required": false,
+          "position": 8
+        }
+      ]
+    }
+  ],
+  "automation_rules": [
+    {
+      "key": "new_signup_qualification",
+      "name": "Qualify a new signup before the trial burns down",
+      "description": "A trial that nobody reaches out to converts far worse than one that gets a human within a day. This books the qualification call and leaves a note to fill in.",
+      "activation": "auto",
+      "trigger": {
+        "type": "contact_created"
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Qualify {{contact.first_name}} {{contact.last_name}} — team size, use case, ICP fit",
+              "priority": "high",
+              "due_in_days": 1
+            }
+          }
+        },
+        {
+          "type": "action",
+          "id": "s2",
+          "action": {
+            "id": "s2",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "New signup to qualify",
+              "body": "{{contact.first_name}} came in as a new contact. Capture: what problem are they trying to solve, how many seats, what they use today, and who else needs to be in the room."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "stage_change_close_plan",
+      "name": "Keep the close plan honest on every stage change",
+      "description": "Forecast rot starts when a deal moves stage and nobody updates the next step. This fires on every stage change so the close plan is never older than the pipeline.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "*"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Update the close plan and next step for {{deal.title}}",
+              "priority": "medium",
+              "due_in_days": 2
+            }
+          }
+        },
+        {
+          "type": "action",
+          "id": "s2",
+          "action": {
+            "id": "s2",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "Stage change on {{deal.title}}",
+              "body": "Record what moved this deal: who said yes, what the next commitment is, and the date it is committed for. If nothing changed on the buyer's side, the stage should not have moved."
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "kb_templates": {
+    "company": "## About us\n\nWe build [product name], a [category] product for [who it is for]. Replace this with what the software actually does in one plain sentence a buyer would recognise.\n\n## The basics\n\n- Founded [year], team of [size], headquartered in [location]\n- [number] customers, strongest in [segment / vertical]\n- Support hours and channels: [hours, email/chat/phone]\n- Where the data lives and which region options exist: [regions]",
+    "products": "## Plans\n\n| Plan | Who it is for | Roughly |\n| --- | --- | --- |\n| Starter | [small teams] | [price] per seat / month |\n| Growth | [scaling teams] | [price] per seat / month |\n| Enterprise | [SSO, SLA, security review] | Custom |\n\n## What is and is not included\n\n- Included on every plan: [core features]\n- Enterprise only: SSO/SAML, audit log, DPA, [others]\n- Add-ons and overages: [list]\n- Implementation and onboarding: [what it costs, how long it takes]",
+    "playbook": "## Discovery — what we must leave knowing\n\n1. The problem in their words, and what it currently costs them (time, money, headcount).\n2. What they use today and why it is not enough.\n3. Seats, teams and rollout scope.\n4. The buying committee: champion, economic buyer, IT/security, procurement.\n5. Their timeline and what is driving it — a renewal, a headcount plan, an audit.\n\n## Running a trial or POC that closes\n\n- Agree the success criteria in writing before it starts, and the date you review them.\n- Get real data in during week one; an empty workspace never converts.\n- Book the readout call before the trial begins, not after.\n\n## Multi-threading\n\nOne contact is not a deal. If you only know the champion by the Proposal stage, that is the risk to work, not the price.",
+    "process": "## From signup to signature\n\n1. **Inbound Qualified** — the enquiry or signup matches our ICP and is worth a human.\n2. **Discovery** — problem, cost of the problem, current stack and buying committee mapped.\n3. **Demo Delivered** — a tailored demo of their use case, not the standard tour.\n4. **Trial / POC** — agreed success criteria, real data, a booked readout date.\n5. **Proposal Sent** — plan, seats, term and price in writing to the economic buyer.\n6. **Security & Procurement** — security questionnaire, DPA, legal redlines, vendor onboarding. Budget this time; it is where deals silently slip a quarter.\n7. **Closed Won** — signed. Create the Subscription record with plan, MRR, seats and renewal date, and hand off to onboarding.\n\nDeals that stall go to **Closed Lost** with a reason — lost to a competitor, no decision, no budget, or built in-house. Log which; it is the only way the pattern ever becomes visible.",
+    "competitors": "## Who we come up against\n\n- **[Competitor A]** — stronger on [x], weaker on [y]. We win when [scenario].\n- **[Competitor B]** — cheaper, but [limitation]. We win when [scenario].\n- **Build in-house** — the most common competitor. Ask what the engineering time is worth and who maintains it in year two.\n- **Do nothing** — the second most common. Quantify the cost of the status quo during discovery or this wins by default.\n\nNever disparage a competitor on a call. State the difference, and let the buyer draw the conclusion."
+  }
+}

@@ -1,0 +1,323 @@
+{
+  "slug": "it_msp",
+  "name": "IT Managed Services",
+  "category": "technology",
+  "description": "Managed service agreements from the first network assessment to a countersigned SLA, with a Contracts object that tracks tier, endpoint count and renewal date.",
+  "icon": "🔧",
+  "sort_order": 50,
+  "spec_version": 1,
+  "ai_context": "You are a CRM assistant for an IT managed service provider (MSP). Contacts are business owners, IT managers and office managers at client and prospect companies; a company is the account you support and a deal is one managed-services agreement being sold or renewed. Pricing is almost always per endpoint or per user with a monthly recurring value and an SLA tier. Never invent SLA response times, endpoint counts, licence positions or audit findings — if the number is not in the record, ask for it.",
+  "pipeline_stages": [
+    {
+      "name": "New Enquiry",
+      "position": 0,
+      "color": "#6366F1",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Discovery Call",
+      "position": 1,
+      "color": "#3B82F6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Network Assessment",
+      "position": 2,
+      "color": "#8B5CF6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Proposal Sent",
+      "position": 3,
+      "color": "#F59E0B",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Contract & SLA Review",
+      "position": 4,
+      "color": "#F97316",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Contract Signed",
+      "position": 5,
+      "color": "#10B981",
+      "is_won": true,
+      "is_lost": false
+    },
+    {
+      "name": "Lost",
+      "position": 6,
+      "color": "#EF4444",
+      "is_won": false,
+      "is_lost": true
+    }
+  ],
+  "custom_field_defs": [
+    {
+      "entity_type": "contact",
+      "key": "decision_role",
+      "label": "Role in the Decision",
+      "type": "select",
+      "options": [
+        "Owner / CEO",
+        "IT Manager",
+        "Office Manager",
+        "Finance / Procurement",
+        "Day-to-day Technical Contact"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "contact",
+      "key": "after_hours_escalation",
+      "label": "After-Hours Escalation Contact",
+      "type": "boolean",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "company",
+      "key": "endpoint_count",
+      "label": "Endpoints (workstations + servers)",
+      "type": "number",
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "company",
+      "key": "incumbent_provider",
+      "label": "Incumbent IT Provider",
+      "type": "text",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "company",
+      "key": "compliance_regime",
+      "label": "Compliance Obligation",
+      "type": "select",
+      "options": [
+        "None",
+        "HIPAA",
+        "PCI-DSS",
+        "GDPR",
+        "SOC 2",
+        "CMMC",
+        "ISO 27001"
+      ],
+      "required": false,
+      "position": 2
+    },
+    {
+      "entity_type": "deal",
+      "key": "sla_tier",
+      "label": "SLA Tier",
+      "type": "select",
+      "options": [
+        "Bronze — Business Hours",
+        "Silver — Extended Hours",
+        "Gold — 24/7",
+        "Platinum — 24/7 + On-site"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "deal",
+      "key": "monthly_recurring",
+      "label": "Monthly Recurring Revenue",
+      "type": "number",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "deal",
+      "key": "contract_term_months",
+      "label": "Contract Term (months)",
+      "type": "number",
+      "required": false,
+      "position": 2
+    }
+  ],
+  "object_defs": [
+    {
+      "slug": "contract",
+      "label": "Contract",
+      "label_plural": "Contracts",
+      "icon": "📄",
+      "searchable": true,
+      "fields": [
+        {
+          "key": "contract_ref",
+          "label": "Contract Reference",
+          "type": "text",
+          "required": true,
+          "position": 0
+        },
+        {
+          "key": "client",
+          "label": "Client",
+          "type": "relation",
+          "target_slug": "company",
+          "required": false,
+          "position": 1
+        },
+        {
+          "key": "sla_tier",
+          "label": "SLA Tier",
+          "type": "select",
+          "options": [
+            "Bronze — Business Hours",
+            "Silver — Extended Hours",
+            "Gold — 24/7",
+            "Platinum — 24/7 + On-site"
+          ],
+          "required": false,
+          "position": 2
+        },
+        {
+          "key": "billing_model",
+          "label": "Billing Model",
+          "type": "select",
+          "options": [
+            "Per Endpoint",
+            "Per User",
+            "Flat Monthly Fee",
+            "Block Hours",
+            "Time & Materials"
+          ],
+          "required": false,
+          "position": 3
+        },
+        {
+          "key": "endpoints_covered",
+          "label": "Endpoints Covered",
+          "type": "number",
+          "required": false,
+          "position": 4
+        },
+        {
+          "key": "monthly_value",
+          "label": "Monthly Value",
+          "type": "number",
+          "required": false,
+          "position": 5
+        },
+        {
+          "key": "start_date",
+          "label": "Start Date",
+          "type": "date",
+          "required": false,
+          "position": 6
+        },
+        {
+          "key": "renewal_date",
+          "label": "Renewal Date",
+          "type": "date",
+          "required": false,
+          "position": 7
+        },
+        {
+          "key": "auto_renews",
+          "label": "Auto-Renews",
+          "type": "boolean",
+          "required": false,
+          "position": 8
+        }
+      ]
+    }
+  ],
+  "automation_rules": [
+    {
+      "key": "new_msp_enquiry_triage",
+      "name": "Triage a new IT enquiry within a day",
+      "description": "Most MSP enquiries arrive because something just broke. This books the discovery call while the pain is still fresh.",
+      "activation": "auto",
+      "trigger": {
+        "type": "contact_created"
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Discovery call with {{contact.first_name}} — endpoint count, who supports them today, what broke",
+              "priority": "high",
+              "due_in_days": 1
+            }
+          }
+        },
+        {
+          "type": "action",
+          "id": "s2",
+          "action": {
+            "id": "s2",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "New IT enquiry logged",
+              "body": "{{contact.first_name}} {{contact.last_name}} came in as a new enquiry. Before quoting anything, capture endpoint and server count, the incumbent provider and when that contract ends, plus any compliance obligation. No proposal goes out before a network assessment."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "msp_stage_recap",
+      "name": "Recap the client after every stage move",
+      "description": "Managed-services deals stall in silence. Every stage change earns a written recap so the buyer can sell it internally.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "*"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Send {{contact.first_name}} a written recap of {{deal.title}} — what changed, what you need next",
+              "priority": "medium",
+              "due_in_days": 2
+            }
+          }
+        },
+        {
+          "type": "action",
+          "id": "s2",
+          "action": {
+            "id": "s2",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "Stage change on {{deal.title}}",
+              "body": "Record what moved this deal: assessment findings shared, SLA tier agreed, redlines returned, or a blocker. Note the next decision date and who owns it on the client side."
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "kb_templates": {
+    "company": "## About us\n\nWe are a managed service provider supporting businesses across [your region]. Replace this with the client size you are built for (for example 10–150 endpoints), the verticals you know best, and how long you have been trading.\n\n## Reaching the helpdesk\n\nTicket email, helpdesk phone, portal URL, and staffed hours.\n\n## Out of hours\n\nState plainly what counts as an emergency and which tiers get out-of-hours cover.",
+    "products": "## Managed service tiers\n\n- **Bronze** — business-hours helpdesk, patch management, EDR/antivirus, monitoring and alerting.\n- **Silver** — Bronze plus extended hours, backup monitoring and testing, vendor liaison.\n- **Gold / Platinum** — 24/7 response, scheduled on-site visits, quarterly vCIO reviews.\n\n## Project work (quoted separately)\n\nMigrations, network refreshes, Microsoft 365 or Google Workspace tenant work, office moves, security remediation.\n\n## Pricing\n\nList your per-endpoint and per-user rates, minimum seat count, and — just as important — what sits explicitly OUT of scope.",
+    "playbook": "## Qualifying an MSP prospect\n\n1. Endpoint and server count. This is what you price on, so get it before anything else.\n2. Who supports them today and when that agreement ends. Chasing a client 11 months into a 12-month contract is the whole game.\n3. What broke recently. Pain closes managed services; feature lists do not.\n4. Compliance obligations — HIPAA, PCI-DSS, CMMC, ISO 27001 — because they set the tier and the price floor.\n5. Who signs, and whether the budget is operational or capital.\n\n## The assessment is the sale\n\nNever send a price before a network assessment. Present the findings live, show the risk you found in their own environment, and price the remediation project and the ongoing agreement in the same conversation.\n\n## Handling \"we already have someone\"\n\nDo not attack the incumbent. Ask what response time they were promised and what they actually get. Let the gap do the work.",
+    "process": "## From enquiry to signed agreement\n\n1. **New Enquiry** — log the contact, endpoint count and who supports them now.\n2. **Discovery Call** — pain, compliance obligations, incumbent contract end date, signing authority.\n3. **Network Assessment** — audit endpoints, backups, patch state, licensing and security posture.\n4. **Proposal Sent** — assessment findings first, then per-endpoint pricing and the recommended SLA tier.\n5. **Contract & SLA Review** — MSA, response-time targets, and the out-of-scope schedule.\n6. **Contract Signed** — countersigned. Create the Contract record with its renewal date, then start onboarding and tooling rollout.\n\nDeals that go quiet at Proposal Sent are usually missing a signer, not a discount.",
+    "competitors": "## Why clients leave their last provider\n\nSlow response, no proactive patching, a one-person shop with no holiday cover, and invoices that arrive as a surprise.\n\n## Our answer\n\nReplace with your genuine differentiators — documented SLA response targets you can evidence from ticket data, a named engineer who knows the site, flat per-endpoint billing with no hourly surprises, quarterly vCIO reviews.\n\nNever quote a response time you cannot prove from your own ticketing history."
+  }
+}

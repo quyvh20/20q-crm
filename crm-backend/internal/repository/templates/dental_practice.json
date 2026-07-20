@@ -1,0 +1,326 @@
+{
+  "slug": "dental_practice",
+  "name": "Dental Practice",
+  "category": "health",
+  "description": "New patient exams, treatment plans and recalls, with a Treatment Plans object and a pipeline built around plan acceptance.",
+  "icon": "🦷",
+  "sort_order": 120,
+  "spec_version": 1,
+  "ai_context": "You are a CRM assistant for a dental practice. Contacts are patients; a deal represents one course of treatment, from the new patient exam through plan presentation and acceptance to completion, and Treatment Plan records hold the itemised proposal and its value. Help with recalls, rebooking, plan follow-up, finance options and unattended-appointment chasing. Never give clinical or dental advice, never suggest what treatment a patient needs, and never invent plan items, prices, insurance cover or radiograph findings.",
+  "pipeline_stages": [
+    {
+      "name": "New Patient Enquiry",
+      "position": 0,
+      "color": "#6366F1",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Exam Booked",
+      "position": 1,
+      "color": "#3B82F6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Exam Completed",
+      "position": 2,
+      "color": "#8B5CF6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Plan Presented",
+      "position": 3,
+      "color": "#F59E0B",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Plan Accepted",
+      "position": 4,
+      "color": "#F97316",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Treatment In Progress",
+      "position": 5,
+      "color": "#EA580C",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Treatment Completed",
+      "position": 6,
+      "color": "#10B981",
+      "is_won": true,
+      "is_lost": false
+    },
+    {
+      "name": "Declined",
+      "position": 7,
+      "color": "#EF4444",
+      "is_won": false,
+      "is_lost": true
+    }
+  ],
+  "custom_field_defs": [
+    {
+      "entity_type": "contact",
+      "key": "recall_due",
+      "label": "Recall Due",
+      "type": "date",
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "contact",
+      "key": "recall_interval",
+      "label": "Recall Interval",
+      "type": "select",
+      "options": [
+        "3 months",
+        "6 months",
+        "9 months",
+        "12 months",
+        "Not on recall"
+      ],
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "contact",
+      "key": "insurance_plan",
+      "label": "Insurance / Plan",
+      "type": "select",
+      "options": [
+        "Self-pay",
+        "In-house membership plan",
+        "Private dental insurance",
+        "Public / state scheme",
+        "Employer scheme"
+      ],
+      "required": false,
+      "position": 2
+    },
+    {
+      "entity_type": "contact",
+      "key": "last_seen",
+      "label": "Last Seen",
+      "type": "date",
+      "required": false,
+      "position": 3
+    },
+    {
+      "entity_type": "contact",
+      "key": "nervous_patient",
+      "label": "Nervous Patient",
+      "type": "boolean",
+      "required": false,
+      "position": 4
+    },
+    {
+      "entity_type": "deal",
+      "key": "plan_value",
+      "label": "Plan Value",
+      "type": "number",
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "deal",
+      "key": "treatment_category",
+      "label": "Treatment Category",
+      "type": "select",
+      "options": [
+        "Routine & hygiene",
+        "Restorative",
+        "Endodontics",
+        "Orthodontics",
+        "Implants",
+        "Cosmetic",
+        "Oral surgery"
+      ],
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "deal",
+      "key": "finance_used",
+      "label": "Patient Finance Used",
+      "type": "boolean",
+      "required": false,
+      "position": 2
+    }
+  ],
+  "object_defs": [
+    {
+      "slug": "treatment_plan",
+      "label": "Treatment Plan",
+      "label_plural": "Treatment Plans",
+      "icon": "📋",
+      "searchable": true,
+      "fields": [
+        {
+          "key": "plan_name",
+          "label": "Plan Name",
+          "type": "text",
+          "required": true,
+          "position": 0
+        },
+        {
+          "key": "patient",
+          "label": "Patient",
+          "type": "relation",
+          "target_slug": "contact",
+          "required": false,
+          "position": 1
+        },
+        {
+          "key": "treating_dentist",
+          "label": "Treating Dentist",
+          "type": "text",
+          "required": false,
+          "position": 2
+        },
+        {
+          "key": "presented_on",
+          "label": "Presented On",
+          "type": "date",
+          "required": false,
+          "position": 3
+        },
+        {
+          "key": "total_value",
+          "label": "Total Value",
+          "type": "number",
+          "required": false,
+          "position": 4
+        },
+        {
+          "key": "status",
+          "label": "Status",
+          "type": "select",
+          "options": [
+            "Draft",
+            "Presented",
+            "Accepted",
+            "Partially accepted",
+            "Declined",
+            "Completed"
+          ],
+          "required": false,
+          "position": 5
+        },
+        {
+          "key": "appointments_required",
+          "label": "Appointments Required",
+          "type": "number",
+          "required": false,
+          "position": 6
+        },
+        {
+          "key": "valid_until",
+          "label": "Quote Valid Until",
+          "type": "date",
+          "required": false,
+          "position": 7
+        },
+        {
+          "key": "plan_notes",
+          "label": "Plan Notes",
+          "type": "text",
+          "required": false,
+          "position": 8
+        }
+      ]
+    }
+  ],
+  "automation_rules": [
+    {
+      "key": "new_patient_exam_booking",
+      "name": "Get a new patient booked for their exam",
+      "description": "A new patient who is not booked within 48 hours is usually booked at the practice down the road. This queues the call and the pre-visit checklist.",
+      "activation": "auto",
+      "trigger": {
+        "type": "contact_created"
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Book {{contact.first_name}} {{contact.last_name}} in for a new patient exam",
+              "priority": "high",
+              "due_in_days": 2
+            }
+          }
+        },
+        {
+          "type": "action",
+          "id": "s2",
+          "action": {
+            "id": "s2",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "New patient added",
+              "body": "Before the exam: send the medical history form, confirm insurance or plan membership, ask whether they are a nervous patient, and note who referred them. Allow the longer new-patient slot."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "plan_follow_up",
+      "name": "Chase every treatment plan after a stage change",
+      "description": "Unaccepted plans are the biggest leak in a dental practice. Any stage move creates the follow-up so no plan sits unanswered.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "*"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Follow up {{deal.title}} — has the patient accepted, and is the next appointment in the book?",
+              "priority": "medium",
+              "due_in_days": 3
+            }
+          }
+        },
+        {
+          "type": "action",
+          "id": "s2",
+          "action": {
+            "id": "s2",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "Treatment plan stage moved",
+              "body": "If the plan was declined, record why — cost, timing, fear, or wanting a second opinion. If it was cost, mention finance options. Set the recall date before closing the record."
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "kb_templates": {
+    "company": "## About the practice\n\n[Practice name], [address], established [year]. [Number] surgeries, [number] dentists and [number] hygienists.\n\n- Principal dentist: [name, qualifications, registration number]\n- Special interests: [implants / ortho / sedation / paediatric]\n- Opening hours: [hours], emergency slots held daily at [time]\n\nWe are registered with [regulator] and hold [membership plan provider] plans.",
+    "products": "## Treatments and typical fees\n\n| Treatment | Typical fee | Appointments |\n| --- | --- | --- |\n| New patient exam | [amount] | 1 |\n| Hygiene visit | [amount] | 1 |\n| Composite filling | [amount] | 1 |\n| Root canal | [amount] | 1-2 |\n| Crown | [amount] | 2 |\n| Implant (single) | [amount] | 3-4 over [months] |\n| Clear aligners | [amount] | [number] |\n\nFinance: [provider], [0% over N months / APR]. Quote only from this table; anything not listed needs a dentist to price it.",
+    "playbook": "## Presenting a plan so it gets accepted\n\n1. Present in the surgery with the images on screen, not at reception.\n2. Lead with what the patient told you they wanted, then the clinical need.\n3. Give a written itemised plan with a total and a valid-until date, and phase it if the total is large.\n4. Offer finance out loud — patients rarely ask for it.\n5. Book the first appointment before they leave the chair. An unbooked accepted plan is not accepted.\n\n## Recalls\n\nRun the recall list weekly. Two contact attempts, then park to a reactivation list at 18 months.\n\n## Failed appointments\n\nCall the same day, never the next. Record the reason, rebook once, and apply the practice FTA policy consistently.",
+    "process": "## From enquiry to completed treatment\n\n1. **New Patient Enquiry** — capture details, insurance or plan, and how they found us.\n2. **Exam Booked** — long slot booked, medical history form sent in advance.\n3. **Exam Completed** — exam, radiographs and charting done; needs identified.\n4. **Plan Presented** — itemised written plan with fees and a valid-until date.\n5. **Plan Accepted** — patient agrees, finance arranged if needed, first appointment booked.\n6. **Treatment In Progress** — appointments running; keep the Treatment Plan record's status current.\n7. **Treatment Completed** — final appointment done, recall interval set, review requested.\n8. **Declined** — always record the reason and set a recall date anyway.",
+    "competitors": "## The local picture\n\n- [Corporate group practice] — cheaper entry price, high dentist turnover; our advantage is seeing the same dentist every time.\n- [Public / state provider] — long waits, limited cosmetic work.\n- [Overseas dental tourism] — headline price only; no aftercare, no warranty, remakes cost more than doing it here.\n\nCompete on continuity of care, written guarantees on lab work, evening and Saturday slots, and same-day emergency access. Never criticise another dentist's work to a patient."
+  }
+}

@@ -1174,6 +1174,102 @@ func main() {
 		db.Exec(`ALTER TABLE lead_sources ENABLE ROW LEVEL SECURITY`)
 		db.Exec(`ALTER TABLE integration_events ENABLE ROW LEVEL SECURITY`)
 
+		// ── Industry starter templates ───────────────────────────────────
+		// system_templates and org_settings both originate in migration 000002 —
+		// which is the exact version golang-migrate went dirty at — so on prod they
+		// may not exist at all. CREATE TABLE IF NOT EXISTS here is load-bearing, not
+		// defensive. Verified on the local DB: the table exists with the original
+		// nine columns and kb_templates (added by 000006) is MISSING, so the ALTERs
+		// below are the only reason a GORM read of SystemTemplate does not explode
+		// with "column system_templates.kb_templates does not exist".
+		//
+		// Ordering matters: every one of these must land before SeedSystemTemplates
+		// runs and before the repository first reads the table.
+		templateGuards := []struct {
+			what string
+			sql  string
+		}{
+			{"system_templates", `CREATE TABLE IF NOT EXISTS system_templates (
+				id                UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+				slug              VARCHAR(100) NOT NULL UNIQUE,
+				name              VARCHAR(255) NOT NULL,
+				pipeline_stages   JSONB NOT NULL DEFAULT '[]'::jsonb,
+				custom_field_defs JSONB NOT NULL DEFAULT '[]'::jsonb,
+				ai_context        TEXT,
+				automation_rules  JSONB NOT NULL DEFAULT '[]'::jsonb,
+				created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			)`},
+			// From migration 000006, which never reached the local DB and may not have
+			// reached prod. NOT NULL DEFAULT '{}' closes the drift between the GORM tag
+			// (which claims a default) and the column (which had none).
+			{"system_templates.kb_templates", `ALTER TABLE system_templates
+				ADD COLUMN IF NOT EXISTS kb_templates JSONB NOT NULL DEFAULT '{}'::jsonb`},
+			// New: custom objects are the highest-value thing a template installs and no
+			// existing column could express them.
+			{"system_templates.object_defs", `ALTER TABLE system_templates
+				ADD COLUMN IF NOT EXISTS object_defs JSONB NOT NULL DEFAULT '[]'::jsonb`},
+			// Catalog metadata — a 20+ card picker needs grouping, ordering and prose.
+			{"system_templates.category", `ALTER TABLE system_templates
+				ADD COLUMN IF NOT EXISTS category VARCHAR(50) NOT NULL DEFAULT 'general'`},
+			{"system_templates.description", `ALTER TABLE system_templates
+				ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''`},
+			{"system_templates.icon", `ALTER TABLE system_templates
+				ADD COLUMN IF NOT EXISTS icon VARCHAR(16) NOT NULL DEFAULT ''`},
+			{"system_templates.sort_order", `ALTER TABLE system_templates
+				ADD COLUMN IF NOT EXISTS sort_order INT NOT NULL DEFAULT 100`},
+			// Retire by flag, never DELETE: org_settings.industry_template_slug carries a
+			// foreign key onto slug, so removing a row would fail or orphan an org.
+			{"system_templates.is_active", `ALTER TABLE system_templates
+				ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE`},
+			// Content revision, recorded on the application ledger. Note the seeder does
+			// NOT gate its upsert on this: pre-existing rows back-fill to 1 here, and a
+			// gate of "only overwrite when newer" then silently preserved the 2022 rows.
+			{"system_templates.spec_version", `ALTER TABLE system_templates
+				ADD COLUMN IF NOT EXISTS spec_version INT NOT NULL DEFAULT 1`},
+			{"system_templates slug unique", `CREATE UNIQUE INDEX IF NOT EXISTS uix_system_templates_slug
+				ON system_templates(slug)`},
+
+			{"org_settings", `CREATE TABLE IF NOT EXISTS org_settings (
+				org_id                 UUID PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
+				industry_template_slug VARCHAR(100),
+				ai_context_override    TEXT,
+				custom_field_defs      JSONB NOT NULL DEFAULT '[]'::jsonb,
+				onboarding_completed   BOOLEAN NOT NULL DEFAULT FALSE,
+				created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			)`},
+			{"org_settings.industry_template_slug", `ALTER TABLE org_settings
+				ADD COLUMN IF NOT EXISTS industry_template_slug VARCHAR(100)`},
+			{"org_settings.ai_context_override", `ALTER TABLE org_settings
+				ADD COLUMN IF NOT EXISTS ai_context_override TEXT`},
+
+			// The application ledger. UNIQUE(org_id, template_slug) is what turns a
+			// second apply into a reported no-op instead of a duplicate install.
+			{"org_template_applications", `CREATE TABLE IF NOT EXISTS org_template_applications (
+				id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+				org_id        UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+				template_slug VARCHAR(100) NOT NULL,
+				spec_version  INT NOT NULL DEFAULT 1,
+				status        VARCHAR(32) NOT NULL,
+				result        JSONB NOT NULL DEFAULT '{}'::jsonb,
+				applied_by    UUID,
+				created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			)`},
+			{"org_template_applications unique", `CREATE UNIQUE INDEX IF NOT EXISTS uix_org_template_app
+				ON org_template_applications(org_id, template_slug)`},
+		}
+		for _, g := range templateGuards {
+			if err := db.Exec(g.sql).Error; err != nil {
+				log.Error("system template boot guard failed", zap.String("what", g.what), zap.Error(err))
+			}
+		}
+		// system_templates is deliberately NOT row-level secured: it is a GLOBAL
+		// catalog with no org_id, shared by every workspace. The ledger is org-scoped
+		// and gets the same treatment as every other table this app adds.
+		db.Exec(`ALTER TABLE org_template_applications ENABLE ROW LEVEL SECURITY`)
+
 		// idx_contacts_org_email — the UNIQUE index lead ingestion's race guard is
 		// built on. It ships only in migrations/000003, which has NEVER run on prod
 		// (golang-migrate is dirty at v2 and start.sh swallows the failure), so prod
@@ -1269,6 +1365,18 @@ func main() {
 			log.Error("Failed to backfill record numbers", zap.Error(err))
 		} else if n > 0 {
 			log.Info("Backfilled human-readable record numbers", zap.Int64("records", n))
+		}
+
+		// Industry starter templates. Content lives in
+		// internal/repository/templates/*.json and is upserted on slug; any row we no
+		// longer ship is retired (is_active = false) rather than deleted, since
+		// org_settings.industry_template_slug foreign-keys onto it. Logged and
+		// survivable: a bad template must not stop the server booting, it just
+		// leaves the picker short an option.
+		if n, err := repository.SeedSystemTemplates(db); err != nil {
+			log.Error("Failed to seed system templates", zap.Error(err))
+		} else if n > 0 {
+			log.Info("Seeded system templates", zap.Int("templates", n))
 		}
 	}
 
@@ -1517,6 +1625,23 @@ func main() {
 		kbUseCase := usecase.NewKnowledgeBaseUseCase(kbRepo, kbBuilder)
 		kbHandler := delivery.NewKnowledgeHandler(kbUseCase)
 
+		// Industry starter templates. Constructed after kbUseCase because applying a
+		// template preloads the knowledge base. The repo factories let the apply
+		// engine build tx-scoped repositories for its atomic phase without this
+		// package's layering being inverted (usecase does not import repository).
+		systemTemplateUC := usecase.NewSystemTemplateUseCase(
+			db,
+			repository.NewSystemTemplateRepository(db),
+			kbUseCase,
+			repository.NewOrgSettingsRepository(db),
+			permissionUC,
+			usecase.TemplateRepoFactories{
+				ObjectRegistry: repository.NewObjectRegistryRepository,
+				CustomObject:   repository.NewCustomObjectRepository,
+			},
+		)
+		templateHandler := delivery.NewSystemTemplateHandler(systemTemplateUC)
+
 		aiHandler := delivery.NewAIHandler(gateway, budget, embedSvc, kbBuilder, aiJobQueue, contactUseCase)
 
 		chatSessionRepo := repository.NewChatSessionRepository(db)
@@ -1588,7 +1713,7 @@ func main() {
 		voiceNoteUC := usecase.NewVoiceNoteUseCase(voiceNoteRepo, aiJobQueue, cfg, contactRepo)
 		voiceHandler := delivery.NewVoiceHandler(voiceNoteUC)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, layoutHandler, roleHandler, roleAccessHandler, auditHandler, reportHandler, reportShareHandler, reportCommentHandler, dashboardHandler, userGroupHandler, notificationHandler, apiTokenHandler, cfg, db, redisClient, authRepo, apiTokenRepo, permissionUC)
+		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, layoutHandler, roleHandler, roleAccessHandler, auditHandler, reportHandler, reportShareHandler, reportCommentHandler, dashboardHandler, userGroupHandler, notificationHandler, apiTokenHandler, templateHandler, cfg, db, redisClient, authRepo, apiTokenRepo, permissionUC)
 
 		// --- Workflow Automation Engine ---
 		memHandler := logger.NewMemoryHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -1710,6 +1835,11 @@ func main() {
 			invalidator(orgID)
 			permissionUC.Invalidate(orgID)
 		})
+		// Applying a template installs objects and fields, so it needs the same
+		// double invalidation. The OLS half is done inside the apply engine (it must
+		// run before the response returns, or the admin 403s on their new objects);
+		// this wires the workflow-builder schema cache.
+		templateHandler.SetSchemaInvalidator(invalidator)
 
 		// Wire contact creation → automation trigger
 		contactHandler.SetEventEmitter(autoEngine.TriggerEvent)

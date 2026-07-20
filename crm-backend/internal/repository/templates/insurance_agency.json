@@ -1,0 +1,320 @@
+{
+  "slug": "insurance_agency",
+  "name": "Insurance Agency",
+  "category": "finance",
+  "description": "Quote-to-bind pipeline for a brokerage, with a Policy object holding the carrier, premium, effective date and renewal date so nothing lapses unnoticed.",
+  "icon": "🛡️",
+  "sort_order": 180,
+  "spec_version": 1,
+  "ai_context": "You are a CRM assistant for an insurance brokerage. Contacts are prospects, policyholders and named insureds; a deal is one quote-to-bind opportunity for a specific line of coverage, and the contract that results is tracked as a Policy. Never quote a premium, confirm that something is covered, or state what a policy pays or excludes unless that detail is already recorded on the record — coverage questions go to the carrier or a licensed producer. Do not invent carrier names, form numbers or underwriting decisions.",
+  "pipeline_stages": [
+    {
+      "name": "New Lead",
+      "position": 0,
+      "color": "#6366F1",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Needs Analysis",
+      "position": 1,
+      "color": "#3B82F6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Quoting Carriers",
+      "position": 2,
+      "color": "#8B5CF6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Quote Presented",
+      "position": 3,
+      "color": "#F59E0B",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "In Underwriting",
+      "position": 4,
+      "color": "#F97316",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Policy Bound",
+      "position": 5,
+      "color": "#10B981",
+      "is_won": true,
+      "is_lost": false
+    },
+    {
+      "name": "Lost",
+      "position": 6,
+      "color": "#EF4444",
+      "is_won": false,
+      "is_lost": true
+    }
+  ],
+  "custom_field_defs": [
+    {
+      "entity_type": "contact",
+      "key": "primary_line",
+      "label": "Primary Line of Business",
+      "type": "select",
+      "options": [
+        "Personal Auto",
+        "Homeowners",
+        "Renters",
+        "Life",
+        "Health",
+        "Commercial",
+        "Umbrella",
+        "Disability"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "contact",
+      "key": "current_carrier",
+      "label": "Current Carrier",
+      "type": "text",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "contact",
+      "key": "x_date",
+      "label": "X-Date (Current Renewal)",
+      "type": "date",
+      "required": false,
+      "position": 2
+    },
+    {
+      "entity_type": "contact",
+      "key": "prior_claims",
+      "label": "Claims in Last 5 Years",
+      "type": "number",
+      "required": false,
+      "position": 3
+    },
+    {
+      "entity_type": "company",
+      "key": "naics_code",
+      "label": "NAICS / Industry Code",
+      "type": "text",
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "company",
+      "key": "employee_count",
+      "label": "Employees",
+      "type": "number",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "deal",
+      "key": "coverage_type",
+      "label": "Coverage Type",
+      "type": "select",
+      "options": [
+        "Personal Auto",
+        "Homeowners",
+        "Renters",
+        "Life",
+        "Health",
+        "Commercial Property",
+        "General Liability",
+        "Workers Comp",
+        "Commercial Auto",
+        "Umbrella",
+        "Professional Liability"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "deal",
+      "key": "estimated_premium",
+      "label": "Estimated Annual Premium",
+      "type": "number",
+      "required": false,
+      "position": 1
+    }
+  ],
+  "object_defs": [
+    {
+      "slug": "policy",
+      "label": "Policy",
+      "label_plural": "Policies",
+      "icon": "📄",
+      "searchable": true,
+      "fields": [
+        {
+          "key": "policy_number",
+          "label": "Policy Number",
+          "type": "text",
+          "required": true,
+          "position": 0
+        },
+        {
+          "key": "policy_type",
+          "label": "Policy Type",
+          "type": "select",
+          "options": [
+            "Personal Auto",
+            "Homeowners",
+            "Renters",
+            "Life",
+            "Health",
+            "Commercial Property",
+            "General Liability",
+            "Workers Comp",
+            "Commercial Auto",
+            "Umbrella",
+            "Professional Liability",
+            "Disability"
+          ],
+          "required": false,
+          "position": 1
+        },
+        {
+          "key": "carrier",
+          "label": "Carrier",
+          "type": "text",
+          "required": false,
+          "position": 2
+        },
+        {
+          "key": "annual_premium",
+          "label": "Annual Premium",
+          "type": "number",
+          "required": false,
+          "position": 3
+        },
+        {
+          "key": "effective_date",
+          "label": "Effective Date",
+          "type": "date",
+          "required": false,
+          "position": 4
+        },
+        {
+          "key": "renewal_date",
+          "label": "Renewal Date",
+          "type": "date",
+          "required": false,
+          "position": 5
+        },
+        {
+          "key": "policy_status",
+          "label": "Status",
+          "type": "select",
+          "options": [
+            "Quoted",
+            "Bound",
+            "Active",
+            "Lapsed",
+            "Cancelled",
+            "Non-renewed"
+          ],
+          "required": false,
+          "position": 6
+        },
+        {
+          "key": "policyholder",
+          "label": "Policyholder",
+          "type": "relation",
+          "target_slug": "contact",
+          "required": false,
+          "position": 7
+        },
+        {
+          "key": "commission_pct",
+          "label": "Commission %",
+          "type": "number",
+          "required": false,
+          "position": 8
+        }
+      ]
+    }
+  ],
+  "automation_rules": [
+    {
+      "key": "new_lead_needs_analysis",
+      "name": "Book the needs analysis while the lead is warm",
+      "description": "Insurance shoppers are quoting three brokers at once — this creates the call task the moment a contact lands.",
+      "activation": "auto",
+      "trigger": {
+        "type": "contact_created"
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Call {{contact.first_name}} — needs analysis and X-date",
+              "priority": "high",
+              "due_in_days": 1
+            }
+          }
+        },
+        {
+          "type": "action",
+          "id": "s2",
+          "action": {
+            "id": "s2",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "New lead — information still needed",
+              "body": "Capture before quoting: current carrier and expiring premium, X-date, loss runs or claims history, drivers or scheduled property, and any prior cancellation or non-renewal."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "stage_move_quote_hygiene",
+      "name": "Keep the quote file current",
+      "description": "Fires on every deal stage change so carrier submissions, quote comparisons and the Policy record stay in step with the pipeline.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "*"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Update carrier submissions and premium on {{deal.title}}",
+              "priority": "medium",
+              "due_in_days": 2
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "kb_templates": {
+    "company": "## About the agency\n\n[Agency name] is an independent brokerage in [city], licensed in [states / regions] since [year]. We place [personal lines / commercial lines / both].\n\n## Appointments\n\nWe are appointed with [list your carriers]. For risks outside that list we broker through [wholesaler / MGA].\n\n## Contact\n\nOffice address, phone, after-hours claims line, and licence numbers where you are required to display them.",
+    "products": "## Lines we write\n\n- **Personal** — auto, home, renters, umbrella, [specialty: boat, motorcycle, valuables].\n- **Commercial** — general liability, property, BOP, workers comp, commercial auto, professional liability.\n- **Life & health** — term, whole, disability, group benefits.\n\nWe are paid by carrier commission of roughly [x]% on new business and [y]% on renewal; disclose fees where required.",
+    "playbook": "## Needs analysis\n\n1. What is the expiring premium, and with which carrier? Get the declarations page.\n2. When is the X-date? Never let a quote arrive after the renewal has auto-renewed.\n3. Losses in the last five years — get the loss runs, not the client's memory.\n4. Any lapse, cancellation or non-renewal? It changes which markets will look at the risk.\n5. What are they actually worried about? Sell the coverage that answers it.\n\n## Presenting the quote\n\nShow two or three options side by side with the same limits, and name the trade-off in each. Never lead with the cheapest without saying what it drops.",
+    "process": "## Lead to bound policy\n\n1. **New Lead** — contact created, X-date and current carrier captured.\n2. **Needs Analysis** — dec page, loss runs and exposures collected.\n3. **Quoting Carriers** — submissions out to the appointed markets.\n4. **Quote Presented** — options compared for the client with limits held constant.\n5. **In Underwriting** — carrier questions, inspections and subjectivities being cleared.\n6. **Policy Bound** — binder issued, premium paid. Create the Policy record with its renewal date here.\n7. **Lost** — record why: price, coverage, declined by underwriting, or stayed with incumbent.",
+    "competitors": "## Where we win\n\nAgainst direct writers ([name them]) we win on choice of carrier and on having a person who answers at claim time. Against [local competitor] we win on [markets, response time, specialty class].\n\n## Where we lose\n\nWe lose on rock-bottom price and on classes we have no appointment for. When that happens, note the X-date and re-approach sixty days before renewal."
+  }
+}

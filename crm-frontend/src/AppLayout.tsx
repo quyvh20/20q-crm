@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { NavLink, Link, useLocation, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   Menu, X, UserRound, Shield, LogOut, ListChecks, BookOpen,
-  LayoutDashboard, Users, Handshake, Mic, Sparkles, Zap, BarChart3, Share2, Settings,
+  LayoutDashboard, Users, Building2, Handshake, Mic, Sparkles, Zap, BarChart3, Share2, Settings,
 } from "lucide-react";
 import { useAuth } from "./lib/auth";
 import { getThemePreference, setThemePreference, type ThemePreference } from "./lib/theme";
@@ -14,9 +14,20 @@ import Modal from "./components/common/Modal";
 import NotificationBell from "./features/notifications/NotificationBell";
 import { useNotificationStream } from "./features/notifications/useNotificationStream";
 import { openSetupChecklist } from "./features/onboarding/checklistState";
-import { getObjectDefs, resendVerification, type CustomObjectDef } from "./lib/api";
+import { listRegistryObjects, resendVerification } from "./lib/api";
+import { listPath } from "./features/objects/recordRoutes";
+import { orderNavObjects, SYSTEM_NAV_FALLBACK, type NavObject } from "./features/objects/sidebarNav";
 import { DOCS_ENABLED, DOCS_IS_EXTERNAL, DOCS_URL } from "./lib/docs";
 import { DocumentTitle } from "./lib/useDocumentTitle";
+
+// System objects keep their lucide glyphs (chrome); custom objects render the
+// user-chosen emoji from the registry (data). Slugs are stable — see
+// systemObjectSpecs in the backend's object_registry_repository.go.
+const SYSTEM_NAV_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
+  contact: Users,
+  company: Building2,
+  deal: Handshake,
+};
 
 interface AppLayoutProps {
   children?: React.ReactNode;
@@ -81,15 +92,21 @@ export default function AppLayout({ children, title }: AppLayoutProps) {
     }
   };
 
-  // The sidebar's custom-object list. React Query (not a one-shot useEffect) so
-  // deploying a starter template can invalidate ['object-defs'] and have the new
-  // object appear in the nav — the retired welcome wizard did that with a full
-  // window.location.reload() (U7.5). A failure resolves to [] rather than erroring:
-  // a custom-object fetch must never take the whole app shell down.
-  const { data: customObjects = [] } = useQuery<CustomObjectDef[]>({
-    queryKey: ['object-defs'],
-    queryFn: () => getObjectDefs().catch(() => []),
+  // The sidebar's object list. React Query (not a one-shot useEffect) so deploying
+  // a starter template can invalidate ['sidebar-objects'] and have the new object
+  // appear in the nav — the retired welcome wizard did that with a full
+  // window.location.reload() (U7.5). A failure resolves to the known system objects
+  // rather than erroring: this fetch must never take the whole app shell down.
+  //
+  // Deliberately NOT sharing ReportBuilderPage's ['registry-objects'] key despite
+  // the identical fetcher: this copy resolves errors to a PARTIAL fallback, and a
+  // shared cache would hand those half-populated summaries to the report builder.
+  const { data: navObjects = SYSTEM_NAV_FALLBACK } = useQuery<NavObject[]>({
+    queryKey: ['sidebar-objects'],
+    queryFn: () => listRegistryObjects().catch(() => SYSTEM_NAV_FALLBACK),
   });
+
+  const orderedNavObjects = useMemo(() => orderNavObjects(navObjects), [navObjects]);
 
   // "Setup guide" in the account menu is what makes the checklist RETURNABLE — the
   // wizard it replaced could never be reopened. Shown only to someone who has at
@@ -126,16 +143,24 @@ export default function AppLayout({ children, title }: AppLayoutProps) {
           <NavLink to="/" end className={navItemClass}><LayoutDashboard aria-hidden className={navIconClass} />Dashboard</NavLink>
 
           <p className={navSectionClass}>Records</p>
-          <NavLink to="/contacts" className={navItemClass}><Users aria-hidden className={navIconClass} />Contacts</NavLink>
-          <NavLink to="/deals" className={navItemClass}><Handshake aria-hidden className={navIconClass} />Deals</NavLink>
-          {customObjects.map(obj => (
-            <NavLink key={obj.slug} to={`/objects/${obj.slug}`} className={navItemClass}>
-              {/* Custom-object icons are user-chosen emoji (data, not chrome) —
-                  boxed to the same footprint as the lucide icons so rows align. */}
-              <span aria-hidden className="flex h-4 w-4 shrink-0 items-center justify-center text-[13px] leading-none">{obj.icon}</span>
-              {obj.label_plural}
-            </NavLink>
-          ))}
+          {orderedNavObjects.map(obj => {
+            const Icon = SYSTEM_NAV_ICONS[obj.slug];
+            return (
+              // listPath keeps the bespoke routes (contact → /contacts, deal →
+              // /deals) authoritative in ONE place; everything else, Companies
+              // included, resolves to the schema-driven /objects/:slug page.
+              <NavLink key={obj.slug} to={listPath(obj.slug)} className={navItemClass}>
+                {Icon ? (
+                  <Icon aria-hidden className={navIconClass} />
+                ) : (
+                  /* Custom-object icons are user-chosen emoji (data, not chrome) —
+                     boxed to the same footprint as the lucide icons so rows align. */
+                  <span aria-hidden className="flex h-4 w-4 shrink-0 items-center justify-center text-[13px] leading-none">{obj.icon}</span>
+                )}
+                {obj.label_plural}
+              </NavLink>
+            );
+          })}
 
           <p className={navSectionClass}>Tools</p>
           <NavLink to="/voice" className={navItemClass}><Mic aria-hidden className={navIconClass} />Voice Notes</NavLink>

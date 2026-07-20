@@ -1,0 +1,359 @@
+{
+  "slug": "travel_agency",
+  "name": "Travel Agency & Tour Operator",
+  "category": "services",
+  "description": "Enquiry to booking for a travel agency or tour operator — dated departures, per-booking references, and a pipeline that ends when the balance is paid.",
+  "icon": "✈️",
+  "sort_order": 230,
+  "spec_version": 1,
+  "ai_context": "You are a CRM assistant for a travel agency / tour operator. Contacts are travellers, the person organising a group, or trade partners such as DMCs and resellers; a deal is one trip being sold to one party, from first enquiry to a fully paid booking. Bookings hang off dated departures, so dates, party size and payment deadlines matter more than anything else. Never invent flight numbers, hotel names, prices, visa rules or supplier reference numbers you were not given — quote only what is on the record.",
+  "pipeline_stages": [
+    {
+      "name": "New Enquiry",
+      "position": 0,
+      "color": "#6366F1",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Brief Taken",
+      "position": 1,
+      "color": "#3B82F6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Itinerary Proposed",
+      "position": 2,
+      "color": "#8B5CF6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Options Held",
+      "position": 3,
+      "color": "#F59E0B",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Deposit Paid",
+      "position": 4,
+      "color": "#F97316",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Booked",
+      "position": 5,
+      "color": "#10B981",
+      "is_won": true,
+      "is_lost": false
+    },
+    {
+      "name": "Lost",
+      "position": 6,
+      "color": "#EF4444",
+      "is_won": false,
+      "is_lost": true
+    }
+  ],
+  "custom_field_defs": [
+    {
+      "entity_type": "contact",
+      "key": "traveller_type",
+      "label": "Traveller Type",
+      "type": "select",
+      "options": [
+        "Leisure",
+        "Family",
+        "Honeymoon",
+        "Group organiser",
+        "Corporate",
+        "Trade / reseller"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "contact",
+      "key": "travel_style",
+      "label": "Travel Style",
+      "type": "select",
+      "options": [
+        "Budget",
+        "Mid-range",
+        "Premium",
+        "Luxury",
+        "Adventure",
+        "Expedition"
+      ],
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "contact",
+      "key": "passport_expiry",
+      "label": "Passport Expiry",
+      "type": "date",
+      "required": false,
+      "position": 2
+    },
+    {
+      "entity_type": "contact",
+      "key": "dietary_medical_notes",
+      "label": "Dietary / Medical Notes",
+      "type": "text",
+      "required": false,
+      "position": 3
+    },
+    {
+      "entity_type": "deal",
+      "key": "destination",
+      "label": "Destination",
+      "type": "text",
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "deal",
+      "key": "departure_date",
+      "label": "Departure Date",
+      "type": "date",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "deal",
+      "key": "travellers",
+      "label": "Travellers",
+      "type": "number",
+      "required": false,
+      "position": 2
+    },
+    {
+      "entity_type": "deal",
+      "key": "balance_due_date",
+      "label": "Balance Due",
+      "type": "date",
+      "required": false,
+      "position": 3
+    }
+  ],
+  "object_defs": [
+    {
+      "slug": "departure",
+      "label": "Departure",
+      "label_plural": "Departures",
+      "icon": "🗓️",
+      "searchable": true,
+      "fields": [
+        {
+          "key": "tour_name",
+          "label": "Tour",
+          "type": "text",
+          "required": true,
+          "position": 0
+        },
+        {
+          "key": "departure_date",
+          "label": "Departure Date",
+          "type": "date",
+          "required": true,
+          "position": 1
+        },
+        {
+          "key": "return_date",
+          "label": "Return Date",
+          "type": "date",
+          "required": false,
+          "position": 2
+        },
+        {
+          "key": "capacity",
+          "label": "Capacity",
+          "type": "number",
+          "required": false,
+          "position": 3
+        },
+        {
+          "key": "seats_sold",
+          "label": "Seats Sold",
+          "type": "number",
+          "required": false,
+          "position": 4
+        },
+        {
+          "key": "tour_leader",
+          "label": "Tour Leader",
+          "type": "relation",
+          "target_slug": "contact",
+          "required": false,
+          "position": 5
+        },
+        {
+          "key": "status",
+          "label": "Status",
+          "type": "select",
+          "options": [
+            "Open",
+            "Guaranteed",
+            "Filling",
+            "Waitlist only",
+            "Full",
+            "Cancelled"
+          ],
+          "required": false,
+          "position": 6
+        }
+      ]
+    },
+    {
+      "slug": "booking",
+      "label": "Booking",
+      "label_plural": "Bookings",
+      "icon": "🎫",
+      "searchable": true,
+      "fields": [
+        {
+          "key": "booking_ref",
+          "label": "Booking Reference",
+          "type": "text",
+          "required": true,
+          "position": 0
+        },
+        {
+          "key": "lead_traveller",
+          "label": "Lead Traveller",
+          "type": "relation",
+          "target_slug": "contact",
+          "required": false,
+          "position": 1
+        },
+        {
+          "key": "departure",
+          "label": "Departure",
+          "type": "relation",
+          "target_slug": "departure",
+          "required": false,
+          "position": 2
+        },
+        {
+          "key": "destination",
+          "label": "Destination",
+          "type": "text",
+          "required": false,
+          "position": 3
+        },
+        {
+          "key": "travellers",
+          "label": "Number of Travellers",
+          "type": "number",
+          "required": false,
+          "position": 4
+        },
+        {
+          "key": "total_price",
+          "label": "Total Price",
+          "type": "number",
+          "required": false,
+          "position": 5
+        },
+        {
+          "key": "deposit_paid",
+          "label": "Deposit Paid",
+          "type": "boolean",
+          "required": false,
+          "position": 6
+        },
+        {
+          "key": "balance_due",
+          "label": "Balance Due",
+          "type": "date",
+          "required": false,
+          "position": 7
+        },
+        {
+          "key": "supplier_ref",
+          "label": "Supplier / PNR Reference",
+          "type": "text",
+          "required": false,
+          "position": 8
+        }
+      ]
+    }
+  ],
+  "automation_rules": [
+    {
+      "key": "new_enquiry_callback",
+      "name": "Call a new enquiry while the trip is still an idea",
+      "description": "Travel enquiries are usually sent to three agencies at once. This books the callback the moment the contact is created.",
+      "activation": "auto",
+      "trigger": {
+        "type": "contact_created"
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Call {{contact.first_name}} to take the trip brief — dates, party, budget",
+              "priority": "high",
+              "due_in_days": 1
+            }
+          }
+        },
+        {
+          "type": "action",
+          "id": "s2",
+          "action": {
+            "id": "s2",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "New travel enquiry",
+              "body": "{{contact.first_name}} {{contact.last_name}} enquired. Capture destination, travel dates and flexibility, number of adults and children with ages, budget per person, and passport nationality and expiry before proposing anything."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "stage_move_ops_check",
+      "name": "Re-check held options when a trip moves stage",
+      "description": "Airline and hotel options expire quietly. Whenever a trip changes stage, this raises a task to confirm the options are still held and the payment deadlines still stand.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "*"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Re-confirm held options and payment deadlines on {{deal.title}}",
+              "priority": "medium",
+              "due_in_days": 1
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "kb_templates": {
+    "company": "## About us\n\nWe are a [travel agency / tour operator] based in [city], selling [tailor-made trips / scheduled group departures] to [regions we actually know].\n\nReplace this with your licensing and financial protection — IATA, ATOL, ABTA, IATAN or your local equivalent, and the bond number. Clients ask for it, and consultants need it to hand.\n\n## Contact\n\nOffice hours, the 24/7 emergency number printed in final documents, and who is on out-of-hours duty this week.",
+    "products": "## What we sell\n\n- **Tailor-made itineraries** — typical value [amount] per party, lead time [weeks]\n- **Scheduled group departures** — dates, capacity and seats sold live on the Departures object\n- **Add-ons** — flights, private transfers, insurance, excursions, visa handling\n\n## Suppliers\n\nList your DMCs and ground handlers per country, your contracted hotels, and which consolidator you ticket through. Note each supplier's release period — that is what sets our deposit deadlines.",
+    "playbook": "## Taking a brief\n\n1. Dates and how flexible they are — fixed school holidays or movable?\n2. Party: adults, children and their ages, room configuration.\n3. Realistic budget per person, and say explicitly whether it includes flights.\n4. Travel style and deal-breakers (long-haul flights, altitude, self-drive, mobility).\n5. Passport nationality and expiry — visa and entry rules turn on both.\n\n## Holding options\n\nEvery held seat or room has a release deadline. Write it on the deal, chase the deposit 48 hours before it, and never let an option lapse silently — a rebooked itinerary rarely comes back at the same price.\n\n## Repeat business\n\nCall returning clients [8-10] weeks after they get home, while the trip is still a story they want to tell.",
+    "process": "## From enquiry to departure\n\n1. **New Enquiry** — contact logged, destination and rough dates captured.\n2. **Brief Taken** — party, budget, style and passport details confirmed.\n3. **Itinerary Proposed** — costed itinerary sent, with what is and is not included.\n4. **Options Held** — flights and rooms held with suppliers; release deadline recorded on the deal.\n5. **Deposit Paid** — deposit received, booking reference issued, booking record created.\n6. **Booked** — balance paid, tickets and final documents issued.\n\nA trip that dies at any point goes to **Lost** with the real reason — price, dates, or booked elsewhere.",
+    "competitors": "## Why clients book with us\n\nOnline booking sites win on price. We win on the itinerary nobody else would have built and on being reachable when a flight is cancelled at 22:00. Replace with your genuine differentiators — destination specialism, ground contacts, financial protection, repeat-client rate.\n\n## Common objections\n\n- \"I can put this together cheaper myself\" — [your answer]\n- \"Why is the deposit non-refundable?\" — [your answer]\n- \"Can you match [OTA] on the flight?\" — [your answer]"
+  }
+}

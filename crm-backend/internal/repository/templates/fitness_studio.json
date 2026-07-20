@@ -1,0 +1,323 @@
+{
+  "slug": "fitness_studio",
+  "name": "Fitness Studio",
+  "category": "fitness",
+  "description": "Trials, memberships, PT blocks and class packs, with a Memberships object that tracks plan, renewal date and sessions remaining.",
+  "icon": "🏋️",
+  "sort_order": 130,
+  "spec_version": 1,
+  "ai_context": "You are a CRM assistant for a gym or fitness studio. Contacts are prospects and members; a deal is one join or renewal, from enquiry through a trial session to a signed plan, and Membership records hold the plan, price, renewal date and remaining sessions. Help with trial follow-up, no-show chasing, renewals, freezes and cancellations. Never write training programmes, nutrition plans, injury or medical advice, and never invent prices, contract terms, class times or a member's payment status.",
+  "pipeline_stages": [
+    {
+      "name": "New Enquiry",
+      "position": 0,
+      "color": "#6366F1",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Trial Booked",
+      "position": 1,
+      "color": "#3B82F6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Trial Attended",
+      "position": 2,
+      "color": "#8B5CF6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Goal Consultation",
+      "position": 3,
+      "color": "#F59E0B",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Plan Quoted",
+      "position": 4,
+      "color": "#F97316",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Joined",
+      "position": 5,
+      "color": "#10B981",
+      "is_won": true,
+      "is_lost": false
+    },
+    {
+      "name": "Lost",
+      "position": 6,
+      "color": "#EF4444",
+      "is_won": false,
+      "is_lost": true
+    }
+  ],
+  "custom_field_defs": [
+    {
+      "entity_type": "contact",
+      "key": "primary_goal",
+      "label": "Primary Goal",
+      "type": "select",
+      "options": [
+        "Weight loss",
+        "Strength / muscle gain",
+        "General fitness",
+        "Sport-specific",
+        "Rehab / mobility",
+        "Event training"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "contact",
+      "key": "how_heard",
+      "label": "How They Heard About Us",
+      "type": "select",
+      "options": [
+        "Walk-in",
+        "Instagram",
+        "Google search",
+        "Member referral",
+        "Corporate partner",
+        "Class pass app",
+        "Local ad / flyer"
+      ],
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "contact",
+      "key": "join_date",
+      "label": "Join Date",
+      "type": "date",
+      "required": false,
+      "position": 2
+    },
+    {
+      "entity_type": "contact",
+      "key": "parq_completed",
+      "label": "PAR-Q Completed",
+      "type": "boolean",
+      "required": false,
+      "position": 3
+    },
+    {
+      "entity_type": "contact",
+      "key": "emergency_contact",
+      "label": "Emergency Contact",
+      "type": "text",
+      "required": false,
+      "position": 4
+    },
+    {
+      "entity_type": "deal",
+      "key": "membership_type",
+      "label": "Membership Type",
+      "type": "select",
+      "options": [
+        "Monthly rolling",
+        "6-month",
+        "12-month",
+        "Class pack (10)",
+        "Class pack (20)",
+        "PT block",
+        "Day pass"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "deal",
+      "key": "monthly_value",
+      "label": "Monthly Value",
+      "type": "number",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "deal",
+      "key": "joining_fee_waived",
+      "label": "Joining Fee Waived",
+      "type": "boolean",
+      "required": false,
+      "position": 2
+    }
+  ],
+  "object_defs": [
+    {
+      "slug": "membership",
+      "label": "Membership",
+      "label_plural": "Memberships",
+      "icon": "🎟️",
+      "searchable": true,
+      "fields": [
+        {
+          "key": "plan",
+          "label": "Plan",
+          "type": "select",
+          "options": [
+            "Off-Peak",
+            "Full Access",
+            "Class Pack 10",
+            "Class Pack 20",
+            "PT Package",
+            "Corporate",
+            "Student"
+          ],
+          "required": true,
+          "position": 0
+        },
+        {
+          "key": "member",
+          "label": "Member",
+          "type": "relation",
+          "target_slug": "contact",
+          "required": false,
+          "position": 1
+        },
+        {
+          "key": "start_date",
+          "label": "Start Date",
+          "type": "date",
+          "required": false,
+          "position": 2
+        },
+        {
+          "key": "renewal_date",
+          "label": "Renews On",
+          "type": "date",
+          "required": false,
+          "position": 3
+        },
+        {
+          "key": "status",
+          "label": "Status",
+          "type": "select",
+          "options": [
+            "Active",
+            "Frozen",
+            "Cancellation requested",
+            "Lapsed",
+            "Cancelled"
+          ],
+          "required": false,
+          "position": 4
+        },
+        {
+          "key": "monthly_price",
+          "label": "Monthly Price",
+          "type": "number",
+          "required": false,
+          "position": 5
+        },
+        {
+          "key": "billing_method",
+          "label": "Billing Method",
+          "type": "select",
+          "options": [
+            "Direct debit",
+            "Card on file",
+            "Paid upfront",
+            "Corporate invoice"
+          ],
+          "required": false,
+          "position": 6
+        },
+        {
+          "key": "sessions_remaining",
+          "label": "Sessions Remaining",
+          "type": "number",
+          "required": false,
+          "position": 7
+        },
+        {
+          "key": "minimum_term_ends",
+          "label": "Minimum Term Ends",
+          "type": "date",
+          "required": false,
+          "position": 8
+        }
+      ]
+    }
+  ],
+  "automation_rules": [
+    {
+      "key": "enquiry_to_trial",
+      "name": "Get a new enquiry into a trial session",
+      "description": "Fitness enquiries decay in hours, not days. This queues the call while they still feel motivated and reminds staff what to collect first.",
+      "activation": "auto",
+      "trigger": {
+        "type": "contact_created"
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Call {{contact.first_name}} and book their intro session at {{org.name}}",
+              "priority": "high",
+              "due_in_days": 1
+            }
+          }
+        },
+        {
+          "type": "action",
+          "id": "s2",
+          "action": {
+            "id": "s2",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "New enquiry received",
+              "body": "On the call: ask what they want to change and by when, what they have tried before, and which days they can realistically train. Book a specific class or trainer, not \"come in sometime\". Send the PAR-Q before their first session."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "join_stage_follow_up",
+      "name": "Follow up whenever a join moves stage",
+      "description": "Trials that go unfollowed and quotes that go unanswered are where most memberships are lost. Every stage move creates the next touch.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "*"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Follow up {{deal.title}} — did they attend, and is the plan and start date agreed?",
+              "priority": "medium",
+              "due_in_days": 2
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "kb_templates": {
+    "company": "## About the studio\n\n[Studio name], [address]. Opened [year]. [Square metres / number of studios], [number] coaches.\n\n- What we are known for: [strength / HIIT / reformer pilates / boxing / small group PT]\n- Staffed hours: [hours]. 24/7 access: [yes/no]\n- Capacity: [number] members. Class sizes capped at [number].\n\nTone with members: direct, encouraging, never shaming.",
+    "products": "## Plans and prices\n\n| Plan | Price | Commitment | Includes |\n| --- | --- | --- | --- |\n| Off-Peak | [amount]/mo | Rolling | [hours] |\n| Full Access | [amount]/mo | Rolling | Gym + all classes |\n| 12-Month | [amount]/mo | 12 months | Full access, [discount] |\n| Class Pack 10 | [amount] | Expires [months] | Any class |\n| PT Block | [amount] | [number] sessions | 1:1 with [coach tier] |\n\nJoining fee [amount], waived during [promo]. Freeze: [terms]. Cancellation: [notice period]. Never quote a price or term that is not on this list.",
+    "playbook": "## The intro session\n\n1. Ask the goal and the deadline behind it — a wedding, a check-up, a race. That is what actually sells the membership.\n2. Ask what stopped them last time; usually time, intimidation or boredom. Answer that objection specifically.\n3. Tour on the way to the floor, not before. Show the two or three things that fit their goal.\n4. Recommend one plan, not a menu. Give the price out loud and then stop talking.\n5. Sign up in the studio and book their first three sessions into the diary.\n\n## Saving a cancellation\n\nOffer a freeze before a cancellation, and a plan downgrade before a freeze. Always record the real reason: cost, moved away, injury, unused, or bad experience.",
+    "process": "## From enquiry to member\n\n1. **New Enquiry** — walk-in, DM or web form; capture goal and how they heard about us.\n2. **Trial Booked** — a named class or trainer at a specific time, PAR-Q sent.\n3. **Trial Attended** — they showed up and trained. No-shows get one rebooking attempt within 24 hours.\n4. **Goal Consultation** — 15 minutes on goals, availability and what plan actually fits.\n5. **Plan Quoted** — one recommended plan, price and start date in writing.\n6. **Joined** — agreement signed, billing set up, Membership record created with renewal date.\n7. **Lost** — record why: price, location, timetable, went to a competitor, or lost interest.",
+    "competitors": "## The local picture\n\n- [Budget chain] — [price]/mo, no coaching, no community; we win on coached sessions and people knowing your name.\n- [Boutique studio] — similar coaching, [price] per class; we win on cost per session for regular attenders.\n- Home training and apps — free or [price]/mo; we win on accountability and equipment.\n\nCompete on results people can feel in the first month, class times that fit shift work, and never locking anyone into a contract they cannot freeze."
+  }
+}

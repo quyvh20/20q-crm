@@ -1,0 +1,439 @@
+{
+  "slug": "recruiting",
+  "name": "Recruitment & Staffing",
+  "category": "services",
+  "description": "Open roles and candidates side by side — a pipeline that runs from job brief to placement, plus Candidate and Job Opening objects carrying seniority, notice period and fee.",
+  "icon": "💼",
+  "sort_order": 60,
+  "spec_version": 1,
+  "ai_context": "You are a CRM assistant for a recruitment and staffing agency. Contacts are client-side people — hiring managers, talent acquisition and finance — while jobseekers live in the Candidates object and vacancies in Job Openings. A deal is one live vacancy the agency is working, and it is won when a candidate is placed and the fee is invoiced. Never invent a candidate's salary expectation, notice period, work authorisation or interview feedback, and never share one client's candidate details with another.",
+  "pipeline_stages": [
+    {
+      "name": "Role Briefed",
+      "position": 0,
+      "color": "#6366F1",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Sourcing",
+      "position": 1,
+      "color": "#3B82F6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Shortlist Submitted",
+      "position": 2,
+      "color": "#8B5CF6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Client Interviews",
+      "position": 3,
+      "color": "#F59E0B",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Offer Out",
+      "position": 4,
+      "color": "#F97316",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Placed",
+      "position": 5,
+      "color": "#10B981",
+      "is_won": true,
+      "is_lost": false
+    },
+    {
+      "name": "Role Lost",
+      "position": 6,
+      "color": "#EF4444",
+      "is_won": false,
+      "is_lost": true
+    }
+  ],
+  "custom_field_defs": [
+    {
+      "entity_type": "contact",
+      "key": "client_role",
+      "label": "Role at the Client",
+      "type": "select",
+      "options": [
+        "Hiring Manager",
+        "HR / Talent Acquisition",
+        "Finance / Procurement",
+        "Founder / Exec",
+        "Referrer"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "contact",
+      "key": "sign_off_authority",
+      "label": "Has Sign-off Authority",
+      "type": "boolean",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "company",
+      "key": "fee_agreement",
+      "label": "Fee Agreement",
+      "type": "select",
+      "options": [
+        "None yet",
+        "Contingent",
+        "Exclusive",
+        "Retained",
+        "Preferred Supplier List"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "company",
+      "key": "fee_percentage",
+      "label": "Fee % of First-Year Salary",
+      "type": "number",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "company",
+      "key": "rebate_period_days",
+      "label": "Rebate / Guarantee Period (days)",
+      "type": "number",
+      "required": false,
+      "position": 2
+    },
+    {
+      "entity_type": "deal",
+      "key": "seniority",
+      "label": "Seniority",
+      "type": "select",
+      "options": [
+        "Intern",
+        "Junior",
+        "Mid-level",
+        "Senior",
+        "Lead / Principal",
+        "Manager",
+        "Director",
+        "C-level"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "deal",
+      "key": "placement_fee",
+      "label": "Placement Fee",
+      "type": "number",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "deal",
+      "key": "role_type",
+      "label": "Role Type",
+      "type": "select",
+      "options": [
+        "Permanent",
+        "Fixed-term",
+        "Contract",
+        "Temp",
+        "Fractional"
+      ],
+      "required": false,
+      "position": 2
+    }
+  ],
+  "object_defs": [
+    {
+      "slug": "job_opening",
+      "label": "Job Opening",
+      "label_plural": "Job Openings",
+      "icon": "📋",
+      "searchable": true,
+      "fields": [
+        {
+          "key": "role_title",
+          "label": "Role Title",
+          "type": "text",
+          "required": true,
+          "position": 0
+        },
+        {
+          "key": "client",
+          "label": "Client",
+          "type": "relation",
+          "target_slug": "company",
+          "required": false,
+          "position": 1
+        },
+        {
+          "key": "hiring_manager",
+          "label": "Hiring Manager",
+          "type": "relation",
+          "target_slug": "contact",
+          "required": false,
+          "position": 2
+        },
+        {
+          "key": "seniority",
+          "label": "Seniority",
+          "type": "select",
+          "options": [
+            "Intern",
+            "Junior",
+            "Mid-level",
+            "Senior",
+            "Lead / Principal",
+            "Manager",
+            "Director",
+            "C-level"
+          ],
+          "required": false,
+          "position": 3
+        },
+        {
+          "key": "employment_type",
+          "label": "Employment Type",
+          "type": "select",
+          "options": [
+            "Permanent",
+            "Fixed-term",
+            "Contract",
+            "Temp",
+            "Fractional"
+          ],
+          "required": false,
+          "position": 4
+        },
+        {
+          "key": "salary_min",
+          "label": "Salary Range — Min",
+          "type": "number",
+          "required": false,
+          "position": 5
+        },
+        {
+          "key": "salary_max",
+          "label": "Salary Range — Max",
+          "type": "number",
+          "required": false,
+          "position": 6
+        },
+        {
+          "key": "openings",
+          "label": "Number of Openings",
+          "type": "number",
+          "required": false,
+          "position": 7
+        },
+        {
+          "key": "target_start_date",
+          "label": "Target Start Date",
+          "type": "date",
+          "required": false,
+          "position": 8
+        }
+      ]
+    },
+    {
+      "slug": "candidate",
+      "label": "Candidate",
+      "label_plural": "Candidates",
+      "icon": "🧑",
+      "searchable": true,
+      "fields": [
+        {
+          "key": "full_name",
+          "label": "Full Name",
+          "type": "text",
+          "required": true,
+          "position": 0
+        },
+        {
+          "key": "current_title",
+          "label": "Current Title",
+          "type": "text",
+          "required": false,
+          "position": 1
+        },
+        {
+          "key": "seniority",
+          "label": "Seniority",
+          "type": "select",
+          "options": [
+            "Intern",
+            "Junior",
+            "Mid-level",
+            "Senior",
+            "Lead / Principal",
+            "Manager",
+            "Director",
+            "C-level"
+          ],
+          "required": false,
+          "position": 2
+        },
+        {
+          "key": "status",
+          "label": "Status",
+          "type": "select",
+          "options": [
+            "Sourced",
+            "Screened",
+            "Shortlisted",
+            "Submitted",
+            "Interviewing",
+            "Offer",
+            "Placed",
+            "On Hold",
+            "Withdrawn",
+            "Do Not Contact"
+          ],
+          "required": false,
+          "position": 3
+        },
+        {
+          "key": "salary_expectation",
+          "label": "Salary Expectation",
+          "type": "number",
+          "required": false,
+          "position": 4
+        },
+        {
+          "key": "notice_period_weeks",
+          "label": "Notice Period (weeks)",
+          "type": "number",
+          "required": false,
+          "position": 5
+        },
+        {
+          "key": "work_authorisation",
+          "label": "Work Authorisation",
+          "type": "select",
+          "options": [
+            "Citizen",
+            "Permanent Resident",
+            "Existing Work Visa",
+            "Needs Sponsorship",
+            "Unknown"
+          ],
+          "required": false,
+          "position": 6
+        },
+        {
+          "key": "linkedin_url",
+          "label": "LinkedIn",
+          "type": "url",
+          "required": false,
+          "position": 7
+        },
+        {
+          "key": "applying_for",
+          "label": "Applying For",
+          "type": "relation",
+          "target_slug": "job_opening",
+          "required": false,
+          "position": 8
+        }
+      ]
+    }
+  ],
+  "automation_rules": [
+    {
+      "key": "new_contact_intro_call",
+      "name": "Qualify every new contact within a day",
+      "description": "A new name is either a vacancy or a candidate, and the answer changes everything you do next. This forces the call that decides which.",
+      "activation": "auto",
+      "trigger": {
+        "type": "contact_created"
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Intro call with {{contact.first_name}} {{contact.last_name}} — are they hiring, or looking?",
+              "priority": "high",
+              "due_in_days": 1
+            }
+          }
+        },
+        {
+          "type": "action",
+          "id": "s2",
+          "action": {
+            "id": "s2",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "New contact to qualify",
+              "body": "If they are hiring: take a full job brief and confirm the fee agreement and rebate period before you source anybody. If they are looking: create a Candidate record with salary expectation, notice period and work authorisation, and get consent before sending their details anywhere."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "vacancy_stage_moved",
+      "name": "Keep both sides warm on every stage move",
+      "description": "Placements are lost in the silence between interviews. Every stage change triggers an update to the client and to every submitted candidate.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "*"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Update {{contact.first_name}} and every submitted candidate on {{deal.title}}",
+              "priority": "high",
+              "due_in_days": 1
+            }
+          }
+        },
+        {
+          "type": "action",
+          "id": "s2",
+          "action": {
+            "id": "s2",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "Pipeline moved on {{deal.title}}",
+              "body": "Log what actually happened: who was submitted, interview feedback in the client's own words, and any change to salary, start date or headcount. Confirm the candidate is still engaged and has not accepted elsewhere."
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "kb_templates": {
+    "company": "## About us\n\nWe are a recruitment agency placing [permanent / contract] talent in [your sectors] across [your region]. Replace this with your specialisms, typical seniority, and how many placements you make a year.\n\n## How we charge\n\nState your standard fee percentage, whether it is contingent, exclusive or retained, and the rebate or guarantee period a client gets if a placement leaves early.\n\n## Contact\n\nOffice address, main line, and who covers which desk.",
+    "products": "## What we place\n\n- **Permanent** — contingent or exclusive, fee as a percentage of first-year salary.\n- **Contract / temp** — day-rate margin, timesheet and payroll handled by [us / your provider].\n- **Retained search** — for leadership and hard-to-fill roles, billed in [three] instalments.\n\n## Sectors and seniority\n\nList the functions you genuinely cover and the salary bands you work in. Being narrow is a selling point; pretending to cover everything is not.",
+    "playbook": "## Taking a proper job brief\n\n1. Why is this role open — growth, backfill, or a resignation you should understand?\n2. The real salary range and what flexes for an outstanding candidate.\n3. The interview process: how many stages, who is in each, and how fast they can move.\n4. What a \"no\" looks like, so you can screen against it rather than guess.\n5. Confirm the fee agreement and rebate period in writing BEFORE you source anyone.\n\n## Candidate control\n\nEvery submitted candidate gets a call before and after each interview. Ask directly what else they are interviewing for, what their current employer would counter-offer with, and whether they have told anyone they are looking. A candidate you have not spoken to this week is a candidate you are about to lose.\n\n## Never do this\n\nDo not send a CV without the candidate's explicit consent for that specific client.",
+    "process": "## From brief to placement\n\n1. **Role Briefed** — full job brief taken, fee agreement and rebate period confirmed in writing.\n2. **Sourcing** — search, referrals and your own database; screen against the brief, not the job ad.\n3. **Shortlist Submitted** — three to five genuinely qualified candidates, each with a written summary.\n4. **Client Interviews** — schedule, prep the candidate, debrief both sides within 24 hours.\n5. **Offer Out** — manage the counter-offer conversation before the offer lands, not after.\n6. **Placed** — offer accepted and start date confirmed. Raise the invoice, then diarise check-ins through the rebate period.\n\nRoles that sit in Sourcing for more than two weeks usually have a brief problem, not a market problem — go back to the client.",
+    "competitors": "## Why clients use us instead of hiring direct\n\nSpeed to shortlist, access to people who are not applying to job ads, and honest market feedback on salary when the range is wrong.\n\n## Why candidates work with us\n\nWe brief them properly, we tell them when a role is not right for them, and we do not send their CV anywhere without asking first.\n\nReplace with your real numbers — average time to shortlist, interview-to-placement ratio, percentage of placements still in seat at 12 months. Do not quote a statistic you cannot pull from your own records."
+  }
+}

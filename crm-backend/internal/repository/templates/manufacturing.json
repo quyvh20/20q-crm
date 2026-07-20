@@ -1,0 +1,109 @@
+{
+  "slug": "manufacturing",
+  "name": "Manufacturing",
+  "category": "industrial",
+  "description": "RFQs, sampling and production runs — a Product Spec register carrying MOQ, unit price and lead time, plus a pipeline that closes when the purchase order lands.",
+  "icon": "🏭",
+  "sort_order": 160,
+  "spec_version": 1,
+  "ai_context": "You are a CRM assistant for a manufacturer selling to OEMs, distributors and resellers. Contacts are procurement buyers, design and quality engineers and owners; a company is the account, and its type, volumes and payment terms matter more than any single order. A deal is one RFQ worked through technical review, quotation and sampling to a purchase order. Never invent a unit price, MOQ, lead time, tooling cost, material grade or certification — quote only figures recorded on the Product Spec or the deal, and say when a figure needs confirming with production.",
+  "pipeline_stages": [
+    { "name": "RFQ Received", "position": 0, "color": "#6366F1", "is_won": false, "is_lost": false },
+    { "name": "Technical Review", "position": 1, "color": "#3B82F6", "is_won": false, "is_lost": false },
+    { "name": "Quotation Sent", "position": 2, "color": "#8B5CF6", "is_won": false, "is_lost": false },
+    { "name": "Sampling / First Article", "position": 3, "color": "#F59E0B", "is_won": false, "is_lost": false },
+    { "name": "Terms & Negotiation", "position": 4, "color": "#F97316", "is_won": false, "is_lost": false },
+    { "name": "PO Received", "position": 5, "color": "#10B981", "is_won": true, "is_lost": false },
+    { "name": "Lost", "position": 6, "color": "#EF4444", "is_won": false, "is_lost": true }
+  ],
+  "custom_field_defs": [
+    { "entity_type": "contact", "key": "buyer_role", "label": "Role", "type": "select", "options": ["Procurement", "Design / Engineering", "Quality", "Operations", "Owner / Director"], "required": false, "position": 0 },
+    { "entity_type": "company", "key": "account_type", "label": "Account Type", "type": "select", "options": ["OEM", "Distributor", "Reseller", "Contract manufacturer", "End user"], "required": false, "position": 0 },
+    { "entity_type": "company", "key": "annual_volume", "label": "Est. Annual Volume (units)", "type": "number", "required": false, "position": 1 },
+    { "entity_type": "company", "key": "payment_terms", "label": "Payment Terms", "type": "select", "options": ["Prepayment", "30% deposit / balance on shipment", "Net 30", "Net 60", "Letter of credit"], "required": false, "position": 2 },
+    { "entity_type": "deal", "key": "order_quantity", "label": "Order Quantity", "type": "number", "required": false, "position": 0 },
+    { "entity_type": "deal", "key": "unit_price", "label": "Quoted Unit Price", "type": "number", "required": false, "position": 1 },
+    { "entity_type": "deal", "key": "lead_time_days", "label": "Lead Time (days)", "type": "number", "required": false, "position": 2 },
+    { "entity_type": "deal", "key": "tooling_required", "label": "New Tooling Required", "type": "boolean", "required": false, "position": 3 }
+  ],
+  "object_defs": [
+    {
+      "slug": "product_spec",
+      "label": "Product Spec",
+      "label_plural": "Product Specs",
+      "icon": "📐",
+      "searchable": true,
+      "fields": [
+        { "key": "part_number", "label": "Part Number", "type": "text", "required": true, "position": 0 },
+        { "key": "description", "label": "Description", "type": "text", "required": false, "position": 1 },
+        { "key": "material", "label": "Material", "type": "select", "options": ["Aluminium", "Steel", "Stainless steel", "Zinc alloy", "ABS", "Polypropylene", "Silicone", "Other"], "required": false, "position": 2 },
+        { "key": "moq", "label": "MOQ (units)", "type": "number", "required": false, "position": 3 },
+        { "key": "unit_price", "label": "Unit Price at MOQ", "type": "number", "required": false, "position": 4 },
+        { "key": "lead_time_days", "label": "Lead Time (days)", "type": "number", "required": false, "position": 5 },
+        { "key": "tooling_status", "label": "Tooling Status", "type": "select", "options": ["Not required", "Quoted", "In production", "Ready", "Needs modification"], "required": false, "position": 6 },
+        { "key": "drawing_url", "label": "Drawing / Spec Sheet", "type": "url", "required": false, "position": 7 },
+        { "key": "customer", "label": "Customer", "type": "relation", "target_slug": "company", "required": false, "position": 8 }
+      ]
+    },
+    {
+      "slug": "production_run",
+      "label": "Production Run",
+      "label_plural": "Production Runs",
+      "icon": "⚙️",
+      "searchable": false,
+      "fields": [
+        { "key": "run_reference", "label": "Run Reference", "type": "text", "required": true, "position": 0 },
+        { "key": "product", "label": "Product", "type": "relation", "target_slug": "product_spec", "required": false, "position": 1 },
+        { "key": "customer", "label": "Customer", "type": "relation", "target_slug": "company", "required": false, "position": 2 },
+        { "key": "quantity", "label": "Quantity", "type": "number", "required": false, "position": 3 },
+        { "key": "status", "label": "Status", "type": "select", "options": ["Planned", "Materials ordered", "In production", "QC", "Packed", "Shipped", "On hold"], "required": false, "position": 4 },
+        { "key": "start_date", "label": "Start Date", "type": "date", "required": false, "position": 5 },
+        { "key": "ship_date", "label": "Target Ship Date", "type": "date", "required": false, "position": 6 }
+      ]
+    }
+  ],
+  "automation_rules": [
+    {
+      "key": "rfq_qualification",
+      "name": "Qualify every new RFQ contact",
+      "description": "Most RFQs are unquotable as received — this raises the qualification call before estimating burns a day on the wrong assumptions.",
+      "activation": "auto",
+      "trigger": { "type": "contact_created" },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Qualify RFQ with {{contact.first_name}} - volumes, target price, drawings",
+              "priority": "high",
+              "due_in_days": 1
+            }
+          }
+        },
+        {
+          "type": "action",
+          "id": "s2",
+          "action": {
+            "id": "s2",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "New RFQ contact",
+              "body": "New enquiry from {{contact.first_name}} {{contact.last_name}} ({{contact.email}}). Before estimating, confirm: drawing or spec received and at what revision, annual volume and first order quantity, target unit price, required lead time, whether tooling already exists, applicable certifications, and the delivery destination and shipping terms."
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "kb_templates": {
+    "company": "## About us\n\nWe manufacture [product category] at [location]. Replace this with your processes — [injection moulding], [CNC machining], [sheet metal], [assembly] — your plant capacity, and the industries you already supply.\n\n## Certifications\n\nList what buyers audit you against — [ISO 9001], [industry-specific standards], [material compliance], [factory audit reports available on request].\n\n## Contact\n\nSales address, the email RFQs should go to, and who handles technical questions.",
+    "products": "## What we make\n\n- [Product line one] — MOQ [qty], lead time [days]\n- [Product line two] — MOQ [qty], lead time [days]\n- [Custom / OEM work to customer drawing]\n\n## Commercial basics\n\nState your standard MOQ, price break quantities, tooling costs and who owns the tool, sampling charges and timescale, standard lead time for repeat orders, and your shipping terms.",
+    "playbook": "## Qualifying an RFQ\n\n1. Drawing or spec, with a revision number — not a photo.\n2. First order quantity and realistic annual volume.\n3. Target unit price, and what they pay today.\n4. Required lead time and the date behind it.\n5. Tooling — does it exist, and who owns it?\n6. Certifications, material compliance and destination market.\n\n## Sampling\n\nAgree in writing what approval means and how many sample rounds are included. Unlimited free samples is how a good account turns unprofitable.\n\n## Distributors\n\nQualify on territory, the lines they already carry and their stocking commitment — not on the size of their forecast.",
+    "process": "## From RFQ to PO\n\n1. **RFQ Received** — enquiry logged against the account with drawings and volumes attached.\n2. **Technical Review** — engineering confirms it is makeable on our equipment and flags spec changes.\n3. **Quotation Sent** — unit price at each break, tooling, lead time and validity period.\n4. **Sampling / First Article** — samples produced and submitted for approval.\n5. **Terms & Negotiation** — price breaks, payment terms and shipping terms agreed.\n6. **PO Received** — order booked; open a Production Run and confirm the ship date.\n\nAnything that stalls or goes elsewhere moves to **Lost** with the reason — price, lead time, capability or certification.",
+    "competitors": "## Why buyers choose us\n\nReplace with your real advantages — [lead time of [days] against an industry norm of [days]], [tooling amortised over first order], [in-house tooling so revisions take days not weeks], [full material traceability], [a named engineer on every account].\n\n## Who we lose to\n\nUsually [a lower-cost overseas supplier], [the incumbent they already have tooling with], or [a competitor with a certification we do not hold yet]. Note which of those you can answer on total landed cost rather than unit price."
+  }
+}

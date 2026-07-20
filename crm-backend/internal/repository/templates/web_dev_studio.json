@@ -1,0 +1,345 @@
+{
+  "slug": "web_dev_studio",
+  "name": "Web & Software Studio",
+  "category": "technology",
+  "description": "Scoped builds and retainers from first enquiry to a signed statement of work, with a Projects object tracking stack, scope, contracted hours and launch date.",
+  "icon": "💻",
+  "sort_order": 70,
+  "spec_version": 1,
+  "ai_context": "You are a CRM assistant for a web and software development studio. Contacts are founders, marketing leads, product managers and CTOs at client companies, and a deal is one engagement being sold — a fixed-scope build, a discovery sprint, or an ongoing retainer. Delivery lives in the Projects object, which carries the stack, scope summary, contracted hours and launch date. Never invent estimates, hourly rates, timelines or technical commitments; if scope is unclear, say so and recommend a paid discovery instead of guessing a number.",
+  "pipeline_stages": [
+    {
+      "name": "New Enquiry",
+      "position": 0,
+      "color": "#6366F1",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Discovery Call",
+      "position": 1,
+      "color": "#3B82F6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Scoping & Estimate",
+      "position": 2,
+      "color": "#8B5CF6",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Proposal Sent",
+      "position": 3,
+      "color": "#F59E0B",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Contract & Deposit",
+      "position": 4,
+      "color": "#F97316",
+      "is_won": false,
+      "is_lost": false
+    },
+    {
+      "name": "Signed",
+      "position": 5,
+      "color": "#10B981",
+      "is_won": true,
+      "is_lost": false
+    },
+    {
+      "name": "Lost",
+      "position": 6,
+      "color": "#EF4444",
+      "is_won": false,
+      "is_lost": true
+    }
+  ],
+  "custom_field_defs": [
+    {
+      "entity_type": "contact",
+      "key": "contact_role",
+      "label": "Role",
+      "type": "select",
+      "options": [
+        "Founder / Owner",
+        "Marketing Lead",
+        "Product Manager",
+        "CTO / Engineering",
+        "Agency Partner",
+        "Other"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "contact",
+      "key": "referral_source",
+      "label": "How They Found Us",
+      "type": "select",
+      "options": [
+        "Referral",
+        "Inbound Search",
+        "Existing Client",
+        "Partner Agency",
+        "Event / Community",
+        "Cold Outreach"
+      ],
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "company",
+      "key": "current_site",
+      "label": "Current Website",
+      "type": "url",
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "company",
+      "key": "has_in_house_devs",
+      "label": "Has In-House Developers",
+      "type": "boolean",
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "deal",
+      "key": "engagement_type",
+      "label": "Engagement Type",
+      "type": "select",
+      "options": [
+        "Fixed-scope Build",
+        "Discovery / Sprint Zero",
+        "Monthly Retainer",
+        "Support & Maintenance",
+        "Staff Augmentation"
+      ],
+      "required": false,
+      "position": 0
+    },
+    {
+      "entity_type": "deal",
+      "key": "budget_band",
+      "label": "Budget Band",
+      "type": "select",
+      "options": [
+        "Under 10k",
+        "10k – 25k",
+        "25k – 50k",
+        "50k – 100k",
+        "100k+",
+        "Not disclosed"
+      ],
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "deal",
+      "key": "estimated_hours",
+      "label": "Estimated Hours",
+      "type": "number",
+      "required": false,
+      "position": 2
+    },
+    {
+      "entity_type": "deal",
+      "key": "target_launch",
+      "label": "Target Launch",
+      "type": "date",
+      "required": false,
+      "position": 3
+    }
+  ],
+  "object_defs": [
+    {
+      "slug": "project",
+      "label": "Project",
+      "label_plural": "Projects",
+      "icon": "🚀",
+      "searchable": true,
+      "fields": [
+        {
+          "key": "project_name",
+          "label": "Project Name",
+          "type": "text",
+          "required": true,
+          "position": 0
+        },
+        {
+          "key": "client",
+          "label": "Client",
+          "type": "relation",
+          "target_slug": "company",
+          "required": false,
+          "position": 1
+        },
+        {
+          "key": "main_contact",
+          "label": "Main Client Contact",
+          "type": "relation",
+          "target_slug": "contact",
+          "required": false,
+          "position": 2
+        },
+        {
+          "key": "status",
+          "label": "Status",
+          "type": "select",
+          "options": [
+            "Not Started",
+            "Discovery",
+            "Design",
+            "In Development",
+            "Client Review",
+            "QA",
+            "Launched",
+            "On Hold",
+            "Post-launch Support"
+          ],
+          "required": false,
+          "position": 3
+        },
+        {
+          "key": "tech_stack",
+          "label": "Primary Stack",
+          "type": "select",
+          "options": [
+            "Next.js / React",
+            "Vue / Nuxt",
+            "Node + API",
+            "WordPress",
+            "Shopify",
+            "Webflow",
+            "Laravel",
+            "Django",
+            "Rails",
+            ".NET",
+            "Native Mobile",
+            "Other"
+          ],
+          "required": false,
+          "position": 4
+        },
+        {
+          "key": "scope_summary",
+          "label": "Scope Summary",
+          "type": "text",
+          "required": false,
+          "position": 5
+        },
+        {
+          "key": "contracted_hours",
+          "label": "Contracted Hours",
+          "type": "number",
+          "required": false,
+          "position": 6
+        },
+        {
+          "key": "kickoff_date",
+          "label": "Kickoff Date",
+          "type": "date",
+          "required": false,
+          "position": 7
+        },
+        {
+          "key": "launch_date",
+          "label": "Launch Date",
+          "type": "date",
+          "required": false,
+          "position": 8
+        }
+      ]
+    }
+  ],
+  "automation_rules": [
+    {
+      "key": "new_project_enquiry",
+      "name": "Book discovery on every new enquiry",
+      "description": "Studio enquiries arrive vague — a rebuild, an app, 'a quick site'. This books the call that turns a wish into a scope.",
+      "activation": "auto",
+      "trigger": {
+        "type": "contact_created"
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Discovery call with {{contact.first_name}} — goal, hard deadline, budget band, who signs",
+              "priority": "high",
+              "due_in_days": 2
+            }
+          }
+        },
+        {
+          "type": "action",
+          "id": "s2",
+          "action": {
+            "id": "s2",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "New studio enquiry",
+              "body": "Before quoting: what business outcome are they buying, what is the real deadline and why, what budget band are they in, who else is involved in the decision, and what exists already (repo, designs, CMS, integrations). If scope is fuzzy, sell a paid discovery — never a fixed price on a guess."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "key": "scope_change_recap",
+      "name": "Write the scope down at every stage move",
+      "description": "Undocumented scope is how fixed-price builds lose money. Every stage change prompts a written recap of what is in and what is out.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "*"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Recap {{deal.title}} to {{contact.first_name}} in writing — scope in, scope out, next decision",
+              "priority": "medium",
+              "due_in_days": 2
+            }
+          }
+        },
+        {
+          "type": "action",
+          "id": "s2",
+          "action": {
+            "id": "s2",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "Stage change on {{deal.title}}",
+              "body": "Note anything that moved the estimate: features added or cut, integrations discovered, content or design dependencies on the client side, and any change to the launch date. Assumptions that are not written down become your problem at delivery."
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "kb_templates": {
+    "company": "## About us\n\nWe are a [web / software] studio building [marketing sites / web apps / mobile apps] for [your typical client]. Replace this with team size, the stack you are opinionated about, and the kind of work you turn down.\n\n## How we work\n\nState your default engagement shape — discovery first, fixed-scope phases, or monthly retainer — and your typical project length.\n\n## Contact\n\nWho to email for new work, and who to email if something is on fire.",
+    "products": "## Engagements we offer\n\n- **Discovery / Sprint Zero** — paid, fixed fee, produces a scope, an estimate and a technical plan you own whether or not you build with us.\n- **Fixed-scope build** — phased delivery against an agreed SOW, invoiced on milestones with a deposit up front.\n- **Monthly retainer** — a set block of hours for ongoing product work, rolled over or forfeited per your terms.\n- **Support & maintenance** — updates, security patching, uptime monitoring, small changes.\n\nList your day rate or blended hourly rate, your minimum engagement, and the stacks you support long-term.",
+    "playbook": "## Qualifying an enquiry\n\n1. What business outcome are they buying? \"A new website\" is not an outcome.\n2. Is there a hard deadline, and what is driving it — a launch, a campaign, a funding round?\n3. Budget band, asked directly. If they will not say, offer your ranges and watch which one they react to.\n4. Who signs, and who else can say no late in the process.\n5. What already exists: repo, designs, CMS, integrations, and who owns the hosting.\n\n## Never fixed-price a guess\n\nIf you cannot write the scope in a page, sell a paid discovery instead. A discovery that ends in \"do not build this\" is a good outcome and a client for life.\n\n## Estimating\n\nEstimate in ranges, add contingency for anything touching a third-party API, and put content, approvals and client-side dependencies in the SOW as named client responsibilities.",
+    "process": "## From enquiry to signed SOW\n\n1. **New Enquiry** — capture the outcome they want, the deadline and how they found you.\n2. **Discovery Call** — 30 to 45 minutes on goals, constraints, budget band and decision-makers.\n3. **Scoping & Estimate** — break the work into phases, estimate in ranges, name the assumptions.\n4. **Proposal Sent** — scope, phases, price, timeline, and an explicit out-of-scope list.\n5. **Contract & Deposit** — SOW signed, deposit invoiced, change-request process agreed in writing.\n6. **Signed** — deposit cleared. Create the Project record with stack, contracted hours and target launch, then book kickoff.\n\nDeals stalling at Proposal Sent are usually missing a decision-maker or a deadline, not a discount.",
+    "competitors": "## What we are up against\n\nCheap offshore quotes, website builders, and the client's nephew who \"does web design\".\n\n## Our answer\n\nDo not compete on hourly rate — compete on total cost of a project that actually ships. Replace this with your real differentiators: a discovery process that catches problems before they are expensive, code and hosting the client fully owns, senior people on the actual build rather than on the pitch, and a maintenance path after launch.\n\nBe honest about when you are the wrong fit. A £3k brochure site is a referral, not a fight."
+  }
+}

@@ -118,7 +118,9 @@ export default function StarterTemplateModal({ open, onClose }: StarterTemplateM
       setDeployed(id);
       // The new object belongs in the sidebar and the new field in every contact
       // form — the old wizard achieved that with window.location.reload().
-      qc.invalidateQueries({ queryKey: ['object-defs'] });
+      // Both registry caches: the sidebar's and the report builder's.
+      qc.invalidateQueries({ queryKey: ['sidebar-objects'] });
+      qc.invalidateQueries({ queryKey: ['registry-objects'] });
       qc.invalidateQueries({ queryKey: ['field-defs'] });
       setStep(canKB ? 'kb' : 'done');
     } catch (err) {
