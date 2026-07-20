@@ -1570,6 +1570,11 @@ func main() {
 		// Inject customObjUC into kbBuilder so it can read custom objects for schema
 		kbBuilder.SetCustomObjectUC(customObjUC)
 
+		// And the org_settings repository, so the assistant adopts the per-org AI
+		// persona an industry template installs. Without this the persona is written
+		// on every template apply and never read by anything.
+		kbBuilder.SetOrgSettingsRepo(repository.NewOrgSettingsRepository(db))
+
 		// Object Registry (P2/P7): uniform view over system + custom objects, reading
 		// every field from object_fields (no blob merge after the P7 cutover).
 		objectRegistryUC := usecase.NewObjectRegistryUseCase(objectRegistryRepo)
@@ -1740,6 +1745,19 @@ func main() {
 				CustomObject:   repository.NewCustomObjectRepository,
 			},
 		)
+		// Applying a template writes the org's AI persona; the assistant's prompt is
+		// cached for 30 minutes and the persona is not in its cache key, so the apply
+		// engine has to bust it explicitly.
+		if setter, ok := systemTemplateUC.(interface {
+			SetKBCacheBuster(domain.SchemaCacheBuster)
+		}); ok {
+			setter.SetKBCacheBuster(kbBuilder)
+		} else {
+			// Loud on purpose. A silently-skipped assertion here degrades into
+			// "personas take 30 minutes to appear", which nobody would trace back
+			// to this line.
+			log.Error("system template usecase does not accept a KB cache buster; AI personas will lag the prompt cache")
+		}
 		templateHandler := delivery.NewSystemTemplateHandler(systemTemplateUC)
 
 		aiHandler := delivery.NewAIHandler(gateway, budget, embedSvc, kbBuilder, aiJobQueue, contactUseCase)

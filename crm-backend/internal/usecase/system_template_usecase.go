@@ -48,6 +48,15 @@ type systemTemplateUseCase struct {
 	factories   TemplateRepoFactories
 	// schemaInvalidator drops the workflow-builder's cached object schema. Optional.
 	schemaInvalidator func(orgID uuid.UUID)
+	// kbCacheBuster drops the assistant's cached system prompt. Optional, but
+	// without it a template's AI persona sits behind a 30-minute cache and the
+	// customer's assistant keeps its old identity long after they applied.
+	kbCacheBuster domain.SchemaCacheBuster
+}
+
+// SetKBCacheBuster wires the AI prompt cache invalidator (the KnowledgeBuilder).
+func (uc *systemTemplateUseCase) SetKBCacheBuster(b domain.SchemaCacheBuster) {
+	uc.kbCacheBuster = b
 }
 
 func NewSystemTemplateUseCase(
@@ -629,6 +638,12 @@ func (uc *systemTemplateUseCase) applyOrgSettings(
 			Kind: "org_settings", Key: slug, Status: domain.TemplateItemFailed, Error: err.Error(),
 		})
 		return
+	}
+	// The assistant's system prompt is cached for 30 minutes and the persona is not
+	// part of its cache key, so without this the customer would apply a template and
+	// keep talking to the old assistant for half an hour.
+	if uc.kbCacheBuster != nil {
+		uc.kbCacheBuster.BustCache(ctx, orgID)
 	}
 	result.Items = append(result.Items, domain.TemplateApplyItem{
 		Kind: "org_settings", Key: slug, Status: domain.TemplateItemCreated,

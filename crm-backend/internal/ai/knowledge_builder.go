@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"crm-backend/internal/domain"
@@ -12,12 +13,23 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// defaultPersona is the assistant's identity when an org has not set one. It is
+// the exact string this prompt opened with before personas existed, so an org
+// without an override gets a byte-identical prompt.
+const defaultPersona = "You are an AI sales assistant."
+
 // KnowledgeBuilder builds a company-aware system prompt from the knowledge base.
 type KnowledgeBuilder struct {
 	repo        domain.KnowledgeBaseRepository
 	settingsUC  domain.OrgSettingsUseCase
 	customObjUC domain.CustomObjectUseCase
-	redis       *redis.Client
+	// orgSettingsRepo reads the org_settings ROW, which is where the per-org AI
+	// persona lives. Deliberately NOT settingsUC: that interface exposes field-def
+	// methods only and can never reach AIContextOverride. Optional — nil yields the
+	// default persona — and set via SetOrgSettingsRepo so the constructor signature
+	// (and its two existing call sites) stay unchanged.
+	orgSettingsRepo domain.OrgSettingsRepository
+	redis           *redis.Client
 }
 
 func NewKnowledgeBuilder(repo domain.KnowledgeBaseRepository, settingsUC domain.OrgSettingsUseCase, customObjUC domain.CustomObjectUseCase, redisClient *redis.Client) *KnowledgeBuilder {
@@ -36,6 +48,31 @@ func (b *KnowledgeBuilder) cacheKey(orgID uuid.UUID) string {
 // SetCustomObjectUC sets the custom object use case (used to break circular init).
 func (b *KnowledgeBuilder) SetCustomObjectUC(uc domain.CustomObjectUseCase) {
 	b.customObjUC = uc
+}
+
+// SetOrgSettingsRepo supplies the repository the per-org AI persona is read from.
+// Optional, mirroring SetCustomObjectUC: unset, the assistant keeps its default
+// identity.
+func (b *KnowledgeBuilder) SetOrgSettingsRepo(repo domain.OrgSettingsRepository) {
+	b.orgSettingsRepo = repo
+}
+
+// persona resolves the org's assistant identity, falling back to the default.
+//
+// A lookup failure degrades to the default rather than erroring the prompt: a
+// blip reading one optional row must not take the whole AI assistant down.
+func (b *KnowledgeBuilder) persona(ctx context.Context, orgID uuid.UUID) string {
+	if b.orgSettingsRepo == nil {
+		return defaultPersona
+	}
+	settings, err := b.orgSettingsRepo.GetByOrgID(ctx, orgID)
+	if err != nil || settings == nil || settings.AIContextOverride == nil {
+		return defaultPersona
+	}
+	if p := strings.TrimSpace(*settings.AIContextOverride); p != "" {
+		return p
+	}
+	return defaultPersona
 }
 
 // BustCache removes the cached prompt for an org (call on KB update).
@@ -137,7 +174,11 @@ func (b *KnowledgeBuilder) BuildSystemPrompt(ctx context.Context, orgID uuid.UUI
 		schemaBuilder = "(no custom schema defined)"
 	}
 
-	prompt := fmt.Sprintf(`You are an AI sales assistant.
+	// The persona REPLACES the opening identity line rather than being appended to
+	// it. An industry template's persona is itself a role statement ("You are a CRM
+	// assistant for a real estate agency…"), so appending would hand the model two
+	// competing identities; role framing has to be singular and first.
+	prompt := fmt.Sprintf(`%s
 
 COMPANY:
 %s
@@ -165,6 +206,7 @@ CRITICAL INSTRUCTIONS:
 - When calling form tools (e.g. create_contact, create_deal), you MUST extract relevant values from the user's message and put them in the 'custom_fields' property mapping to the keys defined in the CRM SCHEMA above.
 - For custom objects, use search_objects and create_object_record tools with the correct object_slug from the schema.
 - Keep all responses concise and action-oriented`,
+		b.persona(ctx, orgID),
 		getSection("company"),
 		getSection("products"),
 		getSection("playbook"),
