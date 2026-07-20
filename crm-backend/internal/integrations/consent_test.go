@@ -186,23 +186,5 @@ func TestParseConsent_OversizedTextIsDroppedWholesale(t *testing.T) {
 	}
 }
 
-// TestTruncateRunes_DoesNotCorrupt: byte-slicing a multi-byte rune yields U+FFFD with
-// no error — silent mangling of a value someone may later have to defend.
-func TestTruncateRunes_DoesNotCorrupt(t *testing.T) {
-	// "日本語" is 3 bytes per rune; cutting at 4 must land on a boundary.
-	if got := truncateRunes("日本語", 4); !isValidUTF8(got) {
-		t.Errorf("truncateRunes produced invalid UTF-8: %q", got)
-	}
-	if got := truncateRunes("abc", 10); got != "abc" {
-		t.Errorf("a short string must pass through unchanged, got %q", got)
-	}
-}
-
-func isValidUTF8(s string) bool {
-	for _, r := range s {
-		if r == 0xFFFD {
-			return false
-		}
-	}
-	return true
-}
+// The rune-safety of the shared `truncate` helper (which the consent basis clamp
+// above uses) is covered by TestTruncate in attribution_test.go.

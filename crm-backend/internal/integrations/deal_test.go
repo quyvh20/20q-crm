@@ -180,15 +180,6 @@ func TestDealTitleFor_TruncatesByCharacterWithoutCorrupting(t *testing.T) {
 	}
 }
 
-// The attribution truncator had the byte-slicing bug this one avoids, and its
-// values now land on TWO objects. Pinned so the fix cannot be undone.
-func TestAttributionTruncateIsRuneSafe(t *testing.T) {
-	// 255 is not a multiple of 3, so a byte cut lands mid-rune here.
-	if got := truncate(strings.Repeat("é", 200), 255); strings.ContainsRune(got, '�') {
-		t.Fatal("truncate severed a rune — a utm_campaign with an accent would become a string that never groups with its siblings in a report")
-	}
-}
-
 // ── Stage resolution: split polarity ─────────────────────────────────────────
 
 type stubStages struct {

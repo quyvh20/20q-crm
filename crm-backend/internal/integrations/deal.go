@@ -448,11 +448,17 @@ func (s *LeadIngestService) maybeCreateDeal(ctx context.Context, source *LeadSou
 
 // truncateChars cuts to n CHARACTERS without splitting one.
 //
-// Deliberately NOT consent.go's truncateRunes, which bounds by BYTES and only backs
-// off to a rune boundary. Both are rune-SAFE; they differ in what they count, and
-// here the limit is deals.title VARCHAR(255), which Postgres counts in characters.
-// Using the byte version would silently cut a Japanese or Greek deal name to a
-// third of the length the column would happily have stored.
+// This is deliberately a SECOND truncator beside attribution.go's `truncate`, which
+// ba987e3 consolidated the package down to — so it owes that commit an answer.
+//
+// They are not one rule. Both are rune-SAFE; they differ in what they COUNT.
+// `truncate` bounds BYTES, which is right for the attribution values it clamps.
+// This one bounds CHARACTERS, because its limit is deals.title VARCHAR(255) and
+// Postgres counts varchar in characters, not bytes. Reusing the byte version here
+// would cut a Japanese or Greek deal name at roughly 85 characters and silently
+// throw away two thirds of a column the database would have stored happily.
+//
+// Merge them only if that stops being true.
 func truncateChars(s string, n int) string {
 	if utf8.RuneCountInString(s) <= n {
 		return s

@@ -136,7 +136,7 @@ func parseConsent(raw map[string]any) ConsentRecord {
 	// basis: a string or nothing. A non-string is recorded verbatim in the envelope
 	// but cannot be displayed, so say so rather than coercing it.
 	if b, ok := clean["basis"].(string); ok {
-		rec.Basis = truncateRunes(strings.ToLower(strings.TrimSpace(b)), maxBasisLen)
+		rec.Basis = truncate(strings.ToLower(strings.TrimSpace(b)), maxBasisLen)
 		if rec.Basis != "" && !knownBases[rec.Basis] {
 			rec.Warnings = append(rec.Warnings,
 				"consent basis \""+rec.Basis+"\" is not one we recognise; it was recorded as sent")
@@ -208,18 +208,4 @@ func parseConsentTime(s string) (string, error) {
 		lastErr = err
 	}
 	return "", lastErr
-}
-
-// truncateRunes cuts at a rune boundary. Byte-slicing a multi-byte rune corrupts it
-// into U+FFFD with no error — silent mangling of a value someone may later have to
-// defend.
-func truncateRunes(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	out := s[:n]
-	for len(out) > 0 && !utf8.ValidString(out) {
-		out = out[:len(out)-1]
-	}
-	return out
 }
