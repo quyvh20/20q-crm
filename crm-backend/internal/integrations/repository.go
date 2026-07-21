@@ -1376,3 +1376,45 @@ func (r *Repository) CountLiveFormSources(ctx context.Context, orgID, connection
 		Count(&n).Error
 	return n, err
 }
+
+// DailyIngestCount is one day's deliveries for a source, split by what became of them.
+type DailyIngestCount struct {
+	Day     string `json:"day"` // YYYY-MM-DD, UTC
+	Written int64  `json:"written"`
+	Failed  int64  `json:"failed"`
+	Skipped int64  `json:"skipped"`
+}
+
+// DailyIngestCounts returns per-day delivery counts for a source over the last N days.
+//
+// Read-only and for DISPLAY only. It splits `test` deliveries out of `written`, which
+// CountCreatedToday deliberately refuses to do — and the difference matters: that
+// function backs the daily CAP, where excluding a status a caller can set on the wire
+// (google_ads accepts is_test) would hand a leaked key cap-free record creation. A
+// chart gates nothing, so the same split is safe here and is what an admin actually
+// wants to see. Do not reuse this for any limit.
+//
+// generate_series so a day with no deliveries is a zero rather than a gap: a sparkline
+// that silently omits quiet days compresses time and makes an outage look like normal
+// spacing.
+func (r *Repository) DailyIngestCounts(ctx context.Context, orgID, sourceID uuid.UUID, days int) ([]DailyIngestCount, error) {
+	if days <= 0 || days > 90 {
+		days = 30
+	}
+	var out []DailyIngestCount
+	err := r.db.WithContext(ctx).Raw(`
+		SELECT to_char(d.day::date, 'YYYY-MM-DD') AS day,
+		       COALESCE(SUM(CASE WHEN e.outcome IN ('created','updated') AND e.status <> 'test' THEN 1 ELSE 0 END), 0) AS written,
+		       COALESCE(SUM(CASE WHEN e.status = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
+		       COALESCE(SUM(CASE WHEN e.status = 'quarantined' THEN 1 ELSE 0 END), 0) AS skipped
+		  FROM generate_series(
+		           ((NOW() AT TIME ZONE 'UTC')::date - (?::int))::timestamp,
+		           ((NOW() AT TIME ZONE 'UTC')::date)::timestamp,
+		           interval '1 day') AS d(day)
+		  LEFT JOIN integration_events e
+		         ON e.org_id = ? AND e.source_id = ?
+		        AND (e.created_at AT TIME ZONE 'UTC')::date = d.day::date
+		 GROUP BY d.day
+		 ORDER BY d.day`, days-1, orgID, sourceID).Scan(&out).Error
+	return out, err
+}

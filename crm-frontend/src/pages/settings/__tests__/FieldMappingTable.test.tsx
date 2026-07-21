@@ -28,6 +28,7 @@ vi.mock('../../../features/integrations/api', () => ({
       this.reason = reason;
     }
   },
+  listSourceStats: vi.fn(),
 }));
 
 import { getMapping, saveMapping } from '../../../features/integrations/api';

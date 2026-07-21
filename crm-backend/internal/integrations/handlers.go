@@ -147,6 +147,8 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, protected []gin.HandlerFunc
 		// the org-wide route instead.
 		g.GET("/sources/:id/events", h.ListEvents)
 		g.GET("/sources/:id/mapping", h.GetMapping)
+		// Per-day delivery counts for the source sparkline (L6.6).
+		g.GET("/sources/:id/stats", h.SourceStats)
 		g.POST("/sources/:id/test-lead", h.SendTestLead)
 		// Import a facebook_form source's historical leads (L5.4).
 		g.POST("/sources/:id/backfill", h.Backfill)
@@ -580,7 +582,6 @@ func (h *Handler) allow(c *gin.Context, key string) bool {
 	return h.allowN(c, key, 1)
 }
 
-
 // captureError writes the public endpoint's error envelope.
 //
 // A local shape rather than domain.Err: handleAppError is unexported in
@@ -615,18 +616,18 @@ func bearerToken(c *gin.Context) string {
 // ── Management ───────────────────────────────────────────────────────────────
 
 type sourceRequest struct {
-	Name           string    `json:"name"`
-	Kind           string    `json:"kind"`
-	TargetSlug     string    `json:"target_slug"`
-	UpdatePolicy   string    `json:"update_policy"`
-	DefaultOwnerID *string   `json:"default_owner_id"`
+	Name           string  `json:"name"`
+	Kind           string  `json:"kind"`
+	TargetSlug     string  `json:"target_slug"`
+	UpdatePolicy   string  `json:"update_policy"`
+	DefaultOwnerID *string `json:"default_owner_id"`
 	// DailyCap is a POINTER so an explicit 0 can CLEAR the cap. A plain int makes
 	// "cleared" and "not mentioned" the same value, which is why this setting was
 	// one-way until now.
-	DailyCap       *int      `json:"daily_cap"`
-	Status         *string   `json:"status"`
-	FieldMap       *FieldMap `json:"field_map"`
-	MatchFields    []string  `json:"match_fields"`
+	DailyCap    *int      `json:"daily_cap"`
+	Status      *string   `json:"status"`
+	FieldMap    *FieldMap `json:"field_map"`
+	MatchFields []string  `json:"match_fields"`
 	// OwnerPool is a POINTER so an explicit [] can clear a rotation. A plain slice
 	// makes "cleared" and "not mentioned" the same value, which is why match_fields
 	// above cannot be emptied once set.
@@ -1829,4 +1830,27 @@ func (h *Handler) applyFieldMapUpdate(c *gin.Context, src *LeadSource, m FieldMa
 	}
 	src.FieldMap = datatypes.JSON(raw)
 	return true
+}
+
+// SourceStats serves the per-day delivery counts behind the source sparkline (L6.6).
+//
+// Display only. The split it applies (test deliveries out of `written`) is one
+// CountCreatedToday refuses, because that function backs the daily CAP and excluding a
+// wire-settable status there would be cap-free record creation. A chart gates nothing.
+func (h *Handler) SourceStats(c *gin.Context) {
+	src, ok := h.loadSource(c)
+	if !ok {
+		return
+	}
+	days, _ := strconv.Atoi(c.Query("days"))
+	rows, err := h.repo.DailyIngestCounts(c.Request.Context(), src.OrgID, src.ID, days)
+	if err != nil {
+		h.logger.Error("integrations: could not read source stats", "error", err, "source_id", src.ID.String())
+		h.mgmtError(c, http.StatusInternalServerError, "could not load delivery counts")
+		return
+	}
+	if rows == nil {
+		rows = []DailyIngestCount{}
+	}
+	c.JSON(http.StatusOK, gin.H{"data": rows})
 }

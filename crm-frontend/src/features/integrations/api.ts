@@ -2,6 +2,7 @@ import { apiFetch, parseJsonSafe, apiError } from '../../lib/api';
 import type {
   CreateSourceInput,
   CreatedLeadSource,
+  DailyIngestCount,
   DealConfig,
   EventLogFilters,
   EventPage,
@@ -237,6 +238,14 @@ export class RetryRefusedError extends Error {
     this.name = 'RetryRefusedError';
     this.reason = reason;
   }
+}
+
+/** listSourceStats reads per-day delivery counts for the source sparkline. */
+export async function listSourceStats(id: string, days = 30): Promise<DailyIngestCount[]> {
+  const res = await apiFetch(`${BASE}/${id}/stats?days=${days}`);
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Failed to load delivery counts');
+  return asList<DailyIngestCount>(json.data);
 }
 
 export async function sendTestLead(id: string): Promise<TestLeadResult> {

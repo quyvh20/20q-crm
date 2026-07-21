@@ -26,6 +26,7 @@ export const integrationKeys = {
   // The org-wide ledger. Filters are IN the key: without them a filtered page would
   // be served from the cache of a differently-filtered one, and the log would answer
   // a question nobody asked.
+  stats: (id: string) => [...integrationKeys.all, 'stats', id] as const,
   eventLog: (f: EventLogFilters) => [...integrationKeys.all, 'event-log', f] as const,
 } as const;
 
@@ -165,6 +166,15 @@ export function useRetryEvent() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: integrationKeys.all });
     },
+  });
+}
+
+/** useSourceStats reads the per-day delivery counts behind the sparkline. */
+export function useSourceStats(id: string | undefined) {
+  return useQuery({
+    queryKey: integrationKeys.stats(id ?? ''),
+    queryFn: () => api.listSourceStats(id as string),
+    enabled: Boolean(id),
   });
 }
 

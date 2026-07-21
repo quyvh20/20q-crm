@@ -27,9 +27,10 @@ vi.mock('../../../features/integrations/api', () => ({
       this.reason = reason;
     }
   },
+  listSourceStats: vi.fn(),
 }));
 
-import { getSource, listEvents, rotateKey, sendTestLead } from '../../../features/integrations/api';
+import { getSource, listEvents, listSourceStats, rotateKey, sendTestLead } from '../../../features/integrations/api';
 import IntegrationSourceDetailSection from '../IntegrationSourceDetailSection';
 
 const SOURCE: LeadSource = {
@@ -350,5 +351,15 @@ describe('IntegrationSourceDetailSection', () => {
     await screen.findByText('What was sent');
 
     expect(screen.queryByText('Consent as reported by the source')).not.toBeInTheDocument();
+  });
+
+  // Asserting the CALL, not the rendered bars. The api module is mocked with an
+  // exhaustive factory, so a missing export resolves to undefined at call time — and
+  // because the query then just errors into an empty state, a render-only assertion
+  // would pass while covering nothing. That is the failure mode this file has hit
+  // before; a call assertion fails loudly instead.
+  it('asks for the delivery counts behind the sparkline', async () => {
+    renderDetail();
+    await vi.waitFor(() => expect(listSourceStats).toHaveBeenCalledWith('s1'));
   });
 });

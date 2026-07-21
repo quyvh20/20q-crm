@@ -30,6 +30,7 @@ vi.mock('../../../features/integrations/api', () => ({
       this.reason = reason;
     }
   },
+  listSourceStats: vi.fn(),
 }));
 
 vi.mock('../../../lib/api', () => ({

@@ -396,3 +396,12 @@ export interface DiagnoseResult {
   checks: DiagnoseCheck[];
   healthy: boolean;
 }
+
+
+/** One day of deliveries for a source (L6.6). */
+export interface DailyIngestCount {
+  day: string;
+  written: number;
+  failed: number;
+  skipped: number;
+}

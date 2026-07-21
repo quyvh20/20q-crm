@@ -25,6 +25,7 @@ vi.mock('../../../features/integrations/api', () => ({
       this.reason = reason;
     }
   },
+  listSourceStats: vi.fn(),
 }));
 
 // Imported from the MOCKED module, not redeclared locally: the component's branch is

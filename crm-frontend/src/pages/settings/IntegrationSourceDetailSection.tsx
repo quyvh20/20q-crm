@@ -25,12 +25,14 @@ import GoogleAdsSetupCard from './GoogleAdsSetupCard';
 import FormEmbedSetupCard from './FormEmbedSetupCard';
 import FacebookFormCard from './FacebookFormCard';
 import { DocumentTitle } from '../../lib/useDocumentTitle';
+import IngestSparkline from './IngestSparkline';
 import { relativeTime } from '../../lib/relativeTime';
 import {
   useDeleteSource,
   useLeadSource,
   useRotateKey,
   useSendTestLead,
+  useSourceStats,
   useSourceEvents,
   useUpdateSource,
 } from '../../features/integrations/queries';
@@ -300,6 +302,7 @@ export default function IntegrationSourceDetailSection() {
 
   const { data: source, isLoading, error } = useLeadSource(id);
   const { data: events, isLoading: eventsLoading } = useSourceEvents(id);
+  const stats = useSourceStats(id);
   const updateSource = useUpdateSource();
   const rotateKey = useRotateKey();
   const deleteSource = useDeleteSource();
@@ -545,6 +548,15 @@ export default function IntegrationSourceDetailSection() {
               Every lead this source sent, and what became of it.
             </p>
           </div>
+
+          {stats.data && stats.data.length > 0 && (
+            <div className="mb-4">
+              <p className="mb-1 text-xs font-medium text-muted-foreground">
+                Deliveries, last 30 days
+              </p>
+              <IngestSparkline data={stats.data} />
+            </div>
+          )}
 
           {eventsLoading ? (
             <SpinnerBlock />
