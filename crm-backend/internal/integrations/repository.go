@@ -453,9 +453,11 @@ const consentTombstone = `{"_crm":{"redacted":true,"enforced":false}}`
 func (r *Repository) RedactForRecord(ctx context.Context, orgID, recordID uuid.UUID) error {
 	return r.db.WithContext(ctx).Exec(`
 		UPDATE integration_events
-		   SET raw_payload = '{}'::jsonb,
-		       context     = '{}'::jsonb,
-		       consent     = CASE WHEN consent IS NULL THEN NULL ELSE ?::jsonb END
+		   SET raw_payload        = '{}'::jsonb,
+		       context            = '{}'::jsonb,
+		       quarantined_fields = '{}'::jsonb,
+		       consent            = CASE WHEN consent IS NULL THEN NULL ELSE ?::jsonb END,
+		       redacted_at        = COALESCE(redacted_at, NOW())
 		 WHERE org_id = ? AND result_record_id = ?`,
 		consentTombstone, orgID, recordID).Error
 }
@@ -477,9 +479,11 @@ func (r *Repository) RedactForRecords(ctx context.Context, orgID uuid.UUID, reco
 	}
 	return r.db.WithContext(ctx).Exec(`
 		UPDATE integration_events
-		   SET raw_payload = '{}'::jsonb,
-		       context     = '{}'::jsonb,
-		       consent     = CASE WHEN consent IS NULL THEN NULL ELSE ?::jsonb END
+		   SET raw_payload        = '{}'::jsonb,
+		       context            = '{}'::jsonb,
+		       quarantined_fields = '{}'::jsonb,
+		       consent            = CASE WHEN consent IS NULL THEN NULL ELSE ?::jsonb END,
+		       redacted_at        = COALESCE(redacted_at, NOW())
 		 WHERE org_id = ? AND result_record_id IN ?`,
 		consentTombstone, orgID, recordIDs).Error
 }
@@ -1213,6 +1217,148 @@ func (r *Repository) SourceLabels(ctx context.Context, orgID uuid.UUID, ids []uu
 	}
 	for _, r := range rows {
 		out[r.ID] = eventSourceLabel{Name: r.Name, Kind: r.Kind, Deleted: r.Deleted}
+	}
+	return out, nil
+}
+
+// WithLedgerPruneLock runs fn holding a Postgres advisory lock, reporting whether
+// the lock was obtained. A caller that gets false did nothing and should skip.
+//
+// The lock is taken on a PINNED connection, not on the pooled handle. A session-level
+// advisory lock belongs to the CONNECTION that took it, and a pool hands successive
+// statements to whichever connection is free — so locking and unlocking through the
+// pool can release nothing (the unlock lands on a connection that never held it) and
+// leak the lock until that backend is recycled, after which no replica ever sweeps
+// again. The automation scheduler's timer job already established the pinned-conn
+// shape for exactly this reason; its no-activity job did not, and is the counterexample.
+func (r *Repository) WithLedgerPruneLock(ctx context.Context, fn func() error) (bool, error) {
+	sqlDB, err := r.db.DB()
+	if err != nil {
+		return false, err
+	}
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer conn.Close()
+
+	var locked bool
+	if err := conn.QueryRowContext(ctx,
+		"SELECT pg_try_advisory_lock(hashtext('integrations_ledger_prune'))").Scan(&locked); err != nil {
+		return false, err
+	}
+	if !locked {
+		return false, nil
+	}
+	// Released explicitly rather than left to connection teardown: conn.Close()
+	// returns the connection to the POOL rather than closing the backend, so an
+	// un-released session lock would ride that connection back into general use and
+	// still be held.
+	defer func() {
+		_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock(hashtext('integrations_ledger_prune'))")
+	}()
+
+	return true, fn()
+}
+
+// PruneExpiredPayloads redacts one batch of ledger rows whose personal data has no
+// other way out, and returns how many it changed.
+//
+// TWO arms, because "unreachable by contact-keyed erasure" turned out to have two
+// causes and only one of them is age:
+//
+//  1. ORPHANS — a failed or quarantined delivery that never produced a record. No
+//     contact exists to key an erasure off, so nothing can ever target it on request
+//     and retention is the only answer. Gated on age.
+//  2. FAILED ERASURES — a delivery that DID produce a record whose contact is now
+//     gone, but whose redaction never happened. Contact deletion calls the redactor
+//     best-effort and only logs on failure, and a second delete is impossible (the
+//     soft-delete finds no live row and returns before reaching the redactor), so a
+//     missed redaction is PERMANENT today. This arm is a repair, not a policy, so it
+//     applies the same write contact deletion would have — consent tombstone included
+//     — and needs no age gate: the erasure was already due.
+//
+// Scoped to `result_slug = 'contact'` because arm 2 asks the contacts table whether
+// the subject still exists. Leads may only target system objects backed by an
+// adapter, and contact is the only one today; a future slug must get its own arm
+// rather than silently borrow this one's liveness check.
+//
+// Never touches pending/processing rows, or rows with no processed_at: their payload
+// is the input a worker is about to use, and FinishEvent's wholesale Save could write
+// it straight back over a redaction anyway.
+func (r *Repository) PruneExpiredPayloads(ctx context.Context, cutoff time.Time, limit int) (int64, error) {
+	if limit <= 0 || limit > 5000 {
+		limit = 500
+	}
+	res := r.db.WithContext(ctx).Exec(`
+		UPDATE integration_events e
+		   SET raw_payload        = '{}'::jsonb,
+		       -- Context is PROJECTED, not blanked. form_id and page_id are provider
+		       -- routing identifiers, not subject data, and the retry path reads
+		       -- context->>'form_id' to resolve which form a quarantined lead belongs
+		       -- to. Blanking it would make every retry answer "this lead's form is not
+		       -- enabled" forever — on a form the admin had just enabled — and destroy
+		       -- the one recovery path the retry button exists to provide.
+		       context            = COALESCE(
+		           (SELECT jsonb_object_agg(k, v) FROM jsonb_each(e.context) AS kv(k, v)
+		             WHERE k IN ('form_id', 'page_id')),
+		           '{}'::jsonb),
+		       -- quarantined_fields holds the VALUES the allowlist refused, not just
+		       -- their names — the free-text a visitor typed into a field nothing maps.
+		       -- Nothing redacted it anywhere before this.
+		       quarantined_fields = '{}'::jsonb,
+		       -- Tombstoned rather than assumed absent. A consent envelope is only
+		       -- written after a record exists, so an orphan "cannot" have one — but
+		       -- FinishEvent's wholesale Save can null a committed result_record_id
+		       -- while consent, being unmapped, survives. The CASE writes nothing when
+		       -- the invariant holds and erases the residue when it does not.
+		       consent            = CASE WHEN e.consent IS NULL THEN NULL ELSE ?::jsonb END,
+		       redacted_at        = NOW()
+		 WHERE e.id IN (
+		       SELECT x.id FROM integration_events x
+		        WHERE x.redacted_at IS NULL
+		          AND x.processed_at IS NOT NULL
+		          AND x.status NOT IN (?, ?)
+		          AND x.result_slug = 'contact'
+		          AND (
+		                -- arm 1: orphan, expired
+		                (x.result_record_id IS NULL AND x.status IN (?, ?) AND x.created_at < ?)
+		                -- arm 2: the subject's contact is gone but the erasure did not happen
+		             OR (x.result_record_id IS NOT NULL AND NOT EXISTS (
+		                    SELECT 1 FROM contacts c
+		                     WHERE c.id = x.result_record_id AND c.deleted_at IS NULL))
+		              )
+		        ORDER BY x.created_at
+		        LIMIT ?
+		 )`,
+		consentTombstone,
+		EventStatusPending, EventStatusProcessing,
+		EventStatusFailed, EventStatusQuarantined, cutoff,
+		limit)
+	return res.RowsAffected, res.Error
+}
+
+// RedactedAtForEvents reads the retention marker for a page of deliveries.
+//
+// A separate targeted read for the same reason ConsentForEvents is one: the column is
+// ALTER-added and unmapped, so a boot guard that never ran must degrade this one
+// display rather than take down the delivery log.
+func (r *Repository) RedactedAtForEvents(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]time.Time, error) {
+	out := map[uuid.UUID]time.Time{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	var rows []struct {
+		ID         uuid.UUID
+		RedactedAt time.Time
+	}
+	if err := r.db.WithContext(ctx).Raw(
+		`SELECT id, redacted_at FROM integration_events
+		  WHERE id IN ? AND redacted_at IS NOT NULL`, ids).Scan(&rows).Error; err != nil {
+		return out, err
+	}
+	for _, row := range rows {
+		out[row.ID] = row.RedactedAt
 	}
 	return out, nil
 }

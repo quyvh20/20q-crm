@@ -323,8 +323,13 @@ describe('IntegrationSourceDetailSection', () => {
     expect(await screen.findByText('Consent as reported by the source')).toBeInTheDocument();
     expect(screen.getByText(/nothing in this CRM checks it before sending/i)).toBeInTheDocument();
     expect(screen.getByText(/not an opt-out list/i)).toBeInTheDocument();
-    // Retention is stated truthfully — there is no prune job yet.
-    expect(screen.getByText(/no automatic deletion yet/i)).toBeInTheDocument();
+    // Retention is stated truthfully, and the statement moved when the fact did: a
+    // 90-day sweep now erases deliveries that never became a record, so "no automatic
+    // deletion yet" became false. Consent only ever exists on a delivery that DID
+    // produce a record, so the contact-keyed promise still holds for THIS row — the
+    // copy must name the rule that applies rather than deny that any rule exists.
+    expect(screen.getByText(/erased automatically after 90 days/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no automatic deletion yet/i)).toBeNull();
   });
 
   it('reports an erased consent record without pretending none was given', async () => {

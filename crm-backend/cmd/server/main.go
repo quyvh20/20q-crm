@@ -1082,6 +1082,18 @@ func main() {
 			// query instead of breaking FinishEvent's wholesale Save.
 			{"events org keyset index", `CREATE INDEX IF NOT EXISTS idx_integration_events_org_keyset
 				ON integration_events(org_id, created_at DESC, id DESC)`},
+			// L6.5b ledger retention. UNMAPPED on the model (like consent and
+			// assigned_owner_id) because FinishEvent is a wholesale Save: a mapped
+			// redacted_at whose in-memory value is zero would be written back as NULL on
+			// the next write to the row, un-marking a delivery whose payload really was
+			// erased. A guard that never ran degrades to "the sweep errors and logs" —
+			// it is in no capture-path SELECT, so it cannot 500 a lead.
+			{"events redacted_at", `ALTER TABLE integration_events
+				ADD COLUMN IF NOT EXISTS redacted_at TIMESTAMPTZ`},
+			// Serves the sweep and empties itself as the backlog drains. Distinct name
+			// for the reason above.
+			{"events prunable index", `CREATE INDEX IF NOT EXISTS idx_integration_events_prunable
+				ON integration_events(created_at) WHERE redacted_at IS NULL`},
 			// NON-unique on purpose. The existing contacts unique index is on raw
 			// (org_id, email) and is case-SENSITIVE, so case-variant twins are legal
 			// today; a UNIQUE index here would fail to build on any org that has them —
@@ -2047,6 +2059,14 @@ func main() {
 		// so the two custody tables do not grow without bound. Advisory — every
 		// consume already re-checks expiry, so a lingering row is harmless.
 		go integrations.StartOAuthArtifactSweeper(context.Background(), integrationsRepo, autoLogger)
+
+		// Ledger retention (L6.5b). Contact-keyed erasure covers every delivery that
+		// became a record and none of the rest: a failed or quarantined delivery still
+		// holds the person's payload verbatim and has no contact to key an erasure off,
+		// so bounding its lifetime is the only reachable answer. Redacts, never
+		// deletes, and never touches a delivery that produced a record — those are
+		// erasable on request and are the only rows that can carry a consent envelope.
+		go integrations.StartLedgerPrune(context.Background(), integrationsRepo, autoLogger)
 
 		// ── L5.3 Facebook leadgen webhook + async processor ───────────────
 		// The PUBLIC webhook endpoint (GET verify handshake + POST signed receipt)

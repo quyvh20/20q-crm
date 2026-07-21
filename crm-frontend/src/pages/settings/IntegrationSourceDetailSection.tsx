@@ -234,9 +234,16 @@ function ConsentBlock({ consent }: { consent: Record<string, unknown> }) {
             Recorded only — nothing in this CRM checks it before sending. It is evidence of what
             the source told us, not an opt-out list, and no email or workflow is filtered by it.
           </p>
+          {/* "There is no automatic deletion yet" was true when consent shipped and is
+              not any more: deliveries that never became a record are erased after 90
+              days. This envelope is not one of those — consent is only ever stored on a
+              delivery that DID produce a record — so the contact-keyed promise still
+              holds for it, and the sentence now says which rule applies rather than
+              denying that any rule exists. */}
           <p className="text-xs text-muted-foreground">
-            Kept with this delivery until you delete the contact, which erases it. There is no
-            automatic deletion yet.
+            Kept with this delivery until you delete the contact, which erases it. Deliveries
+            that never became a record are erased automatically after 90 days; this one did,
+            so it is kept until you say otherwise.
           </p>
         </>
       )}
