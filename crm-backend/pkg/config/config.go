@@ -1,7 +1,9 @@
 package config
 
 import (
+	"fmt"
 	"log"
+	"strings"
 
 	"github.com/spf13/viper"
 )
@@ -198,5 +200,58 @@ func LoadConfig() (*Config, error) {
 		return nil, err
 	}
 
+	if err := validateFrontendURL(config.FrontendURL); err != nil {
+		return nil, err
+	}
+
 	return &config, nil
+}
+
+// validateFrontendURL rejects a FRONTEND_URL that the CORS layer cannot accept.
+//
+// This exists because the failure it prevents is close to undiagnosable in
+// production. FRONTEND_URL feeds delivery.AllowedOrigins, which feeds
+// cors.New(...) in main.go — and gin-contrib/cors PANICS on a bad origin rather
+// than returning an error (cors@v1.7.7/config.go:45). That call sits BEFORE
+// srv.ListenAndServe(), so the process dies without ever binding the port: no
+// /health, no route table, nothing to probe. The platform sees only a connection
+// refused for the whole healthcheck window and reports a generic healthcheck
+// failure, while the last-good container keeps serving and hides it. Grepping the
+// codebase for log.Fatal finds nothing, because the fatal is inside a dependency.
+//
+// Failing here instead turns that into one line naming the variable and the fix,
+// emitted by the existing "Failed to load config" fatal in main.go. It stays FATAL
+// rather than falling back to a default: a wrong CORS origin means the frontend
+// cannot reach the API at all, so booting anyway would ship a broken deployment
+// where refusing to boot keeps the previous one alive.
+//
+// The scheme rule mirrors the library exactly — an origin must contain "*" or
+// start with one of cors.DefaultSchemas ("http://", "https://"). Keep it in sync
+// if the CORS config ever enables AllowWebSockets/AllowFiles/CustomSchemas, which
+// widen the accepted set.
+func validateFrontendURL(raw string) error {
+	if strings.TrimSpace(raw) == "" {
+		return fmt.Errorf("FRONTEND_URL is empty: set it to the browser origin of the frontend, " +
+			"scheme included (e.g. https://app.example.com)")
+	}
+	// Checked before the scheme test, which HasPrefix would otherwise pass. A padded
+	// value never panics — it silently fails to match any browser Origin header, so
+	// every cross-origin request is rejected and the frontend looks broken for a
+	// reason nothing logs.
+	if raw != strings.TrimSpace(raw) {
+		return fmt.Errorf("FRONTEND_URL %q has leading or trailing whitespace: an origin is "+
+			"compared byte-for-byte against the browser's Origin header, so the padding would "+
+			"silently reject every cross-origin request", raw)
+	}
+	if strings.Contains(raw, "*") {
+		return nil
+	}
+	for _, scheme := range []string{"http://", "https://"} {
+		if strings.HasPrefix(raw, scheme) {
+			return nil
+		}
+	}
+	return fmt.Errorf("FRONTEND_URL %q has no scheme: it must start with http:// or https:// "+
+		"(or contain a * wildcard). Without one the CORS layer panics before the server binds "+
+		"its port, which surfaces only as a healthcheck timeout", raw)
 }

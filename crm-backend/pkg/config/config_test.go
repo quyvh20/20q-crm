@@ -47,12 +47,24 @@ var knownUnbound = map[string]string{
 func TestEveryConfigFieldResolvesFromTheEnvironment(t *testing.T) {
 	typ := reflect.TypeOf(Config{})
 
+	// Keys that LoadConfig validates for FORMAT need a sentinel that satisfies the
+	// format while staying unique, or this test fails on the validation rather than
+	// on what it is actually asserting. Still a distinct value per key, so the
+	// copy-paste detection below is unaffected.
+	formatted := map[string]string{
+		"FRONTEND_URL": "http://sentinel-frontend_url", // see validateFrontendURL
+	}
+
 	// A sentinel per key, so a field reading another field's value (a
 	// copy-paste in the struct tags) fails too rather than passing.
 	sentinels := make(map[string]string, typ.NumField())
 	for i := 0; i < typ.NumField(); i++ {
 		key := typ.Field(i).Tag.Get("mapstructure")
 		if key == "" {
+			continue
+		}
+		if v, ok := formatted[key]; ok {
+			sentinels[key] = v
 			continue
 		}
 		if typ.Field(i).Type.Kind() == reflect.Bool {
