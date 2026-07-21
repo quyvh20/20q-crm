@@ -174,7 +174,14 @@ export default function ProviderConnections() {
                       <Badge variant="warning">not receiving yet</Badge>
                     )}
                   </div>
-                  {!c.subscribed && c.last_error && (
+                  {/* The reason shows on ANY status. This used to also require
+                      !c.subscribed, which is only ever set on a `connected`
+                      connection — so an `error` or `degraded` account rendered a
+                      red/amber pill with no explanation beside it, hiding the
+                      message in exactly the state the admin needs it. last_error
+                      is a fixed, token-free string the backend chose, never a
+                      reflected provider payload, so it is safe to render as-is. */}
+                  {c.last_error && (
                     <p className="mt-1 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
                       <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
                       {c.last_error}

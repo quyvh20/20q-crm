@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -28,6 +29,28 @@ const digestMinInterval = 23 * time.Hour
 // that was down for a while doesn't email an ancient backlog (idempotency comes from
 // digested_at, not this window).
 const digestMaxLookback = 7 * 24 * time.Hour
+
+// digestPerTypeCap bounds how many rows of ONE event type may fill a single digest
+// email. Without it a noisy producer silently deletes a member's other
+// notifications: the fetch is oldest-first and capped at 100, so the rows behind it
+// are never fetched, stay pending, and eventually age past digestMaxLookback — lost
+// with no email and no trace. Overflow is summarized rather than dropped.
+const digestPerTypeCap = 10
+
+// digestTypeLabel renders an event type for the overflow summary line, preferring
+// the catalog's human label. An unknown type falls back to the raw key rather than
+// being hidden — a summary that cannot name what it is summarizing is not a summary.
+func digestTypeLabel(typ string) string {
+	for _, t := range domain.NotificationEventTypes {
+		if t.Key == typ {
+			return strings.ToLower(t.Label)
+		}
+	}
+	if typ == "" {
+		return "notifications"
+	}
+	return typ + " notifications"
+}
 
 // notifUserLookup resolves a recipient's email for the notification email channel
 // (U5). domain.AuthRepository satisfies it; kept narrow so the notification usecase
@@ -317,15 +340,42 @@ func (u *notificationUseCase) RunDailyDigest(ctx context.Context) (int, error) {
 			continue
 		}
 		// Every fetched row is a candidate; only email-eligible types go in the email.
+		//
+		// Per-type quota, because one noisy producer could otherwise silently delete a
+		// member's other notifications. The fetch is oldest-first and capped, so a
+		// source flapping between healthy and failing fills the whole window; the
+		// workflow notifications behind it are never fetched, stay pending, and after
+		// digestMaxLookback they fall out of the query's floor and are lost outright —
+		// never emailed, never explained. The quota bounds each type's share of the
+		// EMAIL while `ids` still consumes every fetched row, so nothing clogs the
+		// queue behind it either.
 		ids := make([]uuid.UUID, 0, len(rows))
 		items := make([]domain.NotificationDigestItem, 0, len(rows))
+		perType := map[string]int{}
+		overflow := map[string]int{}
 		for _, r := range rows {
 			ids = append(ids, r.ID)
-			if pref.Channels(r.Type).Email {
-				items = append(items, domain.NotificationDigestItem{
-					Title: r.Title, Body: r.Body, Link: u.absoluteLink(r.Link), CreatedAt: r.CreatedAt,
-				})
+			if !pref.Channels(r.Type).Email {
+				continue
 			}
+			perType[r.Type]++
+			if perType[r.Type] > digestPerTypeCap {
+				overflow[r.Type]++
+				continue
+			}
+			items = append(items, domain.NotificationDigestItem{
+				Title: r.Title, Body: r.Body, Link: u.absoluteLink(r.Link), CreatedAt: r.CreatedAt,
+			})
+		}
+		// Overflow is SUMMARIZED, never silently dropped. A digest that quietly omits
+		// rows is the same failure as the crowding it fixes, one layer down: the member
+		// would believe they had seen everything.
+		for typ, n := range overflow {
+			items = append(items, domain.NotificationDigestItem{
+				Title:     fmt.Sprintf("+%d more %s", n, digestTypeLabel(typ)),
+				Body:      "Only the most recent were listed above. Open the app to see the rest.",
+				CreatedAt: now,
+			})
 		}
 		// consumed = mark the fetched rows digested (so they're never reconsidered).
 		// We hold it back ONLY on a real send failure, so the email-eligible rows are

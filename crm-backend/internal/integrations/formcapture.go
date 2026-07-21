@@ -287,15 +287,7 @@ func (h *Handler) formCapAllows(c *gin.Context, source *FormSource, lead *RawLea
 // worth writing down: the badge will rarely trip for this kind, so L6 alerting must
 // not lean on it for form embeds.
 func (h *Handler) countFormFailure(c *gin.Context, source *FormSource) {
-	flipped, err := h.repo.IncrementSourceFailure(c.Request.Context(), source.ID)
-	if err != nil {
-		h.logger.Error("integrations: could not count form failure", "error", err, "source_id", source.ID.String())
-		return
-	}
-	if flipped {
-		h.logger.Error("integrations: form source flipped to error after consecutive failures",
-			"source_id", source.ID.String(), "org_id", source.OrgID.String())
-	}
+	h.countSourceFailure(c.Request.Context(), &source.LeadSource)
 }
 
 // recordFormRejection writes the ledger row for a submission we accepted but did

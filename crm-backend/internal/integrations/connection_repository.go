@@ -319,6 +319,101 @@ func (r *Repository) SetConnectionStatus(ctx context.Context, orgID, id uuid.UUI
 		status, lastError, id, orgID).Error
 }
 
+// connDegradeThreshold is how many consecutive RETRYABLE fetch failures move a
+// connection to 'degraded'. Small on purpose: a webhook carries only ids, so every
+// failed fetch is a lead we cannot see, and three of them is already a pattern.
+const connDegradeThreshold = 4
+
+// BumpConnectionFailure counts one post-signature fetch failure and reports the
+// status this call moved the connection INTO, or "" when nothing changed.
+//
+// Two classes, deliberately kept apart all the way to the notification copy:
+//
+//   - permanent (a non-retryable 4xx, or credentials that will not open) → 'error'
+//     immediately. A dead token is dead now; making an admin wait for a threshold
+//     would delay the one alert that requires them to act.
+//   - retryable (429 / 5xx / network) → counts toward 'degraded', and is CAPPED
+//     there. This is the hole `degraded` was declared for and never filled: today a
+//     Graph outage or a sustained rate limit is classified Retryable, so it exhausts
+//     maxWebhookAttempts, drops the delivery, and leaves the row reading 'connected'
+//     — silent lead loss behind a green badge. The cap is what keeps the `error` copy
+//     honest: 'error' means "your credential stopped working, reconnect", and telling
+//     someone to redo OAuth because Facebook was throttling us would be false.
+//
+// Both classes are reached only AFTER X-Hub-Signature-256 verification, so neither is
+// forgeable — the same rule that governs the source-side counter.
+//
+// One atomic statement with a `prev` CTE: the row lock serialises concurrent
+// deliveries so exactly one observes a given transition, which is what makes the
+// notification once-only across replicas without a leader or a watermark column.
+func (r *Repository) BumpConnectionFailure(ctx context.Context, orgID, id uuid.UUID, permanent bool, reason string) (band string, err error) {
+	var out []string
+	err = r.db.WithContext(ctx).Raw(`
+		WITH prev AS (
+		    SELECT id, status FROM integration_connections
+		     WHERE id = ? AND org_id = ? AND deleted_at IS NULL FOR UPDATE
+		)
+		UPDATE integration_connections c
+		   SET consecutive_failures = c.consecutive_failures + 1,
+		       status = CASE
+		           WHEN ? THEN 'error'
+		           WHEN c.status = 'connected' AND c.consecutive_failures + 1 >= ? THEN 'degraded'
+		           ELSE c.status END,
+		       last_error = ?,
+		       updated_at = NOW()
+		  FROM prev
+		 WHERE c.id = prev.id
+		RETURNING CASE WHEN c.status = prev.status THEN '' ELSE c.status END`,
+		id, orgID, permanent, connDegradeThreshold, reason).Scan(&out).Error
+	if err != nil || len(out) == 0 {
+		return "", err
+	}
+	return out[0], nil
+}
+
+// EaseConnectionHealth clears the failure count after a successful fetch and reports
+// whether this call un-flipped the connection.
+//
+// Note what it does NOT do: it does not stamp last_synced_at. The heal fires right
+// after FetchLead succeeds and BEFORE the form is resolved, so a connection whose
+// every delivery is being quarantined for a disabled form reaches this line on each
+// one. Stamping a sync time there would render the most confident green the UI has
+// over a pipe that has produced no records at all. last_synced_at is written by
+// MarkConnectionSynced, from the terminal-success path only.
+func (r *Repository) EaseConnectionHealth(ctx context.Context, orgID, id uuid.UUID) (healed bool, err error) {
+	var out []bool
+	err = r.db.WithContext(ctx).Raw(`
+		WITH prev AS (
+		    SELECT id, status FROM integration_connections
+		     WHERE id = ? AND org_id = ? AND deleted_at IS NULL FOR UPDATE
+		)
+		UPDATE integration_connections c
+		   SET consecutive_failures = 0,
+		       status = CASE WHEN c.status IN ('degraded', 'error') THEN 'connected' ELSE c.status END,
+		       last_error = CASE WHEN c.status IN ('degraded', 'error') THEN '' ELSE c.last_error END,
+		       updated_at = NOW()
+		  FROM prev
+		 WHERE c.id = prev.id
+		RETURNING prev.status IN ('degraded', 'error')`,
+		id, orgID).Scan(&out).Error
+	if err != nil || len(out) == 0 {
+		return false, err
+	}
+	return out[0], nil
+}
+
+// MarkConnectionSynced stamps last_synced_at — the column L5 declared, the API
+// returns, and no code path has ever written, so every connection card in the fleet
+// renders "never synced".
+//
+// Called only where a delivery reached a terminal SUCCESS, so the timestamp means
+// what the label says: a lead arrived. Best-effort.
+func (r *Repository) MarkConnectionSynced(ctx context.Context, id uuid.UUID) error {
+	return r.db.WithContext(ctx).Exec(
+		`UPDATE integration_connections SET last_synced_at = NOW(), updated_at = NOW()
+		  WHERE id = ? AND deleted_at IS NULL`, id).Error
+}
+
 // SoftDeleteConnection retires a connection, releasing its claim (both the
 // deleted_at predicate and the status leave the claim index).
 //

@@ -164,6 +164,35 @@ export type EventStatus =
 
 export type EventOutcome = 'created' | 'updated';
 
+/**
+ * What the SERVER decided may be done with a delivery. The client renders this
+ * verdict; it never computes one. Retry guards a callerless contact write, so the
+ * decision belongs where the guards are.
+ */
+export type RetryMode = 'refetch' | 'none';
+
+export interface RetryPlan {
+  mode: RetryMode;
+  reason?: string;
+}
+
+/** One page of the org-wide ledger. */
+export interface EventPage {
+  events: IntegrationEvent[];
+  next_cursor?: string;
+  /** Source id -> label, INCLUDING soft-deleted sources so no row shows a bare uuid. */
+  sources: Record<string, { name: string; kind: string; deleted: boolean }>;
+}
+
+export interface EventLogFilters {
+  source_id?: string;
+  connection_id?: string;
+  status?: EventStatus[];
+  unresolved?: boolean;
+  cursor?: string;
+  limit?: number;
+}
+
 /** One inbound delivery: what arrived, what happened, and what it became. */
 export interface IntegrationEvent {
   id: string;
@@ -172,6 +201,8 @@ export interface IntegrationEvent {
   connection_id?: string;
   provider_event_id?: string;
   status: EventStatus;
+  /** Present only on the org-wide ledger route, which computes it server-side. */
+  retry?: RetryPlan;
   claimed_at?: string;
   attempts: number;
   raw_payload: Record<string, unknown>;

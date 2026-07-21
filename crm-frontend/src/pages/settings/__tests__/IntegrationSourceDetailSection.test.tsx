@@ -17,6 +17,16 @@ vi.mock('../../../features/integrations/api', () => ({
   rotateKey: vi.fn(),
   listEvents: vi.fn(),
   sendTestLead: vi.fn(),
+  listEventLog: vi.fn(),
+  retryEvent: vi.fn(),
+  RetryRefusedError: class RetryRefusedError extends Error {
+    reason: string;
+    constructor(message: string, reason: string) {
+      super(message);
+      this.name = 'RetryRefusedError';
+      this.reason = reason;
+    }
+  },
 }));
 
 import { getSource, listEvents, rotateKey, sendTestLead } from '../../../features/integrations/api';
@@ -200,6 +210,70 @@ describe('IntegrationSourceDetailSection', () => {
     await screen.findByText('What this proved');
 
     expect(screen.queryByText(/rejected right now/i)).not.toBeInTheDocument();
+  });
+
+  it('tells an error-flagged source it is STILL accepting leads, not rejecting them', async () => {
+    // `error` is a self-healing badge, not a gate — the backend's IsLive() is
+    // `status != 'disabled'`, so a flagged source is still taking deliveries and
+    // still logging every one. The banner used to be gated on `!== 'active'` and so
+    // told this admin their leads were being rejected, sending them to hunt an
+    // outage that is not happening while the real failures sat unread in the log.
+    vi.mocked(getSource).mockResolvedValue({ ...SOURCE, status: 'error', consecutive_failures: 3 });
+    vi.mocked(sendTestLead).mockResolvedValue({
+      record_id: 'c9',
+      event_id: 'e2',
+      outcome: 'created',
+      source_status: 'error',
+    });
+    renderDetail();
+
+    fireEvent.click(await screen.findByRole('button', { name: /send test lead/i }));
+
+    expect(await screen.findByText('still accepting leads')).toBeInTheDocument();
+    expect(screen.getByText(/clears itself as soon as one succeeds/i)).toBeInTheDocument();
+    expect(screen.queryByText(/rejected right now/i)).not.toBeInTheDocument();
+  });
+
+  it('offers Disable — never Enable — on an error source, which is already live', async () => {
+    // "Enable" on a live source is false on its face, and clicking it is worse than
+    // cosmetic: PATCHing status to active runs SetSourceStatus, which also zeroes
+    // consecutive_failures. The button would have quietly erased the very failure
+    // count the admin had just been alerted to.
+    vi.mocked(getSource).mockResolvedValue({ ...SOURCE, status: 'error', consecutive_failures: 3 });
+    renderDetail();
+
+    expect(await screen.findByRole('button', { name: 'Disable' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Enable' })).not.toBeInTheDocument();
+  });
+
+  it('offers Enable only on a disabled source', async () => {
+    vi.mocked(getSource).mockResolvedValue({ ...SOURCE, status: 'disabled' });
+    renderDetail();
+
+    expect(await screen.findByRole('button', { name: 'Enable' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Disable' })).not.toBeInTheDocument();
+  });
+
+  it('shows when the last lead arrived', async () => {
+    // The page already fetched last_used_at and read it as a boolean for the delete
+    // confirm, but never showed it. Beside an error badge it is what separates a
+    // source that broke an hour ago from one that never worked at all.
+    vi.mocked(getSource).mockResolvedValue({
+      ...SOURCE,
+      last_used_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+    });
+    renderDetail();
+
+    expect(await screen.findByText(/Last lead received 2h ago/)).toBeInTheDocument();
+  });
+
+  it('says plainly that no lead has ever arrived rather than rendering a blank', async () => {
+    // The fixture has no last_used_at. An empty slot reads as a loading state or a
+    // bug; "no leads received yet" is the finding itself on a source an admin
+    // believes they wired up.
+    renderDetail();
+
+    expect(await screen.findByText('No leads received yet')).toBeInTheDocument();
   });
 
   it('says "matched" not "updated" when a repeat test wrote nothing', async () => {

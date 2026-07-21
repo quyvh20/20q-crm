@@ -34,13 +34,15 @@ type webhookProcessor struct {
 	conn   *ConnectionService
 	ingest *LeadIngestService
 	logger *slog.Logger
+	// health announces connection transitions. Nil-tolerant.
+	health *HealthReporter
 }
 
 // StartWebhookProcessor runs the async claim→fetch→ingest loop until ctx is
 // cancelled — the StartReaper pattern. Launched with context.Background() so a
 // request cancellation cannot kill it.
-func StartWebhookProcessor(ctx context.Context, repo *Repository, conn *ConnectionService, ingest *LeadIngestService, logger *slog.Logger) {
-	p := &webhookProcessor{repo: repo, conn: conn, ingest: ingest, logger: logger}
+func StartWebhookProcessor(ctx context.Context, repo *Repository, conn *ConnectionService, ingest *LeadIngestService, logger *slog.Logger, health *HealthReporter) {
+	p := &webhookProcessor{repo: repo, conn: conn, ingest: ingest, logger: logger, health: health}
 	t := time.NewTicker(webhookPollInterval)
 	defer t.Stop()
 	for {
@@ -165,7 +167,7 @@ func (p *webhookProcessor) process(ctx context.Context, event *IntegrationEvent)
 		// exhaustion, the write deadline — a raw or 5xx error) is not, so repend it
 		// while attempt budget remains rather than lose the lead silently.
 		if !isPermanentIngestError(ierr) && event.Attempts < maxWebhookAttempts {
-			if rerr := p.repo.RependEvent(ctx, event.ID, "lead write failed transiently; will retry"); rerr != nil {
+			if rerr := p.repo.RependEvent(ctx, event.OrgID, event.ID, "lead write failed transiently; will retry"); rerr != nil {
 				p.logf("integrations: could not repend after a transient write failure", "event_id", event.ID.String(), "error", rerr)
 			}
 			return
@@ -193,11 +195,16 @@ func (p *webhookProcessor) handleFetchError(ctx context.Context, conn *Integrati
 		// transient failure (a Graph outage) eventually fails but does NOT flip the
 		// connection — the token may be perfectly fine.
 		if event.Attempts < maxWebhookAttempts {
-			if rerr := p.repo.RependEvent(ctx, event.ID, "lead fetch failed transiently; will retry"); rerr != nil {
+			if rerr := p.repo.RependEvent(ctx, event.OrgID, event.ID, "lead fetch failed transiently; will retry"); rerr != nil {
 				p.logf("integrations: could not repend delivery", "event_id", event.ID.String(), "error", rerr)
 			}
 			return
 		}
+		// Budget exhausted on a TRANSIENT failure: this delivery is now lost, and
+		// nothing about the connection said so until L6.1. Count it toward `degraded`
+		// — capped there, never `error`, because the credential is very likely fine
+		// and telling an admin to reconnect during a Graph outage would be false.
+		p.degradeConnection(ctx, conn, "leads could not be fetched — the provider is rate-limiting or failing our requests")
 		p.fail(ctx, event, "lead fetch kept failing transiently")
 		return
 	}
@@ -213,12 +220,37 @@ func (p *webhookProcessor) handleFetchError(ctx context.Context, conn *Integrati
 // flipConnectionError trips a connection to error, counting POST-fetch failures
 // only (a webhook delivery reaching the fetch has already passed the signature
 // check, so it is not attacker-forgeable). Best-effort.
+// It takes the transition back from the statement rather than inferring it from the
+// row as claimed: two replicas can hold the same connection's deliveries at once, so
+// an in-memory `conn.Status == error` comparison is not evidence that THIS process is
+// the one that changed it — and a notification hung off that comparison fires once per
+// replica. The `prev` CTE's row lock makes exactly one caller observe the change.
 func (p *webhookProcessor) flipConnectionError(ctx context.Context, conn *IntegrationConnection, reason string) {
-	if conn.Status == ConnStatusError {
-		return // already flagged; do not churn
+	p.bumpConnection(ctx, conn, true, reason)
+}
+
+// degradeConnection counts a RETRYABLE fetch failure.
+//
+// New in L6.1, and it closes the quietest hole in the pipeline: 429 and 5xx are
+// classified retryable, so they never flipped anything, and a sustained Graph outage
+// or rate limit would exhaust the three-attempt budget, drop every delivery, and leave
+// the connection card reading "connected". Silent lead loss behind a green badge is
+// precisely what `degraded` was declared for and never used for.
+func (p *webhookProcessor) degradeConnection(ctx context.Context, conn *IntegrationConnection, reason string) {
+	p.bumpConnection(ctx, conn, false, reason)
+}
+
+func (p *webhookProcessor) bumpConnection(ctx context.Context, conn *IntegrationConnection, permanent bool, reason string) {
+	band, err := p.repo.BumpConnectionFailure(ctx, conn.OrgID, conn.ID, permanent, reason)
+	if err != nil {
+		p.logf("integrations: could not record connection failure", "connection_id", conn.ID.String(), "error", err)
+		return
 	}
-	if err := p.repo.SetConnectionStatus(ctx, conn.OrgID, conn.ID, ConnStatusError, reason); err != nil {
-		p.logf("integrations: could not flip connection to error", "connection_id", conn.ID.String(), "error", err)
+	switch band {
+	case ConnStatusError:
+		p.health.ConnectionError(conn.OrgID, conn.ID, conn.ExternalAccountLabel, conn.CreatedBy)
+	case ConnStatusDegraded:
+		p.health.ConnectionDegraded(conn.OrgID, conn.ID, conn.ExternalAccountLabel, conn.CreatedBy)
 	}
 }
 
@@ -226,11 +258,13 @@ func (p *webhookProcessor) flipConnectionError(ctx context.Context, conn *Integr
 // self-healing badge, matching TouchSourceUsed for sources. Only acts when the
 // connection was NOT already healthy, to avoid a write on every delivery.
 func (p *webhookProcessor) healConnection(ctx context.Context, conn *IntegrationConnection) {
-	if conn.Status == ConnStatusConnected {
+	healed, err := p.repo.EaseConnectionHealth(ctx, conn.OrgID, conn.ID)
+	if err != nil {
+		p.logf("integrations: could not heal connection", "connection_id", conn.ID.String(), "error", err)
 		return
 	}
-	if err := p.repo.SetConnectionStatus(ctx, conn.OrgID, conn.ID, ConnStatusConnected, ""); err != nil {
-		p.logf("integrations: could not heal connection", "connection_id", conn.ID.String(), "error", err)
+	if healed {
+		p.health.ConnectionRecovered(conn.OrgID, conn.ID, conn.ExternalAccountLabel, conn.CreatedBy)
 	}
 }
 
@@ -253,7 +287,7 @@ func (p *webhookProcessor) quarantine(ctx context.Context, event *IntegrationEve
 // else fails it.
 func (p *webhookProcessor) retryOrFail(ctx context.Context, event *IntegrationEvent, retryable bool, reason string) {
 	if retryable && event.Attempts < maxWebhookAttempts {
-		if err := p.repo.RependEvent(ctx, event.ID, reason+"; will retry"); err != nil {
+		if err := p.repo.RependEvent(ctx, event.OrgID, event.ID, reason+"; will retry"); err != nil {
 			p.logf("integrations: could not repend delivery", "event_id", event.ID.String(), "error", err)
 		}
 		return

@@ -20,6 +20,7 @@ import {
 import SecretReveal from '../../components/settings/SecretReveal';
 import OwnerPicker from '../../components/records/OwnerPicker';
 import ProviderConnections from './ProviderConnections';
+import { relativeTime } from '../../lib/relativeTime';
 import { useCreateSource, useLeadSources } from '../../features/integrations/queries';
 import {
   UPDATE_POLICY_HELP,
@@ -38,18 +39,6 @@ const STATUS_VARIANT: Record<LeadSourceStatus, 'success' | 'secondary' | 'destru
   disabled: 'secondary',
   error: 'destructive',
 };
-
-function relativeTime(iso?: string): string {
-  if (!iso) return 'Never';
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return 'Never';
-  const mins = Math.floor((Date.now() - then) / 60000);
-  if (mins < 1) return 'Just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
-}
 
 export default function IntegrationsSection() {
   const { data: sources, isLoading, error } = useLeadSources();
@@ -170,12 +159,24 @@ export default function IntegrationsSection() {
         <>
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-medium text-foreground">Lead sources</h3>
-            {!showForm && (
-              <Button size="sm" onClick={() => setShowForm(true)}>
-                <Plus />
-                New source
-              </Button>
-            )}
+            <div className="flex items-center gap-2">
+              {/* The org-wide ledger. Reachable from here because the failures worth
+                  looking at are precisely the ones no single source can show: a
+                  provider delivery that broke before we knew which form it belonged
+                  to has no source to file it under. */}
+              <Link
+                to="/settings/integrations/deliveries"
+                className="text-xs text-primary hover:underline"
+              >
+                View all deliveries
+              </Link>
+              {!showForm && (
+                <Button size="sm" onClick={() => setShowForm(true)}>
+                  <Plus />
+                  New source
+                </Button>
+              )}
+            </div>
           </div>
 
           {showForm && (

@@ -162,8 +162,24 @@ func (r *Repository) FindSourceByTokenHash(ctx context.Context, hash string) (*L
 }
 
 // TouchSourceUsed stamps last_used_at, resets the failure counter, and un-flips a
-// source that had tripped to 'error'. Best-effort: a failure here must never fail
-// a lead that was already written.
+// source that had tripped to 'error'. It reports whether THIS call performed the
+// un-flip, which is the recovery edge L6 notifies on. Best-effort: a failure here
+// must never fail a lead that was already written.
+//
+// The `prev` CTE exists only to read the status the row held BEFORE the update —
+// RETURNING otherwise yields the new value, which is 'active' whether or not this
+// call changed anything, so a recovery notification would fire on every successful
+// lead forever. FOR UPDATE serialises concurrent deliveries on the row, so exactly
+// one of them ever observes the transition: that is what makes the edge once-only
+// across replicas with no leader election, and it is the same property
+// ownerTicketSQL already depends on.
+//
+// This is deliberately a STATEMENT change and not a new "was notified" column. A
+// statement that is wrong fails in every environment at build or test time; an
+// ALTER-added column fails silently on prod alone, because the boot-guard loop logs
+// and boots on — and this particular statement is load-bearing for two features that
+// already work (last_used_at, and the self-heal), so breaking it there would freeze
+// last_used_at fleet-wide and make `error` permanent, with no error anywhere.
 //
 // The un-flip is what makes `error` a SELF-HEALING badge rather than a gate. The
 // alternative — refusing traffic while flagged — was designed and rejected: a
@@ -173,13 +189,23 @@ func (r *Repository) FindSourceByTokenHash(ctx context.Context, hash string) (*L
 // A transient blip would brick the source until a human noticed, with L6 alerting
 // not yet built. Processed-normally-but-flagged loses nothing and heals itself.
 // Deliberately never touches 'disabled': that is an admin's explicit choice.
-func (r *Repository) TouchSourceUsed(ctx context.Context, id uuid.UUID) error {
-	return r.db.WithContext(ctx).Exec(
-		`UPDATE lead_sources
+func (r *Repository) TouchSourceUsed(ctx context.Context, id uuid.UUID) (healed bool, err error) {
+	var out []bool
+	err = r.db.WithContext(ctx).Raw(
+		`WITH prev AS (
+		     SELECT id, status FROM lead_sources WHERE id = ? FOR UPDATE
+		 )
+		 UPDATE lead_sources s
 		    SET last_used_at = NOW(),
 		        consecutive_failures = 0,
-		        status = CASE WHEN status = 'error' THEN 'active' ELSE status END
-		  WHERE id = ?`, id).Error
+		        status = CASE WHEN s.status = 'error' THEN 'active' ELSE s.status END
+		   FROM prev
+		  WHERE s.id = prev.id
+		 RETURNING prev.status = 'error'`, id).Scan(&out).Error
+	if err != nil || len(out) == 0 {
+		return false, err
+	}
+	return out[0], nil
 }
 
 // CountCreatedToday counts records this source has created since UTC midnight —
@@ -304,13 +330,19 @@ func (r *Repository) ClaimPendingEvents(ctx context.Context, limit int) ([]Integ
 // worker's response to a RETRYABLE fetch failure that still has attempt budget.
 // Targeted, clears claimed_at so the reaper's grace does not immediately re-touch
 // it, and records the transient reason.
-func (r *Repository) RependEvent(ctx context.Context, eventID uuid.UUID, note string) error {
+//
+// ORG-SCOPED, and that predicate is not decoration. The statement was `WHERE id = ?`
+// alone, which was survivable only because its three callers are all the worker
+// (which supplies a row it just claimed). The moment anything reachable from a
+// request re-pends an event — L6.2's retry — an unscoped id becomes a cross-tenant
+// write, so the scope is added here rather than remembered at each new call site.
+func (r *Repository) RependEvent(ctx context.Context, orgID, eventID uuid.UUID, note string) error {
 	// processed_at is cleared too: a write-path retry re-pends a row that IngestClaimed
 	// already ran through failEvent (which stamps processed_at), and a `pending` row
 	// carrying a processed_at reads as a finished delivery in the ledger.
 	return r.db.WithContext(ctx).Exec(`
 		UPDATE integration_events SET status = ?, claimed_at = NULL, processed_at = NULL, error = ?
-		 WHERE id = ?`, EventStatusPending, note, eventID).Error
+		 WHERE id = ? AND org_id = ?`, EventStatusPending, note, eventID, orgID).Error
 }
 
 // SetSourceConnection stamps a source's connection_id (an ALTER-added column
@@ -654,7 +686,7 @@ func (r *Repository) HasTurnstileSecret(ctx context.Context, orgID, sourceID uui
 // SetPublicToken stores a source's URL token without touching any credential.
 //
 // Separate from SetGoogleCredentials deliberately: that one writes google_key_hash
-// too, so calling it with an empty hash would stamp '' (not NULL) on a form source
+// too, so calling it with an empty hash would stamp ” (not NULL) on a form source
 // — harmless only by accident, since the google route happens to test for "".
 func (r *Repository) SetPublicToken(ctx context.Context, orgID, sourceID uuid.UUID, token string) error {
 	return r.db.WithContext(ctx).Exec(
@@ -1001,6 +1033,121 @@ func (r *Repository) ObservedKeys(ctx context.Context, orgID, sourceID uuid.UUID
 	return keys, err
 }
 
+// EventFilter narrows the org-wide ledger query.
+//
+// A struct rather than a widening of ListEvents' signature: ListEvents backs the
+// SHIPPED source-detail log and is deliberately left untouched, because the only
+// thing standing between an envelope change and a silently-empty delivery log is the
+// frontend's asList coercion (which turns any unexpected shape into `[]`, not an
+// error). A new reader gets a new method.
+type EventFilter struct {
+	// SourceID and ConnectionID are FILTERS, not scopes — org_id is the scope. That
+	// is what makes a soft-deleted source's ledger reachable: loadSource 404s it, but
+	// its rows are still the org's, and the soft delete exists precisely so they
+	// survive. It is also the only way to see rows with source_id IS NULL, which is
+	// every provider delivery that failed BEFORE ingest could stamp a source.
+	SourceID     *uuid.UUID
+	ConnectionID *uuid.UUID
+	// Statuses is an OR set. The caller validates membership; an unknown status here
+	// simply matches nothing.
+	Statuses []string
+	// Unresolved selects deliveries that produced no record — "show me what did not
+	// land", the question the log exists to answer.
+	Unresolved bool
+	// CursorAt/CursorID are the keyset position (the last row of the previous page).
+	// Keyset, not OFFSET: the ledger is append-heavy, and an OFFSET page shifts under
+	// the reader as new deliveries arrive, silently skipping rows between pages.
+	CursorAt *time.Time
+	CursorID *uuid.UUID
+	Limit    int
+}
+
+// ListEventsFiltered returns one keyset page of the org's ledger, newest first.
+//
+// It returns limit+1 rows when more exist so the caller can mint a cursor without a
+// second COUNT — no total is computed, and none is shown, because a total over a
+// filtered append-heavy table is stale the moment it is rendered.
+func (r *Repository) ListEventsFiltered(ctx context.Context, orgID uuid.UUID, f EventFilter) ([]IntegrationEvent, error) {
+	if f.Limit <= 0 || f.Limit > 200 {
+		f.Limit = 50
+	}
+	q := r.db.WithContext(ctx).Where("org_id = ?", orgID)
+	if f.SourceID != nil {
+		q = q.Where("source_id = ?", *f.SourceID)
+	}
+	if f.ConnectionID != nil {
+		q = q.Where("connection_id = ?", *f.ConnectionID)
+	}
+	if len(f.Statuses) > 0 {
+		q = q.Where("status IN ?", f.Statuses)
+	}
+	if f.Unresolved {
+		q = q.Where("result_record_id IS NULL")
+	}
+	if f.CursorAt != nil && f.CursorID != nil {
+		// Row-value comparison, matching the ORDER BY exactly. Comparing created_at
+		// alone would drop rows that share a timestamp — deliveries arrive in bursts,
+		// so ties are routine rather than theoretical.
+		q = q.Where("(created_at, id) < (?, ?)", *f.CursorAt, *f.CursorID)
+	}
+	var out []IntegrationEvent
+	err := q.Order("created_at DESC, id DESC").Limit(f.Limit + 1).Find(&out).Error
+	return out, err
+}
+
+// GetEvent returns one delivery within an org, or (nil, nil) when absent.
+//
+// Org-scoped by construction: every mutating route resolves its row through this, so
+// a foreign event id is indistinguishable from a missing one.
+func (r *Repository) GetEvent(ctx context.Context, orgID, id uuid.UUID) (*IntegrationEvent, error) {
+	var e IntegrationEvent
+	err := r.db.WithContext(ctx).Where("org_id = ? AND id = ?", orgID, id).First(&e).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &e, nil
+}
+
+// RequeueEventForRetry hands a failed provider delivery back to the async worker,
+// atomically, and reports whether THIS call did it.
+//
+// One conditional UPDATE rather than check-then-act, and every guard rides in the
+// WHERE because each one is a race in disguise:
+//
+//   - `result_record_id IS NULL` — the anti-double-write guard the reaper also
+//     depends on. A row that already produced a record must never re-run.
+//   - `status IN ('failed','quarantined')` — the same safe set Ingest's replay switch
+//     re-runs in place. A `processing`/`pending` row is in flight; re-pending it
+//     races the worker that holds it.
+//   - `connection_id IS NOT NULL` — this door re-FETCHES from the provider, so it
+//     only exists for rows that have a provider to fetch from. A sync row flipped to
+//     `pending` would be claimed by the worker and immediately failed with "delivery
+//     has no connection".
+//   - `org_id = ?` — without it this is a cross-tenant write primitive.
+//
+// `error` is deliberately NOT cleared: it is the only record of WHY the delivery was
+// quarantined, and an admin who retries and fails again has more use for the original
+// reason than for a blank field. `attempts` is deliberately NOT reset either — a
+// requeue buys exactly one more claim, and the existing maxWebhookAttempts budget
+// then terminates a poison delivery instead of looping it forever.
+func (r *Repository) RequeueEventForRetry(ctx context.Context, orgID, id uuid.UUID) (bool, error) {
+	res := r.db.WithContext(ctx).Exec(`
+		UPDATE integration_events
+		   SET status = ?, claimed_at = NULL, processed_at = NULL
+		 WHERE id = ? AND org_id = ?
+		   AND result_record_id IS NULL
+		   AND connection_id IS NOT NULL
+		   AND status IN (?, ?)`,
+		EventStatusPending, id, orgID, EventStatusFailed, EventStatusQuarantined)
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected == 1, nil
+}
+
 // ListEvents returns a source's recent deliveries, newest first — the ledger view.
 func (r *Repository) ListEvents(ctx context.Context, orgID uuid.UUID, sourceID *uuid.UUID, limit int) ([]IntegrationEvent, error) {
 	if limit <= 0 || limit > 200 {
@@ -1013,4 +1160,35 @@ func (r *Repository) ListEvents(ctx context.Context, orgID uuid.UUID, sourceID *
 	var out []IntegrationEvent
 	err := q.Order("created_at DESC").Limit(limit).Find(&out).Error
 	return out, err
+}
+
+// SourceLabels names sources for the ledger view, INCLUDING soft-deleted ones.
+//
+// Unscoped by design and used from exactly one place. The org-wide ledger exists
+// partly to make a deleted source's history readable again — the soft delete is there
+// so the rows survive — and a page that could show the rows but not their names would
+// have brought back the data and left it unreadable. Org-scoped by predicate; only
+// name and kind are exposed, both of which the source list already shows.
+func (r *Repository) SourceLabels(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID) (map[uuid.UUID]eventSourceLabel, error) {
+	out := map[uuid.UUID]eventSourceLabel{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	var rows []struct {
+		ID      uuid.UUID
+		Name    string
+		Kind    string
+		Deleted bool
+	}
+	err := r.db.WithContext(ctx).Raw(`
+		SELECT id, name, kind, (deleted_at IS NOT NULL) AS deleted
+		  FROM lead_sources
+		 WHERE org_id = ? AND id IN ?`, orgID, ids).Scan(&rows).Error
+	if err != nil {
+		return out, err
+	}
+	for _, r := range rows {
+		out[r.ID] = eventSourceLabel{Name: r.Name, Kind: r.Kind, Deleted: r.Deleted}
+	}
+	return out, nil
 }

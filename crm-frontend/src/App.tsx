@@ -20,6 +20,7 @@ import SecuritySection from './pages/settings/SecuritySection';
 import ApiTokensSection from './pages/settings/ApiTokensSection';
 import IntegrationsSection from './pages/settings/IntegrationsSection';
 import IntegrationSourceDetailSection from './pages/settings/IntegrationSourceDetailSection';
+import DeliveryLogSection from './pages/settings/DeliveryLogSection';
 import NotificationPreferencesSection from './pages/settings/NotificationPreferencesSection';
 import PipelineStagesManager from './components/settings/PipelineStagesManager';
 import ObjectsManager from './components/settings/ObjectsManager';
@@ -234,6 +235,9 @@ function App() {
               <Route path="integrations" element={<IntegrationsSection />} />
               {/* Flat sibling, matching roles/:id. The section entry above is what
                   lets the deep-link guard through; this route owns its own tab title. */}
+              {/* Before the :id route: "deliveries" would otherwise be captured as a
+                  source id and 404 against a uuid lookup. */}
+              <Route path="integrations/deliveries" element={<DeliveryLogSection />} />
               <Route path="integrations/:id" element={<IntegrationSourceDetailSection />} />
               <Route path="knowledge" element={<KnowledgeBase />} />
               <Route path="audit" element={<AuditLogViewer />} />

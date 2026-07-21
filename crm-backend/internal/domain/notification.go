@@ -188,6 +188,12 @@ type NotificationEventType struct {
 // NOT in the catalog still delivers using DefaultChannelPref.
 var NotificationEventTypes = []NotificationEventType{
 	{Key: "automation", Label: "Workflow notifications", Description: "Alerts an automation sends you (a workflow's \"Notify user\" action)."},
+	// Registering this is not cosmetic. An unregistered type still DELIVERS (using
+	// DefaultChannelPref), but it renders no row in the preference centre and
+	// UpdatePreferences silently discards any override for it — so a member who wanted
+	// to quieten integration alerts could only do it by muting everything, taking their
+	// workflow notifications with it.
+	{Key: "integration_health", Label: "Lead source health", Description: "Alerts when a lead source or a connected account stops working, and when it recovers."},
 }
 
 // ChannelPref is the per-event-type toggle pair. An ABSENT override (not the zero

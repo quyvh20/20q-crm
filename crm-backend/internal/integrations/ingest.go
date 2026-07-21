@@ -108,11 +108,24 @@ type LeadIngestService struct {
 	// logger surfaces routing degradations. A lead that lands unowned, or a rotation
 	// that could not be read, is invisible otherwise — the write still succeeds.
 	logger *slog.Logger
+	// health announces the recovery edge. Nil-tolerant on purpose: every method on
+	// *HealthReporter no-ops on a nil receiver, so a deployment without notifications
+	// wired keeps capturing leads exactly as before rather than panicking on the
+	// success path.
+	health *HealthReporter
 }
 
 // NewLeadIngestService builds the pipeline.
 func NewLeadIngestService(repo *Repository, records RecordWriter, matcher ContactMatcher, schema SchemaProvider, fields FieldDefManager, members MemberChecker, stages StageReader, logger *slog.Logger) *LeadIngestService {
 	return &LeadIngestService{repo: repo, records: records, matcher: matcher, schema: schema, fields: fields, members: members, stages: stages, logger: logger}
+}
+
+// WithHealthReporter wires health alerting after construction — a setter rather than
+// a constructor arg so the many existing call sites (and every test) stay unchanged,
+// matching Handler.WithConnections.
+func (s *LeadIngestService) WithHealthReporter(h *HealthReporter) *LeadIngestService {
+	s.health = h
+	return s
 }
 
 // newIngestContext builds the context every ingest write runs on. THE ONLY PLACE
@@ -502,7 +515,21 @@ func (s *LeadIngestService) processEvent(ledgerCtx context.Context, source *Lead
 	// on evidence from the one layer the test never touches. A diagnostic that
 	// silences its own alarm is worse than no diagnostic.
 	if !lead.IsTest() {
-		_ = s.repo.TouchSourceUsed(ledgerCtx, source.ID) // best-effort; the lead is already written
+		// best-effort; the lead is already written. `healed` is the recovery edge:
+		// true only on the delivery that actually un-flipped an `error` badge, so the
+		// "working again" notification cannot fire on every subsequent success.
+		healed, err := s.repo.TouchSourceUsed(ledgerCtx, source.ID)
+		if err == nil && healed {
+			s.health.SourceRecovered(source.OrgID, source.ID, source.Name, source.CreatedBy)
+		}
+		// last_synced_at is stamped HERE and nowhere else — this is the only point at
+		// which a provider delivery has demonstrably become a record. The tempting
+		// place is the connection heal in the webhook processor, but that fires right
+		// after FetchLead and before the form is resolved, so a connection whose every
+		// delivery is quarantined would report a fresh sync time forever.
+		if event.ConnectionID != nil {
+			_ = s.repo.MarkConnectionSynced(ledgerCtx, *event.ConnectionID)
+		}
 	}
 
 	result.EventID = event.ID

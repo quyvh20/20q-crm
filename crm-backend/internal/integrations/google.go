@@ -359,15 +359,7 @@ func (h *Handler) respondGoogleIngestError(c *gin.Context, source *GoogleSource,
 // must not be able to flip a healthy source's badge. The flip gates nothing;
 // it exists so L6 has something to alert on and the settings page shows red.
 func (h *Handler) countGoogleFailure(c *gin.Context, source *GoogleSource) {
-	flipped, err := h.repo.IncrementSourceFailure(c.Request.Context(), source.ID)
-	if err != nil {
-		h.logger.Error("integrations: could not count source failure", "error", err, "source_id", source.ID.String())
-		return
-	}
-	if flipped {
-		h.logger.Error("integrations: source flipped to error after consecutive failures",
-			"source_id", source.ID.String(), "org_id", source.OrgID.String())
-	}
+	h.countSourceFailure(c.Request.Context(), &source.LeadSource)
 }
 
 // recordGoogleMismatch writes the failed ledger row for a key mismatch.
@@ -393,6 +385,19 @@ func (h *Handler) recordGoogleMismatch(c *gin.Context, source *GoogleSource, p *
 	if _, err := h.repo.InsertEventDeduped(c.Request.Context(), event); err != nil {
 		h.logger.Error("integrations: could not record key mismatch", "error", err, "source_id", source.ID.String())
 	}
+	// The alert that makes a rotated key visible at all.
+	//
+	// A rotated-away google_key is the scenario the plan names as L6's acceptance
+	// test, and it is unreachable through the failure counter BY CONSTRUCTION: a
+	// mismatched key fails hmac.Equal and 401s here, before any ingest, and this path
+	// deliberately never feeds the counter because it is forgeable. So the counter can
+	// never see it, and the source keeps reading green while every real lead Google
+	// sends is rejected. Detection has to come from this row instead.
+	//
+	// Safe to ship despite being attacker-triggerable because it moves NO status, and
+	// the action it asks for is "check your key" — harmless if the alert was
+	// manufactured. It is the badge, not the alert, that must stay unforgeable.
+	h.health.SourceKeyMismatch(source.OrgID, source.ID, source.Name, source.CreatedBy)
 }
 
 // quarantineCappedGoogleLead stores a post-cap lead and answers 200.

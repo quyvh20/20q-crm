@@ -25,6 +25,7 @@ import GoogleAdsSetupCard from './GoogleAdsSetupCard';
 import FormEmbedSetupCard from './FormEmbedSetupCard';
 import FacebookFormCard from './FacebookFormCard';
 import { DocumentTitle } from '../../lib/useDocumentTitle';
+import { relativeTime } from '../../lib/relativeTime';
 import {
   useDeleteSource,
   useLeadSource,
@@ -123,13 +124,30 @@ function TestLeadPanel({
         </div>
       </div>
 
-      {liveStatus !== 'active' && (
+      {liveStatus === 'disabled' && (
         // The test does not use the capture key, so it succeeds on a source that is
         // rejecting every real lead right now. Saying so is the whole price of
         // letting an admin test before enabling.
+        //
+        // Gated on `disabled` alone, not on `!== 'active'`. `error` is the other
+        // non-active status and it rejects nothing (see below), so the broader gate
+        // put a false outage warning on a source that was working.
         <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-300">
-          This source is <strong>{liveStatus}</strong>, so real leads sent to it are being
+          This source is <strong>disabled</strong>, so real leads sent to it are being
           rejected right now. The test ran anyway, because it does not use your capture key.
+        </div>
+      )}
+
+      {liveStatus === 'error' && (
+        // `error` is a self-healing BADGE, not a gate: the backend's IsLive() is
+        // `status != 'disabled'`, so a flagged source is still accepting deliveries
+        // and still writing every one of them to the log. The admin's actual next
+        // move is to read the failures, not to re-enable anything.
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-300">
+          This source is flagged <strong>error</strong> because its recent deliveries failed.
+          It is <strong>still accepting leads</strong> and recording every one of them, and the
+          flag clears itself as soon as one succeeds. The delivery log below says what went
+          wrong.
         </div>
       )}
 
@@ -318,7 +336,12 @@ export default function IntegrationSourceDetailSection() {
   const handleToggle = async () => {
     if (!id || !source) return;
     setActionError('');
-    const next = source.status === 'active' ? 'disabled' : 'active';
+    // `disabled` is the only status this button turns ON — keyed off `disabled`
+    // rather than `!== active` because `error` is a live source, and treating it as
+    // off made this a hidden "clear the failure counter" button: PATCHing status to
+    // active runs SetSourceStatus, which also zeroes consecutive_failures. An admin
+    // who just read the error banner would have silently erased the evidence.
+    const next = source.status === 'disabled' ? 'active' : 'disabled';
     try {
       await updateSource.mutateAsync({ id, input: { status: next } });
     } catch (err) {
@@ -406,6 +429,17 @@ export default function IntegrationSourceDetailSection() {
                   </code>
                 )}
               </div>
+              {/* last_used_at was already fetched, and already read here — but only
+                  as a boolean, to pick the delete confirm's wording. It is the one
+                  fact that answers "is this actually receiving anything" without
+                  scrolling to the log, and next to an `error` badge it is what
+                  separates a source that broke an hour ago from one that never
+                  worked. Absent renders as a statement, not a blank. */}
+              <p className="text-xs text-muted-foreground mt-1.5">
+                {source.last_used_at
+                  ? `Last lead received ${relativeTime(source.last_used_at)}`
+                  : 'No leads received yet'}
+              </p>
             </div>
             <div className="flex items-center gap-2">
               {/* google_ads has no button: Google's own "Send test data" IS the
@@ -425,7 +459,9 @@ export default function IntegrationSourceDetailSection() {
                 </Button>
               )}
               <Button variant="outline" size="sm" onClick={handleToggle} disabled={updateSource.isPending}>
-                {source.status === 'active' ? 'Disable' : 'Enable'}
+                {/* Mirrors handleToggle: an `error` source is already live, so
+                    offering "Enable" on it would be a lie about the current state. */}
+                {source.status === 'disabled' ? 'Enable' : 'Disable'}
               </Button>
               <Button variant="destructive" size="sm" onClick={handleDelete} disabled={deleteSource.isPending}>
                 <Trash2 />

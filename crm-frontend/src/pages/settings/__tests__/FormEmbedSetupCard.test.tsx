@@ -20,6 +20,16 @@ vi.mock('../../../features/integrations/api', () => ({
   sendTestLead: vi.fn(),
   getMapping: vi.fn(),
   saveMapping: vi.fn(),
+  listEventLog: vi.fn(),
+  retryEvent: vi.fn(),
+  RetryRefusedError: class RetryRefusedError extends Error {
+    reason: string;
+    constructor(message: string, reason: string) {
+      super(message);
+      this.name = 'RetryRefusedError';
+      this.reason = reason;
+    }
+  },
 }));
 
 import { updateSource } from '../../../features/integrations/api';

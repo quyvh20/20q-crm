@@ -3,6 +3,8 @@ import type {
   CreateSourceInput,
   CreatedLeadSource,
   DealConfig,
+  EventLogFilters,
+  EventPage,
   FieldMap,
   FormConfig,
   IntegrationEvent,
@@ -169,6 +171,74 @@ export async function listEvents(id: string, limit = 50): Promise<IntegrationEve
  * request, so aborting here would not stop the write — it would only hide it, and the
  * admin's natural retry would then be a genuine second concurrent pipeline.
  */
+/**
+ * listEventLog reads the ORG-WIDE ledger.
+ *
+ * A separate function from listEvents, and the per-source route it wraps is
+ * deliberately left alone: asList coerces any unexpected envelope to `[]` rather
+ * than throwing, so repointing the shipped delivery log at this nested shape would
+ * render a full ledger as "no deliveries" for anyone whose bundle and backend are one
+ * deploy apart — and an admin debugging a live source would conclude nothing had ever
+ * been sent.
+ *
+ * source_id and connection_id are FILTERS here, not scopes. That is what reaches the
+ * two classes the per-source route cannot show: a provider delivery that failed
+ * before a source was resolved (source_id is NULL forever), and the ledger of a
+ * soft-deleted source.
+ */
+export async function listEventLog(filters: EventLogFilters = {}): Promise<EventPage> {
+  const q = new URLSearchParams();
+  if (filters.source_id) q.set('source_id', filters.source_id);
+  if (filters.connection_id) q.set('connection_id', filters.connection_id);
+  (filters.status ?? []).forEach(s => q.append('status', s));
+  if (filters.unresolved) q.set('unresolved', '1');
+  if (filters.cursor) q.set('cursor', filters.cursor);
+  if (filters.limit) q.set('limit', String(filters.limit));
+
+  const res = await apiFetch(`/api/integrations/events?${q.toString()}`);
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Failed to load the delivery log');
+  const page = json.data ?? {};
+  return {
+    // Coerced, because Go marshals a nil slice to null and a bare .map would
+    // white-screen the settings page under the app-wide error boundary.
+    events: asList<IntegrationEvent>(page.events),
+    next_cursor: typeof page.next_cursor === 'string' ? page.next_cursor : undefined,
+    sources: page.sources && typeof page.sources === 'object' ? page.sources : {},
+  };
+}
+
+/**
+ * retryEvent hands one failed provider delivery back to the async worker.
+ *
+ * 202, not 200: nothing has happened yet — the worker picks it up on its next tick.
+ * A 409 carries a machine-readable `reason` the UI maps through its own copy table,
+ * so the server never dictates the sentence a customer reads.
+ */
+export async function retryEvent(eventId: string): Promise<void> {
+  const res = await apiFetch(`/api/integrations/events/${eventId}/retry`, { method: 'POST' });
+  if (res.status === 202) return;
+  const json = await parseJsonSafe(res);
+  // A refusal carries a machine-readable reason, and apiError deliberately keeps only
+  // the message — so it is surfaced through its own error type rather than by parsing
+  // a sentence, the same rule the reassignment 409 follows.
+  const reason = (json as { reason?: string } | null)?.reason;
+  if (res.status === 409 && reason) {
+    throw new RetryRefusedError(apiError(res, json, 'This delivery cannot be retried').message, reason);
+  }
+  throw apiError(res, json, 'Failed to queue the retry');
+}
+
+/** Thrown when the server refuses a retry, carrying WHY in a form the UI can map. */
+export class RetryRefusedError extends Error {
+  reason: string;
+  constructor(message: string, reason: string) {
+    super(message);
+    this.name = 'RetryRefusedError';
+    this.reason = reason;
+  }
+}
+
 export async function sendTestLead(id: string): Promise<TestLeadResult> {
   const res = await apiFetch(`${BASE}/${id}/test-lead`, { method: 'POST' });
   const json = await parseJsonSafe(res);

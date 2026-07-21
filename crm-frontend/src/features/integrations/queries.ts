@@ -1,6 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as api from './api';
-import type { CreateSourceInput, FieldMap, IntegrationEvent, LeadSource, UpdateSourceInput } from './types';
+import type {
+  CreateSourceInput,
+  EventLogFilters,
+  EventPage,
+  FieldMap,
+  IntegrationEvent,
+  LeadSource,
+  UpdateSourceInput,
+} from './types';
 
 // React-query layer, mirroring features/workflows/queries.ts: one exported key
 // factory with a lists() invalidation umbrella, plus hooks.
@@ -15,6 +23,10 @@ export const integrationKeys = {
   // refetch the whole delivery log too.
   events: (id: string) => [...integrationKeys.all, 'events', id] as const,
   mapping: (id: string) => [...integrationKeys.all, 'mapping', id] as const,
+  // The org-wide ledger. Filters are IN the key: without them a filtered page would
+  // be served from the cache of a differently-filtered one, and the log would answer
+  // a question nobody asked.
+  eventLog: (f: EventLogFilters) => [...integrationKeys.all, 'event-log', f] as const,
 } as const;
 
 export function useLeadSources() {
@@ -122,6 +134,36 @@ export function useSendTestLead() {
     mutationFn: (id: string) => api.sendTestLead(id),
     onSuccess: (_res, id) => {
       qc.invalidateQueries({ queryKey: integrationKeys.events(id) });
+    },
+  });
+}
+
+/** useEventLog reads one page of the org-wide ledger. */
+export function useEventLog(filters: EventLogFilters) {
+  return useQuery<EventPage>({
+    queryKey: integrationKeys.eventLog(filters),
+    queryFn: () => api.listEventLog(filters),
+    refetchOnMount: 'always',
+  });
+}
+
+/**
+ * useRetryEvent queues one delivery for a provider re-fetch.
+ *
+ * Invalidates the WHOLE integrations umbrella rather than a precise key set, and that
+ * is deliberate. The rows worth retrying are provider deliveries that failed before a
+ * source was resolved, so their source_id is null — a targeted
+ * `events(sourceId ?? '')` would build a key matching no live query, resolve
+ * successfully, and leave the admin looking at a stale row they are about to click
+ * again. A retry is rare; correctness is worth more here than the sibling-key
+ * optimisation, which exists to stop a rotate from refetching the log.
+ */
+export function useRetryEvent() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (eventId: string) => api.retryEvent(eventId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: integrationKeys.all });
     },
   });
 }

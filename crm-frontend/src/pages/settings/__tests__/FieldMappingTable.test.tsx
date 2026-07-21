@@ -18,6 +18,16 @@ vi.mock('../../../features/integrations/api', () => ({
   deleteSource: vi.fn(),
   rotateKey: vi.fn(),
   listEvents: vi.fn(),
+  listEventLog: vi.fn(),
+  retryEvent: vi.fn(),
+  RetryRefusedError: class RetryRefusedError extends Error {
+    reason: string;
+    constructor(message: string, reason: string) {
+      super(message);
+      this.name = 'RetryRefusedError';
+      this.reason = reason;
+    }
+  },
 }));
 
 import { getMapping, saveMapping } from '../../../features/integrations/api';

@@ -1073,6 +1073,15 @@ func main() {
 				ON integration_events(source_id, created_at)`},
 			{"events org/created index", `CREATE INDEX IF NOT EXISTS idx_integration_events_org_created
 				ON integration_events(org_id, created_at DESC)`},
+			// The org-wide ledger's keyset index (L6.2). A DISTINCT NAME is load-bearing:
+			// `CREATE INDEX IF NOT EXISTS` matches on NAME ONLY and never compares the
+			// column list, so reusing idx_integration_events_org_created above — whose
+			// (org_id, created_at DESC) cannot serve the (created_at, id) tiebreak — would
+			// be a silent no-op, and the ledger would seq-scan with nothing to show for it.
+			// An INDEX rather than a column, so a guard that never ran degrades to a slow
+			// query instead of breaking FinishEvent's wholesale Save.
+			{"events org keyset index", `CREATE INDEX IF NOT EXISTS idx_integration_events_org_keyset
+				ON integration_events(org_id, created_at DESC, id DESC)`},
 			// NON-unique on purpose. The existing contacts unique index is on raw
 			// (org_id, email) and is case-SENSITIVE, so case-variant twins are legal
 			// today; a UNIQUE index here would fail to build on any org that has them —
@@ -1531,6 +1540,11 @@ func main() {
 
 	// ── Phase 3: Register DB-dependent routes ──
 	var autoEngine *automation.Engine
+	// Declared out here so the shutdown block can drain it. A health alert is
+	// buffered in memory between the transition that raised it and the fan-out that
+	// sends it, and a rolling deploy is itself a likely cause of the failures being
+	// reported — so without a drain the alarm is lost exactly when it fires.
+	var integrationsHealth *integrations.HealthReporter
 	if db != nil {
 		authRepo := repository.NewAuthRepository(db)
 		stageRepo := repository.NewPipelineStageRepository(db)
@@ -1941,6 +1955,22 @@ func main() {
 		// authRepo rather than widening domain.AuthRepository, whose many methods are
 		// stubbed by hand in several test fakes.
 		integrationsMembers := repository.NewOrgMemberReader(db, authRepo)
+		// L6.1 health alerting. Reuses the A6/U5 notification pipeline wholesale —
+		// preferences, digest batching, the email channel and the per-user SSE channel
+		// all come free from NotificationUseCase.Create, so nothing here is new
+		// notification infrastructure. What IS new is the recipient query: nothing in
+		// the permission layer could enumerate the users in an org holding a capability.
+		//
+		// Nil-tolerant end to end: NewHealthReporter returns nil when notifications are
+		// not configured, and every method no-ops on a nil receiver, so a deployment
+		// without it keeps capturing leads exactly as before.
+		integrationsHealth = integrations.NewHealthReporter(
+			notificationUC,
+			repository.NewIntegrationAudienceReader(db),
+			integrationsMembers,
+			autoLogger,
+		)
+		go integrationsHealth.Start(context.Background())
 		// Extracted to a variable (was inline) so the async webhook processor (L5.3)
 		// shares the very same ingest pipeline the sync capture routes use.
 		integrationsIngest := integrations.NewLeadIngestService(
@@ -1948,7 +1978,7 @@ func main() {
 			integrationsMembers, // owner-pool liveness
 			stageRepo,           // re-checks the configured deal stage: deleting one is a SOFT delete, so a stale id keeps satisfying the FK
 			autoLogger,          // routing degradations are invisible otherwise: the write still succeeds
-		)
+		).WithHealthReporter(integrationsHealth)
 		integrationsHandler := integrations.NewHandler(
 			integrationsRepo,
 			integrationsIngest,
@@ -1959,7 +1989,7 @@ func main() {
 			integrationsLimiter,
 			integrationsIPLimiter,
 			autoLogger, // same slog handler the automation engine writes to
-		)
+		).WithHealthReporter(integrationsHealth)
 		// A delivery whose process died mid-write stays at `processing`, and the replay
 		// switch then answers 409 to every retry — turning the Idempotency-Key into the
 		// thing that makes the lead permanently unrecoverable. The reaper releases them.
@@ -2026,7 +2056,7 @@ func main() {
 		// the processor finds no pending rows to claim.
 		integrations.NewWebhookHandler(integrationsRepo, integrationsConnSvc, cfg.FacebookWebhookVerifyToken, integrationsIPLimiter, autoLogger).
 			RegisterRoutes(router)
-		go integrations.StartWebhookProcessor(context.Background(), integrationsRepo, integrationsConnSvc, integrationsIngest, autoLogger)
+		go integrations.StartWebhookProcessor(context.Background(), integrationsRepo, integrationsConnSvc, integrationsIngest, autoLogger, integrationsHealth)
 
 		// Wire schema cache invalidation: when stages, tags, custom fields,
 		// or custom object defs change, the workflow schema cache is purged
@@ -2087,6 +2117,8 @@ func main() {
 	if autoEngine != nil {
 		autoEngine.Stop()
 	}
+	// Drain buffered health alerts before the process exits (see the declaration).
+	integrationsHealth.Stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

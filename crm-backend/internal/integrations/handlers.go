@@ -65,8 +65,14 @@ type Handler struct {
 	// backfillInFlight guards against two concurrent backfills of the same source —
 	// dedupe already makes a re-run correct, this just avoids doubling the Graph calls.
 	backfillInFlight sync.Map
-	logger           *slog.Logger
+	// health announces status transitions. Nil-tolerant (every method no-ops on a nil
+	// receiver): capture must keep working in a deployment without notifications.
+	health *HealthReporter
+	logger *slog.Logger
 }
+
+// WithHealthReporter wires health alerting after construction.
+func (h *Handler) WithHealthReporter(r *HealthReporter) *Handler { h.health = r; return h }
 
 // WithHTTPClient overrides the outbound client used for provider verification.
 func (h *Handler) WithHTTPClient(c *http.Client) *Handler { h.http = c; return h }
@@ -134,11 +140,18 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, protected []gin.HandlerFunc
 		g.DELETE("/sources/:id", h.DeleteSource)
 		g.POST("/sources/:id/rotate-key", h.RotateKey)
 		g.POST("/sources/:id/rotate-google-key", h.RotateGoogleKey)
+		// The per-source log. Left EXACTLY as it was, response shape included: the
+		// frontend coerces an unexpected envelope to an empty array rather than
+		// erroring, so changing this would render a full ledger as "no deliveries" for
+		// anyone whose bundle and backend are one deploy apart. L6.2's filters live on
+		// the org-wide route instead.
 		g.GET("/sources/:id/events", h.ListEvents)
 		g.GET("/sources/:id/mapping", h.GetMapping)
 		g.POST("/sources/:id/test-lead", h.SendTestLead)
 		// Import a facebook_form source's historical leads (L5.4).
 		g.POST("/sources/:id/backfill", h.Backfill)
+		// The org-wide ledger + per-delivery retry (L6.2).
+		h.RegisterEventRoutes(g)
 	}
 }
 
@@ -230,6 +243,18 @@ func (h *Handler) CaptureLead(c *gin.Context) {
 			return
 		}
 		if n >= int64(source.DailyCap) {
+			// Evidence first, THEN the refusal. google_ads and form_embed have always
+			// stored a row here; this route did not, so a source that hit its cap went
+			// silent in its own delivery log — the admin saw leads stop arriving and a
+			// ledger that showed nothing at all, which reads as "the integrator stopped
+			// sending" rather than "we refused them". The one question the ledger exists
+			// to answer was the one it could not.
+			//
+			// The 429 is UNCHANGED and stays correct: unlike Google (which drops a 4xx
+			// permanently, hence its accept-and-quarantine), a bearer-authenticated
+			// integrator retries, and Retry-After tells them when. This row is the
+			// record, not the recovery.
+			h.ledgerCappedLead(c, source, req)
 			c.Header("Retry-After", "3600")
 			h.captureError(c, http.StatusTooManyRequests, "daily capture limit reached for this source")
 			return
@@ -249,10 +274,19 @@ func (h *Handler) CaptureLead(c *gin.Context) {
 	res, err := h.ingest.Ingest(c.Request.Context(), source, lead)
 	if err != nil {
 		if appErr, ok := err.(*domain.AppError); ok {
+			// Only the 5xx class counts, matching google.go's split: a payload-shaped
+			// 4xx (a 422 on a lead missing an email, say) is permanent for THIS lead
+			// and says nothing about the source, which may be fine for every other one.
+			// The bearer key was verified above, so this is post-authentication and not
+			// forgeable — the same bar google_key verification sets.
+			if appErr.Code >= http.StatusInternalServerError {
+				h.countSourceFailure(c.Request.Context(), source)
+			}
 			h.captureError(c, appErr.Code, appErr.Message)
 			return
 		}
 		h.logger.Error("integrations: ingest failed", "error", err, "source_id", source.ID.String())
+		h.countSourceFailure(c.Request.Context(), source)
 		// 500 is safe to retry: the delivery is deduped by Idempotency-Key.
 		h.captureError(c, http.StatusInternalServerError, "could not process lead")
 		return
@@ -264,6 +298,7 @@ func (h *Handler) CaptureLead(c *gin.Context) {
 	// nobody finds out until someone asks where the leads went.
 	if res.RecordID == uuid.Nil {
 		h.logger.Error("integrations: ingest returned no record", "source_id", source.ID.String(), "event_id", res.EventID.String())
+		h.countSourceFailure(c.Request.Context(), source)
 		h.captureError(c, http.StatusInternalServerError, "lead was not written; retry")
 		return
 	}
@@ -488,7 +523,17 @@ func (h *Handler) runBatch(c *gin.Context, source *LeadSource, items []batchItem
 	// Only stamp usage when the batch was clean: a run that failed 99 of 100 must not
 	// reset this source's failure signal and report itself healthy.
 	if failed == 0 {
-		_ = h.repo.TouchSourceUsed(c.Request.Context(), source.ID)
+		healed, err := h.repo.TouchSourceUsed(c.Request.Context(), source.ID)
+		if err == nil && healed {
+			h.health.SourceRecovered(source.OrgID, source.ID, source.Name, source.CreatedBy)
+		}
+	} else if succeeded == 0 {
+		// A batch is ONE delivery envelope, so it counts as at most one failure — never
+		// one per item. Per-item weighting would let a single authenticated request
+		// cross the threshold on its own, on the endpoint documented as the recovery
+		// path for exactly the rows that accumulate during an outage: the act of
+		// recovering would flip the source it was recovering.
+		h.countSourceFailure(c.Request.Context(), source)
 	}
 
 	status := http.StatusOK
@@ -1367,6 +1412,48 @@ func (h *Handler) ListEvents(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"data": out})
+}
+
+// capQuarantineError is the fixed ledger text for a lead refused by the daily cap.
+//
+// Fixed, and it names the remedy: the admin's question on seeing this row is always
+// "did I lose the lead?", and the honest answer is no — the integrator got a 429 with
+// a Retry-After, so their own retry is the recovery, and raising the cap is the fix.
+const capQuarantineError = "daily capture limit reached — this delivery was refused (429) and NOT written as a contact. " +
+	"The sender was told to retry later; raise this source's daily limit to accept it."
+
+// ledgerCappedLead records a delivery the daily cap refused.
+//
+// Best-effort by construction: the caller already holds a correct answer for the
+// integrator (429 + Retry-After), so a ledger failure must not change it. Losing the
+// evidence is worse than nothing but far better than converting a clean, retryable
+// refusal into a 500 the integrator has to interpret.
+//
+// Dedupe-aware via InsertEventDeduped: a caller retrying with the same
+// Idempotency-Key against a still-capped source gets one row, not one per attempt.
+func (h *Handler) ledgerCappedLead(c *gin.Context, source *LeadSource, req captureRequest) {
+	raw, _ := json.Marshal(req.Fields)
+	ctxJSON, _ := json.Marshal(req.Context)
+	var providerID *string
+	if id := strings.TrimSpace(c.GetHeader("Idempotency-Key")); id != "" {
+		providerID = &id
+	}
+	event := &IntegrationEvent{
+		OrgID:           source.OrgID,
+		SourceID:        &source.ID,
+		ProviderEventID: providerID,
+		// quarantined, not failed: nothing was attempted and nothing broke. It is also
+		// the status Ingest's replay switch re-runs in place, so if the caller does
+		// retry that key once the cap resets, the row is reused rather than orphaned.
+		Status:     EventStatusQuarantined,
+		Attempts:   1,
+		RawPayload: datatypes.JSON(raw),
+		Context:    datatypes.JSON(ctxJSON),
+		Error:      capQuarantineError,
+	}
+	if _, err := h.repo.InsertEventDeduped(c.Request.Context(), event); err != nil {
+		h.logger.Error("integrations: could not ledger capped lead", "error", err, "source_id", source.ID.String())
+	}
 }
 
 // testLeadResponse is what the admin learns from one click.
