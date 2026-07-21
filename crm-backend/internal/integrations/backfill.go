@@ -59,14 +59,22 @@ func (h *Handler) Backfill(c *gin.Context) {
 
 	// One backfill per source at a time. Dedupe already makes a concurrent second run
 	// correct, but it would double the Graph calls for nothing.
-	if _, running := h.backfillInFlight.LoadOrStore(src.ID, true); running {
+	//
+	// The map stores the run's CANCEL FUNC, not a bare `true`. An import runs detached
+	// for up to backfillTimeout holding a *LeadSource and opened credentials captured
+	// at request time, and it re-checks nothing — so deleting the workspace mid-import
+	// could not stop it, and it would go on writing real people's details into a
+	// workspace that no longer exists (mailing them too, with enrolment on). A handle
+	// is the only thing that can stop it.
+	ctx, cancel := context.WithTimeout(context.Background(), backfillTimeout)
+	if _, running := h.backfillInFlight.LoadOrStore(src.ID, backfillRun{orgID: src.OrgID, cancel: cancel}); running {
+		cancel()
 		h.mgmtError(c, http.StatusConflict, "a backfill for this form is already running")
 		return
 	}
 
 	go func() {
 		defer h.backfillInFlight.Delete(src.ID)
-		ctx, cancel := context.WithTimeout(context.Background(), backfillTimeout)
 		defer cancel()
 		h.runBackfill(ctx, src, req.Enroll)
 	}()
@@ -238,4 +246,24 @@ func facebookFormID(src *LeadSource) string {
 		return ""
 	}
 	return cfg.Facebook.FormID
+}
+
+// backfillRun is a live import: which org it belongs to, and how to stop it.
+type backfillRun struct {
+	orgID  uuid.UUID
+	cancel context.CancelFunc
+}
+
+// CancelBackfillsForOrg stops every in-flight import for an org and reports how many
+// it stopped. Used by the workspace teardown — see PurgeService.
+func (h *Handler) CancelBackfillsForOrg(orgID uuid.UUID) int {
+	n := 0
+	h.backfillInFlight.Range(func(_, v any) bool {
+		if run, ok := v.(backfillRun); ok && run.orgID == orgID {
+			run.cancel()
+			n++
+		}
+		return true
+	})
+	return n
 }

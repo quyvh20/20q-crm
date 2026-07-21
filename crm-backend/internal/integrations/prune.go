@@ -75,7 +75,7 @@ const (
 // destructive rewrite. Several replicas sweeping the same backlog simultaneously
 // would multiply the write load on a hot table to no purpose, so this one takes an
 // advisory lock and the losers skip the tick entirely.
-func StartLedgerPrune(ctx context.Context, repo *Repository, logger *slog.Logger) {
+func StartLedgerPrune(ctx context.Context, repo *Repository, purger *PurgeService, logger *slog.Logger) {
 	t := time.NewTicker(ledgerPruneInterval)
 	defer t.Stop()
 	for {
@@ -83,13 +83,13 @@ func StartLedgerPrune(ctx context.Context, repo *Repository, logger *slog.Logger
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			runLedgerPrune(ctx, repo, logger)
+			runLedgerPrune(ctx, repo, purger, logger)
 		}
 	}
 }
 
 // runLedgerPrune performs one bounded sweep.
-func runLedgerPrune(ctx context.Context, repo *Repository, logger *slog.Logger) {
+func runLedgerPrune(ctx context.Context, repo *Repository, purger *PurgeService, logger *slog.Logger) {
 	var total int64
 	rounds := 0
 
@@ -125,11 +125,49 @@ func runLedgerPrune(ctx context.Context, repo *Repository, logger *slog.Logger) 
 		logger.Info("integrations: redacted expired lead payloads",
 			"redacted", total, "retention_days", int(ledgerRetention.Hours()/24))
 	}
+	repairDeletedWorkspaces(ctx, repo, purger, logger)
+
 	if rounds >= ledgerPruneMaxRounds && logger != nil {
 		// Never silently truncate: a run that stopped at its cap has left rows over
 		// retention, and saying so is the difference between "the backlog is draining
 		// across ticks" and "retention is quietly not being met".
 		logger.Warn("integrations: ledger retention sweep hit its per-run cap; the remainder continues on the next tick",
 			"redacted", total)
+	}
+}
+
+// repairDeletedWorkspaces finishes teardowns that never completed.
+//
+// The teardown is best-effort at delete time — refusing a workspace deletion because
+// a provider was slow is how someone ends up unable to leave — and best-effort with no
+// retry surface is just a permanent failure with a log line, because a deleted
+// workspace can never be deleted again. This is the retry surface. It also repairs the
+// past: every workspace deleted before the cascade shipped still holds its sealed
+// credentials and its page claim, and only a sweep can reach those.
+func repairDeletedWorkspaces(ctx context.Context, repo *Repository, purger *PurgeService, logger *slog.Logger) {
+	if purger == nil {
+		return
+	}
+	orgs, err := repo.DeletedOrgsNeedingPurge(ctx, 50)
+	if err != nil {
+		if logger != nil {
+			logger.Error("integrations: could not scan for unfinished workspace teardowns", "error", err)
+		}
+		return
+	}
+	for _, orgID := range orgs {
+		if ctx.Err() != nil {
+			return
+		}
+		conns, sources, perr := purger.PurgeWorkspace(ctx, orgID)
+		if logger != nil {
+			if perr != nil {
+				logger.Error("integrations: repairing a workspace teardown failed",
+					"org_id", orgID.String(), "error", perr)
+			} else {
+				logger.Info("integrations: finished a workspace teardown that had not completed",
+					"org_id", orgID.String(), "connections", conns, "sources", sources)
+			}
+		}
 	}
 }

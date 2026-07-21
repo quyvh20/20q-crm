@@ -48,6 +48,20 @@ type offboardStore interface {
 	RoutingSourceNames(ctx context.Context, orgID, userID uuid.UUID) ([]string, error)
 }
 
+// IntegrationsPurger tears down a workspace's integration footprint when the
+// workspace is deleted.
+//
+// A port declared here rather than a direct call, because usecase must not import
+// internal/integrations — the same crossing SetLeadLedgerRedactor makes. Nil-tolerant:
+// a build without the integrations module deletes workspaces exactly as before.
+// Returns bare counts rather than a shared struct: a named result type would have to
+// live in one package and be imported by the other, and integrations must not import
+// usecase any more than usecase may import integrations. Primitives keep the port
+// satisfiable structurally, which is the whole point of declaring it here.
+type IntegrationsPurger interface {
+	PurgeWorkspace(ctx context.Context, orgID uuid.UUID) (connections, sources int64, err error)
+}
+
 // groupMembershipReader resolves which groups a member belongs to, for the
 // member detail drawer (U4). userGroupRepository satisfies it. Nil in unit tests
 // → GetMemberDetail returns no groups; main.go always wires it.
@@ -79,6 +93,8 @@ type workspaceUseCase struct {
 	// offboard reassigns/releases a departing member's owned records and revokes
 	// their grants (U0.2). Nil in unit tests; main.go always wires it.
 	offboard offboardStore
+	// purger tears down lead sources and provider connections on workspace deletion.
+	purger IntegrationsPurger
 	// groups resolves a member's group membership for the detail drawer (U4).
 	// Nil in unit tests; main.go always wires it.
 	groups groupMembershipReader
@@ -461,6 +477,9 @@ func (uc *workspaceUseCase) LeaveWorkspace(ctx context.Context, orgID, callerUse
 // here (not just at the route). Membership resolution excludes soft-deleted
 // orgs, so every member's session falls back to another workspace (or the
 // zero-workspace page) on their next request.
+// SetIntegrationsPurger wires the workspace-deletion teardown. Called once at startup.
+func (uc *workspaceUseCase) SetIntegrationsPurger(p IntegrationsPurger) { uc.purger = p }
+
 func (uc *workspaceUseCase) DeleteWorkspace(ctx context.Context, orgID, callerUserID uuid.UUID) error {
 	ou, err := uc.authRepo.GetOrgUser(ctx, callerUserID, orgID)
 	if err != nil {
@@ -474,6 +493,7 @@ func (uc *workspaceUseCase) DeleteWorkspace(ctx context.Context, orgID, callerUs
 	// warm Redis session entry (status=active) and retain full read/write access
 	// to the deleted workspace for up to the cache TTL (~5 min) on the prod path.
 	members, _ := uc.authRepo.ListMembersByOrgID(ctx, orgID)
+
 	if err := uc.authRepo.SoftDeleteOrganization(ctx, orgID); err != nil {
 		return domain.ErrInternal
 	}
@@ -481,8 +501,47 @@ func (uc *workspaceUseCase) DeleteWorkspace(ctx context.Context, orgID, callerUs
 		uc.evictSession(ctx, members[i].UserID, orgID)
 	}
 	uc.evictSession(ctx, callerUserID, orgID) // belt-and-braces if the caller wasn't in the list
+
+	// Tear down the integration footprint LAST — after the org is soft-deleted and
+	// every session evicted.
+	//
+	// Order matters in one direction only, and it is the opposite of the intuitive
+	// one. Doing it first looks tidy ("clean up, then delete") and is dangerous: none
+	// of the teardown's statements needs a live org row, so nothing is gained, while a
+	// SoftDeleteOrganization that then FAILS leaves a workspace that is still alive and
+	// still signed into — with its provider credentials destroyed, its page claims
+	// released and every lead source disabled. The owner would see "delete failed" and
+	// have no idea their lead pipeline had just been dismantled. Running last makes the
+	// org delete the point of no return, which is what the owner actually consented to.
+	// Evicting first also closes the window where a warm session could start a new
+	// connect behind the teardown.
+	//
+	// Best-effort: refusing the deletion because a provider was slow or a statement
+	// deadlocked is how someone ends up unable to leave. Failures are loud, and the
+	// retention sweep re-runs the teardown for any workspace left half-purged.
+	var purgedConns, purgedSources int64
+	if uc.purger != nil {
+		// WithoutCancel, the newLedgerContext rule: the owner closing the tab must not
+		// tear the teardown in half, leaving some credentials destroyed and others at
+		// rest. Bounded so it cannot hold the request open indefinitely.
+		pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		c, sc, perr := uc.purger.PurgeWorkspace(pctx, orgID)
+		cancel()
+		purgedConns, purgedSources = c, sc
+		if perr != nil {
+			log.Printf("workspace delete: integrations teardown incomplete for %s: %v", orgID, perr)
+		}
+	}
+
 	actor := callerUserID
-	recordAdminEvent(ctx, uc.authRepo, orgID, "workspace.deleted", &actor, nil)
+	// The counts ARE the evidence the teardown ran. Asked six months later whether a
+	// provider token was destroyed, the org's own ledger is unreachable (every route is
+	// org-scoped and the org is gone), so this row is the only place that can answer.
+	recordAdminEvent(ctx, uc.authRepo, orgID, "workspace.deleted", &actor,
+		map[string]interface{}{
+			"integrations_connections_purged": purgedConns,
+			"integrations_sources_disabled":   purgedSources,
+		})
 	return nil
 }
 

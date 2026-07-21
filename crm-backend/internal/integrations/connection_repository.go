@@ -468,3 +468,113 @@ func (r *Repository) PurgeExpiredOAuthArtifacts(ctx context.Context, olderThan t
 		DELETE FROM integration_pending_connections
 		 WHERE (consumed_at IS NOT NULL AND consumed_at < ?) OR expires_at < ?`, cutoff, cutoff).Error
 }
+
+// ── Workspace teardown (L6.4) ────────────────────────────────────────────────
+
+// ListClaimedConnections returns the connections an org CURRENTLY holds the
+// exclusive provider claim on — the only ones it may tell the provider to stop.
+//
+// Deliberately NOT every connection the org ever had. `Provider.Disconnect` is
+// `DELETE /{account}/subscribed_apps`: it detaches our app from the ACCOUNT and knows
+// nothing about connections, orgs or claims. So a teardown that swept every historical
+// row would reach accounts this org disconnected long ago and another workspace has
+// since connected — silently stopping that workspace's lead delivery, with its card
+// still reading "connected, receiving leads" and no alert, because our health signal
+// counts fetch failures and there would be no fetches.
+//
+// Credential DESTRUCTION is the opposite case and covers every row including
+// soft-deleted ones (see PurgeConnectionSecrets): blanking a secret harms nobody,
+// while calling a provider on another tenant's behalf does.
+func (r *Repository) ListClaimedConnections(ctx context.Context, orgID uuid.UUID) ([]IntegrationConnection, error) {
+	var out []IntegrationConnection
+	err := r.db.WithContext(ctx).
+		Where("org_id = ? AND status IN ?", orgID,
+			[]string{ConnStatusConnected, ConnStatusDegraded, ConnStatusError}).
+		Order("created_at DESC").
+		Find(&out).Error
+	return out, err
+}
+
+// PurgeConnectionSecrets destroys the sealed credentials for every connection in an
+// org and releases any page claims it still holds.
+//
+// One statement, Unscoped, covering live and soft-deleted rows alike. It also
+// soft-deletes and flips status to `disconnected`: the claim index is partial on
+// `deleted_at IS NULL AND status IN ('connected','degraded','error')`, so either
+// alone would release the claim — doing both means the row cannot re-enter the index
+// through any later status write, and a customer's Facebook page becomes connectable
+// from another workspace immediately rather than being held hostage by a workspace
+// that no longer exists.
+//
+// Note the credentials are blanked rather than the rows deleted: integration_events
+// references connection_id, and the ledger is the record of what happened to every
+// lead that page produced. What must go is the secret, not the history.
+func (r *Repository) PurgeConnectionSecrets(ctx context.Context, orgID uuid.UUID) (int64, error) {
+	res := r.db.WithContext(ctx).Exec(`
+		UPDATE integration_connections
+		   SET encrypted_credentials    = '',
+		       webhook_secret_encrypted = NULL,
+		       status                   = ?,
+		       deleted_at               = COALESCE(deleted_at, NOW()),
+		       updated_at               = NOW()
+		 WHERE org_id = ?`, ConnStatusDisconnected, orgID)
+	return res.RowsAffected, res.Error
+}
+
+// DisableSourcesForOrg switches off every lead source in an org.
+//
+// Inbound is already refused at receipt (every token lookup joins organizations on
+// deleted_at IS NULL), but the ASYNC backlog is not: ClaimPendingEvents is the global
+// worker queue and has no org join, so deliveries already sitting `pending` when the
+// workspace is deleted would still be claimed and fetched. Disabling the sources makes
+// the processor's `source.IsLive()` check quarantine them instead of writing contacts
+// into a workspace the customer deleted.
+func (r *Repository) DisableSourcesForOrg(ctx context.Context, orgID uuid.UUID) (int64, error) {
+	res := r.db.WithContext(ctx).Exec(`
+		UPDATE lead_sources
+		   SET status = ?, disabled_at = COALESCE(disabled_at, NOW()), updated_at = NOW()
+		 WHERE org_id = ? AND deleted_at IS NULL AND status <> ?`,
+		SourceStatusDisabled, orgID, SourceStatusDisabled)
+	return res.RowsAffected, res.Error
+}
+
+// PurgeOAuthArtifactsForOrg drops an org's in-flight connect attempts. They are
+// short-lived and the sweeper would expire them anyway, but a half-finished OAuth
+// handshake holding an exchanged token is not something to leave behind a deletion.
+func (r *Repository) PurgeOAuthArtifactsForOrg(ctx context.Context, orgID uuid.UUID) error {
+	if err := r.db.WithContext(ctx).Exec(
+		`DELETE FROM integration_oauth_states WHERE org_id = ?`, orgID).Error; err != nil {
+		return err
+	}
+	return r.db.WithContext(ctx).Exec(
+		`DELETE FROM integration_pending_connections WHERE org_id = ?`, orgID).Error
+}
+
+// DeletedOrgsNeedingPurge returns workspaces that are soft-deleted but still hold a
+// live provider credential or an enabled lead source.
+//
+// The repair half of the teardown, and it is what makes "best-effort" defensible.
+// PurgeWorkspace is called from exactly one place and the org is gone immediately
+// after, so there is NO second trigger: a transient deadlock there would otherwise
+// leave a sealed token at rest and a customer's page claimed, permanently, behind a
+// single log line. It also fixes the past — every workspace deleted before this
+// shipped is in exactly that state, and no version of a delete-time-only cascade can
+// reach them.
+func (r *Repository) DeletedOrgsNeedingPurge(ctx context.Context, limit int) ([]uuid.UUID, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	var ids []uuid.UUID
+	err := r.db.WithContext(ctx).Raw(`
+		SELECT o.id FROM organizations o
+		 WHERE o.deleted_at IS NOT NULL
+		   AND (
+		         EXISTS (SELECT 1 FROM integration_connections c
+		                  WHERE c.org_id = o.id AND c.encrypted_credentials <> '')
+		      OR EXISTS (SELECT 1 FROM lead_sources s
+		                  WHERE s.org_id = o.id AND s.deleted_at IS NULL AND s.status <> ?)
+		       )
+		 ORDER BY o.deleted_at
+		 LIMIT ?`, SourceStatusDisabled, limit).Scan(&ids).Error
+	return ids, err
+}

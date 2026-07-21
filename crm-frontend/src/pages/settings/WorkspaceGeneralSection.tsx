@@ -267,6 +267,20 @@ export default function WorkspaceGeneralSection() {
               </div>
             ) : (
               <div className="space-y-2">
+                {/* The external, irreversible effects. "This can't be undone" is true but
+                    covers none of what actually leaves this product: tokens we destroy,
+                    an app we remove from the customer's own Facebook pages, and embed
+                    code still live on their marketing site that stops accepting
+                    visitors. An owner deleting a workspace to start a clean one has no
+                    other way to learn their landing page has stopped collecting leads. */}
+                <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-300">
+                  <p className="font-medium">This also affects things outside this CRM:</p>
+                  <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                    <li>Connected accounts are disconnected and their stored credentials are destroyed — reconnecting later means signing in to the provider again.</li>
+                    <li>This app is removed from your connected Facebook pages.</li>
+                    <li>Any form you embedded on your own website will stop accepting submissions.</li>
+                  </ul>
+                </div>
                 <p className="text-sm">Type <strong className="font-semibold">{ws.name}</strong> to confirm deletion:</p>
                 <Input
                   value={deleteConfirmText}

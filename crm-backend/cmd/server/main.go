@@ -2066,7 +2066,21 @@ func main() {
 		// so bounding its lifetime is the only reachable answer. Redacts, never
 		// deletes, and never touches a delivery that produced a record — those are
 		// erasable on request and are the only rows that can carry a consent envelope.
-		go integrations.StartLedgerPrune(context.Background(), integrationsRepo, autoLogger)
+		integrationsPurge := integrations.NewPurgeService(integrationsRepo, integrationsConnSvc, autoLogger).
+			WithBackfillCanceller(integrationsHandler.CancelBackfillsForOrg)
+		go integrations.StartLedgerPrune(context.Background(), integrationsRepo, integrationsPurge, autoLogger)
+
+		// Workspace teardown (L6.4). Deleting a workspace touched no integrations
+		// table: the sealed provider credentials stayed at rest, the page CLAIM went on
+		// blocking every other workspace from connecting a page the customer could no
+		// longer release, and anything already queued kept being written into the
+		// deleted org. Injected by interface assertion, the SetLeadLedgerRedactor
+		// crossing — usecase must not import integrations.
+		if setter, ok := workspaceUseCase.(interface {
+			SetIntegrationsPurger(usecase.IntegrationsPurger)
+		}); ok {
+			setter.SetIntegrationsPurger(integrationsPurge)
+		}
 
 		// ── L5.3 Facebook leadgen webhook + async processor ───────────────
 		// The PUBLIC webhook endpoint (GET verify handshake + POST signed receipt)
