@@ -4,7 +4,8 @@ import { DocumentTitle } from '../../lib/useDocumentTitle';
 import { Skeleton } from '@/components/ui';
 import {
   Shield, Users, UsersRound, KeyRound, Boxes, Table2, EyeOff,
-  Target, Mail, Brain, ScrollText, MessageSquare, UserRound, Building2, Bell, Plug, type LucideIcon,
+  Target, Mail, Brain, ScrollText, MessageSquare, UserRound, Building2, Bell, Plug,
+  Sparkles, type LucideIcon,
 } from 'lucide-react';
 
 // The unified settings shell (U1): ONE routed area, grouped into Personal vs
@@ -39,6 +40,13 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   { path: 'roles', label: 'Roles', icon: KeyRound, group: 'workspace', visible: (can) => can('roles.manage') },
   { path: 'object-access', label: 'Object Access', icon: Table2, group: 'workspace', visible: (can) => can('roles.manage') },
   { path: 'field-access', label: 'Field Access', icon: EyeOff, group: 'workspace', visible: (can) => can('roles.manage') },
+  // Sits directly above Objects & Fields and Pipeline because it is the one-click
+  // way to populate both. Gated on org.settings to match what
+  // POST /api/templates/:slug/apply itself enforces — a looser gate here would show
+  // a section whose only button 403s. Path is 'starter-templates', not 'templates':
+  // that one is taken by the Email Templates link below, and section paths must not
+  // prefix each other or the nav highlights two entries at once.
+  { path: 'starter-templates', label: 'Starter Templates', icon: Sparkles, group: 'workspace', visible: (can) => can('org.settings') },
   { path: 'objects', label: 'Objects & Fields', icon: Boxes, group: 'workspace', visible: (can) => can('objects.manage') },
   { path: 'pipeline', label: 'Pipeline', icon: Target, group: 'workspace', visible: (can) => can('pipeline.manage') },
   { path: 'integrations', label: 'Integrations', icon: Plug, group: 'workspace', visible: (can) => can('integrations.manage') },

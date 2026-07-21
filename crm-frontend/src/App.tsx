@@ -19,6 +19,7 @@ import ProfileSection from './pages/settings/ProfileSection';
 import SecuritySection from './pages/settings/SecuritySection';
 import ApiTokensSection from './pages/settings/ApiTokensSection';
 import IntegrationsSection from './pages/settings/IntegrationsSection';
+import StarterTemplateSection from './pages/settings/StarterTemplateSection';
 import IntegrationSourceDetailSection from './pages/settings/IntegrationSourceDetailSection';
 import DeliveryLogSection from './pages/settings/DeliveryLogSection';
 import NotificationPreferencesSection from './pages/settings/NotificationPreferencesSection';
@@ -230,6 +231,7 @@ function App() {
               <Route path="roles/:id" element={<RoleDetailSection />} />
               <Route path="object-access" element={<PermissionsManager />} />
               <Route path="field-access" element={<FieldSecurityManager />} />
+              <Route path="starter-templates" element={<StarterTemplateSection />} />
               <Route path="objects" element={<ObjectsManager />} />
               <Route path="pipeline" element={<PipelineStagesManager />} />
               <Route path="integrations" element={<IntegrationsSection />} />
