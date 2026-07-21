@@ -577,16 +577,9 @@ func fireLifecycleEvent(ctx context.Context, emit domain.RecordEventEmitter, org
 // convention so {{slug.custom_fields.x}} templates resolve identically regardless
 // of which write path fired the event.
 func customFieldsAutomation(m map[string]any, raw domain.JSON) {
-	if len(raw) == 0 || string(raw) == "null" || string(raw) == "{}" {
-		return
-	}
-	var cf map[string]any
-	if err := json.Unmarshal([]byte(raw), &cf); err != nil {
-		return
-	}
-	for k, v := range cf {
-		m["custom_fields."+k] = v
-	}
+	// Nested, not flattened — see domain.SetAutomationCustomFields for why a
+	// flattened "custom_fields.<k>" key is unreachable by every reader.
+	domain.SetAutomationCustomFields(m, []byte(raw))
 }
 
 // contactAutomationMap mirrors the delivery layer's contactToMap so a uniform-path
@@ -669,6 +662,13 @@ func dealAutomationMap(d *domain.Deal) map[string]any {
 	if d.ClosedAt != nil {
 		m["closed_at"] = d.ClosedAt.Format(time.RFC3339)
 	}
+	// Deals carry custom fields exactly as contacts and companies do, and their
+	// siblings above have always folded them in. This map did not, so
+	// `deal.custom_fields.<anything>` was not merely unreachable — it was absent
+	// from the payload entirely. Every industry template defines deal fields
+	// (commission %, new MRR, contract term), so this is the path most of them
+	// would have depended on.
+	customFieldsAutomation(m, d.CustomFields)
 	return m
 }
 

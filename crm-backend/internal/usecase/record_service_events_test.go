@@ -78,15 +78,23 @@ func TestCreate_Contact_FiresEventWithAutomationShape(t *testing.T) {
 		t.Fatalf("payload.contact missing: %+v", payload)
 	}
 	// Automation shape mirrors the delivery contactToMap: owner_user_id (not
-	// owner_id) and custom fields flattened as custom_fields.<k>.
+	// owner_id) and custom fields NESTED under custom_fields.
 	if cm["owner_user_id"] != ownerID.String() {
 		t.Errorf("owner_user_id = %v, want %s", cm["owner_user_id"], ownerID)
 	}
 	if cm["company_id"] != companyID.String() {
 		t.Errorf("company_id = %v, want %s", cm["company_id"], companyID)
 	}
-	if cm["custom_fields.tier"] != "gold" {
-		t.Errorf("custom field not flattened: %+v", cm)
+	// This assertion used to require the FLATTENED form (cm["custom_fields.tier"]),
+	// which is precisely the bug: a key with a literal dot is unreachable by
+	// getNestedValue/resolveNestedPath, both of which split on "." and walk maps.
+	// The test passed while the feature did nothing.
+	nested, ok := cm["custom_fields"].(map[string]any)
+	if !ok {
+		t.Fatalf("custom_fields must be a nested map the engine can walk, got %T: %+v", cm["custom_fields"], cm)
+	}
+	if nested["tier"] != "gold" {
+		t.Errorf("custom_fields.tier = %v, want gold", nested["tier"])
 	}
 }
 

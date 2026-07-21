@@ -2,9 +2,10 @@ package automation
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"time"
+
+	"crm-backend/internal/domain"
 
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
@@ -72,18 +73,11 @@ func (h *Handler) loadContactForRun(ctx context.Context, orgID, contactID uuid.U
 		m["tags"] = ids
 	}
 
-	// Custom fields flattened as "custom_fields.<key>" (matching contactToMap).
-	if len(row.CustomFields) > 0 {
-		s := string(row.CustomFields)
-		if s != "null" && s != "{}" {
-			var cf map[string]any
-			if err := json.Unmarshal(row.CustomFields, &cf); err == nil {
-				for k, v := range cf {
-					m["custom_fields."+k] = v
-				}
-			}
-		}
-	}
+	// Custom fields NESTED under "custom_fields" — the shape every reader resolves.
+	// This previously flattened to "custom_fields.<key>" to match contactToMap,
+	// which was itself flattening for the same reason; see
+	// domain.SetAutomationCustomFields.
+	domain.SetAutomationCustomFields(m, row.CustomFields)
 
 	return m, nil
 }

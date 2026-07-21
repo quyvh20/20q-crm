@@ -2,7 +2,6 @@ package http
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -396,15 +395,11 @@ func contactToMap(c *domain.Contact) map[string]any {
 		}
 		m["tags"] = tagIDs
 	}
-	// Include custom fields
-	if len(c.CustomFields) > 0 && string(c.CustomFields) != "null" && string(c.CustomFields) != "{}" {
-		var cf map[string]any
-		if err := json.Unmarshal([]byte(c.CustomFields), &cf); err == nil {
-			for k, v := range cf {
-				m["custom_fields."+k] = v
-			}
-		}
-	}
+	// Include custom fields, NESTED — see domain.SetAutomationCustomFields. The
+	// flattened form this used to write was unreachable by the engine's dotted-path
+	// readers, so conditions and merge tags on any admin-defined contact field
+	// silently resolved to nil.
+	domain.SetAutomationCustomFields(m, []byte(c.CustomFields))
 	return m
 }
 
