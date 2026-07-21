@@ -5,8 +5,8 @@
   "description": "Listings, viewings and closings — a Properties object plus a pipeline that ends the way property deals actually end.",
   "icon": "🏠",
   "sort_order": 10,
-  "spec_version": 3,
-  "ai_context": "You are a CRM assistant for a real estate agency. Contacts are buyers, sellers, renters and landlords. Deals represent a single property transaction and move from first enquiry through viewings to a signed, notarized contract. When drafting messages, be concrete about the property, the price and the next viewing; never invent listing details you were not given.",
+  "spec_version": 4,
+  "ai_context": "You are a CRM assistant for a real estate agency. Contacts are buyers, sellers, renters and landlords; a deal is one property transaction and runs from first enquiry through viewings to a signed, notarized contract. A sale and a rental are different processes on the same pipeline, so check transaction_type before advising. When drafting, be concrete about the property, the asking price and the next viewing. Never invent listing details, square metreage, legal or title status, or what a property will sell for -- those come from the record or from the agent, and an invented figure in writing is a liability. Never promise a mortgage outcome; financing is the lender's call.",
   "pipeline_stages": [
     {
       "name": "New Enquiry",
@@ -110,6 +110,44 @@
       "type": "number",
       "required": false,
       "position": 0
+    },
+    {
+      "entity_type": "contact",
+      "key": "move_timeline",
+      "label": "Move Timeline",
+      "type": "select",
+      "options": [
+        "ASAP",
+        "1-3 months",
+        "3-6 months",
+        "6-12 months",
+        "Just looking"
+      ],
+      "required": false,
+      "position": 4
+    },
+    {
+      "entity_type": "deal",
+      "key": "transaction_type",
+      "label": "Transaction Type",
+      "type": "select",
+      "options": [
+        "Sale",
+        "Rental",
+        "Off-plan",
+        "Land",
+        "Commercial"
+      ],
+      "required": false,
+      "position": 1
+    },
+    {
+      "entity_type": "deal",
+      "key": "exclusive_until",
+      "label": "Exclusive Until",
+      "type": "date",
+      "required": false,
+      "position": 2
     }
   ],
   "object_defs": [
@@ -276,6 +314,19 @@
               "due_in_days": 1
             }
           }
+        },
+        {
+          "type": "action",
+          "id": "s2",
+          "action": {
+            "id": "s2",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "New enquiry logged",
+              "body": "{{contact.first_name}} came in as a new enquiry. Capture budget, area, timeline and whether they have a property to sell before booking viewings."
+            }
+          }
         }
       ]
     },
@@ -305,13 +356,53 @@
           }
         }
       ]
+    },
+    {
+      "key": "offer_chase",
+      "name": "Chase a decision once an offer is in",
+      "description": "An offer with no answer goes stale fast, and the buyer keeps looking while it does. Fires when a deal reaches Offer Made.",
+      "activation": "auto",
+      "trigger": {
+        "type": "deal_stage_changed",
+        "params": {
+          "to_stage": "Offer Made"
+        }
+      },
+      "steps": [
+        {
+          "type": "action",
+          "id": "s1",
+          "action": {
+            "id": "s1",
+            "type": "create_task",
+            "params": {
+              "title": "Chase the seller for a decision on the offer for {{deal.title}}",
+              "priority": "high",
+              "due_in_days": 2
+            }
+          }
+        },
+        {
+          "type": "action",
+          "id": "s2",
+          "action": {
+            "id": "s2",
+            "type": "log_activity",
+            "params": {
+              "activity_type": "note",
+              "title": "Offer submitted",
+              "body": "Offer submitted on {{deal.title}}. Keep the buyer warm and keep showing them alternatives until the contract is signed."
+            }
+          }
+        }
+      ]
     }
   ],
   "kb_templates": {
-    "company": "## About us\n\nWe are a real estate agency serving [your area]. Replace this with who you are, the neighbourhoods you cover, and how long you have been trading.\n\n## Contact\n\nOffice address, phone, and opening hours.",
-    "products": "## What we handle\n\n- Residential sales\n- Rentals and property management\n- Commercial property\n\nList your typical price bands and the areas you know best.",
-    "playbook": "## Qualifying a buyer\n\n1. Budget, and whether financing is already arranged.\n2. Must-have area, size and number of bedrooms.\n3. Timeline — when do they need to move?\n4. Whether they have a property to sell first.\n\n## Viewing follow-up\n\nCall within 24 hours of every viewing. Ask what they liked, what they did not, and offer two alternatives.",
-    "process": "## From enquiry to keys\n\n1. **New Enquiry** — log the contact and what they are looking for.\n2. **Qualified** — budget and financing confirmed.\n3. **Viewing Scheduled** — at least two properties booked.\n4. **Offer Made** — offer submitted to the seller.\n5. **Deposit Paid** — deposit received, property reserved.\n6. **Notarized** — contract signed at the notary.",
-    "competitors": "## Why clients choose us\n\nReplace with your genuine differentiators — local knowledge, exclusive listings, speed of response, negotiated fees."
+    "company": "## About us\n\nWe are a real estate agency covering [your areas]. Replace this with who you are, the neighbourhoods you genuinely know, how long you have traded, and roughly how many transactions you close a year — the AI uses this when it introduces you in writing.\n\n## Where we work\n\nList your core areas first, then the ones you will travel for. Being honest about your boundary is what stops you taking instructions you cannot service properly.\n\n## Registration\n\nAgency registration or licence number, professional body membership, and your client-money protection arrangement. Buyers and sellers ask, and it belongs in writing.\n\n## Office\n\nAddress, phone, opening hours, and who covers weekends — most viewing requests arrive then.",
+    "products": "## What we handle\n\n- **Sales** — valuation, marketing, viewings, offer negotiation through to completion.\n- **Lettings** — tenant find, referencing, tenancy agreement, deposit protection.\n- **Property management** — rent collection, maintenance, inspections, renewals.\n- **Off-plan and new build** — developer stock, reservation agreements, staged payments.\n\n## Fees\n\nSet out your sales commission (and whether it is sole or multi-agency), your letting fee, and your management percentage: [your fee schedule]. State clearly what is included — photography, floor plans, portal listings, board — because that is what a fee conversation actually turns on.\n\n## Typical price bands\n\nThe ranges you work in per area. This is what lets the assistant judge whether an enquiry is realistic before you spend a Saturday on it.",
+    "playbook": "## Qualifying a buyer\n\n1. **Budget**, and whether financing is arranged. A pre-approval is worth more than a number.\n2. **Area, size, bedrooms** — and which of those they will actually flex on.\n3. **Timeline.** Someone moving in six months is not someone moving in six weeks.\n4. **Chain.** Do they have a property to sell first? This decides whether an offer is real.\n\n## Taking an instruction\n\nComparable evidence first, then the seller's expectation, then the gap between them. An overpriced listing costs you the marketing spend and the seller their best six weeks.\n\n## After every viewing\n\nCall within 24 hours. Ask what they liked, what they did not, and offer two alternatives. The feedback is worth as much to the seller as it is to you.\n\n## Fee objections\n\n\"Another agent will do it for less\" — a lower fee on a lower price is not a saving. Lead with your comparable evidence and average days-on-market, not with the fee.",
+    "process": "## From enquiry to keys\n\n1. **New Enquiry** — log the contact and what they are looking for. Call the same day.\n2. **Qualified** — budget, financing, area and timeline confirmed.\n3. **Viewing Scheduled** — at least two properties booked, never just the one.\n4. **Offer Made** — offer submitted in writing; chase a decision within 48 hours.\n5. **Deposit Paid** — deposit received, property reserved, lawyers instructed.\n6. **Notarized** — contract signed at the notary. This is the win: it is where the commission is earned, and it is the point the deal is marked won.\n7. **Lost** — record why. Price, chain, financing and timing are the four that repeat, and the pattern in them is worth more than any single deal.\n\nTrack the property itself on the Property record and each viewing on a Viewing record, so a listing's history survives the deal that came from it.",
+    "competitors": "## Why clients choose us\n\nReplace the generic claims with the ones you can evidence:\n\n- **Local knowledge.** Naming the street, the school catchment and the service charge is what separates an agent from a portal listing.\n- **Speed of response.** Most enquiries go to whoever answers first. If that is you, say so.\n- **Honest valuations.** Winning an instruction by over-valuing it loses the seller money and you the relationship.\n- **Sale progression.** Deals fall through between offer and completion, not before. Chasing lawyers, lenders and chains is the work clients never see and value most when it is done.\n\n## Where we lose\n\nBe honest here — fee-led competitors, developer in-house teams, private sales. Knowing which one you are up against changes the conversation."
   }
 }
