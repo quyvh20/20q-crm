@@ -2462,15 +2462,35 @@ export async function updateMemberRole(userId: string, roleId: string): Promise<
 // substring (U0.2).
 export class ReassignmentRequiredError extends Error {
   code = 'REASSIGNMENT_REQUIRED' as const;
-  owned: { contacts: number; deals: number };
-  constructor(message: string, owned: { contacts: number; deals: number }) {
+  // `custom` = custom-object records. The backend has sent it since U6.3 and this
+  // class dropped it, so the dialog has been under-reporting the impact in the very
+  // place the admin decides what happens to the data.
+  owned: { contacts: number; deals: number; custom: number };
+  // Lead sources that route NEW leads to this member. Not a choice — removal always
+  // clears the binding — so it is shown as a consequence, not a question.
+  routingSources: string[];
+  constructor(
+    message: string,
+    owned: { contacts: number; deals: number; custom: number },
+    routingSources: string[],
+  ) {
     super(message);
     this.name = 'ReassignmentRequiredError';
     this.owned = owned;
+    this.routingSources = routingSources;
   }
 }
 
-export async function removeMember(userId: string, input?: { strategy?: 'transfer' | 'unassign'; reassign_to_user_id?: string }): Promise<void> {
+/** What removing a member changed beyond their membership row. */
+export interface MemberRemoved {
+  /** Lead sources that were routing new leads to them, and no longer are. */
+  routing_sources_cleared: string[];
+}
+
+export async function removeMember(
+  userId: string,
+  input?: { strategy?: 'transfer' | 'unassign'; reassign_to_user_id?: string },
+): Promise<MemberRemoved> {
   const res = await apiFetch(`/api/workspaces/members/${userId}`, {
     method: 'DELETE',
     body: input ? JSON.stringify(input) : undefined
@@ -2478,13 +2498,23 @@ export async function removeMember(userId: string, input?: { strategy?: 'transfe
   if (!res.ok) {
     const json = await res.json().catch(() => ({}));
     if (json.code === 'REASSIGNMENT_REQUIRED') {
-      throw new ReassignmentRequiredError(json.error || 'This member still owns records.', {
-        contacts: json.owned?.contacts ?? 0,
-        deals: json.owned?.deals ?? 0,
-      });
+      throw new ReassignmentRequiredError(
+        json.error || 'This member still owns records.',
+        {
+          contacts: json.owned?.contacts ?? 0,
+          deals: json.owned?.deals ?? 0,
+          custom: json.owned?.custom ?? 0,
+        },
+        Array.isArray(json.routing_sources) ? json.routing_sources : [],
+      );
     }
     throw apiError(res, json, 'Failed to remove member');
   }
+  const json = await parseJsonSafe(res);
+  // Array.isArray rather than `?? []`: Go marshals a nil slice to null, and a bare
+  // .map over it white-screens the settings page.
+  const cleared = json?.data?.routing_sources_cleared;
+  return { routing_sources_cleared: Array.isArray(cleared) ? cleared : [] };
 }
 
 export async function suspendMember(userId: string): Promise<void> {

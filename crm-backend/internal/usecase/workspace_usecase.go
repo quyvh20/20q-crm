@@ -1150,15 +1150,15 @@ func (uc *workspaceUseCase) TransferOwnership(ctx context.Context, orgID uuid.UU
 	return nil
 }
 
-func (uc *workspaceUseCase) RemoveMember(ctx context.Context, orgID uuid.UUID, targetUserID uuid.UUID, input domain.RemoveMemberInput) error {
+func (uc *workspaceUseCase) RemoveMember(ctx context.Context, orgID uuid.UUID, targetUserID uuid.UUID, input domain.RemoveMemberInput) (*domain.MemberRemoved, error) {
 	ou, err := uc.authRepo.GetOrgUser(ctx, targetUserID, orgID)
 	if err != nil || ou == nil {
-		return domain.ErrNotMember
+		return nil, domain.ErrNotMember
 	}
 	if domain.IsOwnerRole(ou.Role) {
 		count, _ := uc.authRepo.CountOrgUsersByRole(ctx, orgID, ou.RoleID, domain.StatusActive)
 		if count <= 1 {
-			return domain.ErrCannotRemoveSuperAdmin
+			return nil, domain.ErrCannotRemoveSuperAdmin
 		}
 	}
 
@@ -1171,7 +1171,7 @@ func (uc *workspaceUseCase) RemoveMember(ctx context.Context, orgID uuid.UUID, t
 		var err error
 		ownedContacts, ownedDeals, ownedCustom, err = uc.offboard.CountOwnedRecords(ctx, orgID, targetUserID)
 		if err != nil {
-			return domain.ErrInternal
+			return nil, domain.ErrInternal
 		}
 	}
 	// Named up front so both the "which strategy?" prompt and the default branch can
@@ -1187,28 +1187,28 @@ func (uc *workspaceUseCase) RemoveMember(ctx context.Context, orgID uuid.UUID, t
 		switch input.Strategy {
 		case "transfer":
 			if input.ReassignToUserID == nil {
-				return &domain.ReassignmentRequiredError{Contacts: ownedContacts, Deals: ownedDeals, Custom: ownedCustom, RoutingSources: routingSources}
+				return nil, &domain.ReassignmentRequiredError{Contacts: ownedContacts, Deals: ownedDeals, Custom: ownedCustom, RoutingSources: routingSources}
 			}
 			newOwner := *input.ReassignToUserID
 			if newOwner == targetUserID {
-				return domain.NewAppError(400, "records cannot be reassigned to the member being removed")
+				return nil, domain.NewAppError(400, "records cannot be reassigned to the member being removed")
 			}
 			recipient, err := uc.authRepo.GetOrgUser(ctx, newOwner, orgID)
 			if err != nil {
-				return domain.ErrInternal
+				return nil, domain.ErrInternal
 			}
 			if recipient == nil || recipient.Status != domain.StatusActive {
-				return domain.NewAppError(400, "records can only be reassigned to an active member of this workspace")
+				return nil, domain.NewAppError(400, "records can only be reassigned to an active member of this workspace")
 			}
 			if err := uc.offboard.ReassignOwnedRecords(ctx, orgID, targetUserID, newOwner); err != nil {
-				return domain.ErrInternal
+				return nil, domain.ErrInternal
 			}
 		case "unassign":
 			if err := uc.offboard.UnassignOwnedRecords(ctx, orgID, targetUserID); err != nil {
-				return domain.ErrInternal
+				return nil, domain.ErrInternal
 			}
 		default:
-			return &domain.ReassignmentRequiredError{Contacts: ownedContacts, Deals: ownedDeals, Custom: ownedCustom, RoutingSources: routingSources}
+			return nil, &domain.ReassignmentRequiredError{Contacts: ownedContacts, Deals: ownedDeals, Custom: ownedCustom, RoutingSources: routingSources}
 		}
 	}
 
@@ -1217,12 +1217,12 @@ func (uc *workspaceUseCase) RemoveMember(ctx context.Context, orgID uuid.UUID, t
 	// clean instead of silently restoring old access.
 	if uc.offboard != nil {
 		if err := uc.offboard.RevokeUserGrants(ctx, orgID, targetUserID); err != nil {
-			return domain.ErrInternal
+			return nil, domain.ErrInternal
 		}
 	}
 
 	if err := uc.authRepo.DeleteOrgUser(ctx, targetUserID, orgID); err != nil {
-		return err
+		return nil, err
 	}
 	uc.evictSession(ctx, targetUserID, orgID)
 	recordAdminEvent(ctx, uc.authRepo, orgID, "member.removed", &targetUserID,
@@ -1230,6 +1230,16 @@ func (uc *workspaceUseCase) RemoveMember(ctx context.Context, orgID uuid.UUID, t
 			"strategy":       input.Strategy,
 			"owned_contacts": ownedContacts,
 			"owned_deals":    ownedDeals,
+			// The durable record of it. The response tells the admin who is standing
+			// there; this is what answers "why did this form stop assigning leads?"
+			// three weeks later, when nobody remembers the offboarding.
+			"routing_sources_cleared": routingSources,
 		})
-	return nil
+	// Always non-nil, so the JSON is `[]` rather than `null` — a nil slice marshals
+	// to null and a frontend that maps over it white-screens the page.
+	cleared := routingSources
+	if cleared == nil {
+		cleared = []string{}
+	}
+	return &domain.MemberRemoved{RoutingSourcesCleared: cleared}, nil
 }

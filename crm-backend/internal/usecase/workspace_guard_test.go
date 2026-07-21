@@ -394,7 +394,7 @@ func TestMembershipMutations_EvictSessionCache(t *testing.T) {
 	if err := uc.ReinstateMember(ctx, orgID, target.UserID); err != nil {
 		t.Fatalf("reinstate: %v", err)
 	}
-	if err := uc.RemoveMember(ctx, orgID, target.UserID, domain.RemoveMemberInput{Strategy: "unassign"}); err != nil {
+	if _, err := uc.RemoveMember(ctx, orgID, target.UserID, domain.RemoveMemberInput{Strategy: "unassign"}); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 

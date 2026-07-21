@@ -302,18 +302,27 @@ func (h *WorkspaceHandler) RemoveMember(c *gin.Context) {
 		return
 	}
 
-	if err := h.workspaceUC.RemoveMember(c.Request.Context(), orgID, targetUserID, input); err != nil {
+	result, err := h.workspaceUC.RemoveMember(c.Request.Context(), orgID, targetUserID, input)
+	if err != nil {
 		// The target still owns records and no strategy was chosen: answer with a
 		// machine-readable code + real counts so the SPA opens the reassignment
 		// dialog off the CODE, never a message substring (U0.2).
 		var reassign *domain.ReassignmentRequiredError
 		if errors.As(err, &reassign) {
+			// routing_sources existed on the error struct but rode ONLY inside the
+			// free-text message, which this handler's own contract forbids the SPA
+			// from parsing — so the dialog could never show it. It gets its own key.
+			routing := reassign.RoutingSources
+			if routing == nil {
+				routing = []string{}
+			}
 			c.JSON(http.StatusConflict, gin.H{
 				"code":  domain.CodeReassignmentRequired,
 				"error": reassign.Error(),
 				// custom = the custom-object records they own (U6.3). Dropping it here
 				// would under-report the impact in the very dialog where the admin decides.
-				"owned": gin.H{"contacts": reassign.Contacts, "deals": reassign.Deals, "custom": reassign.Custom},
+				"owned":           gin.H{"contacts": reassign.Contacts, "deals": reassign.Deals, "custom": reassign.Custom},
+				"routing_sources": routing,
 			})
 			return
 		}
@@ -321,7 +330,15 @@ func (h *WorkspaceHandler) RemoveMember(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, domain.Success(gin.H{"message": "member removed"}))
+	// Removal succeeded. The routing disclosure ships on THIS path too, and that is
+	// the point: a member who owns no records never triggers the 409 at all — and a
+	// recently-added SDR who is on the rotation but has not closed anything yet is
+	// the single commonest offboarding there is. They were being removed in total
+	// silence while their lead sources went ownerless.
+	c.JSON(http.StatusOK, domain.Success(gin.H{
+		"message":                 "member removed",
+		"routing_sources_cleared": result.RoutingSourcesCleared,
+	}))
 }
 
 func (h *WorkspaceHandler) SuspendMember(c *gin.Context) {

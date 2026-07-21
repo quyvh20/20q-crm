@@ -22,7 +22,13 @@ export default function MembersList() {
   // States for reassign modal
   const [reassignModalUser, setReassignModalUser] = useState<WorkspaceMember | null>(null);
   const [targetOwnerId, setTargetOwnerId] = useState<string>('');
-  const [ownedCounts, setOwnedCounts] = useState<{ contacts: number; deals: number } | null>(null);
+  const [ownedCounts, setOwnedCounts] = useState<{ contacts: number; deals: number; custom: number } | null>(null);
+  // Lead sources that were routing new leads to the member. Shown in the dialog
+  // before removal and echoed after it, because this is the one consequence that
+  // survives the offboarding: their records get a new owner, their lead pipes get
+  // none until someone picks one.
+  const [routingSources, setRoutingSources] = useState<string[]>([]);
+  const [routingNotice, setRoutingNotice] = useState<string[]>([]);
   const [removeStrategy, setRemoveStrategy] = useState<'transfer' | 'unassign'>('transfer');
   const [errorMsg, setErrorMsg] = useState('');
   const [noticeMsg, setNoticeMsg] = useState('');
@@ -154,9 +160,16 @@ export default function MembersList() {
     }))) return;
     setErrorMsg('');
     try {
-      await removeMember(userId, input);
+      const result = await removeMember(userId, input);
       setReassignModalUser(null);
       setOwnedCounts(null);
+      setRoutingSources([]);
+      // Surfaced AFTER a successful removal too, and that is the point: a member who
+      // owns no records never triggers the 409 at all, so a recently-added rep who is
+      // on a rotation but has not closed anything yet — the commonest offboarding
+      // there is — used to be removed in total silence while their lead sources went
+      // ownerless. Nobody found out until the leads stopped being followed up.
+      setRoutingNotice(result.routing_sources_cleared);
       fetchMembers();
     } catch (err: any) {
       // Keyed off the typed 409 code, not a message substring: the member still
@@ -165,6 +178,7 @@ export default function MembersList() {
         const mem = members.find(m => m.user_id === userId);
         if (mem) {
           setOwnedCounts(err.owned);
+          setRoutingSources(err.routingSources);
           setRemoveStrategy('transfer');
           setTargetOwnerId('');
           setReassignModalUser(mem);
@@ -241,6 +255,27 @@ export default function MembersList() {
           <div className="mb-4 flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3 text-sm text-emerald-600 dark:text-emerald-400">
             <CheckCircle2 className="w-4 h-4" />
             {noticeMsg}
+          </div>
+        )}
+        {/* Amber, not green: the removal succeeded, but it left lead sources with no
+            owner, and that is an action item rather than a confirmation. Dismissible
+            because it names sources the admin now has to go and fix — it should not
+            vanish on the next re-render before they have read it. */}
+        {routingNotice.length > 0 && (
+          <div className="mb-4 flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300">
+            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+            <span className="flex-1">
+              They were the lead owner on <strong>{routingNotice.join(', ')}</strong>.
+              Those sources now capture leads with no owner — pick a new owner in
+              Settings → Integrations so the leads get followed up.
+            </span>
+            <button
+              type="button"
+              className="shrink-0 underline"
+              onClick={() => setRoutingNotice([])}
+            >
+              Dismiss
+            </button>
           </div>
         )}
         {/* Search + status filter (U4) — free-text over name/email and a status
@@ -540,10 +575,34 @@ export default function MembersList() {
             <p className="text-sm text-muted-foreground mb-4">
               This member still owns{' '}
               <strong className="text-foreground">
-                {ownedCounts ? `${ownedCounts.contacts} contact${ownedCounts.contacts === 1 ? '' : 's'} and ${ownedCounts.deals} deal${ownedCounts.deals === 1 ? '' : 's'}` : 'records'}
+                {ownedCounts
+                  ? [
+                      `${ownedCounts.contacts} contact${ownedCounts.contacts === 1 ? '' : 's'}`,
+                      `${ownedCounts.deals} deal${ownedCounts.deals === 1 ? '' : 's'}`,
+                      // Only when non-zero: naming "0 other records" on every removal
+                      // is noise, but omitting a non-zero count under-reports the
+                      // impact in the dialog where the admin actually decides.
+                      ...(ownedCounts.custom > 0
+                        ? [`${ownedCounts.custom} other record${ownedCounts.custom === 1 ? '' : 's'}`]
+                        : []),
+                    ].join(', ').replace(/, ([^,]*)$/, ' and $1')
+                  : 'records'}
               </strong>
               . Choose what happens to them:
             </p>
+
+            {/* Deliberately NOT a fourth strategy option. Who inherits the records
+                they already own and who should receive the next lead a form captures
+                are different decisions with different right answers; the binding is
+                always cleared, and the admin picks a new owner per source afterwards. */}
+            {routingSources.length > 0 && (
+              <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-300">
+                They are also the lead owner on{' '}
+                <strong>{routingSources.join(', ')}</strong>. Removing them clears that,
+                so those sources will capture leads with no owner until you pick someone
+                new in Integrations.
+              </div>
+            )}
             <div className="mb-6 space-y-3">
               <label className="flex items-start gap-2 text-sm text-foreground cursor-pointer">
                 <input

@@ -150,10 +150,39 @@ func (r *OffboardRepository) RevokeUserGrants(ctx context.Context, orgID, userID
 		// Raw SQL rather than the integrations repository: usecase and repository must
 		// not depend on that package, and `owner_pool - ?` is jsonb array element
 		// removal, which leaves an admin's ordering otherwise intact.
-		return tx.Exec(`
+		if err := tx.Exec(`
 			UPDATE lead_sources
 			   SET owner_pool = owner_pool - ?, updated_at = NOW()
 			 WHERE org_id = ? AND deleted_at IS NULL AND owner_pool @> ?::jsonb`,
-			userID.String(), orgID, `"`+userID.String()+`"`).Error
+			userID.String(), orgID, `"`+userID.String()+`"`).Error; err != nil {
+			return err
+		}
+		// The single-owner half of the same binding, and it was the live bug: pruning
+		// only the POOL left `default_owner_id` pointing at a person with no org_users
+		// row at all, and the non-pooled branch of resolveOwner stamps that column
+		// UNCHECKED. So every source they were the default owner of went on assigning
+		// new contacts to a departed member — invisible to own-scoped reps, triaged by
+		// nobody, which is verbatim the failure this whole platform exists to fix. The
+		// 409 copy even promised otherwise ("they will also be removed from the lead
+		// rotation on: …"), because RoutingSourceNames matches BOTH bindings while only
+		// one of them was ever repaired.
+		//
+		// Cleared to NULL rather than reassigned to the removal's transfer target: that
+		// target answers "who inherits the records they already own", which is a
+		// different question from "who should get the next lead this form receives",
+		// and quietly reusing one answer for the other is how a rep discovers they own
+		// a channel nobody told them about. Unowned is also the deliberately louder
+		// state — L2.5 settled that stamping an inactive member is WORSE than leaving a
+		// lead unassigned, because it looks handled — and the unowned path already
+		// shouts in four places (ledger note, slog, a capture-response warning, and a
+		// badge). The admin is told which sources this hit, and picks a new owner.
+		//
+		// Same asymmetry as above: suspension does not clear this, because it is
+		// reversible and the column is how the rep gets their pipe back on reinstate.
+		return tx.Exec(`
+			UPDATE lead_sources
+			   SET default_owner_id = NULL, updated_at = NOW()
+			 WHERE org_id = ? AND deleted_at IS NULL AND default_owner_id = ?`,
+			orgID, userID).Error
 	})
 }

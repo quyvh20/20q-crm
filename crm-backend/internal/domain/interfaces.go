@@ -567,7 +567,13 @@ type WorkspaceUseCase interface {
 	// the current owner (verified inside, not just at the route), and the current
 	// owner is demoted in the same transaction the target is promoted.
 	TransferOwnership(ctx context.Context, orgID uuid.UUID, callerUserID, targetUserID uuid.UUID) error
-	RemoveMember(ctx context.Context, orgID uuid.UUID, targetUserID uuid.UUID, input RemoveMemberInput) error
+	// RemoveMember offboards a member and reports what that changed BEYOND their own
+	// membership. The report exists because the most consequential side effect is
+	// invisible otherwise: removal clears the member from every lead source that was
+	// routing new leads to them, and those sources now have no owner. That is not a
+	// blocking decision (there is no strategy to pick — the binding is always
+	// cleared), so it is disclosed on the way out rather than demanded on the way in.
+	RemoveMember(ctx context.Context, orgID uuid.UUID, targetUserID uuid.UUID, input RemoveMemberInput) (*MemberRemoved, error)
 	// GetMemberDetail returns one member's drawer payload (U4): identity + groups
 	// + owned-record counts + live sessions. 404s a non-member.
 	GetMemberDetail(ctx context.Context, orgID, targetUserID uuid.UUID) (*MemberDetail, error)
@@ -593,6 +599,25 @@ type WorkspaceUseCase interface {
 type RemoveMemberInput struct {
 	ReassignToUserID *uuid.UUID `json:"reassign_to_user_id,omitempty"`
 	Strategy         string     `json:"strategy,omitempty"` // "transfer" or "unassign"
+	// Deliberately NO routing-reassignment field. ReassignToUserID answers "who
+	// inherits the records this person already owns"; who should receive the NEXT
+	// lead a form captures is a different question with a different correct answer,
+	// and folding them together hands someone a channel nobody told them about.
+	// Routing bindings are cleared and disclosed; the admin then picks per source.
+}
+
+// MemberRemoved is what an offboarding changed beyond the membership row itself.
+type MemberRemoved struct {
+	// RoutingSourcesCleared names the lead sources that were sending NEW leads to
+	// the removed member — as the single default owner, as part of a rotation, or
+	// both — and no longer are.
+	//
+	// Reassigning someone's existing records says nothing about the ones still
+	// arriving for them, so without this an admin completes a tidy offboarding and
+	// then quietly loses the leads that keep coming. Always non-nil, so the JSON is
+	// `[]` and never `null` (a nil slice marshals to null and white-screens a
+	// frontend that maps over it).
+	RoutingSourcesCleared []string `json:"routing_sources_cleared"`
 }
 
 type Mailer interface {
