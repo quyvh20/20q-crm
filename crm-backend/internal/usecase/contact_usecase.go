@@ -392,7 +392,10 @@ func (uc *contactUseCase) BulkImport(ctx context.Context, orgID uuid.UUID, file 
 
 		// When overwrite mode: check for existing contact by email and update instead
 		if conflictMode == "overwrite" && email != "" {
-			existing, _, _ := uc.contactRepo.List(ctx, orgID, domain.ContactFilter{Q: email, Limit: 1})
+			// Email, not Q: Q is a fuzzy search (company name, phone, last-word prefix),
+			// so it can return a near-miss that the EqualFold below then rejects — and
+			// overwrite mode would silently CREATE a duplicate instead of overwriting.
+			existing, _, _ := uc.contactRepo.List(ctx, orgID, domain.ContactFilter{Email: email, Limit: 1})
 			if len(existing) > 0 && existing[0].Email != nil && strings.EqualFold(*existing[0].Email, email) {
 				// Mutate the existing contact and save via repo.Update(*Contact)
 				updated := existing[0]
@@ -445,8 +448,12 @@ func (uc *contactUseCase) BulkImport(ctx context.Context, orgID uuid.UUID, file 
 			continue
 		}
 
-		// Find the contact we just inserted
-		contactList, _, _ := uc.contactRepo.List(ctx, orgID, domain.ContactFilter{Q: email, Limit: 1})
+		// Find the contact we just inserted. Email, not Q, and the distinction is
+		// load-bearing here: this row's tags are REPLACED with no exactness check
+		// after the lookup, so a fuzzy match that returned a near-miss (Q treats the
+		// last word as a prefix, so "bob@example.com" also matches
+		// "bob@example.com.au") would wipe an unrelated contact's tags.
+		contactList, _, _ := uc.contactRepo.List(ctx, orgID, domain.ContactFilter{Email: email, Limit: 1})
 		if len(contactList) == 0 {
 			continue
 		}

@@ -621,6 +621,18 @@ type ContactFilter struct {
 	CompanyID   *uuid.UUID  `form:"company_id"`
 	TagIDs      []uuid.UUID `form:"tag_ids"`
 	OwnerUserID *uuid.UUID  `form:"owner_user_id"`
+	// Email matches ONE address case-insensitively and exactly. Q is a fuzzy
+	// full-text search — it matches names, the related company, phone digits, and
+	// treats the last word as a prefix — so a caller that means "the contact whose
+	// address is exactly this" must not use it: "bob@example.com" as a Q term also
+	// matches bob@example.com.au, and with Limit 1 the wrong row can crowd out the
+	// right one. Import dedupe learned that the hard way.
+	//
+	// form:"-" deliberately: this is an internal exactness tool, not a query param.
+	// Unlike ContactRepository.FindByNormalizedEmail — which is UNSCOPED because
+	// dedupe must see invisible rows — this stays row-scoped like the rest of List,
+	// so it is safe to echo the result back to the caller.
+	Email string `form:"-"`
 	// CustomFilters matches custom (jsonb) fields exactly (custom_fields ->> key = value),
 	// powering reverse related lists for custom lookups on contacts.
 	CustomFilters map[string]string `form:"-"`

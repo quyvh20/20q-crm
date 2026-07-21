@@ -132,9 +132,103 @@ func TestContactSearch_MatchesCompanyName(t *testing.T) {
 	assert.Equal(t, []string{"Bob"}, searchNames(t, repo, org, "(501) 222-7363"))
 	assert.Equal(t, []string{"Nora"}, searchNames(t, repo, org, "Nora"))
 
-	// A company token is whole-word, like the rest of the search: no prefix match.
-	assert.Empty(t, searchNames(t, repo, org, "Acm"))
 	assert.Empty(t, searchNames(t, repo, org, "Zenith"))
+}
+
+// Search-as-you-type: the last word of the term is a prefix. Before this, a search
+// box showed nothing until you finished typing the word.
+func TestContactSearch_PrefixMatching(t *testing.T) {
+	repo, db, done := setupContactSearch(t)
+	defer done()
+
+	org := seedOrg(t, db)
+	acme := seedCompany(t, db, org, "Acme Corporation", false)
+	seedContact(t, db, org, "Bob", "Smith", "bob@example.com", "", &acme)
+
+	// Company name, the reported case.
+	assert.Equal(t, []string{"Bob"}, searchNames(t, repo, org, "Acm"))
+	assert.Equal(t, []string{"Bob"}, searchNames(t, repo, org, "Acme Corp"))
+	// Contact name and email get the same rule — one term, one behaviour.
+	assert.Equal(t, []string{"Bob"}, searchNames(t, repo, org, "Bo"))
+	assert.Equal(t, []string{"Bob"}, searchNames(t, repo, org, "Smi"))
+
+	// Only the LAST lexeme is a prefix; earlier words still have to match whole.
+	// "Corp" is not a word in "Acme Corporation" reversed order, so this stays empty.
+	assert.Empty(t, searchNames(t, repo, org, "Corp Acme"))
+	assert.Empty(t, searchNames(t, repo, org, "Zeni"))
+}
+
+// The reason the prefix is built by rewriting plainto_tsquery's OUTPUT instead of
+// tokenizing in Go: the 'simple' config keeps a COMPLETE address as one lexeme
+// ('bob@example.com'), so a Go-side split on non-alphanumerics would emit
+// 'bob' & 'example' & 'com' and match nothing.
+func TestContactSearch_EmailTokenization(t *testing.T) {
+	repo, db, done := setupContactSearch(t)
+	defer done()
+
+	org := seedOrg(t, db)
+	seedContact(t, db, org, "Bob", "Smith", "bob@example.com", "", nil)
+
+	assert.Equal(t, []string{"Bob"}, searchNames(t, repo, org, "bob@example.com"))
+	assert.Equal(t, []string{"Bob"}, searchNames(t, repo, org, "bob"))
+	assert.Equal(t, []string{"Bob"}, searchNames(t, repo, org, "bob@"))
+
+	// A HALF-typed address does not match, and cannot under this design. Postgres
+	// tokenizes a complete address as ONE lexeme but an incomplete one as TWO
+	// ('bob' & 'exam' — "exam" has no TLD, so it is no longer an email token), so
+	// the prefix lands on a token the stored vector never contains. Likewise the
+	// domain alone: the lexeme is the whole address, and it does not start with
+	// "example". Both were already true before prefixes existed; typing the local
+	// part or stopping at the @ is what works. Fixing it means trigrams, not tsquery.
+	assert.Empty(t, searchNames(t, repo, org, "bob@exam"))
+	assert.Empty(t, searchNames(t, repo, org, "example"))
+}
+
+// ContactFilter.Email is the exactness escape hatch from fuzzy Q. The CSV import
+// path depends on it: it replaces the matched contact's tags outright, so a
+// near-miss would wipe an unrelated contact's tags. Q's prefix rule makes
+// "bob@example.com" match "bob@example.com.au"; Email must not.
+func TestContactSearch_ExactEmailFilterIsNotFuzzy(t *testing.T) {
+	repo, db, done := setupContactSearch(t)
+	defer done()
+
+	org := seedOrg(t, db)
+	seedContact(t, db, org, "Bob", "Smith", "bob@example.com", "", nil)
+	// Inserted second, so created_at DESC puts it FIRST — it is exactly the row that
+	// would crowd out the real match under Q + Limit 1.
+	seedContact(t, db, org, "Imposter", "Twin", "bob@example.com.au", "", nil)
+
+	exact, _, err := repo.List(context.Background(), org, domain.ContactFilter{Email: "bob@example.com", Limit: 1})
+	require.NoError(t, err)
+	require.Len(t, exact, 1)
+	assert.Equal(t, "Bob", exact[0].FirstName)
+
+	// Case-insensitive, matching idx_contacts_org_lower_email.
+	upper, _, err := repo.List(context.Background(), org, domain.ContactFilter{Email: "BOB@Example.COM", Limit: 1})
+	require.NoError(t, err)
+	require.Len(t, upper, 1)
+	assert.Equal(t, "Bob", upper[0].FirstName)
+
+	// And the demonstration that Q is the wrong tool for this: it returns the
+	// imposter first, which is why the import path no longer uses it.
+	assert.Equal(t, []string{"Imposter", "Bob"}, searchNames(t, repo, org, "bob@example.com"))
+}
+
+// A term that reduces to no lexemes at all must return nothing, not explode:
+// '' || ':*' is ':*', which is a tsquery syntax error. Guarded with NULLIF/COALESCE.
+func TestContactSearch_LexemelessTermIsNotAnError(t *testing.T) {
+	repo, db, done := setupContactSearch(t)
+	defer done()
+
+	org := seedOrg(t, db)
+	acme := seedCompany(t, db, org, "Acme Corporation", false)
+	seedContact(t, db, org, "Bob", "Smith", "bob@example.com", "", &acme)
+
+	for _, q := range []string{"!!!", "?", "&", "|", "  ", "()"} {
+		got, _, err := repo.List(context.Background(), org, domain.ContactFilter{Q: q, Limit: 50})
+		require.NoError(t, err, "query %q must not error", q)
+		assert.Empty(t, got, "query %q must match nothing", q)
+	}
 }
 
 // THE regression that matters. Two orgs own a company with the SAME name; a search

@@ -335,7 +335,7 @@ export default function VoiceUploader({
                   onChange={e => { setContactSearch(e.target.value); setContactDropOpen(true); setShowContactError(false); }}
                   onFocus={() => setContactDropOpen(true)}
                   onBlur={() => setTimeout(() => setContactDropOpen(false), 150)}
-                  placeholder="Search by name or email…"
+                  placeholder="Search by name, email, company, or phone…"
                   autoComplete="off"
                   className={`${inputClass} ${showContactError ? 'border-destructive' : ''}`}
                 />

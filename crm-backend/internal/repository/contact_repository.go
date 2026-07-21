@@ -109,13 +109,36 @@ func (r *contactRepository) List(ctx context.Context, orgID uuid.UUID, f domain.
 		Preload("Owner")
 
 	// Full-text search over name + email, OR'd with the related company's name, and
-	// with a digits match when the term looks like a phone number. The tsvector
-	// deliberately does not index phone (formatting makes it useless as a text
-	// token), so before that branch existed searching "501-222-7363" tokenized into
-	// terms the vector could never contain and returned zero rows for a contact that
-	// was sitting right there.
+	// with a digits match when the term looks like a phone number; the last word of
+	// the term is a prefix. The tsvector deliberately does not index phone
+	// (formatting makes it useless as a text token), so before that branch existed
+	// searching "501-222-7363" tokenized into terms the vector could never contain
+	// and returned zero rows for a contact that was sitting right there.
+	//
+	// Q is FUZZY on every axis. A caller that wants one specific contact wants
+	// f.Email (exact, below), not this.
 	if f.Q != "" {
-		const textMatch = "to_tsvector('simple', contacts.first_name || ' ' || contacts.last_name || ' ' || COALESCE(contacts.email, '')) @@ plainto_tsquery('simple', ?)"
+		// Search-as-you-type. plainto_tsquery matches whole tokens only, so "Acm"
+		// found neither Acme the person nor Acme Corporation the company — the box
+		// looked broken for exactly the half-typed word people actually type.
+		// Appending :* to the tsquery's LAST lexeme makes that trailing word a prefix
+		// while earlier words stay exact, the conventional search-as-you-type rule:
+		// "Acme Corp" finds Acme Corporation, "Corp Acme" still finds nothing.
+		//
+		// Built by rewriting plainto_tsquery's OUTPUT rather than tokenizing in Go,
+		// and that is load-bearing: the 'simple' config keeps an address like
+		// bob@example.com as ONE lexeme, so a Go-side split on non-alphanumerics would
+		// emit 'bob' & 'example' & 'com' and silently break email search.
+		//
+		// NULLIF/COALESCE guards a term that yields no lexemes at all ("!!!"): there
+		// '' || ':*' is ':*', a tsquery syntax ERROR, whereas ''::tsquery is simply a
+		// query that matches nothing.
+		//
+		// Index-safe: :* changes the QUERY side only. Both GIN indexes are on the
+		// to_tsvector side and stay exactly as the main.go boot guards build them.
+		const prefixQuery = `COALESCE(NULLIF(plainto_tsquery('simple', ?)::text, '') || ':*', '')::tsquery`
+
+		const textMatch = "to_tsvector('simple', contacts.first_name || ' ' || contacts.last_name || ' ' || COALESCE(contacts.email, '')) @@ " + prefixQuery
 
 		// "Everyone at Acme" is a contact search users expect to work, but the company
 		// name lives on another table and so cannot join the contacts tsvector.
@@ -125,17 +148,16 @@ func (r *contactRepository) List(ctx context.Context, orgID uuid.UUID, f domain.
 		// the select list, and this file already spells "contact matches a related row"
 		// this way — see the TagIDs filter below.
 		//
-		// Same tokenizer as the name/email half, so one term behaves consistently
-		// across both: "Acme" finds Acme Corporation, and a prefix like "Acm" finds
-		// neither. org_id is not redundant despite company_id already being org-local —
-		// it lets the planner cut the company scan to one org before the GIN probe.
-		// deleted_at IS NULL has to be written out: GORM's soft-delete clause does not
-		// reach inside a raw subquery, so without it a deleted company would go on
-		// matching its contacts.
+		// Same tokenizer AND the same prefix rule as the name/email half, so one term
+		// behaves consistently across both. org_id is not redundant despite company_id
+		// already being org-local — it lets the planner cut the company scan to one org
+		// before the GIN probe. deleted_at IS NULL has to be written out: GORM's
+		// soft-delete clause does not reach inside a raw subquery, so without it a
+		// deleted company would go on matching its contacts.
 		const companyMatch = `contacts.company_id IN (
 			SELECT c.id FROM companies c
 			WHERE c.org_id = ? AND c.deleted_at IS NULL
-			  AND to_tsvector('simple', c.name) @@ plainto_tsquery('simple', ?)
+			  AND to_tsvector('simple', c.name) @@ ` + prefixQuery + `
 		)`
 
 		// The company arm is unscoped by design. Every contact row returned still goes
@@ -156,6 +178,13 @@ func (r *contactRepository) List(ctx context.Context, orgID uuid.UUID, f domain.
 		}
 
 		query = query.Where(cond)
+	}
+
+	// Exact address, for callers that mean equality rather than search. LOWER(email)
+	// is character-identical to idx_contacts_org_lower_email (a main.go boot guard),
+	// so this is an index probe, not a scan.
+	if f.Email != "" {
+		query = query.Where("LOWER(contacts.email) = LOWER(?)", f.Email)
 	}
 
 	// Filters

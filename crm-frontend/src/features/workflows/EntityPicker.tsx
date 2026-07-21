@@ -90,7 +90,9 @@ export const EntityPicker: React.FC<EntityPickerProps> = ({ kind, onSelect }) =>
   // NOT a no-op: it fetches a default first page so the picker opens as a ready-to-pick
   // list (a searchable picklist), and typing narrows it. Case is handled server-side
   // (contacts: tsvector 'simple'; deals: LOWER(title) LIKE LOWER(q)), so the query is
-  // forwarded verbatim and any casing matches.
+  // forwarded verbatim and any casing matches. A contact term also matches the related
+  // company's name and the phone digits, and its last word is treated as a prefix —
+  // all server-side, so nothing here needs to special-case them.
   useEffect(() => {
     const reqId = ++reqIdRef.current;
     setLoading(true);
@@ -126,7 +128,7 @@ export const EntityPicker: React.FC<EntityPickerProps> = ({ kind, onSelect }) =>
     onSelect(candidate);
   };
 
-  const placeholder = kind === 'contact' ? 'Search contacts by name or email…' : 'Search deals by title…';
+  const placeholder = kind === 'contact' ? 'Search contacts by name, email, company, or phone…' : 'Search deals by title…';
 
   return (
     <div className="space-y-3">

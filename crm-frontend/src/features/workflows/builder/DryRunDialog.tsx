@@ -94,7 +94,7 @@ export function DryRunDialog({ kind, running, error, onPick, onClose }: Props) {
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder={kind === 'contact' ? 'Search contacts by name or email…' : 'Search deals by title…'}
+              placeholder={kind === 'contact' ? 'Search contacts by name, email, company, or phone…' : 'Search deals by title…'}
               aria-label={`Search ${kind}s`}
               className="w-full rounded-lg border border-border bg-background py-2 pl-8 pr-3 text-sm text-foreground placeholder:text-muted-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
             />
