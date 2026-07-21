@@ -2,11 +2,11 @@ package usecase
 
 import (
 	"context"
-	"log"
 	"encoding/csv"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"path/filepath"
 	"strings"
@@ -60,6 +60,10 @@ type contactUseCase struct {
 // failure a consent feature must not have.
 type LeadLedgerRedactor interface {
 	RedactForRecord(ctx context.Context, orgID, recordID uuid.UUID) error
+	// RedactForRecords is the same erasure for many contacts at once — the bulk
+	// delete's path. Separate from a loop over the singular form because a bulk
+	// action can carry hundreds of ids.
+	RedactForRecords(ctx context.Context, orgID uuid.UUID, recordIDs []uuid.UUID) error
 }
 
 // SetLeadLedgerRedactor wires the ledger erasure hook. Called once at startup.
@@ -148,7 +152,7 @@ func (uc *contactUseCase) Create(ctx context.Context, orgID uuid.UUID, input dom
 
 	// Re-fetch with preloads
 	result, err := uc.contactRepo.GetByID(ctx, orgID, contact.ID)
-	
+
 	// Queue for embedding
 	if err == nil && result != nil && uc.queue != nil {
 		uc.queue.EnqueueContact(result)
@@ -264,13 +268,32 @@ func (uc *contactUseCase) BulkAction(ctx context.Context, orgID uuid.UUID, input
 
 	switch input.Action {
 	case "delete":
-		n, err := uc.contactRepo.BulkDeleteByIDs(ctx, orgID, input.ContactIDs)
+		deleted, err := uc.contactRepo.BulkDeleteByIDs(ctx, orgID, input.ContactIDs)
 		if err != nil {
 			return nil, domain.ErrInternal
 		}
+		// Erase what the lead ledger holds about these people — the half of deletion
+		// the bulk path never did. Single-contact delete has redacted since L2.7, so a
+		// customer honouring a data-protection request one person at a time was covered
+		// and the same customer honouring it over a LIST was not: the raw payload, the
+		// capture context and the consent envelope all survived, for every subject.
+		//
+		// Keyed on `deleted`, never on input.ContactIDs. The delete carries a row-level
+		// write scope, so an own-scoped caller's request silently skips records they do
+		// not own — and redacting the requested set would let any member with bulk
+		// access destroy ledger evidence for contacts they were never allowed to touch.
+		//
+		// Best-effort, matching the single path: the contacts are already gone, and
+		// failing here would report a deletion that did happen as having failed, which
+		// is the one answer that makes a deletion request impossible to honour at all.
+		if uc.ledgerRedactor != nil && len(deleted) > 0 {
+			if err := uc.ledgerRedactor.RedactForRecords(ctx, orgID, deleted); err != nil {
+				log.Printf("contact bulk delete: could not redact the lead ledger for %d contact(s): %v", len(deleted), err)
+			}
+		}
 		return &domain.BulkActionResult{
-			Affected: int(n),
-			Message:  fmt.Sprintf("%d contact(s) deleted", n),
+			Affected: len(deleted),
+			Message:  fmt.Sprintf("%d contact(s) deleted", len(deleted)),
 		}, nil
 
 	case "assign_tag":
@@ -323,7 +346,7 @@ func (uc *contactUseCase) BulkImport(ctx context.Context, orgID uuid.UUID, file 
 	colMap := mapColumns(header)
 
 	result := &domain.ImportResult{}
-	seen := make(map[string]bool)           // within-batch email dedup
+	seen := make(map[string]bool)               // within-batch email dedup
 	companyCache := make(map[string]*uuid.UUID) // company name → ID cache (avoids per-row DB lookup)
 	var contacts []domain.Contact
 
@@ -422,7 +445,6 @@ func (uc *contactUseCase) BulkImport(ctx context.Context, orgID uuid.UUID, file 
 				continue
 			}
 		}
-
 
 		contacts = append(contacts, c)
 

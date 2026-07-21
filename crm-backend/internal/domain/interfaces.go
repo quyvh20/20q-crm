@@ -722,7 +722,13 @@ type ContactRepository interface {
 	FindCompanyByName(ctx context.Context, orgID uuid.UUID, name string) (*Company, error)
 	CreateCompany(ctx context.Context, c *Company) error
 	ReplaceContactTags(ctx context.Context, contactID uuid.UUID, tagIDs []uuid.UUID) error
-	BulkDeleteByIDs(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID) (int64, error)
+	// BulkDeleteByIDs soft-deletes the given contacts and returns the ids it
+	// ACTUALLY deleted, which is not always the ids it was asked for: the statement
+	// carries a row-level write scope, so an own-scoped caller's request silently
+	// skips the records they do not own. Callers that must act on the deletion —
+	// erasing the lead ledger, say — have to key off the returned set, never the
+	// requested one, or they act on records the caller was not allowed to touch.
+	BulkDeleteByIDs(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID) ([]uuid.UUID, error)
 	BulkAssignTag(ctx context.Context, orgID uuid.UUID, contactIDs []uuid.UUID, tagID uuid.UUID) (int64, error)
 	SemanticSearch(ctx context.Context, orgID uuid.UUID, vec []float32, threshold float32, limit int) ([]Contact, error)
 }

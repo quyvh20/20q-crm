@@ -460,6 +460,30 @@ func (r *Repository) RedactForRecord(ctx context.Context, orgID, recordID uuid.U
 		consentTombstone, orgID, recordID).Error
 }
 
+// RedactForRecords is the bulk erasure path: the same strip, for many contacts, in
+// one statement.
+//
+// It exists because the single-contact hook was only ever wired to the single-contact
+// delete, and the bulk action an admin actually reaches for when honouring a
+// data-protection request over a list of people wrote nothing at all — so exactly the
+// case with the most subjects in it was the case that erased none of them.
+//
+// One UPDATE rather than a loop: a bulk delete can carry hundreds of ids, and a
+// round trip each would make erasure the slowest thing in the request by an order of
+// magnitude, which is how it ends up being made asynchronous and then unreliable.
+func (r *Repository) RedactForRecords(ctx context.Context, orgID uuid.UUID, recordIDs []uuid.UUID) error {
+	if len(recordIDs) == 0 {
+		return nil
+	}
+	return r.db.WithContext(ctx).Exec(`
+		UPDATE integration_events
+		   SET raw_payload = '{}'::jsonb,
+		       context     = '{}'::jsonb,
+		       consent     = CASE WHEN consent IS NULL THEN NULL ELSE ?::jsonb END
+		 WHERE org_id = ? AND result_record_id IN ?`,
+		consentTombstone, orgID, recordIDs).Error
+}
+
 // ConsentForEvents reads the envelopes for a page of deliveries in one query.
 //
 // Separate from ListEvents so a missing column degrades the consent display rather
