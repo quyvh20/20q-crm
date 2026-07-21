@@ -393,8 +393,10 @@ func (uc *contactUseCase) BulkImport(ctx context.Context, orgID uuid.UUID, file 
 		// When overwrite mode: check for existing contact by email and update instead
 		if conflictMode == "overwrite" && email != "" {
 			// Email, not Q: Q is a fuzzy search (company name, phone, last-word prefix),
-			// so it can return a near-miss that the EqualFold below then rejects — and
-			// overwrite mode would silently CREATE a duplicate instead of overwriting.
+			// so it can return a near-miss that the EqualFold below then rejects. The row
+			// then falls through to the insert path, where ON CONFLICT DO NOTHING drops
+			// it because the address already exists — so the edit is SILENTLY LOST and
+			// the import still reports success. See contact_import_dedupe_test.go.
 			existing, _, _ := uc.contactRepo.List(ctx, orgID, domain.ContactFilter{Email: email, Limit: 1})
 			if len(existing) > 0 && existing[0].Email != nil && strings.EqualFold(*existing[0].Email, email) {
 				// Mutate the existing contact and save via repo.Update(*Contact)
