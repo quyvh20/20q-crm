@@ -5,7 +5,7 @@
   "description": "Rate enquiry to booked shipment for a freight forwarder — lanes, modes and Incoterms on the deal, plus a Shipments object tracking ETD and ETA.",
   "icon": "🚚",
   "sort_order": 240,
-  "spec_version": 2,
+  "spec_version": 3,
   "ai_context": "You are a CRM assistant for a freight forwarder / logistics provider. Contacts are the people at a shipper or consignee who book and pay for freight; a deal is a rate enquiry for a lane that ends either booked or lost, while the Shipment object tracks the job once it is moving. Rates, surcharges and transit times expire, so validity dates matter as much as the number. Never invent rates, sailing schedules, container numbers, customs classifications or ETAs — quote only what is recorded, and say when a rate has expired.",
   "pipeline_stages": [
     {
@@ -40,19 +40,12 @@
       "name": "Booking Confirmed",
       "position": 4,
       "color": "#F97316",
-      "is_won": false,
-      "is_lost": false
-    },
-    {
-      "name": "Delivered & Invoiced",
-      "position": 5,
-      "color": "#10B981",
       "is_won": true,
       "is_lost": false
     },
     {
       "name": "Lost",
-      "position": 6,
+      "position": 5,
       "color": "#EF4444",
       "is_won": false,
       "is_lost": true
@@ -331,12 +324,12 @@
     {
       "key": "won_handover",
       "name": "Close out a delivered shipment",
-      "description": "Fires the moment a deal reaches Delivered & Invoiced — the point where work is won and something has to happen next.",
+      "description": "Fires the moment a deal reaches Booking Confirmed — the commercial win, which is when the handover has to happen.",
       "activation": "auto",
       "trigger": {
         "type": "deal_stage_changed",
         "params": {
-          "to_stage": "Delivered & Invoiced"
+          "to_stage": "Booking Confirmed"
         }
       },
       "steps": [

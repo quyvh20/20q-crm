@@ -5,7 +5,7 @@
   "description": "New patient exams, treatment plans and recalls, with a Treatment Plans object and a pipeline built around plan acceptance.",
   "icon": "🦷",
   "sort_order": 120,
-  "spec_version": 2,
+  "spec_version": 3,
   "ai_context": "You are a CRM assistant for a dental practice. Contacts are patients; a deal represents one course of treatment, from the new patient exam through plan presentation and acceptance to completion, and Treatment Plan records hold the itemised proposal and its value. Help with recalls, rebooking, plan follow-up, finance options and unattended-appointment chasing. Never give clinical or dental advice, never suggest what treatment a patient needs, and never invent plan items, prices, insurance cover or radiograph findings.",
   "pipeline_stages": [
     {
@@ -40,26 +40,12 @@
       "name": "Plan Accepted",
       "position": 4,
       "color": "#F97316",
-      "is_won": false,
-      "is_lost": false
-    },
-    {
-      "name": "Treatment In Progress",
-      "position": 5,
-      "color": "#EA580C",
-      "is_won": false,
-      "is_lost": false
-    },
-    {
-      "name": "Treatment Completed",
-      "position": 6,
-      "color": "#10B981",
       "is_won": true,
       "is_lost": false
     },
     {
       "name": "Declined",
-      "position": 7,
+      "position": 5,
       "color": "#EF4444",
       "is_won": false,
       "is_lost": true
@@ -318,12 +304,12 @@
     {
       "key": "won_handover",
       "name": "Book the recall when treatment completes",
-      "description": "Fires the moment a deal reaches Treatment Completed — the point where work is won and something has to happen next.",
+      "description": "Fires the moment a deal reaches Plan Accepted — the commercial win, which is when the handover has to happen.",
       "activation": "auto",
       "trigger": {
         "type": "deal_stage_changed",
         "params": {
-          "to_stage": "Treatment Completed"
+          "to_stage": "Plan Accepted"
         }
       },
       "steps": [

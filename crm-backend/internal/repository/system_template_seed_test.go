@@ -3,6 +3,7 @@ package repository
 import (
 	"encoding/json"
 	"regexp"
+	"sort"
 	"testing"
 
 	"crm-backend/internal/domain"
@@ -80,6 +81,64 @@ func TestEmbeddedTemplatesHaveUsablePipelines(t *testing.T) {
 			// reporting stays permanently empty.
 			t.Errorf("%s: pipeline has no is_won stage", tf.Slug)
 		}
+	}
+}
+
+// The won stage marks the COMMERCIAL win, and it must be the last non-lost stage.
+// ChangeStage clears is_won when a deal moves to an open stage, so a delivery stage
+// sitting after the won one silently un-wins the deal and wipes closed_at — which
+// reports revenue in the wrong period, in a direction nobody audits.
+func TestEmbeddedTemplatesHaveTerminalWonStage(t *testing.T) {
+	files, err := loadTemplateFiles()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	for i := range files {
+		tf := files[i]
+		if len(tf.PipelineStages) == 0 {
+			continue
+		}
+		byPos := make([]domain.TemplateStage, len(tf.PipelineStages))
+		copy(byPos, tf.PipelineStages)
+		sort.Slice(byPos, func(a, b int) bool { return byPos[a].Position < byPos[b].Position })
+
+		seenWon := false
+		for _, s := range byPos {
+			if s.IsWon {
+				seenWon = true
+				continue
+			}
+			if seenWon && !s.IsLost {
+				t.Errorf("%s: open stage %q sits after the won stage — a deal moved there would be un-won",
+					tf.Slug, s.Name)
+			}
+		}
+	}
+}
+
+func TestValidateTemplateFileRejectsOpenStageAfterWon(t *testing.T) {
+	tf := templateFile{
+		Slug: "ok", Name: "X", SpecVersion: 1,
+		PipelineStages: []domain.TemplateStage{
+			{Name: "Quote Sent", Position: 0},
+			{Name: "Deposit Paid", Position: 1, IsWon: true},
+			{Name: "Delivered", Position: 2}, // delivery state on the sales pipeline
+			{Name: "Lost", Position: 3, IsLost: true},
+		},
+	}
+	if err := ValidateTemplateFile(&tf); err == nil {
+		t.Error("an open stage after the won stage must be rejected")
+	}
+
+	// The lost stage is allowed to sit after the won one — it always does.
+	good := tf
+	good.PipelineStages = []domain.TemplateStage{
+		{Name: "Quote Sent", Position: 0},
+		{Name: "Deposit Paid", Position: 1, IsWon: true},
+		{Name: "Lost", Position: 2, IsLost: true},
+	}
+	if err := ValidateTemplateFile(&good); err != nil {
+		t.Errorf("a lost stage after the won stage is normal, got %v", err)
 	}
 }
 

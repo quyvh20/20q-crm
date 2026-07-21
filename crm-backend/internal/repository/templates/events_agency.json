@@ -5,7 +5,7 @@
   "description": "Enquiry to proposal to delivered event, with an Events object holding the date, venue, guest count and budget.",
   "icon": "🎉",
   "sort_order": 210,
-  "spec_version": 2,
+  "spec_version": 3,
   "ai_context": "You are a CRM assistant for an events and wedding planning agency. A contact is the person paying for and deciding on the event — a couple, a private host, or a corporate marketing or EA buyer — and there is often a second decision-maker on the same enquiry. A deal is one event from first enquiry through site visit and proposal to a signed contract and the day itself. Event dates, venues, guest counts and budgets are held on Event records; never invent a date, venue, supplier, headcount or price you were not given, and never imply availability you have not checked.",
   "pipeline_stages": [
     {
@@ -40,26 +40,12 @@
       "name": "Contract & Deposit",
       "position": 4,
       "color": "#F97316",
-      "is_won": false,
-      "is_lost": false
-    },
-    {
-      "name": "In Production",
-      "position": 5,
-      "color": "#84CC16",
-      "is_won": false,
-      "is_lost": false
-    },
-    {
-      "name": "Event Delivered",
-      "position": 6,
-      "color": "#10B981",
       "is_won": true,
       "is_lost": false
     },
     {
       "name": "Lost",
-      "position": 7,
+      "position": 5,
       "color": "#EF4444",
       "is_won": false,
       "is_lost": true
@@ -323,12 +309,12 @@
     {
       "key": "won_handover",
       "name": "Wrap up a delivered event",
-      "description": "Fires the moment a deal reaches Event Delivered — the point where work is won and something has to happen next.",
+      "description": "Fires the moment a deal reaches Contract & Deposit — the commercial win, which is when the handover has to happen.",
       "activation": "auto",
       "trigger": {
         "type": "deal_stage_changed",
         "params": {
-          "to_stage": "Event Delivered"
+          "to_stage": "Contract & Deposit"
         }
       },
       "steps": [

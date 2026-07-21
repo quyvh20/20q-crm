@@ -147,6 +147,28 @@ func ValidateTemplateFile(tf *templateFile) error {
 		if !won {
 			return fmt.Errorf("pipeline needs at least one is_won stage")
 		}
+
+		// The won stage must be the LAST non-lost stage. ChangeStage clears is_won
+		// whenever a deal moves to an open stage (deal_usecase.go), so an open stage
+		// positioned after the won one silently un-wins the deal and wipes closed_at
+		// the moment fulfilment starts. Delivery states belong on the object's own
+		// status field, not on the sales pipeline.
+		ordered := make([]TemplateStageRef, 0, n)
+		for _, s := range tf.PipelineStages {
+			ordered = append(ordered, TemplateStageRef{Name: s.Name, Position: s.Position, IsWon: s.IsWon, IsLost: s.IsLost})
+		}
+		sort.Slice(ordered, func(i, j int) bool { return ordered[i].Position < ordered[j].Position })
+		seenWon := false
+		for _, s := range ordered {
+			if s.IsWon {
+				seenWon = true
+				continue
+			}
+			if seenWon && !s.IsLost {
+				return fmt.Errorf("stage %q is an open stage positioned after the won stage; "+
+					"moving a deal into it would clear is_won — put delivery states on the object's status field instead", s.Name)
+			}
+		}
 	}
 
 	// System-object fields.
@@ -246,6 +268,15 @@ func ValidateTemplateFile(tf *templateFile) error {
 		}
 	}
 	return nil
+}
+
+// TemplateStageRef is a sortable view of a stage, used to check ordering rules
+// without mutating the template's own slice.
+type TemplateStageRef struct {
+	Name     string
+	Position int
+	IsWon    bool
+	IsLost   bool
 }
 
 // declaresStage reports whether the template defines a stage of this name, using

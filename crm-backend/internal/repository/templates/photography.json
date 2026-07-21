@@ -5,7 +5,7 @@
   "description": "Enquiry to delivered gallery for a photo or video studio, with a Shoots object holding the package, shoot date, location and delivery deadline.",
   "icon": "📷",
   "sort_order": 220,
-  "spec_version": 2,
+  "spec_version": 3,
   "ai_context": "You are a CRM assistant for a photography and videography studio. A contact is the person booking and paying — a couple, a family, or a marketing or brand buyer commissioning commercial work — and for commercial jobs the person on set is often not the person who signed. A deal is one commission from enquiry through quote and retainer to the shoot and the delivered gallery. Shoot dates, call times, locations and delivery deadlines live on Shoot records; never invent a date, location, price, turnaround time or usage licence you were not given, and never promise availability you have not checked against the calendar.",
   "pipeline_stages": [
     {
@@ -33,33 +33,12 @@
       "name": "Booked — Retainer Paid",
       "position": 3,
       "color": "#F59E0B",
-      "is_won": false,
-      "is_lost": false
-    },
-    {
-      "name": "Shoot Complete",
-      "position": 4,
-      "color": "#F97316",
-      "is_won": false,
-      "is_lost": false
-    },
-    {
-      "name": "In Post-Production",
-      "position": 5,
-      "color": "#84CC16",
-      "is_won": false,
-      "is_lost": false
-    },
-    {
-      "name": "Gallery Delivered",
-      "position": 6,
-      "color": "#10B981",
       "is_won": true,
       "is_lost": false
     },
     {
       "name": "Lost",
-      "position": 7,
+      "position": 4,
       "color": "#EF4444",
       "is_won": false,
       "is_lost": true
@@ -330,12 +309,12 @@
     {
       "key": "won_handover",
       "name": "Follow up a delivered gallery",
-      "description": "Fires the moment a deal reaches Gallery Delivered — the point where work is won and something has to happen next.",
+      "description": "Fires the moment a deal reaches Booked — Retainer Paid — the commercial win, which is when the handover has to happen.",
       "activation": "auto",
       "trigger": {
         "type": "deal_stage_changed",
         "params": {
-          "to_stage": "Gallery Delivered"
+          "to_stage": "Booked — Retainer Paid"
         }
       },
       "steps": [

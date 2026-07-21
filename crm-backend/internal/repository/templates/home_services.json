@@ -5,7 +5,7 @@
   "description": "Call-outs, quotes and recurring maintenance for plumbing, electrical, HVAC and cleaning firms — a Jobs object with the service address, and a pipeline that only closes once the job is done and invoiced.",
   "icon": "🔧",
   "sort_order": 150,
-  "spec_version": 2,
+  "spec_version": 3,
   "ai_context": "You are a CRM assistant for a home services business — plumbing, electrical, heating and air conditioning, drainage or cleaning. Contacts are householders, landlords, letting agents and facilities managers; a deal is one piece of work from the first call through the visit and quote to a completed, invoiced job. Jobs hold the service address, the appointment and what was actually done on site. Never invent a price, a call-out fee, an appointment time or a part number, and never promise a same-day slot you have not been told is free.",
   "pipeline_stages": [
     {
@@ -40,19 +40,12 @@
       "name": "Work Scheduled",
       "position": 4,
       "color": "#F97316",
-      "is_won": false,
-      "is_lost": false
-    },
-    {
-      "name": "Completed & Invoiced",
-      "position": 5,
-      "color": "#10B981",
       "is_won": true,
       "is_lost": false
     },
     {
       "name": "Lost",
-      "position": 6,
+      "position": 5,
       "color": "#EF4444",
       "is_won": false,
       "is_lost": true
@@ -295,12 +288,12 @@
     {
       "key": "won_handover",
       "name": "Check the job landed well",
-      "description": "Fires the moment a deal reaches Completed & Invoiced — the point where work is won and something has to happen next.",
+      "description": "Fires the moment a deal reaches Work Scheduled — the commercial win, which is when the handover has to happen.",
       "activation": "auto",
       "trigger": {
         "type": "deal_stage_changed",
         "params": {
-          "to_stage": "Completed & Invoiced"
+          "to_stage": "Work Scheduled"
         }
       },
       "steps": [

@@ -5,7 +5,7 @@
   "description": "Enquiry to booking for a travel agency or tour operator — dated departures, per-booking references, and a pipeline that ends when the balance is paid.",
   "icon": "✈️",
   "sort_order": 230,
-  "spec_version": 2,
+  "spec_version": 3,
   "ai_context": "You are a CRM assistant for a travel agency / tour operator. Contacts are travellers, the person organising a group, or trade partners such as DMCs and resellers; a deal is one trip being sold to one party, from first enquiry to a fully paid booking. Bookings hang off dated departures, so dates, party size and payment deadlines matter more than anything else. Never invent flight numbers, hotel names, prices, visa rules or supplier reference numbers you were not given — quote only what is on the record.",
   "pipeline_stages": [
     {
@@ -40,19 +40,12 @@
       "name": "Deposit Paid",
       "position": 4,
       "color": "#F97316",
-      "is_won": false,
-      "is_lost": false
-    },
-    {
-      "name": "Booked",
-      "position": 5,
-      "color": "#10B981",
       "is_won": true,
       "is_lost": false
     },
     {
       "name": "Lost",
-      "position": 6,
+      "position": 5,
       "color": "#EF4444",
       "is_won": false,
       "is_lost": true
@@ -279,6 +272,21 @@
           "type": "text",
           "required": false,
           "position": 8
+        },
+        {
+          "key": "status",
+          "label": "Booking Status",
+          "type": "select",
+          "options": [
+            "Held",
+            "Deposit paid",
+            "Booked",
+            "Balance paid",
+            "Travelled",
+            "Cancelled"
+          ],
+          "required": false,
+          "position": 9
         }
       ]
     }
@@ -351,12 +359,12 @@
     {
       "key": "won_handover",
       "name": "Prepare a booked trip",
-      "description": "Fires the moment a deal reaches Booked — the point where work is won and something has to happen next.",
+      "description": "Fires the moment a deal reaches Deposit Paid — the commercial win, which is when the handover has to happen.",
       "activation": "auto",
       "trigger": {
         "type": "deal_stage_changed",
         "params": {
-          "to_stage": "Booked"
+          "to_stage": "Deposit Paid"
         }
       },
       "steps": [

@@ -5,7 +5,7 @@
   "description": "DTC orders, wholesale enquiries and returns for an online store — an Orders object carrying channel and fulfilment status, and a pipeline that closes when the order ships.",
   "icon": "🛒",
   "sort_order": 90,
-  "spec_version": 2,
+  "spec_version": 3,
   "ai_context": "You are a CRM assistant for an online store selling direct to consumers and, on enquiry, to wholesale and corporate buyers. Contacts are shoppers, subscribers and wholesale buyers; companies are resellers, marketplaces, distributors and corporate gifting accounts. A deal is a wholesale, bulk or corporate enquiry being worked from first message to a fulfilled order — everyday DTC purchases live on the Order object, not the pipeline. Never invent order numbers, tracking links, stock availability or delivery dates: use only what is recorded on the order or the deal.",
   "pipeline_stages": [
     {
@@ -37,22 +37,15 @@
       "is_lost": false
     },
     {
-      "name": "Awaiting Payment",
+      "name": "Order Placed",
       "position": 4,
       "color": "#F97316",
-      "is_won": false,
-      "is_lost": false
-    },
-    {
-      "name": "Fulfilled",
-      "position": 5,
-      "color": "#10B981",
       "is_won": true,
       "is_lost": false
     },
     {
       "name": "Lost",
-      "position": 6,
+      "position": 5,
       "color": "#EF4444",
       "is_won": false,
       "is_lost": true
@@ -249,6 +242,20 @@
           "target_slug": "contact",
           "required": false,
           "position": 8
+        },
+        {
+          "key": "payment_status",
+          "label": "Payment Status",
+          "type": "select",
+          "options": [
+            "Awaiting payment",
+            "Part paid",
+            "Paid",
+            "Refunded",
+            "Failed"
+          ],
+          "required": false,
+          "position": 9
         }
       ]
     }
@@ -294,12 +301,12 @@
     {
       "key": "won_handover",
       "name": "Follow up a fulfilled order",
-      "description": "Fires the moment a deal reaches Fulfilled — the point where work is won and something has to happen next.",
+      "description": "Fires the moment a deal reaches Order Placed — the commercial win, which is when the handover has to happen.",
       "activation": "auto",
       "trigger": {
         "type": "deal_stage_changed",
         "params": {
-          "to_stage": "Fulfilled"
+          "to_stage": "Order Placed"
         }
       },
       "steps": [
