@@ -75,8 +75,12 @@ const ProviderKeyFacebook = "facebook"
 // Info describes the provider.
 func (p *FacebookProvider) Info() ProviderInfo {
 	return ProviderInfo{
-		Key:              ProviderKeyFacebook,
-		Label:            "Facebook Lead Ads",
+		Key: ProviderKeyFacebook,
+		// One connection, two placements: an Instagram lead ad runs through the same
+		// Facebook Page, the same app subscription and the same leadgen webhook, so a
+		// page connected here already receives both (L7.1). The label says so because
+		// an admin looking for Instagram would otherwise conclude we do not support it.
+		Label:            "Facebook & Instagram Lead Ads",
 		SupportsWebhooks: true,
 		// Facebook's server-side flow does not use PKCE (it authenticates the token
 		// exchange with the app secret), so the framework skips the verifier dance.
@@ -257,7 +261,12 @@ type fbLead struct {
 	AdID        string `json:"ad_id"`
 	CampaignID  string `json:"campaign_id"`
 	AdgroupID   string `json:"adgroup_id"`
-	FieldData   []struct {
+	// Platform names the placement the lead was submitted from ("fb", "ig"). IsOrganic
+	// is a POINTER so "Graph did not tell us" stays distinguishable from "no, it was
+	// a paid ad" — the same rule the diagnose panel applies to unknown-vs-fail.
+	Platform  string `json:"platform"`
+	IsOrganic *bool  `json:"is_organic"`
+	FieldData []struct {
 		Name   string   `json:"name"`
 		Values []string `json:"values"`
 	} `json:"field_data"`
@@ -273,17 +282,51 @@ func (p *FacebookProvider) FetchLead(ctx context.Context, _ *IntegrationConnecti
 	if ev.ProviderEventID == "" {
 		return RawLead{}, errors.New("facebook: cannot fetch a lead with no leadgen id")
 	}
-	q := url.Values{}
-	q.Set("fields", "field_data,form_id,created_time,ad_id,campaign_id,adgroup_id")
-	q.Set("access_token", creds.AccessToken)
-	q.Set("appsecret_proof", p.proof(creds.AccessToken))
-	endpoint := p.graphBaseURL + "/" + url.PathEscape(ev.ProviderEventID) + "?" + q.Encode()
+	lead, err := withPlacementFallback(func(fields string) (fbLead, error) {
+		q := url.Values{}
+		q.Set("fields", fields)
+		q.Set("access_token", creds.AccessToken)
+		q.Set("appsecret_proof", p.proof(creds.AccessToken))
+		endpoint := p.graphBaseURL + "/" + url.PathEscape(ev.ProviderEventID) + "?" + q.Encode()
 
-	var lead fbLead
-	if err := p.call(ctx, http.MethodGet, endpoint, &lead); err != nil {
+		var lead fbLead
+		err := p.call(ctx, http.MethodGet, endpoint, &lead)
+		return lead, err
+	})
+	if err != nil {
 		return RawLead{}, err
 	}
 	return rawLeadFromFB(lead, ev.ExternalAccountID, ev.FormID, ev.ProviderEventID), nil
+}
+
+// withPlacementFallback runs a Graph lead read asking for the placement fields and,
+// ONLY if that fails permanently, runs it once more without them.
+//
+// The asymmetry is the whole point. A `fields` list Graph does not recognise — a
+// version retirement, a permission the app has not been granted — fails the WHOLE
+// node request, so adding a field to satisfy a reporting question would put every
+// Facebook and Instagram lead behind it. A placement label is never worth losing the
+// lead it labels. A RETRYABLE error is about the call rather than the field list, so
+// it propagates untouched: retrying narrower against an outage would burn a second
+// request and learn nothing.
+//
+// When the narrow read ALSO fails, the FIRST error is what propagates. The fallback
+// exists to survive a rejected field list and nothing else, so a second failure is
+// proof the field list was never the problem — and the retry classification is
+// load-bearing downstream: the async worker repends a retryable failure and flips the
+// connection to `error` on a permanent one. Returning the narrow attempt's verdict
+// would let a transient blip on the second call mask a genuinely dead token (the
+// connection never flips, the reconnect banner never appears) or the reverse.
+func withPlacementFallback[T any](attempt func(fields string) (T, error)) (T, error) {
+	out, err := attempt(facebookLeadFields)
+	if err == nil || IsRetryableHTTP(err) {
+		return out, err
+	}
+	narrow, narrowErr := attempt(facebookLeadFieldsBase)
+	if narrowErr != nil {
+		return out, err
+	}
+	return narrow, nil
 }
 
 // rawLeadFromFB flattens a Graph lead node into a RawLead. Shared by the webhook
@@ -314,10 +357,20 @@ func rawLeadFromFB(lead fbLead, pageID, formIDFallback, leadgenFallback string) 
 		"campaign_id":  lead.CampaignID,
 		"adgroup_id":   lead.AdgroupID,
 		"page_id":      pageID,
+		// Facebook and Instagram leads are otherwise byte-identical here: same page,
+		// same webhook, same form. This key is the only thing in the ledger that can
+		// answer "are the Instagram leads arriving?" (L7.1).
+		"platform": lead.Platform,
 	} {
 		if v != "" {
 			leadCtx[k] = v
 		}
+	}
+	// Kept out of the loop above because it is a bool, and out of the ledger entirely
+	// when absent: a defaulted `false` would assert the lead came from a paid ad on
+	// every delivery Graph declined to tell us about.
+	if lead.IsOrganic != nil {
+		leadCtx["is_organic"] = *lead.IsOrganic
 	}
 
 	leadgenID := lead.ID
@@ -327,9 +380,16 @@ func rawLeadFromFB(lead fbLead, pageID, formIDFallback, leadgenFallback string) 
 	return RawLead{Fields: fields, Context: leadCtx, ProviderEventID: leadgenID}
 }
 
-// facebookLeadFields is the fields set both the single-lead fetch and the backfill
-// pager request, so the two return identical lead shapes.
-const facebookLeadFields = "id,field_data,form_id,created_time,ad_id,campaign_id,adgroup_id"
+// facebookLeadFields is the field set both the single-lead fetch and the backfill
+// pager request, so the two return identical lead shapes. (Before L7.1 the comment
+// claimed that and the two lists had silently drifted — FetchLead inlined its own,
+// which is why adding a field here alone would have changed backfill and not the
+// webhook path. Both now go through withPlacementFallback and share these consts.)
+const facebookLeadFields = "id,field_data,form_id,created_time,ad_id,campaign_id,adgroup_id,platform,is_organic"
+
+// facebookLeadFieldsBase is facebookLeadFields without the placement fields — the
+// rung withPlacementFallback drops to when Graph rejects the wider list.
+const facebookLeadFieldsBase = "id,field_data,form_id,created_time,ad_id,campaign_id,adgroup_id"
 
 // ListForms enumerates a page's lead forms (L5.4), following the cursor. Each is
 // projected to id/name/status for the enable-a-form UI.
@@ -381,15 +441,7 @@ func (p *FacebookProvider) Backfill(ctx context.Context, conn *IntegrationConnec
 	if formID == "" {
 		return nil, "", errors.New("facebook: cannot backfill without a form id")
 	}
-	q := url.Values{}
-	q.Set("fields", facebookLeadFields)
-	q.Set("limit", "100")
-	q.Set("access_token", creds.AccessToken)
-	q.Set("appsecret_proof", p.proof(creds.AccessToken))
-	if cursor != "" {
-		q.Set("after", cursor)
-	}
-	var resp struct {
+	type leadsPage struct {
 		Data   []fbLead `json:"data"`
 		Paging struct {
 			Cursors struct {
@@ -398,7 +450,24 @@ func (p *FacebookProvider) Backfill(ctx context.Context, conn *IntegrationConnec
 			Next string `json:"next"`
 		} `json:"paging"`
 	}
-	if err := p.call(ctx, http.MethodGet, p.graphBaseURL+"/"+url.PathEscape(formID)+"/leads?"+q.Encode(), &resp); err != nil {
+	// Same ladder as FetchLead, for the same reason one shelf over: a rejected field
+	// list here would not lose a live lead, but it would leave historical import
+	// permanently broken while the webhook path kept working — a split failure that
+	// reads as "backfill is buggy" rather than "this field does not exist".
+	resp, err := withPlacementFallback(func(fields string) (leadsPage, error) {
+		q := url.Values{}
+		q.Set("fields", fields)
+		q.Set("limit", "100")
+		q.Set("access_token", creds.AccessToken)
+		q.Set("appsecret_proof", p.proof(creds.AccessToken))
+		if cursor != "" {
+			q.Set("after", cursor)
+		}
+		var page leadsPage
+		err := p.call(ctx, http.MethodGet, p.graphBaseURL+"/"+url.PathEscape(formID)+"/leads?"+q.Encode(), &page)
+		return page, err
+	})
+	if err != nil {
 		return nil, "", err
 	}
 	leads := make([]RawLead, 0, len(resp.Data))
@@ -440,6 +509,69 @@ func fbStr(v any) string {
 	default:
 		return ""
 	}
+}
+
+// CheckSubscription reports whether THIS app is still subscribed to the page's
+// leadgen field — the layer L6.3's diagnose panel was built for, and the one that
+// shipped without an implementation here, so the only provider in the product has
+// been answering "unknown" to it since the day the panel landed.
+//
+// It is the one broken layer a token probe cannot see. Subscribe only ever WROTE,
+// so "subscribed" was a belief recorded at connect time; a subscription can lapse
+// on Meta's side alone — an admin removing the app in the page's Business Settings,
+// a permission review — while the stored page token keeps passing HealthCheck. That
+// page reads perfectly healthy and never delivers another lead.
+//
+// The app id is matched defensively rather than because the list is crowded: the
+// page token is app-scoped, so `data` is realistically zero or one entry, but a row
+// belonging to some other agency's CRM would not feed US and must not read as health.
+func (p *FacebookProvider) CheckSubscription(ctx context.Context, conn *IntegrationConnection, creds Credentials) (bool, error) {
+	if p.appID == "" {
+		// "We could not ask" — never `false`, which the panel renders as a definite no
+		// and sends the admin to re-subscribe a page that may be perfectly fine.
+		return false, errors.New("facebook: no app id configured, cannot check the page subscription")
+	}
+	q := url.Values{}
+	// Asked for explicitly even though Graph documents subscribed_fields as a DEFAULT
+	// field of this edge. The whole verdict hangs on that one key being present, and
+	// the cost of Meta narrowing its default set later is not a missing label — it is
+	// every healthy page reporting a definite "not subscribed" and every admin being
+	// told to redo OAuth. A projection we control is cheaper than that bet.
+	q.Set("fields", "subscribed_fields")
+	q.Set("access_token", creds.AccessToken)
+	q.Set("appsecret_proof", p.proof(creds.AccessToken))
+	endpoint := p.graphBaseURL + "/" + url.PathEscape(conn.ExternalAccountID) + "/subscribed_apps?" + q.Encode()
+
+	var resp struct {
+		Data []struct {
+			ID               string   `json:"id"`
+			SubscribedFields []string `json:"subscribed_fields"`
+		} `json:"data"`
+	}
+	if err := p.call(ctx, http.MethodGet, endpoint, &resp); err != nil {
+		return false, err
+	}
+	for _, app := range resp.Data {
+		if app.ID != p.appID {
+			continue
+		}
+		if app.SubscribedFields == nil {
+			// Our app is attached and Graph told us nothing about what it is subscribed
+			// TO. That is a third state, and folding it into `false` is the precise
+			// mistake this layer exists to avoid: "we could not read the answer" and
+			// "the answer is no" send an admin to different places.
+			return false, errors.New("facebook: the page did not report which fields this app is subscribed to")
+		}
+		for _, field := range app.SubscribedFields {
+			if field == "leadgen" {
+				return true, nil
+			}
+		}
+		// Attached, subscribed to something, but not to leads. Distinct from "not
+		// attached" and, unlike the nil case above, an honest definite no.
+		return false, nil
+	}
+	return false, nil
 }
 
 // HealthCheck probes whether the stored page token still works (L6 diagnose).

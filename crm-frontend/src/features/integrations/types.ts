@@ -25,7 +25,9 @@ export const KIND_LABELS: Record<string, string> = {
   api: 'Capture API',
   google_ads: 'Google Ads',
   form_embed: 'Website form',
-  facebook_form: 'Facebook form',
+  // One kind, both Meta placements: an Instagram lead ad arrives on the same page
+  // connection and the same form as a Facebook one (L7.1).
+  facebook_form: 'Facebook & Instagram',
 };
 
 /** One field a form_embed source collects. */

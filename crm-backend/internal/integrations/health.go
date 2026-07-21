@@ -464,11 +464,15 @@ func (r *HealthReporter) SourceKeyMismatch(orgID, sourceID uuid.UUID, name strin
 // Deliberately NOT worded as a credential problem, and deliberately capped short of
 // `error` at the call site: a Graph outage and a revoked token are different events with
 // different remedies, and letting them share one band would mean telling an admin to
-// redo OAuth because Facebook was rate-limiting us.
+// redo OAuth because Meta was rate-limiting us.
+//
+// "Meta", not "Facebook": the same page connection carries Instagram lead ads (L7.1),
+// and naming one placement in a message about a platform-wide throttle invites the
+// admin to go looking for a Facebook-specific fault that does not exist.
 func (r *HealthReporter) ConnectionDegraded(orgID, connID uuid.UUID, label string, creator *uuid.UUID) {
 	r.enqueue(healthEvent{
 		OrgID: orgID, EntityID: connID, Band: bandConnDegraded, Creator: creator,
-		Title: "Facebook is throttling or failing requests for \"" + label + "\"",
+		Title: "Meta is throttling or failing requests for \"" + label + "\"",
 		Body: "We keep being turned away when fetching leads for this page, which usually means a " +
 			"platform-side rate limit or outage rather than a problem with your connection. " +
 			"Deliveries are retried a limited number of times, so some may not arrive. " +

@@ -33,12 +33,21 @@ export default function FacebookFormCard({ source }: { source: LeadSource }) {
   return (
     <div className="rounded-xl border border-border p-4 space-y-4">
       <div>
-        <h3 className="text-sm font-medium text-foreground">Facebook Lead Ads</h3>
+        <h3 className="text-sm font-medium text-foreground">Facebook &amp; Instagram Lead Ads</h3>
         <p className="text-xs text-muted-foreground mt-1">
           New leads from this form arrive automatically — there is no key to paste. To verify the
           connection, open Meta&apos;s{' '}
           <span className="font-medium">Lead Ads Testing Tool</span>, pick this page and form, and
           send a test lead. It lands in the delivery log below within a minute.
+        </p>
+        {/* Instagram placements need no separate setup and no separate connection — the
+            same form serves both — so the only honest thing to add is where to LOOK,
+            since the two are otherwise indistinguishable in the log. */}
+        <p className="text-xs text-muted-foreground mt-1">
+          Instagram placements on the same ad run through this form too. Open a delivery below to
+          see which placement it came from — <span className="font-mono">platform</span> reads{' '}
+          <span className="font-mono">ig</span> for Instagram and <span className="font-mono">fb</span>{' '}
+          for Facebook.
         </p>
       </div>
 
@@ -56,7 +65,7 @@ export default function FacebookFormCard({ source }: { source: LeadSource }) {
             Import past leads
           </Button>
           <p className="text-xs text-muted-foreground mt-1">
-            Pull up to 90 days of this form&apos;s history (Facebook&apos;s limit). Leads already
+            Pull up to 90 days of this form&apos;s history (Meta&apos;s limit). Leads already
             received are skipped, so this is safe to run more than once.
           </p>
         </div>

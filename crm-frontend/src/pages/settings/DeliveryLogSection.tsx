@@ -341,6 +341,19 @@ function DeliveryDetails({
         )
       )}
 
+      {/* This log is the ONLY surface for a delivery that never matched a source —
+          a quarantined Meta lead has source_id NULL, so it appears on no source's
+          page. Without this block the delivery context is unreachable for exactly
+          the deliveries an admin opens this page to understand. */}
+      {Object.keys(ev.context ?? {}).length > 0 && (
+        <div>
+          <p className="mb-1 text-xs font-medium text-muted-foreground">Delivery context</p>
+          <pre className="w-full overflow-x-auto rounded-lg bg-muted p-3 text-xs">
+            {JSON.stringify(ev.context, null, 2)}
+          </pre>
+        </div>
+      )}
+
       <div>
         <p className="mb-1 text-xs font-medium text-muted-foreground">What arrived</p>
         {ev.redacted_at ? (

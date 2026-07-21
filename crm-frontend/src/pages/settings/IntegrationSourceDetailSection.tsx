@@ -369,7 +369,7 @@ export default function IntegrationSourceDetailSection() {
     // its copy must not talk about a key or the sender getting errors.
     const body =
       source.kind === 'facebook_form'
-        ? 'This stops importing leads from this Facebook form. Facebook is not notified — its leads for this form will simply stop being recorded. The delivery log is kept.'
+        ? 'This stops importing leads from this Meta form. Meta is not notified — its Facebook and Instagram leads for this form will simply stop being recorded. The delivery log is kept.'
         : recentlyUsed
           ? 'This key has been receiving leads. Deleting it stops them immediately, and whatever is sending them will start getting errors. The delivery log is kept.'
           : 'The key stops working immediately. The delivery log is kept.';
@@ -669,7 +669,9 @@ export default function IntegrationSourceDetailSection() {
                 <p className="text-xs font-medium text-foreground">Delivery context</p>
                 <p className="text-xs text-muted-foreground">
                   Where this lead came from — for Google Ads deliveries, the campaign and click
-                  ids Google sent alongside it.
+                  ids Google sent alongside it; for Meta deliveries, the form, the ad and the{' '}
+                  <span className="font-mono">platform</span> it was submitted from (
+                  <span className="font-mono">fb</span> or <span className="font-mono">ig</span>).
                 </p>
                 <pre className="w-full overflow-x-auto rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs">
                   {JSON.stringify(inspecting.context, null, 2)}
