@@ -164,6 +164,31 @@ describe('DeliveryLogSection', () => {
     expect(within(select).getByText('Failed')).toBeInTheDocument();
   });
 
+  // An empty payload with no explanation is indistinguishable from a delivery that
+  // stored nothing — which is what a bug looks like. Retention has to say it erased
+  // something, or support cannot tell a redacted row from a broken write.
+  it('says a payload was erased rather than rendering a bare empty object', async () => {
+    vi.mocked(listEventLog).mockResolvedValue(page({
+      events: [EV({ raw_payload: {}, redacted_at: new Date().toISOString() })],
+    }));
+    renderLog();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Details' }));
+    expect(await screen.findByText(/was erased/)).toBeInTheDocument();
+    expect(screen.getByText(/erased automatically after 90 days/)).toBeInTheDocument();
+  });
+
+  it('still shows the payload on a delivery that was not redacted', async () => {
+    vi.mocked(listEventLog).mockResolvedValue(page({
+      events: [EV({ raw_payload: { email: 'a@x.com' } })],
+    }));
+    renderLog();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Details' }));
+    expect(await screen.findByText(/a@x.com/)).toBeInTheDocument();
+    expect(screen.queryByText(/was erased/)).toBeNull();
+  });
+
   it('passes the URL filters through to the query', async () => {
     renderLog('/settings/integrations/deliveries?status=failed&unresolved=1&connection_id=c1');
     await screen.findByText('No deliveries match these filters');

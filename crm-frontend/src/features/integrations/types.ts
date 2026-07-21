@@ -203,6 +203,13 @@ export interface IntegrationEvent {
   status: EventStatus;
   /** Present only on the org-wide ledger route, which computes it server-side. */
   retry?: RetryPlan;
+  /**
+   * Set when this delivery's personal data has been removed — by an erasure request,
+   * or by retention once nothing could reach it on request. Without it an empty
+   * payload is ambiguous: erased and never-stored render identically, and the second
+   * is what a bug looks like.
+   */
+  redacted_at?: string;
   claimed_at?: string;
   attempts: number;
   raw_payload: Record<string, unknown>;

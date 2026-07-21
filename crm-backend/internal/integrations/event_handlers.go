@@ -117,13 +117,29 @@ func (h *Handler) ListOrgEvents(c *gin.Context) {
 
 	h.hydrateConsent(c, rows)
 
+	// A second targeted read, like consent: the column is ALTER-added and unmapped, so
+	// a boot guard that never ran must cost this one marker rather than the whole log.
+	ids := make([]uuid.UUID, 0, len(rows))
+	for i := range rows {
+		ids = append(ids, rows[i].ID)
+	}
+	redacted, rerr := h.repo.RedactedAtForEvents(c.Request.Context(), ids)
+	if rerr != nil {
+		h.logger.Error("integrations: could not read redaction markers", "error", rerr)
+		redacted = nil
+	}
+
 	page := eventPage{
 		Events:     make([]eventView, 0, len(rows)),
 		NextCursor: next,
 		Sources:    h.sourceLabels(c, orgID, rows),
 	}
 	for _, ev := range rows {
-		page.Events = append(page.Events, viewOfEvent(ev))
+		var at *time.Time
+		if t, ok := redacted[ev.ID]; ok {
+			at = &t
+		}
+		page.Events = append(page.Events, viewOfEvent(ev, at))
 	}
 	c.JSON(http.StatusOK, gin.H{"data": page})
 }

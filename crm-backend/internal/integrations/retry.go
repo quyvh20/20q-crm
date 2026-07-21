@@ -1,6 +1,8 @@
 package integrations
 
 import (
+	"time"
+
 	"github.com/google/uuid"
 )
 
@@ -143,10 +145,18 @@ func classifyRetry(ev *IntegrationEvent) RetryPlan {
 type eventView struct {
 	IntegrationEvent
 	Retry RetryPlan `json:"retry"`
+	// RedactedAt marks a delivery whose personal data has been removed — by an
+	// erasure request, or by retention once nothing could reach it on request.
+	//
+	// Carried explicitly because the column is unmapped and because an empty payload
+	// is otherwise AMBIGUOUS: "we erased this" and "nothing was ever stored" render
+	// identically as `{}`, and the second is what a bug looks like. An operator
+	// staring at an empty payload has to be able to tell which one they are seeing.
+	RedactedAt *time.Time `json:"redacted_at,omitempty"`
 }
 
-func viewOfEvent(ev IntegrationEvent) eventView {
-	return eventView{IntegrationEvent: ev, Retry: classifyRetry(&ev)}
+func viewOfEvent(ev IntegrationEvent, redactedAt *time.Time) eventView {
+	return eventView{IntegrationEvent: ev, Retry: classifyRetry(&ev), RedactedAt: redactedAt}
 }
 
 // eventPage is the org-wide ledger's envelope.

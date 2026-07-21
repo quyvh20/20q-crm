@@ -343,9 +343,20 @@ function DeliveryDetails({
 
       <div>
         <p className="mb-1 text-xs font-medium text-muted-foreground">What arrived</p>
-        <pre className="w-full overflow-x-auto rounded-lg bg-muted p-3 text-xs">
-          {JSON.stringify(ev.raw_payload, null, 2)}
-        </pre>
+        {ev.redacted_at ? (
+          // An empty payload with no explanation is indistinguishable from a delivery
+          // that stored nothing — which is what a bug looks like. Say which it is.
+          <p className="rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
+            The lead this delivery carried was erased {relativeTime(ev.redacted_at)}. The
+            delivery is kept so the log still explains what happened; what the person
+            supplied is gone. Deliveries that never became a record are erased
+            automatically after 90 days.
+          </p>
+        ) : (
+          <pre className="w-full overflow-x-auto rounded-lg bg-muted p-3 text-xs">
+            {JSON.stringify(ev.raw_payload, null, 2)}
+          </pre>
+        )}
       </div>
     </div>
   );
