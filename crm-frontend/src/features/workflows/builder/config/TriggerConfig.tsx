@@ -1,5 +1,6 @@
 import React, { useMemo, useCallback, useState, useEffect, useRef } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import type { TriggerSpec } from '../../types';
 import { useBuilderStore } from '../../store';
 import { getWebhookToken, revealWebhookSecret, regenerateWebhookSecret } from '../../api';
@@ -579,8 +580,28 @@ const WebhookSetup: React.FC = () => {
         <span className="text-sm">🔗</span>
         <p className="text-xs text-foreground font-medium">Webhook Setup</p>
       </div>
+      {/* The old copy here said "POST to this URL to trigger the workflow", and it was
+          not true: the endpoint upserts a contact and emits contact_created /
+          contact_updated, and workflow lookup matches on the trigger TYPE — so a
+          workflow saved with this Webhook trigger is the one kind of workflow an
+          inbound POST can never start. This panel is also the only place the URL and
+          secret are shown, so the misdescription lived exactly where someone was
+          setting the integration up. */}
       <p className="text-[11px] text-muted-foreground -mt-1">
-        POST to this URL to trigger the workflow. Sign the request body with your secret using HMAC-SHA256 and send it as the <code className="text-muted-foreground">X-Signature</code> header.
+        POST a contact to this URL to create or update it. Sign the request body with your secret using HMAC-SHA256 and send it as the <code className="text-muted-foreground">X-Signature</code> header.
+      </p>
+      <p className="text-[11px] text-amber-700 dark:text-amber-400 -mt-1">
+        Deliveries here run <span className="font-medium">Contact created</span> and{' '}
+        <span className="font-medium">Contact updated</span> workflows — not this one. Change this
+        trigger to one of those to act on inbound leads.
+      </p>
+      <p className="text-[11px] text-muted-foreground -mt-1">
+        For new integrations use{' '}
+        <Link to="/settings/integrations" className="text-primary underline underline-offset-2">
+          Settings → Integrations
+        </Link>
+        : per-source keys you can rotate individually, field mapping, owner routing and a
+        delivery log. This endpoint is one shared key per workspace with none of that.
       </p>
 
       {/* Endpoint URL */}
@@ -665,7 +686,12 @@ const WebhookSetup: React.FC = () => {
         {fieldsOpen && (
           <p className="text-[11px] text-muted-foreground leading-relaxed">
             <code className="text-foreground">email</code> is required and identifies the contact.{' '}
-            <code className="text-foreground">first_name</code>, <code className="text-foreground">last_name</code>, <code className="text-foreground">phone</code>, <code className="text-foreground">company</code> map to contact fields. Any other keys are saved as custom fields.
+            <code className="text-foreground">first_name</code>, <code className="text-foreground">last_name</code> and <code className="text-foreground">phone</code> map to contact fields. Any other keys are saved as custom fields, merged with what the contact already has.{' '}
+            {/* company was listed here as a mapped field for years. It is read and passed
+                to the workflow, but contacts hold a company RELATION and there is no
+                text column for it, so it has never been stored. Saying so is cheaper
+                than an admin concluding their data is being dropped at random. */}
+            <code className="text-foreground">company</code> is accepted and visible to workflows, but is not saved on the contact.
           </p>
         )}
       </div>

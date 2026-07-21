@@ -178,6 +178,9 @@ func webhookTokenTestRouter(t *testing.T) (*gin.Engine, *gorm.DB, uuid.UUID, fun
 		logger:      slog.Default(),
 		rateLimiter: newTokenBucket(),
 		capChecker:  capAllow{},
+		// See the note in dod_log_activity_e2e_test.go: without this the skip flag is
+		// inert and every unsigned fixture delivery 401s.
+		appEnv: "test",
 	}
 
 	gin.SetMode(gin.TestMode)

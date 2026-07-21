@@ -127,6 +127,15 @@ func setupTestDB(t *testing.T) (*gorm.DB, func()) {
 		updated_at TIMESTAMPTZ DEFAULT NOW()
 	)`)
 
+	// The unique index production actually has (the boot guard in cmd/server/main.go,
+	// and the NAME isContactEmailConflict matches on). Without it this fixture cannot
+	// produce a 23505 at all, so the inbound webhook's duplicate-race recovery would
+	// be untestable and any test claiming to cover it would pass vacuously — the same
+	// fixture-disagrees-with-production failure the record_shares comment below is
+	// about.
+	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_org_email
+		ON contacts(org_id, email) WHERE email IS NOT NULL AND deleted_at IS NULL`)
+
 	// The tables the U6 row predicate reads (repository.RecordAccessPredicate). They
 	// are created HERE, once, in their real shape — several tests used to hand-roll a
 	// pre-U6 record_shares (grantee_user_id, no org_id, no target), and since
@@ -756,6 +765,8 @@ func TestIntegration_WebhookInbound_E2E(t *testing.T) {
 		logger:      slog.Default(),
 		rateLimiter: newTokenBucket(),
 		capChecker:  capAllow{},
+		// L7.3: the skip flag is inert unless the handler knows it is in dev/test.
+		appEnv: "test",
 	}
 
 	gin.SetMode(gin.TestMode)
@@ -1603,6 +1614,8 @@ func TestIntegration_WebhookInbound_AsyncTriggerSurvivesRequestCancel(t *testing
 		logger:      slog.Default(),
 		rateLimiter: newTokenBucket(),
 		capChecker:  capAllow{},
+		// L7.3: the skip flag is inert unless the handler knows it is in dev/test.
+		appEnv: "test",
 	}
 
 	gin.SetMode(gin.TestMode)

@@ -1925,6 +1925,11 @@ func main() {
 		// gateway (never saves; the client applies the draft through the same zod
 		// validation as a manual edit).
 		autoHandler.SetDraftAI(gateway)
+		// L7.3: WEBHOOK_SKIP_SIGNATURE is honoured only in development/test. Passed
+		// rather than read inside the handler so the escape hatch is gated by the same
+		// config value as every other one, and so a handler that is never told its
+		// environment defaults to production.
+		autoHandler.SetAppEnv(cfg.AppEnv)
 		autoHandler.RegisterRoutes(router,
 			delivery.AuthMiddleware(cfg.JWTSecret, authRepo, redisClient),
 			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },

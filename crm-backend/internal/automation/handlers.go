@@ -22,6 +22,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
@@ -45,6 +46,37 @@ type Handler struct {
 	// draftAI backs the AI copilot's NL→draft endpoint (A7). nil disables it (the
 	// endpoint returns 503). Set via SetDraftAI from main.go.
 	draftAI draftAICaller
+	// appEnv gates the WEBHOOK_SKIP_SIGNATURE escape hatch (L7.3). The ZERO VALUE
+	// disables it, which is the whole point: an unset field means production, so a
+	// handler built without SetAppEnv can never be talked out of verifying a
+	// signature. Set via SetAppEnv from main.go.
+	appEnv string
+}
+
+// SetAppEnv tells the handler which environment it is running in, using the same
+// exact-allowlist convention as usecase.debugTokensEnabled. Anything other than
+// "development" or "test" is production.
+func (h *Handler) SetAppEnv(env string) { h.appEnv = env }
+
+// skipSignatureAllowed reports whether the inbound webhook may accept an unsigned
+// body.
+//
+// WEBHOOK_SKIP_SIGNATURE was a bare os.Getenv read with no environment gate: setting
+// it anywhere turned off HMAC verification for EVERY org's public endpoint at once,
+// with no log line, no UI indication, and no record of the variable's existence —
+// it is in no config struct, no BindEnv, and neither .env.example. A production
+// deployment that inherited it from a dev shell would have handed anyone who could
+// read an org token (it travels in the URL, and the URL is written to the access log)
+// the ability to create contacts and fire workflows in that workspace.
+//
+// The gate is an exact allowlist rather than `!= "production"` for the reason P10 P1
+// records: APP_ENV is unset on prod today, so a negative match fails OPEN — which is
+// exactly how account-takeover debug tokens once shipped.
+func (h *Handler) skipSignatureAllowed() bool {
+	if h.appEnv != "development" && h.appEnv != "test" {
+		return false
+	}
+	return os.Getenv("WEBHOOK_SKIP_SIGNATURE") == "true"
 }
 
 // NewHandler creates a new automation HTTP handler. capChecker is required: Run Now
@@ -875,9 +907,9 @@ func (h *Handler) WebhookInbound(c *gin.Context) {
 		return
 	}
 
-	// Signature verification (skip in dev if env flag set)
-	skipSig := os.Getenv("WEBHOOK_SKIP_SIGNATURE") == "true"
-	if !skipSig {
+	// Signature verification. The skip is honoured only in a dev/test environment —
+	// see skipSignatureAllowed for why the env var alone is not enough.
+	if !h.skipSignatureAllowed() {
 		sigHeader := c.GetHeader("X-Signature")
 		if sigHeader == "" {
 			c.JSON(http.StatusUnauthorized, ErrorResponse{
@@ -937,58 +969,23 @@ func (h *Handler) WebhookInbound(c *gin.Context) {
 		contactData["custom_fields"] = customFields
 	}
 
-	// Upsert contact by email
-	var contactID uuid.UUID
-	var eventType string
-
-	var existingContact struct {
-		ID uuid.UUID `gorm:"column:id"`
-	}
-	err = h.db.Raw("SELECT id FROM contacts WHERE org_id = ? AND email = ? AND deleted_at IS NULL LIMIT 1",
-		token.OrgID, email).Scan(&existingContact).Error
-
-	if err == nil && existingContact.ID != uuid.Nil {
-		// Update existing
-		contactID = existingContact.ID
-		updates := make(map[string]any)
-		if fn, ok := contactData["first_name"]; ok {
-			updates["first_name"] = fn
+	// Upsert contact by email.
+	contactID, eventType, err := h.upsertWebhookContact(token.OrgID, email, contactData, customFields)
+	if err != nil {
+		// Answering 500 here is a deliberate change from the shipped behaviour, which
+		// discarded every write error and still returned 200 with a freshly-minted
+		// uuid. That 200 was not merely uninformative: it fired a contact_created
+		// workflow against a contact id that does not exist, so runs referenced a
+		// phantom record and the sender had no way to learn the lead was gone. A 5xx
+		// is also the only answer a retrying integrator can act on.
+		if h.logger != nil {
+			h.logger.Error("inbound webhook contact upsert failed",
+				"org_id", token.OrgID.String(), "error", err)
 		}
-		if ln, ok := contactData["last_name"]; ok {
-			updates["last_name"] = ln
-		}
-		if ph, ok := contactData["phone"]; ok {
-			updates["phone"] = ph
-		}
-		if cf, ok := contactData["custom_fields"]; ok {
-			cfJSON, _ := json.Marshal(cf)
-			updates["custom_fields"] = datatypes.JSON(cfJSON)
-		}
-		if len(updates) > 0 {
-			h.db.Table("contacts").Where("id = ?", contactID).Updates(updates)
-		}
-		eventType = TriggerContactUpdated
-	} else {
-		// Create new
-		contactID = uuid.New()
-		firstName := ""
-		if fn, ok := contactData["first_name"].(string); ok {
-			firstName = fn
-		}
-		lastName := ""
-		if ln, ok := contactData["last_name"].(string); ok {
-			lastName = ln
-		}
-
-		cfJSON, _ := json.Marshal(customFields)
-
-		h.db.Exec(
-			`INSERT INTO contacts (id, org_id, first_name, last_name, email, phone, custom_fields, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
-			contactID, token.OrgID, firstName, lastName, email,
-			contactData["phone"], datatypes.JSON(cfJSON),
-		)
-		eventType = TriggerContactCreated
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error: ErrorBody{Code: "INTERNAL_ERROR", Message: "failed to record the lead"},
+		})
+		return
 	}
 
 	// Audit the webhook-driven contact write as the SYSTEM actor (P8 webhook-run
@@ -1045,6 +1042,160 @@ func (h *Handler) WebhookInbound(c *gin.Context) {
 		Status:    "accepted",
 		ContactID: contactID.String(),
 	})
+}
+
+// contactEmailUniqueIndex is the partial unique index on contacts(org_id, email).
+// Matched by NAME rather than by bare SQLSTATE 23505, for the reason its twin in
+// internal/usecase/contact_usecase.go gives: contacts may grow another unique index,
+// and a constraint-blind check would read that unrelated conflict as an email
+// duplicate and update the WRONG row.
+const contactEmailUniqueIndex = "idx_contacts_org_email"
+
+func isContactEmailConflict(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) &&
+		pgErr.Code == "23505" &&
+		pgErr.ConstraintName == contactEmailUniqueIndex
+}
+
+// upsertWebhookContact writes an inbound legacy-webhook lead and reports which
+// lifecycle event it is (contact_created / contact_updated).
+//
+// It deliberately keeps the legacy FIELD SEMANTICS byte-for-byte — the same four
+// direct fields, the same "every other key is a custom field", the same
+// case-sensitive email match — because the trigger payload built from them is the
+// interface every existing workflow is written against. What it fixes is the three
+// ways the shipped version lost data while reporting success:
+//
+//  1. Every write error was discarded. A duplicate-email race, an over-length name
+//     or a wrong-typed value all returned 200 with a contact id that was never
+//     inserted. The race in particular is the shape a busy integrator hits.
+//  2. custom_fields was REPLACED wholesale with only the current payload's unknown
+//     keys, so a delivery carrying one custom field destroyed every other custom
+//     field on that contact — including ones a human had typed.
+//  3. A failed SELECT fell through to the INSERT branch, so a transient database
+//     blip created a duplicate contact instead of updating the existing one.
+func (h *Handler) upsertWebhookContact(orgID uuid.UUID, email string, contactData, customFields map[string]any) (uuid.UUID, string, error) {
+	// context.Background(), matching the audit and trigger dispatch below: a client
+	// that hangs up must not leave the lead half-written.
+	ctx := context.Background()
+
+	existingID, err := h.findContactByEmail(ctx, orgID, email)
+	if err != nil {
+		return uuid.Nil, "", err
+	}
+	if existingID == uuid.Nil {
+		id := uuid.New()
+		cfJSON, _ := json.Marshal(customFields)
+		insertErr := h.db.WithContext(ctx).Exec(
+			`INSERT INTO contacts (id, org_id, first_name, last_name, email, phone, custom_fields, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+			id, orgID, stringField(contactData, "first_name"), stringField(contactData, "last_name"), email,
+			phoneValue(contactData), datatypes.JSON(cfJSON),
+		).Error
+		if insertErr == nil {
+			return id, TriggerContactCreated, nil
+		}
+		if !isContactEmailConflict(insertErr) {
+			return uuid.Nil, "", insertErr
+		}
+		// Two first-time deliveries for the same address raced and the other one won.
+		// Re-read and fall through to the update: exactly one contact, and the loser
+		// reports contact_updated, which is what actually happened. Re-matched ONCE —
+		// the winner's row cannot disappear underneath us, and an unbounded loop here
+		// would be a way to spin on a genuinely broken index.
+		existingID, err = h.findContactByEmail(ctx, orgID, email)
+		if err != nil {
+			return uuid.Nil, "", err
+		}
+		if existingID == uuid.Nil {
+			return uuid.Nil, "", insertErr
+		}
+	}
+
+	updates := make(map[string]any)
+	if fn, ok := contactData["first_name"]; ok {
+		updates["first_name"] = fn
+	}
+	if ln, ok := contactData["last_name"]; ok {
+		updates["last_name"] = ln
+	}
+	if ph, ok := contactData["phone"]; ok {
+		updates["phone"] = ph
+	}
+	if len(customFields) > 0 {
+		cfJSON, _ := json.Marshal(customFields)
+		// MERGE, never replace. One statement rather than a read-modify-write, so
+		// concurrent deliveries for the same contact cannot lose each other's keys:
+		// jsonb `||` is a shallow merge with the right-hand side winning, which is
+		// precisely the legacy per-key intent minus the collateral damage.
+		updates["custom_fields"] = gorm.Expr("COALESCE(contacts.custom_fields, '{}'::jsonb) || ?::jsonb", datatypes.JSON(cfJSON))
+	}
+	if len(updates) > 0 {
+		// Set explicitly: Table()+map supplies no model schema, so GORM does not
+		// track timestamps here and the row's updated_at would go stale on every
+		// inbound update — invisible until someone sorts a list by it.
+		updates["updated_at"] = gorm.Expr("NOW()")
+		if uerr := h.db.WithContext(ctx).Table("contacts").Where("id = ?", existingID).Updates(updates).Error; uerr != nil {
+			return uuid.Nil, "", uerr
+		}
+	}
+	return existingID, TriggerContactUpdated, nil
+}
+
+// findContactByEmail returns the live contact id for an address, or uuid.Nil when
+// there is none. A query FAILURE is returned as an error and never conflated with
+// "no such contact" — that conflation is what made a database blip create a
+// duplicate contact instead of updating the existing one.
+func (h *Handler) findContactByEmail(ctx context.Context, orgID uuid.UUID, email string) (uuid.UUID, error) {
+	var row struct {
+		ID uuid.UUID `gorm:"column:id"`
+	}
+	res := h.db.WithContext(ctx).Raw(
+		"SELECT id FROM contacts WHERE org_id = ? AND email = ? AND deleted_at IS NULL LIMIT 1",
+		orgID, email).Scan(&row)
+	if res.Error != nil {
+		return uuid.Nil, res.Error
+	}
+	return row.ID, nil
+}
+
+// stringField reproduces the legacy type assertion exactly: a non-string value
+// becomes "". Deliberately NOT widened to coerce numbers — unlike the phone case
+// below there is no lost lead to recover here, so changing what lands in the column
+// would be a product change wearing a bug fix's clothes.
+func stringField(m map[string]any, key string) string {
+	if s, ok := m[key].(string); ok {
+		return s
+	}
+	return ""
+}
+
+// phoneValue renders a phone for the varchar column.
+//
+// The shipped code passed the raw JSON value straight into the INSERT, so a payload
+// with a NUMERIC phone (a real shape — plenty of senders emit 5551234567 unquoted)
+// failed the insert, and because the error was discarded the caller got a 200 and
+// the lead vanished. Coercing scalars costs nothing and cannot regress stored data,
+// since the alternative outcome was no row at all. The trigger payload keeps the
+// caller's raw value, so no workflow sees a different phone than it does today.
+func phoneValue(m map[string]any) any {
+	switch v := m["phone"].(type) {
+	case nil:
+		return nil
+	case string:
+		return v
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case bool:
+		return strconv.FormatBool(v)
+	case json.Number:
+		return v.String()
+	default:
+		// An object or an array is not a phone number by any reading; storing NULL
+		// keeps the rest of the lead rather than failing the whole delivery over it.
+		return nil
+	}
 }
 
 // GetWebhookToken handles GET /api/webhooks/token.

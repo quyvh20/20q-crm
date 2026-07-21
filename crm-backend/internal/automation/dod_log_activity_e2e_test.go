@@ -125,6 +125,10 @@ func TestDoD_LogActivity_WebhookToTimeline(t *testing.T) {
 		logger:      slog.Default(),
 		rateLimiter: newTokenBucket(),
 		capChecker:  capAllow{},
+		// Required as of L7.3: WEBHOOK_SKIP_SIGNATURE is honoured only in a dev/test
+		// environment, and the zero value means production. A handler literal that
+		// omits this silently starts demanding a real signature.
+		appEnv: "test",
 	}
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
