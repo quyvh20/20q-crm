@@ -42,6 +42,24 @@ var reservedObjectSlugs = func() map[string]bool {
 // literals: at 20+ templates the literals are unreviewable, whereas a JSON file is
 // a clean diff and can be validated by a test with no database at all.
 //
+// A note for anyone tempted to gate a template's contact_created automation behind
+// a condition step, to stop it firing for contacts who are not prospects (an
+// opposing counsel, a supplier, a member of staff). It was tried and reverted:
+//
+//   - evaluateLeaf (automation/conditions.go) fails CLOSED on a field that resolves
+//     to nil, BEFORE the operator switch. So `not_in` on an unset field is false,
+//     not true. Custom fields are usually empty at creation time, so the gate would
+//     suppress the task in the common case rather than the exceptional one.
+//   - Switching the trigger to deal_created does not work either: the legacy
+//     POST /api/deals handler emits no event at all, so the workflow would be
+//     silently dead for deals created through the UI.
+//
+// The noise itself is smaller than it looks: contact_created has exactly two emit
+// sites and both are single-record creates. CSV import calls contactRepo.BulkCreate
+// directly and emits nothing, so importing a contact list does NOT raise a task per
+// row. Leave this alone until the engine offers a fail-open operator or the legacy
+// deal route emits.
+//
 //go:embed templates/*.json
 var templateFS embed.FS
 
