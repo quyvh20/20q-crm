@@ -353,8 +353,60 @@ export default function IntegrationsSection() {
               </TableShell>
             )
           )}
+
+          <RelayRecipes />
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * RelayRecipes answers the question the sources table provokes: "my platform isn't
+ * in the list — is it supported?"
+ *
+ * It is prose on the page rather than a link to a doc because the app has no docs
+ * route and nothing serves the repo's docs/ directory, so a link would be a 404 —
+ * and it names LinkedIn explicitly because the alternative reading of an absent
+ * entry is "this product cannot do LinkedIn", which is wrong.
+ *
+ * LinkedIn is deliberately not a native connector: Lead Sync API access is gated on
+ * a verified company page and a per-app review, and its versions retire on a
+ * schedule, so a native adapter is a maintenance commitment someone else can switch
+ * off. The relay cannot be revoked.
+ */
+function RelayRecipes() {
+  return (
+    <div className="rounded-xl border border-border p-4 space-y-3">
+      <div>
+        <h3 className="text-sm font-semibold text-foreground">Platforms without a direct connection</h3>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          Anything Make or Zapier can read — <span className="font-medium">LinkedIn Lead Gen
+          Forms</span>, Typeform, Webflow, a spreadsheet — reaches the CRM through a{' '}
+          <span className="font-medium">Capture API</span> source. Create one above, then add an
+          HTTP step that POSTs{' '}
+          <code className="font-mono">{'{"fields": {…}}'}</code> to it.
+        </p>
+      </div>
+      <ul className="space-y-1.5 text-xs text-muted-foreground">
+        <li>
+          <span className="font-medium text-foreground">Name the source for the channel</span>{' '}
+          (&ldquo;LinkedIn&rdquo;), not for the relay tool — reports group by that name, and{' '}
+          <code className="font-mono">lead_source</code> will read{' '}
+          <code className="font-mono">integration:api</code> for every relayed lead regardless.
+        </li>
+        <li>
+          <span className="font-medium text-foreground">Send the platform&apos;s own lead id as{' '}
+          <code className="font-mono">Idempotency-Key</code></span>. Without it a re-run of the
+          scenario relays the same person again, and there is nothing here to dedupe on.
+        </li>
+        <li>
+          <span className="font-medium text-foreground">Alert on scenario failure in the relay
+          tool.</span> A paused scenario or an expired connection stops leads arriving, and this
+          delivery log only records what reached us — a relay that stopped relaying looks
+          exactly like a quiet week.
+        </li>
+      </ul>
     </div>
   );
 }
