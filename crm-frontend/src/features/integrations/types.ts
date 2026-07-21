@@ -381,3 +381,18 @@ export interface ProviderForm {
   enabled: boolean;
   source_id?: string;
 }
+
+
+/** One layer of the per-connection diagnose (L6.3). */
+export type DiagnoseCheckKey = 'credentials' | 'token' | 'subscription' | 'forms';
+export type DiagnoseCheckStatus = 'ok' | 'fail' | 'warn' | 'unknown' | 'skipped';
+
+export interface DiagnoseCheck {
+  key: DiagnoseCheckKey;
+  status: DiagnoseCheckStatus;
+}
+
+export interface DiagnoseResult {
+  checks: DiagnoseCheck[];
+  healthy: boolean;
+}

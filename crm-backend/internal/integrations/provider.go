@@ -70,6 +70,12 @@ type Provider interface {
 	// already arrived by webhook. L5.4.
 	Backfill(ctx context.Context, conn *IntegrationConnection, creds Credentials, formID, cursor string) ([]RawLead, string, error)
 
+	// CheckSubscription reports whether the provider is currently configured to PUSH
+	// deliveries to us for this account — the read counterpart to Subscribe, which
+	// only ever writes. Without it "connected" can only mean "the token works", and a
+	// page whose subscription silently lapsed looks identical to a healthy one.
+	CheckSubscription(ctx context.Context, conn *IntegrationConnection, creds Credentials) (bool, error)
+
 	// HealthCheck probes whether the stored credential still works, for the L6
 	// diagnose action.
 	HealthCheck(ctx context.Context, conn *IntegrationConnection, creds Credentials) error
@@ -215,6 +221,10 @@ func (UnimplementedProvider) Backfill(context.Context, *IntegrationConnection, C
 }
 
 // HealthCheck reports the capability is unsupported.
+func (UnimplementedProvider) CheckSubscription(context.Context, *IntegrationConnection, Credentials) (bool, error) {
+	return false, ErrProviderCapabilityUnsupported
+}
+
 func (UnimplementedProvider) HealthCheck(context.Context, *IntegrationConnection, Credentials) error {
 	return ErrProviderCapabilityUnsupported
 }

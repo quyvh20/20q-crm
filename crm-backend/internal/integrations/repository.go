@@ -1362,3 +1362,17 @@ func (r *Repository) RedactedAtForEvents(ctx context.Context, ids []uuid.UUID) (
 	}
 	return out, nil
 }
+
+// CountLiveFormSources counts the enabled per-form sources behind a connection —
+// whether anything on OUR side is ready to receive.
+//
+// The diagnose action's last layer, and the one that most often explains "it isn't
+// working": a connection can be perfectly healthy and produce nothing because no form
+// was ever enabled, which no provider-side probe can see.
+func (r *Repository) CountLiveFormSources(ctx context.Context, orgID, connectionID uuid.UUID) (int64, error) {
+	var n int64
+	err := r.db.WithContext(ctx).Model(&LeadSource{}).
+		Where("org_id = ? AND connection_id = ? AND status <> ?", orgID, connectionID, SourceStatusDisabled).
+		Count(&n).Error
+	return n, err
+}

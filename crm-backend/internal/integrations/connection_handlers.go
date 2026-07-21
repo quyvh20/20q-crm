@@ -71,6 +71,9 @@ func (h *ConnectionHandler) RegisterRoutes(router *gin.Engine, protected []gin.H
 		// Per-form config (L5.4): discover a connection's provider forms, and enable
 		// one (create its facebook_form source).
 		g.GET("/connections/:id/forms", h.ListForms)
+		// Which layer is actually broken (L6.3) — "reconnect this account" is wrong
+		// at least as often as it is right.
+		g.POST("/connections/:id/diagnose", h.Diagnose)
 		g.POST("/connections/:id/forms", h.EnableForm)
 		// The account picker: read candidates (peek), then commit one (select).
 		g.GET("/pending/:token", h.Candidates)

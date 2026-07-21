@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
-import { AlertTriangle, ChevronDown, ChevronRight, Plug, RefreshCw, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Stethoscope, ChevronDown, ChevronRight, Plug, RefreshCw, Trash2, X } from 'lucide-react';
 import { Badge, Button, SpinnerBlock } from '@/components/ui';
 import Modal from '../../components/common/Modal';
 import { useConfirm } from '../../components/common/ConfirmDialog';
@@ -11,10 +11,11 @@ import {
   useDisconnectConnection,
   useEnableForm,
   usePendingCandidates,
+  useDiagnoseConnection,
   useProviders,
   useSelectAccount,
 } from '../../features/integrations/connections';
-import type { Connection, ConnectionStatus, ProviderForm } from '../../features/integrations/types';
+import type { Connection, ConnectionStatus, DiagnoseResult, ProviderForm } from '../../features/integrations/types';
 
 const STATUS_VARIANT: Record<ConnectionStatus, 'success' | 'secondary' | 'destructive' | 'warning'> = {
   connected: 'success',
@@ -54,6 +55,21 @@ export default function ProviderConnections() {
   const [connectError, setConnectError] = useState('');
   const [startError, setStartError] = useState('');
   const [openForms, setOpenForms] = useState<string | null>(null);
+  const [diagnosing, setDiagnosing] = useState<string | null>(null);
+  const [diagnosis, setDiagnosis] = useState<Record<string, DiagnoseResult>>({});
+  const [diagnoseError, setDiagnoseError] = useState<Record<string, string>>({});
+  const diagnose = useDiagnoseConnection();
+
+  const runDiagnose = async (id: string) => {
+    setDiagnosing(id);
+    setDiagnoseError((e) => ({ ...e, [id]: '' }));
+    try {
+      const res = await diagnose.mutateAsync(id);
+      setDiagnosis((d) => ({ ...d, [id]: res }));
+    } catch (err: any) {
+      setDiagnoseError((e) => ({ ...e, [id]: err?.message || 'Could not run the check' }));
+    }
+  };
 
   // The selection token rides in the fragment (#selection=…), the provider in the
   // query (?connect=…). Both present ⇒ open the picker.
@@ -191,6 +207,15 @@ export default function ProviderConnections() {
                 <Button
                   variant="ghost"
                   size="sm"
+                  disabled={diagnose.isPending && diagnosing === c.id}
+                  onClick={() => runDiagnose(c.id)}
+                >
+                  <Stethoscope />
+                  {diagnose.isPending && diagnosing === c.id ? 'Checking…' : 'Check connection'}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={() => setOpenForms((cur) => (cur === c.id ? null : c.id))}
                 >
                   {openForms === c.id ? <ChevronDown /> : <ChevronRight />}
@@ -206,6 +231,10 @@ export default function ProviderConnections() {
                   Disconnect
                 </Button>
               </div>
+              {diagnoseError[c.id] && (
+                <p className="mt-2 text-xs text-destructive">{diagnoseError[c.id]}</p>
+              )}
+              {diagnosis[c.id] && <DiagnosisPanel result={diagnosis[c.id]} />}
               {openForms === c.id && <ConnectionForms connectionId={c.id} />}
             </div>
           ))}
@@ -388,6 +417,84 @@ function ConnectionForms({ connectionId }: { connectionId: string }) {
           </p>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * What each layer means, in the admin's language.
+ *
+ * The server sends keys and statuses only — never a sentence. That is the house
+ * posture (the server decides what is TRUE, this file decides how to say it) and here
+ * it is also a security control: a provider error embeds the request URL, and a page
+ * token rides in that query string. A fixed vocabulary cannot leak a secret.
+ *
+ * `unknown` is never rendered as a failure. "We could not ask" and "the answer was no"
+ * lead to different actions, and collapsing them is how an admin ends up redoing OAuth
+ * to fix a Meta outage.
+ */
+const DIAGNOSE_COPY: Record<string, { label: string; ok: string; bad: string }> = {
+  credentials: {
+    label: 'Stored credentials',
+    ok: 'Readable.',
+    bad: 'We cannot read the stored credentials for this account. Reconnect it — nothing else here can work until that is fixed.',
+  },
+  token: {
+    label: 'Access to the account',
+    ok: 'The provider still accepts our access.',
+    bad: 'The provider rejected our access. This usually means the app was removed from the account, or a permission was withdrawn. Reconnect the account.',
+  },
+  subscription: {
+    label: 'Delivery subscription',
+    ok: 'The provider is set up to send us new leads.',
+    bad: 'The provider is NOT set up to send us new leads for this account, so nothing will arrive even though the connection itself is fine. Reconnect to re-subscribe.',
+  },
+  forms: {
+    label: 'Forms enabled here',
+    ok: 'At least one form is enabled and receiving.',
+    bad: 'No form is enabled for this account yet, so leads have nowhere to land. Open "Manage forms" and enable the ones you want.',
+  },
+};
+
+const DIAGNOSE_UNKNOWN: Record<string, string> = {
+  token: 'We could not check this right now — that is not the same as it being broken. Try again shortly.',
+  subscription:
+    'We could not read the delivery subscription. That can mean the provider was unreachable, or that Leads Access has not been granted for this account — both look the same from here.',
+  forms: 'We could not count the enabled forms right now.',
+};
+
+function DiagnosisPanel({ result }: { result: DiagnoseResult }) {
+  return (
+    <div className="mt-2 space-y-1.5 rounded-lg border border-border bg-background p-3">
+      {result.healthy && (
+        <p className="text-xs text-emerald-600 dark:text-emerald-400">
+          Every layer checked out. If leads still are not arriving, the delivery log shows what
+          the provider has actually sent.
+        </p>
+      )}
+      {result.checks.map((ch) => {
+        const copy = DIAGNOSE_COPY[ch.key];
+        if (!copy) return null;
+        // Skipped is rendered, not hidden: an omitted row reads as "fine", and the
+        // reason it was skipped is that an earlier layer already failed.
+        const tone =
+          ch.status === 'ok'
+            ? 'text-emerald-600 dark:text-emerald-400'
+            : ch.status === 'fail'
+              ? 'text-destructive'
+              : 'text-muted-foreground';
+        let text = copy.bad;
+        if (ch.status === 'ok') text = copy.ok;
+        else if (ch.status === 'warn') text = copy.bad;
+        else if (ch.status === 'unknown') text = DIAGNOSE_UNKNOWN[ch.key] ?? 'We could not check this right now.';
+        else if (ch.status === 'skipped') text = 'Not checked — an earlier step needs fixing first.';
+        return (
+          <div key={ch.key} className="text-xs">
+            <span className="font-medium text-foreground">{copy.label}: </span>
+            <span className={tone}>{text}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }

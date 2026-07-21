@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiError, apiFetch, parseJsonSafe } from '../../lib/api';
 import { integrationKeys } from './queries';
-import type { Connection, PendingCandidates, ProviderForm, ProviderInfo } from './types';
+import type { Connection, DiagnoseCheck, DiagnoseResult, PendingCandidates, ProviderForm, ProviderInfo } from './types';
 
 // Provider-connection API + react-query layer (L5.2), sibling to the sources
 // module. Same discipline: every call through apiFetch (bearer + 401→refresh) and
@@ -115,7 +115,28 @@ export async function startBackfill(sourceId: string, enroll: boolean): Promise<
 
 // ── react-query ──────────────────────────────────────────────────────────────
 
+/**
+ * diagnoseConnection probes which layer of a connection is actually broken.
+ *
+ * POST because it makes live calls to the provider — it is an action with a cost, not
+ * a cacheable read. The server returns keys and statuses only; every sentence the
+ * admin reads is chosen here (see DIAGNOSE_COPY), which is both the house posture and
+ * a security control: a provider error embeds the request URL, and a page token rides
+ * in that query string.
+ */
+export async function diagnoseConnection(id: string): Promise<DiagnoseResult> {
+  const res = await apiFetch(`/api/integrations/connections/${id}/diagnose`, { method: 'POST' });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Could not run the check');
+  const data = json?.data ?? {};
+  return {
+    checks: asList<DiagnoseCheck>(data.checks),
+    healthy: data.healthy === true,
+  };
+}
+
 export const connectionKeys = {
+  diagnose: (id: string) => [...integrationKeys.all, 'diagnose', id] as const,
   providers: () => [...integrationKeys.all, 'providers'] as const,
   connections: () => [...integrationKeys.all, 'connections'] as const,
   pending: (token: string) => [...integrationKeys.all, 'pending', token] as const,
@@ -207,5 +228,12 @@ export function useBackfill() {
     onSuccess: (_res, { sourceId }) => {
       qc.invalidateQueries({ queryKey: integrationKeys.events(sourceId) });
     },
+  });
+}
+
+/** useDiagnoseConnection runs the layered check for one connection. */
+export function useDiagnoseConnection() {
+  return useMutation({
+    mutationFn: (id: string) => diagnoseConnection(id),
   });
 }
