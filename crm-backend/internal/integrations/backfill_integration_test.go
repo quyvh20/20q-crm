@@ -64,7 +64,7 @@ func TestForms_EnableCreatesFacebookFormSource(t *testing.T) {
 	require.Equal(t, KindFacebookForm, src.Kind)
 
 	// It is resolvable by (connection, form_id) — exactly what the webhook processor uses.
-	got, err := s.repo.FindFacebookFormSource(ctx, c.ID, "form1")
+	got, err := s.repo.FindConnectionFormSource(ctx, c.ID, KindFacebookForm, ProviderKeyFacebook, "form1")
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	require.Equal(t, src.ID, got.ID)
@@ -75,7 +75,7 @@ func TestForms_EnableCreatesFacebookFormSource(t *testing.T) {
 	require.Nil(t, hash, "a facebook_form source must have a NULL token_hash (no bearer credential)")
 
 	// EnabledFormIDs reports it.
-	enabled, err := s.repo.EnabledFormIDs(ctx, org, c.ID)
+	enabled, err := s.repo.EnabledFormIDs(ctx, org, c.ID, KindFacebookForm, ProviderKeyFacebook)
 	require.NoError(t, err)
 	require.Equal(t, src.ID, enabled["form1"])
 }

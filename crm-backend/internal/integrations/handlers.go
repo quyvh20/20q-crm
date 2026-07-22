@@ -929,11 +929,14 @@ func (h *Handler) CreateSource(c *gin.Context) {
 		h.mgmtError(c, http.StatusBadRequest, "unknown source kind: "+req.Kind)
 		return
 	}
-	if req.Kind == KindFacebookForm {
-		// A facebook_form source is bound to a connection + a provider form id; it has
-		// no token and cannot be created from the generic New-source flow. It is created
-		// by enabling a form on its connection (POST /connections/:id/forms).
-		h.mgmtError(c, http.StatusBadRequest, "Facebook forms are added from their connection, not here")
+	// EVERY keyless kind, not an enumeration of two. A keyless source is credentialed
+	// by something other than a bearer key, so minting one here would hand it a second
+	// capture-API ingress that FindSourceByTokenHash — which has no kind filter —
+	// happily authenticates, on a source whose UI hides the key and whose Rotate button
+	// is refused. The literal-by-literal version of this guard missed tiktok_form the
+	// day it was added, which is why it is a predicate now.
+	if IsKeylessKind(req.Kind) && req.Kind != KindWebhookInbound {
+		h.mgmtError(c, http.StatusBadRequest, "forms are added from their connection, not here")
 		return
 	}
 	if req.Kind == KindWebhookInbound {
@@ -1373,8 +1376,13 @@ func (h *Handler) RotateKey(c *gin.Context) {
 	// actually authenticates with, because FindSourceByTokenHash has no kind filter —
 	// but the remedy differs, so the copy has to.
 	if IsKeylessKind(src.Kind) {
-		remedy := "its credential is the Facebook connection"
-		if src.Kind == KindWebhookInbound {
+		remedy := "its credential is the connection it was enabled from"
+		switch src.Kind {
+		case KindFacebookForm:
+			remedy = "its credential is the Facebook connection"
+		case KindTikTokForm:
+			remedy = "its credential is the TikTok connection"
+		case KindWebhookInbound:
 			remedy = "its secret is the workflow webhook signing secret, rotated in the workflow builder"
 		}
 		h.mgmtError(c, http.StatusBadRequest, "this source has no bearer key to rotate — "+remedy)

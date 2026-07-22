@@ -76,6 +76,12 @@ type Provider interface {
 	// page whose subscription silently lapsed looks identical to a healthy one.
 	CheckSubscription(ctx context.Context, conn *IntegrationConnection, creds Credentials) (bool, error)
 
+	// SeedFieldMap is the mapping a newly-enabled form starts with: the provider's
+	// standard question names onto contact fields. Custom questions arrive under
+	// their own names, quarantine, surface as observed keys, and get one-click mapped
+	// by the admin — the L2 flow.
+	SeedFieldMap() FieldMap
+
 	// HealthCheck probes whether the stored credential still works, for the L6
 	// diagnose action.
 	HealthCheck(ctx context.Context, conn *IntegrationConnection, creds Credentials) error
@@ -103,6 +109,22 @@ type ProviderInfo struct {
 	// S256 challenge. Facebook's server-side flow does not; a provider that does
 	// sets this and reads the verifier back in ExchangeCallback.
 	UsesPKCE bool `json:"uses_pkce"`
+	// SourceKind is the lead_sources.kind a form enabled on this provider produces
+	// ("facebook_form", "tiktok_form"). It is also the key of the config namespace
+	// the form id is stored under, so `config -> <provider key> ->> 'form_id'` is
+	// what resolves a delivery back to its source. Before L7.5 both were hardcoded to
+	// Facebook in four places.
+	SourceKind string `json:"source_kind"`
+	// CarriesLeadData reports that the provider's WEBHOOK already contains the lead's
+	// answers, so no per-lead fetch is needed or possible.
+	//
+	// This is not an optimisation, it is a capability difference. Meta's leadgen
+	// webhook carries ids only and the lead is read back with GET /{leadgen_id};
+	// TikTok's carries the answers inline and its /lead/get/ endpoint has NO lead id
+	// parameter at all, so there is no by-id read to make. A provider that sets this
+	// implements FetchLead as a pure function over InboundEvent.Raw, which the worker
+	// rehydrates from the stored delivery for exactly this purpose.
+	CarriesLeadData bool `json:"carries_lead_data"`
 }
 
 // Credentials is a provider access-token blob, sealed at rest by the envelope
@@ -172,6 +194,17 @@ type ProviderForm struct {
 // ErrProviderCapabilityUnsupported is what a Provider returns for a capability it
 // does not implement. Callers branch on it to skip an optional step rather than
 // treat it as a failure.
+// ErrDeliveryUnusable marks a delivery that cannot be turned into a lead no matter
+// how often it is retried — the payload is empty or malformed — as distinct from a
+// credential or transport failure.
+//
+// The distinction is load-bearing for a provider whose webhook CARRIES the lead.
+// There the "fetch" is a read of our own stored row, so its failures say nothing at
+// all about the token; without this the worker's fetch-error path would flip the
+// connection to `error` and tell the admin to reconnect an account that is working
+// perfectly.
+var ErrDeliveryUnusable = errors.New("integrations: delivery cannot be turned into a lead")
+
 var ErrProviderCapabilityUnsupported = errors.New("integrations: provider does not support this capability")
 
 // ErrUnknownProvider reports a connect/callback for a provider that is not
@@ -221,6 +254,11 @@ func (UnimplementedProvider) Backfill(context.Context, *IntegrationConnection, C
 }
 
 // HealthCheck reports the capability is unsupported.
+// SeedFieldMap defaults to empty, which ParseFieldMap reads as IDENTITY over
+// schema-valid keys — the same thing an unmapped capture-API source does. A provider
+// that has standard field names overrides it.
+func (UnimplementedProvider) SeedFieldMap() FieldMap { return FieldMap{} }
+
 func (UnimplementedProvider) CheckSubscription(context.Context, *IntegrationConnection, Credentials) (bool, error) {
 	return false, ErrProviderCapabilityUnsupported
 }

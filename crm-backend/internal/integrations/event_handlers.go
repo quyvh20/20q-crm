@@ -1,6 +1,7 @@
 package integrations
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -254,7 +255,12 @@ func (h *Handler) RetryEvent(c *gin.Context) {
 	// Integrations settings". Refusing here costs the admin one honest message.
 	if ev.ConnectionID != nil {
 		formID := stringOf(readContext(ev.Context)["form_id"])
-		src, serr := h.repo.FindFacebookFormSource(c.Request.Context(), *ev.ConnectionID, formID)
+		kind, provider, kerr := h.connectionFormKind(c.Request.Context(), orgID, *ev.ConnectionID)
+		if kerr != nil {
+			h.mgmtError(c, http.StatusInternalServerError, "could not check this lead's form")
+			return
+		}
+		src, serr := h.repo.FindConnectionFormSource(c.Request.Context(), *ev.ConnectionID, kind, provider, formID)
 		if serr != nil {
 			h.mgmtError(c, http.StatusInternalServerError, "could not check this lead's form")
 			return
@@ -318,4 +324,21 @@ func decodeEventCursor(s string) (time.Time, uuid.UUID, error) {
 		return time.Time{}, uuid.Nil, err
 	}
 	return at, cur.ID, nil
+}
+
+// connectionFormKind resolves which source kind and config namespace a delivery's
+// connection uses. A connection whose provider is no longer registered yields empty
+// strings, which make the form lookup miss — the same outcome as a form that was
+// never enabled, and the right one: without an adapter there is nothing to retry
+// into.
+func (h *Handler) connectionFormKind(ctx context.Context, orgID, connID uuid.UUID) (kind, provider string, err error) {
+	conn, err := h.repo.GetConnection(ctx, orgID, connID)
+	if err != nil || conn == nil {
+		return "", "", err
+	}
+	prov, ok := h.connections.registry.Get(conn.Provider)
+	if !ok {
+		return "", conn.Provider, nil
+	}
+	return prov.Info().SourceKind, conn.Provider, nil
 }

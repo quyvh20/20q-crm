@@ -120,10 +120,25 @@ func (p *webhookProcessor) process(ctx context.Context, event *IntegrationEvent)
 		ExternalAccountID: conn.ExternalAccountID,
 		ProviderEventID:   derefString(event.ProviderEventID),
 		FormID:            formID,
+		// Rehydrated from the stored delivery, and this one line is what lets the
+		// framework carry a provider whose webhook already contains the lead. Meta's
+		// carries ids only, so FetchLead reads the lead back over the network; TikTok's
+		// carries the answers inline and its API has no by-id read at all. A provider
+		// that declares CarriesLeadData implements FetchLead as a pure function over
+		// this map, and the claim/retry/health machinery around it is unchanged.
+		Raw: readContext(event.RawPayload),
 	}
 
 	lead, err := prov.FetchLead(ctx, conn, creds, inbound)
 	if err != nil {
+		if errors.Is(err, ErrDeliveryUnusable) {
+			// The DELIVERY is unusable, not the connection. Retrying cannot help and
+			// the credential is not implicated, so this fails the one row and leaves the
+			// health signal alone — flipping the account here would tell an admin to
+			// redo OAuth over a single malformed callback.
+			p.fail(ctx, event, err.Error())
+			return
+		}
 		p.handleFetchError(ctx, conn, event, err)
 		return
 	}
@@ -137,7 +152,7 @@ func (p *webhookProcessor) process(ctx context.Context, event *IntegrationEvent)
 	if fetchedForm == "" {
 		fetchedForm = formID
 	}
-	source, serr := p.repo.FindFacebookFormSource(ctx, conn.ID, fetchedForm)
+	source, serr := p.repo.FindConnectionFormSource(ctx, conn.ID, prov.Info().SourceKind, conn.Provider, fetchedForm)
 	if serr != nil {
 		p.retryOrFail(ctx, event, true, "could not resolve the form's source")
 		return

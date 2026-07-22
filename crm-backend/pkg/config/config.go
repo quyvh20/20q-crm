@@ -63,7 +63,7 @@ type Config struct {
 	// and each needs its own BindEnv below or it silently reads "" in production
 	// (the PADDLE_WEBHOOK_SECRET / TOTP_ENC_KEY failure — the config test enforces
 	// this).
-	FacebookAppID string `mapstructure:"FACEBOOK_APP_ID"`
+	FacebookAppID     string `mapstructure:"FACEBOOK_APP_ID"`
 	FacebookAppSecret string `mapstructure:"FACEBOOK_APP_SECRET"`
 	// FacebookWebhookVerifyToken authenticates the GET hub.challenge handshake on
 	// the app-level leadgen webhook (L5.3).
@@ -72,6 +72,15 @@ type Config struct {
 	// Integration System User tokens that survive employee departure). Empty falls
 	// back to the classic scope flow.
 	FacebookLoginConfigID string `mapstructure:"FACEBOOK_LOGIN_CONFIG_ID"`
+
+	// TikTok Lead Generation provider (L7.5). All optional: when TikTokAppID is empty
+	// the provider is not registered and every /connect for it 404s. TikTokAuthURL is
+	// the advertiser authorization URL copied from the app's page in TikTok's
+	// developer portal — it is configuration rather than a construction because
+	// TikTok does not document the parameters. Each needs its own BindEnv below.
+	TikTokAppID     string `mapstructure:"TIKTOK_APP_ID"`
+	TikTokAppSecret string `mapstructure:"TIKTOK_APP_SECRET"`
+	TikTokAuthURL   string `mapstructure:"TIKTOK_AUTH_URL"`
 	// TrustedProxies is a comma-separated CIDR list of edge proxies whose
 	// X-Forwarded-For may be believed. EMPTY (the default) trusts none, so
 	// c.ClientIP() returns the unforgeable peer address. Gin's own default is the
@@ -97,7 +106,6 @@ type Config struct {
 	CFAIToken        string `mapstructure:"CF_AI_TOKEN"`
 	CFAIGatewayID    string `mapstructure:"CF_AI_GATEWAY_ID"`
 	CFAIGatewayToken string `mapstructure:"CF_AI_GATEWAY_TOKEN"`
-
 
 	// Payments
 	PaddleWebhookSecret string `mapstructure:"PADDLE_WEBHOOK_SECRET"`
@@ -143,6 +151,9 @@ func LoadConfig() (*Config, error) {
 	viper.BindEnv("FACEBOOK_APP_SECRET")
 	viper.BindEnv("FACEBOOK_WEBHOOK_VERIFY_TOKEN")
 	viper.BindEnv("FACEBOOK_LOGIN_CONFIG_ID")
+	viper.BindEnv("TIKTOK_APP_ID")
+	viper.BindEnv("TIKTOK_APP_SECRET")
+	viper.BindEnv("TIKTOK_AUTH_URL")
 	viper.BindEnv("TRUSTED_PROXIES")
 	viper.BindEnv("COOKIE_SECURE")
 	viper.BindEnv("COOKIE_SAMESITE")

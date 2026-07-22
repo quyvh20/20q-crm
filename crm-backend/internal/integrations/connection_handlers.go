@@ -268,7 +268,7 @@ func (h *ConnectionHandler) ListForms(c *gin.Context) {
 		h.writeErr(c, err)
 		return
 	}
-	enabled, err := h.repo.EnabledFormIDs(c.Request.Context(), orgID, conn.ID)
+	enabled, err := h.repo.EnabledFormIDs(c.Request.Context(), orgID, conn.ID, prov.Info().SourceKind, conn.Provider)
 	if err != nil {
 		h.err(c, http.StatusInternalServerError, "could not load enabled forms")
 		return
@@ -296,6 +296,13 @@ func (h *ConnectionHandler) EnableForm(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// The provider decides the source kind, the config namespace and the seed map —
+	// all three were hardcoded to Facebook before L7.5.
+	prov, ok := h.svc.registry.Get(conn.Provider)
+	if !ok {
+		h.err(c, http.StatusBadRequest, "this provider is not available")
+		return
+	}
 	var req struct {
 		FormID   string `json:"form_id"`
 		FormName string `json:"form_name"`
@@ -307,7 +314,7 @@ func (h *ConnectionHandler) EnableForm(c *gin.Context) {
 	formID := strings.TrimSpace(req.FormID)
 
 	// Idempotent: re-enabling a form returns the existing source, never a duplicate.
-	enabled, err := h.repo.EnabledFormIDs(c.Request.Context(), orgID, conn.ID)
+	enabled, err := h.repo.EnabledFormIDs(c.Request.Context(), orgID, conn.ID, prov.Info().SourceKind, conn.Provider)
 	if err != nil {
 		h.err(c, http.StatusInternalServerError, "could not check enabled forms")
 		return
@@ -332,7 +339,7 @@ func (h *ConnectionHandler) EnableForm(c *gin.Context) {
 
 	// Validate the seed map against the contact schema — a broken seed is our bug,
 	// worth failing loudly on rather than quarantining every future lead.
-	seed := facebookSeedFieldMap()
+	seed := prov.SeedFieldMap()
 	if h.schema != nil {
 		allow, aerr := BuildAllowlist(ctx, h.schema, orgID, "contact")
 		if aerr != nil {
@@ -340,26 +347,28 @@ func (h *ConnectionHandler) EnableForm(c *gin.Context) {
 			return
 		}
 		if problems := ValidateFieldMap(seed, allow); len(problems) > 0 {
-			h.logger.Error("integrations: facebook seed field map invalid", "problems", problems)
+			h.logger.Error("integrations: provider seed field map invalid", "provider", conn.Provider, "problems", problems)
 			h.err(c, http.StatusInternalServerError, "could not seed the field mapping")
 			return
 		}
 	}
 
 	fmapJSON, _ := json.Marshal(seed)
-	cfgJSON, _ := json.Marshal(map[string]any{"facebook": map[string]any{"form_id": formID}})
+	// The config namespace is the PROVIDER KEY, which is what makes
+	// FindConnectionFormSource one statement for every adapter rather than one per.
+	cfgJSON, _ := json.Marshal(map[string]any{conn.Provider: map[string]any{"form_id": formID}})
 	name := strings.TrimSpace(req.FormName)
 	if name == "" {
-		name = "Facebook form " + formID
+		name = prov.Info().Label + " form " + formID
 	}
 	src := &LeadSource{
 		OrgID:        orgID,
-		Kind:         KindFacebookForm,
+		Kind:         prov.Info().SourceKind,
 		Name:         name,
 		TargetSlug:   "contact",
 		UpdatePolicy: UpdatePolicyFillBlankOnly,
-		// Facebook forms are phone-heavy; match on email then phone so a phone-only
-		// lead still dedupes (the L2/L3 rationale).
+		// Lead-ad forms are phone-heavy on every platform; match on email then phone
+		// so a phone-only lead still dedupes (the L2/L3 rationale).
 		MatchFields: datatypes.JSON(`["email","phone"]`),
 		FieldMap:    datatypes.JSON(fmapJSON),
 		Config:      datatypes.JSON(cfgJSON),
@@ -373,7 +382,7 @@ func (h *ConnectionHandler) EnableForm(c *gin.Context) {
 		// Lost the idempotency race (a concurrent enable of the same form won). The
 		// unique index caught it; resolve to the existing source rather than error.
 		if IsFormSourceConflict(err) {
-			if again, e := h.repo.EnabledFormIDs(ctx, orgID, conn.ID); e == nil {
+			if again, e := h.repo.EnabledFormIDs(ctx, orgID, conn.ID, prov.Info().SourceKind, conn.Provider); e == nil {
 				if sid, on := again[formID]; on {
 					c.JSON(http.StatusOK, gin.H{"data": gin.H{"source_id": sid.String(), "form_id": formID, "already_enabled": true}})
 					return

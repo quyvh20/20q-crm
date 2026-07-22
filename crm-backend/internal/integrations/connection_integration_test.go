@@ -253,7 +253,10 @@ func TestConnectFlow_UnknownProvider(t *testing.T) {
 	db, cleanup := newIntegrationsTestDB(t)
 	defer cleanup()
 	_, svc, _ := newTestConnStack(t, db, testKey)
-	_, err := svc.StartConnect(context.Background(), seedOrg(t, db), uuid.New(), "tiktok", "")
+	// Deliberately a name no adapter will ever claim. This read "tiktok" until L7.5
+	// shipped one — at which point the test still passed (it builds its own empty
+	// registry) while no longer testing what its message says.
+	_, err := svc.StartConnect(context.Background(), seedOrg(t, db), uuid.New(), "no-such-provider", "")
 	require.Error(t, err, "an unregistered provider must be refused")
 }
 

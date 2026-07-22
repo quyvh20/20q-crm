@@ -129,7 +129,7 @@ func TestFacebook_FetchLead(t *testing.T) {
 }
 
 func TestWebhook_VerifyHandshake(t *testing.T) {
-	h := NewWebhookHandler(nil, nil, "the-verify-token", nil, nil)
+	h := NewWebhookHandler(nil, nil, ProviderKeyFacebook, "the-verify-token", nil, nil)
 	router := gin.New()
 	router.GET("/api/integrations/facebook/webhook", h.Verify)
 

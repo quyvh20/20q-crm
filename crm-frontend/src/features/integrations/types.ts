@@ -32,6 +32,8 @@ export const KIND_LABELS: Record<string, string> = {
   // in the workflow builder, not here; this row exists so the delivery log, owner
   // routing and health signal reach that traffic too (L7.2b).
   webhook_inbound: 'Workflow webhook',
+  // One TikTok Instant Form on a connected advertiser account (L7.5).
+  tiktok_form: 'TikTok',
 };
 
 /** One field a form_embed source collects. */
@@ -61,7 +63,7 @@ export const FORM_FIELD_TYPES = ['text', 'email', 'tel', 'textarea'] as const;
  *  `facebook_form` is credentialed by its connection; `webhook_inbound` by the org
  *  token the workflow builder manages. Mirrors integrations.IsKeylessKind. */
 export function isKeylessKind(kind: string): boolean {
-  return kind === 'facebook_form' || kind === 'webhook_inbound';
+  return kind === 'facebook_form' || kind === 'tiktok_form' || kind === 'webhook_inbound';
 }
 
 /** Kinds the system owns: created automatically, and not deletable or disableable

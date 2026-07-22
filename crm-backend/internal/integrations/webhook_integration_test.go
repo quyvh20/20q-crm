@@ -51,7 +51,7 @@ func newWebhookStack(t *testing.T, db *gorm.DB) *webhookStack {
 	logger := slog.New(slog.NewTextHandler(nopWriter{}, nil))
 	ingest := NewLeadIngestService(repo, writer, &stubMatcher{}, contactSchema(), noFieldDefs{}, stubMembers{}, nil, logger)
 
-	h := NewWebhookHandler(repo, conn, "verify-token", nil, logger)
+	h := NewWebhookHandler(repo, conn, ProviderKeyFacebook, "verify-token", nil, logger)
 	router := gin.New()
 	h.RegisterRoutes(router)
 

@@ -411,18 +411,18 @@ func (r *Repository) SourceConnectionID(ctx context.Context, orgID, sourceID uui
 // on this connection to that source's id — so the form picker can show which forms
 // are enabled and enabling is idempotent (re-enabling returns the existing source
 // rather than creating a duplicate).
-func (r *Repository) EnabledFormIDs(ctx context.Context, orgID, connID uuid.UUID) (map[string]uuid.UUID, error) {
+func (r *Repository) EnabledFormIDs(ctx context.Context, orgID, connID uuid.UUID, kind, provider string) (map[string]uuid.UUID, error) {
 	type row struct {
 		ID     uuid.UUID `gorm:"column:id"`
 		FormID string    `gorm:"column:form_id"`
 	}
 	var rows []row
 	if err := r.db.WithContext(ctx).Raw(`
-		SELECT id, config->'facebook'->>'form_id' AS form_id
+		SELECT id, config->?->>'form_id' AS form_id
 		  FROM lead_sources
 		 WHERE org_id = ? AND connection_id = ? AND kind = ? AND deleted_at IS NULL
-		   AND config->'facebook'->>'form_id' IS NOT NULL`,
-		orgID, connID, KindFacebookForm).Scan(&rows).Error; err != nil {
+		   AND config->?->>'form_id' IS NOT NULL`,
+		provider, orgID, connID, kind, provider).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make(map[string]uuid.UUID, len(rows))
@@ -437,14 +437,18 @@ func (r *Repository) EnabledFormIDs(ctx context.Context, orgID, connID uuid.UUID
 // these rows). The form id lives in config.facebook.form_id — config is inside the
 // original CREATE TABLE, so unlike an ALTER-added column it cannot be missing where
 // the table exists. GORM adds `deleted_at IS NULL`.
-func (r *Repository) FindFacebookFormSource(ctx context.Context, connectionID uuid.UUID, formID string) (*LeadSource, error) {
+func (r *Repository) FindConnectionFormSource(ctx context.Context, connectionID uuid.UUID, kind, provider, formID string) (*LeadSource, error) {
 	if formID == "" {
 		return nil, nil
 	}
 	var s LeadSource
+	// `config -> ? ->> 'form_id'` with the provider as a bound parameter, so one
+	// statement serves every adapter. Before L7.5 the namespace was the literal
+	// 'facebook' in four places, which is what made a second provider a rewrite
+	// rather than an adapter.
 	err := r.db.WithContext(ctx).
-		Where("connection_id = ? AND kind = ? AND config->'facebook'->>'form_id' = ?",
-			connectionID, KindFacebookForm, formID).
+		Where("connection_id = ? AND kind = ? AND config->?->>'form_id' = ?",
+			connectionID, kind, provider, formID).
 		First(&s).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

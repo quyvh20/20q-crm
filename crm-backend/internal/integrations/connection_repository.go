@@ -3,6 +3,7 @@ package integrations
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"crm-backend/internal/integrations/envelope"
@@ -45,14 +46,19 @@ func isConnAccountConflict(err error) bool {
 }
 
 // formSourceUniqueIndex is the one-facebook_form-source-per-(connection,form) index.
-const formSourceUniqueIndex = "uix_lead_sources_conn_form"
+// formSourceUniqueIndexPrefix matches every provider's connection+form unique index
+// (uix_lead_sources_conn_form for Facebook, …_tiktok for TikTok). A PREFIX rather than
+// a list because the alternative already failed once: the constant named only
+// Facebook's, so the TikTok enable-form race would have 500'd instead of resolving to
+// the winning source the way the Facebook one does.
+const formSourceUniqueIndexPrefix = "uix_lead_sources_conn_form"
 
 // IsFormSourceConflict reports the enable-form idempotency race — a concurrent
 // enable of the same (connection, form) hit the unique index. The handler resolves
 // it to the existing source rather than erroring.
 func IsFormSourceConflict(err error) bool {
 	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == formSourceUniqueIndex
+	return errors.As(err, &pgErr) && pgErr.Code == "23505" && strings.HasPrefix(pgErr.ConstraintName, formSourceUniqueIndexPrefix)
 }
 
 // ── OAuth state ────────────────────────────────────────────────────────────

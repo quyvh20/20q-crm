@@ -11,9 +11,9 @@ import (
 	"syscall"
 	"time"
 
-	delivery "crm-backend/internal/delivery/http"
 	"crm-backend/internal/ai"
 	"crm-backend/internal/automation"
+	delivery "crm-backend/internal/delivery/http"
 	"crm-backend/internal/domain"
 	"crm-backend/internal/integrations"
 	"crm-backend/internal/integrations/envelope"
@@ -31,8 +31,8 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"go.uber.org/zap"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -1151,6 +1151,13 @@ func main() {
 			// A DISTINCT NAME, because CREATE INDEX IF NOT EXISTS matches on name only
 			// and never compares columns. Partial on the kind, mirroring
 			// uix_lead_sources_conn_form.
+			// L7.5: the tiktok_form twin of uix_lead_sources_conn_form. Partial indexes
+			// cannot be parameterised by kind, so a second provider needs its own —
+			// and without it the enable-a-form idempotency race has nothing to lose to.
+			{"lead_sources conn form tiktok unique", `
+				CREATE UNIQUE INDEX IF NOT EXISTS uix_lead_sources_conn_form_tiktok
+				ON lead_sources (connection_id, (config->'tiktok'->>'form_id'))
+				WHERE kind = 'tiktok_form' AND deleted_at IS NULL`},
 			{"lead_sources one legacy webhook per org", `
 				CREATE UNIQUE INDEX IF NOT EXISTS uix_lead_sources_org_webhook_inbound
 				ON lead_sources (org_id) WHERE kind = 'webhook_inbound' AND deleted_at IS NULL`},
@@ -2091,6 +2098,20 @@ func main() {
 			))
 			log.Info("Facebook Lead Ads provider registered")
 		}
+		// L7.5 TikTok Lead Generation. The authorization URL is operator-supplied
+		// rather than constructed: TikTok does not document its query parameters and
+		// tells developers to copy it out of the app's own portal page, so building one
+		// from guessed names would be a URL that fails at consent time.
+		// AuthURL is part of the gate, not an optional extra: without it AuthURL()
+		// returns "" and the Connect button would start a flow that lands nowhere.
+		// Registering a provider that cannot be connected is worse than not offering it.
+		if cfg.TikTokAppID != "" && cfg.TikTokAppSecret != "" && cfg.TikTokAuthURL != "" {
+			integrationsRegistry.Register(integrations.NewTikTokProvider(
+				cfg.TikTokAppID, cfg.TikTokAppSecret, cfg.TikTokAuthURL,
+				cfg.PublicAPIBaseURL+"/api/integrations/tiktok/webhook",
+				integrations.NewHTTPClient(nil)))
+			log.Info("TikTok Lead Generation provider registered")
+		}
 		integrationsConnSvc := integrations.NewConnectionService(
 			integrationsRepo,
 			integrationCodec, // resolved in Phase 1 (top of main); this is its first consumer
@@ -2149,8 +2170,10 @@ func main() {
 		// Graph, and runs it through the shared ingest pipeline. Both are harmless when
 		// Facebook is unconfigured: the endpoint's provider lookup misses and acks, and
 		// the processor finds no pending rows to claim.
-		integrations.NewWebhookHandler(integrationsRepo, integrationsConnSvc, cfg.FacebookWebhookVerifyToken, integrationsIPLimiter, autoLogger).
-			RegisterRoutes(router)
+		integrations.NewWebhookHandler(integrationsRepo, integrationsConnSvc, integrations.ProviderKeyFacebook, cfg.FacebookWebhookVerifyToken, integrationsIPLimiter, autoLogger).RegisterRoutes(router)
+		// TikTok registers its callback through an API call rather than a console
+		// handshake, so it gets no verify token and therefore no GET route.
+		integrations.NewWebhookHandler(integrationsRepo, integrationsConnSvc, integrations.ProviderKeyTikTok, "", integrationsIPLimiter, autoLogger).RegisterRoutes(router)
 		go integrations.StartWebhookProcessor(context.Background(), integrationsRepo, integrationsConnSvc, integrationsIngest, autoLogger, integrationsHealth)
 
 		// Wire schema cache invalidation: when stages, tags, custom fields,
@@ -2263,6 +2286,9 @@ func providerCredentialEnvSet(cfg *config.Config) []string {
 	// a half-set config would crash-loop over a key it does not actually need yet.
 	if cfg.FacebookAppID != "" && cfg.FacebookAppSecret != "" {
 		configured = append(configured, "FACEBOOK_APP_ID")
+	}
+	if cfg.TikTokAppID != "" && cfg.TikTokAppSecret != "" {
+		configured = append(configured, "TIKTOK_APP_ID")
 	}
 	return configured
 }

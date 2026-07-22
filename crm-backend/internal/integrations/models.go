@@ -49,19 +49,26 @@ const (
 	// the org token in automation_workflow_org_tokens, so it can never be minted from
 	// the API, given a bearer key, or reached by the capture endpoints.
 	KindWebhookInbound = "webhook_inbound"
+	// KindTikTokForm is one TikTok Instant Form on a connected advertiser account
+	// (L7.5). Like facebook_form it has no credential of its own — the connection is
+	// the credential — but unlike it, the delivery ARRIVES COMPLETE: TikTok's webhook
+	// carries the answers, and its API has no by-id lead read to make.
+	KindTikTokForm = "tiktok_form"
 )
 
 // validKinds is the kind allowlist. Later phases append their own.
 var validKinds = map[string]bool{
 	KindAPI: true, KindGoogleAds: true, KindFormEmbed: true,
-	KindFacebookForm: true, KindWebhookInbound: true,
+	KindFacebookForm: true, KindWebhookInbound: true, KindTikTokForm: true,
 }
 
 // IsKeylessKind reports whether a source authenticates by something other than a
 // bearer key of its own — so the UI must not offer a key, a rotate button, or the
 // copy that assumes one. facebook_form is credentialed by its connection;
 // webhook_inbound by the org token the workflow builder manages.
-func IsKeylessKind(k string) bool { return k == KindFacebookForm || k == KindWebhookInbound }
+func IsKeylessKind(k string) bool {
+	return k == KindFacebookForm || k == KindTikTokForm || k == KindWebhookInbound
+}
 
 // IsValidKind reports whether a source kind is known.
 func IsValidKind(k string) bool { return validKinds[k] }

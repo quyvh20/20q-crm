@@ -370,8 +370,12 @@ export default function IntegrationSourceDetailSection() {
     // (Facebook keeps posting to the connection; those leads are simply dropped), so
     // its copy must not talk about a key or the sender getting errors.
     const body =
-      source.kind === 'facebook_form'
-        ? 'This stops importing leads from this Meta form. Meta is not notified — its Facebook and Instagram leads for this form will simply stop being recorded. The delivery log is kept.'
+      isKeylessKind(source.kind)
+        ? // A keyless source has no key to stop working, and the provider is not told:
+          // it keeps posting to the connection and those leads are simply dropped. Keyed
+          // on the PREDICATE rather than the facebook_form literal, which is what left
+          // a TikTok source promising key behaviour it does not have.
+          'This stops importing leads from this form. The provider is not notified — its leads for this form will simply stop being recorded. The delivery log is kept.'
         : recentlyUsed
           ? 'This key has been receiving leads. Deleting it stops them immediately, and whatever is sending them will start getting errors. The delivery log is kept.'
           : 'The key stops working immediately. The delivery log is kept.';

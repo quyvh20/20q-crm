@@ -81,6 +81,7 @@ func (p *FacebookProvider) Info() ProviderInfo {
 		// page connected here already receives both (L7.1). The label says so because
 		// an admin looking for Instagram would otherwise conclude we do not support it.
 		Label:            "Facebook & Instagram Lead Ads",
+		SourceKind:       KindFacebookForm,
 		SupportsWebhooks: true,
 		// Facebook's server-side flow does not use PKCE (it authenticates the token
 		// exchange with the app secret), so the framework skips the verifier dance.
@@ -487,7 +488,7 @@ func (p *FacebookProvider) Backfill(ctx context.Context, conn *IntegrationConnec
 // get one-click mapped by the admin — the L2 flow. FULL_NAME carries a non-empty
 // target even though split_name ignores it (Apply rejects an empty target before
 // the transform switch).
-func facebookSeedFieldMap() FieldMap {
+func (p *FacebookProvider) SeedFieldMap() FieldMap {
 	return FieldMap{
 		"email":        {TargetKey: "email"},
 		"phone_number": {TargetKey: "phone"},
