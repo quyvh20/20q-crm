@@ -36,10 +36,32 @@ const (
 	// by (connection_id, provider form id, stored in config.facebook.form_id), never
 	// created through the generic New-source flow (L5.4 owns its creation).
 	KindFacebookForm = "facebook_form"
+	// KindWebhookInbound is the org's ONE legacy automation webhook
+	// (POST /api/webhooks/inbound/:org_token), which predates this whole subsystem
+	// (L7.2b). It is the only kind whose lead is NOT written by LeadIngestService:
+	// that endpoint keeps its own upsert and its own trigger payload, because the
+	// payload is the interface every workflow written against it depends on, and a
+	// projection of the stored row is a different document from the JSON the caller
+	// sent. What the row buys is the parts that are purely ADDITIVE — a delivery
+	// ledger, owner routing, and a health signal — none of which a workflow can see.
+	//
+	// One row per org, created eagerly. It has no token of its own: the credential is
+	// the org token in automation_workflow_org_tokens, so it can never be minted from
+	// the API, given a bearer key, or reached by the capture endpoints.
+	KindWebhookInbound = "webhook_inbound"
 )
 
 // validKinds is the kind allowlist. Later phases append their own.
-var validKinds = map[string]bool{KindAPI: true, KindGoogleAds: true, KindFormEmbed: true, KindFacebookForm: true}
+var validKinds = map[string]bool{
+	KindAPI: true, KindGoogleAds: true, KindFormEmbed: true,
+	KindFacebookForm: true, KindWebhookInbound: true,
+}
+
+// IsKeylessKind reports whether a source authenticates by something other than a
+// bearer key of its own — so the UI must not offer a key, a rotate button, or the
+// copy that assumes one. facebook_form is credentialed by its connection;
+// webhook_inbound by the org token the workflow builder manages.
+func IsKeylessKind(k string) bool { return k == KindFacebookForm || k == KindWebhookInbound }
 
 // IsValidKind reports whether a source kind is known.
 func IsValidKind(k string) bool { return validKinds[k] }

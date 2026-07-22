@@ -51,12 +51,53 @@ type Handler struct {
 	// handler built without SetAppEnv can never be talked out of verifying a
 	// signature. Set via SetAppEnv from main.go.
 	appEnv string
+	// leadCapture lends this endpoint the lead platform's delivery ledger, owner
+	// routing and health signal (L7.2b). nil disables all three and changes nothing
+	// else about the write. Set via SetLeadCapture from main.go.
+	leadCapture LeadCapture
 }
 
 // SetAppEnv tells the handler which environment it is running in, using the same
 // exact-allowlist convention as usecase.debugTokensEnabled. Anything other than
 // "development" or "test" is production.
 func (h *Handler) SetAppEnv(env string) { h.appEnv = env }
+
+// LeadCapture is the lead platform's ADDITIVE bookkeeping, borrowed by the inbound
+// webhook (L7.2b). Implemented by internal/integrations and injected from main.
+//
+// Declared HERE, in the consumer, and using only primitives — the same shape as
+// usecase.LeadLedgerRedactor. That is what keeps the two packages independent: the
+// implementer matches these methods structurally and imports nothing from automation.
+//
+// The write is NOT part of this port, on purpose. Routing the contact write through
+// the lead pipeline would change the automation trigger payload, which is the
+// interface every workflow built on this endpoint is written against; the design pass
+// that established this is recorded on integrations.LegacyCapture. So what crosses
+// this boundary is only what a workflow cannot observe: a ledger row, an owner, and a
+// health signal.
+type LeadCapture interface {
+	// BeginDelivery opens a ledger row. A zero delivery id means "not recorded" and is
+	// not an error the caller may fail on.
+	BeginDelivery(ctx context.Context, orgID uuid.UUID, payload map[string]any) (uuid.UUID, error)
+	// ResolveOwner picks who a lead being CREATED should land on, and must be called
+	// ONLY on that branch. The rotation ticket it takes is consuming, so calling it for
+	// a delivery that turns out to be an update burns a rep's turn on a lead that never
+	// gets an owner — and this endpoint's ordinary traffic is resubmissions.
+	ResolveOwner(ctx context.Context, orgID, deliveryID uuid.UUID) *uuid.UUID
+	// FinishDelivery closes the row and moves the source's health signal. cause nil
+	// means the write succeeded.
+	FinishDelivery(ctx context.Context, orgID, deliveryID, contactID uuid.UUID, created bool, cause error)
+}
+
+// SetLeadCapture wires the bookkeeping bridge. Called once at startup.
+//
+// Nil-TOLERANT, unlike capChecker, and the asymmetry is the point: capChecker is an
+// authorization decision, so a nil one is a wiring bug that must panic rather than
+// fail open. This port is pure bookkeeping laid over a write that already works
+// without it, so a nil one degrades to exactly the pre-L7.2b behaviour — the lead is
+// still written, still audited, still fires its workflows. Panicking would convert a
+// missing ledger into a dead lead endpoint.
+func (h *Handler) SetLeadCapture(c LeadCapture) { h.leadCapture = c }
 
 // skipSignatureAllowed reports whether the inbound webhook may accept an unsigned
 // body.
@@ -969,8 +1010,34 @@ func (h *Handler) WebhookInbound(c *gin.Context) {
 		contactData["custom_fields"] = customFields
 	}
 
+	// Open the delivery record and resolve routing BEFORE the write, so the ledger
+	// holds the raw payload even when the write fails — a failed delivery whose
+	// payload was never stored is unrecoverable, and recovering it is most of what a
+	// delivery log is for. Nothing here may fail the lead: a zero delivery id means
+	// the bookkeeping degraded and the endpoint carries on exactly as it did before.
+	//
+	// context.Background(), matching the write and the trigger dispatch below: a client
+	// that hangs up must not leave a half-open delivery row.
+	var deliveryID uuid.UUID
+	if h.leadCapture != nil {
+		deliveryID, _ = h.leadCapture.BeginDelivery(context.Background(), token.OrgID, payload)
+	}
+
+	// Routing is resolved LAZILY, by the create branch only — see LeadCapture.
+	// ResolveOwner for why calling it up here would quietly wreck the rotation.
+	resolveOwner := func() *uuid.UUID {
+		if h.leadCapture == nil {
+			return nil
+		}
+		return h.leadCapture.ResolveOwner(context.Background(), token.OrgID, deliveryID)
+	}
+
 	// Upsert contact by email.
-	contactID, eventType, err := h.upsertWebhookContact(token.OrgID, email, contactData, customFields)
+	contactID, eventType, err := h.upsertWebhookContact(token.OrgID, email, contactData, customFields, resolveOwner)
+	if h.leadCapture != nil {
+		h.leadCapture.FinishDelivery(context.Background(), token.OrgID, deliveryID, contactID,
+			eventType == TriggerContactCreated, err)
+	}
 	if err != nil {
 		// Answering 500 here is a deliberate change from the shipped behaviour, which
 		// discarded every write error and still returned 200 with a freshly-minted
@@ -1075,7 +1142,15 @@ func isContactEmailConflict(err error) bool {
 //     field on that contact — including ones a human had typed.
 //  3. A failed SELECT fell through to the INSERT branch, so a transient database
 //     blip created a duplicate contact instead of updating the existing one.
-func (h *Handler) upsertWebhookContact(orgID uuid.UUID, email string, contactData, customFields map[string]any) (uuid.UUID, string, error) {
+//
+// resolveOwner is invoked on the CREATE branch and nowhere else, which is load-bearing
+// twice over. The stamp itself must not happen on update — a present-but-null owner
+// means UNASSIGN in the contact adapter, so writing it on a resubmission would
+// silently strip whichever rep had since been given the record. And the CALL must not
+// happen on update either, because the rotation ticket it takes is consuming: paying
+// for a turn on a lead that gets no owner is what turns a fair rotation into one rep
+// receiving everything (ingest.go:563).
+func (h *Handler) upsertWebhookContact(orgID uuid.UUID, email string, contactData, customFields map[string]any, resolveOwner func() *uuid.UUID) (uuid.UUID, string, error) {
 	// context.Background(), matching the audit and trigger dispatch below: a client
 	// that hangs up must not leave the lead half-written.
 	ctx := context.Background()
@@ -1087,11 +1162,15 @@ func (h *Handler) upsertWebhookContact(orgID uuid.UUID, email string, contactDat
 	if existingID == uuid.Nil {
 		id := uuid.New()
 		cfJSON, _ := json.Marshal(customFields)
+		var ownerUserID *uuid.UUID
+		if resolveOwner != nil {
+			ownerUserID = resolveOwner()
+		}
 		insertErr := h.db.WithContext(ctx).Exec(
-			`INSERT INTO contacts (id, org_id, first_name, last_name, email, phone, custom_fields, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+			`INSERT INTO contacts (id, org_id, first_name, last_name, email, phone, owner_user_id, custom_fields, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
 			id, orgID, stringField(contactData, "first_name"), stringField(contactData, "last_name"), email,
-			phoneValue(contactData), datatypes.JSON(cfJSON),
+			phoneValue(contactData), ownerUserID, datatypes.JSON(cfJSON),
 		).Error
 		if insertErr == nil {
 			return id, TriggerContactCreated, nil

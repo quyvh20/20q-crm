@@ -1141,6 +1141,56 @@ func main() {
 			// EVERY capture request — free of new entries only while the heap page has
 			// room, and the default fillfactor of 100 leaves none.
 			{"lead_sources fillfactor", `ALTER TABLE lead_sources SET (fillfactor = 90)`},
+			// L7.2b: "one webhook_inbound source per org" is an ASSUMPTION everything
+			// else here rests on — the resolve-or-create, the ON CONFLICT DO NOTHING,
+			// and the delete guard that makes a duplicate permanently undeletable. This
+			// index is what makes it true. Without it two concurrent first deliveries
+			// both insert, the ledger and the owner rotation split across rows that look
+			// identical in the UI, and neither can be removed.
+			//
+			// A DISTINCT NAME, because CREATE INDEX IF NOT EXISTS matches on name only
+			// and never compares columns. Partial on the kind, mirroring
+			// uix_lead_sources_conn_form.
+			{"lead_sources one legacy webhook per org", `
+				CREATE UNIQUE INDEX IF NOT EXISTS uix_lead_sources_org_webhook_inbound
+				ON lead_sources (org_id) WHERE kind = 'webhook_inbound' AND deleted_at IS NULL`},
+			// L7.2b: one webhook_inbound source per org that already has a legacy
+			// automation webhook token, so the Integrations page has something to
+			// configure on day one rather than only after the org's next delivery.
+			//
+			// NOT an ON CONFLICT: there is no unique index to conflict on, deliberately —
+			// this kind adds no columns and no indexes, so its whole schema footprint is
+			// a new VALUE in an existing varchar (kind has no CHECK constraint, by an
+			// explicit decision recorded in integrations/models.go). WHERE NOT EXISTS is
+			// what makes it idempotent across boots instead.
+			//
+			// token_hash is left NULL rather than '': the column is UNIQUE, and an empty
+			// string would collide across the second such row in the fleet. It must stay
+			// NULL anyway — FindSourceByTokenHash has no kind filter, so a token here
+			// would open a second capture-API ingress into the org.
+			// Wrapped in a to_regclass check because automation_workflow_org_tokens is
+			// created by that package's GORM AutoMigrate, which runs AFTER this block —
+			// so on a fresh database the table does not exist yet and a bare INSERT
+			// would log an error every first boot. Missing it costs nothing: an org
+			// without a token has no legacy webhook, and the first delivery through one
+			// creates the row anyway.
+			{"lead_sources legacy webhook backfill", `
+				DO $$
+				BEGIN
+					IF to_regclass('public.automation_workflow_org_tokens') IS NOT NULL THEN
+						INSERT INTO lead_sources (
+							id, org_id, kind, name, target_slug, match_fields, field_map,
+							update_policy, config, status, daily_cap, created_at, updated_at)
+						SELECT uuid_generate_v4(), t.org_id, 'webhook_inbound', 'Workflow webhook (legacy)',
+						       'contact', '["email"]'::jsonb, '{}'::jsonb, 'overwrite', '{}'::jsonb,
+						       'active', 0, NOW(), NOW()
+						FROM automation_workflow_org_tokens t
+						WHERE NOT EXISTS (
+							SELECT 1 FROM lead_sources s
+							WHERE s.org_id = t.org_id AND s.kind = 'webhook_inbound' AND s.deleted_at IS NULL
+						);
+					END IF;
+				END $$`},
 			// Binds the rotation ticket to the DELIVERY, not the attempt. Ingest
 			// deliberately re-runs the pipeline against a prior `failed` row on an
 			// Idempotency-Key retry, so without this a failure-correlated retry pattern
@@ -1996,6 +2046,12 @@ func main() {
 			stageRepo,           // re-checks the configured deal stage: deleting one is a SOFT delete, so a stale id keeps satisfying the FK
 			autoLogger,          // routing degradations are invisible otherwise: the write still succeeds
 		).WithHealthReporter(integrationsHealth)
+		// L7.2b: lend the legacy inbound webhook the platform's delivery ledger, owner
+		// routing and health signal. Its contact write and its trigger payload are
+		// deliberately untouched — see integrations.LegacyCapture for why moving the
+		// write would silently rewrite what every existing workflow reads.
+		autoHandler.SetLeadCapture(integrations.NewLegacyCapture(integrationsRepo, integrationsIngest, autoLogger))
+
 		integrationsHandler := integrations.NewHandler(
 			integrationsRepo,
 			integrationsIngest,

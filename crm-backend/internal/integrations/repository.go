@@ -39,6 +39,43 @@ func (r *Repository) CreateConnectionSource(ctx context.Context, s *LeadSource) 
 	return r.db.WithContext(ctx).Omit("token_hash", "token_prefix").Create(s).Error
 }
 
+// FindSourceByKind returns an org's single source of a kind, or nil when there is
+// none. Used for the kinds an org has exactly one of (webhook_inbound), where the
+// kind itself is the identifier.
+func (r *Repository) FindSourceByKind(ctx context.Context, orgID uuid.UUID, kind string) (*LeadSource, error) {
+	var s LeadSource
+	err := r.db.WithContext(ctx).
+		Where("org_id = ? AND kind = ?", orgID, kind).
+		Order("created_at ASC").
+		First(&s).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+// CreateLegacySource inserts the org's webhook_inbound source.
+//
+// token_hash/token_prefix are OMITTED for the reason CreateConnectionSource gives —
+// the column must stay NULL, not empty, or the second such source in the fleet
+// collides on the UNIQUE index. Here it matters twice over: FindSourceByTokenHash has
+// no kind filter, so a token_hash on this row would silently open a second,
+// capture-API ingress into an org whose only intended credential is its org token.
+//
+// ON CONFLICT DO NOTHING with NO target is deliberate: it is a no-op when no unique
+// constraint exists and a loss-to-the-winner when one does, so this write never
+// depends on an index whose boot guard the loop is allowed to log-and-continue past.
+// A conflicted insert leaves the ID zero, which is how the caller knows to re-read.
+func (r *Repository) CreateLegacySource(ctx context.Context, s *LeadSource) error {
+	return r.db.WithContext(ctx).
+		Omit("token_hash", "token_prefix").
+		Clauses(clause.OnConflict{DoNothing: true}).
+		Create(s).Error
+}
+
 // UpdateSource saves a source's mutable fields. It is org-guarded by the caller's
 // prior GetSource, and Save writes by primary key.
 //
@@ -1034,6 +1071,42 @@ func (r *Repository) FinishEvent(ctx context.Context, e *IntegrationEvent) error
 	now := time.Now()
 	e.ProcessedAt = &now
 	return r.db.WithContext(ctx).Save(e).Error
+}
+
+// SetEventRouting records what routing decided for a delivery: who it was assigned
+// to (nil for nobody) and, when routing had to fall back, why.
+//
+// One statement for both, and a targeted UPDATE rather than a Save — the note used to
+// be assigned to an already-inserted struct and silently never persisted, which meant
+// the one disclosure explaining an unowned lead reached nobody.
+func (r *Repository) SetEventRouting(ctx context.Context, eventID uuid.UUID, owner *uuid.UUID, note string) error {
+	fields := map[string]any{"assigned_owner_id": owner}
+	if note != "" {
+		fields["note"] = note
+	}
+	return r.db.WithContext(ctx).Model(&IntegrationEvent{}).Where("id = ?", eventID).Updates(fields).Error
+}
+
+// FinishLegacyEvent closes a legacy webhook delivery.
+//
+// A targeted UPDATE rather than FinishEvent's wholesale Save, because the legacy
+// caller holds only the delivery id — it does not carry the loaded row the ingest
+// path does. Handing Save a partial struct would write the ZERO value of every mapped
+// column: org_id nil, raw_payload NULL, the very payload the row exists to preserve.
+// (That is not theoretical — it was the first implementation, and it survived only
+// because the NOT NULL on org_id rejected the statement and the error was logged.)
+func (r *Repository) FinishLegacyEvent(ctx context.Context, id uuid.UUID, status, outcome, errText string, recordID *uuid.UUID) error {
+	fields := map[string]any{
+		"status":       status,
+		"error":        errText,
+		"processed_at": time.Now(),
+	}
+	if recordID != nil {
+		fields["outcome"] = outcome
+		fields["result_slug"] = "contact"
+		fields["result_record_id"] = *recordID
+	}
+	return r.db.WithContext(ctx).Model(&IntegrationEvent{}).Where("id = ?", id).Updates(fields).Error
 }
 
 // ObservedKeys returns the distinct top-level keys this source has actually sent,

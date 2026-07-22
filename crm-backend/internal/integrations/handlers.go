@@ -936,6 +936,13 @@ func (h *Handler) CreateSource(c *gin.Context) {
 		h.mgmtError(c, http.StatusBadRequest, "Facebook forms are added from their connection, not here")
 		return
 	}
+	if req.Kind == KindWebhookInbound {
+		// There is exactly ONE of these per org and the system creates it, because its
+		// credential is the org's automation webhook token — a second row would be a
+		// source with no way to authenticate anything.
+		h.mgmtError(c, http.StatusBadRequest, "the workflow webhook source is created automatically, not here")
+		return
+	}
 	if req.TargetSlug == "" {
 		req.TargetSlug = "contact"
 	}
@@ -1233,6 +1240,27 @@ func (h *Handler) UpdateSource(c *gin.Context) {
 		raw, _ := json.Marshal(req.MatchFields)
 		src.MatchFields = datatypes.JSON(raw)
 	}
+	if src.Kind == KindWebhookInbound &&
+		(req.DailyCap != nil || req.UpdatePolicy != "" || req.Deal != nil ||
+			req.FieldMap != nil || len(req.MatchFields) > 0) {
+		// The legacy write path reads NONE of these: it has its own upsert, its own
+		// email match, its own overwrite semantics, and no cap. Accepting them would
+		// store a setting the product then ignores — the same "switch that silently
+		// does nothing" the status and delete guards exist to prevent, and worse here
+		// because these ones look like they took effect.
+		//
+		// default_owner_id and owner_pool are deliberately NOT in this list: routing is
+		// the one platform capability the legacy path really does honour.
+		h.mgmtError(c, http.StatusBadRequest, "the workflow webhook source routes leads to an owner; its mapping, cap and update policy are handled by the webhook itself and cannot be set here")
+		return
+	}
+	if req.Status != nil && src.Kind == KindWebhookInbound {
+		// Same reason as the delete guard: disabling this row would not refuse a single
+		// delivery, because the endpoint authenticates on the org token and never
+		// consults it. A switch that silently does nothing is worse than no switch.
+		h.mgmtError(c, http.StatusBadRequest, "this source mirrors the workflow webhook and cannot be disabled here — rotate its secret in the workflow builder to stop accepting deliveries")
+		return
+	}
 	if req.Status != nil {
 		switch *req.Status {
 		case SourceStatusActive:
@@ -1313,6 +1341,16 @@ func (h *Handler) DeleteSource(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if src.Kind == KindWebhookInbound {
+		// Refused, and the alternative is worse than a missing button. This row is a
+		// VIEW onto an endpoint that lives elsewhere: the URL and secret belong to the
+		// org's automation webhook token, so deleting the row stops none of the traffic
+		// it describes — the next delivery would simply recreate it, and an admin who
+		// "deleted" their webhook would watch it come back. Turn the endpoint off where
+		// it actually lives, by rotating the secret in the workflow builder.
+		h.mgmtError(c, http.StatusBadRequest, "this source mirrors the workflow webhook and cannot be deleted here — rotate its secret in the workflow builder to stop accepting deliveries")
+		return
+	}
 	if err := h.repo.SoftDeleteSource(c.Request.Context(), src.OrgID, src.ID); err != nil {
 		h.mgmtError(c, http.StatusInternalServerError, "could not delete source")
 		return
@@ -1330,8 +1368,16 @@ func (h *Handler) RotateKey(c *gin.Context) {
 	// and it is resolved only by (connection_id, form_id). Minting a token_hash for
 	// it would give it a second, unintended capture-API ingress (FindSourceByToken
 	// Hash has no kind filter). Reject, symmetric to RotateGoogleKey's kind guard.
-	if src.Kind == KindFacebookForm {
-		h.mgmtError(c, http.StatusBadRequest, "this source has no bearer key to rotate — its credential is the Facebook connection")
+	// One predicate, two messages. The hazard is identical for both kinds — minting a
+	// token_hash opens a capture-API ingress that bypasses the credential the source
+	// actually authenticates with, because FindSourceByTokenHash has no kind filter —
+	// but the remedy differs, so the copy has to.
+	if IsKeylessKind(src.Kind) {
+		remedy := "its credential is the Facebook connection"
+		if src.Kind == KindWebhookInbound {
+			remedy = "its secret is the workflow webhook signing secret, rotated in the workflow builder"
+		}
+		h.mgmtError(c, http.StatusBadRequest, "this source has no bearer key to rotate — "+remedy)
 		return
 	}
 	plaintext, hash, prefix, err := GenerateLeadKey()

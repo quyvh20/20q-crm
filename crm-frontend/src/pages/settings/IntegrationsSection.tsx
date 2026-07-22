@@ -25,6 +25,7 @@ import { useCreateSource, useLeadSources } from '../../features/integrations/que
 import {
   UPDATE_POLICY_HELP,
   UPDATE_POLICY_LABELS,
+  isKeylessKind,
   kindLabel,
   type LeadSource,
   type LeadSourceStatus,
@@ -330,9 +331,10 @@ export default function IntegrationsSection() {
                           <span className="text-xs text-muted-foreground">{kindLabel(s.kind)}</span>
                         </TableCell>
                         <TableCell>
-                          {/* facebook_form has no bearer key — the connection is the
-                              credential, so show a neutral placeholder, not a bare "…". */}
-                          {s.kind === 'facebook_form' ? (
+                          {/* A keyless kind has no bearer key — facebook_form is
+                              credentialed by its connection, webhook_inbound by the org
+                              token — so show a neutral placeholder, not a bare "…". */}
+                          {isKeylessKind(s.kind) ? (
                             <span className="text-xs text-muted-foreground">—</span>
                           ) : (
                             <code className="font-mono text-xs text-muted-foreground">

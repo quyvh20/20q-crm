@@ -28,6 +28,10 @@ export const KIND_LABELS: Record<string, string> = {
   // One kind, both Meta placements: an Instagram lead ad arrives on the same page
   // connection and the same form as a Facebook one (L7.1).
   facebook_form: 'Facebook & Instagram',
+  // The org's ONE legacy automation webhook. Its URL and signing secret are managed
+  // in the workflow builder, not here; this row exists so the delivery log, owner
+  // routing and health signal reach that traffic too (L7.2b).
+  webhook_inbound: 'Workflow webhook',
 };
 
 /** One field a form_embed source collects. */
@@ -51,6 +55,20 @@ export interface FormConfig {
 }
 
 export const FORM_FIELD_TYPES = ['text', 'email', 'tel', 'textarea'] as const;
+
+/** Kinds that authenticate by something other than a bearer key of their own, so the
+ *  UI must not offer a key, a rotate button, or copy that assumes one.
+ *  `facebook_form` is credentialed by its connection; `webhook_inbound` by the org
+ *  token the workflow builder manages. Mirrors integrations.IsKeylessKind. */
+export function isKeylessKind(kind: string): boolean {
+  return kind === 'facebook_form' || kind === 'webhook_inbound';
+}
+
+/** Kinds the system owns: created automatically, and not deletable or disableable
+ *  from this page because the thing they describe lives somewhere else. */
+export function isManagedKind(kind: string): boolean {
+  return kind === 'webhook_inbound';
+}
 
 export function kindLabel(kind: string): string {
   return KIND_LABELS[kind] ?? kind;

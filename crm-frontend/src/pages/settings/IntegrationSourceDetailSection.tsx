@@ -38,6 +38,8 @@ import {
 } from '../../features/integrations/queries';
 import {
   UPDATE_POLICY_LABELS,
+  isKeylessKind,
+  isManagedKind,
   kindLabel,
   type EventStatus,
   type IntegrationEvent,
@@ -432,8 +434,8 @@ export default function IntegrationSourceDetailSection() {
                   {source.status}
                 </Badge>
                 <Badge variant="secondary">{kindLabel(source.kind)}</Badge>
-                {/* facebook_form has no bearer key — the connection is the credential. */}
-                {source.kind !== 'facebook_form' && (
+                {/* A keyless kind has no bearer key to show. */}
+                {!isKeylessKind(source.kind) && (
                   <code className="font-mono text-xs text-muted-foreground">
                     {source.token_prefix}…
                   </code>
@@ -460,23 +462,33 @@ export default function IntegrationSourceDetailSection() {
                   {sendTestLead.isPending ? 'Sending…' : 'Send test lead'}
                 </Button>
               )}
-              {/* facebook_form has no bearer key to rotate — its credential is the
-                  connection, rotated by reconnecting the account. */}
-              {source.kind !== 'facebook_form' && (
+              {/* A keyless kind has no bearer key to rotate: facebook_form is rotated
+                  by reconnecting the account, webhook_inbound in the workflow builder.
+                  The server refuses both, so a button here would only produce an error. */}
+              {!isKeylessKind(source.kind) && (
                 <Button variant="outline" size="sm" onClick={handleRotate} disabled={rotateKey.isPending}>
                   <KeyRound />
                   {rotateKey.isPending ? 'Rotating…' : 'Rotate key'}
                 </Button>
               )}
-              <Button variant="outline" size="sm" onClick={handleToggle} disabled={updateSource.isPending}>
-                {/* Mirrors handleToggle: an `error` source is already live, so
-                    offering "Enable" on it would be a lie about the current state. */}
-                {source.status === 'disabled' ? 'Enable' : 'Disable'}
-              </Button>
-              <Button variant="destructive" size="sm" onClick={handleDelete} disabled={deleteSource.isPending}>
-                <Trash2 />
-                Delete
-              </Button>
+              {/* A managed kind is a VIEW onto an endpoint that lives elsewhere, so
+                  neither control would do what it says: disabling refuses no delivery
+                  (the endpoint never consults this row) and deleting is undone by the
+                  next one. The server refuses both; showing them would just surface an
+                  error message where a button used to be. */}
+              {!isManagedKind(source.kind) && (
+                <>
+                  <Button variant="outline" size="sm" onClick={handleToggle} disabled={updateSource.isPending}>
+                    {/* Mirrors handleToggle: an `error` source is already live, so
+                        offering "Enable" on it would be a lie about the current state. */}
+                    {source.status === 'disabled' ? 'Enable' : 'Disable'}
+                  </Button>
+                  <Button variant="destructive" size="sm" onClick={handleDelete} disabled={deleteSource.isPending}>
+                    <Trash2 />
+                    Delete
+                  </Button>
+                </>
+              )}
             </div>
           </div>
 
@@ -533,14 +545,26 @@ export default function IntegrationSourceDetailSection() {
           {source.kind === 'form_embed' && <FormEmbedSetupCard source={source} />}
 
           {source.kind === 'facebook_form' && <FacebookFormCard source={source} />}
+          {source.kind === 'webhook_inbound' && <LegacyWebhookCard />}
 
+          {/* Routing is the one platform capability the legacy webhook actually
+              honours, so this card stays for every kind. */}
           <OwnerRoutingCard source={source} />
 
-          <DeliveryLimitsCard source={source} />
+          {/* The other three are hidden for a managed kind because its write path
+              reads none of them — it has its own upsert, its own email match and no
+              cap. Offering them would store settings the product then ignores, which
+              is worse than offering nothing: they look like they took effect. The
+              server rejects them too, so this is not the only guard. */}
+          {!isManagedKind(source.kind) && (
+            <>
+              <DeliveryLimitsCard source={source} />
 
-          <LeadDealCard source={source} />
+              <LeadDealCard source={source} />
 
-          <FieldMappingTable sourceId={source.id} />
+              <FieldMappingTable sourceId={source.id} />
+            </>
+          )}
 
           <div>
             <h3 className="text-sm font-medium text-foreground">Recent deliveries</h3>
@@ -691,6 +715,38 @@ export default function IntegrationSourceDetailSection() {
       {/* Must be in the tree: without it confirm() never settles and the handler
           hangs forever with no error. */}
       {dialog}
+    </div>
+  );
+}
+
+/**
+ * LegacyWebhookCard explains a source the admin did not create and cannot delete.
+ *
+ * Without it this page is confusing in a specific way: every other source has a
+ * credential shown here and a delete button, and this one has neither. The card says
+ * where the endpoint actually lives, and what this row is FOR — the parts of the lead
+ * platform that could be added to legacy traffic without changing what the workflows
+ * built on it receive.
+ */
+function LegacyWebhookCard() {
+  return (
+    <div className="rounded-xl border border-border p-4 space-y-2">
+      <h3 className="text-sm font-medium text-foreground">Workflow webhook</h3>
+      <p className="text-xs text-muted-foreground">
+        This is the workspace&apos;s original inbound webhook, the one that predates lead sources.
+        Its URL and signing secret are managed in the workflow builder — open any workflow, choose
+        the <span className="font-medium">Webhook</span> trigger, and the setup panel is there.
+      </p>
+      <p className="text-xs text-muted-foreground">
+        It appears here so its deliveries show up in the log below, so its leads can be routed to an
+        owner like every other channel, and so it raises a health alert when it starts failing.
+        Everything else about it is unchanged: the same URL, the same signature, and the same data
+        handed to your workflows.
+      </p>
+      <p className="text-xs text-muted-foreground">
+        There is no key to rotate here and no way to switch it off from this page — rotating the
+        signing secret in the builder is what stops it accepting deliveries.
+      </p>
     </div>
   );
 }

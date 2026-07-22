@@ -1,7 +1,9 @@
 package automation
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -390,4 +392,171 @@ func TestWebhookInbound_DevEnvAloneDoesNotSkipTheSignature(t *testing.T) {
 	w := postLead(t, router, tok, map[string]any{"email": "nodev@example.com"})
 	require.Equal(t, http.StatusUnauthorized, w.Code,
 		"without the flag, a dev environment must still verify signatures")
+}
+
+// ── L7.2b: the borrowed lead-platform bookkeeping ──────────────────────────
+
+// fakeLeadCapture stands in for internal/integrations.LegacyCapture. The port is
+// declared with primitives precisely so this is possible without importing it.
+type fakeLeadCapture struct {
+	owner *uuid.UUID
+	begin int
+	// what FinishDelivery was told
+	finishedContact uuid.UUID
+	finishedCreated bool
+	finishedCause   error
+	finishCalls     int
+	resolveCalls    int
+	beginErr        error
+}
+
+func (f *fakeLeadCapture) BeginDelivery(_ context.Context, _ uuid.UUID, _ map[string]any) (uuid.UUID, error) {
+	f.begin++
+	if f.beginErr != nil {
+		return uuid.Nil, f.beginErr
+	}
+	return uuid.New(), nil
+}
+
+// resolveCalls counts how many times routing was asked for an owner. It is the whole
+// point of the split: a delivery that turns out to be an UPDATE must never ask,
+// because the rotation ticket is consuming.
+func (f *fakeLeadCapture) ResolveOwner(_ context.Context, _, _ uuid.UUID) *uuid.UUID {
+	f.resolveCalls++
+	return f.owner
+}
+
+func (f *fakeLeadCapture) FinishDelivery(_ context.Context, _, deliveryID, contactID uuid.UUID, created bool, cause error) {
+	if deliveryID == uuid.Nil {
+		return
+	}
+	f.finishCalls++
+	f.finishedContact, f.finishedCreated, f.finishedCause = contactID, created, cause
+}
+
+func contactOwner(t *testing.T, db *gorm.DB, orgID uuid.UUID, email string) *uuid.UUID {
+	t.Helper()
+	var row struct {
+		OwnerUserID *uuid.UUID `gorm:"column:owner_user_id"`
+	}
+	require.NoError(t, db.Raw(
+		"SELECT owner_user_id FROM contacts WHERE org_id = ? AND email = ? AND deleted_at IS NULL",
+		orgID, email).Scan(&row).Error)
+	return row.OwnerUserID
+}
+
+// The complaint this whole lead platform opens with: the legacy endpoint writes no
+// owner, so own-scoped reps have never been able to see a single lead it produced.
+func TestWebhookInbound_StampsTheRoutedOwnerOnANewContact(t *testing.T) {
+	t.Setenv("WEBHOOK_SKIP_SIGNATURE", "true")
+	router, handler, db, orgID, cleanup := inboundRouterWithHandler(t)
+	defer cleanup()
+	handler.SetAppEnv("test")
+	tok := seedOrgToken(t, db, orgID)
+
+	rep := uuid.New()
+	cap := &fakeLeadCapture{owner: &rep}
+	handler.SetLeadCapture(cap)
+
+	require.Equal(t, http.StatusOK, postLead(t, router, tok, map[string]any{"email": "owned@example.com"}).Code)
+
+	got := contactOwner(t, db, orgID, "owned@example.com")
+	require.NotNil(t, got, "a routed lead must be assigned to someone")
+	require.Equal(t, rep, *got)
+	require.Equal(t, 1, cap.begin)
+	require.Equal(t, 1, cap.finishCalls)
+	require.True(t, cap.finishedCreated, "a first delivery is a create")
+	require.NoError(t, cap.finishedCause)
+}
+
+// The rule the ingest path documents and this one now has to hold too: an owner is
+// stamped on CREATE only. On the update path a present-but-null owner means UNASSIGN,
+// so writing it on a resubmission would silently strip whichever rep had since been
+// given the record.
+func TestWebhookInbound_ResubmissionDoesNotRestampTheOwner(t *testing.T) {
+	t.Setenv("WEBHOOK_SKIP_SIGNATURE", "true")
+	router, handler, db, orgID, cleanup := inboundRouterWithHandler(t)
+	defer cleanup()
+	handler.SetAppEnv("test")
+	tok := seedOrgToken(t, db, orgID)
+
+	first := uuid.New()
+	cap := &fakeLeadCapture{owner: &first}
+	handler.SetLeadCapture(cap)
+	require.Equal(t, http.StatusOK, postLead(t, router, tok, map[string]any{"email": "keep@example.com"}).Code)
+
+	// A human reassigns the contact to someone else.
+	handOver := uuid.New()
+	require.NoError(t, db.Exec("UPDATE contacts SET owner_user_id = ? WHERE org_id = ? AND email = ?",
+		handOver, orgID, "keep@example.com").Error)
+
+	// The rotation would now hand the lead to a third rep — and must not.
+	third := uuid.New()
+	cap.owner = &third
+	require.Equal(t, http.StatusOK,
+		postLead(t, router, tok, map[string]any{"email": "keep@example.com", "first_name": "Again"}).Code)
+
+	got := contactOwner(t, db, orgID, "keep@example.com")
+	require.NotNil(t, got)
+	require.Equal(t, handOver, *got, "a resubmission must not move the record away from its current owner")
+	require.False(t, cap.finishedCreated, "the second delivery is an update")
+	// The other half, and the one review caught: an update must not even ASK for an
+	// owner. The rotation ticket is consuming, so asking burns a rep's turn on a lead
+	// that gets nobody — and resubmissions are this endpoint's ordinary traffic.
+	require.Equal(t, 1, cap.resolveCalls,
+		"only the create should have consulted routing; an update asking burns a rotation turn")
+}
+
+// The bookkeeping is additive and must never be able to revoke the lead. A capture
+// that cannot open a delivery leaves the endpoint behaving exactly as it did before
+// L7.2b existed.
+func TestWebhookInbound_BookkeepingFailureStillWritesTheLead(t *testing.T) {
+	t.Setenv("WEBHOOK_SKIP_SIGNATURE", "true")
+	router, handler, db, orgID, cleanup := inboundRouterWithHandler(t)
+	defer cleanup()
+	handler.SetAppEnv("test")
+	tok := seedOrgToken(t, db, orgID)
+	handler.SetLeadCapture(&fakeLeadCapture{beginErr: errors.New("ledger down")})
+
+	w := postLead(t, router, tok, map[string]any{"email": "degraded@example.com"})
+	require.Equal(t, http.StatusOK, w.Code, "a ledger failure must not cost the lead")
+
+	var count int64
+	require.NoError(t, db.Raw("SELECT COUNT(*) FROM contacts WHERE org_id = ? AND email = ?",
+		orgID, "degraded@example.com").Scan(&count).Error)
+	require.EqualValues(t, 1, count)
+	require.Nil(t, contactOwner(t, db, orgID, "degraded@example.com"), "no owner is honest when routing never ran")
+}
+
+// A nil port is the pre-L7.2b world, and it must still work: this endpoint predates
+// the lead platform and cannot be made to depend on it.
+func TestWebhookInbound_WorksWithNoLeadCaptureAtAll(t *testing.T) {
+	t.Setenv("WEBHOOK_SKIP_SIGNATURE", "true")
+	router, handler, db, orgID, cleanup := inboundRouterWithHandler(t)
+	defer cleanup()
+	handler.SetAppEnv("test")
+	tok := seedOrgToken(t, db, orgID)
+
+	require.Equal(t, http.StatusOK, postLead(t, router, tok, map[string]any{"email": "nocap@example.com"}).Code)
+	require.Nil(t, contactOwner(t, db, orgID, "nocap@example.com"))
+}
+
+// A failed write must reach the ledger as a failure, or the delivery log would show
+// a source that is quietly losing every lead as perfectly healthy.
+func TestWebhookInbound_ReportsAFailedWriteToTheLedger(t *testing.T) {
+	t.Setenv("WEBHOOK_SKIP_SIGNATURE", "true")
+	router, handler, db, orgID, cleanup := inboundRouterWithHandler(t)
+	defer cleanup()
+	handler.SetAppEnv("test")
+	tok := seedOrgToken(t, db, orgID)
+	cap := &fakeLeadCapture{}
+	handler.SetLeadCapture(cap)
+
+	require.NoError(t, db.Exec("ALTER TABLE contacts RENAME TO contacts_hidden").Error)
+	t.Cleanup(func() { db.Exec("ALTER TABLE contacts_hidden RENAME TO contacts") })
+
+	require.Equal(t, http.StatusInternalServerError,
+		postLead(t, router, tok, map[string]any{"email": "boom2@example.com"}).Code)
+	require.Equal(t, 1, cap.finishCalls, "a failed delivery must still be closed")
+	require.Error(t, cap.finishedCause, "the ledger must record WHY it failed")
 }
