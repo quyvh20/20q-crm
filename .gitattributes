@@ -1,0 +1,11 @@
+# Shell scripts must keep LF endings in the repository.
+#
+# crm-backend/start.sh is the container entrypoint (railway.toml startCommand).
+# With CRLF, Linux reads the shebang as "/bin/sh\r" and the container dies with
+# "bad interpreter: /bin/sh^M" before anything listens on a port — which looks
+# exactly like a healthcheck timeout and produces no application log at all.
+#
+# This repo is developed on Windows with core.autocrlf=true, so a checkout would
+# otherwise hand the working copy CRLF and any tool that rewrites the file whole
+# could commit it back that way.
+*.sh text eol=lf
