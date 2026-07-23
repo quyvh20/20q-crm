@@ -1512,6 +1512,47 @@ func main() {
 			}
 		}
 
+		// ── RLS backfill (Supabase alert 2026-07-20: rls_disabled_in_public) ────
+		// Every table created before the boot-guard convention has its ENABLE ROW
+		// LEVEL SECURITY stranded in migrations/000008 and /000013 — files that have
+		// never executed on prod, since golang-migrate is dirty at v2 and start.sh
+		// runs `migrate up || true`. Supabase grants ALL on public tables to anon and
+		// authenticated by default and publishes them over PostgREST, so on those 26
+		// tables RLS-off means the project's anon key is a full read/write handle on
+		// users.password_hash, refresh_tokens, org_users and the rest — reaching them
+		// directly, with this backend's org scoping, OLS/FLS and audit trail bypassed.
+		//
+		// A sweep rather than a list, deliberately: the enumerated form is exactly how
+		// this happened. Thirty-two tables added after the convention each got a line
+		// (see :1349-1353) and the older, more sensitive ones did not. The sweep also
+		// covers the automation_* tables, which are AutoMigrate-only and so appear in
+		// no migration and no guard at all.
+		//
+		// Zero policies is the whole point, not an oversight: the app connects as the
+		// table owner, and an owner bypasses RLS unless FORCE ROW LEVEL SECURITY is
+		// set — which this codebase never uses and must never start using, because
+		// with no policies FORCE would lock the app out of its own database. Owner
+		// sees everything; anon and authenticated see nothing. Nothing in this repo
+		// consumes PostgREST, so that surface has no legitimate reader to break.
+		if err := db.Exec(`
+			DO $$
+			DECLARE r record;
+			BEGIN
+				FOR r IN
+					SELECT c.relname
+					FROM pg_class c
+					JOIN pg_namespace n ON n.oid = c.relnamespace
+					WHERE n.nspname = 'public'
+					  AND c.relkind = 'r'
+					  AND NOT c.relrowsecurity
+					  AND c.relname <> 'schema_migrations'
+				LOOP
+					EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', r.relname);
+				END LOOP;
+			END $$;`).Error; err != nil {
+			log.Error("rls backfill boot guard failed", zap.Error(err))
+		}
+
 		log.Info("Lead integration tables ready")
 
 		log.Info("Seeding system roles...")
