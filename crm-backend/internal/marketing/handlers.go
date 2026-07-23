@@ -269,23 +269,11 @@ func (h *Handler) MarketingStatus(c *gin.Context) {
 // ── helpers (mirror integrations' actor/mgmtError) ───────────────────────────
 
 func (h *Handler) actor(c *gin.Context) (orgID, userID uuid.UUID, ok bool) {
-	o, exists := c.Get("org_id")
-	if !exists {
-		h.mgmtError(c, http.StatusUnauthorized, "unauthorized")
-		return uuid.Nil, uuid.Nil, false
-	}
-	u, _ := c.Get("user_id")
-	orgID, _ = o.(uuid.UUID)
-	userID, _ = u.(uuid.UUID)
-	if orgID == uuid.Nil {
-		h.mgmtError(c, http.StatusUnauthorized, "unauthorized")
-		return uuid.Nil, uuid.Nil, false
-	}
-	return orgID, userID, true
+	return actorFromCtx(c)
 }
 
 func (h *Handler) mgmtError(c *gin.Context, status int, msg string) {
-	c.AbortWithStatusJSON(status, gin.H{"error": msg})
+	abortErr(c, status, msg)
 }
 
 // sameTopic reports whether two optional topic ids refer to the same topic

@@ -1559,6 +1559,34 @@ func main() {
 				updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 				UNIQUE (org_id, email_normalized)
 			)`},
+			// M2: per-org verified sending domain. Mirrors the Resend domain object
+			// plus the DMARC state we check ourselves. Nullable provenance/verify
+			// columns; soft-deletable. dns_records holds Resend's DNS record list for
+			// the onboarding wizard.
+			{"org_email_domains", `CREATE TABLE IF NOT EXISTS org_email_domains (
+				id                 UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+				org_id             UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+				domain             VARCHAR(255) NOT NULL,
+				resend_domain_id   VARCHAR(64) NOT NULL DEFAULT '',
+				region             VARCHAR(32) NOT NULL DEFAULT '',
+				send_subdomain     VARCHAR(63) NOT NULL DEFAULT 'send',
+				tracking_subdomain VARCHAR(63),
+				return_path        VARCHAR(320) NOT NULL DEFAULT '',
+				status             VARCHAR(24) NOT NULL DEFAULT 'not_started',
+				spf_verified       BOOLEAN NOT NULL DEFAULT false,
+				dkim_verified      BOOLEAN NOT NULL DEFAULT false,
+				dmarc_policy       VARCHAR(16),
+				dns_records        JSONB NOT NULL DEFAULT '[]',
+				verified_at        TIMESTAMPTZ,
+				last_checked_at    TIMESTAMPTZ,
+				warmup_daily_cap   INT,
+				created_by         UUID REFERENCES users(id) ON DELETE SET NULL,
+				created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				deleted_at         TIMESTAMPTZ
+			)`},
+			{"org_email_domains org index", `CREATE INDEX IF NOT EXISTS idx_org_email_domains_org
+				ON org_email_domains(org_id) WHERE deleted_at IS NULL`},
 		}
 		for _, g := range marketingGuards {
 			if err := db.Exec(g.sql).Error; err != nil {
@@ -1571,6 +1599,7 @@ func main() {
 		// out of its own tables.
 		db.Exec(`ALTER TABLE marketing_suppressions ENABLE ROW LEVEL SECURITY`)
 		db.Exec(`ALTER TABLE contact_marketing_state ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`ALTER TABLE org_email_domains ENABLE ROW LEVEL SECURITY`)
 
 		// The suppression dedupe UNIQUE index is FUNCTIONAL: COALESCE(topic_id, zero)
 		// is load-bearing because Postgres treats NULL as DISTINCT in a unique index,
@@ -1599,6 +1628,32 @@ func main() {
 				log.Error("marketing_suppressions: failed to create uix_marketing_suppressions_dedupe", zap.Error(err))
 			} else {
 				log.Info("marketing_suppressions: uix_marketing_suppressions_dedupe created")
+			}
+		}
+
+		// One live sending domain per DOMAIN STRING across the WHOLE table — GLOBAL,
+		// not per-org — because Resend domains are team-global, so a domain must be
+		// owned by exactly one org. This is the race-free backstop the app-level
+		// DomainOwnerOrg pre-check cannot provide (two orgs adding the same domain
+		// concurrently would both pass a per-org check). Partial on deleted_at so a
+		// removed domain can be re-added. Same probe-and-refuse ritual.
+		const orgDomainUnique = `SELECT EXISTS(SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = 'uix_org_email_domains_domain' AND i.indisunique)`
+		var hasOrgDomainUnique bool
+		db.Raw(orgDomainUnique).Scan(&hasOrgDomainUnique)
+		if !hasOrgDomainUnique {
+			var domainDups int64
+			db.Raw(`SELECT COUNT(*) FROM (
+				SELECT domain FROM org_email_domains
+				WHERE deleted_at IS NULL
+				GROUP BY domain HAVING COUNT(*) > 1
+			) d`).Scan(&domainDups)
+			if domainDups > 0 {
+				log.Error("org_email_domains: duplicate live domain strings exist across orgs — UNIQUE index skipped until merged", zap.Int64("domains", domainDups))
+			} else if err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uix_org_email_domains_domain
+				ON org_email_domains(domain) WHERE deleted_at IS NULL`).Error; err != nil {
+				log.Error("org_email_domains: failed to create uix_org_email_domains_domain", zap.Error(err))
+			} else {
+				log.Info("org_email_domains: uix_org_email_domains_domain created")
 			}
 		}
 
@@ -2228,6 +2283,18 @@ func main() {
 			setter.SetMarketingStateRedactor(marketingRepo)
 		}
 		marketing.NewHandler(marketingRepo, autoLogger).RegisterRoutes(router,
+			integrationsProtected,
+			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
+		)
+
+		// ── Email marketing (M2: per-org verified sending domain) ─────────
+		// Reuses the same Resend API key as the send mailer for the Domains API.
+		// When RESEND_API_KEY is unset (dev / MAIL_DISABLED) the client is not
+		// Configured() and the service returns a clear "sending not configured"
+		// error instead of calling Resend. DMARC is checked via our own DNS lookup
+		// (Resend manages only SPF+DKIM).
+		marketingDomainSvc := marketing.NewDomainService(marketingRepo, marketing.NewDomainsClient(cfg.ResendAPIKey))
+		marketing.NewDomainHandler(marketingDomainSvc, autoLogger).RegisterRoutes(router,
 			integrationsProtected,
 			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
 		)

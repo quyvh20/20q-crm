@@ -3,7 +3,7 @@ import { NavLink, Link, useLocation, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   Menu, X, UserRound, Shield, LogOut, ListChecks, BookOpen,
-  LayoutDashboard, Users, Building2, Handshake, Mic, Sparkles, Zap, BarChart3, Share2, Settings, ShieldOff,
+  LayoutDashboard, Users, Building2, Handshake, Mic, Sparkles, Zap, BarChart3, Share2, Settings, ShieldOff, Globe,
 } from "lucide-react";
 import { useAuth } from "./lib/auth";
 import { getThemePreference, setThemePreference, type ThemePreference } from "./lib/theme";
@@ -172,6 +172,7 @@ export default function AppLayout({ children, title }: AppLayoutProps) {
           {hasCapability('marketing.manage') && (
             <>
               <p className={navSectionClass}>Marketing</p>
+              <NavLink to="/marketing/domains" className={navItemClass}><Globe aria-hidden className={navIconClass} />Sending domains</NavLink>
               <NavLink to="/marketing/suppressions" className={navItemClass}><ShieldOff aria-hidden className={navIconClass} />Suppression list</NavLink>
             </>
           )}
