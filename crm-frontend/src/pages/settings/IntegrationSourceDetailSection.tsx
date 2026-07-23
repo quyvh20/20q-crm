@@ -24,6 +24,7 @@ import LeadDealCard from './LeadDealCard';
 import GoogleAdsSetupCard from './GoogleAdsSetupCard';
 import FormEmbedSetupCard from './FormEmbedSetupCard';
 import FacebookFormCard from './FacebookFormCard';
+import TikTokFormCard from './TikTokFormCard';
 import { DocumentTitle } from '../../lib/useDocumentTitle';
 import IngestSparkline from './IngestSparkline';
 import { relativeTime } from '../../lib/relativeTime';
@@ -549,6 +550,7 @@ export default function IntegrationSourceDetailSection() {
           {source.kind === 'form_embed' && <FormEmbedSetupCard source={source} />}
 
           {source.kind === 'facebook_form' && <FacebookFormCard source={source} />}
+          {source.kind === 'tiktok_form' && <TikTokFormCard source={source} />}
           {source.kind === 'webhook_inbound' && <LegacyWebhookCard />}
 
           {/* Routing is the one platform capability the legacy webhook actually

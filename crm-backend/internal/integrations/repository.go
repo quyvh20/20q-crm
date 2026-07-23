@@ -291,11 +291,24 @@ func (r *Repository) ReapStrandedEvents(ctx context.Context, grace time.Duration
 	cutoff := time.Now().Add(-grace)
 	var total int64
 
-	// Async, budget remaining → re-claimable.
+	// Async webhook, budget remaining → re-claimable.
+	//
+	// `source_id IS NULL` is load-bearing and was added after review. Only a genuine
+	// async webhook delivery has a NULL source at strand time — its source is resolved
+	// during processing and persisted with the final write, so a row that died before
+	// finishing still has source_id NULL. A row that ALREADY carries a source_id is a
+	// SYNCHRONOUS delivery (capture API) or a BACKFILL import, and re-pending either
+	// into the async worker re-ingests it as a LIVE webhook delivery — which drops the
+	// DeliveryBackfill suppression a backfill row carried only in memory, so a year of
+	// imported history would enrol into every workflow and email all of it. Those rows
+	// fall to the source-bearing arm below and FAIL instead; a re-run (backfill) or an
+	// Idempotency-Key retry (sync) recovers them through the channel that keeps their
+	// delivery mode. This mirrors classifyRetry's own `source_id != nil ⇒ not
+	// re-fetchable` rule.
 	rep := r.db.WithContext(ctx).Exec(`
 		UPDATE integration_events
 		   SET status = ?, claimed_at = NULL, error = ?
-		 WHERE status = ? AND result_record_id IS NULL
+		 WHERE status = ? AND result_record_id IS NULL AND source_id IS NULL
 		   AND claimed_at IS NOT NULL AND claimed_at < ? AND attempts < ?`,
 		EventStatusPending,
 		"this delivery was interrupted before it finished (the server restarted or crashed); it will be retried",
@@ -305,11 +318,11 @@ func (r *Repository) ReapStrandedEvents(ctx context.Context, grace time.Duration
 	}
 	total += rep.RowsAffected
 
-	// Async, budget exhausted → failed.
+	// Async webhook, budget exhausted → failed.
 	af := r.db.WithContext(ctx).Exec(`
 		UPDATE integration_events
 		   SET status = ?, error = ?, processed_at = NOW()
-		 WHERE status = ? AND result_record_id IS NULL
+		 WHERE status = ? AND result_record_id IS NULL AND source_id IS NULL
 		   AND claimed_at IS NOT NULL AND claimed_at < ? AND attempts >= ?`,
 		EventStatusFailed,
 		"this delivery could not be processed after repeated attempts (the fetch kept failing or the worker kept dying)",
@@ -318,6 +331,22 @@ func (r *Repository) ReapStrandedEvents(ctx context.Context, grace time.Duration
 		return total, af.Error
 	}
 	total += af.RowsAffected
+
+	// Source-bearing strand (a claimed backfill import, or any sync row that somehow
+	// carries claimed_at) → failed, NEVER re-pended. Re-entering the async worker
+	// would strip the delivery mode; the correct recovery is a re-run.
+	sb := r.db.WithContext(ctx).Exec(`
+		UPDATE integration_events
+		   SET status = ?, error = ?, processed_at = NOW()
+		 WHERE status = ? AND result_record_id IS NULL AND source_id IS NOT NULL
+		   AND claimed_at IS NOT NULL AND claimed_at < ?`,
+		EventStatusFailed,
+		"this import was interrupted before it finished; run the import again — leads already brought in are skipped",
+		EventStatusProcessing, cutoff)
+	if sb.Error != nil {
+		return total, sb.Error
+	}
+	total += sb.RowsAffected
 
 	// Sync → failed (a client retries via its Idempotency-Key).
 	sf := r.db.WithContext(ctx).Exec(`

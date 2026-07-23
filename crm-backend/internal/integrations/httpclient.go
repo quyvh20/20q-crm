@@ -97,6 +97,10 @@ type Response struct {
 	StatusCode int
 	Body       []byte
 	Header     http.Header
+	// Truncated reports that the body hit the client's cap and was cut. A JSON
+	// caller can ignore it (the decode fails anyway); a caller reading a bulk export
+	// MUST check it, because a short read there looks exactly like a short export.
+	Truncated bool
 }
 
 // DecodeJSON unmarshals the (already-capped) body into v.
@@ -111,6 +115,16 @@ type OutboundRequest struct {
 	URL    string
 	Body   []byte
 	Header http.Header
+	// BodyLimit overrides the client's response cap for this ONE request. Zero means
+	// the default.
+	//
+	// Per-request rather than a client variant, because the client carries a mutex and
+	// copying it to vary one field is a data race the compiler will not catch (go vet
+	// does). The default bounds a JSON API response, where a megabyte is generous; a
+	// bulk export is a different shape — TikTok's lead download is a CSV that only
+	// becomes a zip above 10MB, so the default would cut a real advertiser's history
+	// in half and the truncated file would still parse.
+	BodyLimit int64
 }
 
 // HTTPClient is the retrying, bounded outbound client.
@@ -235,8 +249,31 @@ func (c *HTTPClient) attempt(ctx context.Context, r OutboundRequest) (*Response,
 
 	// Bounded read: a body cut at the cap fails a later JSON decode, which is the
 	// right outcome — an unreadable response is not a usable one.
-	raw, _ := io.ReadAll(io.LimitReader(res.Body, c.bodyLimit))
-	resp := &Response{StatusCode: res.StatusCode, Body: raw, Header: res.Header}
+	//
+	// One extra byte is requested so a body that exactly fills the cap is
+	// DISTINGUISHABLE from one that was cut. That matters for a caller reading a
+	// non-JSON body (a CSV export), where truncation does not fail a decode — it
+	// silently returns fewer rows, and an import that drops most of its history
+	// while reporting success is the worst outcome available.
+	limit := c.bodyLimit
+	if r.BodyLimit > 0 {
+		limit = r.BodyLimit
+	}
+	raw, readErr := io.ReadAll(io.LimitReader(res.Body, limit+1))
+	// A read error mid-body (a reset connection, a TLS teardown) is NOT a complete
+	// response — but io.ReadAll returns the bytes it got ALONGSIDE the error, so
+	// discarding it would hand a caller a half a body that looks whole. For a JSON
+	// caller the later decode fails anyway; for one reading a bulk export a short read
+	// is indistinguishable from a short export, so this is where it has to be caught.
+	// Retryable, because a re-fetch may complete.
+	if readErr != nil {
+		return nil, &HTTPError{StatusCode: res.StatusCode, Err: fmt.Errorf("response body read failed: %w", readErr), Retryable: true}
+	}
+	truncated := int64(len(raw)) > limit
+	if truncated {
+		raw = raw[:limit]
+	}
+	resp := &Response{StatusCode: res.StatusCode, Body: raw, Header: res.Header, Truncated: truncated}
 
 	switch {
 	case res.StatusCode >= 200 && res.StatusCode < 300:

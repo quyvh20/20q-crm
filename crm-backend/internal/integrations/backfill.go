@@ -13,17 +13,22 @@ import (
 	"gorm.io/datatypes"
 )
 
+// backfillPageDelay throttles between pages/polls, so importing a large form's
+// history does not itself trip the rate limiter the connector works so hard to
+// respect. A var, not a const, only so a test can zero it — production never sets it.
+var backfillPageDelay = 1 * time.Second
+
 const (
-	// backfillPageDelay throttles between Graph pages, so importing a large form's
-	// history does not itself trip the rate limiter the connector works so hard to
-	// respect.
-	backfillPageDelay = 1 * time.Second
 	// backfillMaxPages bounds one run. Graph's /leads is already ~90-day-bounded; this
 	// is a runaway backstop (100 x 100 leads = 10k, far beyond any real form's window).
 	backfillMaxPages = 100
 	// backfillTimeout bounds the whole async run so a wedged Graph cannot leak a
 	// goroutine forever.
 	backfillTimeout = 15 * time.Minute
+	// backfillMaxRetries bounds how many consecutive retryable failures a run absorbs
+	// before giving up. Small, because the ctx deadline is the real ceiling; this only
+	// stops a mislabelled-permanent error from spinning against it.
+	backfillMaxRetries = 5
 )
 
 // Backfill triggers a historical import for a facebook_form source. It returns
@@ -34,8 +39,11 @@ func (h *Handler) Backfill(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if src.Kind != KindFacebookForm {
-		h.mgmtError(c, http.StatusBadRequest, "only Facebook form sources can be backfilled")
+	// Connection-backed kinds only. Not an enumeration of providers: a source with no
+	// connection has no credential to import WITH, and the provider itself refuses
+	// with ErrProviderCapabilityUnsupported if it has no historical export.
+	if !IsKeylessKind(src.Kind) || src.Kind == KindWebhookInbound {
+		h.mgmtError(c, http.StatusBadRequest, "only connected provider forms can be backfilled")
 		return
 	}
 	if !src.IsLive() {
@@ -91,7 +99,7 @@ func (h *Handler) runBackfill(ctx context.Context, src *LeadSource, enroll bool)
 		h.logf("integrations: backfill could not resolve the connection", "source_id", src.ID.String(), "error", err)
 		return
 	}
-	formID := facebookFormID(src)
+	formID := connectionFormID(src, conn.Provider)
 	if formID == "" {
 		h.logf("integrations: backfill source has no form id", "source_id", src.ID.String())
 		return
@@ -99,34 +107,93 @@ func (h *Handler) runBackfill(ctx context.Context, src *LeadSource, enroll bool)
 
 	cursor := ""
 	imported := 0
-	for page := 0; page < backfillMaxPages; page++ {
+	pages := 0
+	retries := 0
+	completed := false
+	for {
 		if ctx.Err() != nil {
-			return
+			// The run's own 15m deadline (or a cancel) elapsed. This is an incomplete
+			// walk, reported as such below — not "finished".
+			break
 		}
 		leads, next, ferr := prov.Backfill(ctx, conn, creds, formID, cursor)
 		if ferr != nil {
-			// Stop on a Graph error. A re-run resumes safely: dedupe skips everything
-			// already imported, so a partial import is never lost or doubled.
-			h.logf("integrations: backfill page failed", "source_id", src.ID.String(), "error", ferr)
-			break
+			// A RETRYABLE error is not a reason to abandon the walk. This is the shape
+			// that bit TikTok: its throttles arrive as HTTP 200 with a code, classified
+			// inside the adapter AFTER the shared client's own retry has passed, and a
+			// once-per-second poll against one advertiser is exactly what provokes an
+			// advertiser-level QPS limit. Breaking here would drop the remaining
+			// regions and log "finished". Re-issue the SAME cursor after a backoff,
+			// bounded so a mislabelled-permanent error cannot spin until the deadline.
+			if IsRetryableHTTP(ferr) && retries < backfillMaxRetries {
+				retries++
+				h.logf("integrations: backfill hit a retryable error, retrying", "source_id", src.ID.String(), "attempt", retries, "error", ferr)
+				if !sleepBackfill(ctx, backfillPageDelay*time.Duration(retries)) {
+					break
+				}
+				continue
+			}
+			// Permanent, or out of retries. Stop — but LOUDLY and distinctly from the
+			// success line, because a re-run is the recovery and the admin has to know
+			// one is needed. Dedupe makes a re-run safe: everything already imported is
+			// skipped.
+			if h.logger != nil {
+				h.logger.Error("integrations: backfill stopped on a provider error", "source_id", src.ID.String(), "imported", imported, "error", ferr)
+			}
+			return
 		}
+		retries = 0
 		for i := range leads {
 			if h.importBackfillLead(ctx, src, conn, leads[i], enroll) {
 				imported++
 			}
 		}
 		if next == "" {
+			completed = true
 			break
 		}
+
+		// A POLL returns the SAME cursor it was handed (a provider waiting on an async
+		// export task, e.g. TikTok). It must NOT count against the page budget: that
+		// budget bounds how many PAGES of leads a runaway cursor can pull, and charging
+		// polls against it means a slow export exhausts it before the leads arrive —
+		// which is the "budget spent on polls, history dropped" defect. A page (a real
+		// advance) counts; a poll only pays the delay and is bounded by the ctx
+		// deadline. Facebook never returns the same cursor, so its behaviour is
+		// unchanged.
+		if next != cursor {
+			pages++
+			if pages >= backfillMaxPages {
+				h.logf("integrations: backfill hit the page cap before completing", "source_id", src.ID.String(), "imported", imported)
+				break
+			}
+		}
 		cursor = next
-		select {
-		case <-time.After(backfillPageDelay):
-		case <-ctx.Done():
-			return
+		if !sleepBackfill(ctx, backfillPageDelay) {
+			break
 		}
 	}
+	// Info ONLY on a genuinely complete walk. Every other exit — the deadline, the
+	// page cap, a cancel — is a partial import that a re-run should finish, and it must
+	// not read as success.
+	if completed {
+		if h.logger != nil {
+			h.logger.Info("integrations: backfill finished", "source_id", src.ID.String(), "imported", imported, "enroll", enroll)
+		}
+		return
+	}
 	if h.logger != nil {
-		h.logger.Info("integrations: backfill finished", "source_id", src.ID.String(), "imported", imported, "enroll", enroll)
+		h.logger.Warn("integrations: backfill ended incomplete — run it again to finish", "source_id", src.ID.String(), "imported", imported)
+	}
+}
+
+// sleepBackfill waits between steps, returning false if the run's context ended first.
+func sleepBackfill(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-time.After(d):
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 
@@ -232,20 +299,22 @@ func (h *Handler) logf(msg string, args ...any) {
 
 func ptrTime(t time.Time) *time.Time { return &t }
 
-// facebookFormID reads config.facebook.form_id off a facebook_form source.
-func facebookFormID(src *LeadSource) string {
-	if len(src.Config) == 0 {
+// connectionFormID reads the provider form id out of the source's config.
+//
+// Keyed by the PROVIDER, matching the namespace EnableForm writes and the one
+// FindConnectionFormSource queries — `config -> <provider> ->> 'form_id'`. It read
+// only `config.facebook.form_id` until a second adapter existed.
+func connectionFormID(src *LeadSource, provider string) string {
+	if len(src.Config) == 0 || provider == "" {
 		return ""
 	}
-	var cfg struct {
-		Facebook struct {
-			FormID string `json:"form_id"`
-		} `json:"facebook"`
+	var cfg map[string]struct {
+		FormID string `json:"form_id"`
 	}
 	if json.Unmarshal(src.Config, &cfg) != nil {
 		return ""
 	}
-	return cfg.Facebook.FormID
+	return cfg[provider].FormID
 }
 
 // backfillRun is a live import: which org it belongs to, and how to stop it.

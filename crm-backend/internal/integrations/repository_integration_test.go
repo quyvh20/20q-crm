@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -348,4 +349,53 @@ func TestUpdateSource_DoesNotClobberConfig(t *testing.T) {
 	require.Equal(t, "renamed", reloaded.Name, "the rename must still apply")
 	require.True(t, ParseDealConfig(reloaded.Config).Enabled,
 		"renaming a source must not switch its deal option off")
+}
+
+// TestReapStrandedEvents_BackfillRowFailsNotRepends is the regression for the review
+// finding that a stranded backfill row was re-pended into the async webhook worker,
+// which re-ingests it as a LIVE delivery — dropping the DeliveryBackfill suppression
+// the row carried only in memory, so a year of imported history would enrol into
+// every workflow and email all of it.
+//
+// The discriminator is source_id: a genuine async webhook delivery has it NULL at
+// strand time (its source is resolved and persisted only with the final write), while
+// a backfill import carries it from insert. So a source-bearing strand must FAIL, not
+// return to `pending`.
+func TestReapStrandedEvents_BackfillRowFailsNotRepends(t *testing.T) {
+	db, cleanup := newIntegrationsTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := NewRepository(db)
+	orgID := seedOrg(t, db)
+	src := seedSource(t, repo, orgID)
+
+	stale := time.Now().Add(-30 * time.Minute)
+	connID := uuid.New()
+
+	// A stranded BACKFILL row: processing, claimed, source_id set, result NULL.
+	backfillID := uuid.New()
+	require.NoError(t, db.Exec(`
+		INSERT INTO integration_events (id, org_id, source_id, connection_id, status, attempts, claimed_at, raw_payload, created_at)
+		VALUES (?, ?, ?, ?, 'processing', 1, ?, '{}'::jsonb, ?)`,
+		backfillID, orgID, src.ID, connID, stale, stale).Error)
+
+	// A stranded ASYNC WEBHOOK row: processing, claimed, source_id NULL, result NULL.
+	webhookID := uuid.New()
+	require.NoError(t, db.Exec(`
+		INSERT INTO integration_events (id, org_id, connection_id, status, attempts, claimed_at, raw_payload, created_at)
+		VALUES (?, ?, ?, 'processing', 1, ?, '{}'::jsonb, ?)`,
+		webhookID, orgID, connID, stale, stale).Error)
+
+	_, err := repo.ReapStrandedEvents(ctx, 5*time.Minute)
+	require.NoError(t, err)
+
+	status := func(id uuid.UUID) string {
+		var s string
+		require.NoError(t, db.Raw("SELECT status FROM integration_events WHERE id = ?", id).Row().Scan(&s))
+		return s
+	}
+	require.Equal(t, EventStatusFailed, status(backfillID),
+		"a source-bearing backfill strand must FAIL — re-pending it re-ingests it live and drops suppression")
+	require.Equal(t, EventStatusPending, status(webhookID),
+		"a genuine async webhook strand (source_id NULL) must still be re-claimable")
 }
