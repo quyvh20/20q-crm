@@ -17,6 +17,7 @@ import (
 	"crm-backend/internal/domain"
 	"crm-backend/internal/integrations"
 	"crm-backend/internal/integrations/envelope"
+	"crm-backend/internal/marketing"
 	"crm-backend/internal/repository"
 	"crm-backend/internal/usecase"
 	"crm-backend/internal/worker"
@@ -1512,6 +1513,95 @@ func main() {
 			}
 		}
 
+		// ── Email marketing foundation (M1: suppression & consent ledger) ───────
+		// Mirrored by migrations/000055_marketing_suppression_ledger.*.sql (prod runs
+		// THIS guard — golang-migrate is dead — a fresh install and Docker run the
+		// migration; both must agree). Both tables are org-scoped and get RLS below +
+		// via the dynamic sweep. Enums are VARCHAR + app-level validation (the repo
+		// uses no PG ENUM type). Every non-zero-default column carries a DDL DEFAULT
+		// because GORM omits zero-values on insert (the U5 digest_only trap). The
+		// provenance columns on contact_marketing_state are deliberately nullable —
+		// the GDPR-erasure collapse (RedactMarketingStateForEmail) nulls them.
+		//
+		// These tables are NEVER named in RedactForRecord, so a contact deletion /
+		// GDPR erasure / CSV re-import leaves a suppression standing — the whole point.
+		marketingGuards := []struct {
+			what string
+			sql  string
+		}{
+			{"marketing_suppressions", `CREATE TABLE IF NOT EXISTS marketing_suppressions (
+				id                UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+				org_id            UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+				email_normalized  VARCHAR(320) NOT NULL,
+				reason            VARCHAR(32) NOT NULL,
+				scope             VARCHAR(16) NOT NULL DEFAULT 'marketing',
+				topic_id          UUID,
+				source            VARCHAR(64) NOT NULL DEFAULT '',
+				soft_bounce_count INT NOT NULL DEFAULT 0,
+				created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			)`},
+			{"marketing_suppressions org+email index", `CREATE INDEX IF NOT EXISTS idx_marketing_suppressions_org_email
+				ON marketing_suppressions(org_id, email_normalized)`},
+			{"contact_marketing_state", `CREATE TABLE IF NOT EXISTS contact_marketing_state (
+				id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+				org_id           UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+				email_normalized VARCHAR(320) NOT NULL,
+				contact_id       UUID REFERENCES contacts(id) ON DELETE SET NULL,
+				marketing_status VARCHAR(16) NOT NULL DEFAULT 'pending',
+				consent_basis    VARCHAR(40),
+				consent_source   VARCHAR(64),
+				consent_at       TIMESTAMPTZ,
+				consent_ip       VARCHAR(64),
+				region           VARCHAR(16),
+				casl_expires_at  TIMESTAMPTZ,
+				double_opt_in_at TIMESTAMPTZ,
+				created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE (org_id, email_normalized)
+			)`},
+		}
+		for _, g := range marketingGuards {
+			if err := db.Exec(g.sql).Error; err != nil {
+				log.Error("marketing boot guard failed", zap.String("what", g.what), zap.Error(err))
+			}
+		}
+		// Explicit RLS (defence in depth — the dynamic sweep below also covers these,
+		// but a newly-added table getting its own line is the house convention). Never
+		// FORCE: owner bypasses zero-policy RLS, and FORCE with no policy locks the app
+		// out of its own tables.
+		db.Exec(`ALTER TABLE marketing_suppressions ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`ALTER TABLE contact_marketing_state ENABLE ROW LEVEL SECURITY`)
+
+		// The suppression dedupe UNIQUE index is FUNCTIONAL: COALESCE(topic_id, zero)
+		// is load-bearing because Postgres treats NULL as DISTINCT in a unique index,
+		// so a plain UNIQUE(org_id, email, reason, topic_id) would let every topic-less
+		// unsubscribe/bounce/complaint accumulate duplicates. Built via the same
+		// probe-and-refuse ritual as idx_contacts_org_email: probe pg_index.indisunique
+		// by name, count dups with a predicate character-identical to the index, and
+		// refuse loudly over dirty data rather than half-applying. The write path uses
+		// ON CONFLICT DO NOTHING, so it tolerates the index being absent.
+		const marketingSuppUnique = `SELECT EXISTS(SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = 'uix_marketing_suppressions_dedupe' AND i.indisunique)`
+		var hasMktSuppUnique bool
+		db.Raw(marketingSuppUnique).Scan(&hasMktSuppUnique)
+		if !hasMktSuppUnique {
+			var mktSuppDups int64
+			db.Raw(`SELECT COUNT(*) FROM (
+				SELECT org_id, email_normalized, reason, COALESCE(topic_id, '00000000-0000-0000-0000-000000000000'::uuid)
+				FROM marketing_suppressions
+				GROUP BY org_id, email_normalized, reason, COALESCE(topic_id, '00000000-0000-0000-0000-000000000000'::uuid)
+				HAVING COUNT(*) > 1
+			) d`).Scan(&mktSuppDups)
+			if mktSuppDups > 0 {
+				log.Error("marketing_suppressions: duplicate (org, email, reason, topic) groups exist — UNIQUE dedupe index skipped until merged",
+					zap.Int64("groups", mktSuppDups))
+			} else if err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uix_marketing_suppressions_dedupe
+				ON marketing_suppressions(org_id, email_normalized, reason, COALESCE(topic_id, '00000000-0000-0000-0000-000000000000'::uuid))`).Error; err != nil {
+				log.Error("marketing_suppressions: failed to create uix_marketing_suppressions_dedupe", zap.Error(err))
+			} else {
+				log.Info("marketing_suppressions: uix_marketing_suppressions_dedupe created")
+			}
+		}
+
 		// ── RLS backfill (Supabase alert 2026-07-20: rls_disabled_in_public) ────
 		// Every table created before the boot-guard convention has its ENABLE ROW
 		// LEVEL SECURITY stranded in migrations/000008 and /000013 — files that have
@@ -2117,6 +2207,27 @@ func main() {
 		go integrations.StartReaper(context.Background(), integrationsRepo, autoLogger)
 
 		integrationsHandler.RegisterRoutes(router,
+			integrationsProtected,
+			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
+		)
+
+		// ── Email marketing (M1: suppression & consent ledger) ────────────
+		// Reuses integrationsProtected verbatim (PAT auth + workspace 2FA), gated by
+		// marketing.manage. No RecordAuthorizer: M1 writes only the marketing tables,
+		// never CRM records through a callerless path, so there is no OLS re-check to
+		// protect (unlike integrations).
+		marketingRepo := marketing.NewRepository(db)
+		// Deleting a contact must collapse their marketing consent PROVENANCE (ip,
+		// region, source, CASL/opt-in timestamps, contact link) while keeping the
+		// email + status so the opt-out keeps being honored — and never touches the
+		// suppression row. Wired by interface assertion because usecase must not import
+		// marketing (same boundary as SetLeadLedgerRedactor above).
+		if setter, ok := contactUseCase.(interface {
+			SetMarketingStateRedactor(usecase.MarketingStateRedactor)
+		}); ok {
+			setter.SetMarketingStateRedactor(marketingRepo)
+		}
+		marketing.NewHandler(marketingRepo, autoLogger).RegisterRoutes(router,
 			integrationsProtected,
 			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
 		)

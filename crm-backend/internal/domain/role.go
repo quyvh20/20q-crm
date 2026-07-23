@@ -177,6 +177,14 @@ const (
 	// admin's own create+edit permission on a source's target object, with their
 	// real caller, whenever the target is set or changed.
 	CapIntegrationsManage = "integrations.manage"
+	// CapMarketingManage gates the email-marketing surface: the suppression &
+	// consent ledger (M1), and later sending domains, campaigns, and bulk send.
+	//
+	// It is flagged sensitive for the same reason as workflows.manage /
+	// integrations.manage: it is the gate on outbound bulk email, which is a
+	// high-blast-radius, reputation-affecting power. Seeded to admin+manager; owner
+	// is absent from the default matrix (it bypasses capability checks).
+	CapMarketingManage = "marketing.manage"
 )
 
 // AllCapabilities is the canonical list, used for validation and the roles UI.
@@ -184,7 +192,7 @@ var AllCapabilities = []string{
 	CapMembersInvite, CapMembersManage, CapRolesManage, CapObjectsManage,
 	CapWorkflowsManage, CapWorkflowsRunAny, CapAuditView, CapAnalyticsView,
 	CapOrgSettings, CapDataExport, CapPipelineManage, CapKnowledgeManage, CapRecordsWrite,
-	CapReportsManage, CapGroupsManage, CapIntegrationsManage,
+	CapReportsManage, CapGroupsManage, CapIntegrationsManage, CapMarketingManage,
 }
 
 // IsCapability reports whether code is a recognized capability.
@@ -241,6 +249,7 @@ var CapabilityCatalog = []CapabilityInfo{
 	{CapRecordsWrite, "Edit collaboration records", "Create and edit tasks, activities, voice notes, tags, and record links.", CapGroupRecords, false},
 	{CapWorkflowsManage, "Manage workflows", "Create and edit automation workflows (org-wide write + email + outbound HTTP).", CapGroupAutomation, true},
 	{CapIntegrationsManage, "Manage integrations", "Connect lead sources and mint the capture keys third parties use to send leads in.", CapGroupAutomation, true},
+	{CapMarketingManage, "Manage email marketing", "Manage the marketing suppression & consent ledger, sending domains, and campaigns.", CapGroupAutomation, true},
 	{CapWorkflowsRunAny, "Run any workflow", "Manually run any workflow, not just the ones you created.", CapGroupAutomation, true},
 	{CapKnowledgeManage, "Manage knowledge base", "Edit the knowledge base that powers AI answers.", CapGroupAutomation, false},
 	{CapAuditView, "View audit log", "See the who-did-what admin and security audit trail.", CapGroupOversight, false},
@@ -275,11 +284,11 @@ var DefaultRoleCapabilities = map[string][]string{
 	RoleAdmin: {
 		CapMembersInvite, CapMembersManage, CapRolesManage, CapObjectsManage,
 		CapWorkflowsManage, CapWorkflowsRunAny, CapAuditView, CapAnalyticsView, CapOrgSettings, CapDataExport,
-		CapPipelineManage, CapKnowledgeManage, CapRecordsWrite, CapReportsManage, CapGroupsManage,
+		CapPipelineManage, CapKnowledgeManage, CapRecordsWrite, CapReportsManage, CapGroupsManage, CapMarketingManage,
 	},
 	RoleManager: {
 		CapMembersInvite, CapWorkflowsManage, CapWorkflowsRunAny, CapAuditView, CapAnalyticsView, CapDataExport,
-		CapPipelineManage, CapKnowledgeManage, CapRecordsWrite, CapReportsManage, CapGroupsManage,
+		CapPipelineManage, CapKnowledgeManage, CapRecordsWrite, CapReportsManage, CapGroupsManage, CapMarketingManage,
 	},
 	RoleSales:  {CapRecordsWrite},
 	RoleViewer: {},

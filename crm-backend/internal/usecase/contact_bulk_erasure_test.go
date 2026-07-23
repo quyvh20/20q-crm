@@ -31,9 +31,13 @@ type bulkDeleteFakeRepo struct {
 	deleted []uuid.UUID
 }
 
-func (f *bulkDeleteFakeRepo) BulkDeleteByIDs(_ context.Context, _ uuid.UUID, ids []uuid.UUID) ([]uuid.UUID, error) {
+func (f *bulkDeleteFakeRepo) BulkDeleteByIDs(_ context.Context, _ uuid.UUID, ids []uuid.UUID) ([]domain.Contact, error) {
 	f.requested = ids
-	return f.deleted, nil
+	out := make([]domain.Contact, 0, len(f.deleted))
+	for _, id := range f.deleted {
+		out = append(out, domain.Contact{ID: id})
+	}
+	return out, nil
 }
 
 type recordingRedactor struct {

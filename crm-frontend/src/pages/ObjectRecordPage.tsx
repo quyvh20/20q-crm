@@ -22,6 +22,7 @@ import AccessDeniedPanel from '../components/common/AccessDeniedPanel';
 import Modal from '../components/common/Modal';
 import { Badge, Button, EmptyState, Skeleton } from '@/components/ui';
 import { usePermissions } from '../lib/auth';
+import { MarketingStatusBadge } from '../features/marketing/MarketingStatusBadge';
 
 // ObjectRecordPage is the Salesforce-style, URL-addressable detail page for any
 // object — /objects/:slug/records/:id. Every list row, kanban card, and global
@@ -203,6 +204,11 @@ export default function ObjectRecordPage() {
             <span>{schema.icon} {schema.label}</span>
             {record.number && (
               <Badge variant="secondary" className="font-semibold tracking-wide">{record.number}</Badge>
+            )}
+            {/* Marketing standing (M1) — only for contacts, only for marketing.manage
+                holders (the endpoint 403s otherwise and the badge hides). */}
+            {slug === 'contact' && (
+              <MarketingStatusBadge email={typeof record.fields.email === 'string' ? record.fields.email : undefined} />
             )}
           </div>
           <h1 className="break-words text-2xl font-semibold tracking-tight text-foreground">

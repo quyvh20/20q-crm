@@ -539,27 +539,25 @@ func (r *contactRepository) CreateCompany(ctx context.Context, c *domain.Company
 // Bulk Actions
 // ============================================================
 
-func (r *contactRepository) BulkDeleteByIDs(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID) ([]uuid.UUID, error) {
+func (r *contactRepository) BulkDeleteByIDs(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID) ([]domain.Contact, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	// RETURNING the ids rather than a count. A count answers "how many", and the
-	// caller needs "which": the write scope above can skip rows an own-scoped caller
-	// does not own, so requested-minus-deleted is a non-empty set the caller must not
-	// mistake for deleted. Ledger erasure keys off this result.
+	// RETURNING the deleted rows (id + email) rather than a count. A count answers
+	// "how many", and the caller needs "which": the write scope above can skip rows
+	// an own-scoped caller does not own, so requested-minus-deleted is a non-empty
+	// set the caller must not mistake for deleted. Ledger erasure keys off the ids;
+	// the marketing-state collapse keys off the emails — both must follow the scope,
+	// never the request. Email is nullable (*string), so a returned row may carry none.
 	var deleted []domain.Contact
 	result := applyWriteScopeFromCtx(r.db.WithContext(ctx), ctx, orgID, "contacts", "contact").
-		Clauses(clause.Returning{Columns: []clause.Column{{Name: "id"}}}).
+		Clauses(clause.Returning{Columns: []clause.Column{{Name: "id"}, {Name: "email"}}}).
 		Where("contacts.id IN ?", ids).
 		Delete(&deleted)
 	if result.Error != nil {
 		return nil, result.Error
 	}
-	out := make([]uuid.UUID, 0, len(deleted))
-	for i := range deleted {
-		out = append(out, deleted[i].ID)
-	}
-	return out, nil
+	return deleted, nil
 }
 
 func (r *contactRepository) BulkAssignTag(ctx context.Context, orgID uuid.UUID, contactIDs []uuid.UUID, tagID uuid.UUID) (int64, error) {

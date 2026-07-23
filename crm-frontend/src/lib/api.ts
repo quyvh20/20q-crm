@@ -1594,7 +1594,7 @@ export const ALL_CAPABILITIES = [
   'members.invite', 'members.manage', 'roles.manage', 'objects.manage',
   'workflows.manage', 'workflows.run_any', 'audit.view', 'analytics.view',
   'org.settings', 'data.export', 'pipeline.manage', 'knowledge.manage', 'records.write',
-  'reports.manage', 'groups.manage', 'integrations.manage',
+  'reports.manage', 'groups.manage', 'integrations.manage', 'marketing.manage',
 ] as const;
 export type Capability = (typeof ALL_CAPABILITIES)[number];
 
@@ -1615,6 +1615,7 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   'reports.manage': "Edit/delete other members' reports",
   'groups.manage': 'Manage user groups & their members',
   'integrations.manage': 'Connect lead sources & mint capture keys',
+  'marketing.manage': 'Manage the marketing suppression & consent ledger',
 };
 
 // DataScope is a role's row scope (U6): 'own' = only records they own (plus

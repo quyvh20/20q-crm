@@ -50,6 +50,10 @@ type contactUseCase struct {
 	// contact when that contact is deleted. Nil-tolerant: unset in unit tests and in
 	// any build without the integrations module.
 	ledgerRedactor LeadLedgerRedactor
+	// marketingRedactor collapses a deleted contact's marketing consent PROVENANCE
+	// (keeping only the email + status so an opt-out keeps being honored). Nil-
+	// tolerant, same as ledgerRedactor.
+	marketingRedactor MarketingStateRedactor
 }
 
 // LeadLedgerRedactor erases what the inbound-lead ledger stored about one contact —
@@ -68,6 +72,21 @@ type LeadLedgerRedactor interface {
 
 // SetLeadLedgerRedactor wires the ledger erasure hook. Called once at startup.
 func (uc *contactUseCase) SetLeadLedgerRedactor(r LeadLedgerRedactor) { uc.ledgerRedactor = r }
+
+// MarketingStateRedactor collapses the marketing consent state for one email on
+// GDPR erasure: it nulls every provenance column (ip, region, source, CASL/opt-in
+// timestamps, the contact link) while PRESERVING email + marketing_status, so an
+// opt-out survives the erasure of the person it describes. It is keyed on email,
+// not contact id, because marketing consent is email-authoritative and several
+// contacts can share one normalized address. The sibling suppression row is left
+// standing — retaining the opt-out is the whole point.
+type MarketingStateRedactor interface {
+	RedactMarketingStateForEmail(ctx context.Context, orgID uuid.UUID, email string) error
+}
+
+// SetMarketingStateRedactor wires the marketing-state collapse hook. Called once at
+// startup (interface assertion, so usecase never imports the marketing module).
+func (uc *contactUseCase) SetMarketingStateRedactor(r MarketingStateRedactor) { uc.marketingRedactor = r }
 
 func NewContactUseCase(repo domain.ContactRepository, queue domain.EmbeddingQueue, embedSvc ...*ai.EmbeddingService) domain.ContactUseCase {
 	uc := &contactUseCase{contactRepo: repo, queue: queue}
@@ -234,6 +253,15 @@ func (uc *contactUseCase) Update(ctx context.Context, orgID, id uuid.UUID, input
 // ============================================================
 
 func (uc *contactUseCase) Delete(ctx context.Context, orgID, id uuid.UUID) error {
+	// Capture the email BEFORE the soft delete — GetByID filters deleted_at IS NULL,
+	// so it cannot be read back afterward, and the marketing-state collapse is keyed
+	// on email, not id. Best-effort: a read miss just skips the collapse.
+	var email string
+	if uc.marketingRedactor != nil {
+		if c, err := uc.contactRepo.GetByID(ctx, orgID, id); err == nil && c != nil && c.Email != nil {
+			email = *c.Email
+		}
+	}
 	if err := uc.contactRepo.SoftDelete(ctx, orgID, id); err != nil {
 		return domain.ErrContactNotFound
 	}
@@ -244,6 +272,13 @@ func (uc *contactUseCase) Delete(ctx context.Context, orgID, id uuid.UUID) error
 	if uc.ledgerRedactor != nil {
 		if err := uc.ledgerRedactor.RedactForRecord(ctx, orgID, id); err != nil {
 			log.Printf("contact delete: could not redact the lead ledger for %s: %v", id, err)
+		}
+	}
+	// Collapse the marketing consent provenance for this email (keeping email +
+	// status so an opt-out keeps being honored). Best-effort, same rationale.
+	if uc.marketingRedactor != nil && email != "" {
+		if err := uc.marketingRedactor.RedactMarketingStateForEmail(ctx, orgID, email); err != nil {
+			log.Printf("contact delete: could not collapse marketing state for %s: %v", id, err)
 		}
 	}
 	return nil
@@ -287,8 +322,25 @@ func (uc *contactUseCase) BulkAction(ctx context.Context, orgID uuid.UUID, input
 		// failing here would report a deletion that did happen as having failed, which
 		// is the one answer that makes a deletion request impossible to honour at all.
 		if uc.ledgerRedactor != nil && len(deleted) > 0 {
-			if err := uc.ledgerRedactor.RedactForRecords(ctx, orgID, deleted); err != nil {
-				log.Printf("contact bulk delete: could not redact the lead ledger for %d contact(s): %v", len(deleted), err)
+			deletedIDs := make([]uuid.UUID, 0, len(deleted))
+			for i := range deleted {
+				deletedIDs = append(deletedIDs, deleted[i].ID)
+			}
+			if err := uc.ledgerRedactor.RedactForRecords(ctx, orgID, deletedIDs); err != nil {
+				log.Printf("contact bulk delete: could not redact the lead ledger for %d contact(s): %v", len(deletedIDs), err)
+			}
+		}
+		// Collapse the marketing consent provenance for each actually-deleted contact,
+		// keyed on the email from the returned set (same scope discipline as the
+		// ledger). Skip nil/empty emails. Best-effort.
+		if uc.marketingRedactor != nil {
+			for i := range deleted {
+				if deleted[i].Email == nil || *deleted[i].Email == "" {
+					continue
+				}
+				if err := uc.marketingRedactor.RedactMarketingStateForEmail(ctx, orgID, *deleted[i].Email); err != nil {
+					log.Printf("contact bulk delete: could not collapse marketing state for %s: %v", deleted[i].ID, err)
+				}
 			}
 		}
 		return &domain.BulkActionResult{

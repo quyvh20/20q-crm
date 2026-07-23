@@ -25,6 +25,8 @@ export const SENSITIVE_CAPABILITIES: ReadonlySet<string> = new Set([
   'workflows.manage',
   'workflows.run_any',
   'data.export',
+  'integrations.manage',
+  'marketing.manage',
 ]);
 
 // capabilityLabel resolves a capability code to its human label, preferring the

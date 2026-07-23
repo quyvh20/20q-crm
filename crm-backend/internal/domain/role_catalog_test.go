@@ -55,6 +55,9 @@ func TestCapabilityCatalogCoversAllCapabilities(t *testing.T) {
 		// land in — same blast radius as workflow authoring, which is flagged for the
 		// same reason.
 		CapIntegrationsManage: true,
+		// Outbound bulk email is a high-blast-radius, reputation-affecting power —
+		// flagged for the same reason as workflow authoring / integrations.
+		CapMarketingManage: true,
 	}
 	for _, ci := range CapabilityCatalog {
 		if ci.Sensitive != wantSensitive[ci.Code] {

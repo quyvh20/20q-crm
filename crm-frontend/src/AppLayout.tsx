@@ -3,7 +3,7 @@ import { NavLink, Link, useLocation, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   Menu, X, UserRound, Shield, LogOut, ListChecks, BookOpen,
-  LayoutDashboard, Users, Building2, Handshake, Mic, Sparkles, Zap, BarChart3, Share2, Settings,
+  LayoutDashboard, Users, Building2, Handshake, Mic, Sparkles, Zap, BarChart3, Share2, Settings, ShieldOff,
 } from "lucide-react";
 import { useAuth } from "./lib/auth";
 import { getThemePreference, setThemePreference, type ThemePreference } from "./lib/theme";
@@ -168,6 +168,13 @@ export default function AppLayout({ children, title }: AppLayoutProps) {
           <NavLink to="/workflows" className={navItemClass}><Zap aria-hidden className={navIconClass} />Automations</NavLink>
           <NavLink to="/reports" className={navItemClass}><BarChart3 aria-hidden className={navIconClass} />Reports</NavLink>
           <NavLink to="/shared-with-me" className={navItemClass}><Share2 aria-hidden className={navIconClass} />Shared with me</NavLink>
+
+          {hasCapability('marketing.manage') && (
+            <>
+              <p className={navSectionClass}>Marketing</p>
+              <NavLink to="/marketing/suppressions" className={navItemClass}><ShieldOff aria-hidden className={navIconClass} />Suppression list</NavLink>
+            </>
+          )}
 
           <p className={navSectionClass}>Workspace</p>
           <NavLink to="/settings" className={navItemClass}><Settings aria-hidden className={navIconClass} />Settings</NavLink>

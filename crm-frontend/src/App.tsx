@@ -51,6 +51,7 @@ import { EmailTemplateEditor } from './features/workflows/EmailTemplateEditor';
 import AIPage from './pages/AIPage';
 import SharedWithMePage from './pages/SharedWithMePage';
 import ReportsListPage from './features/reports/ReportsListPage';
+import SuppressionListPage from './features/marketing/SuppressionListPage';
 import ReportBuilderPage from './features/reports/ReportBuilderPage';
 import DashboardPage from './features/reports/DashboardPage';
 import TermsPage from './pages/legal/TermsPage';
@@ -308,6 +309,11 @@ function App() {
             <Route path="/reports" element={
               <ProtectedRoute>
                 <AppLayout title="Reports"><ReportsListPage /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/marketing/suppressions" element={
+              <ProtectedRoute>
+                <AppLayout title="Suppression list"><SuppressionListPage /></AppLayout>
               </ProtectedRoute>
             } />
             <Route path="/reports/new" element={

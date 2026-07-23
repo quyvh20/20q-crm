@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom';
 import type { ObjectSchema, UniformRecord } from '../../lib/api';
 
@@ -74,14 +75,20 @@ function LocationProbe() {
 }
 
 function renderPage() {
+  // The real app wraps everything in a QueryClientProvider; the contact detail
+  // header now mounts MarketingStatusBadge (a react-query consumer), so the test
+  // must supply a client. Retries off + no cache carry-over between tests.
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   return render(
-    <MemoryRouter initialEntries={['/objects/contact/records/p1']}>
-      <Routes>
-        <Route path="/objects/:slug/records/:id" element={<ObjectRecordPage />} />
-        <Route path="*" element={<div>elsewhere</div>} />
-      </Routes>
-      <LocationProbe />
-    </MemoryRouter>,
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={['/objects/contact/records/p1']}>
+        <Routes>
+          <Route path="/objects/:slug/records/:id" element={<ObjectRecordPage />} />
+          <Route path="*" element={<div>elsewhere</div>} />
+        </Routes>
+        <LocationProbe />
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
