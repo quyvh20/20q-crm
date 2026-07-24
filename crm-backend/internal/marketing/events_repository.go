@@ -8,6 +8,7 @@ import (
 	"crm-backend/internal/emailutil"
 
 	"github.com/google/uuid"
+	"gorm.io/datatypes"
 	"gorm.io/gorm/clause"
 )
 
@@ -26,7 +27,7 @@ func (r *Repository) InsertEvent(ctx context.Context, e *MarketingEmailEvent) (i
 		e.Status = EventStatusPending
 	}
 	if len(e.RawPayload) == 0 {
-		e.RawPayload = []byte("{}")
+		e.RawPayload = datatypes.JSON("{}")
 	}
 	res := r.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(e)
 	if res.Error != nil {

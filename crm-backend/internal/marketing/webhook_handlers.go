@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"gorm.io/datatypes"
 )
 
 // resendWebhookBodyLimit bounds the webhook body. Resend delivery events are small;
@@ -142,7 +143,7 @@ func (h *ResendWebhookHandler) Receive(c *gin.Context) {
 		FromDomain:      fromDomain,
 		Reason:          action.Reason,
 		BounceType:      bounceTypeOf(env, action),
-		RawPayload:      body,
+		RawPayload:      datatypes.JSON(body),
 		OccurredAt:      parseOccurredAt(env.CreatedAt),
 		Status:          EventStatusPending,
 	}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/datatypes"
 )
 
 // MarketingEmailEvent is one Resend delivery-webhook event (M4). It is an
@@ -33,10 +34,12 @@ type MarketingEmailEvent struct {
 	Channel    string     `gorm:"type:varchar(16);not null;default:''" json:"channel"`
 	CampaignID *uuid.UUID `gorm:"type:uuid" json:"campaign_id,omitempty"`
 	// Queue columns (mirror integrations.IntegrationEvent).
-	Status     string     `gorm:"type:varchar(16);not null;default:'pending'" json:"status"`
-	Attempts   int        `gorm:"type:int;not null;default:0" json:"attempts"`
-	ClaimedAt  *time.Time `json:"claimed_at,omitempty"`
-	RawPayload []byte     `gorm:"column:raw_payload;type:jsonb;not null;default:'{}'" json:"-"`
+	Status     string         `gorm:"type:varchar(16);not null;default:'pending'" json:"status"`
+	Attempts   int            `gorm:"type:int;not null;default:0" json:"attempts"`
+	ClaimedAt  *time.Time     `json:"claimed_at,omitempty"`
+	// datatypes.JSON (not []byte) so GORM binds it as jsonb, not bytea — a plain
+	// []byte is sent as bytea and Postgres rejects it for a jsonb column (22P02).
+	RawPayload datatypes.JSON `gorm:"column:raw_payload;type:jsonb;not null;default:'{}'" json:"-"`
 	Error      string     `gorm:"type:text;not null;default:''" json:"error,omitempty"`
 	OccurredAt *time.Time `json:"occurred_at,omitempty"`
 	CreatedAt  time.Time  `gorm:"not null;default:now()" json:"created_at"`
