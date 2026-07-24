@@ -1587,6 +1587,29 @@ func main() {
 			)`},
 			{"org_email_domains org index", `CREATE INDEX IF NOT EXISTS idx_org_email_domains_org
 				ON org_email_domains(org_id) WHERE deleted_at IS NULL`},
+			// M6: authored marketing email content. body_json = block document (edit
+			// source); body_html_compiled = mjml-compiled email-safe HTML (send source,
+			// still carrying {{merge}} tokens resolved per recipient at send). A NEW
+			// table, never an ALTER of automation_email_templates.
+			{"marketing_campaign_content", `CREATE TABLE IF NOT EXISTS marketing_campaign_content (
+				id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+				org_id              UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+				name                VARCHAR(160) NOT NULL,
+				subject             VARCHAR(998) NOT NULL DEFAULT '',
+				preheader           VARCHAR(255) NOT NULL DEFAULT '',
+				body_json           JSONB NOT NULL DEFAULT '{"blocks":[]}',
+				body_html_compiled  TEXT NOT NULL DEFAULT '',
+				plain_text          TEXT NOT NULL DEFAULT '',
+				merge_scope         JSONB NOT NULL DEFAULT '["contact","org","campaign"]',
+				compiled_size_bytes INT NOT NULL DEFAULT 0,
+				compiled_at         TIMESTAMPTZ,
+				created_by          UUID REFERENCES users(id) ON DELETE SET NULL,
+				created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				deleted_at          TIMESTAMPTZ
+			)`},
+			{"marketing_campaign_content org index", `CREATE INDEX IF NOT EXISTS idx_marketing_campaign_content_org
+				ON marketing_campaign_content(org_id) WHERE deleted_at IS NULL`},
 		}
 		for _, g := range marketingGuards {
 			if err := db.Exec(g.sql).Error; err != nil {
@@ -1600,6 +1623,7 @@ func main() {
 		db.Exec(`ALTER TABLE marketing_suppressions ENABLE ROW LEVEL SECURITY`)
 		db.Exec(`ALTER TABLE contact_marketing_state ENABLE ROW LEVEL SECURITY`)
 		db.Exec(`ALTER TABLE org_email_domains ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`ALTER TABLE marketing_campaign_content ENABLE ROW LEVEL SECURITY`)
 
 		// The suppression dedupe UNIQUE index is FUNCTIONAL: COALESCE(topic_id, zero)
 		// is load-bearing because Postgres treats NULL as DISTINCT in a unique index,
@@ -2295,6 +2319,33 @@ func main() {
 		// (Resend manages only SPF+DKIM).
 		marketingDomainSvc := marketing.NewDomainService(marketingRepo, marketing.NewDomainsClient(cfg.ResendAPIKey))
 		marketing.NewDomainHandler(marketingDomainSvc, autoLogger).RegisterRoutes(router,
+			integrationsProtected,
+			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
+		)
+
+		// ── Email marketing (M6: email-safe content composer) ─────────────
+		// mjml-go compiles block JSON → email-safe HTML (pure-Go WASM, no Node — B2).
+		// Warm the wazero runtime off the hot path. Test-send reuses the automation
+		// engine's SendTestEmail (no idempotency key → every click delivers) and
+		// resolves the caller's own email as the recipient.
+		marketingCompiler := marketing.NewCompiler()
+		go func() {
+			if err := marketingCompiler.Warmup(context.Background()); err != nil {
+				autoLogger.Warn("marketing: mjml compiler warmup failed", "error", err)
+			}
+		}()
+		var marketingTestSender marketing.TestEmailSender
+		if autoEngine != nil {
+			marketingTestSender = autoEngine // typed-nil guard: only set when non-nil
+		}
+		callerEmail := func(ctx context.Context, orgID, userID uuid.UUID) (string, error) {
+			u, err := authRepo.GetUserByID(ctx, userID)
+			if err != nil || u == nil {
+				return "", err
+			}
+			return u.Email, nil
+		}
+		marketing.NewContentHandler(marketingRepo, marketingCompiler, marketingTestSender, callerEmail, autoLogger).RegisterRoutes(router,
 			integrationsProtected,
 			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
 		)

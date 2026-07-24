@@ -9,8 +9,11 @@ import (
 	"strings"
 )
 
-// templatePattern matches {{path.to.field}} with optional whitespace inside braces.
-var templatePattern = regexp.MustCompile(`\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}`)
+// templatePattern matches {{path.to.field}} with optional whitespace inside braces,
+// and an OPTIONAL fallback after a pipe: {{path.to.field | fallback text}} (M6).
+// Group 1 = path, group 2 = fallback (empty when the pipe is absent). Existing
+// {{path}} tags match exactly as before (group 2 = "") — byte-for-byte compatible.
+var templatePattern = regexp.MustCompile(`\{\{\s*([a-zA-Z0-9_.]+)\s*(?:\|\s*([^}]*?)\s*)?\}\}`)
 
 // escapedPattern matches \{\{...\}\} which should render as literal {{...}}.
 var escapedPattern = regexp.MustCompile(`\\\{\\\{(.+?)\\\}\\\}`)
@@ -32,6 +35,31 @@ func InterpolateTemplate(template string, ctx EvalContext) string {
 // subjects) must keep using InterpolateTemplate.
 func InterpolateTemplateHTML(template string, ctx EvalContext) string {
 	return interpolateTemplate(template, ctx, true)
+}
+
+// MergeRef is one {{path|fallback}} occurrence found by ExtractMergeTags.
+type MergeRef struct {
+	Path        string // the dotted path, e.g. "contact.first_name"
+	Fallback    string // the fallback text (empty when absent)
+	HasFallback bool   // true only when a NON-EMPTY fallback was authored
+	Raw         string // the full matched token, e.g. "{{contact.first_name|there}}"
+}
+
+// ExtractMergeTags returns every merge tag in s, parsed on the SAME grammar the
+// runtime interpolator uses (so a validator built on this can't drift from what
+// actually renders). An empty fallback ({{a|}}) is reported as HasFallback=false.
+func ExtractMergeTags(s string) []MergeRef {
+	matches := templatePattern.FindAllStringSubmatch(s, -1)
+	out := make([]MergeRef, 0, len(matches))
+	for _, m := range matches {
+		ref := MergeRef{Path: m[1], Raw: m[0]}
+		if len(m) >= 3 && m[2] != "" {
+			ref.Fallback = m[2]
+			ref.HasFallback = true
+		}
+		out = append(out, ref)
+	}
+	return out
 }
 
 func interpolateTemplate(template string, ctx EvalContext, escapeHTML bool) string {
@@ -56,16 +84,33 @@ func interpolateTemplate(template string, ctx EvalContext, escapeHTML bool) stri
 			return match
 		}
 		path := groups[1]
+		fallback := ""
+		if len(groups) >= 3 {
+			fallback = groups[2]
+		}
 		val := resolvePath(path, ctx)
-		if val == nil {
-			slog.Warn("template: unresolved path", "path", path)
-			return ""
+		var out string
+		switch {
+		case val == nil:
+			// Unresolved path → fallback (M6). No fallback authored → empty + warn,
+			// exactly the pre-M6 behavior.
+			out = fallback
+			if fallback == "" {
+				slog.Warn("template: unresolved path", "path", path)
+			}
+		default:
+			out = formatValue(val)
+			if out == "" {
+				// Resolved but empty (e.g. a contact with no first_name) → fallback.
+				out = fallback
+			}
 		}
-		formatted := formatValue(val)
 		if escapeHTML {
-			formatted = html.EscapeString(formatted)
+			// Escape whichever we emit (value or fallback) — the fallback lands in the
+			// same HTML position, so it gets the same injection-safe treatment.
+			out = html.EscapeString(out)
 		}
-		return formatted
+		return out
 	})
 
 	// Restore escaped braces

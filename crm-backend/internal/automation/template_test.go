@@ -216,3 +216,46 @@ func TestInterpolateTemplate_PlainVariantDoesNotEscape(t *testing.T) {
 	result := InterpolateTemplate("Hi {{contact.first_name}}", ctx)
 	assert.Equal(t, "Hi <b>Eve</b> & co", result, "non-HTML consumers (webhooks, conditions, addresses, subjects) must receive raw values")
 }
+
+// ── M6: {{path|fallback}} grammar ────────────────────────────────────────────
+
+func TestInterpolateTemplate_Fallback(t *testing.T) {
+	ctx := testContext()
+	// Present value wins over the fallback.
+	assert.Equal(t, "John", InterpolateTemplate("{{contact.first_name|there}}", ctx))
+	// Unresolved path → fallback.
+	assert.Equal(t, "there", InterpolateTemplate("Hi {{contact.nope|there}}", ctx)[3:])
+	// Present-but-empty value → fallback.
+	empty := testContext()
+	empty.Contact["first_name"] = ""
+	assert.Equal(t, "friend", InterpolateTemplate("{{contact.first_name|friend}}", empty))
+	// No fallback + unresolved → empty (pre-M6 behavior, byte-for-byte).
+	assert.Equal(t, "", InterpolateTemplate("{{contact.nope}}", ctx))
+	// Whitespace around the pipe is trimmed.
+	assert.Equal(t, "there", InterpolateTemplate("{{ contact.nope | there }}", ctx))
+}
+
+func TestInterpolateTemplateHTML_FallbackEscaped(t *testing.T) {
+	ctx := testContext()
+	// A fallback with HTML-special chars is escaped (same treatment as a merged value).
+	assert.Equal(t, "Jane &amp; Co", InterpolateTemplateHTML("{{contact.nope|Jane & Co}}", ctx))
+	// A resolved value is still escaped.
+	ctx.Contact["first_name"] = "<b>x</b>"
+	assert.Equal(t, "&lt;b&gt;x&lt;/b&gt;", InterpolateTemplateHTML("{{contact.first_name|f}}", ctx))
+}
+
+func TestExtractMergeTags(t *testing.T) {
+	got := ExtractMergeTags("Hi {{contact.first_name|there}}, {{contact.email}} and {{a|}}")
+	if len(got) != 3 {
+		t.Fatalf("expected 3 tags, got %d: %+v", len(got), got)
+	}
+	if got[0].Path != "contact.first_name" || got[0].Fallback != "there" || !got[0].HasFallback {
+		t.Errorf("tag0 wrong: %+v", got[0])
+	}
+	if got[1].Path != "contact.email" || got[1].HasFallback {
+		t.Errorf("tag1 should have no fallback: %+v", got[1])
+	}
+	if got[2].Path != "a" || got[2].HasFallback {
+		t.Errorf("tag2 empty fallback must be HasFallback=false: %+v", got[2])
+	}
+}
