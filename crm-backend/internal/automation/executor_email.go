@@ -50,6 +50,13 @@ type resendEmailPayload struct {
 	Subject string   `json:"subject"`
 	HTML    string   `json:"html"`
 	Cc      []string `json:"cc,omitempty"`
+	// ReplyTo and Headers are populated ONLY by the marketing lane (channel=marketing,
+	// via SendMarketingEmail). Both are `omitempty`: a nil map / empty string emits no
+	// key at all, so every existing transactional/workflow/test send marshals to the
+	// exact same JSON bytes as before this field existed. Headers carries the RFC-8058
+	// List-Unsubscribe pair; Resend takes them in the request BODY, not as HTTP headers.
+	ReplyTo string            `json:"reply_to,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // Execute sends an email using Resend. Subject/body come from inline params or,
@@ -140,7 +147,19 @@ func (e *EmailExecutor) Execute(ctx context.Context, run *WorkflowRun, action Ac
 // (Engine.SendTestEmail). logID labels the log lines (a run id, or "test-send").
 // A non-empty idempotencyKey is forwarded as Resend's Idempotency-Key header;
 // test-send passes "" so every manual test click actually delivers.
+//
+// It is a thin wrapper over sendEmailWithHeaders that sends no reply-to and no
+// custom headers — so the transactional path is byte-for-byte unchanged. Only the
+// marketing lane (SendMarketingEmail) supplies those, keeping Guardrail 9.
 func (e *EmailExecutor) sendEmail(ctx context.Context, logID, idempotencyKey, to, subject, bodyHTML, fromName string, cc []string) (any, error) {
+	return e.sendEmailWithHeaders(ctx, logID, idempotencyKey, to, subject, bodyHTML, fromName, "", cc, nil)
+}
+
+// sendEmailWithHeaders is sendEmail plus an optional Reply-To and an optional set
+// of custom email headers (the marketing lane's RFC-8058 List-Unsubscribe pair).
+// replyTo=="" and headers==nil reproduce sendEmail exactly (both fields are
+// `omitempty`), so a transactional caller is unaffected.
+func (e *EmailExecutor) sendEmailWithHeaders(ctx context.Context, logID, idempotencyKey, to, subject, bodyHTML, fromName, replyTo string, cc []string, headers map[string]string) (any, error) {
 	from := e.fromEmail
 	if fromName != "" {
 		from = fmt.Sprintf("%s <%s>", fromName, e.fromEmail)
@@ -152,6 +171,8 @@ func (e *EmailExecutor) sendEmail(ctx context.Context, logID, idempotencyKey, to
 		Subject: subject,
 		HTML:    bodyHTML,
 		Cc:      cc,
+		ReplyTo: replyTo,
+		Headers: headers,
 	}
 
 	body, err := json.Marshal(payload)

@@ -233,6 +233,107 @@ func (c *Codec) Rewrap(b Binding, blob string) (string, int, error) {
 	return out, c.ring.Primary(), nil
 }
 
+// statelessPrefix tags a stateless (no owning-row) sealed token, kept distinct
+// from blobPrefix so a stateless token can never be mistaken for a row-bound
+// credential blob (and vice versa) even if one is pasted where the other is
+// expected — the prefix mismatch fails the format check before any key work.
+const statelessPrefix = "senv1"
+
+// SealStateless seals a self-contained token that is NOT welded to an owning
+// database row — the case Binding cannot serve (it requires a non-nil row id).
+// It is a single-layer AES-256-GCM seal under the primary KEK, with the purpose
+// and key version bound into the GCM additional data so a token cannot be lifted
+// into another purpose or have its version relabelled. The org (and any other
+// identity) travels INSIDE the ciphertext, so it need not be known before opening
+// — which is exactly what a URL-borne token (e.g. one-click unsubscribe) needs.
+//
+// There is deliberately no per-record DEK/rewrap here: a token is short and
+// disposable, not a credential kept at rest, so the two-layer machinery would buy
+// nothing. Key rotation still works — an old key version stays in the ring and
+// keeps opening tokens minted under it.
+func (c *Codec) SealStateless(purpose Purpose, plaintext []byte) (string, error) {
+	if !c.Configured() {
+		return "", ErrNotConfigured
+	}
+	if purpose == "" {
+		return "", errors.New("envelope: stateless seal needs a purpose")
+	}
+	version := c.ring.Primary()
+	kek, err := c.ring.key(version)
+	if err != nil {
+		return "", err
+	}
+	sealed, err := sealWith(kek, plaintext, statelessAAD(version, purpose))
+	if err != nil {
+		return "", fmt.Errorf("envelope: could not seal the token: %w", err)
+	}
+	return strings.Join([]string{
+		statelessPrefix,
+		strconv.Itoa(version),
+		base64.RawURLEncoding.EncodeToString(sealed),
+	}, "."), nil
+}
+
+// SealStatelessString seals a string payload.
+func (c *Codec) SealStatelessString(purpose Purpose, plaintext string) (string, error) {
+	return c.SealStateless(purpose, []byte(plaintext))
+}
+
+// OpenStateless reverses SealStateless. Its error shapes mirror Open: structural
+// problems name themselves (they are operator/format mistakes), an authentication
+// failure says only that the token could not be opened (wrong-key and tampered are
+// not distinguishable, and guessing invites the wrong remedy). Fail-closed: any
+// error means the token is untrustworthy.
+func (c *Codec) OpenStateless(purpose Purpose, blob string) ([]byte, error) {
+	if !c.Configured() {
+		return nil, ErrNotConfigured
+	}
+	if purpose == "" {
+		return nil, errors.New("envelope: stateless open needs a purpose")
+	}
+	parts := strings.Split(blob, ".")
+	if len(parts) != 3 || parts[0] != statelessPrefix {
+		return nil, errors.New("envelope: token is not in the expected format")
+	}
+	version, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return nil, errors.New("envelope: token has a non-numeric key version")
+	}
+	kek, err := c.ring.key(version)
+	if err != nil {
+		return nil, fmt.Errorf("envelope: %w", err)
+	}
+	sealed, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return nil, errors.New("envelope: token payload is malformed")
+	}
+	plaintext, err := openWith(kek, sealed, statelessAAD(version, purpose))
+	if err != nil {
+		return nil, errors.New("envelope: could not open the token")
+	}
+	return plaintext, nil
+}
+
+// OpenStatelessString is OpenStateless for a string payload.
+func (c *Codec) OpenStatelessString(purpose Purpose, blob string) (string, error) {
+	out, err := c.OpenStateless(purpose, blob)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+// statelessAAD binds a stateless token to its format, key version, and purpose —
+// no org/row id (those live inside the ciphertext, since a URL token's identity is
+// not known until it is opened).
+func statelessAAD(version int, purpose Purpose) []byte {
+	return []byte(strings.Join([]string{
+		statelessPrefix,
+		strconv.Itoa(version),
+		string(purpose),
+	}, "|"))
+}
+
 // VersionOf reports the key version a blob claims, without opening it — the
 // query a rotation sweep runs to find rows still on an old key. It reads the
 // blob, never the mirror column.

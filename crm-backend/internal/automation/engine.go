@@ -190,6 +190,23 @@ func (e *Engine) SendTestEmail(ctx context.Context, to, subject, bodyHTML string
 	return err
 }
 
+// SendMarketingEmail sends one already-resolved MARKETING email through the
+// registered email executor, carrying an optional Reply-To and the caller-supplied
+// custom headers (the RFC-8058 List-Unsubscribe pair). This is the seam the M7 bulk
+// lane calls per recipient with a deterministic idempotency key; the header/footer
+// assembly and the channel=marketing gating live in package marketing (which cannot
+// be imported here without a cycle), so this method stays a thin, channel-agnostic
+// transport. A transactional caller must never reach this path — it exists only so
+// the marketing lane can attach List-Unsubscribe without teaching the executor about
+// the marketing channel.
+func (e *Engine) SendMarketingEmail(ctx context.Context, to, subject, bodyHTML, fromName, replyTo string, cc []string, headers map[string]string, idempotencyKey string) (any, error) {
+	ex, ok := e.executors[ActionSendEmail].(*EmailExecutor)
+	if !ok || ex == nil {
+		return nil, fmt.Errorf("email executor is not configured")
+	}
+	return ex.sendEmailWithHeaders(ctx, "marketing-send", idempotencyKey, to, subject, bodyHTML, fromName, replyTo, cc, headers)
+}
+
 // WithAuthorizer wires the OLS/FLS + audit chokepoint (PermissionUseCase) so the
 // record-writing executors enforce and audit as the workflow author (P8). Without
 // it the executors write unrestricted (pre-P8 behavior), so prod MUST set it.

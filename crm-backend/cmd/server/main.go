@@ -1620,6 +1620,39 @@ func main() {
 			)`},
 			{"marketing_campaign_content org index", `CREATE INDEX IF NOT EXISTS idx_marketing_campaign_content_org
 				ON marketing_campaign_content(org_id) WHERE deleted_at IS NULL`},
+			// M3: per-org marketing sender profile — the CAN-SPAM physical postal
+			// address + from-identity rendered in every marketing footer, plus
+			// marketing_paused (the M4 complaint-breaker's org-level pause target, set
+			// here so M4 is independently deployable). One row per org: org_id is the
+			// PRIMARY KEY, so one-per-org uniqueness is the PK itself — no probe-and-refuse
+			// ritual (a brand-new table has no dirty data to violate a plain constraint).
+			// marketing_paused BOOLEAN NOT NULL DEFAULT false: the DDL default is
+			// load-bearing (GORM omits zero-values on insert — the U5 digest_only trap).
+			{"org_marketing_profile", `CREATE TABLE IF NOT EXISTS org_marketing_profile (
+				org_id                  UUID PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
+				from_name               VARCHAR(160) NOT NULL DEFAULT '',
+				reply_to                VARCHAR(320) NOT NULL DEFAULT '',
+				physical_postal_address TEXT NOT NULL DEFAULT '',
+				marketing_paused        BOOLEAN NOT NULL DEFAULT false,
+				created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			)`},
+			// M3: optional per-org marketing topics. opt_in_default is immutable after
+			// creation (app-enforced). No soft-delete, so the inline UNIQUE(org_id, name)
+			// is a correct table constraint on a brand-new table (a partial unique would
+			// be needed only if rows were soft-deletable).
+			{"marketing_topics", `CREATE TABLE IF NOT EXISTS marketing_topics (
+				id             UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+				org_id         UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+				name           VARCHAR(160) NOT NULL,
+				description    VARCHAR(500) NOT NULL DEFAULT '',
+				opt_in_default BOOLEAN NOT NULL DEFAULT false,
+				created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE (org_id, name)
+			)`},
+			{"marketing_topics org index", `CREATE INDEX IF NOT EXISTS idx_marketing_topics_org
+				ON marketing_topics(org_id)`},
 		}
 		for _, g := range marketingGuards {
 			if err := db.Exec(g.sql).Error; err != nil {
@@ -1634,6 +1667,8 @@ func main() {
 		db.Exec(`ALTER TABLE contact_marketing_state ENABLE ROW LEVEL SECURITY`)
 		db.Exec(`ALTER TABLE org_email_domains ENABLE ROW LEVEL SECURITY`)
 		db.Exec(`ALTER TABLE marketing_campaign_content ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`ALTER TABLE org_marketing_profile ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`ALTER TABLE marketing_topics ENABLE ROW LEVEL SECURITY`)
 
 		// The suppression dedupe UNIQUE index is FUNCTIONAL: COALESCE(topic_id, zero)
 		// is load-bearing because Postgres treats NULL as DISTINCT in a unique index,
@@ -2360,6 +2395,31 @@ func main() {
 			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
 		)
 
+		// ── Email marketing (M3: one-click unsubscribe + preference center +
+		// CAN-SPAM footer + sender profile + topics) ──────────────────────
+		// Unsubscribe tokens are signed by their OWN keyring (MARKETING_UNSUB_KEY),
+		// never JWT_SECRET / INTEGRATION_ENC_KEY — a rotation of an unrelated secret
+		// must not break the CAN-SPAM 30-day-plus links already mailed. Absent key =
+		// links un-mintable (send gate blocks, public endpoint 4xxs); malformed = fatal.
+		marketingTokens := marketing.NewTokenService(buildMarketingUnsubRing(cfg, log))
+		// Admin surface (sender profile + topics): reuses marketing.manage + the
+		// protected stack, exactly like M1/M2/M6.
+		marketing.NewProfileHandler(marketingRepo, autoLogger).RegisterRoutes(router,
+			integrationsProtected,
+			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
+		)
+		// PUBLIC one-click unsubscribe + preference center: mounted on the BARE router
+		// (no auth middleware) like the provider webhooks — the opaque token is the only
+		// credential. IP-limited (reuse the integrations limiter). The org display name
+		// for the preference page is resolved from organizations directly (the page must
+		// never expose the recipient's per-topic subscription state).
+		marketingOrgName := func(ctx context.Context, orgID uuid.UUID) (string, error) {
+			var name string
+			err := db.WithContext(ctx).Raw(`SELECT name FROM organizations WHERE id = ?`, orgID).Scan(&name).Error
+			return name, err
+		}
+		marketing.NewPublicUnsubHandler(marketingRepo, marketingTokens, integrationsIPLimiter, marketingOrgName, autoLogger).RegisterRoutes(router)
+
 		// ── L5.1 provider connector framework ────────────────────────────
 		// The registry holds the provider adapters that have shipped. It stays EMPTY
 		// (and every /connect a clean 404) until a provider is BOTH built and
@@ -2628,6 +2688,37 @@ func buildIntegrationCodec(cfg *config.Config, log *zap.Logger) *envelope.Codec 
 		// to be material-free precisely so this line can be logged, but the
 		// Fatal is what matters: a malformed key must not reach runtime.
 		log.Fatal("INTEGRATION_ENC_KEY is set but could not be parsed: " + err.Error() +
+			". Expected a base64-encoded 32-byte key, optionally as a comma-separated `version:key` keyring.")
+		return nil
+	}
+}
+
+// buildMarketingUnsubRing resolves MARKETING_UNSUB_KEY into the keyring that signs
+// one-click unsubscribe tokens (M3). It follows buildIntegrationCodec's asymmetry:
+//   - MALFORMED is always fatal (a typo must fail at deploy, not at every send).
+//   - ABSENT returns nil — the marketing token service then reports not-configured,
+//     the public endpoint 4xxs and the send gate blocks. Unlike a provider key this
+//     is never fatal-on-absent: a deployment can legitimately run without marketing
+//     campaigns, and the send gate already fails closed.
+//
+// A dedicated key (no fallback to JWT_SECRET / INTEGRATION_ENC_KEY) is deliberate:
+// rotating an unrelated secret must not silently break the CAN-SPAM 30-day-plus
+// unsubscribe links already in inboxes. Old key versions stay in the ring to keep
+// verifying old links across a rotation.
+func buildMarketingUnsubRing(cfg *config.Config, log *zap.Logger) *envelope.Keyring {
+	ring, err := envelope.ParseKeyring(cfg.MarketingUnsubKey)
+	switch {
+	case err == nil:
+		log.Info("Marketing unsubscribe token signing is configured",
+			zap.Ints("key_versions", ring.Versions()),
+			zap.Int("signing_under", ring.Primary()))
+		return ring
+	case errors.Is(err, envelope.ErrNoKeys):
+		log.Warn("MARKETING_UNSUB_KEY is not set: one-click unsubscribe links cannot be minted or verified, so the marketing send gate stays closed. " +
+			"Generate one with `openssl rand -base64 32`. This is expected for deployments not yet running marketing campaigns.")
+		return nil
+	default:
+		log.Fatal("MARKETING_UNSUB_KEY is set but could not be parsed: " + err.Error() +
 			". Expected a base64-encoded 32-byte key, optionally as a comma-separated `version:key` keyring.")
 		return nil
 	}

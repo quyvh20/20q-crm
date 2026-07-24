@@ -110,6 +110,19 @@ type Config struct {
 	// Payments
 	PaddleWebhookSecret string `mapstructure:"PADDLE_WEBHOOK_SECRET"`
 
+	// MarketingUnsubKey signs the opaque, stateless one-click unsubscribe tokens
+	// (M3). Format is the same versioned keyring as INTEGRATION_ENC_KEY
+	// (`version:base64key,...`; a bare 32-byte base64 key is version 1). It follows
+	// the SAME doctrine and for the same reasons: NO default and NO fallback to any
+	// other secret. A default would mask its own absence and let unset deployments
+	// mint forgeable links; a fallback (e.g. to JWT_SECRET) would silently break
+	// every already-mailed, CAN-SPAM-mandated 30-day-plus unsubscribe link the day
+	// that unrelated secret is rotated. Keep an old key version in the ring after a
+	// rotation so links minted under it keep verifying. Absent = unsubscribe tokens
+	// are un-mintable (the public endpoint 4xxs, the marketing send gate blocks) —
+	// which is the correct state for a deployment not yet running marketing sends.
+	MarketingUnsubKey string `mapstructure:"MARKETING_UNSUB_KEY"`
+
 	// Email
 	ResendAPIKey string `mapstructure:"RESEND_API_KEY"`
 	// MailFrom is the From address for all outgoing mail; the domain must be
@@ -165,6 +178,7 @@ func LoadConfig() (*Config, error) {
 	viper.BindEnv("CF_AI_GATEWAY_TOKEN")
 
 	viper.BindEnv("APP_ENV")
+	viper.BindEnv("MARKETING_UNSUB_KEY")
 	viper.BindEnv("RESEND_API_KEY")
 	viper.BindEnv("MAIL_FROM")
 	viper.BindEnv("MAIL_DISABLED")

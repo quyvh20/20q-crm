@@ -55,6 +55,8 @@ import SuppressionListPage from './features/marketing/SuppressionListPage';
 import SendingDomainsPage from './features/marketing/SendingDomainsPage';
 import CampaignContentListPage from './features/marketing/CampaignContentListPage';
 import CampaignContentEditor from './features/marketing/CampaignContentEditor';
+import SenderProfilePage from './features/marketing/SenderProfilePage';
+import PreferenceCenterPage from './features/marketing/PreferenceCenterPage';
 import ReportBuilderPage from './features/reports/ReportBuilderPage';
 import DashboardPage from './features/reports/DashboardPage';
 import TermsPage from './pages/legal/TermsPage';
@@ -160,6 +162,11 @@ function App() {
             <Route path="/verify-email" element={<VerifyEmailPage />} />
             <Route path="/auth/callback" element={<AuthCallbackPage />} />
             <Route path="/accept-invite" element={<AcceptInvitePage />} />
+            {/* PUBLIC one-click unsubscribe / preference center (M3). Token-bearing,
+                so — like /reset-password — left UNWRAPPED: a logged-in admin clicking
+                their own emailed unsubscribe link must still land here, not be bounced
+                to the dashboard. It calls only the public token endpoint. */}
+            <Route path="/u/:token" element={<PreferenceCenterPage />} />
 
             {/* Legal pages (U7.6): the fallback destinations for the signup
                 consent line when the operator hasn't pointed VITE_TERMS_URL /
@@ -327,6 +334,11 @@ function App() {
             <Route path="/marketing/content" element={
               <ProtectedRoute>
                 <AppLayout title="Email content"><CampaignContentListPage /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/marketing/sender-profile" element={
+              <ProtectedRoute>
+                <AppLayout title="Sender profile"><SenderProfilePage /></AppLayout>
               </ProtectedRoute>
             } />
             <Route path="/marketing/content/new" element={
