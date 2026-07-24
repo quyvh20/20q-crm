@@ -90,7 +90,7 @@ func (h *Handler) Backfill(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"data": gin.H{"status": "started", "enroll": req.Enroll}})
 }
 
-// runBackfill pages the form's history and imports each lead through the shared
+// runBackfill pages the form's WHOLE history and imports each lead through the shared
 // ingest pipeline. Runs on a detached context (never the request's) so a client
 // hangup cannot tear it in half.
 func (h *Handler) runBackfill(ctx context.Context, src *LeadSource, enroll bool) {
@@ -105,77 +105,21 @@ func (h *Handler) runBackfill(ctx context.Context, src *LeadSource, enroll bool)
 		return
 	}
 
-	cursor := ""
-	imported := 0
-	pages := 0
-	retries := 0
-	completed := false
-	for {
-		if ctx.Err() != nil {
-			// The run's own 15m deadline (or a cancel) elapsed. This is an incomplete
-			// walk, reported as such below — not "finished".
-			break
+	// A full history walk: page to the end (stopWhenCaughtUp=false), bounded only by
+	// the runaway page cap and the ctx deadline.
+	imported, completed, werr := h.walkFormLeads(ctx, src, conn, prov, creds, formID, backfillMaxPages, false, enroll)
+	if werr != nil {
+		// Permanent, or out of retries. LOUD and distinct from the success line, because
+		// a re-run is the recovery and the admin has to know one is needed. Dedupe makes
+		// a re-run safe: everything already imported is skipped.
+		if h.logger != nil {
+			h.logger.Error("integrations: backfill stopped on a provider error", "source_id", src.ID.String(), "imported", imported, "error", werr)
 		}
-		leads, next, ferr := prov.Backfill(ctx, conn, creds, formID, cursor)
-		if ferr != nil {
-			// A RETRYABLE error is not a reason to abandon the walk. This is the shape
-			// that bit TikTok: its throttles arrive as HTTP 200 with a code, classified
-			// inside the adapter AFTER the shared client's own retry has passed, and a
-			// once-per-second poll against one advertiser is exactly what provokes an
-			// advertiser-level QPS limit. Breaking here would drop the remaining
-			// regions and log "finished". Re-issue the SAME cursor after a backoff,
-			// bounded so a mislabelled-permanent error cannot spin until the deadline.
-			if IsRetryableHTTP(ferr) && retries < backfillMaxRetries {
-				retries++
-				h.logf("integrations: backfill hit a retryable error, retrying", "source_id", src.ID.String(), "attempt", retries, "error", ferr)
-				if !sleepBackfill(ctx, backfillPageDelay*time.Duration(retries)) {
-					break
-				}
-				continue
-			}
-			// Permanent, or out of retries. Stop — but LOUDLY and distinctly from the
-			// success line, because a re-run is the recovery and the admin has to know
-			// one is needed. Dedupe makes a re-run safe: everything already imported is
-			// skipped.
-			if h.logger != nil {
-				h.logger.Error("integrations: backfill stopped on a provider error", "source_id", src.ID.String(), "imported", imported, "error", ferr)
-			}
-			return
-		}
-		retries = 0
-		for i := range leads {
-			if h.importBackfillLead(ctx, src, conn, leads[i], enroll) {
-				imported++
-			}
-		}
-		if next == "" {
-			completed = true
-			break
-		}
-
-		// A POLL returns the SAME cursor it was handed (a provider waiting on an async
-		// export task, e.g. TikTok). It must NOT count against the page budget: that
-		// budget bounds how many PAGES of leads a runaway cursor can pull, and charging
-		// polls against it means a slow export exhausts it before the leads arrive —
-		// which is the "budget spent on polls, history dropped" defect. A page (a real
-		// advance) counts; a poll only pays the delay and is bounded by the ctx
-		// deadline. Facebook never returns the same cursor, so its behaviour is
-		// unchanged.
-		if next != cursor {
-			pages++
-			if pages >= backfillMaxPages {
-				h.logf("integrations: backfill hit the page cap before completing", "source_id", src.ID.String(), "imported", imported)
-				break
-			}
-		}
-		cursor = next
-		if !sleepBackfill(ctx, backfillPageDelay) {
-			break
-		}
+		return
 	}
-	// Info ONLY on a genuinely complete walk. Every other exit — the deadline, the
-	// page cap, a cancel — is a partial import that a re-run should finish, and it must
-	// not read as success.
+	// Info ONLY on a genuinely complete walk. Every other exit — the deadline, the page
+	// cap, a cancel — is a partial import that a re-run should finish, and it must not
+	// read as success.
 	if completed {
 		if h.logger != nil {
 			h.logger.Info("integrations: backfill finished", "source_id", src.ID.String(), "imported", imported, "enroll", enroll)
@@ -184,6 +128,75 @@ func (h *Handler) runBackfill(ctx context.Context, src *LeadSource, enroll bool)
 	}
 	if h.logger != nil {
 		h.logger.Warn("integrations: backfill ended incomplete — run it again to finish", "source_id", src.ID.String(), "imported", imported)
+	}
+}
+
+// walkFormLeads pages a form's leads through importBackfillLead and is the ONE page
+// walker: the user-triggered backfill (a full-history walk, large budget) and the
+// reconciliation poller (a recent-leads backstop, small budget, stopWhenCaughtUp)
+// both drive it. It returns the count imported, whether the walk reached a natural
+// end (vs stopped on the page cap or ctx), and a non-nil error ONLY for a PERMANENT
+// provider failure — a ctx cancel/deadline or the page cap is `completed=false, err=nil`
+// (an incomplete-but-not-broken walk).
+func (h *Handler) walkFormLeads(ctx context.Context, src *LeadSource, conn *IntegrationConnection, prov Provider, creds Credentials, formID string, maxPages int, stopWhenCaughtUp, enroll bool) (imported int, completed bool, err error) {
+	cursor := ""
+	pages := 0
+	retries := 0
+	for {
+		if ctx.Err() != nil {
+			return imported, false, nil // deadline or cancel: incomplete, not broken
+		}
+		leads, next, ferr := prov.Backfill(ctx, conn, creds, formID, cursor)
+		if ferr != nil {
+			// A RETRYABLE error is not a reason to abandon the walk. This is the shape
+			// that bit TikTok: its throttles arrive as HTTP 200 with a code, classified
+			// inside the adapter AFTER the shared client's own retry has passed, and a
+			// once-per-second poll against one advertiser is exactly what provokes an
+			// advertiser-level QPS limit. Re-issue the SAME cursor after a backoff,
+			// bounded so a mislabelled-permanent error cannot spin until the deadline.
+			if IsRetryableHTTP(ferr) && retries < backfillMaxRetries {
+				retries++
+				h.logf("integrations: form walk hit a retryable error, retrying", "source_id", src.ID.String(), "attempt", retries, "error", ferr)
+				if !sleepBackfill(ctx, backfillPageDelay*time.Duration(retries)) {
+					return imported, false, nil
+				}
+				continue
+			}
+			return imported, false, ferr // permanent, or out of retries
+		}
+		retries = 0
+		newThisPage := 0
+		for i := range leads {
+			if h.importBackfillLead(ctx, src, conn, leads[i], enroll) {
+				imported++
+				newThisPage++
+			}
+		}
+		if next == "" {
+			return imported, true, nil
+		}
+		// Caught up: a non-empty page produced NOTHING new, so from here every lead is
+		// one the dedupe already holds. Only the poller sets this — its job is to re-pull
+		// RECENT leads until it reaches ones the webhook already delivered, not to re-page
+		// a whole history each tick. The backfill leaves it false and walks to the end.
+		if stopWhenCaughtUp && len(leads) > 0 && newThisPage == 0 {
+			return imported, true, nil
+		}
+		// A POLL returns the SAME cursor it was handed (a provider waiting on an async
+		// export task, e.g. TikTok). It must NOT count against the page budget: charging
+		// polls means a slow export exhausts it before the leads arrive — the "budget
+		// spent on polls, history dropped" defect. A page (a real advance) counts; a poll
+		// only pays the delay. Facebook never returns the same cursor.
+		if next != cursor {
+			pages++
+			if pages >= maxPages {
+				return imported, false, nil // page cap: incomplete, not broken
+			}
+		}
+		cursor = next
+		if !sleepBackfill(ctx, backfillPageDelay) {
+			return imported, false, nil
+		}
 	}
 }
 
@@ -236,8 +249,8 @@ func (h *Handler) importBackfillLead(ctx context.Context, src *LeadSource, conn 
 	lead.DeliveryMode = DeliveryBackfill
 	lead.EnrollAutomation = enroll
 
-	raw, _ := json.Marshal(lead.Fields)
-	ctxJSON, _ := json.Marshal(lead.Context)
+	raw := marshalJSONB(lead.Fields)
+	ctxJSON := marshalJSONB(lead.Context)
 	leadgenID := lead.ProviderEventID
 	event := &IntegrationEvent{
 		OrgID:           src.OrgID,

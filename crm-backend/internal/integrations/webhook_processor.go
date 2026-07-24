@@ -287,8 +287,8 @@ func (p *webhookProcessor) healConnection(ctx context.Context, conn *Integration
 // worker stops re-claiming it), storing the fetched data so re-enabling the form
 // later shows what arrived.
 func (p *webhookProcessor) quarantine(ctx context.Context, event *IntegrationEvent, lead RawLead, reason string) {
-	raw, _ := json.Marshal(lead.Fields)
-	ctxJSON, _ := json.Marshal(lead.Context)
+	raw := marshalJSONB(lead.Fields)
+	ctxJSON := marshalJSONB(lead.Context)
 	event.RawPayload = raw
 	event.Context = ctxJSON
 	event.Status = EventStatusQuarantined

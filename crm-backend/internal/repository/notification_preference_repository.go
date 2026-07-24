@@ -53,10 +53,19 @@ func (r *notificationPreferenceRepository) Upsert(ctx context.Context, p *domain
 
 // ListDailyDigestDue returns every email_digest='daily' preference whose last digest
 // was sent before `sentBefore` (or never) — the digest job's cross-org work list.
+//
+// The liveness EXISTS is load-bearing, not cosmetic: a preference row outlives its
+// membership (neither workspace deletion nor member offboarding prunes
+// notification_preferences), and the send path only re-hydrates the GLOBAL user row,
+// so without this gate a deleted workspace's owner — or a suspended/removed member —
+// still receives one final digest. One correlated subquery excludes all three at the
+// source: a deleted org stamps org_users status='deleted'+deleted_at, a suspension
+// flips status, and a removal hard-deletes the row.
 func (r *notificationPreferenceRepository) ListDailyDigestDue(ctx context.Context, sentBefore time.Time) ([]domain.NotificationPreference, error) {
 	var rows []domain.NotificationPreference
 	err := r.db.WithContext(ctx).
 		Where("email_digest = ? AND mute_all = false AND (last_digest_sent_at IS NULL OR last_digest_sent_at < ?)", domain.DigestDaily, sentBefore).
+		Where(LiveMemberExists("notification_preferences.org_id", "notification_preferences.user_id")).
 		Find(&rows).Error
 	return rows, err
 }

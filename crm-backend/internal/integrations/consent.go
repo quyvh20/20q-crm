@@ -1,6 +1,7 @@
 package integrations
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"time"
@@ -108,6 +109,50 @@ func sanitizeValue(v any) any {
 	default:
 		return v
 	}
+}
+
+// sanitizeMap strips jsonb/text-hostile bytes from every string in a decoded map,
+// returning a clean copy of the same shape. Used for values headed to a record WRITE
+// (a native text column and the custom_fields jsonb both reject a NUL), whereas
+// marshalJSONB guards values headed to a jsonb ledger column.
+func sanitizeMap(m map[string]any) map[string]any {
+	if m == nil {
+		return nil
+	}
+	return sanitizeValue(m).(map[string]any)
+}
+
+// nulEscape is how encoding/json renders a NUL byte — the one sequence a well-formed
+// JSON document can carry that Postgres jsonb rejects (text cannot hold 0x00; every
+// other control escape it accepts). json.Marshal coerces invalid UTF-8 to U+FFFD, so a
+// NUL is the only jsonb-hostile byte left to guard.
+var nulEscape = []byte{'\\', 'u', '0', '0', '0', '0'}
+
+// marshalJSONB marshals a decoded value for storage in a jsonb event column,
+// stripping bytes Postgres rejects (a NUL, invalid UTF-8) BEFORE they are encoded.
+//
+// This is the ledger's load-bearing write guard, and every event-payload marshal
+// goes through it. A single 0x00 anywhere in a public payload would otherwise fail
+// the row INSERT — and because no event row lands, there is nothing to dedupe on, so
+// the caller's retry re-reads the same byte and fails identically forever (the
+// Idempotency-Key makes the loss permanent, not recoverable). Stripping at the value
+// level, not the marshaled bytes, is deliberate: an encoded NUL is the six-character
+//  escape, and a naive text strip would also corrupt a legitimate literal
+// "\\u0000" string. sanitizeValue's fast path makes this free for clean data.
+func marshalJSONB(v any) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return []byte("null")
+	}
+	if !bytes.Contains(b, nulEscape) {
+		return b
+	}
+	var generic any
+	if json.Unmarshal(b, &generic) != nil {
+		return b // unreachable in practice; better than dropping the whole payload
+	}
+	out, _ := json.Marshal(sanitizeValue(generic))
+	return out
 }
 
 // parseConsent turns a caller's consent object into what gets stored.

@@ -2,7 +2,6 @@ package integrations
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 
 	"github.com/google/uuid"
@@ -72,7 +71,7 @@ func (c *LegacyCapture) BeginDelivery(ctx context.Context, orgID uuid.UUID, payl
 		return uuid.Nil, err
 	}
 
-	raw, _ := json.Marshal(payload)
+	raw := marshalJSONB(payload)
 	event := &IntegrationEvent{
 		OrgID:    orgID,
 		SourceID: &src.ID,

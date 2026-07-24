@@ -368,7 +368,7 @@ func (h *Handler) countGoogleFailure(c *gin.Context, source *GoogleSource) {
 // shows a red test). Conflict-tolerant: Google redelivers, and a second mismatch
 // of the same lead_id must not error into a retry wall.
 func (h *Handler) recordGoogleMismatch(c *gin.Context, source *GoogleSource, p *googlePayload) {
-	raw, _ := json.Marshal(redactedEnvelope(p))
+	raw := marshalJSONB(redactedEnvelope(p))
 	var providerID *string
 	if id := strings.TrimSpace(p.LeadID); id != "" {
 		providerID = &id
@@ -406,8 +406,8 @@ func (h *Handler) recordGoogleMismatch(c *gin.Context, source *GoogleSource, p *
 // must answer 200 for THAT delivery rather than writing a second row, and a prior
 // failed/quarantined row is already the recovery copy.
 func (h *Handler) quarantineCappedGoogleLead(c *gin.Context, source *GoogleSource, lead *RawLead) {
-	raw, _ := json.Marshal(lead.Fields)
-	ctxJSON, _ := json.Marshal(lead.Context)
+	raw := marshalJSONB(lead.Fields)
+	ctxJSON := marshalJSONB(lead.Context)
 	var providerID *string
 	if lead.ProviderEventID != "" {
 		id := lead.ProviderEventID

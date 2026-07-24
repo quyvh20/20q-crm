@@ -302,7 +302,7 @@ func (h *Handler) countFormFailure(c *gin.Context, source *FormSource) {
 // caller-chosen key names at the top level of raw_payload — which the mapping UI
 // samples to suggest mappings to the admin.
 func (h *Handler) recordFormRejection(c *gin.Context, source *FormSource, body []byte, note string) {
-	raw, _ := json.Marshal(map[string]any{"submission": json.RawMessage(sanitizeFormBody(body))})
+	raw := marshalJSONB(map[string]any{"submission": rejectionSubmission(body)})
 	event := &IntegrationEvent{
 		OrgID:      source.OrgID,
 		SourceID:   &source.ID,
@@ -316,15 +316,20 @@ func (h *Handler) recordFormRejection(c *gin.Context, source *FormSource, body [
 	}
 }
 
-// sanitizeFormBody returns a body safe to embed in a JSONB document, or a JSON
-// string describing why it could not be. An unparseable body is exactly the case
-// this is most often called for, so it must not itself break the write.
-func sanitizeFormBody(body []byte) []byte {
-	if len(body) == 0 || !json.Valid(body) {
-		out, _ := json.Marshal(string(sanitizeJSONText(body)))
-		return out
+// rejectionSubmission returns the rejected body as a value safe to store under a jsonb
+// key. A parseable document is DECODED and handed back so marshalJSONB can strip any
+// NUL a caller slipped INSIDE valid JSON — a  escape passes json.Valid yet
+// Postgres jsonb rejects it, so returning the raw bytes verbatim (the old behaviour)
+// would silently lose the rejection row, the only evidence these submissions leave. An
+// unparseable body degrades to a sanitized string describing what arrived.
+func rejectionSubmission(body []byte) any {
+	if len(body) > 0 && json.Valid(body) {
+		var v any
+		if json.Unmarshal(body, &v) == nil {
+			return v
+		}
 	}
-	return body
+	return string(sanitizeJSONText(body))
 }
 
 // sanitizeJSONText strips what Postgres will not accept inside jsonb: Go tolerates

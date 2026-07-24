@@ -78,6 +78,7 @@ func newIntegrationsTestDB(t *testing.T) (*gorm.DB, func()) {
 		"000051_lead_ledger_retention.up.sql",
 		"000052_lead_legacy_webhook_source.up.sql",
 		"000053_lead_tiktok_forms.up.sql",
+		"000054_lead_deletion_callback.up.sql",
 	} {
 		b, err := os.ReadFile(filepath.Join("..", "..", "migrations", m))
 		require.NoError(t, err, "read migration %s", m)

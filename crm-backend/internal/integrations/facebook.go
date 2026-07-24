@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -124,6 +125,18 @@ func (p *FacebookProvider) ExchangeCallback(ctx context.Context, code, redirectU
 		userToken = longToken
 	}
 
+	// The app-scoped id of the user who authorized this grant, captured so a later
+	// Data Deletion Callback — which identifies the requester by this id, NOT by any
+	// page — can find and tear down the connections they created. Best-effort: the
+	// user token is about to be discarded, and a connect must not fail because this one
+	// read did. An empty id only means the deletion callback cannot match these rows —
+	// a coverage gap that surfaces (and is logged) as a zero-match at deletion time,
+	// never a broken connect. A systematic capture failure is anyway unlikely to be
+	// silent: /me shares this grant's token with listPages below, which fails the
+	// connect loudly. The framework copies the id off the credentials into the
+	// queryable external_user_id column at SelectAccount.
+	fbUserID, _ := p.me(ctx, userToken)
+
 	pages, err := p.listPages(ctx, userToken)
 	if err != nil {
 		return nil, err
@@ -136,10 +149,14 @@ func (p *FacebookProvider) ExchangeCallback(ctx context.Context, code, redirectU
 			// never fetch a lead.
 			continue
 		}
+		creds := Credentials{AccessToken: pg.AccessToken, TokenType: "page"}
+		if fbUserID != "" {
+			creds.Extra = map[string]any{CredentialExternalUserID: fbUserID}
+		}
 		acc := Account{
 			ID:          pg.ID,
 			Label:       pg.Name,
-			Credentials: Credentials{AccessToken: pg.AccessToken, TokenType: "page"},
+			Credentials: creds,
 		}
 		if pg.Category != "" {
 			acc.Meta = map[string]any{"category": pg.Category}
@@ -147,6 +164,66 @@ func (p *FacebookProvider) ExchangeCallback(ctx context.Context, code, redirectU
 		accounts = append(accounts, acc)
 	}
 	return accounts, nil
+}
+
+// me reads the app-scoped id of the user who authorized the connect, with their user
+// token. Captured for the Data Deletion Callback (ParseDeletionRequest returns the
+// same id) — it is the ONLY handle that ties a deletion request to the connections a
+// user made, since Meta's callback names the user, never the page.
+func (p *FacebookProvider) me(ctx context.Context, userToken string) (string, error) {
+	q := url.Values{}
+	q.Set("fields", "id")
+	q.Set("access_token", userToken)
+	q.Set("appsecret_proof", p.proof(userToken))
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := p.call(ctx, http.MethodGet, p.graphBaseURL+"/me?"+q.Encode(), &out); err != nil {
+		return "", err
+	}
+	return out.ID, nil
+}
+
+// ParseDeletionRequest verifies a Facebook Data Deletion Callback signed_request and
+// returns the app-scoped id of the user who asked us to erase their login data.
+//
+// Meta's signed_request is `base64url(sig).base64url(payload)`, where sig is
+// HMAC-SHA256 of the SECOND part's base64url STRING (not its decoded bytes) keyed by
+// the app secret. Verifying the raw string and comparing with hmac.Equal is the same
+// unforgeable posture as VerifyWebhook: a forged request must never reach a deletion.
+// base64url is unpadded, but a stray '=' from a lax caller is tolerated.
+func (p *FacebookProvider) ParseDeletionRequest(signedRequest string) (string, error) {
+	parts := strings.SplitN(signedRequest, ".", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", errors.New("facebook: malformed signed_request")
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[0], "="))
+	if err != nil {
+		return "", errors.New("facebook: signed_request signature is not valid base64url")
+	}
+	mac := hmac.New(sha256.New, []byte(p.appSecret))
+	mac.Write([]byte(parts[1]))
+	if !hmac.Equal(sig, mac.Sum(nil)) {
+		return "", errors.New("facebook: signed_request signature mismatch")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	if err != nil {
+		return "", errors.New("facebook: signed_request payload is not valid base64url")
+	}
+	var data struct {
+		Algorithm string `json:"algorithm"`
+		UserID    string `json:"user_id"`
+	}
+	if err := json.Unmarshal(payload, &data); err != nil {
+		return "", errors.New("facebook: signed_request payload is not valid JSON")
+	}
+	if !strings.EqualFold(data.Algorithm, "HMAC-SHA256") {
+		return "", fmt.Errorf("facebook: unexpected signed_request algorithm %q", data.Algorithm)
+	}
+	if data.UserID == "" {
+		return "", errors.New("facebook: signed_request carried no user_id")
+	}
+	return data.UserID, nil
 }
 
 // Subscribe activates leadgen delivery for the connected page.

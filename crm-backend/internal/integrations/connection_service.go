@@ -329,6 +329,17 @@ func (s *ConnectionService) SelectAccount(ctx context.Context, orgID, userID uui
 	if conn == nil {
 		return nil, domain.NewAppError(http.StatusConflict, "this connection was just changed elsewhere — reload to see the current state")
 	}
+	// Record the CURRENT grant's app-scoped provider user id (captured at
+	// ExchangeCallback) against the stored connection, so a later Data Deletion Callback
+	// can find and tear down what this user made. Written UNCONDITIONALLY and
+	// NULL-on-empty: on a reconnect whose capture failed this CLEARS a prior admin's
+	// stale id, so the row can never be matched by the wrong user (which would
+	// over-delete a live token this grant now owns). Best-effort: the connection is
+	// already committed, and a failed stamp only leaves a coverage gap logged at
+	// deletion time.
+	if serr := s.repo.StampExternalUserID(ctx, conn.ID, credentialExternalUserID(chosen.Credentials)); serr != nil {
+		s.logf("integrations: could not record external user id for data-deletion matching", "connection_id", conn.ID.String(), "error", serr)
+	}
 	// Activate delivery (Facebook: subscribe the page to leadgen). A failure here
 	// does NOT undo the connection — the credential is stored and the page is
 	// connected — but it IS recorded so the card can warn "connected, not receiving
@@ -540,6 +551,94 @@ func (s *ConnectionService) Disconnect(ctx context.Context, orgID, id uuid.UUID)
 		}
 	}
 	return s.repo.SoftDeleteConnection(ctx, orgID, id)
+}
+
+// HandleDataDeletion tears down every connection a provider user created, for a
+// provider Data Deletion Callback (Meta step 5). It needs no session: the
+// signed_request verifies itself, and ParseDeletionRequest returns the app-scoped
+// user id only when the app-secret HMAC checks out. It returns an opaque confirmation
+// code the caller reports back to the provider — we act synchronously, so the status
+// page that code points to is a confirmation, not a poll.
+//
+// Best-effort per connection, like Disconnect: a provider teardown that fails must not
+// leave the credential sealed at rest. Purging is what actually satisfies the request
+// — the sealed token is the "login data we hold" — so it runs regardless.
+func (s *ConnectionService) HandleDataDeletion(ctx context.Context, provider, signedRequest string) (string, error) {
+	prov, ok := s.registry.Get(provider)
+	if !ok {
+		return "", domain.NewAppError(http.StatusNotFound, "unknown provider")
+	}
+	externalUserID, err := prov.ParseDeletionRequest(signedRequest)
+	if err != nil {
+		// One opaque 400 for every verification failure — a malformed body, a bad
+		// signature, an unsupported provider all look identical to an unauthenticated
+		// caller, deliberately.
+		return "", domain.NewAppError(http.StatusBadRequest, "the deletion request could not be verified")
+	}
+	code, _, cerr := randToken()
+	if cerr != nil {
+		return "", cerr
+	}
+	conns, err := s.repo.FindConnectionsByExternalUser(ctx, provider, externalUserID)
+	if err != nil {
+		return "", err
+	}
+	if len(conns) == 0 {
+		// Nothing stored for this user — they may already have disconnected AND been
+		// purged, or connected before external_user_id capture shipped, or the capture
+		// failed. Logged because this is exactly where a coverage gap surfaces: a
+		// systematically unstamped fleet answers every callback here. Still a successful
+		// deletion from the provider's view — there is nothing left to erase.
+		s.logf("integrations: data deletion callback matched no connections", "provider", provider)
+		return code, nil
+	}
+	ids := make([]uuid.UUID, 0, len(conns))
+	for i := range conns {
+		c := &conns[i]
+		ids = append(ids, c.ID)
+		// Provider teardown (unsubscribe) ONLY for still-LIVE rows. A soft-deleted row
+		// was already unsubscribed on its original disconnect, and its page may since
+		// have been claimed by ANOTHER workspace — re-issuing DELETE /subscribed_apps
+		// would detach that tenant's live delivery (the cross-tenant hazard the
+		// workspace teardown re-checks the claim to avoid). The credential purge below
+		// is what actually satisfies the erasure and is safe on any row.
+		if c.DeletedAt.Valid {
+			continue
+		}
+		if p, pok := s.registry.Get(c.Provider); pok && s.codec.Configured() {
+			if creds, oerr := s.openCredentials(c); oerr == nil {
+				if derr := p.Disconnect(ctx, c, creds); derr != nil {
+					s.logf("integrations: provider teardown failed during data deletion", "connection_id", c.ID.String(), "error", derr)
+				}
+			}
+		}
+	}
+	purged, err := s.repo.PurgeConnectionSecretsByIDs(ctx, ids)
+	if err != nil {
+		return "", err
+	}
+	s.logf("integrations: data deletion callback purged connections", "provider", provider, "connections", purged)
+	return code, nil
+}
+
+// DeletionStatusURL builds the human-readable status page URL the callback returns to
+// the provider. Config-derived origin (publicBaseURL), never the request host. The
+// code is base64url, so it is query-safe without escaping.
+func (s *ConnectionService) DeletionStatusURL(code string) string {
+	return s.publicBaseURL + "/api/integrations/data-deletion/status?code=" + code
+}
+
+// credentialExternalUserID reads the app-scoped user id an adapter stamped onto the
+// freshly exchanged credentials (see CredentialExternalUserID), for the framework to
+// copy into the queryable column.
+func credentialExternalUserID(creds Credentials) string {
+	if creds.Extra == nil {
+		return ""
+	}
+	if v, ok := creds.Extra[CredentialExternalUserID].(string); ok {
+		return v
+	}
+	return ""
 }
 
 // Canary proves the configured key opens the credentials already at rest. Its

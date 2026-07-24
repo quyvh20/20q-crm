@@ -1,7 +1,6 @@
 package integrations
 
 import (
-	"encoding/json"
 	"strings"
 	"time"
 
@@ -247,8 +246,8 @@ func batchContext(src map[string]any, batchID string) map[string]any {
 // delivery log tell different stories, and "we never received it" becomes
 // unanswerable.
 func refusedEvent(source *LeadSource, item batchItem, r batchItemResult, batchID string) *IntegrationEvent {
-	raw, _ := json.Marshal(item.Fields)
-	ctxJSON, _ := json.Marshal(batchContext(item.Context, batchID))
+	raw := marshalJSONB(item.Fields)
+	ctxJSON := marshalJSONB(batchContext(item.Context, batchID))
 	var providerID *string
 	if r.IdempotencyKey != "" {
 		k := r.IdempotencyKey

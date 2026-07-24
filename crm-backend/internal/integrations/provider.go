@@ -89,6 +89,12 @@ type Provider interface {
 	// Disconnect best-effort tears down the provider-side subscription when a
 	// connection is removed (unsubscribe the page's leadgen webhook). L6.
 	Disconnect(ctx context.Context, conn *IntegrationConnection, creds Credentials) error
+
+	// ParseDeletionRequest verifies a provider Data Deletion Callback (Facebook's
+	// signed_request) and returns the app-scoped id of the user asking us to erase the
+	// login data we hold, so the framework can find and tear down that user's
+	// connections. Optional — UnimplementedProvider returns unsupported. L5.4.
+	ParseDeletionRequest(signedRequest string) (string, error)
 }
 
 // ProviderInfo is a provider's self-description. JSON-tagged because the
@@ -126,6 +132,12 @@ type ProviderInfo struct {
 	// rehydrates from the stored delivery for exactly this purpose.
 	CarriesLeadData bool `json:"carries_lead_data"`
 }
+
+// CredentialExternalUserID is the Extra key an adapter stamps with the app-scoped id
+// of the user who authorized the connect. The framework copies it out of the freshly
+// exchanged Credentials into the queryable external_user_id column at connect time
+// (see SelectAccount) so a Data Deletion Callback can find that user's connections.
+const CredentialExternalUserID = "external_user_id"
 
 // Credentials is a provider access-token blob, sealed at rest by the envelope
 // codec. Providers populate whichever fields they hold; Extra carries anything
@@ -275,6 +287,12 @@ func (UnimplementedProvider) HealthCheck(context.Context, *IntegrationConnection
 // would make an ordinary disconnect look like it failed.
 func (UnimplementedProvider) Disconnect(context.Context, *IntegrationConnection, Credentials) error {
 	return nil
+}
+
+// ParseDeletionRequest reports the capability is unsupported — a provider with no
+// signed-request deletion callback has nothing to verify.
+func (UnimplementedProvider) ParseDeletionRequest(string) (string, error) {
+	return "", ErrProviderCapabilityUnsupported
 }
 
 // Registry is the set of providers whose adapters have shipped. It is populated

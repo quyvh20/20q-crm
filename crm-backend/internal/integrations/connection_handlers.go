@@ -3,6 +3,7 @@ package integrations
 import (
 	"encoding/json"
 	"errors"
+	"html"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -33,17 +34,23 @@ type ConnectionHandler struct {
 	// an OLS bypass) and validates the seeded field map against the target schema.
 	authz  domain.RecordAuthorizer
 	schema SchemaProvider
-	logger *slog.Logger
+	// ipLimiter bounds the one PUBLIC route here — the OAuth callback — per source
+	// IP. Every other route in this handler is behind the protected group; the
+	// callback is authenticated only by its single-use state row, so without this a
+	// stranger could hammer state guesses and the provider token-exchange each one
+	// triggers. Nil-tolerant, matching the webhook handler.
+	ipLimiter *RateLimiter
+	logger    *slog.Logger
 }
 
 // NewConnectionHandler builds the handler. authz is required for the same reason
 // the source handler's is: the form-enable path writes to `contact`, and the OLS
 // re-check is a security control, not a formality.
-func NewConnectionHandler(repo *Repository, svc *ConnectionService, authz domain.RecordAuthorizer, schema SchemaProvider, logger *slog.Logger) *ConnectionHandler {
+func NewConnectionHandler(repo *Repository, svc *ConnectionService, authz domain.RecordAuthorizer, schema SchemaProvider, ipLimiter *RateLimiter, logger *slog.Logger) *ConnectionHandler {
 	if authz == nil {
 		panic("integrations: connection handler needs an authorizer — the form-enable OLS check is a security control")
 	}
-	return &ConnectionHandler{repo: repo, svc: svc, authz: authz, schema: schema, logger: logger}
+	return &ConnectionHandler{repo: repo, svc: svc, authz: authz, schema: schema, ipLimiter: ipLimiter, logger: logger}
 }
 
 // RegisterRoutes mounts the connection routes: a PUBLIC provider callback (a
@@ -54,6 +61,11 @@ func (h *ConnectionHandler) RegisterRoutes(router *gin.Engine, protected []gin.H
 	// carries no bearer/PAT and cannot join the protected group; the single-use
 	// `state` param is its whole authentication, resolved server-side.
 	router.GET("/api/integrations/providers/:provider/callback", h.Callback)
+	// Data Deletion Callback (Meta App Review step 5) and the status page it points a
+	// user at. Both PUBLIC: the POST authenticates itself with the signed_request; the
+	// status GET is informational.
+	router.POST("/api/integrations/providers/:provider/data-deletion", h.DataDeletion)
+	router.GET("/api/integrations/data-deletion/status", h.DeletionStatus)
 
 	g := router.Group("/api/integrations")
 	g.Use(protected...)
@@ -111,13 +123,28 @@ func (h *ConnectionHandler) Connect(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{"auth_url": authURL}})
 }
 
-// Callback is the provider's redirect target. It ALWAYS redirects the browser
-// back to the frontend — never returns a JSON error — because a provider sent a
-// human here, not an API client. Failures land on the integrations page with a
-// short machine reason, never a raw error string (which could carry provider
-// detail or token fragments).
+// Callback is the provider's redirect target. Every outcome that reaches the
+// provider flow redirects the browser back to the frontend — never a JSON error —
+// because a provider sent a human here, not an API client: failures land on the
+// integrations page with a short machine reason, never a raw error string (which
+// could carry provider detail or token fragments). The ONE exception is the pre-DB
+// per-IP rate limit below, which bare-aborts 429: that branch fires only under a
+// flood, where redirecting the flood into the frontend is the worse answer.
 func (h *ConnectionHandler) Callback(c *gin.Context) {
 	provider := strings.TrimSpace(c.Param("provider"))
+	// Bound this public, state-authenticated route per IP before any DB work. The key
+	// is the IP ALONE — deliberately NOT the provider, which is a caller-controlled
+	// path segment here (unlike the webhook handler, where it is a construction-time
+	// constant): folding it into the key would let a flood vary the segment to mint a
+	// fresh bucket per name and multiply its own allowance. Coarse behind an unset
+	// TRUSTED_PROXIES (ClientIP is then the edge) — a documented prod precondition,
+	// not a reason to leave the route unbounded.
+	if h.ipLimiter != nil {
+		if ok, _ := h.ipLimiter.AllowN(c.Request.Context(), "provcb:ip:"+c.ClientIP(), 1); !ok {
+			c.AbortWithStatus(http.StatusTooManyRequests)
+			return
+		}
+	}
 	if reason := c.Query("error"); reason != "" {
 		// The user declined consent, or the provider refused. "denied" is deliberately
 		// generic: the provider's own error text is not something to reflect into our
@@ -134,6 +161,66 @@ func (h *ConnectionHandler) Callback(c *gin.Context) {
 		return
 	}
 	c.Redirect(http.StatusFound, h.svc.PickerRedirect(provider, token))
+}
+
+// DataDeletion is Facebook's Data Deletion Callback (Meta App Review step 5): Meta
+// POSTs a signed_request identifying the user who asked us to erase the login data we
+// hold. PUBLIC and unauthenticated — the signed_request IS the authentication — so it
+// is rate-limited per IP like the OAuth callback, keyed on IP alone for the same
+// reason (the :provider path segment is caller-controlled here).
+func (h *ConnectionHandler) DataDeletion(c *gin.Context) {
+	provider := strings.TrimSpace(c.Param("provider"))
+	if h.ipLimiter != nil {
+		if ok, _ := h.ipLimiter.AllowN(c.Request.Context(), "provdd:ip:"+c.ClientIP(), 1); !ok {
+			c.AbortWithStatus(http.StatusTooManyRequests)
+			return
+		}
+	}
+	// Meta sends signed_request form-encoded; tolerate a JSON body too rather than
+	// reject a well-meaning integrator posting the same field as JSON.
+	signed := strings.TrimSpace(c.PostForm("signed_request"))
+	if signed == "" {
+		var body struct {
+			SignedRequest string `json:"signed_request"`
+		}
+		_ = c.ShouldBindJSON(&body)
+		signed = strings.TrimSpace(body.SignedRequest)
+	}
+	if signed == "" {
+		h.err(c, http.StatusBadRequest, "signed_request is required")
+		return
+	}
+	code, err := h.svc.HandleDataDeletion(c.Request.Context(), provider, signed)
+	if err != nil {
+		h.writeErr(c, err)
+		return
+	}
+	// The exact shape Meta requires: a top-level url + confirmation_code, not the
+	// {data:…} envelope the management routes use.
+	c.JSON(http.StatusOK, gin.H{
+		"url":               h.svc.DeletionStatusURL(code),
+		"confirmation_code": code,
+	})
+}
+
+// DeletionStatus renders the human-readable page the Data Deletion Callback points a
+// user at. We act synchronously, so it is a confirmation rather than a poll. The code
+// is echoed HTML-ESCAPED — it arrives as a caller-controlled query param on a public
+// route, so reflecting it raw would be a stored-nowhere reflected-XSS.
+func (h *ConnectionHandler) DeletionStatus(c *gin.Context) {
+	code := strings.TrimSpace(c.Query("code"))
+	page := `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
+		`<meta name="viewport" content="width=device-width,initial-scale=1">` +
+		`<title>Data deletion</title></head>` +
+		`<body style="font-family:system-ui,sans-serif;max-width:40rem;margin:4rem auto;padding:0 1rem;line-height:1.5">` +
+		`<h1>Data deletion</h1>` +
+		`<p>The login data associated with your account for this application has been removed.</p>`
+	if code != "" {
+		page += `<p>Reference: <code>` + html.EscapeString(code) + `</code></p>`
+	}
+	page += `</body></html>`
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.String(http.StatusOK, page)
 }
 
 // Candidates returns the token-free account choices for a pending selection.

@@ -33,6 +33,21 @@ import (
 const ActiveMemberSQL = `SELECT user_id FROM org_users
 	WHERE org_id = ? AND user_id IN ? AND status = 'active' AND deleted_at IS NULL`
 
+// LiveMemberExists is the correlated-subquery form of the same rule, for a caller
+// that filters ANOTHER table by "this (org, user) is a live member" rather than
+// probing a known list. It checks the same two facts as ActiveMemberSQL — active
+// status and no org-level soft-delete tombstone — and lives here beside it so the
+// rule keeps ONE home; a REMOVED member's org_users row is hard-deleted, so the
+// subquery is simply empty for them.
+//
+// orgCol and userCol are the OUTER query's fully-qualified column references (e.g.
+// "notification_preferences.org_id"). They are interpolated into the SQL text, so
+// they MUST be trusted compile-time literals — never user input.
+func LiveMemberExists(orgCol, userCol string) string {
+	return "EXISTS (SELECT 1 FROM org_users ou WHERE ou.org_id = " + orgCol +
+		" AND ou.user_id = " + userCol + " AND ou.status = 'active' AND ou.deleted_at IS NULL)"
+}
+
 // ActiveMemberIDs returns which of the given users are live members of the org, in
 // ONE round trip.
 //

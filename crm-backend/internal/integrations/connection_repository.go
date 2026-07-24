@@ -527,6 +527,70 @@ func (r *Repository) PurgeConnectionSecrets(ctx context.Context, orgID uuid.UUID
 	return res.RowsAffected, res.Error
 }
 
+// StampExternalUserID records the CURRENT grant's app-scoped provider user id on a
+// connection so a Data Deletion Callback can match it later. external_user_id is an
+// ALTER-added column and is deliberately UNMAPPED on the model (the owner_pool/
+// redacted_at rule: a mapped column whose boot guard slipped would break Create/Save
+// on the connect path). It is touched ONLY here (SET) and in
+// FindConnectionsByExternalUser (WHERE), so a missing column fails those two calls
+// alone — a coverage gap logged at deletion time — never a connect or webhook.
+//
+// It writes AUTHORITATIVELY, NULL-on-empty (NULLIF): a reconnect whose fresh capture
+// failed must CLEAR a prior admin's stale id, not leave the row matchable by the wrong
+// user — otherwise that user's deletion request would over-delete a live token this
+// admin's grant now owns. Best-effort at the call site.
+func (r *Repository) StampExternalUserID(ctx context.Context, connID uuid.UUID, externalUserID string) error {
+	return r.db.WithContext(ctx).Exec(
+		`UPDATE integration_connections SET external_user_id = NULLIF(?, ''), updated_at = NOW() WHERE id = ?`,
+		externalUserID, connID).Error
+}
+
+// FindConnectionsByExternalUser returns every connection a given provider user
+// created — the set a Data Deletion Callback must tear down. It INCLUDES soft-deleted
+// rows: a user-initiated Disconnect soft-deletes without blanking the sealed token or
+// clearing external_user_id, so a page the user connected then disconnected still
+// holds "the login data we hold", and erasure must reach it — the same "live and
+// soft-deleted rows alike" posture PurgeConnectionSecrets takes, and why deleted_at is
+// carried out so the caller can skip the provider unsubscribe on already-detached rows.
+// It selects only mapped columns and references external_user_id solely in the WHERE,
+// so the model never carries the ALTER-added column and a missing column fails this
+// query in isolation.
+func (r *Repository) FindConnectionsByExternalUser(ctx context.Context, provider, externalUserID string) ([]IntegrationConnection, error) {
+	if externalUserID == "" {
+		return nil, nil
+	}
+	var out []IntegrationConnection
+	err := r.db.WithContext(ctx).Raw(`
+		SELECT id, org_id, provider, external_account_id, external_account_label,
+		       encrypted_credentials, key_version, status, created_by, created_at, updated_at, deleted_at
+		  FROM integration_connections
+		 WHERE provider = ? AND external_user_id = ?`,
+		provider, externalUserID).Scan(&out).Error
+	return out, err
+}
+
+// PurgeConnectionSecretsByIDs destroys the sealed credentials and releases the claim
+// for a specific set of connections — the Data Deletion Callback counterpart to the
+// per-org PurgeConnectionSecrets. It also NULLs external_user_id: once the login data
+// is erased, retaining the identifier that tied it to a person would defeat the
+// erasure. Blanks rather than deletes — the ledger references connection_id, and what
+// must go is the secret, not the history.
+func (r *Repository) PurgeConnectionSecretsByIDs(ctx context.Context, ids []uuid.UUID) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	res := r.db.WithContext(ctx).Exec(`
+		UPDATE integration_connections
+		   SET encrypted_credentials    = '',
+		       webhook_secret_encrypted = NULL,
+		       external_user_id         = NULL,
+		       status                   = ?,
+		       deleted_at               = COALESCE(deleted_at, NOW()),
+		       updated_at               = NOW()
+		 WHERE id IN ?`, ConnStatusDisconnected, ids)
+	return res.RowsAffected, res.Error
+}
+
 // DisableSourcesForOrg switches off every lead source in an org.
 //
 // Inbound is already refused at receipt (every token lookup joins organizations on

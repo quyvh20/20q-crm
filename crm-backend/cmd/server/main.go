@@ -1286,6 +1286,16 @@ func main() {
 			{"integration_connections claim", `CREATE UNIQUE INDEX IF NOT EXISTS uix_integration_connections_claim
 				ON integration_connections(provider, external_account_id)
 				WHERE deleted_at IS NULL AND status IN ('connected', 'degraded', 'error')`},
+			// L5.4 Data Deletion Callback: the app-scoped provider user id, captured at
+			// connect so a signed_request can find the connections that user created.
+			// UNMAPPED on the model — an ALTER-added column, so the owner_pool/redacted_at
+			// rule applies: it is referenced only in StampExternalUserID's SET and
+			// FindConnectionsByExternalUser's WHERE, never a model SELECT, so a guard that
+			// never ran fails only the deletion callback, not the connect or webhook path.
+			{"integration_connections external_user_id", `ALTER TABLE integration_connections
+				ADD COLUMN IF NOT EXISTS external_user_id VARCHAR(64)`},
+			{"integration_connections external_user index", `CREATE INDEX IF NOT EXISTS idx_integration_connections_ext_user
+				ON integration_connections(provider, external_user_id) WHERE external_user_id IS NOT NULL`},
 
 			{"integration_oauth_states", `CREATE TABLE IF NOT EXISTS integration_oauth_states (
 				id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -2402,7 +2412,7 @@ func main() {
 		}
 		// The source handler's backfill action needs a connection's creds+adapter.
 		integrationsHandler.WithConnections(integrationsConnSvc)
-		integrations.NewConnectionHandler(integrationsRepo, integrationsConnSvc, permissionUC, objectRegistryUC, autoLogger).
+		integrations.NewConnectionHandler(integrationsRepo, integrationsConnSvc, permissionUC, objectRegistryUC, integrationsIPLimiter, autoLogger).
 			RegisterRoutes(router,
 				integrationsProtected,
 				func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
@@ -2445,6 +2455,11 @@ func main() {
 		// handshake, so it gets no verify token and therefore no GET route.
 		integrations.NewWebhookHandler(integrationsRepo, integrationsConnSvc, integrations.ProviderKeyTikTok, "", integrationsIPLimiter, autoLogger).RegisterRoutes(router)
 		go integrations.StartWebhookProcessor(context.Background(), integrationsRepo, integrationsConnSvc, integrationsIngest, autoLogger, integrationsHealth)
+		// L5.4 reconciliation poller — the leadgen webhook's backstop. On a slow tick it
+		// re-pulls each live Facebook form's recent leads and imports any a dropped webhook
+		// delivery never delivered (deduped, suppressed). One advisory lock so only one
+		// replica sweeps; dormant without a ConnectionService (guarded inside).
+		go integrationsHandler.StartReconciliationPoller(context.Background())
 
 		// Wire schema cache invalidation: when stages, tags, custom fields,
 		// or custom object defs change, the workflow schema cache is purged

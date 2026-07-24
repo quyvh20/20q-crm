@@ -3,7 +3,6 @@ package integrations
 import (
 	"context"
 	"crypto/subtle"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -178,7 +177,7 @@ func (h *WebhookHandler) enqueue(ctx context.Context, ev *InboundEvent) (transie
 	// that is not just evidence — it is the lead. The worker rehydrates it into
 	// InboundEvent.Raw so a restart between receipt and processing cannot lose the
 	// answers, exactly as a fetched lead survives one.
-	rawJSON, _ := json.Marshal(ev.Raw)
+	rawJSON := marshalJSONB(ev.Raw)
 	// form_id is what resolves the source; the account key is provider-flavoured, so
 	// both the generic name and Meta's own are written — the retention sweep's
 	// context projection and the delivery-details panel both already know page_id.
@@ -186,7 +185,7 @@ func (h *WebhookHandler) enqueue(ctx context.Context, ev *InboundEvent) (transie
 	if h.provider == ProviderKeyFacebook {
 		deliveryCtx["page_id"] = ev.ExternalAccountID
 	}
-	ctxJSON, _ := json.Marshal(deliveryCtx)
+	ctxJSON := marshalJSONB(deliveryCtx)
 	leadgenID := ev.ProviderEventID
 	event := &IntegrationEvent{
 		OrgID:        conn.OrgID,

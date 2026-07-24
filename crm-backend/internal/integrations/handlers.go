@@ -1487,8 +1487,8 @@ const capQuarantineError = "daily capture limit reached — this delivery was re
 // Dedupe-aware via InsertEventDeduped: a caller retrying with the same
 // Idempotency-Key against a still-capped source gets one row, not one per attempt.
 func (h *Handler) ledgerCappedLead(c *gin.Context, source *LeadSource, req captureRequest) {
-	raw, _ := json.Marshal(req.Fields)
-	ctxJSON, _ := json.Marshal(req.Context)
+	raw := marshalJSONB(req.Fields)
+	ctxJSON := marshalJSONB(req.Context)
 	var providerID *string
 	if id := strings.TrimSpace(c.GetHeader("Idempotency-Key")); id != "" {
 		providerID = &id

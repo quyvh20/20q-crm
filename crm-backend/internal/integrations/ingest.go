@@ -2,7 +2,6 @@ package integrations
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -242,8 +241,8 @@ func (s *LeadIngestService) Ingest(ctx context.Context, source *LeadSource, lead
 		id := lead.ProviderEventID
 		providerID = &id
 	}
-	raw, _ := json.Marshal(lead.Fields)
-	ctxJSON, _ := json.Marshal(lead.Context)
+	raw := marshalJSONB(lead.Fields)
+	ctxJSON := marshalJSONB(lead.Context)
 
 	event := &IntegrationEvent{
 		OrgID:           source.OrgID,
@@ -327,8 +326,8 @@ func (s *LeadIngestService) IngestClaimed(ctx context.Context, source *LeadSourc
 	if !IsSupportedTarget(source.TargetSlug) {
 		return nil, s.failEvent(ledgerCtx, event, domain.NewAppError(http.StatusBadRequest, "unsupported target object: "+source.TargetSlug))
 	}
-	raw, _ := json.Marshal(lead.Fields)
-	ctxJSON, _ := json.Marshal(lead.Context)
+	raw := marshalJSONB(lead.Fields)
+	ctxJSON := marshalJSONB(lead.Context)
 	event.RawPayload = datatypes.JSON(raw)
 	event.Context = datatypes.JSON(ctxJSON)
 	event.SourceID = &source.ID
@@ -357,6 +356,14 @@ func (s *LeadIngestService) processEvent(ledgerCtx context.Context, source *Lead
 	incoming, mapFailures := fmap.Apply(lead.Fields)
 
 	fields, quarantined := allow.Apply(incoming)
+	// Strip jsonb/text-hostile bytes (a NUL, invalid UTF-8) from the mapped values
+	// before anything is matched on or written. The ledger marshal is already guarded
+	// by marshalJSONB, but these values head to a record WRITE — a native text column
+	// and the custom_fields jsonb both reject 0x00 — and on the sync path that write
+	// failure is the same permanent Idempotency-Key retry loop, one layer down. One
+	// strip at the single point the to-be-written map is produced covers the match
+	// key, the native columns and the custom_fields blob at once.
+	fields = sanitizeMap(fields)
 	// A mapping that could not be applied is quarantined like any other unusable
 	// key: recorded, visible, and never a reason to reject the lead.
 	for k, reason := range mapFailures {
@@ -368,7 +375,7 @@ func (s *LeadIngestService) processEvent(ledgerCtx context.Context, source *Lead
 	}
 	sort.Strings(quarantinedKeys) // stable output; map order would churn the response
 	if len(quarantined) > 0 {
-		q, _ := json.Marshal(quarantined)
+		q := marshalJSONB(quarantined)
 		event.QuarantinedFields = datatypes.JSON(q)
 	}
 

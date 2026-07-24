@@ -1327,17 +1327,19 @@ func (r *Repository) SourceLabels(ctx context.Context, orgID uuid.UUID, ids []uu
 	return out, nil
 }
 
-// WithLedgerPruneLock runs fn holding a Postgres advisory lock, reporting whether
-// the lock was obtained. A caller that gets false did nothing and should skip.
+// withAdvisoryLock runs fn holding a session-level Postgres advisory lock named
+// lockName, reporting whether the lock was obtained. A caller that gets false did
+// nothing and should skip. It backs the fleet-wide singleton jobs (the ledger prune,
+// the reconciliation poller) so only one replica does the work per tick.
 //
 // The lock is taken on a PINNED connection, not on the pooled handle. A session-level
 // advisory lock belongs to the CONNECTION that took it, and a pool hands successive
 // statements to whichever connection is free — so locking and unlocking through the
 // pool can release nothing (the unlock lands on a connection that never held it) and
-// leak the lock until that backend is recycled, after which no replica ever sweeps
-// again. The automation scheduler's timer job already established the pinned-conn
+// leak the lock until that backend is recycled, after which no replica ever runs the
+// job again. The automation scheduler's timer job already established the pinned-conn
 // shape for exactly this reason; its no-activity job did not, and is the counterexample.
-func (r *Repository) WithLedgerPruneLock(ctx context.Context, fn func() error) (bool, error) {
+func (r *Repository) withAdvisoryLock(ctx context.Context, lockName string, fn func() error) (bool, error) {
 	sqlDB, err := r.db.DB()
 	if err != nil {
 		return false, err
@@ -1350,7 +1352,7 @@ func (r *Repository) WithLedgerPruneLock(ctx context.Context, fn func() error) (
 
 	var locked bool
 	if err := conn.QueryRowContext(ctx,
-		"SELECT pg_try_advisory_lock(hashtext('integrations_ledger_prune'))").Scan(&locked); err != nil {
+		"SELECT pg_try_advisory_lock(hashtext($1))", lockName).Scan(&locked); err != nil {
 		return false, err
 	}
 	if !locked {
@@ -1359,12 +1361,23 @@ func (r *Repository) WithLedgerPruneLock(ctx context.Context, fn func() error) (
 	// Released explicitly rather than left to connection teardown: conn.Close()
 	// returns the connection to the POOL rather than closing the backend, so an
 	// un-released session lock would ride that connection back into general use and
-	// still be held.
+	// still be held. hashtext is deterministic, so the unlock's key matches the lock's.
 	defer func() {
-		_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock(hashtext('integrations_ledger_prune'))")
+		_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock(hashtext($1))", lockName)
 	}()
 
 	return true, fn()
+}
+
+// WithLedgerPruneLock runs fn under the ledger-retention sweep's singleton lock.
+func (r *Repository) WithLedgerPruneLock(ctx context.Context, fn func() error) (bool, error) {
+	return r.withAdvisoryLock(ctx, "integrations_ledger_prune", fn)
+}
+
+// WithReconcileLock runs fn under the reconciliation poller's singleton lock. A
+// DISTINCT key from the prune so the two fleet jobs never block each other.
+func (r *Repository) WithReconcileLock(ctx context.Context, fn func() error) (bool, error) {
+	return r.withAdvisoryLock(ctx, "integrations_reconcile", fn)
 }
 
 // PruneExpiredPayloads redacts one batch of ledger rows whose personal data has no
@@ -1481,6 +1494,27 @@ func (r *Repository) CountLiveFormSources(ctx context.Context, orgID, connection
 		Where("org_id = ? AND connection_id = ? AND status <> ?", orgID, connectionID, SourceStatusDisabled).
 		Count(&n).Error
 	return n, err
+}
+
+// ListReconcilableFacebookForms returns the live facebook_form sources whose
+// connection is live too — the fleet the reconciliation poller re-pulls as a webhook
+// backstop. Cross-org (a scheduled fleet job, like the prune) and bounded to
+// facebook_form ON PURPOSE: TikTok's historical export is an async CSV task that
+// creates a fresh export on each call, which is the wrong shape for a frequent poll,
+// and a webhook that carries the lead inline has nothing a re-fetch would recover
+// differently. The EXISTS (not a JOIN) keeps the SELECT on lead_sources alone, so the
+// scan never collides on a column both tables share and the LeadSource model's
+// unmapped ALTER columns are untouched.
+func (r *Repository) ListReconcilableFacebookForms(ctx context.Context) ([]LeadSource, error) {
+	var out []LeadSource
+	err := r.db.WithContext(ctx).
+		Where("kind = ? AND status = ? AND deleted_at IS NULL AND connection_id IS NOT NULL",
+			KindFacebookForm, SourceStatusActive).
+		Where(`EXISTS (SELECT 1 FROM integration_connections c
+		         WHERE c.id = lead_sources.connection_id AND c.deleted_at IS NULL
+		           AND c.status IN ('connected','degraded'))`).
+		Find(&out).Error
+	return out, err
 }
 
 // DailyIngestCount is one day's deliveries for a source, split by what became of them.
