@@ -53,6 +53,8 @@ import SharedWithMePage from './pages/SharedWithMePage';
 import ReportsListPage from './features/reports/ReportsListPage';
 import SuppressionListPage from './features/marketing/SuppressionListPage';
 import SendingDomainsPage from './features/marketing/SendingDomainsPage';
+import CampaignContentListPage from './features/marketing/CampaignContentListPage';
+import CampaignContentEditor from './features/marketing/CampaignContentEditor';
 import ReportBuilderPage from './features/reports/ReportBuilderPage';
 import DashboardPage from './features/reports/DashboardPage';
 import TermsPage from './pages/legal/TermsPage';
@@ -320,6 +322,21 @@ function App() {
             <Route path="/marketing/domains" element={
               <ProtectedRoute>
                 <AppLayout title="Sending domains"><SendingDomainsPage /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/marketing/content" element={
+              <ProtectedRoute>
+                <AppLayout title="Email content"><CampaignContentListPage /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/marketing/content/new" element={
+              <ProtectedRoute>
+                <AppLayout title="New email content"><CampaignContentEditor /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/marketing/content/:id" element={
+              <ProtectedRoute>
+                <AppLayout title="Email content"><CampaignContentEditor /></AppLayout>
               </ProtectedRoute>
             } />
             <Route path="/reports/new" element={
