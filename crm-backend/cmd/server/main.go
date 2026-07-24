@@ -1653,6 +1653,44 @@ func main() {
 			)`},
 			{"marketing_topics org index", `CREATE INDEX IF NOT EXISTS idx_marketing_topics_org
 				ON marketing_topics(org_id)`},
+			// M4: Resend delivery-webhook event ledger (owner-less, org-level) — doubles
+			// as the durable ledger, the svix dedupe row, and the async work queue, like
+			// integration_events. UNIQUE(org_id, svix_id) is a PLAIN INLINE constraint (a
+			// brand-new table has no dirty data, so no probe-and-refuse ritual). Every
+			// non-zero-default column carries a DDL DEFAULT (GORM omits zero-values).
+			{"marketing_email_events", `CREATE TABLE IF NOT EXISTS marketing_email_events (
+				id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+				org_id           UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+				svix_id          VARCHAR(80) NOT NULL,
+				event_type       VARCHAR(48) NOT NULL,
+				email_normalized VARCHAR(320) NOT NULL DEFAULT '',
+				from_domain      VARCHAR(255) NOT NULL DEFAULT '',
+				reason           VARCHAR(32) NOT NULL DEFAULT '',
+				bounce_type      VARCHAR(24) NOT NULL DEFAULT '',
+				channel          VARCHAR(16) NOT NULL DEFAULT '',
+				campaign_id      UUID,
+				status           VARCHAR(16) NOT NULL DEFAULT 'pending',
+				attempts         INT NOT NULL DEFAULT 0,
+				claimed_at       TIMESTAMPTZ,
+				raw_payload      JSONB NOT NULL DEFAULT '{}',
+				error            TEXT NOT NULL DEFAULT '',
+				occurred_at      TIMESTAMPTZ,
+				created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				processed_at     TIMESTAMPTZ,
+				UNIQUE (org_id, svix_id)
+			)`},
+			// Poll index for the claim query (distinct name — CREATE INDEX IF NOT EXISTS
+			// matches on NAME ONLY, so a reused name is a silent no-op).
+			{"marketing_email_events pending index", `CREATE INDEX IF NOT EXISTS idx_marketing_email_events_pending
+				ON marketing_email_events(created_at) WHERE status = 'pending'`},
+			// Rollup index for the per-org rate breaker (org + time window).
+			{"marketing_email_events org+time index", `CREATE INDEX IF NOT EXISTS idx_marketing_email_events_org_created
+				ON marketing_email_events(org_id, created_at)`},
+			// M4: rolling-window soft-bounce accumulation needs a last-seen timestamp on
+			// the (M1) suppressions table. Idempotent ADD COLUMN IF NOT EXISTS boot guard
+			// (a raw ALTER runs on prod; a GORM AutoMigrate-added column does not).
+			{"marketing_suppressions last_soft_bounce_at", `ALTER TABLE marketing_suppressions
+				ADD COLUMN IF NOT EXISTS last_soft_bounce_at TIMESTAMPTZ`},
 		}
 		for _, g := range marketingGuards {
 			if err := db.Exec(g.sql).Error; err != nil {
@@ -1669,6 +1707,7 @@ func main() {
 		db.Exec(`ALTER TABLE marketing_campaign_content ENABLE ROW LEVEL SECURITY`)
 		db.Exec(`ALTER TABLE org_marketing_profile ENABLE ROW LEVEL SECURITY`)
 		db.Exec(`ALTER TABLE marketing_topics ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`ALTER TABLE marketing_email_events ENABLE ROW LEVEL SECURITY`)
 
 		// The suppression dedupe UNIQUE index is FUNCTIONAL: COALESCE(topic_id, zero)
 		// is load-bearing because Postgres treats NULL as DISTINCT in a unique index,
@@ -2419,6 +2458,21 @@ func main() {
 			return name, err
 		}
 		marketing.NewPublicUnsubHandler(marketingRepo, marketingTokens, integrationsIPLimiter, marketingOrgName, autoLogger).RegisterRoutes(router)
+
+		// ── Email marketing (M4: Resend/Svix delivery webhook → auto-suppression +
+		// event ledger + complaint-rate auto-pause) ───────────────────────
+		// PUBLIC Svix-signed webhook on the bare router (no auth — the whsec_ signature
+		// is the credential; absent secret => every event 401s, fail-closed). It is a
+		// pure enqueue into marketing_email_events; a callerless processor drains the
+		// queue off the request path and applies suppressions + the org-level breaker
+		// (auto-pause via marketing_paused; transactional keeps flowing). Org is resolved
+		// defensively from the send domain — pre-M7 (no per-org send lane) every event is
+		// a transactional send from the global MAIL_FROM and resolves to no org, so the
+		// endpoint verifies+dedupes+ACKs+drops them, and the machinery is dormant until M7.
+		marketing.NewResendWebhookHandler(marketingRepo, integrationsIPLimiter, cfg.ResendWebhookSecret, cfg.AppEnv, autoLogger).RegisterRoutes(router)
+		marketingResendProcessor := marketing.NewResendProcessor(marketingRepo, autoLogger)
+		go marketing.StartResendWebhookProcessor(context.Background(), marketingResendProcessor)
+		go marketing.StartResendReaper(context.Background(), marketingRepo, autoLogger)
 
 		// ── L5.1 provider connector framework ────────────────────────────
 		// The registry holds the provider adapters that have shipped. It stays EMPTY

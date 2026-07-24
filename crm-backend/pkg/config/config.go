@@ -133,6 +133,14 @@ type Config struct {
 	// when RESEND_API_KEY is missing rather than silently dropping recovery
 	// emails (P10 P1).
 	MailDisabled bool `mapstructure:"MAIL_DISABLED"`
+	// ResendWebhookSecret verifies the Svix signature on Resend's delivery webhooks
+	// (M4). Format is the Svix `whsec_<base64>` secret from the Resend webhook
+	// endpoint's settings. Like the other webhook secrets it has NO default and NO
+	// fallback — absent = every webhook fails signature verification (401), which is
+	// the correct fail-closed state for a deployment not yet wired to Resend's
+	// webhooks. Needs its own viper.BindEnv below or it silently reads "" in prod
+	// (the PADDLE_WEBHOOK_SECRET footgun the config test guards against).
+	ResendWebhookSecret string `mapstructure:"RESEND_WEBHOOK_SECRET"`
 
 	// Storage (Cloudflare R2 — optional, falls back to base64-in-redis for dev)
 	R2AccountID       string `mapstructure:"R2_ACCOUNT_ID"`
@@ -180,6 +188,7 @@ func LoadConfig() (*Config, error) {
 	viper.BindEnv("APP_ENV")
 	viper.BindEnv("MARKETING_UNSUB_KEY")
 	viper.BindEnv("RESEND_API_KEY")
+	viper.BindEnv("RESEND_WEBHOOK_SECRET")
 	viper.BindEnv("MAIL_FROM")
 	viper.BindEnv("MAIL_DISABLED")
 	viper.BindEnv("R2_ACCOUNT_ID")

@@ -77,6 +77,12 @@ func DefaultScopeForReason(reason string) string {
 // (the webhook processor); IsSendable only reads the current count.
 const SoftBounceSuppressThreshold = 3
 
+// SoftBounceWindow is the rolling window over which soft bounces accumulate toward
+// SoftBounceSuppressThreshold (M4). A soft bounce whose predecessor is older than
+// this resets the count to 1, so a mailbox that soft-bounces occasionally over a
+// long period is not suppressed — only ~3 within the window is.
+const SoftBounceWindow = 14 * 24 * time.Hour
+
 // Marketing lifecycle status for an email address.
 const (
 	StatusSubscribed   = "subscribed"
@@ -127,7 +133,12 @@ type Suppression struct {
 	TopicID         *uuid.UUID `gorm:"type:uuid" json:"topic_id,omitempty"`
 	Source          string     `gorm:"type:varchar(64);not null;default:''" json:"source"`
 	SoftBounceCount int        `gorm:"type:int;not null;default:0" json:"soft_bounce_count"`
-	CreatedAt       time.Time  `gorm:"not null;default:now()" json:"created_at"`
+	// LastSoftBounceAt is the timestamp of the most recent soft bounce counted (M4).
+	// The accumulator resets SoftBounceCount to 1 when the previous soft bounce is
+	// older than SoftBounceWindow, so the "~3 within ~14 days" rule is a rolling
+	// window rather than a lifetime count. NULL for non-soft-bounce rows.
+	LastSoftBounceAt *time.Time `gorm:"column:last_soft_bounce_at" json:"last_soft_bounce_at,omitempty"`
+	CreatedAt        time.Time  `gorm:"not null;default:now()" json:"created_at"`
 }
 
 // TableName pins the table name (never let GORM pluralize/guess).
