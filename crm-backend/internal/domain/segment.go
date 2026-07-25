@@ -143,6 +143,15 @@ type SegmentUseCase interface {
 	ListFields(ctx context.Context, orgID uuid.UUID) ([]ReportFieldDescriptor, error)
 	AddStaticMembers(ctx context.Context, orgID, id uuid.UUID, contactIDs []uuid.UUID) (int, error)
 	RemoveStaticMember(ctx context.Context, orgID, id, contactID uuid.UUID) (bool, error)
+
+	// AudienceQueryForSegments (M7) compiles the union(includes) minus union(excludes)
+	// of the given segments into a single parameterized `SELECT contact_id,
+	// email_normalized` over live, org-scoped contacts (callerless / org-wide, since a
+	// bulk send has no acting user). Segments are validated to belong to the org; a
+	// dynamic segment's saved AST is trusted (it passed FLS at its own save). The bulk
+	// send engine wraps the returned SelectSQL in an INSERT…SELECT (roster snapshot) or
+	// a COUNT (live estimate).
+	AudienceQueryForSegments(ctx context.Context, orgID uuid.UUID, includeIDs, excludeIDs []uuid.UUID) (*AudienceQuery, error)
 }
 
 // SegmentStore is what the usecase needs from persistence (implemented by the
@@ -172,4 +181,11 @@ type SegmentStore interface {
 
 	// TagBelongsToOrg validates a tag-leaf id at save time (prevents cross-org probing).
 	TagBelongsToOrg(ctx context.Context, orgID, tagID uuid.UUID) (bool, error)
+
+	// CompileAudienceQuery (M7) is the pure SQL builder behind AudienceQueryForSegments:
+	// given the pre-built catalog and the resolved include/exclude segments, it returns
+	// a fully-parameterized `SELECT contact_id, email_normalized` over the deduped
+	// union(includes) minus union(excludes), org-scoped, email non-empty, lower-cased.
+	// It never runs the query and never interpolates values (reuses the M5 compiler).
+	CompileAudienceQuery(orgID uuid.UUID, catalog []ReportField, includes, excludes []ResolvedSegment) (string, []any, error)
 }

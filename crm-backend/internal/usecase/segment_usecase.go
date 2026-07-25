@@ -357,6 +357,52 @@ func (uc *segmentUseCase) Count(ctx context.Context, orgID, id uuid.UUID) (int, 
 	return n, nil
 }
 
+// AudienceQueryForSegments compiles the union(includes) minus union(excludes) of the
+// given segments into a parameterized audience SELECT (M7). Callerless / org-wide: a
+// bulk send has no acting user, and each referenced segment already passed FLS at its
+// own save, so we trust the stored AST and apply no row scope (DataScopeAll). A
+// missing (deleted / cross-org) segment simply contributes nothing.
+func (uc *segmentUseCase) AudienceQueryForSegments(ctx context.Context, orgID uuid.UUID, includeIDs, excludeIDs []uuid.UUID) (*domain.AudienceQuery, error) {
+	catalog, err := uc.contactCatalog(ctx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	includes, err := uc.resolveSegments(ctx, orgID, includeIDs)
+	if err != nil {
+		return nil, err
+	}
+	excludes, err := uc.resolveSegments(ctx, orgID, excludeIDs)
+	if err != nil {
+		return nil, err
+	}
+	sql, args, err := uc.store.CompileAudienceQuery(orgID, catalog, includes, excludes)
+	if err != nil {
+		return nil, mapSegErr(err)
+	}
+	return &domain.AudienceQuery{SelectSQL: sql, Args: args}, nil
+}
+
+func (uc *segmentUseCase) resolveSegments(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID) ([]domain.ResolvedSegment, error) {
+	out := make([]domain.ResolvedSegment, 0, len(ids))
+	for _, id := range ids {
+		seg, err := uc.store.GetSegmentByID(ctx, orgID, id)
+		if err != nil {
+			return nil, err
+		}
+		if seg == nil {
+			continue
+		}
+		rs := domain.ResolvedSegment{ID: seg.ID, Type: seg.Type}
+		if seg.Type == domain.SegmentTypeDynamic && len(seg.Definition) > 0 {
+			if err := json.Unmarshal(seg.Definition, &rs.Filter); err != nil {
+				return nil, domain.NewAppError(http.StatusBadRequest, "invalid segment definition")
+			}
+		}
+		out = append(out, rs)
+	}
+	return out, nil
+}
+
 func (uc *segmentUseCase) ListFields(ctx context.Context, orgID uuid.UUID) ([]domain.ReportFieldDescriptor, error) {
 	if err := uc.authz.Authorize(ctx, orgID, segmentContactSlug, domain.ActionRead); err != nil {
 		return nil, err

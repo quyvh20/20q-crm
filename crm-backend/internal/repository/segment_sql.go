@@ -132,6 +132,69 @@ func buildSegmentTagLeaf(ref reportTableRef, tagID string, not bool, leafCount *
 	return ex, []any{id}, nil
 }
 
+// audienceSegmentSelect builds one segment's `SELECT contact_id, email_normalized`
+// over live, non-empty-email contacts (dynamic → the compiled AST WHERE; static →
+// the membership join). Callerless/org-wide (DataScopeAll), so no row predicate.
+func audienceSegmentSelect(fields map[string]domain.ReportField, seg domain.ResolvedSegment, orgID uuid.UUID) (string, []any, error) {
+	const cols = "SELECT contacts.id AS contact_id, lower(contacts.email) AS email_normalized "
+	const liveEmail = " AND contacts.email IS NOT NULL AND btrim(contacts.email) <> ''"
+	if seg.Type == domain.SegmentTypeStatic {
+		sql := cols +
+			"FROM marketing_segment_static_members sm JOIN contacts ON contacts.id = sm.contact_id " +
+			"WHERE sm.segment_id = ? AND contacts.org_id = ? AND contacts.deleted_at IS NULL" + liveEmail
+		return sql, []any{seg.ID, orgID}, nil
+	}
+	// dynamic
+	where, args, err := buildSegmentWhere(fields, seg.Filter, orgID, reportScope{Scope: domain.DataScopeAll})
+	if err != nil {
+		return "", nil, err
+	}
+	sql := cols + "FROM contacts WHERE (" + where + ")" + liveEmail
+	return sql, args, nil
+}
+
+// unionSelects joins per-segment selects with UNION (which dedupes identical
+// (contact_id, email) rows). Returns "" when there are no segments.
+func unionSelects(fields map[string]domain.ReportField, segs []domain.ResolvedSegment, orgID uuid.UUID) (string, []any, error) {
+	var parts []string
+	var args []any
+	for _, s := range segs {
+		sql, a, err := audienceSegmentSelect(fields, s, orgID)
+		if err != nil {
+			return "", nil, err
+		}
+		parts = append(parts, sql)
+		args = append(args, a...)
+	}
+	return strings.Join(parts, " UNION "), args, nil
+}
+
+// CompileAudienceQuery composes the audience SELECT: union(includes) minus the
+// emails in union(excludes). The bulk send engine wraps this in INSERT…SELECT or
+// COUNT. Every value is a bind arg; only catalog-resolved identifiers are spliced.
+func (r *SegmentRepository) CompileAudienceQuery(orgID uuid.UUID, catalog []domain.ReportField, includes, excludes []domain.ResolvedSegment) (string, []any, error) {
+	if len(includes) == 0 {
+		// No audience — a SELECT that returns zero rows, safely typed.
+		return "SELECT NULL::uuid AS contact_id, NULL::text AS email_normalized WHERE false", nil, nil
+	}
+	fields := r.fieldMap(catalog)
+	incSQL, incArgs, err := unionSelects(fields, includes, orgID)
+	if err != nil {
+		return "", nil, err
+	}
+	sql := "SELECT inc.contact_id, inc.email_normalized FROM (" + incSQL + ") inc"
+	args := append([]any{}, incArgs...)
+	if len(excludes) > 0 {
+		excSQL, excArgs, err := unionSelects(fields, excludes, orgID)
+		if err != nil {
+			return "", nil, err
+		}
+		sql += " WHERE inc.email_normalized NOT IN (SELECT exc.email_normalized FROM (" + excSQL + ") exc)"
+		args = append(args, excArgs...)
+	}
+	return sql, args, nil
+}
+
 // ValidateSegmentFilter checks an AST compiles against the catalog (unknown field,
 // invalid operator for the field type, bad tag id, too deep / too many rules)
 // WITHOUT running it — save-time validation, defense-in-depth alongside the usecase

@@ -94,6 +94,10 @@ func (f *fakeSegStore) RemoveStaticMember(_ context.Context, _, _, _ uuid.UUID) 
 func (f *fakeSegStore) TagBelongsToOrg(_ context.Context, _, _ uuid.UUID) (bool, error) {
 	return f.tagOK, nil
 }
+func (f *fakeSegStore) CompileAudienceQuery(_ uuid.UUID, _ []domain.ReportField, includes, excludes []domain.ResolvedSegment) (string, []any, error) {
+	// Minimal stand-in: the real SQL is proven in the repository + Docker tests.
+	return "SELECT NULL::uuid AS contact_id, NULL::text AS email_normalized WHERE false", nil, nil
+}
 
 // ============================================================
 // Env

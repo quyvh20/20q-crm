@@ -1735,6 +1735,57 @@ func main() {
 				ON contact_tags(tag_id, contact_id)`},
 			{"contacts custom_fields gin", `CREATE INDEX IF NOT EXISTS idx_contacts_custom_fields_gin
 				ON contacts USING GIN (custom_fields)`},
+			// M7: bulk send engine — campaigns + the recipient roster (the sole durable
+			// authority for send state / dedup / progress / resume / pause). JSONB defaults
+			// as datatypes.JSON. The UNIQUE(campaign_id, email_normalized) is the structural
+			// cross-segment dedupe; created plainly (the table is new, so always empty — the
+			// probe ritual is only for promoting a UNIQUE on possibly-dirty existing data).
+			{"marketing_campaigns", `CREATE TABLE IF NOT EXISTS marketing_campaigns (
+				id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+				org_id              UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+				name                VARCHAR(200) NOT NULL,
+				content_id          UUID REFERENCES marketing_campaign_content(id) ON DELETE SET NULL,
+				segment_ids         JSONB NOT NULL DEFAULT '[]',
+				exclude_segment_ids JSONB NOT NULL DEFAULT '[]',
+				sending_domain_id   UUID REFERENCES org_email_domains(id) ON DELETE SET NULL,
+				topic_id            UUID REFERENCES marketing_topics(id) ON DELETE SET NULL,
+				status              VARCHAR(16) NOT NULL DEFAULT 'draft',
+				send_lane           VARCHAR(16) NOT NULL DEFAULT 'single',
+				scheduled_at        TIMESTAMPTZ,
+				recipient_lock_mode VARCHAR(24) NOT NULL DEFAULT 'lock_on_schedule',
+				snapshot_counts     JSONB NOT NULL DEFAULT '{}',
+				feedback_id         VARCHAR(128),
+				created_by          UUID REFERENCES users(id) ON DELETE SET NULL,
+				created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				started_at          TIMESTAMPTZ,
+				finished_at         TIMESTAMPTZ,
+				deleted_at          TIMESTAMPTZ
+			)`},
+			{"marketing_campaigns org index", `CREATE INDEX IF NOT EXISTS idx_marketing_campaigns_org
+				ON marketing_campaigns(org_id) WHERE deleted_at IS NULL`},
+			{"marketing_campaign_recipients", `CREATE TABLE IF NOT EXISTS marketing_campaign_recipients (
+				id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+				campaign_id         UUID NOT NULL REFERENCES marketing_campaigns(id) ON DELETE CASCADE,
+				org_id              UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+				contact_id          UUID REFERENCES contacts(id) ON DELETE SET NULL,
+				email_normalized    VARCHAR(320) NOT NULL,
+				variant             VARCHAR(32),
+				status              VARCHAR(16) NOT NULL DEFAULT 'pending',
+				attempts            INT NOT NULL DEFAULT 0,
+				next_attempt_at     TIMESTAMPTZ,
+				scheduled_for       TIMESTAMPTZ,
+				locked_at           TIMESTAMPTZ,
+				provider_message_id VARCHAR(128),
+				idempotency_key     VARCHAR(160),
+				error               TEXT,
+				created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				processed_at        TIMESTAMPTZ
+			)`},
+			{"campaign_recipients dedupe unique", `CREATE UNIQUE INDEX IF NOT EXISTS uix_campaign_recipients_campaign_email
+				ON marketing_campaign_recipients(campaign_id, email_normalized)`},
+			{"campaign_recipients claim index", `CREATE INDEX IF NOT EXISTS idx_campaign_recipients_claim
+				ON marketing_campaign_recipients(campaign_id, status, scheduled_for)`},
 		}
 		for _, g := range marketingGuards {
 			if err := db.Exec(g.sql).Error; err != nil {
@@ -1755,6 +1806,8 @@ func main() {
 		db.Exec(`ALTER TABLE marketing_segments ENABLE ROW LEVEL SECURITY`)
 		db.Exec(`ALTER TABLE marketing_segment_static_members ENABLE ROW LEVEL SECURITY`)
 		db.Exec(`ALTER TABLE marketing_segment_members ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`ALTER TABLE marketing_campaigns ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`ALTER TABLE marketing_campaign_recipients ENABLE ROW LEVEL SECURITY`)
 
 		// The suppression dedupe UNIQUE index is FUNCTIONAL: COALESCE(topic_id, zero)
 		// is load-bearing because Postgres treats NULL as DISTINCT in a unique index,
@@ -2532,6 +2585,17 @@ func main() {
 		segmentRepo := repository.NewSegmentRepository(db)
 		segmentUC := usecase.NewSegmentUseCase(segmentRepo, objectRegistryRepo, permissionUC, redisClient)
 		delivery.NewSegmentHandler(segmentUC).RegisterRoutes(router,
+			integrationsProtected,
+			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
+		)
+
+		// ── Email marketing (M7.1: bulk send — campaigns + roster fan-out + launch
+		// gates; sends NO email — that is the M7.2 send worker). The audience is
+		// resolved via M5 (segmentUC.AudienceQueryForSegments); launch readiness reuses
+		// the M2 domain gate, M3/M4 sender profile, and M6 compiled content. marketingTokens
+		// gates the one-click-unsubscribe launch check (unset key ⇒ not-ready, never panic).
+		campaignUC := marketing.NewCampaignUseCase(marketingRepo, segmentUC, marketingDomainSvc, marketingTokens, autoLogger)
+		marketing.NewCampaignHandler(campaignUC, autoLogger).RegisterRoutes(router,
 			integrationsProtected,
 			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
 		)
