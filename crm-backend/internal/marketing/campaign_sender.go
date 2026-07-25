@@ -192,9 +192,12 @@ func (s *CampaignSender) publishProgress(ctx context.Context, orgID, campID uuid
 	if err != nil {
 		return
 	}
-	status := ""
-	if camp, err := s.store.GetCampaignByID(ctx, orgID, campID); err == nil && camp != nil {
-		status = camp.Status
+	// The status is load-bearing on the FE (a blank one blanks the badge and hides the
+	// pause/cancel controls), so never publish a status-less frame — skip on a read
+	// failure; the next batch/poll emits a correct one.
+	camp, err := s.store.GetCampaignByID(ctx, orgID, campID)
+	if err != nil || camp == nil {
+		return
 	}
 	total := 0
 	for _, n := range counts {
@@ -204,14 +207,15 @@ func (s *CampaignSender) publishProgress(ctx context.Context, orgID, campID uuid
 		"type":        "campaign_progress",
 		"campaign_id": campID.String(),
 		"org_id":      orgID.String(),
-		"status":      status,
+		"status":      camp.Status,
 		"counts":      counts,
 		"total":       total,
 	})
 	if err != nil {
 		return
 	}
-	s.redis.Publish(ctx, domain.OrgNotificationChannel(orgID), payload)
+	// Marketing-only channel — the SSE hub subscribes only marketing.manage callers.
+	s.redis.Publish(ctx, domain.OrgMarketingChannel(orgID), payload)
 }
 
 func (s *CampaignSender) loadCampaignContext(ctx context.Context, orgID, campID uuid.UUID) *campaignSendContext {

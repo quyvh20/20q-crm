@@ -47,7 +47,13 @@ export function useCampaignProgress(id: string | undefined, status: string | und
     queryKey: campaignKeys.progress(id ?? ''),
     queryFn: () => getProgress(id as string),
     enabled: !!id,
-    refetchInterval: status && isCampaignActive(status as Campaign['status']) ? 3000 : false,
+    // Key the poll's lifetime on the LIVE polled status (falling back to the passed-in
+    // detail status only before the first fetch) so it self-terminates when the
+    // campaign finishes, even if SSE never connected to flip the detail cache.
+    refetchInterval: (query) => {
+      const s = (query.state.data?.status ?? status) as Campaign['status'] | undefined;
+      return s && isCampaignActive(s) ? 3000 : false;
+    },
     retry: false,
   });
 }
@@ -90,7 +96,13 @@ export function useLaunchCampaign() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => launchCampaign(id),
-    onSuccess: (c) => invalidateCampaign(qc, c.id),
+    onSuccess: (c) => {
+      // Seed the detail cache with the returned 'sending' campaign so the editor
+      // unmounts and swaps to the monitor synchronously — otherwise the slide re-arms
+      // during the refetch and a second slide fires a redundant launch that 409s.
+      qc.setQueryData(campaignKeys.detail(c.id), c);
+      invalidateCampaign(qc, c.id);
+    },
   });
 }
 
@@ -111,8 +123,6 @@ export function useCampaignProgressStream(campaignId: string | undefined, enable
   const qc = useQueryClient();
   useEffect(() => {
     if (!enabled || !campaignId) return;
-    const token = getAccessToken();
-    if (!token) return;
 
     let stopped = false;
     let abort: AbortController | null = null;
@@ -120,6 +130,14 @@ export function useCampaignProgressStream(campaignId: string | undefined, enable
 
     const connect = async () => {
       while (!stopped) {
+        // Re-read the token each attempt (not captured once) so a reconnect after a
+        // token rotation uses the fresh token instead of 401-looping forever.
+        const token = getAccessToken();
+        if (!token) {
+          retry = Math.min(retry + 1, 6);
+          await new Promise((r) => setTimeout(r, Math.min(1000 * 2 ** retry, 30_000)));
+          continue;
+        }
         abort = new AbortController();
         try {
           const res = await fetch(`${API_URL}/api/events`, {
@@ -145,9 +163,13 @@ export function useCampaignProgressStream(campaignId: string | undefined, enable
               try {
                 const data = JSON.parse(str);
                 if (data.type === 'campaign_progress' && data.campaign_id === campaignId) {
-                  qc.setQueryData(campaignKeys.progress(campaignId), {
-                    status: data.status, counts: data.counts ?? {}, total: data.total ?? 0,
-                  } as CampaignProgress);
+                  // Preserve the last good status if a frame arrives status-less, so a
+                  // blank status can't clobber the cache and blank the badge/controls.
+                  qc.setQueryData<CampaignProgress>(campaignKeys.progress(campaignId), (prev) => ({
+                    status: (data.status || prev?.status || '') as CampaignProgress['status'],
+                    counts: data.counts ?? {},
+                    total: data.total ?? 0,
+                  }));
                   qc.invalidateQueries({ queryKey: campaignKeys.detail(campaignId) });
                 }
               } catch { /* ignore keep-alives / non-JSON frames */ }

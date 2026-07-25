@@ -73,13 +73,27 @@ func (r *Repository) SoftDeleteCampaign(ctx context.Context, orgID, id uuid.UUID
 	return res.RowsAffected > 0, nil
 }
 
+// rosterCountsSubquery aggregates a campaign's roster into a {status: count} jsonb,
+// correlated on the bound campaign id — snapshotted into snapshot_counts at the
+// terminal transition so the by-status rollup survives the 30-day roster prune.
+const rosterCountsSubquery = `(SELECT COALESCE(jsonb_object_agg(t.status, t.cnt), '{}'::jsonb)
+	FROM (SELECT status, count(*) AS cnt FROM marketing_campaign_recipients r WHERE r.campaign_id = ? GROUP BY status) t)`
+
 // SetCampaignStatus flips the status ONLY from one of the expected `from` states, in
 // a single atomic guarded UPDATE — so concurrent transitions (e.g. Cancel racing
-// Resume) can't resurrect a terminal campaign. Returns whether a row changed.
+// Resume) can't resurrect a terminal campaign. On a TERMINAL transition (canceled/sent)
+// it also stamps finished_at (so the pruner can ever reclaim a canceled campaign's
+// roster — otherwise finished_at stays NULL and the 'canceled' prune arm is dead) and
+// snapshots the roster counts. Returns whether a row changed.
 func (r *Repository) SetCampaignStatus(ctx context.Context, orgID, id uuid.UUID, status string, from []string) (bool, error) {
+	updates := map[string]any{"status": status, "updated_at": gorm.Expr("NOW()")}
+	if status == domain.CampaignStatusCanceled || status == domain.CampaignStatusSent {
+		updates["finished_at"] = gorm.Expr("COALESCE(finished_at, NOW())")
+		updates["snapshot_counts"] = gorm.Expr(rosterCountsSubquery, id)
+	}
 	res := r.db.WithContext(ctx).Model(&domain.Campaign{}).
 		Where("org_id = ? AND id = ? AND status IN ?", orgID, id, from).
-		Updates(map[string]any{"status": status, "updated_at": gorm.Expr("NOW()")})
+		Updates(updates)
 	if res.Error != nil {
 		return false, res.Error
 	}
@@ -261,7 +275,10 @@ func (r *Repository) ReapStrandedRecipients(ctx context.Context, grace time.Dura
 func (r *Repository) MarkDrainedCampaignsSent(ctx context.Context) (int64, error) {
 	res := r.db.WithContext(ctx).Exec(`
 		UPDATE marketing_campaigns c
-		SET status = 'sent', finished_at = NOW(), updated_at = NOW()
+		SET status = 'sent', finished_at = NOW(), updated_at = NOW(),
+		    snapshot_counts = (SELECT COALESCE(jsonb_object_agg(t.status, t.cnt), '{}'::jsonb)
+		                       FROM (SELECT status, count(*) AS cnt FROM marketing_campaign_recipients r
+		                             WHERE r.campaign_id = c.id GROUP BY status) t)
 		WHERE c.status = 'sending'
 		  AND NOT EXISTS (
 			SELECT 1 FROM marketing_campaign_recipients r

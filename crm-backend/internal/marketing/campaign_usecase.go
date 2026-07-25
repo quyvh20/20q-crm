@@ -130,7 +130,12 @@ func (uc *CampaignUseCase) Update(ctx context.Context, orgID, id uuid.UUID, in d
 	if c.Status != domain.CampaignStatusDraft && c.Status != domain.CampaignStatusScheduled {
 		return nil, domain.NewAppError(http.StatusConflict, "campaign can only be edited while in draft or scheduled")
 	}
-	name, lane, lock, err := uc.validateInput(ctx, orgID, in)
+	// validateInput still validates lane/lock (rejects bad values) but the composer
+	// does not send them, so we do NOT overwrite send_lane / scheduled_at /
+	// recipient_lock_mode here — `c` already holds their persisted values and
+	// UpdateCampaign writes those back unchanged (else editing a scheduled campaign
+	// would silently null scheduled_at and reset the lane/lock to defaults).
+	name, _, _, err := uc.validateInput(ctx, orgID, in)
 	if err != nil {
 		return nil, err
 	}
@@ -139,9 +144,6 @@ func (uc *CampaignUseCase) Update(ctx context.Context, orgID, id uuid.UUID, in d
 	c.SegmentIDs = marshalUUIDList(in.SegmentIDs)
 	c.ExcludeSegmentIDs = marshalUUIDList(in.ExcludeSegmentIDs)
 	c.TopicID = in.TopicID
-	c.SendLane = lane
-	c.ScheduledAt = in.ScheduledAt
-	c.RecipientLockMode = lock
 	// Guarded partial UPDATE: 0 rows ⇒ the campaign left draft/scheduled (a concurrent
 	// Launch) between our read and write — surface a 409 rather than clobber it.
 	ok, err := uc.repo.UpdateCampaign(ctx, c)
@@ -162,6 +164,11 @@ func (uc *CampaignUseCase) Delete(ctx context.Context, orgID, id uuid.UUID) erro
 	if !removed {
 		return domain.NewAppError(http.StatusNotFound, "campaign not found")
 	}
+	// A soft-deleted campaign can never send again (the claim query requires
+	// deleted_at IS NULL) nor be re-snapshotted (Get 404s), so reclaim its roster now
+	// — otherwise those rows are orphaned forever (the pruner only touches sent/
+	// canceled campaigns). Best-effort: a clear failure must not fail the delete.
+	_ = uc.repo.ClearRoster(ctx, id)
 	return nil
 }
 
@@ -360,6 +367,18 @@ func (uc *CampaignUseCase) Progress(ctx context.Context, orgID, id uuid.UUID) (m
 	total := 0
 	for _, n := range counts {
 		total += n
+	}
+	// After the roster prune (or any time the live roster is gone) fall back to the
+	// per-status counts snapshotted at the terminal transition, so a finished campaign
+	// keeps showing its real totals instead of 0 / 0.
+	if total == 0 && len(c.SnapshotCounts) > 0 {
+		var snap map[string]int
+		if json.Unmarshal(c.SnapshotCounts, &snap) == nil && len(snap) > 0 {
+			counts = snap
+			for _, n := range snap {
+				total += n
+			}
+		}
 	}
 	return map[string]any{"status": c.Status, "counts": counts, "total": total}, nil
 }

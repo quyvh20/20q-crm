@@ -13,10 +13,11 @@ import (
 
 type EventsHandler struct {
 	redis *redis.Client
+	caps  domain.CapabilityChecker // nil-safe; gates the marketing channel subscription
 }
 
-func NewEventsHandler(redisClient *redis.Client) *EventsHandler {
-	return &EventsHandler{redis: redisClient}
+func NewEventsHandler(redisClient *redis.Client, caps domain.CapabilityChecker) *EventsHandler {
+	return &EventsHandler{redis: redisClient, caps: caps}
 }
 
 // Stream handles GET /api/events and streams Redis Pub/Sub messages via SSE.
@@ -49,6 +50,11 @@ func (h *EventsHandler) Stream(c *gin.Context) {
 	channels := []string{domain.OrgNotificationChannel(orgID)}
 	if userID, ok := GetUserID(c); ok {
 		channels = append(channels, domain.UserNotificationChannel(orgID, userID))
+	}
+	// Marketing campaign_progress rides its own org channel; only subscribe callers
+	// who hold marketing.manage, so send stats don't stream to every member.
+	if h.caps != nil && h.caps.HasCapability(ctx, orgID, domain.CapMarketingManage) == nil {
+		channels = append(channels, domain.OrgMarketingChannel(orgID))
 	}
 	pubsub := h.redis.Subscribe(ctx, channels...)
 	defer pubsub.Close()

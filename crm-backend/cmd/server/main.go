@@ -2277,7 +2277,7 @@ func main() {
 		commandCenter := ai.NewCommandCenter(gateway, kbBuilder, contactRepo, dealRepo, taskRepo, activityRepo, chatSessionRepo, customObjUC, permissionUC, log)
 		commandHandler := delivery.NewCommandHandler(commandCenter)
 
-		eventsHandler := delivery.NewEventsHandler(redisClient)
+		eventsHandler := delivery.NewEventsHandler(redisClient, permissionUC)
 
 		// In-app notifications (A6): the inbox usecase publishes each new
 		// notification on the recipient's per-user SSE channel (redisClient), which

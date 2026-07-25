@@ -102,6 +102,14 @@ func OrgNotificationChannel(orgID uuid.UUID) string {
 	return "sse:" + orgID.String()
 }
 
+// OrgMarketingChannel carries marketing-only org events (M7 campaign_progress). It is
+// a SEPARATE channel from OrgNotificationChannel so the SSE hub can subscribe a caller
+// to it ONLY when they hold marketing.manage — campaign send stats must not stream to
+// every member the way AI/voice job events do.
+func OrgMarketingChannel(orgID uuid.UUID) string {
+	return "sse:" + orgID.String() + ":marketing"
+}
+
 // ============================================================
 // Ports
 // ============================================================

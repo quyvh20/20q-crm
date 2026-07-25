@@ -72,6 +72,7 @@ func newCampaignTestDB(t *testing.T) *gorm.DB {
 			org_id UUID NOT NULL,
 			name VARCHAR(200) NOT NULL,
 			status VARCHAR(16) NOT NULL DEFAULT 'draft',
+			snapshot_counts JSONB NOT NULL DEFAULT '{}',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			finished_at TIMESTAMPTZ,
@@ -310,4 +311,36 @@ func TestCampaignIntegration_PruneCompletedRoster(t *testing.T) {
 	var campaigns int64
 	require.NoError(t, db.Raw(`SELECT count(*) FROM marketing_campaigns`).Scan(&campaigns).Error)
 	require.Equal(t, int64(3), campaigns, "prune keeps every campaign row")
+}
+
+// Canceling via the real transition must stamp finished_at + snapshot_counts — else
+// the 'canceled' arm of the prune predicate is dead and a canceled roster leaks
+// forever (review finding). This drives the production SetCampaignStatus path.
+func TestCampaignIntegration_CancelStampsFinishedAtAndCounts(t *testing.T) {
+	db := newCampaignTestDB(t)
+	mkt := marketing.NewRepository(db)
+	ctx := context.Background()
+	org := uuid.New()
+
+	var idStr string
+	require.NoError(t, db.Raw(`INSERT INTO marketing_campaigns (org_id, name, status) VALUES (?, 'C', 'sending') RETURNING id::text`, org).Scan(&idStr).Error)
+	id, err := uuid.Parse(idStr)
+	require.NoError(t, err)
+	require.NoError(t, db.Exec(`INSERT INTO marketing_campaign_recipients (campaign_id, org_id, email_normalized, status) VALUES (?, ?, 'a@x.com', 'sent')`, id, org).Error)
+
+	ok, err := mkt.SetCampaignStatus(ctx, org, id, "canceled", []string{"sending"})
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	var finishedSet bool
+	require.NoError(t, db.Raw(`SELECT finished_at IS NOT NULL FROM marketing_campaigns WHERE id = ?`, id).Scan(&finishedSet).Error)
+	require.True(t, finishedSet, "cancel must stamp finished_at so the pruner can reclaim it")
+	var snap string
+	require.NoError(t, db.Raw(`SELECT snapshot_counts::text FROM marketing_campaigns WHERE id = ?`, id).Scan(&snap).Error)
+	require.Contains(t, snap, "sent", "cancel must snapshot the roster counts before prune")
+
+	// With finished_at now set, the pruner reclaims it (retention 0 → any finished).
+	deleted, err := mkt.PruneCompletedRoster(ctx, 0)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), deleted, "a canceled campaign's roster is now prunable")
 }

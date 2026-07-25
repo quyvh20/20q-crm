@@ -133,7 +133,10 @@ function CampaignEditor({ campaign }: { campaign: Campaign }) {
     });
   };
 
-  const canLaunch = !!readiness.data?.ready && !dirty && !launch.isPending;
+  // !readiness.isFetching closes the stale-data window: after a Save the readiness
+  // refetches, and the slide stays disabled until the fresh result lands (never
+  // enabling send against a now-stale "ready").
+  const canLaunch = !!readiness.data?.ready && !dirty && !launch.isPending && !readiness.isFetching;
 
   return (
     <div className="mx-auto w-full max-w-4xl">
@@ -275,7 +278,11 @@ function CampaignMonitor({ campaign }: { campaign: Campaign }) {
   const total = progress.data?.total ?? 0;
   const done = (counts.sent ?? 0) + (counts.failed ?? 0) + (counts.suppressed ?? 0) + (counts.skipped ?? 0);
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-  const status = progress.data?.status ?? campaign.status;
+  // Once the AUTHORITATIVE detail status is terminal, trust it (a missed final SSE
+  // frame could otherwise leave the best-effort progress status stuck on 'sending' at
+  // 100%). While still active, prefer the live progress status — `||` (not `??`) so a
+  // status-less frame falls back to the detail status instead of blanking the badge.
+  const status = isCampaignActive(campaign.status) ? (progress.data?.status || campaign.status) : campaign.status;
 
   const onCancel = async () => {
     const ok = await confirm({ title: 'Cancel campaign', body: 'Stop this campaign? Recipients not yet sent will not receive it.', confirmLabel: 'Cancel campaign', tone: 'danger' });
@@ -300,7 +307,7 @@ function CampaignMonitor({ campaign }: { campaign: Campaign }) {
           <span className="text-muted-foreground">{pct}%</span>
         </div>
         <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
-          <div className="h-full bg-primary transition-[width]" style={{ width: `${pct}%` }} />
+          <div className={`h-full transition-[width] ${status === 'canceled' ? 'bg-muted-foreground/40' : 'bg-primary'}`} style={{ width: `${pct}%` }} />
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
           <CountChip label="Sent" value={counts.sent ?? 0} variant="success" />
@@ -322,7 +329,7 @@ function CampaignMonitor({ campaign }: { campaign: Campaign }) {
             <Play aria-hidden /> Resume
           </Button>
         )}
-        {(status === 'sending' || status === 'paused' || status === 'snapshotting') && (
+        {(status === 'sending' || status === 'paused') && (
           <Button variant="ghost" onClick={onCancel} disabled={cancel.isPending} className="text-destructive hover:text-destructive">
             <XCircle aria-hidden /> Cancel
           </Button>
