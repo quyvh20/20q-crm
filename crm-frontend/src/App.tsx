@@ -59,6 +59,8 @@ import SenderProfilePage from './features/marketing/SenderProfilePage';
 import PreferenceCenterPage from './features/marketing/PreferenceCenterPage';
 import SegmentsPage from './features/marketing/SegmentsPage';
 import SegmentEditorPage from './features/marketing/SegmentEditorPage';
+import CampaignsListPage from './features/marketing/CampaignsListPage';
+import CampaignComposerPage from './features/marketing/CampaignComposerPage';
 import ReportBuilderPage from './features/reports/ReportBuilderPage';
 import DashboardPage from './features/reports/DashboardPage';
 import TermsPage from './pages/legal/TermsPage';
@@ -351,6 +353,16 @@ function App() {
             <Route path="/marketing/audiences/:id" element={
               <ProtectedRoute>
                 <AppLayout title="Audience"><SegmentEditorPage /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/marketing/campaigns" element={
+              <ProtectedRoute>
+                <AppLayout title="Campaigns"><CampaignsListPage /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/marketing/campaigns/:id" element={
+              <ProtectedRoute>
+                <AppLayout title="Campaign"><CampaignComposerPage /></AppLayout>
               </ProtectedRoute>
             } />
             <Route path="/marketing/content/new" element={
