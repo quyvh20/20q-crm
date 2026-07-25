@@ -149,7 +149,7 @@ func TestBuildReportSQL_JSONBCustomObject(t *testing.T) {
 	}
 	want := "SELECT custom_object_records.data->>'status' AS group_key, COUNT(*) AS agg_value, COUNT(*) AS row_count " +
 		"FROM custom_object_records WHERE custom_object_records.org_id = ? AND custom_object_records.deleted_at IS NULL AND custom_object_records.object_def_id = ? AND " +
-		`((CASE WHEN custom_object_records.data->>'sqft' ~ '^-?[0-9]+(\.[0-9]+)?$' THEN (custom_object_records.data->>'sqft')::numeric END) > ?) ` +
+		`((CASE WHEN custom_object_records.data->>'sqft' ~ '^-{0,1}[0-9]+(\.[0-9]+){0,1}$' THEN (custom_object_records.data->>'sqft')::numeric END) > ?) ` +
 		"GROUP BY 1 ORDER BY agg_value DESC NULLS LAST LIMIT 100"
 	if q != want {
 		t.Errorf("query mismatch:\n got: %s\nwant: %s", q, want)

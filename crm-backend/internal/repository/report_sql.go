@@ -289,7 +289,13 @@ func reportTypedExpr(ref reportTableRef, f domain.ReportField) (string, error) {
 	}
 	switch f.Type {
 	case "number":
-		return `(CASE WHEN ` + raw + ` ~ '^-?[0-9]+(\.[0-9]+)?$' THEN (` + raw + `)::numeric END)`, nil
+		// The numeric-validity regex uses {0,1} rather than `?` quantifiers ON PURPOSE:
+		// this SQL is executed through gorm's db.Raw, which treats EVERY `?` — including
+		// ones inside a quoted string literal — as a positional bind placeholder. A `?`
+		// here would steal a bind arg and misalign the rest of the query (a jsonb number
+		// filter then fails with "syntax error at end of input"). {0,1} is the exact
+		// equivalent with no `?`.
+		return `(CASE WHEN ` + raw + ` ~ '^-{0,1}[0-9]+(\.[0-9]+){0,1}$' THEN (` + raw + `)::numeric END)`, nil
 	case "date":
 		return "(NULLIF(" + raw + ", ''))::timestamptz", nil
 	case "boolean":
