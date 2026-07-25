@@ -1691,6 +1691,50 @@ func main() {
 			// (a raw ALTER runs on prod; a GORM AutoMigrate-added column does not).
 			{"marketing_suppressions last_soft_bounce_at", `ALTER TABLE marketing_suppressions
 				ADD COLUMN IF NOT EXISTS last_soft_bounce_at TIMESTAMPTZ`},
+			// M5: audiences — saved segments (dynamic AST or static list). Soft-deletable
+			// CRUD; definition JSONB (datatypes.JSON, never []byte). DDL DEFAULTs on every
+			// non-zero column (GORM omits zero-values on insert).
+			{"marketing_segments", `CREATE TABLE IF NOT EXISTS marketing_segments (
+				id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+				org_id           UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+				name             VARCHAR(160) NOT NULL,
+				type             VARCHAR(16) NOT NULL DEFAULT 'dynamic',
+				definition       JSONB NOT NULL DEFAULT '{}',
+				materialized     BOOLEAN NOT NULL DEFAULT false,
+				count_cached     INT NOT NULL DEFAULT 0,
+				count_cached_at  TIMESTAMPTZ,
+				refreshed_at     TIMESTAMPTZ,
+				created_by       UUID REFERENCES users(id) ON DELETE SET NULL,
+				created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				deleted_at       TIMESTAMPTZ
+			)`},
+			{"marketing_segments org index", `CREATE INDEX IF NOT EXISTS idx_marketing_segments_org
+				ON marketing_segments(org_id) WHERE deleted_at IS NULL`},
+			// Static-list membership (composite PK, no soft-delete). Cascade-deletes with
+			// the segment and the contact.
+			{"marketing_segment_static_members", `CREATE TABLE IF NOT EXISTS marketing_segment_static_members (
+				segment_id UUID NOT NULL REFERENCES marketing_segments(id) ON DELETE CASCADE,
+				contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+				source     VARCHAR(32) NOT NULL DEFAULT '',
+				PRIMARY KEY (segment_id, contact_id)
+			)`},
+			// Materialized dynamic-segment membership (opt-in; composite PK, no soft-delete).
+			{"marketing_segment_members", `CREATE TABLE IF NOT EXISTS marketing_segment_members (
+				segment_id UUID NOT NULL REFERENCES marketing_segments(id) ON DELETE CASCADE,
+				contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+				matched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				PRIMARY KEY (segment_id, contact_id)
+			)`},
+			// M5: the reverse tag index (PK is (contact_id, tag_id) — useless for a
+			// tag->contacts EXISTS) and a GIN on contacts.custom_fields for segment
+			// filtering. Plain non-unique indexes on existing tables — no probe ritual
+			// (that is only for UNIQUE on possibly-dirty data). Distinct names (CREATE
+			// INDEX IF NOT EXISTS matches on name only).
+			{"contact_tags reverse index", `CREATE INDEX IF NOT EXISTS idx_contact_tags_tag_contact
+				ON contact_tags(tag_id, contact_id)`},
+			{"contacts custom_fields gin", `CREATE INDEX IF NOT EXISTS idx_contacts_custom_fields_gin
+				ON contacts USING GIN (custom_fields)`},
 		}
 		for _, g := range marketingGuards {
 			if err := db.Exec(g.sql).Error; err != nil {
@@ -1708,6 +1752,9 @@ func main() {
 		db.Exec(`ALTER TABLE org_marketing_profile ENABLE ROW LEVEL SECURITY`)
 		db.Exec(`ALTER TABLE marketing_topics ENABLE ROW LEVEL SECURITY`)
 		db.Exec(`ALTER TABLE marketing_email_events ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`ALTER TABLE marketing_segments ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`ALTER TABLE marketing_segment_static_members ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`ALTER TABLE marketing_segment_members ENABLE ROW LEVEL SECURITY`)
 
 		// The suppression dedupe UNIQUE index is FUNCTIONAL: COALESCE(topic_id, zero)
 		// is load-bearing because Postgres treats NULL as DISTINCT in a unique index,
@@ -2473,6 +2520,21 @@ func main() {
 		marketingResendProcessor := marketing.NewResendProcessor(marketingRepo, autoLogger)
 		go marketing.StartResendWebhookProcessor(context.Background(), marketingResendProcessor)
 		go marketing.StartResendReaper(context.Background(), marketingRepo, autoLogger)
+
+		// ── Email marketing (M5: audiences — static lists + dynamic segments) ──
+		// A dynamic segment's boolean AST is compiled to fully-parameterized SQL against
+		// a whitelisted contact field catalog (the injection defense + FLS boundary),
+		// reusing the Reports P9 discipline + RecordAccessPredicate; preview/count run
+		// under the marketing.manage caller's OLS/FLS/own-scope. permissionUC is the
+		// RecordAuthorizer; objectRegistryRepo sources the per-org catalog (resolving the
+		// crm_-prefixed attribution keys); the count cache is org-wide-only (row-scoped
+		// callers compute live), nil-tolerant on redisClient.
+		segmentRepo := repository.NewSegmentRepository(db)
+		segmentUC := usecase.NewSegmentUseCase(segmentRepo, objectRegistryRepo, permissionUC, redisClient)
+		delivery.NewSegmentHandler(segmentUC).RegisterRoutes(router,
+			integrationsProtected,
+			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
+		)
 
 		// ── L5.1 provider connector framework ────────────────────────────
 		// The registry holds the provider adapters that have shipped. It stays EMPTY
