@@ -89,6 +89,7 @@ func newCampaignTestDB(t *testing.T) *gorm.DB {
 			locked_at TIMESTAMPTZ,
 			provider_message_id VARCHAR(128),
 			idempotency_key VARCHAR(160),
+			dispatched_at TIMESTAMPTZ,
 			error TEXT,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			processed_at TIMESTAMPTZ

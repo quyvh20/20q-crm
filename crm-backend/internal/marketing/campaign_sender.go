@@ -49,6 +49,7 @@ type providerLimiter interface {
 // senderStore is the persistence the worker needs.
 type senderStore interface {
 	ClaimSendableRecipients(ctx context.Context, limit int) ([]domain.CampaignRecipient, error)
+	MarkRecipientDispatched(ctx context.Context, id uuid.UUID) error
 	MarkRecipientSent(ctx context.Context, id uuid.UUID, providerMessageID string) error
 	MarkRecipientFailed(ctx context.Context, id uuid.UUID, errMsg string) error
 	MarkRecipientSuppressed(ctx context.Context, id uuid.UUID, reason string) error
@@ -93,13 +94,14 @@ func NewCampaignSender(store senderStore, guard *SuppressionGuard, sender market
 // campaignSendContext is the per-campaign data loaded once per drain (not per
 // recipient), so a 5k send does not reload the campaign/content/profile 5k times.
 type campaignSendContext struct {
-	campaign     *domain.Campaign
-	content      *CampaignContent
-	profile      *OrgMarketingProfile
-	fromAddr     string
-	orgName      string
-	hasCompany   bool
-	fatalReason  string // non-empty ⇒ the campaign can't send right now; fail its rows
+	campaign    *domain.Campaign
+	content     *CampaignContent
+	profile     *OrgMarketingProfile
+	fromAddr    string
+	orgName     string
+	hasCompany  bool
+	fatalReason string // non-empty ⇒ this campaign's rows can't send right now
+	transient   bool   // fatalReason came from a DB/transport error → repend, not fail
 }
 
 // StartCampaignSender runs the drain loop until ctx is done.
@@ -160,8 +162,16 @@ func (s *CampaignSender) processBatch(ctx context.Context, rows []domain.Campaig
 
 func (s *CampaignSender) loadCampaignContext(ctx context.Context, orgID, campID uuid.UUID) *campaignSendContext {
 	sc := &campaignSendContext{}
+	// A DB/transport error on ANY of these reads is TRANSIENT (repend, don't drop the
+	// recipient); only a genuine nil/not-found or a bad-state result is a permanent
+	// fatalReason. Collapsing the two (the pre-review bug) turned a Postgres blip into
+	// silent, irrecoverable recipient loss for a whole batch.
 	camp, err := s.store.GetCampaignByID(ctx, orgID, campID)
-	if err != nil || camp == nil {
+	if err != nil {
+		sc.fatalReason, sc.transient = "load campaign: "+err.Error(), true
+		return sc
+	}
+	if camp == nil {
 		sc.fatalReason = "campaign not found"
 		return sc
 	}
@@ -176,20 +186,32 @@ func (s *CampaignSender) loadCampaignContext(ctx context.Context, orgID, campID 
 		return sc
 	}
 	content, err := s.store.GetContentByID(ctx, orgID, *camp.ContentID)
-	if err != nil || content == nil {
+	if err != nil {
+		sc.fatalReason, sc.transient = "load content: "+err.Error(), true
+		return sc
+	}
+	if content == nil {
 		sc.fatalReason = "content missing"
 		return sc
 	}
 	sc.content = content
 	sc.hasCompany = mergeScopeHasCompany(content.MergeScope)
 	profile, err := s.store.GetProfile(ctx, orgID)
-	if err != nil || profile == nil {
+	if err != nil {
+		sc.fatalReason, sc.transient = "load sender profile: "+err.Error(), true
+		return sc
+	}
+	if profile == nil {
 		sc.fatalReason = "no sender profile"
 		return sc
 	}
 	sc.profile = profile
 	fromAddr, err := s.from.ResolveFromAddress(ctx, orgID, camp.SendingDomainID)
-	if err != nil || fromAddr == "" {
+	if err != nil {
+		sc.fatalReason, sc.transient = "resolve from address: "+err.Error(), true
+		return sc
+	}
+	if fromAddr == "" {
 		sc.fatalReason = "no verified sending domain"
 		return sc
 	}
@@ -207,7 +229,13 @@ func (s *CampaignSender) sendOne(ctx context.Context, r domain.CampaignRecipient
 		return
 	}
 	if sc.fatalReason != "" {
-		_ = s.store.MarkRecipientFailed(ctx, r.ID, sc.fatalReason)
+		// Transient (DB/transport) → repend and retry; permanent (bad state / missing
+		// content/domain) → fail. Attempt cap prevents an infinite repend loop.
+		if sc.transient && r.Attempts < campaignMaxAttempts {
+			_ = s.store.RependRecipient(ctx, r.ID, sendBackoff(r.Attempts), sc.fatalReason)
+		} else {
+			_ = s.store.MarkRecipientFailed(ctx, r.ID, sc.fatalReason)
+		}
 		return
 	}
 
@@ -215,6 +243,13 @@ func (s *CampaignSender) sendOne(ctx context.Context, r domain.CampaignRecipient
 	// unsubscribe is dropped here, never mailed.
 	verdict := s.guard.IsSendable(ctx, r.OrgID, r.EmailNormalized, ChannelMarketing, sc.campaign.TopicID)
 	if !verdict.Sendable {
+		// A transient ledger-read failure returns Reason "error" (IsSendable fails
+		// closed) — that must NOT permanently suppress a mailable recipient. Retry it
+		// (attempt-capped); a real suppression / no-lawful-basis is terminal.
+		if verdict.Reason == "error" && r.Attempts < campaignMaxAttempts {
+			_ = s.store.RependRecipient(ctx, r.ID, sendBackoff(r.Attempts), "consent check transient error")
+			return
+		}
 		_ = s.store.MarkRecipientSuppressed(ctx, r.ID, verdict.Reason)
 		return
 	}
@@ -242,6 +277,10 @@ func (s *CampaignSender) sendOne(ctx context.Context, r domain.CampaignRecipient
 	subject := automation.InterpolateTemplate(sc.content.Subject, ec)
 
 	idemKey := fmt.Sprintf("campaign:%s:contact:%s", sc.campaign.ID, r.ID)
+	// Stamp dispatch BEFORE handing to Resend, so a crash between here and MarkSent
+	// leaves a durable "was dispatched" marker the reaper reads to avoid a >24h
+	// duplicate re-send. Best-effort: a stamp failure must not block the send.
+	_ = s.store.MarkRecipientDispatched(ctx, r.ID)
 	resp, err := s.sender.SendMarketingEmail(ctx, r.EmailNormalized, subject, html, sc.profile.FromName, sc.fromAddr, sc.profile.ReplyTo, nil, headers, idemKey)
 	if err != nil {
 		s.handleSendError(ctx, r, err)

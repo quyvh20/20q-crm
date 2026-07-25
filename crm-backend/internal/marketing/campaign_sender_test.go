@@ -20,6 +20,7 @@ type recStore struct {
 	failed     map[uuid.UUID]string
 	suppressed map[uuid.UUID]string
 	repended   map[uuid.UUID]string
+	campErr    bool
 }
 
 func newRecStore() *recStore {
@@ -29,6 +30,7 @@ func newRecStore() *recStore {
 	}
 }
 
+func (f *recStore) MarkRecipientDispatched(_ context.Context, _ uuid.UUID) error { return nil }
 func (f *recStore) MarkRecipientSent(_ context.Context, id uuid.UUID, pmid string) error {
 	f.sent[id] = pmid
 	return nil
@@ -46,7 +48,7 @@ func (f *recStore) RependRecipient(_ context.Context, id uuid.UUID, _ time.Durat
 	return nil
 }
 
-// unused-by-sendOne stubs to satisfy senderStore
+// campErr, when set, makes GetCampaignByID fail transiently (a DB blip).
 func (f *recStore) ClaimSendableRecipients(context.Context, int) ([]domain.CampaignRecipient, error) {
 	return nil, nil
 }
@@ -54,8 +56,14 @@ func (f *recStore) ReapStrandedRecipients(context.Context, time.Duration, int) (
 	return 0, nil
 }
 func (f *recStore) MarkDrainedCampaignsSent(context.Context) (int64, error) { return 0, nil }
+
+var errTransientDB = errors.New("transient db blip")
+
 func (f *recStore) GetCampaignByID(context.Context, uuid.UUID, uuid.UUID) (*domain.Campaign, error) {
-	return nil, nil
+	if f.campErr {
+		return nil, errTransientDB
+	}
+	return &domain.Campaign{ID: uuid.New(), Name: "C", Status: "sending", ContentID: nil}, nil
 }
 func (f *recStore) GetContentByID(context.Context, uuid.UUID, uuid.UUID) (*CampaignContent, error) {
 	return nil, nil
@@ -186,6 +194,26 @@ func TestSender_PermanentFails(t *testing.T) {
 	s.sendOne(context.Background(), r, sendCtx())
 	if _, ok := store.failed[r.ID]; !ok {
 		t.Fatal("a permanent 4xx must fail terminally, not repend")
+	}
+}
+
+func TestSender_TransientLoadErrorRepends(t *testing.T) {
+	// A DB blip loading the campaign context must REPEND (retry), never permanently
+	// drop the recipient — the pre-review bug marked the whole batch 'failed'.
+	store := newRecStore()
+	store.campErr = true
+	snd := &recSender{}
+	s := NewCampaignSender(store, NewSuppressionGuard(sendableLedger()), snd, recFrom{}, recTokens{}, nil, "https://api.example.com", "https://app.example.com", nil)
+	r := recip(1)
+	s.processBatch(context.Background(), []domain.CampaignRecipient{r})
+	if _, ok := store.repended[r.ID]; !ok {
+		t.Fatal("a transient load error must repend the recipient")
+	}
+	if _, ok := store.failed[r.ID]; ok {
+		t.Fatal("a transient load error must NOT permanently fail the recipient")
+	}
+	if snd.calls != 0 {
+		t.Fatal("must not attempt to send when the context failed to load")
 	}
 }
 

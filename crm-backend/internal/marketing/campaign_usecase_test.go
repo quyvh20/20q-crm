@@ -47,10 +47,14 @@ func (f *fakeCampStore) ListCampaignsByOrg(_ context.Context, _ uuid.UUID) ([]do
 	}
 	return out, nil
 }
-func (f *fakeCampStore) UpdateCampaign(_ context.Context, c *domain.Campaign) error {
+func (f *fakeCampStore) UpdateCampaign(_ context.Context, c *domain.Campaign) (bool, error) {
+	cur, ok := f.campaigns[c.ID]
+	if !ok || (cur.Status != domain.CampaignStatusDraft && cur.Status != domain.CampaignStatusScheduled) {
+		return false, nil
+	}
 	f.updateCalled = true
 	f.campaigns[c.ID] = c
-	return nil
+	return true, nil
 }
 func (f *fakeCampStore) SoftDeleteCampaign(_ context.Context, _ uuid.UUID, id uuid.UUID) (bool, error) {
 	if _, ok := f.campaigns[id]; !ok {
@@ -59,21 +63,34 @@ func (f *fakeCampStore) SoftDeleteCampaign(_ context.Context, _ uuid.UUID, id uu
 	delete(f.campaigns, id)
 	return true, nil
 }
-func (f *fakeCampStore) StartCampaign(_ context.Context, _, id uuid.UUID) (bool, error) {
+func (f *fakeCampStore) BeginLaunch(_ context.Context, _, id uuid.UUID) (bool, error) {
 	c, ok := f.campaigns[id]
 	if !ok || (c.Status != domain.CampaignStatusDraft && c.Status != domain.CampaignStatusScheduled) {
+		return false, nil
+	}
+	c.Status = domain.CampaignStatusSnapshotting
+	return true, nil
+}
+func (f *fakeCampStore) FinishLaunch(_ context.Context, _, id uuid.UUID) (bool, error) {
+	c, ok := f.campaigns[id]
+	if !ok || c.Status != domain.CampaignStatusSnapshotting {
 		return false, nil
 	}
 	c.Status = domain.CampaignStatusSending
 	return true, nil
 }
-func (f *fakeCampStore) SetCampaignStatus(_ context.Context, _, id uuid.UUID, status string) (bool, error) {
+func (f *fakeCampStore) SetCampaignStatus(_ context.Context, _, id uuid.UUID, status string, from []string) (bool, error) {
 	c, ok := f.campaigns[id]
 	if !ok {
 		return false, nil
 	}
-	c.Status = status
-	return true, nil
+	for _, s := range from {
+		if s == c.Status {
+			c.Status = status
+			return true, nil
+		}
+	}
+	return false, nil
 }
 func (f *fakeCampStore) CountRosterByStatus(_ context.Context, _ uuid.UUID) (map[string]int, error) {
 	return map[string]int{}, nil
@@ -291,6 +308,45 @@ func TestCampaign_SnapshotBlockedWhileSending(t *testing.T) {
 	env.store.campaigns[c.ID] = c
 	if code := campErrCode(t, mustErrSnapshot(env.uc.Snapshot(context.Background(), env.orgID, c.ID))); code != http.StatusConflict {
 		t.Fatalf("snapshot while sending code=%d want 409", code)
+	}
+}
+
+func TestCampaign_LaunchTwoPhaseAndConflict(t *testing.T) {
+	env := newCampEnv()
+	c := readyCampaign(env)
+	got, err := env.uc.Launch(context.Background(), env.orgID, c.ID)
+	if err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	if got.Status != domain.CampaignStatusSending {
+		t.Fatalf("status = %q, want sending", got.Status)
+	}
+	// A second launch (now 'sending') loses the atomic BeginLaunch claim → 409.
+	if code := campErrCode(t, mustErr(env.uc.Launch(context.Background(), env.orgID, c.ID))); code != http.StatusConflict {
+		t.Fatalf("second launch code = %d, want 409", code)
+	}
+}
+
+func TestCampaign_LaunchBlockedWhenNotReady(t *testing.T) {
+	env := newCampEnv()
+	c := readyCampaign(env)
+	env.domains.ok = false // break a gate → not ready
+	if code := campErrCode(t, mustErr(env.uc.Launch(context.Background(), env.orgID, c.ID))); code != http.StatusUnprocessableEntity {
+		t.Fatalf("not-ready launch code = %d, want 422", code)
+	}
+	// And it must NOT have flipped state.
+	if env.store.campaigns[c.ID].Status != domain.CampaignStatusDraft {
+		t.Fatal("a not-ready launch must leave the campaign in draft")
+	}
+}
+
+func TestCampaign_SnapshotBlockedOnceLaunched(t *testing.T) {
+	env := newCampEnv()
+	c := &domain.Campaign{ID: uuid.New(), OrgID: env.orgID, Name: "C", Status: domain.CampaignStatusPaused, SegmentIDs: datatypes.JSON("[]"), ExcludeSegmentIDs: datatypes.JSON("[]")}
+	env.store.campaigns[c.ID] = c
+	// A paused campaign's roster must NOT be rebuildable (would wipe send-state).
+	if code := campErrCode(t, mustErrSnapshot(env.uc.Snapshot(context.Background(), env.orgID, c.ID))); code != http.StatusConflict {
+		t.Fatalf("snapshot on paused code = %d, want 409", code)
 	}
 }
 

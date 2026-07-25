@@ -136,7 +136,10 @@ func buildSegmentTagLeaf(ref reportTableRef, tagID string, not bool, leafCount *
 // over live, non-empty-email contacts (dynamic → the compiled AST WHERE; static →
 // the membership join). Callerless/org-wide (DataScopeAll), so no row predicate.
 func audienceSegmentSelect(fields map[string]domain.ReportField, seg domain.ResolvedSegment, orgID uuid.UUID) (string, []any, error) {
-	const cols = "SELECT contacts.id AS contact_id, lower(contacts.email) AS email_normalized "
+	// lower(btrim(...)) matches emailutil.Normalize (lower + trim) exactly, so the
+	// roster's email_normalized aligns with the suppression ledger + unsub-token keys
+	// (a leading/trailing space would otherwise dedupe wrong and miss a suppression).
+	const cols = "SELECT contacts.id AS contact_id, lower(btrim(contacts.email)) AS email_normalized "
 	const liveEmail = " AND contacts.email IS NOT NULL AND btrim(contacts.email) <> ''"
 	if seg.Type == domain.SegmentTypeStatic {
 		sql := cols +

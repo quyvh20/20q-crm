@@ -27,10 +27,11 @@ type campaignStore interface {
 	CreateCampaign(ctx context.Context, c *domain.Campaign) error
 	GetCampaignByID(ctx context.Context, orgID, id uuid.UUID) (*domain.Campaign, error)
 	ListCampaignsByOrg(ctx context.Context, orgID uuid.UUID) ([]domain.Campaign, error)
-	UpdateCampaign(ctx context.Context, c *domain.Campaign) error
+	UpdateCampaign(ctx context.Context, c *domain.Campaign) (bool, error)
 	SoftDeleteCampaign(ctx context.Context, orgID, id uuid.UUID) (bool, error)
-	StartCampaign(ctx context.Context, orgID, id uuid.UUID) (bool, error)
-	SetCampaignStatus(ctx context.Context, orgID, id uuid.UUID, status string) (bool, error)
+	BeginLaunch(ctx context.Context, orgID, id uuid.UUID) (bool, error)
+	FinishLaunch(ctx context.Context, orgID, id uuid.UUID) (bool, error)
+	SetCampaignStatus(ctx context.Context, orgID, id uuid.UUID, status string, from []string) (bool, error)
 	CountRosterByStatus(ctx context.Context, campaignID uuid.UUID) (map[string]int, error)
 	ClearRoster(ctx context.Context, campaignID uuid.UUID) error
 	SnapshotRoster(ctx context.Context, campaignID, orgID uuid.UUID, aud domain.AudienceQuery) (int, error)
@@ -141,8 +142,14 @@ func (uc *CampaignUseCase) Update(ctx context.Context, orgID, id uuid.UUID, in d
 	c.SendLane = lane
 	c.ScheduledAt = in.ScheduledAt
 	c.RecipientLockMode = lock
-	if err := uc.repo.UpdateCampaign(ctx, c); err != nil {
+	// Guarded partial UPDATE: 0 rows ⇒ the campaign left draft/scheduled (a concurrent
+	// Launch) between our read and write — surface a 409 rather than clobber it.
+	ok, err := uc.repo.UpdateCampaign(ctx, c)
+	if err != nil {
 		return nil, err
+	}
+	if !ok {
+		return nil, domain.NewAppError(http.StatusConflict, "campaign can only be edited while in draft or scheduled")
 	}
 	return c, nil
 }
@@ -235,9 +242,19 @@ func (uc *CampaignUseCase) Snapshot(ctx context.Context, orgID, id uuid.UUID) (*
 	if err != nil {
 		return nil, err
 	}
-	if c.Status == domain.CampaignStatusSending || c.Status == domain.CampaignStatusSent {
-		return nil, domain.NewAppError(http.StatusConflict, "roster is locked once sending has begun")
+	// The public snapshot (a preview/rebuild) is allowed ONLY before sending. Once a
+	// campaign is snapshotting/sending/paused/sent/canceled, rebuilding the roster
+	// would wipe partially-sent send-state and mass-double-send on resume.
+	if c.Status != domain.CampaignStatusDraft && c.Status != domain.CampaignStatusScheduled {
+		return nil, domain.NewAppError(http.StatusConflict, "the roster can only be built while the campaign is draft or scheduled")
 	}
+	return uc.materializeRoster(ctx, orgID, id, c)
+}
+
+// materializeRoster clears + rebuilds the roster from the campaign's segments. Callers
+// own the status guard (Snapshot restricts to draft/scheduled; Launch runs it inside
+// the exclusive 'snapshotting' state where the worker can't claim).
+func (uc *CampaignUseCase) materializeRoster(ctx context.Context, orgID, id uuid.UUID, c *domain.Campaign) (*domain.SnapshotResult, error) {
 	includes := parseUUIDList(c.SegmentIDs)
 	excludes := parseUUIDList(c.ExcludeSegmentIDs)
 	aud, err := uc.segments.AudienceQueryForSegments(ctx, orgID, includes, excludes)
@@ -254,9 +271,12 @@ func (uc *CampaignUseCase) Snapshot(ctx context.Context, orgID, id uuid.UUID) (*
 	return &domain.SnapshotResult{Total: total}, nil
 }
 
-// Launch validates readiness, snapshots the roster, and flips the campaign to
-// 'sending' — the async worker then drains it. Launch itself sends no email
-// synchronously. Refuses a not-ready campaign (422) and a non-launchable state (409).
+// Launch validates readiness, then atomically claims the campaign into 'snapshotting'
+// (only one concurrent Launch wins), builds the roster while the worker cannot see it,
+// and flips to 'sending'. Launch sends no email synchronously — the worker drains.
+// Refuses a not-ready campaign (422) and a non-launchable state (409). On a snapshot
+// failure it reverts to 'draft' so the campaign stays editable/retryable rather than
+// stranded in 'snapshotting'.
 func (uc *CampaignUseCase) Launch(ctx context.Context, orgID, id uuid.UUID) (*domain.Campaign, error) {
 	r, err := uc.Readiness(ctx, orgID, id)
 	if err != nil {
@@ -265,15 +285,24 @@ func (uc *CampaignUseCase) Launch(ctx context.Context, orgID, id uuid.UUID) (*do
 	if !r.Ready {
 		return nil, domain.NewAppError(http.StatusUnprocessableEntity, "campaign is not ready to send — resolve the checklist first")
 	}
-	if _, err := uc.Snapshot(ctx, orgID, id); err != nil {
-		return nil, err
-	}
-	started, err := uc.repo.StartCampaign(ctx, orgID, id)
+	c, err := uc.Get(ctx, orgID, id)
 	if err != nil {
 		return nil, err
 	}
-	if !started {
-		return nil, domain.NewAppError(http.StatusConflict, "campaign is not in a launchable state")
+	began, err := uc.repo.BeginLaunch(ctx, orgID, id)
+	if err != nil {
+		return nil, err
+	}
+	if !began {
+		return nil, domain.NewAppError(http.StatusConflict, "campaign is not in a launchable state (already launching or sent)")
+	}
+	if _, err := uc.materializeRoster(ctx, orgID, id, c); err != nil {
+		// Roll back the exclusive claim so the campaign is editable/retryable again.
+		_, _ = uc.repo.SetCampaignStatus(ctx, orgID, id, domain.CampaignStatusDraft, []string{domain.CampaignStatusSnapshotting})
+		return nil, err
+	}
+	if _, err := uc.repo.FinishLaunch(ctx, orgID, id); err != nil {
+		return nil, err
 	}
 	return uc.Get(ctx, orgID, id)
 }
@@ -298,15 +327,21 @@ func (uc *CampaignUseCase) Cancel(ctx context.Context, orgID, id uuid.UUID) erro
 }
 
 func (uc *CampaignUseCase) transition(ctx context.Context, orgID, id uuid.UUID, to string, from map[string]bool) error {
-	c, err := uc.Get(ctx, orgID, id)
+	// Existence check (404 vs 409). The actual flip is a single guarded UPDATE so a
+	// concurrent transition can't win a lost-update race.
+	if _, err := uc.Get(ctx, orgID, id); err != nil {
+		return err
+	}
+	fromList := make([]string, 0, len(from))
+	for s := range from {
+		fromList = append(fromList, s)
+	}
+	ok, err := uc.repo.SetCampaignStatus(ctx, orgID, id, to, fromList)
 	if err != nil {
 		return err
 	}
-	if !from[c.Status] {
-		return domain.NewAppError(http.StatusConflict, "campaign cannot move to "+to+" from "+c.Status)
-	}
-	if _, err := uc.repo.SetCampaignStatus(ctx, orgID, id, to); err != nil {
-		return err
+	if !ok {
+		return domain.NewAppError(http.StatusConflict, "campaign cannot move to "+to+" from its current state")
 	}
 	return nil
 }

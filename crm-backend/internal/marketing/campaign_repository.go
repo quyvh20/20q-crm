@@ -41,8 +41,28 @@ func (r *Repository) ListCampaignsByOrg(ctx context.Context, orgID uuid.UUID) ([
 	return rows, nil
 }
 
-func (r *Repository) UpdateCampaign(ctx context.Context, c *domain.Campaign) error {
-	return r.db.WithContext(ctx).Save(c).Error
+// UpdateCampaign applies an edit ONLY while the campaign is still draft/scheduled,
+// as a guarded partial UPDATE of the editable columns — never a full-row Save (which
+// would clobber status/started_at set by a concurrent Launch). Returns whether a row
+// changed; false ⇒ the campaign left the editable window (the usecase 409s).
+func (r *Repository) UpdateCampaign(ctx context.Context, c *domain.Campaign) (bool, error) {
+	res := r.db.WithContext(ctx).Model(&domain.Campaign{}).
+		Where("org_id = ? AND id = ? AND deleted_at IS NULL AND status IN ('draft','scheduled')", c.OrgID, c.ID).
+		Updates(map[string]any{
+			"name":                c.Name,
+			"content_id":          c.ContentID,
+			"segment_ids":         c.SegmentIDs,
+			"exclude_segment_ids": c.ExcludeSegmentIDs,
+			"topic_id":            c.TopicID,
+			"send_lane":           c.SendLane,
+			"scheduled_at":        c.ScheduledAt,
+			"recipient_lock_mode": c.RecipientLockMode,
+			"updated_at":          gorm.Expr("NOW()"),
+		})
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected > 0, nil
 }
 
 func (r *Repository) SoftDeleteCampaign(ctx context.Context, orgID, id uuid.UUID) (bool, error) {
@@ -53,12 +73,13 @@ func (r *Repository) SoftDeleteCampaign(ctx context.Context, orgID, id uuid.UUID
 	return res.RowsAffected > 0, nil
 }
 
-// SetCampaignStatus flips the status (launch / pause / cancel / done). Org-scoped;
-// returns whether a row changed.
-func (r *Repository) SetCampaignStatus(ctx context.Context, orgID, id uuid.UUID, status string) (bool, error) {
+// SetCampaignStatus flips the status ONLY from one of the expected `from` states, in
+// a single atomic guarded UPDATE — so concurrent transitions (e.g. Cancel racing
+// Resume) can't resurrect a terminal campaign. Returns whether a row changed.
+func (r *Repository) SetCampaignStatus(ctx context.Context, orgID, id uuid.UUID, status string, from []string) (bool, error) {
 	res := r.db.WithContext(ctx).Model(&domain.Campaign{}).
-		Where("org_id = ? AND id = ?", orgID, id).
-		Update("status", status)
+		Where("org_id = ? AND id = ? AND status IN ?", orgID, id, from).
+		Updates(map[string]any{"status": status, "updated_at": gorm.Expr("NOW()")})
 	if res.Error != nil {
 		return false, res.Error
 	}
@@ -104,13 +125,27 @@ func (r *Repository) EstimateAudience(ctx context.Context, aud domain.AudienceQu
 	return int(n), nil
 }
 
-// StartCampaign flips a draft/scheduled campaign to 'sending' and stamps started_at.
-// Only these two states may launch (an already-sending/sent/canceled campaign is a
-// no-op → false), so a double-launch cannot restart a finished send.
-func (r *Repository) StartCampaign(ctx context.Context, orgID, id uuid.UUID) (bool, error) {
+// BeginLaunch atomically claims a draft/scheduled campaign into 'snapshotting' — the
+// exclusive launch-in-progress state. Only one concurrent Launch wins (RowsAffected>0);
+// the loser 409s instead of racing to wipe/rebuild the roster.
+func (r *Repository) BeginLaunch(ctx context.Context, orgID, id uuid.UUID) (bool, error) {
+	res := r.db.WithContext(ctx).Exec(`
+		UPDATE marketing_campaigns SET status = 'snapshotting', updated_at = NOW()
+		WHERE org_id = ? AND id = ? AND deleted_at IS NULL AND status IN ('draft','scheduled')`,
+		orgID, id)
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected > 0, nil
+}
+
+// FinishLaunch flips the just-snapshotted campaign to 'sending' (worker-claimable) and
+// stamps started_at. Guarded on 'snapshotting' so only the launch that built the
+// roster starts the send.
+func (r *Repository) FinishLaunch(ctx context.Context, orgID, id uuid.UUID) (bool, error) {
 	res := r.db.WithContext(ctx).Exec(`
 		UPDATE marketing_campaigns SET status = 'sending', started_at = NOW(), updated_at = NOW()
-		WHERE org_id = ? AND id = ? AND deleted_at IS NULL AND status IN ('draft','scheduled')`,
+		WHERE org_id = ? AND id = ? AND deleted_at IS NULL AND status = 'snapshotting'`,
 		orgID, id)
 	if res.Error != nil {
 		return false, res.Error
@@ -145,6 +180,15 @@ func (r *Repository) ClaimSendableRecipients(ctx context.Context, limit int) ([]
 		)
 		RETURNING r.*`, limit).Scan(&rows).Error
 	return rows, err
+}
+
+// MarkRecipientDispatched stamps dispatched_at exactly once (COALESCE), just before a
+// row's send is handed to Resend, so the reaper can tell "already tried to send" from
+// "never dispatched" and avoid a duplicate delivery past the idempotency window.
+func (r *Repository) MarkRecipientDispatched(ctx context.Context, id uuid.UUID) error {
+	return r.db.WithContext(ctx).Exec(`
+		UPDATE marketing_campaign_recipients SET dispatched_at = COALESCE(dispatched_at, NOW())
+		WHERE id = ?`, id).Error
 }
 
 // MarkRecipientSent is the terminal success write (idempotency key + this row are the
@@ -187,13 +231,26 @@ func (r *Repository) RependRecipient(ctx context.Context, id uuid.UUID, backoff 
 // this is safe — the deterministic idempotency key makes a redelivery a Resend-cached
 // no-op within 24h, and the row status is the authority beyond that.
 func (r *Repository) ReapStrandedRecipients(ctx context.Context, grace time.Duration, maxAttempts int) (int64, error) {
+	// A stranded row is FAILED (not re-pent) when either it has exhausted attempts OR
+	// it was already dispatched to Resend more than 24h ago — past that window the
+	// deterministic idempotency key no longer dedupes, so re-sending would deliver a
+	// duplicate. A never-dispatched (dispatched_at IS NULL) or recently-dispatched row
+	// re-pends safely (Resend replays the cached response for a same-key retry).
 	res := r.db.WithContext(ctx).Exec(`
 		UPDATE marketing_campaign_recipients
-		SET status = CASE WHEN attempts >= ? THEN 'failed' ELSE 'pending' END,
+		SET status = CASE
+		        WHEN attempts >= ? THEN 'failed'
+		        WHEN dispatched_at IS NOT NULL AND dispatched_at < NOW() - INTERVAL '24 hours' THEN 'failed'
+		        ELSE 'pending' END,
 		    locked_at = NULL,
 		    next_attempt_at = NOW(),
-		    error = CASE WHEN attempts >= ? THEN 'stranded: max attempts' ELSE error END,
-		    processed_at = CASE WHEN attempts >= ? THEN NOW() ELSE processed_at END
+		    error = CASE
+		        WHEN attempts >= ? THEN 'stranded: max attempts'
+		        WHEN dispatched_at IS NOT NULL AND dispatched_at < NOW() - INTERVAL '24 hours' THEN 'stranded past idempotency window; not re-sent to avoid duplicate'
+		        ELSE error END,
+		    processed_at = CASE
+		        WHEN attempts >= ? OR (dispatched_at IS NOT NULL AND dispatched_at < NOW() - INTERVAL '24 hours') THEN NOW()
+		        ELSE processed_at END
 		WHERE status = 'processing' AND locked_at < NOW() - make_interval(secs => ?)`,
 		maxAttempts, maxAttempts, maxAttempts, grace.Seconds())
 	return res.RowsAffected, res.Error

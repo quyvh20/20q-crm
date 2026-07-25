@@ -13,10 +13,16 @@ import (
 const (
 	CampaignStatusDraft     = "draft"
 	CampaignStatusScheduled = "scheduled"
-	CampaignStatusSending   = "sending"
-	CampaignStatusPaused    = "paused"
-	CampaignStatusSent      = "sent"
-	CampaignStatusCanceled  = "canceled"
+	// CampaignStatusSnapshotting is the brief, exclusive launch-in-progress state: one
+	// Launch atomically claims draft/scheduled → snapshotting, builds the roster while
+	// the send worker (which claims only 'sending') cannot see it, then flips to
+	// 'sending'. It makes Launch serializable — a second concurrent Launch loses the
+	// claim and 409s instead of wiping a half-built roster.
+	CampaignStatusSnapshotting = "snapshotting"
+	CampaignStatusSending      = "sending"
+	CampaignStatusPaused       = "paused"
+	CampaignStatusSent         = "sent"
+	CampaignStatusCanceled     = "canceled"
 )
 
 // Send lanes: single = one /emails per recipient with a per-recipient idempotency
@@ -90,6 +96,12 @@ type CampaignRecipient struct {
 	LockedAt          *time.Time `json:"locked_at,omitempty"`
 	ProviderMessageID *string    `gorm:"type:varchar(128)" json:"provider_message_id,omitempty"`
 	IdempotencyKey    *string    `gorm:"type:varchar(160)" json:"idempotency_key,omitempty"`
+	// DispatchedAt is stamped (once) just before the send is handed to Resend. The
+	// reaper reads it: a stranded 'processing' row dispatched within Resend's 24h
+	// idempotency window may be safely re-pent (Resend dedupes the replay); one
+	// dispatched longer ago is failed instead of re-sent, so a long pause can't
+	// duplicate-deliver past the window.
+	DispatchedAt      *time.Time `json:"dispatched_at,omitempty"`
 	Error             *string    `gorm:"type:text" json:"error,omitempty"`
 	CreatedAt         time.Time  `gorm:"not null;default:now()" json:"created_at"`
 	ProcessedAt       *time.Time `json:"processed_at,omitempty"`
