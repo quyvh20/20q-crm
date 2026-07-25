@@ -29,6 +29,9 @@ type campaignStore interface {
 	ListCampaignsByOrg(ctx context.Context, orgID uuid.UUID) ([]domain.Campaign, error)
 	UpdateCampaign(ctx context.Context, c *domain.Campaign) error
 	SoftDeleteCampaign(ctx context.Context, orgID, id uuid.UUID) (bool, error)
+	StartCampaign(ctx context.Context, orgID, id uuid.UUID) (bool, error)
+	SetCampaignStatus(ctx context.Context, orgID, id uuid.UUID, status string) (bool, error)
+	CountRosterByStatus(ctx context.Context, campaignID uuid.UUID) (map[string]int, error)
 	ClearRoster(ctx context.Context, campaignID uuid.UUID) error
 	SnapshotRoster(ctx context.Context, campaignID, orgID uuid.UUID, aud domain.AudienceQuery) (int, error)
 	EstimateAudience(ctx context.Context, aud domain.AudienceQuery) (int, error)
@@ -249,6 +252,81 @@ func (uc *CampaignUseCase) Snapshot(ctx context.Context, orgID, id uuid.UUID) (*
 		return nil, err
 	}
 	return &domain.SnapshotResult{Total: total}, nil
+}
+
+// Launch validates readiness, snapshots the roster, and flips the campaign to
+// 'sending' — the async worker then drains it. Launch itself sends no email
+// synchronously. Refuses a not-ready campaign (422) and a non-launchable state (409).
+func (uc *CampaignUseCase) Launch(ctx context.Context, orgID, id uuid.UUID) (*domain.Campaign, error) {
+	r, err := uc.Readiness(ctx, orgID, id)
+	if err != nil {
+		return nil, err
+	}
+	if !r.Ready {
+		return nil, domain.NewAppError(http.StatusUnprocessableEntity, "campaign is not ready to send — resolve the checklist first")
+	}
+	if _, err := uc.Snapshot(ctx, orgID, id); err != nil {
+		return nil, err
+	}
+	started, err := uc.repo.StartCampaign(ctx, orgID, id)
+	if err != nil {
+		return nil, err
+	}
+	if !started {
+		return nil, domain.NewAppError(http.StatusConflict, "campaign is not in a launchable state")
+	}
+	return uc.Get(ctx, orgID, id)
+}
+
+// Pause halts an in-flight send (the claim query stops seeing its recipients). Only a
+// 'sending' campaign can pause.
+func (uc *CampaignUseCase) Pause(ctx context.Context, orgID, id uuid.UUID) error {
+	return uc.transition(ctx, orgID, id, domain.CampaignStatusPaused, map[string]bool{domain.CampaignStatusSending: true})
+}
+
+// Resume returns a paused campaign to 'sending'.
+func (uc *CampaignUseCase) Resume(ctx context.Context, orgID, id uuid.UUID) error {
+	return uc.transition(ctx, orgID, id, domain.CampaignStatusSending, map[string]bool{domain.CampaignStatusPaused: true})
+}
+
+// Cancel permanently stops a send (from sending, paused, or scheduled). A sent or
+// already-canceled campaign cannot be canceled.
+func (uc *CampaignUseCase) Cancel(ctx context.Context, orgID, id uuid.UUID) error {
+	return uc.transition(ctx, orgID, id, domain.CampaignStatusCanceled, map[string]bool{
+		domain.CampaignStatusSending: true, domain.CampaignStatusPaused: true, domain.CampaignStatusScheduled: true,
+	})
+}
+
+func (uc *CampaignUseCase) transition(ctx context.Context, orgID, id uuid.UUID, to string, from map[string]bool) error {
+	c, err := uc.Get(ctx, orgID, id)
+	if err != nil {
+		return err
+	}
+	if !from[c.Status] {
+		return domain.NewAppError(http.StatusConflict, "campaign cannot move to "+to+" from "+c.Status)
+	}
+	if _, err := uc.repo.SetCampaignStatus(ctx, orgID, id, to); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Progress returns the campaign status + roster counts by status (the polling/SSE
+// progress source).
+func (uc *CampaignUseCase) Progress(ctx context.Context, orgID, id uuid.UUID) (map[string]any, error) {
+	c, err := uc.Get(ctx, orgID, id)
+	if err != nil {
+		return nil, err
+	}
+	counts, err := uc.repo.CountRosterByStatus(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	total := 0
+	for _, n := range counts {
+		total += n
+	}
+	return map[string]any{"status": c.Status, "counts": counts, "total": total}, nil
 }
 
 // ── internals ────────────────────────────────────────────────────────────────

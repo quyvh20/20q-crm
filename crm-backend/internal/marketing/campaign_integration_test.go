@@ -95,6 +95,12 @@ func newCampaignTestDB(t *testing.T) *gorm.DB {
 		)`,
 		`CREATE UNIQUE INDEX uix_campaign_recipients_campaign_email
 			ON marketing_campaign_recipients(campaign_id, email_normalized)`,
+		`CREATE TABLE org_marketing_profile (
+			org_id UUID PRIMARY KEY,
+			from_name VARCHAR(160) NOT NULL DEFAULT '',
+			physical_postal_address TEXT NOT NULL DEFAULT '',
+			marketing_paused BOOLEAN NOT NULL DEFAULT false
+		)`,
 	}
 	for _, s := range stmts {
 		require.NoError(t, db.Exec(s).Error)
@@ -203,4 +209,53 @@ func TestCampaignIntegration_RosterFanOut(t *testing.T) {
 	require.Zero(t, web5Rows, "excluded contact must not be in the roster")
 	require.Zero(t, emptyRows, "empty-email contact must be dropped")
 	require.Zero(t, otherOrgRows, "other-org contact must be dropped by org scoping")
+}
+
+// The claim query is the load-bearing send-lane SQL: pause/cancel = "drop out of the
+// claim". This proves a 'sending' non-paused campaign's recipients are claimed (flipped
+// to processing, attempts incremented) while a paused-campaign and a paused-org's rows
+// are left untouched.
+func TestCampaignIntegration_ClaimRespectsStatusAndPause(t *testing.T) {
+	db := newCampaignTestDB(t)
+	mkt := marketing.NewRepository(db)
+	ctx := context.Background()
+
+	orgLive, orgPaused := uuid.New(), uuid.New()
+	require.NoError(t, db.Exec(`INSERT INTO org_marketing_profile (org_id, from_name, physical_postal_address, marketing_paused) VALUES (?, 'Acme', '1 St', false)`, orgLive).Error)
+	require.NoError(t, db.Exec(`INSERT INTO org_marketing_profile (org_id, from_name, physical_postal_address, marketing_paused) VALUES (?, 'Acme', '1 St', true)`, orgPaused).Error)
+
+	newCampaign := func(org uuid.UUID, status string) uuid.UUID {
+		var idStr string
+		require.NoError(t, db.Raw(`INSERT INTO marketing_campaigns (org_id, name, status) VALUES (?, 'C', ?) RETURNING id::text`, org, status).Scan(&idStr).Error)
+		id, err := uuid.Parse(idStr)
+		require.NoError(t, err)
+		return id
+	}
+	addRecipient := func(camp, org uuid.UUID, email string) {
+		require.NoError(t, db.Exec(`INSERT INTO marketing_campaign_recipients (campaign_id, org_id, email_normalized) VALUES (?, ?, ?)`, camp, org, email).Error)
+	}
+
+	cSending := newCampaign(orgLive, "sending")   // claimable
+	cPaused := newCampaign(orgLive, "paused")     // campaign not sending → skip
+	cOrgPaused := newCampaign(orgPaused, "sending") // org paused → skip
+	addRecipient(cSending, orgLive, "live@x.com")
+	addRecipient(cPaused, orgLive, "paused@x.com")
+	addRecipient(cOrgPaused, orgPaused, "orgpaused@x.com")
+
+	claimed, err := mkt.ClaimSendableRecipients(ctx, 100)
+	require.NoError(t, err)
+	require.Len(t, claimed, 1, "only the sending, non-paused campaign's recipient is claimable")
+	require.Equal(t, "live@x.com", claimed[0].EmailNormalized)
+	require.Equal(t, "processing", claimed[0].Status)
+	require.Equal(t, 1, claimed[0].Attempts, "claim increments attempts")
+
+	// The skipped rows stay pending.
+	var pending int64
+	require.NoError(t, db.Raw(`SELECT count(*) FROM marketing_campaign_recipients WHERE status = 'pending'`).Scan(&pending).Error)
+	require.Equal(t, int64(2), pending, "paused-campaign and paused-org rows remain pending")
+
+	// A second claim finds nothing new (the one row is now processing).
+	again, err := mkt.ClaimSendableRecipients(ctx, 100)
+	require.NoError(t, err)
+	require.Empty(t, again)
 }

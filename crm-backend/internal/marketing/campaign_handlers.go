@@ -1,6 +1,7 @@
 package marketing
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -45,6 +46,11 @@ func (h *CampaignHandler) RegisterRoutes(router *gin.Engine, protected []gin.Han
 		g.DELETE("/:id", h.Remove)
 		g.GET("/:id/readiness", h.Readiness)
 		g.POST("/:id/snapshot", h.Snapshot)
+		g.POST("/:id/launch", h.Launch)
+		g.POST("/:id/pause", h.Pause)
+		g.POST("/:id/resume", h.Resume)
+		g.POST("/:id/cancel", h.Cancel)
+		g.GET("/:id/progress", h.Progress)
 	}
 
 	ge := router.Group("/api/marketing/campaign-estimate")
@@ -193,6 +199,60 @@ func (h *CampaignHandler) Snapshot(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": res})
+}
+
+func (h *CampaignHandler) Launch(c *gin.Context) {
+	orgID, _, ok := actorFromCtx(c)
+	if !ok {
+		return
+	}
+	id, ok := campaignID(c)
+	if !ok {
+		return
+	}
+	camp, err := h.uc.Launch(c.Request.Context(), orgID, id)
+	if err != nil {
+		h.fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": camp})
+}
+
+func (h *CampaignHandler) lifecycle(c *gin.Context, fn func(ctx context.Context, orgID, id uuid.UUID) error) {
+	orgID, _, ok := actorFromCtx(c)
+	if !ok {
+		return
+	}
+	id, ok := campaignID(c)
+	if !ok {
+		return
+	}
+	if err := fn(c.Request.Context(), orgID, id); err != nil {
+		h.fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"ok": true}})
+}
+
+func (h *CampaignHandler) Pause(c *gin.Context)  { h.lifecycle(c, h.uc.Pause) }
+func (h *CampaignHandler) Resume(c *gin.Context) { h.lifecycle(c, h.uc.Resume) }
+func (h *CampaignHandler) Cancel(c *gin.Context) { h.lifecycle(c, h.uc.Cancel) }
+
+func (h *CampaignHandler) Progress(c *gin.Context) {
+	orgID, _, ok := actorFromCtx(c)
+	if !ok {
+		return
+	}
+	id, ok := campaignID(c)
+	if !ok {
+		return
+	}
+	p, err := h.uc.Progress(c.Request.Context(), orgID, id)
+	if err != nil {
+		h.fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": p})
 }
 
 type estimateRequest struct {

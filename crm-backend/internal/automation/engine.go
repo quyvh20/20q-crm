@@ -199,12 +199,42 @@ func (e *Engine) SendTestEmail(ctx context.Context, to, subject, bodyHTML string
 // transport. A transactional caller must never reach this path — it exists only so
 // the marketing lane can attach List-Unsubscribe without teaching the executor about
 // the marketing channel.
-func (e *Engine) SendMarketingEmail(ctx context.Context, to, subject, bodyHTML, fromName, replyTo string, cc []string, headers map[string]string, idempotencyKey string) (any, error) {
+func (e *Engine) SendMarketingEmail(ctx context.Context, to, subject, bodyHTML, fromName, fromAddress, replyTo string, cc []string, headers map[string]string, idempotencyKey string) (any, error) {
 	ex, ok := e.executors[ActionSendEmail].(*EmailExecutor)
 	if !ok || ex == nil {
 		return nil, fmt.Errorf("email executor is not configured")
 	}
-	return ex.sendEmailWithHeaders(ctx, "marketing-send", idempotencyKey, to, subject, bodyHTML, fromName, replyTo, cc, headers)
+	return ex.sendEmailWithHeaders(ctx, "marketing-send", idempotencyKey, to, subject, bodyHTML, fromName, fromAddress, replyTo, cc, headers)
+}
+
+// HydrateMarketingContext builds the per-recipient merge EvalContext for a bulk
+// send (B4 scope: contact + org + campaign, plus optional one-hop company). A bulk
+// blast is callerless with no run/deal/user, so it reuses only the contact + company
+// loaders. org.* and campaign.unsubscribe_url are overlaid by marketing.RenderForRecipient
+// for the body; org.name is seeded here too so the SUBJECT (which does not pass through
+// RenderForRecipient) can resolve {{org.name}}. A missing contact/company leaves that
+// root empty (fallbacks apply), never an error.
+func (e *Engine) HydrateMarketingContext(ctx context.Context, orgID, contactID uuid.UUID, campaignName, orgName string, includeCompany bool) EvalContext {
+	ec := EvalContext{Actions: map[string]any{}, Extra: map[string]any{}}
+	if contactID != uuid.Nil {
+		if c := loadContactForTrigger(ctx, e.db, orgID, contactID); c != nil {
+			ec.Contact = c
+		}
+	}
+	if orgName != "" {
+		ec.Org = map[string]any{"name": orgName}
+	}
+	ec.Extra["campaign"] = map[string]any{"name": campaignName}
+	if includeCompany && ec.Contact != nil {
+		if cid, _ := ec.Contact["company_id"].(string); cid != "" {
+			if cuid, err := uuid.Parse(cid); err == nil {
+				if co := loadCompanyForTrigger(ctx, e.db, orgID, cuid); co != nil {
+					ec.Extra["company"] = co
+				}
+			}
+		}
+	}
+	return ec
 }
 
 // WithAuthorizer wires the OLS/FLS + audit chokepoint (PermissionUseCase) so the

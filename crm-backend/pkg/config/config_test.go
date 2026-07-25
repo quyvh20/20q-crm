@@ -71,6 +71,10 @@ func TestEveryConfigFieldResolvesFromTheEnvironment(t *testing.T) {
 			sentinels[key] = "true"
 			continue
 		}
+		if typ.Field(i).Type.Kind() == reflect.Int {
+			sentinels[key] = "4242" // a numeric sentinel int fields can parse
+			continue
+		}
 		sentinels[key] = "sentinel-" + strings.ToLower(key)
 	}
 
@@ -97,6 +101,8 @@ func TestEveryConfigFieldResolvesFromTheEnvironment(t *testing.T) {
 			resolved = val.Field(i).Bool()
 		case reflect.String:
 			resolved = val.Field(i).String() == sentinels[key]
+		case reflect.Int:
+			resolved = val.Field(i).Int() == 4242
 		default:
 			t.Fatalf("%s has unhandled kind %s — teach this test about it rather than skipping it", field.Name, field.Type.Kind())
 		}

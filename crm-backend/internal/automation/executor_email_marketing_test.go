@@ -38,7 +38,7 @@ func TestSendMarketingLane_HeadersAndReplyToInBody(t *testing.T) {
 		"List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
 	}
 	_, err := exec.sendEmailWithHeaders(context.Background(), "marketing-send", "campaign:1:contact:2",
-		"jane@acme.com", "Subject", "<p>Hi</p>", "Acme Marketing", "reply@send.acme.com", nil, headers)
+		"jane@acme.com", "Subject", "<p>Hi</p>", "Acme Marketing", "", "reply@send.acme.com", nil, headers)
 	require.NoError(t, err)
 
 	// headers is a nested object in the JSON body.
@@ -80,12 +80,14 @@ func TestSendMarketingEmail_Engine(t *testing.T) {
 
 	headers := MarketingUnsubHeadersForTest()
 	_, err := eng.SendMarketingEmail(context.Background(), "jane@acme.com", "S", "<p>b</p>",
-		"Acme", "reply@x.com", nil, headers, "campaign:1:contact:2")
+		"Acme", "marketing@acme.com", "reply@x.com", nil, headers, "campaign:1:contact:2")
 	require.NoError(t, err)
 
 	gotHeaders, ok := raw["headers"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, "List-Unsubscribe=One-Click", gotHeaders["List-Unsubscribe-Post"])
+	// The per-org verified From address (B1 alignment) rides through the seam.
+	assert.Equal(t, "Acme <marketing@acme.com>", raw["from"])
 }
 
 // MarketingUnsubHeadersForTest builds the byte-exact header pair the marketing

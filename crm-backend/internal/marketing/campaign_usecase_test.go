@@ -59,6 +59,25 @@ func (f *fakeCampStore) SoftDeleteCampaign(_ context.Context, _ uuid.UUID, id uu
 	delete(f.campaigns, id)
 	return true, nil
 }
+func (f *fakeCampStore) StartCampaign(_ context.Context, _, id uuid.UUID) (bool, error) {
+	c, ok := f.campaigns[id]
+	if !ok || (c.Status != domain.CampaignStatusDraft && c.Status != domain.CampaignStatusScheduled) {
+		return false, nil
+	}
+	c.Status = domain.CampaignStatusSending
+	return true, nil
+}
+func (f *fakeCampStore) SetCampaignStatus(_ context.Context, _, id uuid.UUID, status string) (bool, error) {
+	c, ok := f.campaigns[id]
+	if !ok {
+		return false, nil
+	}
+	c.Status = status
+	return true, nil
+}
+func (f *fakeCampStore) CountRosterByStatus(_ context.Context, _ uuid.UUID) (map[string]int, error) {
+	return map[string]int{}, nil
+}
 func (f *fakeCampStore) ClearRoster(_ context.Context, _ uuid.UUID) error { f.cleared = true; return nil }
 func (f *fakeCampStore) SnapshotRoster(_ context.Context, _, _ uuid.UUID, _ domain.AudienceQuery) (int, error) {
 	return f.snapshotN, nil

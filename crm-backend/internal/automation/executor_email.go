@@ -152,17 +152,24 @@ func (e *EmailExecutor) Execute(ctx context.Context, run *WorkflowRun, action Ac
 // custom headers — so the transactional path is byte-for-byte unchanged. Only the
 // marketing lane (SendMarketingEmail) supplies those, keeping Guardrail 9.
 func (e *EmailExecutor) sendEmail(ctx context.Context, logID, idempotencyKey, to, subject, bodyHTML, fromName string, cc []string) (any, error) {
-	return e.sendEmailWithHeaders(ctx, logID, idempotencyKey, to, subject, bodyHTML, fromName, "", cc, nil)
+	return e.sendEmailWithHeaders(ctx, logID, idempotencyKey, to, subject, bodyHTML, fromName, "", "", cc, nil)
 }
 
-// sendEmailWithHeaders is sendEmail plus an optional Reply-To and an optional set
-// of custom email headers (the marketing lane's RFC-8058 List-Unsubscribe pair).
-// replyTo=="" and headers==nil reproduce sendEmail exactly (both fields are
-// `omitempty`), so a transactional caller is unaffected.
-func (e *EmailExecutor) sendEmailWithHeaders(ctx context.Context, logID, idempotencyKey, to, subject, bodyHTML, fromName, replyTo string, cc []string, headers map[string]string) (any, error) {
-	from := e.fromEmail
+// sendEmailWithHeaders is sendEmail plus an optional From ADDRESS override, Reply-To,
+// and custom email headers (the marketing lane's RFC-8058 List-Unsubscribe pair).
+// fromAddress=="", replyTo=="" and headers==nil reproduce sendEmail exactly (the
+// address falls back to the global e.fromEmail; both wire fields are `omitempty`), so
+// a transactional caller is unaffected. The marketing lane passes the org's VERIFIED
+// domain address so DKIM/DMARC/Return-Path align per org (B1) — the global MAIL_FROM
+// is owned by no org and would fail alignment.
+func (e *EmailExecutor) sendEmailWithHeaders(ctx context.Context, logID, idempotencyKey, to, subject, bodyHTML, fromName, fromAddress, replyTo string, cc []string, headers map[string]string) (any, error) {
+	addr := e.fromEmail
+	if fromAddress != "" {
+		addr = fromAddress
+	}
+	from := addr
 	if fromName != "" {
-		from = fmt.Sprintf("%s <%s>", fromName, e.fromEmail)
+		from = fmt.Sprintf("%s <%s>", fromName, addr)
 	}
 
 	payload := resendEmailPayload{

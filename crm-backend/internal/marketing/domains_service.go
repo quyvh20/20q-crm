@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"regexp"
 	"strings"
@@ -263,6 +264,43 @@ func (s *DomainService) GetDomain(ctx context.Context, orgID, id uuid.UUID) (*Em
 
 // CanBulkSend reports whether the org has at least one domain cleared for bulk
 // marketing (SPF+DKIM verified + DMARC published), with a stable reason when not.
+// marketingFromLocalPart is the local part of the per-org bulk From address; the
+// domain half is the org's VERIFIED sending domain (so DKIM/DMARC/Return-Path align).
+const marketingFromLocalPart = "marketing"
+
+// ResolveFromAddress returns the org's bulk From ADDRESS (local@verified-domain) for
+// M7 sends: the campaign's chosen sending_domain_id when set and bulk-verified, else
+// the first bulk-verified domain. Errors when no domain can bulk-send — the launch
+// gate blocks that case, but the worker re-checks defensively (a domain can be
+// unverified between launch and the moment a recipient is claimed).
+func (s *DomainService) ResolveFromAddress(ctx context.Context, orgID uuid.UUID, domainID *uuid.UUID) (string, error) {
+	domains, err := s.repo.ListDomainsByOrg(ctx, orgID)
+	if err != nil {
+		return "", err
+	}
+	var chosen *EmailDomain
+	for i := range domains {
+		d := &domains[i]
+		if !d.CanBulkSend() {
+			continue
+		}
+		if domainID != nil {
+			if d.ID == *domainID {
+				chosen = d
+				break
+			}
+			continue
+		}
+		if chosen == nil {
+			chosen = d
+		}
+	}
+	if chosen == nil {
+		return "", fmt.Errorf("no verified sending domain for org %s", orgID)
+	}
+	return marketingFromLocalPart + "@" + chosen.Domain, nil
+}
+
 func (s *DomainService) CanBulkSend(ctx context.Context, orgID uuid.UUID) (bool, string, error) {
 	domains, err := s.repo.ListDomainsByOrg(ctx, orgID)
 	if err != nil {

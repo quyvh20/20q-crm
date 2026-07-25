@@ -141,6 +141,12 @@ type Config struct {
 	// webhooks. Needs its own viper.BindEnv below or it silently reads "" in prod
 	// (the PADDLE_WEBHOOK_SECRET footgun the config test guards against).
 	ResendWebhookSecret string `mapstructure:"RESEND_WEBHOOK_SECRET"`
+	// ResendMaxRPS sizes the M7 shared send token bucket. Resend's default is 10
+	// req/s PER TEAM across every API key (both transactional + marketing), so this is
+	// ONE global bucket, never per-org — and never hard-coded (a trial tier may be
+	// lower, a support-raised limit higher). 0 ⇒ the default (8, one below the 10
+	// documented ceiling for burst headroom). Needs its own viper.BindEnv below.
+	ResendMaxRPS int `mapstructure:"RESEND_MAX_RPS"`
 
 	// Storage (Cloudflare R2 — optional, falls back to base64-in-redis for dev)
 	R2AccountID       string `mapstructure:"R2_ACCOUNT_ID"`
@@ -189,6 +195,7 @@ func LoadConfig() (*Config, error) {
 	viper.BindEnv("MARKETING_UNSUB_KEY")
 	viper.BindEnv("RESEND_API_KEY")
 	viper.BindEnv("RESEND_WEBHOOK_SECRET")
+	viper.BindEnv("RESEND_MAX_RPS")
 	viper.BindEnv("MAIL_FROM")
 	viper.BindEnv("MAIL_DISABLED")
 	viper.BindEnv("R2_ACCOUNT_ID")

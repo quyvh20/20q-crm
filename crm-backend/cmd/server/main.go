@@ -2600,6 +2600,28 @@ func main() {
 			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
 		)
 
+		// ── Email marketing (M7.2: send-lane worker) ──────────────────────
+		// Drains the recipient roster of every 'sending' campaign under ONE shared
+		// provider token bucket (Resend's limit is per-team across all API keys — B1),
+		// single-send per recipient with a deterministic idempotency key (exactly-once
+		// across retries), re-checking the LIVE M1 suppression verdict at claim. Started
+		// only when an email transport is configured. LIVE deliverability of the
+		// one-click unsubscribe stays gated on the B3 DKIM test.
+		if autoEngine != nil {
+			sendRPS := cfg.ResendMaxRPS
+			if sendRPS <= 0 {
+				sendRPS = 8 // one below Resend's documented 10/s for burst headroom (B1)
+			}
+			marketingSendLimiter := integrations.NewRateLimiter(redisClient, sendRPS, time.Second)
+			campaignSender := marketing.NewCampaignSender(
+				marketingRepo, marketing.NewSuppressionGuard(marketingRepo), autoEngine,
+				marketingDomainSvc, marketingTokens, marketingSendLimiter,
+				cfg.PublicAPIBaseURL, cfg.FrontendURL, autoLogger,
+			)
+			go marketing.StartCampaignSender(context.Background(), campaignSender)
+			go marketing.StartCampaignReaper(context.Background(), marketingRepo, autoLogger)
+		}
+
 		// ── L5.1 provider connector framework ────────────────────────────
 		// The registry holds the provider adapters that have shipped. It stays EMPTY
 		// (and every /connect a clean 404) until a provider is BOTH built and
