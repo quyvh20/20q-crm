@@ -3,6 +3,7 @@ package marketing_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"crm-backend/internal/domain"
 	"crm-backend/internal/marketing"
@@ -73,6 +74,7 @@ func newCampaignTestDB(t *testing.T) *gorm.DB {
 			status VARCHAR(16) NOT NULL DEFAULT 'draft',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			finished_at TIMESTAMPTZ,
 			deleted_at TIMESTAMPTZ
 		)`,
 		`CREATE TABLE marketing_campaign_recipients (
@@ -259,4 +261,53 @@ func TestCampaignIntegration_ClaimRespectsStatusAndPause(t *testing.T) {
 	again, err := mkt.ClaimSendableRecipients(ctx, 100)
 	require.NoError(t, err)
 	require.Empty(t, again)
+}
+
+// The prune job reclaims a long-finished campaign's roster but keeps recent-finished
+// and still-active rosters — and never deletes the campaign row.
+func TestCampaignIntegration_PruneCompletedRoster(t *testing.T) {
+	db := newCampaignTestDB(t)
+	mkt := marketing.NewRepository(db)
+	ctx := context.Background()
+	org := uuid.New()
+
+	newCampaign := func(status string, finishedDaysAgo int) uuid.UUID {
+		var idStr string
+		if finishedDaysAgo < 0 {
+			require.NoError(t, db.Raw(`INSERT INTO marketing_campaigns (org_id, name, status) VALUES (?, 'C', ?) RETURNING id::text`, org, status).Scan(&idStr).Error)
+		} else {
+			require.NoError(t, db.Raw(`INSERT INTO marketing_campaigns (org_id, name, status, finished_at) VALUES (?, 'C', ?, NOW() - make_interval(days => ?)) RETURNING id::text`, org, status, finishedDaysAgo).Scan(&idStr).Error)
+		}
+		id, err := uuid.Parse(idStr)
+		require.NoError(t, err)
+		return id
+	}
+	addRecipient := func(camp uuid.UUID, email string) {
+		require.NoError(t, db.Exec(`INSERT INTO marketing_campaign_recipients (campaign_id, org_id, email_normalized) VALUES (?, ?, ?)`, camp, org, email).Error)
+	}
+
+	old := newCampaign("sent", 40)      // finished 40d ago → pruned
+	recent := newCampaign("sent", 5)    // finished 5d ago → kept
+	active := newCampaign("sending", -1) // still sending → kept
+	addRecipient(old, "old@x.com")
+	addRecipient(recent, "recent@x.com")
+	addRecipient(active, "active@x.com")
+
+	deleted, err := mkt.PruneCompletedRoster(ctx, 30*24*time.Hour)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), deleted, "only the >30d-finished campaign's roster is pruned")
+
+	rosterCount := func(camp uuid.UUID) int64 {
+		var n int64
+		require.NoError(t, db.Raw(`SELECT count(*) FROM marketing_campaign_recipients WHERE campaign_id = ?`, camp).Scan(&n).Error)
+		return n
+	}
+	require.Zero(t, rosterCount(old), "old campaign roster pruned")
+	require.Equal(t, int64(1), rosterCount(recent), "recent campaign roster kept")
+	require.Equal(t, int64(1), rosterCount(active), "active campaign roster kept")
+
+	// The campaign rows themselves are never deleted (reporting).
+	var campaigns int64
+	require.NoError(t, db.Raw(`SELECT count(*) FROM marketing_campaigns`).Scan(&campaigns).Error)
+	require.Equal(t, int64(3), campaigns, "prune keeps every campaign row")
 }

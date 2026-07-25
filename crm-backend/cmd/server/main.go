@@ -2616,11 +2616,14 @@ func main() {
 			marketingSendLimiter := integrations.NewRateLimiter(redisClient, sendRPS, time.Second)
 			campaignSender := marketing.NewCampaignSender(
 				marketingRepo, marketing.NewSuppressionGuard(marketingRepo), autoEngine,
-				marketingDomainSvc, marketingTokens, marketingSendLimiter,
+				marketingDomainSvc, marketingTokens, marketingSendLimiter, redisClient,
 				cfg.PublicAPIBaseURL, cfg.FrontendURL, autoLogger,
 			)
 			go marketing.StartCampaignSender(context.Background(), campaignSender)
 			go marketing.StartCampaignReaper(context.Background(), marketingRepo, autoLogger)
+			// M7.3: reclaim the roster rows of long-finished campaigns (keeps the campaign
+			// row for reporting). Runs regardless of send transport.
+			go marketing.StartCampaignPruner(context.Background(), marketingRepo, autoLogger)
 		}
 
 		// ── L5.1 provider connector framework ────────────────────────────

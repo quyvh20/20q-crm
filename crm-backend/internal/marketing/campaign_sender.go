@@ -12,6 +12,7 @@ import (
 	"crm-backend/internal/domain"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/datatypes"
 )
 
@@ -32,6 +33,8 @@ const (
 	campaignReapGrace    = 10 * time.Minute
 	providerBucketKey    = "provider" // one global bucket (Resend limit is per-team)
 	providerWaitCap      = 5 * time.Second
+	campaignPruneInterval  = 6 * time.Hour
+	campaignRosterRetention = 30 * 24 * time.Hour // keep a finished campaign's roster 30d
 )
 
 // marketingSender is the automation transport seam (satisfied by *automation.Engine).
@@ -56,6 +59,7 @@ type senderStore interface {
 	RependRecipient(ctx context.Context, id uuid.UUID, backoff time.Duration, errMsg string) error
 	ReapStrandedRecipients(ctx context.Context, grace time.Duration, maxAttempts int) (int64, error)
 	MarkDrainedCampaignsSent(ctx context.Context) (int64, error)
+	CountRosterByStatus(ctx context.Context, campaignID uuid.UUID) (map[string]int, error)
 	GetCampaignByID(ctx context.Context, orgID, id uuid.UUID) (*domain.Campaign, error)
 	GetContentByID(ctx context.Context, orgID, id uuid.UUID) (*CampaignContent, error)
 	GetProfile(ctx context.Context, orgID uuid.UUID) (*OrgMarketingProfile, error)
@@ -72,23 +76,25 @@ type tokenMinter interface {
 
 // CampaignSender is the send-lane worker.
 type CampaignSender struct {
-	store     senderStore
-	sender    marketingSender
-	guard     *SuppressionGuard
-	from      fromResolver
-	tokens    tokenMinter
-	limiter   providerLimiter
-	apiBase   string
-	frontend  string
-	logger    *slog.Logger
+	store    senderStore
+	sender   marketingSender
+	guard    *SuppressionGuard
+	from     fromResolver
+	tokens   tokenMinter
+	limiter  providerLimiter
+	redis    *redis.Client // nullable — SSE progress degrades to no-op (FE can poll /progress)
+	apiBase  string
+	frontend string
+	logger   *slog.Logger
 }
 
-// NewCampaignSender builds the worker. guard is derived from the same repo.
-func NewCampaignSender(store senderStore, guard *SuppressionGuard, sender marketingSender, from fromResolver, tokens tokenMinter, limiter providerLimiter, apiBase, frontend string, logger *slog.Logger) *CampaignSender {
+// NewCampaignSender builds the worker. guard is derived from the same repo; redis may
+// be nil (SSE progress then no-ops and the FE falls back to polling GET /:id/progress).
+func NewCampaignSender(store senderStore, guard *SuppressionGuard, sender marketingSender, from fromResolver, tokens tokenMinter, limiter providerLimiter, redisClient *redis.Client, apiBase, frontend string, logger *slog.Logger) *CampaignSender {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &CampaignSender{store: store, sender: sender, guard: guard, from: from, tokens: tokens, limiter: limiter, apiBase: apiBase, frontend: frontend, logger: logger}
+	return &CampaignSender{store: store, sender: sender, guard: guard, from: from, tokens: tokens, limiter: limiter, redis: redisClient, apiBase: apiBase, frontend: frontend, logger: logger}
 }
 
 // campaignSendContext is the per-campaign data loaded once per drain (not per
@@ -123,6 +129,7 @@ func StartCampaignSender(ctx context.Context, s *CampaignSender) {
 }
 
 func (s *CampaignSender) drain(ctx context.Context) {
+	touched := map[uuid.UUID]uuid.UUID{} // campaignID → orgID, for the final progress event
 	for round := 0; round < campaignMaxDrain; round++ {
 		claimed, err := s.store.ClaimSendableRecipients(ctx, campaignClaimBatch)
 		if err != nil {
@@ -132,7 +139,9 @@ func (s *CampaignSender) drain(ctx context.Context) {
 		if len(claimed) == 0 {
 			break
 		}
-		s.processBatch(ctx, claimed)
+		for campID, orgID := range s.processBatch(ctx, claimed) {
+			touched[campID] = orgID
+		}
 		if len(claimed) < campaignClaimBatch {
 			break
 		}
@@ -143,21 +152,66 @@ func (s *CampaignSender) drain(ctx context.Context) {
 	if _, err := s.store.MarkDrainedCampaignsSent(ctx); err != nil {
 		s.logger.Error("marketing: finalize drained campaigns failed", "error", err)
 	}
+	// Final progress event per campaign touched this drain — after the finalize flip,
+	// so a just-completed campaign streams its 'sent' status to the UI.
+	for campID, orgID := range touched {
+		s.publishProgress(ctx, orgID, campID)
+	}
 }
 
 // processBatch groups claimed rows by campaign, loads each campaign's send context
-// once, then sends each recipient.
-func (s *CampaignSender) processBatch(ctx context.Context, rows []domain.CampaignRecipient) {
+// once, sends each recipient, then publishes a live progress event per campaign.
+// Returns the campaigns it touched (campaignID → orgID).
+func (s *CampaignSender) processBatch(ctx context.Context, rows []domain.CampaignRecipient) map[uuid.UUID]uuid.UUID {
 	ctxs := map[uuid.UUID]*campaignSendContext{}
+	orgOf := map[uuid.UUID]uuid.UUID{}
 	for i := range rows {
 		r := rows[i]
 		sc := ctxs[r.CampaignID]
 		if sc == nil {
 			sc = s.loadCampaignContext(ctx, r.OrgID, r.CampaignID)
 			ctxs[r.CampaignID] = sc
+			orgOf[r.CampaignID] = r.OrgID
 		}
 		s.sendOne(ctx, r, sc)
 	}
+	for campID, orgID := range orgOf {
+		s.publishProgress(ctx, orgID, campID)
+	}
+	return orgOf
+}
+
+// publishProgress emits a campaign_progress event (status + roster counts) onto the
+// org SSE channel the FE already subscribes to (/api/events). No-op without Redis;
+// best-effort — a publish failure never affects the send.
+func (s *CampaignSender) publishProgress(ctx context.Context, orgID, campID uuid.UUID) {
+	if s.redis == nil {
+		return
+	}
+	counts, err := s.store.CountRosterByStatus(ctx, campID)
+	if err != nil {
+		return
+	}
+	status := ""
+	if camp, err := s.store.GetCampaignByID(ctx, orgID, campID); err == nil && camp != nil {
+		status = camp.Status
+	}
+	total := 0
+	for _, n := range counts {
+		total += n
+	}
+	payload, err := json.Marshal(map[string]any{
+		"type":        "campaign_progress",
+		"campaign_id": campID.String(),
+		"org_id":      orgID.String(),
+		"status":      status,
+		"counts":      counts,
+		"total":       total,
+	})
+	if err != nil {
+		return
+	}
+	s.redis.Publish(ctx, domain.OrgNotificationChannel(orgID), payload)
 }
 
 func (s *CampaignSender) loadCampaignContext(ctx context.Context, orgID, campID uuid.UUID) *campaignSendContext {
@@ -348,6 +402,33 @@ func StartCampaignReaper(ctx context.Context, store senderStore, logger *slog.Lo
 				logger.Error("marketing: campaign reaper failed", "error", err)
 			} else if n > 0 {
 				logger.Info("marketing: reaped stranded recipients", "count", n)
+			}
+		}
+	}
+}
+
+// prunerStore is the slice of persistence the roster pruner needs.
+type prunerStore interface {
+	PruneCompletedRoster(ctx context.Context, olderThan time.Duration) (int64, error)
+}
+
+// StartCampaignPruner periodically reclaims the roster rows of long-finished
+// campaigns (the campaign row is kept for reporting). Runs until ctx is done.
+func StartCampaignPruner(ctx context.Context, store prunerStore, logger *slog.Logger) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	ticker := time.NewTicker(campaignPruneInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if n, err := store.PruneCompletedRoster(ctx, campaignRosterRetention); err != nil {
+				logger.Error("marketing: campaign roster prune failed", "error", err)
+			} else if n > 0 {
+				logger.Info("marketing: pruned completed campaign roster rows", "count", n)
 			}
 		}
 	}

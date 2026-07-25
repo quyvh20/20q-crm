@@ -56,6 +56,9 @@ func (f *recStore) ReapStrandedRecipients(context.Context, time.Duration, int) (
 	return 0, nil
 }
 func (f *recStore) MarkDrainedCampaignsSent(context.Context) (int64, error) { return 0, nil }
+func (f *recStore) CountRosterByStatus(context.Context, uuid.UUID) (map[string]int, error) {
+	return map[string]int{}, nil
+}
 
 var errTransientDB = errors.New("transient db blip")
 
@@ -114,7 +117,7 @@ func (f *fakeLedger) MarketingStateForEmail(context.Context, uuid.UUID, string) 
 func senderEnv(led *fakeLedger, resp any, sendErr error) (*CampaignSender, *recStore, *recSender) {
 	store := newRecStore()
 	snd := &recSender{resp: resp, err: sendErr}
-	s := NewCampaignSender(store, NewSuppressionGuard(led), snd, recFrom{}, recTokens{}, nil, "https://api.example.com", "https://app.example.com", nil)
+	s := NewCampaignSender(store, NewSuppressionGuard(led), snd, recFrom{}, recTokens{}, nil, nil, "https://api.example.com", "https://app.example.com", nil)
 	return s, store, snd
 }
 
@@ -203,7 +206,7 @@ func TestSender_TransientLoadErrorRepends(t *testing.T) {
 	store := newRecStore()
 	store.campErr = true
 	snd := &recSender{}
-	s := NewCampaignSender(store, NewSuppressionGuard(sendableLedger()), snd, recFrom{}, recTokens{}, nil, "https://api.example.com", "https://app.example.com", nil)
+	s := NewCampaignSender(store, NewSuppressionGuard(sendableLedger()), snd, recFrom{}, recTokens{}, nil, nil, "https://api.example.com", "https://app.example.com", nil)
 	r := recip(1)
 	s.processBatch(context.Background(), []domain.CampaignRecipient{r})
 	if _, ok := store.repended[r.ID]; !ok {

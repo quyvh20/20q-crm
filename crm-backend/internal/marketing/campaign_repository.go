@@ -277,6 +277,21 @@ func (r *Repository) GetOrgName(ctx context.Context, orgID uuid.UUID) (string, e
 	return name, err
 }
 
+// PruneCompletedRoster deletes the (bulky) recipient rows of campaigns that finished
+// (sent/canceled) more than `olderThan` ago. The campaign row itself is KEPT for
+// reporting/analytics (M9) — only its roster is reclaimed. Returns rows deleted.
+func (r *Repository) PruneCompletedRoster(ctx context.Context, olderThan time.Duration) (int64, error) {
+	res := r.db.WithContext(ctx).Exec(`
+		DELETE FROM marketing_campaign_recipients
+		WHERE campaign_id IN (
+			SELECT id FROM marketing_campaigns
+			WHERE status IN ('sent','canceled')
+			  AND finished_at IS NOT NULL
+			  AND finished_at < NOW() - make_interval(secs => ?))`,
+		olderThan.Seconds())
+	return res.RowsAffected, res.Error
+}
+
 func nullIfEmpty(s string) any {
 	if s == "" {
 		return nil
