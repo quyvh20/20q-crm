@@ -4,6 +4,7 @@ import type { ActionSpec } from '../../types';
 import { useBuilderStore } from '../../store';
 import { TemplateInput } from './inputs';
 import { useEmailTemplates, useWorkflowsList } from '../../queries';
+import { useContentList } from '../../../marketing/contentQueries';
 import { FieldPicker, type FieldMeta } from './FieldPicker';
 import { SmartValueInput } from './SmartValueInput';
 import type { SchemaField, WorkflowSchema, SchemaEntity } from '../../api';
@@ -70,52 +71,115 @@ const EmailParams: React.FC<ParamProps> = ({ action, setParam }) => {
   const usingTemplate = templateId !== '';
   const templateMissing = usingTemplate && !templates.some((t) => t.id === templateId);
 
+  // M8: channel=marketing routes this step through the marketing lane — a live
+  // suppression/consent gate, the org's verified sending domain, a one-click
+  // unsubscribe + CAN-SPAM footer, and email-safe M6 compiled content. Default
+  // (absent) is transactional, so existing send steps are unchanged.
+  const channel = String(action.params.channel || 'transactional');
+  const marketing = channel === 'marketing';
+  const { data: content = [] } = useContentList();
+  const contentId = String(action.params.content_id || '');
+  const contentMissing = marketing && contentId !== '' && !content.some((c) => c.id === contentId);
+
+  const selectClass =
+    'w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring';
+
   return (
     <div className="space-y-3">
-      {/* Template picker */}
+      {/* Channel selector (M8) */}
       <div>
-        <div className="mb-1 flex items-center justify-between">
-          <label className="block text-sm text-muted-foreground">Template</label>
-          <a
-            href="/workflows/email-templates"
-            target="_blank"
-            rel="noreferrer"
-            className="text-xs text-primary hover:underline"
-          >
-            Manage templates
-          </a>
-        </div>
-        <select
-          value={templateId}
-          onChange={(e) => setParam('template_id', e.target.value)}
-          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
-        >
-          <option value="">Write inline</option>
-          {templateMissing && <option value={templateId}>(template not found)</option>}
-          {templates.map((t) => (
-            <option key={t.id} value={t.id}>{t.name}</option>
+        <label className="mb-1 block text-sm text-muted-foreground">Channel</label>
+        <div className="inline-flex rounded-lg border border-border p-0.5">
+          {(['transactional', 'marketing'] as const).map((ch) => (
+            <button
+              key={ch}
+              type="button"
+              onClick={() => setParam('channel', ch)}
+              className={`rounded-md px-3 py-1.5 text-sm font-medium capitalize transition-colors ${
+                channel === ch ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {ch}
+            </button>
           ))}
-        </select>
-        {usingTemplate && (
-          <p className="mt-1 text-xs text-muted-foreground">
-            Subject &amp; body come from this template. Fill the fields below only to override them for this action.
-          </p>
-        )}
+        </div>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {marketing
+            ? 'Checked against unsubscribe/consent at send time; sends from your verified domain with a one-click unsubscribe + postal-address footer. Use inside a drip sequence.'
+            : 'Receipts, alerts and internal mail — skips the marketing suppression gate and footer.'}
+        </p>
       </div>
 
-      <TemplateInput label="To" value={String(action.params.to || '')} onChange={(v) => setParam('to', v)} placeholder="Click {x} to insert contact email" fieldFilter="email" />
-      <TemplateInput label="CC" value={String(action.params.cc || '')} onChange={(v) => setParam('cc', v)} placeholder="Separate multiple addresses with commas" fieldFilter="email" />
-      <TemplateInput label="From Name" value={String(action.params.from_name || '')} onChange={(v) => setParam('from_name', v)} placeholder="Your Company" />
-      <TemplateInput label={usingTemplate ? 'Subject (override)' : 'Subject'} value={String(action.params.subject || '')} onChange={(v) => setParam('subject', v)} placeholder={usingTemplate ? 'Leave blank to use the template subject' : 'Click {x} to insert variables'} />
-      <TemplateInput
-        label={usingTemplate ? 'Body HTML (override)' : 'Body HTML'}
-        value={String(action.params.body_html || '')}
-        onChange={(v) => setParam('body_html', v)}
-        placeholder={usingTemplate ? 'Leave blank to use the template body' : 'Write your email body — click {x} to insert variables'}
-        multiline
-        rows={6}
-        mono
-      />
+      {marketing ? (
+        <>
+          <div>
+            <div className="mb-1 flex items-center justify-between">
+              <label className="block text-sm text-muted-foreground">Marketing content</label>
+              <a href="/marketing/content" target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline">
+                Manage content
+              </a>
+            </div>
+            <select
+              value={content.some((c) => c.id === contentId) ? contentId : ''}
+              onChange={(e) => setParam('content_id', e.target.value)}
+              className={selectClass}
+            >
+              <option value="">Select content…</option>
+              {contentMissing && <option value={contentId}>(content not found)</option>}
+              {content.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Subject and body come from this email-safe content. The verified sending domain, footer and unsubscribe link are added automatically.
+            </p>
+          </div>
+          <TemplateInput label="To" value={String(action.params.to || '')} onChange={(v) => setParam('to', v)} placeholder="Click {x} to insert contact email" fieldFilter="email" />
+        </>
+      ) : (
+        <>
+          {/* Template picker */}
+          <div>
+            <div className="mb-1 flex items-center justify-between">
+              <label className="block text-sm text-muted-foreground">Template</label>
+              <a
+                href="/workflows/email-templates"
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs text-primary hover:underline"
+              >
+                Manage templates
+              </a>
+            </div>
+            <select value={templateId} onChange={(e) => setParam('template_id', e.target.value)} className={selectClass}>
+              <option value="">Write inline</option>
+              {templateMissing && <option value={templateId}>(template not found)</option>}
+              {templates.map((t) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
+            {usingTemplate && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Subject &amp; body come from this template. Fill the fields below only to override them for this action.
+              </p>
+            )}
+          </div>
+
+          <TemplateInput label="To" value={String(action.params.to || '')} onChange={(v) => setParam('to', v)} placeholder="Click {x} to insert contact email" fieldFilter="email" />
+          <TemplateInput label="CC" value={String(action.params.cc || '')} onChange={(v) => setParam('cc', v)} placeholder="Separate multiple addresses with commas" fieldFilter="email" />
+          <TemplateInput label="From Name" value={String(action.params.from_name || '')} onChange={(v) => setParam('from_name', v)} placeholder="Your Company" />
+          <TemplateInput label={usingTemplate ? 'Subject (override)' : 'Subject'} value={String(action.params.subject || '')} onChange={(v) => setParam('subject', v)} placeholder={usingTemplate ? 'Leave blank to use the template subject' : 'Click {x} to insert variables'} />
+          <TemplateInput
+            label={usingTemplate ? 'Body HTML (override)' : 'Body HTML'}
+            value={String(action.params.body_html || '')}
+            onChange={(v) => setParam('body_html', v)}
+            placeholder={usingTemplate ? 'Leave blank to use the template body' : 'Write your email body — click {x} to insert variables'}
+            multiline
+            rows={6}
+            mono
+          />
+        </>
+      )}
     </div>
   );
 };

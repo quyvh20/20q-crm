@@ -1787,6 +1787,25 @@ func main() {
 				ON marketing_campaign_recipients(campaign_id, email_normalized)`},
 			{"campaign_recipients claim index", `CREATE INDEX IF NOT EXISTS idx_campaign_recipients_claim
 				ON marketing_campaign_recipients(campaign_id, status, scheduled_for)`},
+			{"marketing_sequence_enrollments", `CREATE TABLE IF NOT EXISTS marketing_sequence_enrollments (
+				id                   UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+				org_id               UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+				sequence_workflow_id UUID NOT NULL,
+				segment_id           UUID NOT NULL,
+				feeder_cursor        UUID,
+				status               VARCHAR(20) NOT NULL DEFAULT 'active',
+				enrolled_count       INT NOT NULL DEFAULT 0,
+				last_error           TEXT NOT NULL DEFAULT '',
+				created_by           UUID,
+				created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			)`},
+			// One ACTIVE enrollment per (sequence, segment); completed/canceled don't block
+			// a re-enroll. New empty table → plain CREATE UNIQUE (no probe-and-refuse ritual).
+			{"sequence_enrollments active unique", `CREATE UNIQUE INDEX IF NOT EXISTS uix_seq_enroll_active
+				ON marketing_sequence_enrollments(org_id, sequence_workflow_id, segment_id) WHERE status = 'active'`},
+			{"sequence_enrollments feeder index", `CREATE INDEX IF NOT EXISTS idx_seq_enroll_active
+				ON marketing_sequence_enrollments(status, updated_at) WHERE status = 'active'`},
 		}
 		for _, g := range marketingGuards {
 			if err := db.Exec(g.sql).Error; err != nil {
@@ -1809,6 +1828,7 @@ func main() {
 		db.Exec(`ALTER TABLE marketing_segment_members ENABLE ROW LEVEL SECURITY`)
 		db.Exec(`ALTER TABLE marketing_campaigns ENABLE ROW LEVEL SECURITY`)
 		db.Exec(`ALTER TABLE marketing_campaign_recipients ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`ALTER TABLE marketing_sequence_enrollments ENABLE ROW LEVEL SECURITY`)
 
 		// The suppression dedupe UNIQUE index is FUNCTIONAL: COALESCE(topic_id, zero)
 		// is load-bearing because Postgres treats NULL as DISTINCT in a unique index,
@@ -2369,6 +2389,10 @@ func main() {
 			automation.WithCallerResolver(usecase.NewCallerResolver(authRepo)),
 		)
 		autoEngine.Start()
+		// M8: reclaim terminal workflow runs + their action logs (both grew unbounded
+		// before now; drip sequences at thousands of recipients × steps make this the
+		// heaviest write volume in the schema). Independent of the email transport.
+		go automation.StartAutomationRunPruner(context.Background(), automation.NewRepository(db), autoLogger)
 		// capChecker is REQUIRED (P8): Run Now / Retry authorize on workflows.run_any
 		// with no role-name fallback. authz (permissionUC) stamps the webhook-inbound
 		// contact upsert audit as the system actor.
@@ -2614,8 +2638,9 @@ func main() {
 				sendRPS = 8 // one below Resend's documented 10/s for burst headroom (B1)
 			}
 			marketingSendLimiter := integrations.NewRateLimiter(redisClient, sendRPS, time.Second)
+			marketingGuard := marketing.NewSuppressionGuard(marketingRepo)
 			campaignSender := marketing.NewCampaignSender(
-				marketingRepo, marketing.NewSuppressionGuard(marketingRepo), autoEngine,
+				marketingRepo, marketingGuard, autoEngine,
 				marketingDomainSvc, marketingTokens, marketingSendLimiter, redisClient,
 				cfg.PublicAPIBaseURL, cfg.FrontendURL, autoLogger,
 			)
@@ -2624,6 +2649,30 @@ func main() {
 			// M7.3: reclaim the roster rows of long-finished campaigns (keeps the campaign
 			// row for reporting). Runs regardless of send transport.
 			go marketing.StartCampaignPruner(context.Background(), marketingRepo, autoLogger)
+
+			// ── M8: drip-sequence in-executor marketing gate ─────────────────
+			// Injected AFTER autoEngine + marketing services exist (the preparer depends
+			// on the engine for merge hydration), breaking the construction cycle. This
+			// lets a send_email step with channel=marketing send a compliant marketing
+			// email — reusing the SAME suppression gate / verified-domain / footer /
+			// List-Unsubscribe assembly as the M7 campaign lane so they never drift.
+			autoEngine.SetMarketingSendPreparer(marketing.NewSequenceSendPreparer(
+				marketingRepo, marketingGuard, marketingDomainSvc, marketingTokens,
+				autoEngine, autoEngine, cfg.PublicAPIBaseURL, cfg.FrontendURL,
+			))
+
+			// ── M8: drip-sequence enrollment API + segment feeder ────────────
+			// A "sequence" is an automation workflow (delay + channel=marketing send steps);
+			// this surface wires an M5 segment into one and the feeder drains it in bounded,
+			// cursor-paginated batches at depth 0 (never the 100-capped enroll_records action),
+			// idempotent per (sequence, contact). Registered inside the engine guard because
+			// it needs the engine for enroll + run rollups.
+			sequenceUC := marketing.NewSequenceUseCase(marketingRepo, segmentUC, autoEngine, autoLogger)
+			marketing.NewSequenceHandler(sequenceUC, autoLogger).RegisterRoutes(router,
+				integrationsProtected,
+				func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
+			)
+			go marketing.StartSequenceFeeder(context.Background(), marketing.NewSequenceFeeder(marketingRepo, segmentUC, autoEngine, autoLogger))
 		}
 
 		// ── L5.1 provider connector framework ────────────────────────────

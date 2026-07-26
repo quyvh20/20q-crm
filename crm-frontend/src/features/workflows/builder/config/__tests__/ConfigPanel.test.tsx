@@ -31,6 +31,12 @@ vi.mock('../../../queries', async () => {
   return { ...actual, useEmailTemplates: () => ({ data: { templates: [], total: 0 }, isLoading: false }) };
 });
 
+// EmailParams also calls useContentList (M8 marketing-content picker); stub it so the
+// panel renders without a QueryClientProvider — marketing content isn't under test here.
+vi.mock('../../../../marketing/contentQueries', () => ({
+  useContentList: () => ({ data: [], isLoading: false }),
+}));
+
 const MOCK_SCHEMA: WorkflowSchema = {
   entities: [
     {

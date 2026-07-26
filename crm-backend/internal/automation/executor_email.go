@@ -27,6 +27,11 @@ type EmailExecutor struct {
 	// templates loads library email templates for the template_id path (A5). nil
 	// disables template_id (a template_id then fails permanently with a clear error).
 	templates *EmailTemplateRepository
+	// mktPreparer assembles a compliant MARKETING send (M8) — live suppression gate,
+	// verified send-domain From, List-Unsubscribe headers, M6 compiled footer. It is
+	// injected post-construction via Engine.SetMarketingSendPreparer (the impl lives in
+	// package marketing, which imports automation). nil ⇒ channel=marketing fails closed.
+	mktPreparer MarketingSendPreparer
 }
 
 // NewEmailExecutor creates a new email executor. db is used to load library
@@ -72,6 +77,17 @@ func (e *EmailExecutor) Execute(ctx context.Context, run *WorkflowRun, action Ac
 	// Runtime validation: 'to' must be a valid email after template resolution
 	if !isValidEmail(to) {
 		return nil, fmt.Errorf("send_email: resolved 'to' address is not a valid email: '%s'", to)
+	}
+
+	// M8 marketing lane: a drip step that sets channel=marketing sends a compliant
+	// marketing email — LIVE M1 suppression/lawful-basis gate, the org's verified
+	// send-domain From (DKIM/DMARC alignment), RFC-8058 List-Unsubscribe headers, and
+	// the M6 compiled footer/preheader — all assembled in package marketing via the
+	// injected preparer. A transactional step (no channel / channel=transactional) never
+	// enters here, so its request bytes are unchanged (Guardrail 9). Subject/body come
+	// from the M6 content, so the branch bypasses the inline subject/body/template path.
+	if ch, _ := action.Params["channel"].(string); ch == marketingChannelParam {
+		return e.executeMarketing(ctx, run, action, evalCtx, to)
 	}
 
 	subject := getStringParam(action.Params, "subject", evalCtx)
@@ -140,6 +156,68 @@ func (e *EmailExecutor) Execute(ctx context.Context, run *WorkflowRun, action Ac
 	}
 
 	return e.sendEmail(ctx, run.ID.String(), idempotencyKey, to, subject, bodyHTML, fromName, cc)
+}
+
+// executeMarketing handles a send_email step whose channel=marketing (M8 drip send).
+// It delegates the compliance-critical assembly (live suppression gate, verified
+// send-domain From, List-Unsubscribe headers, M6 footer/preheader render) to the
+// injected package-marketing preparer, then reuses the shared transport. The
+// idempotency key is run.ID/action.ID — because each sequence run is exactly ONE
+// enrolled contact, that key is unique per (recipient, step), giving exactly-once
+// send across a lost-ack retry (a validated step always has a non-empty, unique id).
+func (e *EmailExecutor) executeMarketing(ctx context.Context, run *WorkflowRun, action ActionSpec, evalCtx EvalContext, to string) (any, error) {
+	if e.mktPreparer == nil {
+		// Fail closed: never fall back to the global MAIL_FROM for a marketing send and
+		// never send without the suppression gate + List-Unsubscribe + footer.
+		return nil, fmt.Errorf("send_email: channel=marketing is not available (marketing is not configured)")
+	}
+
+	contentID, ok := uuidParam(action.Params, "content_id")
+	if !ok {
+		// Permanent: a marketing step must reference an M6 content to render.
+		return nil, fmt.Errorf("send_email: channel=marketing requires a valid content_id")
+	}
+	var topicID *uuid.UUID
+	if t, ok := uuidParam(action.Params, "topic_id"); ok {
+		topicID = &t
+	}
+
+	idempotencyKey := ""
+	if action.ID != "" {
+		idempotencyKey = run.ID.String() + "/" + action.ID
+	}
+
+	dec, err := e.mktPreparer.PrepareMarketingSend(ctx, MarketingSendRequest{
+		OrgID:      run.OrgID,
+		WorkflowID: run.WorkflowID,
+		ContactID:  contactIDFromEval(evalCtx),
+		ToEmail:    to,
+		ContentID:  contentID,
+		TopicID:    topicID,
+	})
+	if err != nil {
+		// An unexpected preparer error is treated as transient — better to park + retry
+		// than to permanently drop a mailable recipient.
+		return nil, NewRetryableError(fmt.Errorf("send_email: marketing prepare: %w", err))
+	}
+	if dec.Skip {
+		if dec.Retry {
+			// Transient (ledger read error, no verified domain yet, missing profile,
+			// unsub key unset) — retry so the run resumes once the condition clears.
+			return nil, NewRetryableError(fmt.Errorf("send_email: marketing send deferred (%s)", dec.SkipReason))
+		}
+		// Terminal, non-error skip (suppressed / no lawful basis / deleted content): the
+		// run CONTINUES to its next step, this recipient is just not mailed at this step.
+		slog.Info("automation: marketing send skipped",
+			"workflow_run_id", run.ID.String(),
+			"reason", dec.SkipReason,
+		)
+		return map[string]any{"status": "skipped", "reason": dec.SkipReason, "channel": "marketing"}, nil
+	}
+
+	// A marketing blast never CCs; the from-name/address/reply-to/headers are the
+	// preparer's verified-domain + List-Unsubscribe assembly.
+	return e.sendEmailWithHeaders(ctx, run.ID.String(), idempotencyKey, dec.ToAddress, dec.Subject, dec.BodyHTML, dec.FromName, dec.FromAddress, dec.ReplyTo, nil, dec.Headers)
 }
 
 // sendEmail performs the actual Resend POST for already-resolved fields. It is

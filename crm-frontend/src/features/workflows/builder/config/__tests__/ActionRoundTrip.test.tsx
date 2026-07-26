@@ -20,6 +20,11 @@ vi.mock('../../../queries', async () => {
   return { ...actual, useEmailTemplates: () => ({ data: { templates: [], total: 0 }, isLoading: false }) };
 });
 
+// …and the M8 marketing-content picker (useContentList); stub it too.
+vi.mock('../../../../marketing/contentQueries', () => ({
+  useContentList: () => ({ data: [], isLoading: false }),
+}));
+
 const MOCK_SCHEMA: WorkflowSchema = {
   entities: [{ key: 'contact', label: 'Contact', icon: '👤', fields: [{ path: 'contact.email', label: 'Email', type: 'string' }] }],
   custom_objects: [],

@@ -61,6 +61,8 @@ import SegmentsPage from './features/marketing/SegmentsPage';
 import SegmentEditorPage from './features/marketing/SegmentEditorPage';
 import CampaignsListPage from './features/marketing/CampaignsListPage';
 import CampaignComposerPage from './features/marketing/CampaignComposerPage';
+import SequencesListPage from './features/marketing/SequencesListPage';
+import SequenceDetailPage from './features/marketing/SequenceDetailPage';
 import ReportBuilderPage from './features/reports/ReportBuilderPage';
 import DashboardPage from './features/reports/DashboardPage';
 import TermsPage from './pages/legal/TermsPage';
@@ -363,6 +365,16 @@ function App() {
             <Route path="/marketing/campaigns/:id" element={
               <ProtectedRoute>
                 <AppLayout title="Campaign"><CampaignComposerPage /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/marketing/sequences" element={
+              <ProtectedRoute>
+                <AppLayout title="Sequences"><SequencesListPage /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/marketing/sequences/:id" element={
+              <ProtectedRoute>
+                <AppLayout title="Sequence"><SequenceDetailPage /></AppLayout>
               </ProtectedRoute>
             } />
             <Route path="/marketing/content/new" element={
