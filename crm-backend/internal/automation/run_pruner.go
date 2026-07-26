@@ -10,7 +10,7 @@ import (
 
 const (
 	runPruneInterval  = 6 * time.Hour
-	runPruneRetention = 30 * 24 * time.Hour // keep terminal runs + their logs 30 days
+	runPruneRetention = 90 * 24 * time.Hour // keep terminal runs + their logs 90 days
 )
 
 // PruneCompletedRuns hard-deletes terminal (completed/failed/skipped) workflow runs that
