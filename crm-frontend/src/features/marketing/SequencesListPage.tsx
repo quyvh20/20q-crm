@@ -11,7 +11,19 @@ import {
 import { useSequences, useCreateSequence } from './sequencesQueries';
 import { useSegments } from './segmentsQueries';
 import { useWorkflowsList } from '../workflows/queries';
+import type { Workflow } from '../workflows/types';
 import { SEQUENCE_STATUS_LABEL, sequenceStatusVariant } from './sequencesApi';
+
+// A workflow is usable as a drip sequence only if it actually sends marketing mail.
+function hasMarketingSend(w: Workflow): boolean {
+  return (w.actions ?? []).some((a) => a.type === 'send_email' && (a.params as { channel?: unknown } | undefined)?.channel === 'marketing');
+}
+
+// 'schedule' is the only trigger that fires without a per-record context; every other
+// type auto-enrolls records on its own, which would double-send to fed contacts.
+function triggerAutoEnrolls(w: Workflow): boolean {
+  return (w.trigger?.type ?? '') !== 'schedule';
+}
 
 const SequencesListPage: React.FC = () => {
   const { can, loaded } = usePermissions();
@@ -36,6 +48,10 @@ const SequencesContent: React.FC = () => {
   const [error, setError] = useState('');
 
   const openCreate = () => { setWorkflowId(''); setSegmentId(''); setError(''); setShowCreate(true); };
+
+  const selectedWf = workflows.find((w) => w.id === workflowId);
+  const wfNoMarketing = !!selectedWf && !hasMarketingSend(selectedWf);
+  const wfAutoEnrolls = !!selectedWf && !wfNoMarketing && triggerAutoEnrolls(selectedWf);
 
   const handleCreate = () => {
     if (!workflowId || !segmentId) return;
@@ -99,11 +115,21 @@ const SequencesContent: React.FC = () => {
               <option value="">Select a workflow…</option>
               {workflows.map((w) => <option key={w.id} value={w.id}>{w.name}{w.is_active ? '' : ' (inactive)'}</option>)}
             </Select>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Build the drip in{' '}
-              <a className="text-primary hover:underline" href="/workflows" target="_blank" rel="noreferrer">Workflows</a>
-              {' '}— delay + marketing send steps.
-            </p>
+            {wfNoMarketing ? (
+              <p className="mt-1 text-xs text-destructive">
+                This workflow has no marketing send step. Add a send step with Channel = Marketing before enrolling.
+              </p>
+            ) : wfAutoEnrolls ? (
+              <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                This workflow’s trigger also auto-enrolls records on its own, so matching contacts may receive the sequence twice. For a segment-only drip, use a Schedule trigger.
+              </p>
+            ) : (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Build the drip in{' '}
+                <a className="text-primary hover:underline" href="/workflows" target="_blank" rel="noreferrer">Workflows</a>
+                {' '}— delay + marketing send steps.
+              </p>
+            )}
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-muted-foreground" htmlFor="seq-seg">Audience segment</label>
@@ -115,7 +141,7 @@ const SequencesContent: React.FC = () => {
           {error && <p className="text-sm text-destructive">{error}</p>}
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={() => setShowCreate(false)}>Cancel</Button>
-            <Button onClick={handleCreate} disabled={createMutation.isPending || !workflowId || !segmentId}>Enroll</Button>
+            <Button onClick={handleCreate} disabled={createMutation.isPending || !workflowId || !segmentId || wfNoMarketing}>Enroll</Button>
           </div>
         </div>
       </Modal>

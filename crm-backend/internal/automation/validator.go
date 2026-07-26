@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // ValidationError represents a structured validation error.
@@ -562,6 +564,26 @@ func validateActionParams(action ActionSpec, path string, result *ValidationResu
 				result.Errors = append(result.Errors, ValidationError{
 					Field:   path + ".params.to",
 					Message: fmt.Sprintf("invalid email address: '%s' (must be email or {{template}})", toStr),
+				})
+			}
+		}
+		// M8: a marketing-channel send renders M6 content, so content_id is required —
+		// a marketing step saved without it fails PERMANENTLY at send (the preparer has
+		// nothing to render). Catch it at save instead.
+		if ch, _ := action.Params["channel"].(string); ch == marketingChannelParam {
+			cid, _ := action.Params["content_id"].(string)
+			cid = strings.TrimSpace(cid)
+			if cid == "" {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   path + ".params.content_id",
+					Message: "a marketing send (channel=marketing) requires content_id — pick the marketing content to send",
+				})
+			} else if _, err := uuid.Parse(cid); err != nil {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   path + ".params.content_id",
+					Message: fmt.Sprintf("invalid content_id: '%s' (must be a marketing content id)", cid),
 				})
 			}
 		}

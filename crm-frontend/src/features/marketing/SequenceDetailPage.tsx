@@ -66,7 +66,7 @@ const SequenceDetailPage: React.FC = () => {
       />
 
       {seq.last_error && seq.status !== 'completed' && (
-        <div className="mb-4 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-foreground">
+        <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-foreground">
           {seq.last_error}
         </div>
       )}

@@ -133,6 +133,11 @@ const EmailParams: React.FC<ParamProps> = ({ action, setParam }) => {
             <p className="mt-1 text-xs text-muted-foreground">
               Subject and body come from this email-safe content. The verified sending domain, footer and unsubscribe link are added automatically.
             </p>
+            {!contentId && (
+              <p className="mt-1 text-xs text-destructive">
+                Pick the marketing content to send — a marketing step can’t be saved without it.
+              </p>
+            )}
           </div>
           <TemplateInput label="To" value={String(action.params.to || '')} onChange={(v) => setParam('to', v)} placeholder="Click {x} to insert contact email" fieldFilter="email" />
         </>

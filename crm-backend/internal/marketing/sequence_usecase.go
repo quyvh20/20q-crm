@@ -2,6 +2,7 @@ package marketing
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -63,6 +64,13 @@ func (uc *SequenceUseCase) Create(ctx context.Context, orgID, userID, seqWFID, s
 	}
 	if wf == nil {
 		return nil, domain.NewAppError(http.StatusNotFound, "sequence workflow not found")
+	}
+	// A sequence must actually send marketing mail — enrolling a segment into a workflow
+	// with no channel=marketing send step does nothing useful (and would silently create
+	// runs that never mail). Require at least one before wiring the audience.
+	if !workflowHasMarketingSend(wf) {
+		return nil, domain.NewAppError(http.StatusUnprocessableEntity,
+			"this workflow has no marketing send step — add a send step with channel = marketing before enrolling a segment")
 	}
 	seg, err := uc.segments.Get(ctx, orgID, segmentID)
 	if err != nil {
@@ -214,6 +222,35 @@ func (uc *SequenceUseCase) workflowName(ctx context.Context, orgID, wfID uuid.UU
 		cache[wfID] = name
 	}
 	return name
+}
+
+// workflowHasMarketingSend reports whether a workflow contains at least one send_email
+// step with channel=marketing (scanning the full flattened tree, so steps inside If/Else
+// branches count). This is the load-bearing "is this a drip sequence?" check.
+func workflowHasMarketingSend(wf *automation.Workflow) bool {
+	for _, a := range flattenWorkflowActions(wf) {
+		if a.Type == automation.ActionSendEmail {
+			if ch, _ := a.Params["channel"].(string); ch == "marketing" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// flattenWorkflowActions returns the workflow's actions in DFS order. It prefers the
+// Steps tree (branches inlined) and falls back to the deprecated flat Actions list, so
+// it stays correct once the Actions column is removed.
+func flattenWorkflowActions(wf *automation.Workflow) []automation.ActionSpec {
+	if len(wf.Steps) > 0 {
+		var steps []automation.StepSpec
+		if err := json.Unmarshal(wf.Steps, &steps); err == nil && len(steps) > 0 {
+			return automation.FlattenStepsToActions(steps)
+		}
+	}
+	var actions []automation.ActionSpec
+	_ = json.Unmarshal(wf.Actions, &actions)
+	return actions
 }
 
 func (uc *SequenceUseCase) segmentName(ctx context.Context, orgID, segID uuid.UUID, cache map[uuid.UUID]string) string {
