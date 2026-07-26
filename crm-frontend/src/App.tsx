@@ -63,6 +63,7 @@ import CampaignsListPage from './features/marketing/CampaignsListPage';
 import CampaignComposerPage from './features/marketing/CampaignComposerPage';
 import SequencesListPage from './features/marketing/SequencesListPage';
 import SequenceDetailPage from './features/marketing/SequenceDetailPage';
+import MarketingOverviewPage from './features/marketing/MarketingOverviewPage';
 import ReportBuilderPage from './features/reports/ReportBuilderPage';
 import DashboardPage from './features/reports/DashboardPage';
 import TermsPage from './pages/legal/TermsPage';
@@ -355,6 +356,11 @@ function App() {
             <Route path="/marketing/audiences/:id" element={
               <ProtectedRoute>
                 <AppLayout title="Audience"><SegmentEditorPage /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/marketing/overview" element={
+              <ProtectedRoute>
+                <AppLayout title="Marketing health"><MarketingOverviewPage /></AppLayout>
               </ProtectedRoute>
             } />
             <Route path="/marketing/campaigns" element={

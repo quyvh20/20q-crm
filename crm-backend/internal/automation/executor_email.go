@@ -62,6 +62,51 @@ type resendEmailPayload struct {
 	// List-Unsubscribe pair; Resend takes them in the request BODY, not as HTTP headers.
 	ReplyTo string            `json:"reply_to,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
+	// Tags attribute a MARKETING send to its campaign/sequence + recipient (M9). Resend
+	// echoes them on every delivery webhook (data.tags), so engagement rolls up per
+	// campaign without a fragile join that dies when the roster is pruned. omitempty: a
+	// nil slice emits no key, so transactional bytes stay byte-identical (Guardrail 9).
+	Tags []resendTag `json:"tags,omitempty"`
+}
+
+// resendTag is one Resend send-time tag. Resend restricts Name/Value to ASCII letters,
+// digits, underscore and dash — the marketing lane stamps only uuid-valued tags.
+type resendTag struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// toResendTags converts a name→value map into Resend's tag array, dropping empty values
+// (Resend rejects them) and returning nil for an empty map so the omitempty key is
+// absent — transactional sends pass nil and stay byte-identical (Guardrail 9).
+func toResendTags(m map[string]string) []resendTag {
+	if len(m) == 0 {
+		return nil
+	}
+	tags := make([]resendTag, 0, len(m))
+	for k, v := range m {
+		if v != "" {
+			tags = append(tags, resendTag{Name: k, Value: v})
+		}
+	}
+	if len(tags) == 0 {
+		return nil
+	}
+	return tags
+}
+
+// marketingTags attributes a marketing send to its campaign (or M8 sequence workflow) and
+// recipient, so the delivery webhook rolls engagement up per campaign (M9). Values are
+// uuids (valid Resend tag charset); empty ids are omitted.
+func marketingTags(campaignID, contactID uuid.UUID) map[string]string {
+	tags := map[string]string{}
+	if campaignID != uuid.Nil {
+		tags["campaign_id"] = campaignID.String()
+	}
+	if contactID != uuid.Nil {
+		tags["contact_id"] = contactID.String()
+	}
+	return tags
 }
 
 // Execute sends an email using Resend. Subject/body come from inline params or,
@@ -216,8 +261,10 @@ func (e *EmailExecutor) executeMarketing(ctx context.Context, run *WorkflowRun, 
 	}
 
 	// A marketing blast never CCs; the from-name/address/reply-to/headers are the
-	// preparer's verified-domain + List-Unsubscribe assembly.
-	return e.sendEmailWithHeaders(ctx, run.ID.String(), idempotencyKey, dec.ToAddress, dec.Subject, dec.BodyHTML, dec.FromName, dec.FromAddress, dec.ReplyTo, nil, dec.Headers)
+	// preparer's verified-domain + List-Unsubscribe assembly. Tags attribute the send to
+	// its sequence workflow + contact so the delivery webhook rolls engagement up (M9).
+	tags := marketingTags(run.WorkflowID, contactIDFromEval(evalCtx))
+	return e.sendEmailWithHeaders(ctx, run.ID.String(), idempotencyKey, dec.ToAddress, dec.Subject, dec.BodyHTML, dec.FromName, dec.FromAddress, dec.ReplyTo, nil, dec.Headers, tags)
 }
 
 // sendEmail performs the actual Resend POST for already-resolved fields. It is
@@ -230,7 +277,7 @@ func (e *EmailExecutor) executeMarketing(ctx context.Context, run *WorkflowRun, 
 // custom headers — so the transactional path is byte-for-byte unchanged. Only the
 // marketing lane (SendMarketingEmail) supplies those, keeping Guardrail 9.
 func (e *EmailExecutor) sendEmail(ctx context.Context, logID, idempotencyKey, to, subject, bodyHTML, fromName string, cc []string) (any, error) {
-	return e.sendEmailWithHeaders(ctx, logID, idempotencyKey, to, subject, bodyHTML, fromName, "", "", cc, nil)
+	return e.sendEmailWithHeaders(ctx, logID, idempotencyKey, to, subject, bodyHTML, fromName, "", "", cc, nil, nil)
 }
 
 // sendEmailWithHeaders is sendEmail plus an optional From ADDRESS override, Reply-To,
@@ -240,7 +287,7 @@ func (e *EmailExecutor) sendEmail(ctx context.Context, logID, idempotencyKey, to
 // a transactional caller is unaffected. The marketing lane passes the org's VERIFIED
 // domain address so DKIM/DMARC/Return-Path align per org (B1) — the global MAIL_FROM
 // is owned by no org and would fail alignment.
-func (e *EmailExecutor) sendEmailWithHeaders(ctx context.Context, logID, idempotencyKey, to, subject, bodyHTML, fromName, fromAddress, replyTo string, cc []string, headers map[string]string) (any, error) {
+func (e *EmailExecutor) sendEmailWithHeaders(ctx context.Context, logID, idempotencyKey, to, subject, bodyHTML, fromName, fromAddress, replyTo string, cc []string, headers, tags map[string]string) (any, error) {
 	addr := e.fromEmail
 	if fromAddress != "" {
 		addr = fromAddress
@@ -258,6 +305,7 @@ func (e *EmailExecutor) sendEmailWithHeaders(ctx context.Context, logID, idempot
 		Cc:      cc,
 		ReplyTo: replyTo,
 		Headers: headers,
+		Tags:    toResendTags(tags),
 	}
 
 	body, err := json.Marshal(payload)

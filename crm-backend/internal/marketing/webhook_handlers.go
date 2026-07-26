@@ -135,6 +135,13 @@ func (h *ResendWebhookHandler) Receive(c *gin.Context) {
 		// to a stable per-event key so dedupe still holds locally.
 		svixID = "local:" + env.Data.EmailID + ":" + env.Type
 	}
+	// M9: attribute the event to its campaign (or M8 sequence workflow) + mark the lane
+	// from the send-time tags Resend echoes back, so engagement rolls up per campaign.
+	campaignID := env.Data.tagCampaignID()
+	channel := ""
+	if campaignID != nil {
+		channel = string(ChannelMarketing)
+	}
 	evt := &MarketingEmailEvent{
 		OrgID:           orgID,
 		SvixID:          svixID,
@@ -143,6 +150,8 @@ func (h *ResendWebhookHandler) Receive(c *gin.Context) {
 		FromDomain:      fromDomain,
 		Reason:          action.Reason,
 		BounceType:      bounceTypeOf(env, action),
+		Channel:         channel,
+		CampaignID:      campaignID,
 		RawPayload:      datatypes.JSON(body),
 		OccurredAt:      parseOccurredAt(env.CreatedAt),
 		Status:          EventStatusPending,

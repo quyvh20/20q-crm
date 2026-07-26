@@ -2625,6 +2625,15 @@ func main() {
 			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
 		)
 
+		// ── M9: campaign engagement analytics + org deliverability (read-only) ──
+		// Rolls up the M4 marketing_email_events ledger per campaign (attributed via the
+		// M9 send-time tags) + the org's rolling complaint/bounce rates against the SAME
+		// M4 breaker thresholds. Gated by marketing.manage.
+		marketing.NewAnalyticsHandler(marketingRepo, autoLogger).RegisterRoutes(router,
+			integrationsProtected,
+			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
+		)
+
 		// ── Email marketing (M7.2: send-lane worker) ──────────────────────
 		// Drains the recipient roster of every 'sending' campaign under ONE shared
 		// provider token bucket (Resend's limit is per-team across all API keys — B1),

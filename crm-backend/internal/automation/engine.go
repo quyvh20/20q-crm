@@ -199,12 +199,12 @@ func (e *Engine) SendTestEmail(ctx context.Context, to, subject, bodyHTML string
 // transport. A transactional caller must never reach this path — it exists only so
 // the marketing lane can attach List-Unsubscribe without teaching the executor about
 // the marketing channel.
-func (e *Engine) SendMarketingEmail(ctx context.Context, to, subject, bodyHTML, fromName, fromAddress, replyTo string, cc []string, headers map[string]string, idempotencyKey string) (any, error) {
+func (e *Engine) SendMarketingEmail(ctx context.Context, to, subject, bodyHTML, fromName, fromAddress, replyTo string, cc []string, headers, tags map[string]string, idempotencyKey string) (any, error) {
 	ex, ok := e.executors[ActionSendEmail].(*EmailExecutor)
 	if !ok || ex == nil {
 		return nil, fmt.Errorf("email executor is not configured")
 	}
-	return ex.sendEmailWithHeaders(ctx, "marketing-send", idempotencyKey, to, subject, bodyHTML, fromName, fromAddress, replyTo, cc, headers)
+	return ex.sendEmailWithHeaders(ctx, "marketing-send", idempotencyKey, to, subject, bodyHTML, fromName, fromAddress, replyTo, cc, headers, tags)
 }
 
 // HydrateMarketingContext builds the per-recipient merge EvalContext for a bulk

@@ -15,6 +15,7 @@ import { useSegments } from './segmentsQueries';
 import { useContentList } from './contentQueries';
 import { useTopics } from './senderProfileQueries';
 import SlideToConfirm from './SlideToConfirm';
+import CampaignAnalyticsPanel from './CampaignAnalyticsPanel';
 import { campaignStatusVariant } from './CampaignsListPage';
 import {
   useCampaign, useUpdateCampaign, useReadiness, useLaunchCampaign,
@@ -335,6 +336,8 @@ function CampaignMonitor({ campaign }: { campaign: Campaign }) {
           </Button>
         )}
       </div>
+
+      {status === 'sent' && <CampaignAnalyticsPanel campaignId={campaign.id} />}
     </div>
   );
 }

@@ -82,10 +82,56 @@ type resendEventData struct {
 	EmailID string          `json:"email_id"`
 	From    string          `json:"from"`
 	To      json.RawMessage `json:"to"` // Resend sends an array of strings; tolerate a bare string
-	Bounce  *resendBounce   `json:"bounce,omitempty"`
+	// Tags are the send-time tags Resend echoes back on every webhook (M9 attribution):
+	// the marketing lane stamps {campaign_id, contact_id} so engagement rolls up per
+	// campaign. Resend echoes them as an OBJECT map {name: value}; older/array forms are
+	// tolerated by the tag() reader.
+	Tags   json.RawMessage `json:"tags,omitempty"`
+	Bounce *resendBounce   `json:"bounce,omitempty"`
 	// Some Resend bounce payloads carry the classification at the top of data rather
 	// than under a nested bounce object; accept both.
 	BounceType string `json:"bounce_type,omitempty"`
+}
+
+// tag returns the value of an echoed send-time tag, or "".
+func (d resendEventData) tag(name string) string {
+	if len(d.Tags) == 0 {
+		return ""
+	}
+	// Object form (webhook echo): {"campaign_id":"...","contact_id":"..."}.
+	var obj map[string]string
+	if json.Unmarshal(d.Tags, &obj) == nil {
+		if v, ok := obj[name]; ok {
+			return v
+		}
+	}
+	// Array form (as sent): [{"name":"campaign_id","value":"..."}].
+	var arr []struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	}
+	if json.Unmarshal(d.Tags, &arr) == nil {
+		for _, t := range arr {
+			if t.Name == name {
+				return t.Value
+			}
+		}
+	}
+	return ""
+}
+
+// tagCampaignID returns the campaign (or M8 sequence workflow) id the send stamped as a
+// tag, or nil when absent/unparseable — the M9 per-campaign attribution key.
+func (d resendEventData) tagCampaignID() *uuid.UUID {
+	s := d.tag("campaign_id")
+	if s == "" {
+		return nil
+	}
+	id, err := uuid.Parse(s)
+	if err != nil {
+		return nil
+	}
+	return &id
 }
 
 type resendBounce struct {

@@ -85,7 +85,7 @@ type recSender struct {
 func (f *recSender) HydrateMarketingContext(context.Context, uuid.UUID, uuid.UUID, string, string, bool) automation.EvalContext {
 	return automation.EvalContext{Actions: map[string]any{}, Extra: map[string]any{}}
 }
-func (f *recSender) SendMarketingEmail(_ context.Context, _, _, _, _, _, _ string, _ []string, _ map[string]string, _ string) (any, error) {
+func (f *recSender) SendMarketingEmail(_ context.Context, _, _, _, _, _, _ string, _ []string, _, _ map[string]string, _ string) (any, error) {
 	f.calls++
 	return f.resp, f.err
 }

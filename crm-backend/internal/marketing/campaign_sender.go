@@ -40,7 +40,7 @@ const (
 // marketingSender is the automation transport seam (satisfied by *automation.Engine).
 type marketingSender interface {
 	HydrateMarketingContext(ctx context.Context, orgID, contactID uuid.UUID, campaignName, orgName string, includeCompany bool) automation.EvalContext
-	SendMarketingEmail(ctx context.Context, to, subject, bodyHTML, fromName, fromAddress, replyTo string, cc []string, headers map[string]string, idempotencyKey string) (any, error)
+	SendMarketingEmail(ctx context.Context, to, subject, bodyHTML, fromName, fromAddress, replyTo string, cc []string, headers, tags map[string]string, idempotencyKey string) (any, error)
 }
 
 // providerLimiter throttles all sends to the Resend per-team rps (B1). Fixed-window
@@ -335,11 +335,17 @@ func (s *CampaignSender) sendOne(ctx context.Context, r domain.CampaignRecipient
 	subject := automation.InterpolateTemplate(sc.content.Subject, ec)
 
 	idemKey := fmt.Sprintf("campaign:%s:contact:%s", sc.campaign.ID, r.ID)
+	// Tags attribute the delivery webhook back to this campaign + contact so M9
+	// engagement analytics roll up per campaign (values are uuids — valid Resend charset).
+	tags := map[string]string{"campaign_id": sc.campaign.ID.String()}
+	if r.ContactID != nil {
+		tags["contact_id"] = r.ContactID.String()
+	}
 	// Stamp dispatch BEFORE handing to Resend, so a crash between here and MarkSent
 	// leaves a durable "was dispatched" marker the reaper reads to avoid a >24h
 	// duplicate re-send. Best-effort: a stamp failure must not block the send.
 	_ = s.store.MarkRecipientDispatched(ctx, r.ID)
-	resp, err := s.sender.SendMarketingEmail(ctx, r.EmailNormalized, subject, html, sc.profile.FromName, sc.fromAddr, sc.profile.ReplyTo, nil, headers, idemKey)
+	resp, err := s.sender.SendMarketingEmail(ctx, r.EmailNormalized, subject, html, sc.profile.FromName, sc.fromAddr, sc.profile.ReplyTo, nil, headers, tags, idemKey)
 	if err != nil {
 		s.handleSendError(ctx, r, err)
 		return
