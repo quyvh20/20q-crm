@@ -48,6 +48,7 @@ type domainStore interface {
 type domainsAPI interface {
 	Configured() bool
 	CreateDomain(ctx context.Context, name, region, customReturnPath string) (*ResendDomain, error)
+	EnableTracking(ctx context.Context, id string) (*ResendDomain, error)
 	GetDomain(ctx context.Context, id string) (*ResendDomain, error)
 	VerifyDomain(ctx context.Context, id string) error
 	DeleteDomain(ctx context.Context, id string) error
@@ -107,6 +108,14 @@ func (s *DomainService) AddDomain(ctx context.Context, orgID, createdBy uuid.UUI
 	rd, err := s.client.CreateDomain(ctx, domain, "", "send")
 	if err != nil {
 		return nil, err
+	}
+
+	// M9: enable open + click tracking so opened/clicked events flow. Best-effort — the
+	// domain sends fine without it (tracking only adds analytics), so a PATCH failure must
+	// NOT block onboarding. On success the returned domain carries the Tracking CNAME the
+	// customer must publish (surfaced alongside SPF/DKIM in the wizard).
+	if td, terr := s.client.EnableTracking(ctx, rd.ID); terr == nil && td != nil && len(td.Records) > 0 {
+		rd = td
 	}
 
 	spf, dkim := deriveRecordVerification(rd.Records)

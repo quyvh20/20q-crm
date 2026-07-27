@@ -90,6 +90,25 @@ func (c *DomainsClient) CreateDomain(ctx context.Context, name, region, customRe
 	return &out, nil
 }
 
+type updateDomainRequest struct {
+	OpenTracking  bool `json:"open_tracking"`
+	ClickTracking bool `json:"click_tracking"`
+}
+
+// EnableTracking turns on Resend's open + click tracking for a domain (M9). Tracking is
+// a DOMAIN-level setting: once enabled AND the Tracking-CNAME record Resend adds is
+// verified, Resend inserts the open pixel + rewrites links to the tracking subdomain,
+// emitting email.opened / email.clicked webhooks. Returns the updated domain, whose
+// records now include the Tracking CNAME (surfaced in the onboarding wizard).
+func (c *DomainsClient) EnableTracking(ctx context.Context, id string) (*ResendDomain, error) {
+	body := updateDomainRequest{OpenTracking: true, ClickTracking: true}
+	var out ResendDomain
+	if err := c.do(ctx, http.MethodPatch, "/domains/"+id, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // GetDomain reads a domain's current status + records.
 func (c *DomainsClient) GetDomain(ctx context.Context, id string) (*ResendDomain, error) {
 	var out ResendDomain

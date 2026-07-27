@@ -72,12 +72,15 @@ func (f *fakeDomainStore) SoftDeleteDomain(_ context.Context, orgID, id uuid.UUI
 }
 
 type fakeDomainsAPI struct {
-	configured  bool
-	createResp  *ResendDomain
-	getResp     *ResendDomain
-	verifyErr   error
-	deleteErr   error
-	deleteCalls []string
+	configured    bool
+	createResp    *ResendDomain
+	getResp       *ResendDomain
+	verifyErr     error
+	deleteErr     error
+	deleteCalls   []string
+	trackingResp  *ResendDomain
+	trackingErr   error
+	trackingCalls []string
 }
 
 func (f *fakeDomainsAPI) Configured() bool { return f.configured }
@@ -86,6 +89,13 @@ func (f *fakeDomainsAPI) CreateDomain(_ context.Context, name, _, _ string) (*Re
 		return f.createResp, nil
 	}
 	return &ResendDomain{ID: "d_" + name, Name: name, Status: DomainStatusNotStarted, Region: "us-east-1"}, nil
+}
+func (f *fakeDomainsAPI) EnableTracking(_ context.Context, id string) (*ResendDomain, error) {
+	f.trackingCalls = append(f.trackingCalls, id)
+	if f.trackingResp != nil {
+		return f.trackingResp, nil
+	}
+	return nil, f.trackingErr
 }
 func (f *fakeDomainsAPI) GetDomain(_ context.Context, id string) (*ResendDomain, error) {
 	return f.getResp, nil

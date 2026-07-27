@@ -241,6 +241,10 @@ const DomainCard: React.FC<{
             Add these DNS records at your domain registrar, then click <strong>Re-check</strong>. DMARC (a{' '}
             <code className="rounded bg-muted px-1">_dmarc</code> TXT record with at least <code className="rounded bg-muted px-1">p=none</code>) must be added separately — Resend manages only SPF and DKIM.
           </p>
+          <p className="mb-2 text-xs text-muted-foreground">
+            The <strong>Tracking</strong> CNAME is optional — add it to enable open &amp; click analytics (open tracking adds a
+            hidden pixel; click tracking routes links through your tracking subdomain). Skip it if you prefer not to track.
+          </p>
           <TableShell>
             <Table>
               <TableHeader>
