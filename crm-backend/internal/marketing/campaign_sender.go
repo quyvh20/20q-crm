@@ -332,9 +332,21 @@ func (s *CampaignSender) sendOne(ctx context.Context, r domain.CampaignRecipient
 	}
 	ec := s.sender.HydrateMarketingContext(ctx, r.OrgID, contactID, sc.campaign.Name, sc.orgName, sc.hasCompany)
 	html := RenderForRecipient(sc.content.BodyHTMLCompiled, ec, footer)
-	subject := automation.InterpolateTemplate(sc.content.Subject, ec)
+	// A/B (M9 Part B): a subject-test's variant B swaps in the alternate subject; the
+	// body and everything else are identical. Variant A + the winner remainder use the
+	// content's subject.
+	subjectTmpl := sc.content.Subject
+	if r.Variant != nil && *r.Variant == "B" && sc.campaign.ABSubjectB != "" {
+		subjectTmpl = sc.campaign.ABSubjectB
+	}
+	subject := automation.InterpolateTemplate(subjectTmpl, ec)
 
+	// The roster surrogate id makes the key unique per send; variant is folded in
+	// defensively so a row could never be sent under two variants as a same-key replay.
 	idemKey := fmt.Sprintf("campaign:%s:contact:%s", sc.campaign.ID, r.ID)
+	if r.Variant != nil && *r.Variant != "" {
+		idemKey = fmt.Sprintf("campaign:%s:variant:%s:contact:%s", sc.campaign.ID, *r.Variant, r.ID)
+	}
 	// Tags attribute the delivery webhook back to this campaign + contact so M9
 	// engagement analytics roll up per campaign (values are uuids — valid Resend charset).
 	tags := map[string]string{"campaign_id": sc.campaign.ID.String()}

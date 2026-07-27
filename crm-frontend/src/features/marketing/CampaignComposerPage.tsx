@@ -19,7 +19,7 @@ import CampaignAnalyticsPanel from './CampaignAnalyticsPanel';
 import { campaignStatusVariant } from './CampaignsListPage';
 import {
   useCampaign, useUpdateCampaign, useReadiness, useLaunchCampaign,
-  useCampaignProgress, useCampaignProgressStream, useCampaignLifecycle,
+  useCampaignProgress, useCampaignProgressStream, useCampaignLifecycle, useABResults,
 } from './campaignsQueries';
 import { estimateAudience, isCampaignActive, type Campaign } from './campaignsApi';
 
@@ -81,6 +81,10 @@ function CampaignEditor({ campaign }: { campaign: Campaign }) {
   const [exclude, setExclude] = useState<Set<string>>(new Set(campaign.exclude_segment_ids));
   const [contentId, setContentId] = useState(campaign.content_id ?? '');
   const [topicId, setTopicId] = useState(campaign.topic_id ?? '');
+  const [abTestPct, setAbTestPct] = useState(campaign.ab_test_pct ?? 0);
+  const [abSubjectB, setAbSubjectB] = useState(campaign.ab_subject_b ?? '');
+  const [abWindowHours, setAbWindowHours] = useState(campaign.ab_test_window_hours || 4);
+  const abEnabled = abTestPct > 0;
   const [dirty, setDirty] = useState(false);
 
   const markDirty = () => setDirty(true);
@@ -121,6 +125,9 @@ function CampaignEditor({ campaign }: { campaign: Campaign }) {
         segment_ids: [...include],
         exclude_segment_ids: [...exclude],
         topic_id: topicId || null,
+        ab_test_pct: abTestPct,
+        ab_subject_b: abSubjectB,
+        ab_test_window_hours: abWindowHours,
       } },
       { onSuccess: () => { setDirty(false); show('Saved'); }, onError: (e) => show((e as Error).message || 'Failed to save', 'error') },
     );
@@ -189,6 +196,51 @@ function CampaignEditor({ campaign }: { campaign: Campaign }) {
               {topics.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
             </Select>
           </div>
+        </div>
+
+        {/* A/B test (subject line) */}
+        <div className="rounded-xl border border-border bg-card p-4">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-foreground">A/B test</h3>
+              <p className="mt-0.5 text-xs text-muted-foreground">Test two subject lines on a fraction of your audience; the higher unique open rate wins and is sent to the rest.</p>
+            </div>
+            <label className="flex items-center gap-2 whitespace-nowrap text-xs text-muted-foreground">
+              <input type="checkbox" className="h-3.5 w-3.5 rounded border-border" checked={abEnabled}
+                onChange={(e) => { setAbTestPct(e.target.checked ? (abTestPct > 0 ? abTestPct : 20) : 0); markDirty(); }} />
+              Enable
+            </label>
+          </div>
+          {abEnabled && (
+            <div className="mt-3 space-y-3">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground" htmlFor="ab-subject">Variant B subject line</label>
+                <Input id="ab-subject" value={abSubjectB} onChange={(e) => { setAbSubjectB(e.target.value); markDirty(); }} placeholder="An alternate subject to test against your content's subject" />
+                <p className="mt-1 text-xs text-muted-foreground">Variant A uses your email content's subject; variant B uses this one. Same body for both.</p>
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground" htmlFor="ab-pct">Test audience</label>
+                  <Select id="ab-pct" value={String(abTestPct)} onChange={(e) => { setAbTestPct(Number(e.target.value)); markDirty(); }}>
+                    <option value="10">10% (5% per variant)</option>
+                    <option value="20">20% (10% per variant)</option>
+                    <option value="30">30% (15% per variant)</option>
+                    <option value="40">40% (20% per variant)</option>
+                  </Select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground" htmlFor="ab-window">Test window</label>
+                  <Select id="ab-window" value={String(abWindowHours)} onChange={(e) => { setAbWindowHours(Number(e.target.value)); markDirty(); }}>
+                    <option value="4">4 hours</option>
+                    <option value="8">8 hours</option>
+                    <option value="24">24 hours</option>
+                    <option value="48">48 hours</option>
+                  </Select>
+                </div>
+              </div>
+              {!abSubjectB.trim() && <p className="text-xs text-destructive">Add a variant B subject line to run the test.</p>}
+            </div>
+          )}
         </div>
 
         {/* Readiness checklist */}
@@ -337,6 +389,7 @@ function CampaignMonitor({ campaign }: { campaign: Campaign }) {
         )}
       </div>
 
+      {campaign.ab_test_pct > 0 && <CampaignABPanel campaign={campaign} />}
       {status === 'sent' && <CampaignAnalyticsPanel campaignId={campaign.id} />}
     </div>
   );
@@ -344,6 +397,51 @@ function CampaignMonitor({ campaign }: { campaign: Campaign }) {
 
 function CountChip({ label, value, variant }: { label: string; value: number; variant: 'success' | 'secondary' | 'outline' | 'warning' | 'destructive' }) {
   return <Badge variant={variant} className="gap-1">{label}: <span className="tabular-nums">{value.toLocaleString()}</span></Badge>;
+}
+
+function CampaignABPanel({ campaign }: { campaign: Campaign }) {
+  const ab = useABResults(campaign.id, campaign.ab_test_pct > 0);
+  const d = ab.data;
+  if (!d || !d.enabled) return null;
+
+  const a = d.variant_a ?? { variant: 'A', sent: 0, opened: 0, clicked: 0 };
+  const b = d.variant_b ?? { variant: 'B', sent: 0, opened: 0, clicked: 0 };
+  const rate = (s: { sent: number; opened: number }) => (s.sent > 0 ? (s.opened / s.sent) * 100 : 0);
+  const decided = !!d.winner;
+  const lead = decided ? d.winner : d.projected_winner;
+
+  return (
+    <div className="mt-4 rounded-xl border border-border bg-card p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-foreground">A/B test — subject line</h3>
+        {decided
+          ? <Badge variant="success">Winner: {d.winner}{d.significant ? ' · significant' : ''}</Badge>
+          : <Badge variant="secondary">Testing…</Badge>}
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <ABVariantRow label="A — content subject" stat={a} rate={rate(a)} isLead={lead === 'A'} />
+        <ABVariantRow label={`B — “${d.subject_b || ''}”`} stat={b} rate={rate(b)} isLead={lead === 'B'} />
+      </div>
+      <p className="mt-3 text-xs text-muted-foreground">
+        {decided
+          ? `Winner ${d.winner} was sent to the remaining audience${d.significant ? ' with 95% confidence.' : d.reason === 'cell_too_small' ? ' (test cells were too small to reach significance — the higher rate was chosen).' : ' (not statistically significant — the higher rate was chosen).'}`
+          : `The higher unique open rate wins after the ${campaign.ab_test_window_hours}-hour window; currently leaning ${lead}${d.significant ? ' (significant).' : d.reason === 'cell_too_small' ? ' (cells still too small for significance).' : ' (not yet significant).'}`}
+      </p>
+    </div>
+  );
+}
+
+function ABVariantRow({ label, stat, rate, isLead }: { label: string; stat: { sent: number; opened: number }; rate: number; isLead: boolean }) {
+  return (
+    <div className={`rounded-lg border p-3 ${isLead ? 'border-primary' : 'border-border'}`}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="truncate text-xs font-medium text-foreground">{label}</div>
+        {isLead && <Badge variant="success">Lead</Badge>}
+      </div>
+      <div className="mt-1 text-xl font-semibold tabular-nums text-foreground">{rate.toFixed(1)}%</div>
+      <div className="mt-0.5 text-xs text-muted-foreground">{stat.opened.toLocaleString()} opens / {stat.sent.toLocaleString()} sent</div>
+    </div>
+  );
 }
 
 export default CampaignComposerPage;

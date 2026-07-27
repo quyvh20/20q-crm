@@ -49,15 +49,18 @@ func (r *Repository) UpdateCampaign(ctx context.Context, c *domain.Campaign) (bo
 	res := r.db.WithContext(ctx).Model(&domain.Campaign{}).
 		Where("org_id = ? AND id = ? AND deleted_at IS NULL AND status IN ('draft','scheduled')", c.OrgID, c.ID).
 		Updates(map[string]any{
-			"name":                c.Name,
-			"content_id":          c.ContentID,
-			"segment_ids":         c.SegmentIDs,
-			"exclude_segment_ids": c.ExcludeSegmentIDs,
-			"topic_id":            c.TopicID,
-			"send_lane":           c.SendLane,
-			"scheduled_at":        c.ScheduledAt,
-			"recipient_lock_mode": c.RecipientLockMode,
-			"updated_at":          gorm.Expr("NOW()"),
+			"name":                  c.Name,
+			"content_id":            c.ContentID,
+			"segment_ids":           c.SegmentIDs,
+			"exclude_segment_ids":   c.ExcludeSegmentIDs,
+			"topic_id":              c.TopicID,
+			"send_lane":             c.SendLane,
+			"scheduled_at":          c.ScheduledAt,
+			"recipient_lock_mode":   c.RecipientLockMode,
+			"ab_test_pct":           c.ABTestPct,
+			"ab_subject_b":          c.ABSubjectB,
+			"ab_test_window_hours":  c.ABTestWindowHours,
+			"updated_at":            gorm.Expr("NOW()"),
 		})
 	if res.Error != nil {
 		return false, res.Error

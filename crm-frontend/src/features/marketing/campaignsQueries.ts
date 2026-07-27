@@ -5,8 +5,8 @@ import { getAccessToken } from '../../lib/api';
 import {
   listCampaigns, getCampaign, createCampaign, updateCampaign, deleteCampaign,
   getReadiness, launchCampaign, pauseCampaign, resumeCampaign, cancelCampaign, getProgress,
-  isCampaignActive,
-  type Campaign, type CampaignInput, type CampaignProgress,
+  getABResults, isCampaignActive,
+  type Campaign, type CampaignInput, type CampaignProgress, type ABResults,
 } from './campaignsApi';
 
 const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8080' : '');
@@ -53,6 +53,21 @@ export function useCampaignProgress(id: string | undefined, status: string | und
     refetchInterval: (query) => {
       const s = (query.state.data?.status ?? status) as Campaign['status'] | undefined;
       return s && isCampaignActive(s) ? 3000 : false;
+    },
+    retry: false,
+  });
+}
+
+/** A/B test results for the monitor. Polls while the test is running (enabled + no
+ *  winner yet), then settles once the decider picks a winner. */
+export function useABResults(id: string | undefined, enabled = true) {
+  return useQuery<ABResults>({
+    queryKey: [...campaignKeys.all, 'ab', id ?? ''],
+    queryFn: () => getABResults(id as string),
+    enabled: !!id && enabled,
+    refetchInterval: (query) => {
+      const d = query.state.data;
+      return d?.enabled && !d.winner ? 30_000 : false;
     },
     retry: false,
   });

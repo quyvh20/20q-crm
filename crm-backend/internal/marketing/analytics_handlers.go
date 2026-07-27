@@ -35,6 +35,7 @@ func (h *AnalyticsHandler) RegisterRoutes(router *gin.Engine, protected []gin.Ha
 	g.Use(requireCap(domain.CapMarketingManage))
 	{
 		g.GET("/campaigns/:id/analytics", h.CampaignAnalytics)
+		g.GET("/campaigns/:id/ab", h.ABResults)
 		g.GET("/deliverability", h.Deliverability)
 	}
 }
@@ -68,6 +69,55 @@ func (h *AnalyticsHandler) CampaignAnalytics(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": a})
+}
+
+// ABResults returns a campaign's A/B test state: per-variant unique engagement, the
+// decided winner (empty until the decider runs), and — while undecided — the projected
+// winner + whether the difference is significant yet (for the live significance readout).
+func (h *AnalyticsHandler) ABResults(c *gin.Context) {
+	orgID, _, ok := actorFromCtx(c)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		abortErr(c, http.StatusBadRequest, "invalid campaign id")
+		return
+	}
+	camp, err := h.repo.GetCampaignByID(c.Request.Context(), orgID, id)
+	if err != nil {
+		h.logger.Error("marketing: ab results campaign lookup failed", "error", err, "org_id", orgID.String())
+		abortErr(c, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if camp == nil {
+		abortErr(c, http.StatusNotFound, "campaign not found")
+		return
+	}
+	if camp.ABTestPct == 0 {
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{"enabled": false}})
+		return
+	}
+	metrics, err := h.repo.ABVariantMetrics(c.Request.Context(), id)
+	if err != nil {
+		h.logger.Error("marketing: ab variant metrics failed", "error", err, "org_id", orgID.String())
+		abortErr(c, http.StatusInternalServerError, "could not load A/B results")
+		return
+	}
+	projected, sig, reason := decideABWinner(metrics["A"], metrics["B"])
+	a, b := metrics["A"], metrics["B"]
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"enabled":          true,
+		"test_pct":         camp.ABTestPct,
+		"subject_b":        camp.ABSubjectB,
+		"variant_a":        a,
+		"variant_b":        b,
+		"winner":           camp.ABWinnerVariant, // "" until the decider runs
+		"decided_at":       camp.ABDecidedAt,
+		"projected_winner": projected,
+		"significant":      sig,
+		"reason":           reason,
+	}})
 }
 
 // Deliverability returns the org's rolling complaint/bounce rates alongside the SAME

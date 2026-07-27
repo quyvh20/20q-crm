@@ -69,6 +69,15 @@ type Campaign struct {
 	RecipientLockMode string         `gorm:"type:varchar(24);not null;default:'lock_on_schedule'" json:"recipient_lock_mode"`
 	SnapshotCounts    datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'" json:"snapshot_counts"`
 	FeedbackID        *string        `gorm:"type:varchar(128)" json:"feedback_id,omitempty"`
+	// M9 Part B — subject-line A/B. ABTestPct>0 enables it: a random ABTestPct% of the
+	// roster is split into A/B test cells (variant B uses ABSubjectB, A uses the content's
+	// subject), the rest is held; after ABTestWindowHours the winner (higher unique open
+	// rate, ≥95% two-proportion significance) is sent to the held remainder.
+	ABTestPct         int        `gorm:"type:int;not null;default:0" json:"ab_test_pct"`
+	ABSubjectB        string     `gorm:"type:varchar(998);not null;default:''" json:"ab_subject_b"`
+	ABTestWindowHours int        `gorm:"type:int;not null;default:4" json:"ab_test_window_hours"`
+	ABWinnerVariant   string     `gorm:"type:varchar(8);not null;default:''" json:"ab_winner_variant"`
+	ABDecidedAt       *time.Time `json:"ab_decided_at,omitempty"`
 	CreatedBy         *uuid.UUID     `gorm:"type:uuid" json:"created_by,omitempty"`
 	CreatedAt         time.Time      `gorm:"not null;default:now()" json:"created_at"`
 	UpdatedAt         time.Time      `gorm:"not null;default:now()" json:"updated_at"`
@@ -120,6 +129,10 @@ type CampaignInput struct {
 	SendLane          string      `json:"send_lane"`
 	ScheduledAt       *time.Time  `json:"scheduled_at"`
 	RecipientLockMode string      `json:"recipient_lock_mode"`
+	// M9 Part B — subject-line A/B config. ABTestPct>0 enables it (requires ABSubjectB).
+	ABTestPct         int    `json:"ab_test_pct"`
+	ABSubjectB        string `json:"ab_subject_b"`
+	ABTestWindowHours int    `json:"ab_test_window_hours"`
 }
 
 // LaunchCheck is one row of the pre-send checklist; a campaign may launch only when

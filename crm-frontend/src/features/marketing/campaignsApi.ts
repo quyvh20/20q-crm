@@ -20,6 +20,12 @@ export interface Campaign {
   send_lane: SendLane;
   scheduled_at?: string | null;
   recipient_lock_mode: RecipientLockMode;
+  // M9 Part B — subject-line A/B (0 test_pct = off).
+  ab_test_pct: number;
+  ab_subject_b: string;
+  ab_test_window_hours: number;
+  ab_winner_variant: string;
+  ab_decided_at?: string | null;
   created_by?: string | null;
   created_at: string;
   updated_at: string;
@@ -36,6 +42,36 @@ export interface CampaignInput {
   send_lane?: SendLane;
   scheduled_at?: string | null;
   recipient_lock_mode?: RecipientLockMode;
+  ab_test_pct?: number;
+  ab_subject_b?: string;
+  ab_test_window_hours?: number;
+}
+
+// M9 Part B — A/B test results for the monitor's significance readout.
+export interface ABVariantStat {
+  variant: string;
+  sent: number;
+  opened: number;
+  clicked: number;
+}
+export interface ABResults {
+  enabled: boolean;
+  test_pct?: number;
+  subject_b?: string;
+  variant_a?: ABVariantStat;
+  variant_b?: ABVariantStat;
+  winner?: string;            // '' until the decider runs
+  decided_at?: string | null;
+  projected_winner?: string;
+  significant?: boolean;
+  reason?: string;
+}
+
+export async function getABResults(id: string): Promise<ABResults> {
+  const res = await apiFetch(`/api/marketing/campaigns/${id}/ab`);
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Failed to load A/B results');
+  return json.data as ABResults;
 }
 
 export interface LaunchCheck {

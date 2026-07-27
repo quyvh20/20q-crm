@@ -19,10 +19,11 @@ type fakeCampStore struct {
 	createCalled bool
 	updateCalled bool
 	cleared      bool
-	snapshotN    int
-	estimateN    int
-	profile      *OrgMarketingProfile
-	content      *CampaignContent
+	snapshotN     int
+	estimateN     int
+	profile       *OrgMarketingProfile
+	content       *CampaignContent
+	abAssignCalls int
 }
 
 func newFakeCampStore() *fakeCampStore {
@@ -98,6 +99,10 @@ func (f *fakeCampStore) CountRosterByStatus(_ context.Context, _ uuid.UUID) (map
 func (f *fakeCampStore) ClearRoster(_ context.Context, _ uuid.UUID) error { f.cleared = true; return nil }
 func (f *fakeCampStore) SnapshotRoster(_ context.Context, _, _ uuid.UUID, _ domain.AudienceQuery) (int, error) {
 	return f.snapshotN, nil
+}
+func (f *fakeCampStore) AssignABTestCells(_ context.Context, _ uuid.UUID, _ int) (int, error) {
+	f.abAssignCalls++
+	return 0, nil
 }
 func (f *fakeCampStore) EstimateAudience(_ context.Context, _ domain.AudienceQuery) (int, error) {
 	return f.estimateN, nil

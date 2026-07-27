@@ -35,6 +35,7 @@ type campaignStore interface {
 	CountRosterByStatus(ctx context.Context, campaignID uuid.UUID) (map[string]int, error)
 	ClearRoster(ctx context.Context, campaignID uuid.UUID) error
 	SnapshotRoster(ctx context.Context, campaignID, orgID uuid.UUID, aud domain.AudienceQuery) (int, error)
+	AssignABTestCells(ctx context.Context, campaignID uuid.UUID, testPct int) (int, error)
 	EstimateAudience(ctx context.Context, aud domain.AudienceQuery) (int, error)
 	GetProfile(ctx context.Context, orgID uuid.UUID) (*OrgMarketingProfile, error)
 	GetContentByID(ctx context.Context, orgID, id uuid.UUID) (*CampaignContent, error)
@@ -92,21 +93,24 @@ func (uc *CampaignUseCase) Get(ctx context.Context, orgID, id uuid.UUID) (*domai
 }
 
 func (uc *CampaignUseCase) Create(ctx context.Context, orgID, userID uuid.UUID, in domain.CampaignInput) (*domain.Campaign, error) {
-	name, lane, lock, err := uc.validateInput(ctx, orgID, in)
+	v, err := uc.validateInput(ctx, orgID, in)
 	if err != nil {
 		return nil, err
 	}
 	c := &domain.Campaign{
 		OrgID:             orgID,
-		Name:              name,
+		Name:              v.name,
 		ContentID:         in.ContentID,
 		SegmentIDs:        marshalUUIDList(in.SegmentIDs),
 		ExcludeSegmentIDs: marshalUUIDList(in.ExcludeSegmentIDs),
 		TopicID:           in.TopicID,
 		Status:            domain.CampaignStatusDraft,
-		SendLane:          lane,
+		SendLane:          v.lane,
 		ScheduledAt:       in.ScheduledAt,
-		RecipientLockMode: lock,
+		RecipientLockMode: v.lock,
+		ABTestPct:         v.abTestPct,
+		ABSubjectB:        v.abSubjectB,
+		ABTestWindowHours: v.abTestWindowHours,
 	}
 	if userID != uuid.Nil {
 		c.CreatedBy = &userID
@@ -135,15 +139,21 @@ func (uc *CampaignUseCase) Update(ctx context.Context, orgID, id uuid.UUID, in d
 	// recipient_lock_mode here — `c` already holds their persisted values and
 	// UpdateCampaign writes those back unchanged (else editing a scheduled campaign
 	// would silently null scheduled_at and reset the lane/lock to defaults).
-	name, _, _, err := uc.validateInput(ctx, orgID, in)
+	v, err := uc.validateInput(ctx, orgID, in)
 	if err != nil {
 		return nil, err
 	}
-	c.Name = name
+	c.Name = v.name
 	c.ContentID = in.ContentID
 	c.SegmentIDs = marshalUUIDList(in.SegmentIDs)
 	c.ExcludeSegmentIDs = marshalUUIDList(in.ExcludeSegmentIDs)
 	c.TopicID = in.TopicID
+	// A/B config is composer-editable (unlike lane/lock/scheduled_at). UpdateCampaign
+	// already writes these columns; never touch ab_winner_variant/ab_decided_at (the
+	// decider owns those).
+	c.ABTestPct = v.abTestPct
+	c.ABSubjectB = v.abSubjectB
+	c.ABTestWindowHours = v.abTestWindowHours
 	// Guarded partial UPDATE: 0 rows ⇒ the campaign left draft/scheduled (a concurrent
 	// Launch) between our read and write — surface a 409 rather than clobber it.
 	ok, err := uc.repo.UpdateCampaign(ctx, c)
@@ -308,6 +318,15 @@ func (uc *CampaignUseCase) Launch(ctx context.Context, orgID, id uuid.UUID) (*do
 		_, _ = uc.repo.SetCampaignStatus(ctx, orgID, id, domain.CampaignStatusDraft, []string{domain.CampaignStatusSnapshotting})
 		return nil, err
 	}
+	// A/B (M9 Part B): split a test fraction into A/B cells + hold the remainder for the
+	// winner, inside the exclusive snapshotting window (the worker can't claim mid-split).
+	// A subject test needs a variant-B subject; without one this is a no-op (normal send).
+	if c.ABTestPct > 0 && c.ABSubjectB != "" {
+		if _, err := uc.repo.AssignABTestCells(ctx, id, c.ABTestPct); err != nil {
+			_, _ = uc.repo.SetCampaignStatus(ctx, orgID, id, domain.CampaignStatusDraft, []string{domain.CampaignStatusSnapshotting})
+			return nil, err
+		}
+	}
 	if _, err := uc.repo.FinishLaunch(ctx, orgID, id); err != nil {
 		return nil, err
 	}
@@ -385,36 +404,72 @@ func (uc *CampaignUseCase) Progress(ctx context.Context, orgID, id uuid.UUID) (m
 
 // ── internals ────────────────────────────────────────────────────────────────
 
-// validateInput checks the name + enums and that every referenced segment exists in
-// the org (uc.segments.Get is org-scoped and returns 404 for a foreign/missing id).
-func (uc *CampaignUseCase) validateInput(ctx context.Context, orgID uuid.UUID, in domain.CampaignInput) (name, lane, lock string, err error) {
-	name = strings.TrimSpace(in.Name)
-	if name == "" {
-		return "", "", "", domain.NewAppError(http.StatusBadRequest, "name is required")
+// validatedInput is validateInput's normalized output.
+type validatedInput struct {
+	name              string
+	lane              string
+	lock              string
+	abTestPct         int
+	abSubjectB        string
+	abTestWindowHours int
+}
+
+// validateInput checks the name + enums, the A/B config, and that every referenced
+// segment exists in the org (uc.segments.Get is org-scoped and returns 404 for a
+// foreign/missing id).
+func (uc *CampaignUseCase) validateInput(ctx context.Context, orgID uuid.UUID, in domain.CampaignInput) (validatedInput, error) {
+	var v validatedInput
+	v.name = strings.TrimSpace(in.Name)
+	if v.name == "" {
+		return v, domain.NewAppError(http.StatusBadRequest, "name is required")
 	}
-	if utf8.RuneCountInString(name) > maxCampaignNameLen {
-		return "", "", "", domain.NewAppError(http.StatusBadRequest, "name must be 200 characters or fewer")
+	if utf8.RuneCountInString(v.name) > maxCampaignNameLen {
+		return v, domain.NewAppError(http.StatusBadRequest, "name must be 200 characters or fewer")
 	}
-	lane = strings.TrimSpace(in.SendLane)
-	if lane == "" {
-		lane = domain.CampaignLaneSingle
+	v.lane = strings.TrimSpace(in.SendLane)
+	if v.lane == "" {
+		v.lane = domain.CampaignLaneSingle
 	}
-	if lane != domain.CampaignLaneSingle && lane != domain.CampaignLaneBatch {
-		return "", "", "", domain.NewAppError(http.StatusBadRequest, "invalid send lane")
+	if v.lane != domain.CampaignLaneSingle && v.lane != domain.CampaignLaneBatch {
+		return v, domain.NewAppError(http.StatusBadRequest, "invalid send lane")
 	}
-	lock = strings.TrimSpace(in.RecipientLockMode)
-	if lock == "" {
-		lock = domain.RecipientLockOnSchedule
+	v.lock = strings.TrimSpace(in.RecipientLockMode)
+	if v.lock == "" {
+		v.lock = domain.RecipientLockOnSchedule
 	}
-	if lock != domain.RecipientLockOnSchedule && lock != domain.RecipientLockAtSend {
-		return "", "", "", domain.NewAppError(http.StatusBadRequest, "invalid recipient lock mode")
+	if v.lock != domain.RecipientLockOnSchedule && v.lock != domain.RecipientLockAtSend {
+		return v, domain.NewAppError(http.StatusBadRequest, "invalid recipient lock mode")
+	}
+	// A/B (M9 Part B): pct>0 enables a subject test and REQUIRES a variant-B subject; pct=0
+	// clears the config. Window defaults to 4h, capped at 7 days.
+	if in.ABTestPct < 0 || in.ABTestPct > 100 {
+		return v, domain.NewAppError(http.StatusBadRequest, "A/B test percentage must be between 0 and 100")
+	}
+	v.abTestPct = in.ABTestPct
+	if v.abTestPct > 0 {
+		v.abSubjectB = strings.TrimSpace(in.ABSubjectB)
+		if v.abSubjectB == "" {
+			return v, domain.NewAppError(http.StatusBadRequest, "an A/B test needs a variant B subject line")
+		}
+		if utf8.RuneCountInString(v.abSubjectB) > 998 {
+			return v, domain.NewAppError(http.StatusBadRequest, "variant B subject must be 998 characters or fewer")
+		}
+		v.abTestWindowHours = in.ABTestWindowHours
+		if v.abTestWindowHours <= 0 {
+			v.abTestWindowHours = 4
+		}
+		if v.abTestWindowHours > 168 {
+			v.abTestWindowHours = 168
+		}
+	} else {
+		v.abTestWindowHours = 4
 	}
 	for _, id := range append(append([]uuid.UUID{}, in.SegmentIDs...), in.ExcludeSegmentIDs...) {
 		if _, gerr := uc.segments.Get(ctx, orgID, id); gerr != nil {
-			return "", "", "", domain.NewAppError(http.StatusBadRequest, "unknown segment: "+id.String())
+			return v, domain.NewAppError(http.StatusBadRequest, "unknown segment: "+id.String())
 		}
 	}
-	return name, lane, lock, nil
+	return v, nil
 }
 
 func (uc *CampaignUseCase) addContentCheck(ctx context.Context, orgID uuid.UUID, c *domain.Campaign, add func(key, label string, ok bool, detail string)) {

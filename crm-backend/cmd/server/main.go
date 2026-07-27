@@ -1764,6 +1764,14 @@ func main() {
 			)`},
 			{"marketing_campaigns org index", `CREATE INDEX IF NOT EXISTS idx_marketing_campaigns_org
 				ON marketing_campaigns(org_id) WHERE deleted_at IS NULL`},
+			// M9 Part B: subject-line A/B test config. ADD COLUMN IF NOT EXISTS is idempotent;
+			// every column carries a DDL DEFAULT (GORM omits zero-values on insert).
+			{"marketing_campaigns A/B columns", `ALTER TABLE marketing_campaigns
+				ADD COLUMN IF NOT EXISTS ab_test_pct          INT NOT NULL DEFAULT 0,
+				ADD COLUMN IF NOT EXISTS ab_subject_b         VARCHAR(998) NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS ab_test_window_hours INT NOT NULL DEFAULT 4,
+				ADD COLUMN IF NOT EXISTS ab_winner_variant    VARCHAR(8) NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS ab_decided_at        TIMESTAMPTZ`},
 			{"marketing_campaign_recipients", `CREATE TABLE IF NOT EXISTS marketing_campaign_recipients (
 				id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
 				campaign_id         UUID NOT NULL REFERENCES marketing_campaigns(id) ON DELETE CASCADE,
@@ -2658,6 +2666,9 @@ func main() {
 			// M7.3: reclaim the roster rows of long-finished campaigns (keeps the campaign
 			// row for reporting). Runs regardless of send transport.
 			go marketing.StartCampaignPruner(context.Background(), marketingRepo, autoLogger)
+			// M9 Part B: once an A/B campaign's test window elapses, pick the winning
+			// subject (unique open rate, 95% significance) and release the held remainder.
+			go marketing.StartABDecider(context.Background(), marketingRepo, autoLogger)
 
 			// ── M8: drip-sequence in-executor marketing gate ─────────────────
 			// Injected AFTER autoEngine + marketing services exist (the preparer depends
