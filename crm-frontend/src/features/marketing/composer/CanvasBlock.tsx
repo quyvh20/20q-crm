@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { useSortable, SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { useDroppable } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
-import { ChevronDown, ChevronUp, Copy, GripVertical, Image as ImageIcon, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronUp, CirclePlay, CodeXml, Copy, GripVertical, Image as ImageIcon, Monitor, Share2, Smartphone, Trash2 } from 'lucide-react';
 import type { Block } from './blocks';
+import { displayImageSrc } from '../assetsApi';
 import type { BlockAddress } from './blockUtils';
 import { useBuilderStore } from './builderStore';
 import { InlineRichText } from './InlineRichText';
@@ -100,6 +101,18 @@ export const CanvasBlock: React.FC<CanvasBlockProps> = ({ block, parentId, colIn
             {block.type}
           </span>
 
+          {/* device-visibility badge — persistent so a hidden-on-X block is
+              never a surprise at send time */}
+          {block.hide_mobile !== block.hide_desktop && (
+            <span
+              title={block.hide_mobile ? 'Shown on desktop only' : 'Shown on mobile only'}
+              className="absolute left-2 bottom-1 z-20 flex items-center gap-0.5 rounded bg-card/90 px-1 py-px text-[9px] font-medium text-muted-foreground shadow-sm ring-1 ring-border"
+            >
+              {block.hide_mobile ? <Monitor className="h-2.5 w-2.5" /> : <Smartphone className="h-2.5 w-2.5" />}
+              {block.hide_mobile ? 'Desktop only' : 'Mobile only'}
+            </span>
+          )}
+
           {/* action bar */}
           <div
             className={`absolute -top-3.5 right-2 z-30 flex items-center gap-0.5 rounded-lg border border-border bg-card p-0.5 shadow-md transition-opacity ${
@@ -164,12 +177,16 @@ const BlockBody: React.FC<{
   readOnly?: boolean;
   onText: (html: string) => void;
 }> = ({ block, nested, selected, hovered, variableGroups, dropHint, readOnly, onText }) => {
-  const sectionPad = nested ? undefined : SECTION_PAD;
+  const padY = block.pad_y != null ? Math.min(Math.max(block.pad_y, 0), 80) : null;
+  const sectionPad = nested ? undefined : padY != null ? `${padY}px 0` : SECTION_PAD;
+  // Root blocks compile to their own mj-section, so bg paints the full section
+  // area (padding included) — exactly what the recipient sees.
+  const sectionBg = nested ? undefined : block.bg || undefined;
 
   switch (block.type) {
     case 'text':
       return (
-        <div style={{ padding: sectionPad }}>
+        <div style={{ padding: sectionPad, background: sectionBg }}>
           <div style={{ padding: COMPONENT_PAD }}>
             <InlineRichText
               html={block.text ?? ''}
@@ -179,6 +196,8 @@ const BlockBody: React.FC<{
               variant="text"
               align={block.align}
               readOnly={readOnly}
+              overrideSize={block.size}
+              overrideColor={block.color}
             />
           </div>
         </div>
@@ -186,7 +205,7 @@ const BlockBody: React.FC<{
 
     case 'heading':
       return (
-        <div style={{ padding: sectionPad }}>
+        <div style={{ padding: sectionPad, background: sectionBg }}>
           <div style={{ padding: COMPONENT_PAD }}>
             <InlineRichText
               html={block.text ?? ''}
@@ -198,30 +217,45 @@ const BlockBody: React.FC<{
               nested={nested}
               align={block.align}
               readOnly={readOnly}
+              overrideSize={block.size}
+              overrideColor={block.color}
             />
           </div>
         </div>
       );
 
-    case 'button':
+    case 'button': {
+      const btnStyle: React.CSSProperties = {
+        background: block.btn_bg || undefined,
+        color: block.btn_color || undefined,
+        borderRadius: block.radius ? `${block.radius}px` : undefined,
+        fontSize: block.size && block.size >= 10 && block.size <= 40 ? `${block.size}px` : undefined,
+      };
+      const btnAlign = block.align === 'left' || block.align === 'right' ? block.align : 'center';
       return (
-        <div style={{ padding: sectionPad }}>
-          {/* mj-button: centered container, #414141 pill — compiler ignores align */}
-          <div style={{ padding: COMPONENT_PAD, textAlign: 'center' }}>
-            <span className="email-button-preview">{block.label || 'Button'}</span>
+        <div style={{ padding: sectionPad, background: sectionBg }}>
+          <div style={{ padding: COMPONENT_PAD, textAlign: btnAlign }}>
+            <span className="email-button-preview" style={btnStyle}>{block.label || 'Button'}</span>
           </div>
         </div>
       );
+    }
 
-    case 'image':
+    case 'image': {
+      const imgAlign = block.align === 'left' || block.align === 'right' ? block.align : 'center';
       return (
-        <div style={{ padding: sectionPad }}>
-          <div style={{ padding: COMPONENT_PAD, textAlign: 'center' }}>
+        <div style={{ padding: sectionPad, background: sectionBg }}>
+          <div style={{ padding: COMPONENT_PAD, textAlign: imgAlign }}>
             {block.src ? (
               <img
-                src={block.src}
+                src={displayImageSrc(block.src)}
                 alt={block.alt ?? ''}
-                style={{ maxWidth: '100%', display: 'inline-block' }}
+                style={{
+                  maxWidth: '100%',
+                  display: 'inline-block',
+                  width: block.width_px ? `${block.width_px}px` : undefined,
+                  borderRadius: block.radius ? `${block.radius}px` : undefined,
+                }}
                 draggable={false}
               />
             ) : (
@@ -235,20 +269,126 @@ const BlockBody: React.FC<{
           </div>
         </div>
       );
+    }
 
     case 'divider':
       return (
-        <div style={{ padding: sectionPad }}>
+        <div style={{ padding: sectionPad, background: sectionBg }}>
           <div style={{ padding: COMPONENT_PAD }}>
-            <div style={{ borderTop: '1px solid #e5e7eb' }} />
+            <div style={{ borderTop: `${block.thickness && block.thickness >= 1 && block.thickness <= 10 ? block.thickness : 1}px solid ${block.color || '#e5e7eb'}` }} />
           </div>
         </div>
       );
 
+    case 'social': {
+      const size = block.size && block.size >= 12 && block.size <= 48 ? block.size : 24;
+      const align = block.align === 'left' || block.align === 'right' ? block.align : 'center';
+      const configured = (block.social ?? []).filter((s) => s.network);
+      const anyHref = configured.some((s) => s.href.trim() !== '');
+      return (
+        <div style={{ padding: sectionPad, background: sectionBg }}>
+          <div style={{ padding: COMPONENT_PAD, textAlign: align }}>
+            {configured.length === 0 ? (
+              <div className="email-hint flex flex-col items-center gap-1 rounded border border-dashed py-6">
+                <Share2 className="h-5 w-5" />
+                <span className="text-xs">Add social links in the inspector</span>
+              </div>
+            ) : (
+              <>
+                {configured.map((s, i) => (
+                  // The exact icon assets mj-social ships — true WYSIWYG.
+                  <img
+                    key={i}
+                    src={`https://www.mailjet.com/images/theme/v1/icons/ico-social/${s.network}.png`}
+                    alt={s.network}
+                    style={{ width: size, height: size, display: 'inline-block', margin: '0 4px', opacity: s.href.trim() ? 1 : 0.35 }}
+                    draggable={false}
+                  />
+                ))}
+                {!anyHref && <div className="email-hint mt-1 text-[11px]">Icons without a link won’t be sent — add URLs in the inspector</div>}
+              </>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    case 'video':
+      return (
+        <div style={{ padding: sectionPad, background: sectionBg }}>
+          <div style={{ padding: COMPONENT_PAD, textAlign: 'center' }}>
+            {block.src ? (
+              <div style={{ position: 'relative', display: 'inline-block', maxWidth: '100%' }}>
+                <img
+                  src={displayImageSrc(block.src)}
+                  alt={block.alt ?? ''}
+                  style={{ maxWidth: '100%', display: 'block', width: block.width_px ? `${block.width_px}px` : undefined, borderRadius: block.radius ? `${block.radius}px` : undefined }}
+                  draggable={false}
+                />
+                <CirclePlay
+                  className="absolute left-1/2 top-1/2 h-12 w-12 -translate-x-1/2 -translate-y-1/2"
+                  style={{ color: '#ffffff', filter: 'drop-shadow(0 1px 4px rgba(0,0,0,0.5))' }}
+                />
+              </div>
+            ) : (
+              <div className="email-hint flex flex-col items-center gap-1 rounded border border-dashed py-8">
+                <CirclePlay className="h-6 w-6" />
+                <span className="text-xs">Set a thumbnail image and video link in the inspector</span>
+              </div>
+            )}
+          </div>
+          <div style={{ padding: COMPONENT_PAD, paddingTop: 0, textAlign: 'center' }}>
+            <span className="email-button-preview">{block.label?.trim() || '▶ Watch video'}</span>
+          </div>
+        </div>
+      );
+
+    case 'quote':
+      return (
+        <div style={{ padding: sectionPad, background: sectionBg }}>
+          <div style={{ padding: COMPONENT_PAD }}>
+            <div style={{ borderLeft: `3px solid ${block.color || '#d1d5db'}`, padding: '4px 0 4px 16px', fontStyle: 'italic' }}>
+              <InlineRichText
+                html={block.text ?? ''}
+                variableGroups={variableGroups}
+                onChange={onText}
+                active={selected}
+                variant="text"
+                align={block.align}
+                readOnly={readOnly}
+              />
+            </div>
+            {block.label?.trim() && (
+              <p style={{ margin: '8px 0 0', color: '#6b7280', fontSize: 13 }}>— {block.label}</p>
+            )}
+          </div>
+        </div>
+      );
+
+    case 'menu': {
+      const items = (block.items ?? []).filter((it) => it.label.trim() !== '');
+      return (
+        <div style={{ padding: sectionPad, background: sectionBg }}>
+          <div style={{ padding: COMPONENT_PAD, textAlign: 'center' }}>
+            {items.length === 0 ? (
+              <div className="email-hint rounded border border-dashed py-4 text-xs">Add menu links in the inspector</div>
+            ) : (
+              items.map((it, i) => (
+                <React.Fragment key={i}>
+                  {i > 0 && <span style={{ margin: '0 8px', color: '#9ca3af' }}>•</span>}
+                  <span style={{ color: 'var(--email-link-color, #2563eb)', fontWeight: 500 }}>{it.label}</span>
+                </React.Fragment>
+              ))
+            )}
+          </div>
+        </div>
+      );
+    }
+
     case 'spacer': {
       const h = block.height && block.height > 0 ? block.height : 20;
       return (
-        <div style={{ padding: sectionPad }}>
+        <div style={{ padding: sectionPad, background: sectionBg }}>
           <div className="email-spacer-hatch relative" style={{ height: `${h}px` }}>
             <span
               className={`email-hint absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded px-1.5 py-px text-[10px] transition-opacity ${
@@ -263,10 +403,24 @@ const BlockBody: React.FC<{
       );
     }
 
+    case 'html':
+      return (
+        <div style={{ padding: sectionPad, background: sectionBg }}>
+          {block.text?.trim() ? (
+            <RawHTMLPreview html={block.text} />
+          ) : (
+            <div className="email-hint m-2 flex flex-col items-center gap-1 rounded border border-dashed py-6">
+              <CodeXml className="h-5 w-5" />
+              <span className="text-xs">Write your HTML in the inspector</span>
+            </div>
+          )}
+        </div>
+      );
+
     case 'columns': {
       const cols = block.columns ?? [];
       return (
-        <div style={{ padding: sectionPad }}>
+        <div style={{ padding: sectionPad, background: sectionBg }}>
           <div className="flex items-stretch">
             {cols.map((col, ci) => (
               <Column
@@ -287,6 +441,30 @@ const BlockBody: React.FC<{
     default:
       return null;
   }
+};
+
+/** RawHTMLPreview renders an html block's snippet in a script-dead iframe.
+ *  sandbox has allow-same-origin (so we can measure content height for
+ *  autosizing) but NOT allow-scripts — author <script>/handlers are inert in
+ *  the editor regardless of what the backend sanitizer will strip on save.
+ *  pointer-events:none keeps clicks selecting the block. */
+const RawHTMLPreview: React.FC<{ html: string }> = ({ html }) => {
+  const ref = useRef<HTMLIFrameElement>(null);
+  const [height, setHeight] = useState(48);
+  const doc = `<!doctype html><html><head><style>body{margin:0;font-family:Arial,Helvetica,sans-serif;color:#111827;font-size:15px;line-height:1.5}</style></head><body>${html}</body></html>`;
+  return (
+    <iframe
+      ref={ref}
+      title="Custom HTML preview"
+      sandbox="allow-same-origin"
+      srcDoc={doc}
+      style={{ width: '100%', height, border: 0, pointerEvents: 'none', display: 'block' }}
+      onLoad={() => {
+        const h = ref.current?.contentDocument?.body?.scrollHeight;
+        if (h && Math.abs(h - height) > 2) setHeight(Math.min(Math.max(h, 24), 1200));
+      }}
+    />
+  );
 };
 
 const Column: React.FC<{

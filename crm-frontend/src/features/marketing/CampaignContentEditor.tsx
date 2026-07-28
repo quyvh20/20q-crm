@@ -8,16 +8,18 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-  AlertCircle, ArrowLeft, CheckCircle2, Eye, Monitor, Redo2, Send, Undo2,
+  AlertCircle, ArrowLeft, CheckCircle2, Code, Eye, LayoutGrid, Monitor, Redo2, Send, Undo2,
 } from 'lucide-react';
 import { usePermissions } from '../../lib/auth';
 import AccessDeniedPanel from '../../components/common/AccessDeniedPanel';
 import { useConfirm } from '../../components/common/ConfirmDialog';
 import { Badge, Button, SpinnerBlock } from '@/components/ui';
 import { EmailBuilder } from './composer/EmailBuilder';
+import { CodeView } from './composer/CodeView';
 import { PreviewModal } from './composer/PreviewModal';
-import { useBuilderStore, DEFAULT_SCOPE } from './composer/builderStore';
-import type { Block } from './composer/blocks';
+import { blocksToSimpleHtml } from './composer/htmlSerializer';
+import { useBuilderStore, DEFAULT_SCOPE, type DocStyles } from './composer/builderStore';
+import type { Block, BlockDocument } from './composer/blocks';
 import { variableGroupsForScope } from './composer/mergeScope';
 import type { Check } from './composer/InspectorPanel';
 import { useContent, useCreateContent, useUpdateContent } from './contentQueries';
@@ -45,6 +47,8 @@ const Editor: React.FC = () => {
   const preheader = useBuilderStore((s) => s.preheader);
   const scope = useBuilderStore((s) => s.scope);
   const blocks = useBuilderStore((s) => s.blocks);
+  const bodyBg = useBuilderStore((s) => s.bodyBg);
+  const styles = useBuilderStore((s) => s.styles);
   const dirty = useBuilderStore((s) => s.dirty);
   const canUndo = useBuilderStore((s) => s.past.length > 0);
   const canRedo = useBuilderStore((s) => s.future.length > 0);
@@ -55,6 +59,30 @@ const Editor: React.FC = () => {
   const [previewErr, setPreviewErr] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const { confirm, dialog } = useConfirm();
+
+  // Design vs Code (raw HTML) editing. Code mode requires the document to be a
+  // single html block; undoing the conversion drops back to Design.
+  const [view, setView] = useState<'design' | 'code'>('design');
+  const isHtmlDoc = blocks.length === 1 && blocks[0].type === 'html';
+  useEffect(() => {
+    if (view === 'code' && !isHtmlDoc) setView('design');
+  }, [view, isHtmlDoc]);
+
+  const switchToCode = async () => {
+    if (isHtmlDoc) {
+      setView('code');
+      return;
+    }
+    const ok = await confirm({
+      title: 'Edit as HTML?',
+      body: 'Your blocks become one editable HTML snippet. You can keep editing the code, but it won’t convert back into blocks (undo does).',
+      confirmLabel: 'Convert to HTML',
+    });
+    if (!ok) return;
+    const s = useBuilderStore.getState();
+    s.convertToHtml(blocksToSimpleHtml(s.blocks));
+    setView('code');
+  };
 
   // Below 768px the builder is read-only (the NextBuilder mobile pass): the
   // canvas becomes a scrollable preview and editing chrome is hidden.
@@ -78,12 +106,23 @@ const Editor: React.FC = () => {
       return;
     }
     if (data && seededId.current !== data.id) {
+      const bj = data.body_json;
       useBuilderStore.getState().hydrate({
         name: data.name,
         subject: data.subject,
         preheader: data.preheader,
         scope: data.merge_scope ?? [],
-        blocks: data.body_json?.blocks ?? [],
+        blocks: bj?.blocks ?? [],
+        bodyBg: bj?.body_bg ?? '',
+        styles: {
+          width: bj?.width,
+          fontFamily: bj?.font_family,
+          textColor: bj?.text_color,
+          linkColor: bj?.link_color,
+          footerBg: bj?.footer?.bg,
+          footerColor: bj?.footer?.color,
+          footerText: bj?.footer?.text,
+        },
       });
       seededId.current = data.id;
     }
@@ -100,6 +139,13 @@ const Editor: React.FC = () => {
 
   const variableGroups = useMemo(() => variableGroupsForScope(scope), [scope]);
 
+  // Stable identity matters: PreviewModal refetches the as-recipient render when
+  // this changes, so it must only change when the document actually does.
+  const previewInput = useMemo(
+    () => ({ subject, preheader, body_json: buildBodyJson(blocks, bodyBg, styles), merge_scope: scope }),
+    [subject, preheader, blocks, scope, bodyBg, styles],
+  );
+
   // Debounced live compile (server-side /preview): powers the Review checklist,
   // the size badge and the preview modal. The `cancelled` guard discards a
   // superseded/unmounted response (out-of-order race) and keeps "preview failed"
@@ -107,12 +153,12 @@ const Editor: React.FC = () => {
   useEffect(() => {
     let cancelled = false;
     const t = setTimeout(() => {
-      previewContent({ subject, preheader, body_json: { blocks }, merge_scope: scope })
+      previewContent({ subject, preheader, body_json: buildBodyJson(blocks, bodyBg, styles), merge_scope: scope })
         .then((r) => { if (!cancelled) { setPreview(r); setPreviewErr(false); } })
         .catch(() => { if (!cancelled) { setPreview(null); setPreviewErr(true); } });
     }, 400);
     return () => { cancelled = true; clearTimeout(t); };
-  }, [subject, preheader, blocks, scope]);
+  }, [subject, preheader, blocks, scope, bodyBg, styles]);
 
   // Warn before discarding unsaved work.
   useEffect(() => {
@@ -150,7 +196,7 @@ const Editor: React.FC = () => {
       name: s.name.trim(),
       subject: s.subject,
       preheader: s.preheader,
-      body_json: { blocks: s.blocks },
+      body_json: buildBodyJson(s.blocks, s.bodyBg, s.styles),
       merge_scope: s.scope,
     };
     try {
@@ -246,6 +292,30 @@ const Editor: React.FC = () => {
               <ToolbarIcon title="Redo (Ctrl+Shift+Z)" disabled={!canRedo} onClick={() => store.redo()}><Redo2 className="h-4 w-4" /></ToolbarIcon>
             </div>
             <div className="h-5 w-px bg-border" />
+            {/* Design / Code view toggle */}
+            <div className="flex items-center rounded-lg border border-border p-0.5" role="group" aria-label="Editor view">
+              <button
+                type="button"
+                aria-pressed={view === 'design'}
+                onClick={() => setView('design')}
+                className={`flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+                  view === 'design' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                <LayoutGrid className="h-3.5 w-3.5" /> Design
+              </button>
+              <button
+                type="button"
+                aria-pressed={view === 'code'}
+                onClick={switchToCode}
+                className={`flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+                  view === 'code' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                <Code className="h-3.5 w-3.5" /> Code
+              </button>
+            </div>
+            <div className="h-5 w-px bg-border" />
             {preview?.size_bytes != null && (
               <span className={`hidden text-[11px] lg:inline ${preview.too_large ? 'font-medium text-destructive' : 'text-muted-foreground'}`}>
                 {Math.round(preview.size_bytes / 1024)} KB
@@ -271,13 +341,17 @@ const Editor: React.FC = () => {
         </div>
       )}
 
-      <EmailBuilder
-        variableGroups={variableGroups}
-        inspector={{ preview, previewErr, saveErrors, checklist }}
-        readOnly={isMobile}
-      />
+      {view === 'code' && !isMobile ? (
+        <CodeView />
+      ) : (
+        <EmailBuilder
+          variableGroups={variableGroups}
+          inspector={{ preview, previewErr, saveErrors, checklist }}
+          readOnly={isMobile}
+        />
+      )}
 
-      <PreviewModal open={previewOpen} onClose={() => setPreviewOpen(false)} preview={preview} previewErr={previewErr} />
+      <PreviewModal open={previewOpen} onClose={() => setPreviewOpen(false)} preview={preview} previewErr={previewErr} previewInput={previewInput} />
     </div>
   );
 };
@@ -294,6 +368,23 @@ const ToolbarIcon: React.FC<{ title: string; disabled?: boolean; onClick: () => 
     {children}
   </button>
 );
+
+/** buildBodyJson maps store state to the wire BlockDocument (empty style values
+ *  are omitted so untouched docs stay byte-identical). */
+function buildBodyJson(blocks: Block[], bodyBg: string, styles: DocStyles): BlockDocument {
+  const footer = styles.footerBg || styles.footerColor || styles.footerText?.trim()
+    ? { bg: styles.footerBg || undefined, color: styles.footerColor || undefined, text: styles.footerText || undefined }
+    : undefined;
+  return {
+    blocks,
+    body_bg: bodyBg || undefined,
+    width: styles.width || undefined,
+    font_family: styles.fontFamily && styles.fontFamily !== 'arial' ? styles.fontFamily : undefined,
+    text_color: styles.textColor || undefined,
+    link_color: styles.linkColor || undefined,
+    footer,
+  };
+}
 
 // ok: true = satisfied, false = failing, 'pending' = unknown until a preview lands.
 function buildChecklist(

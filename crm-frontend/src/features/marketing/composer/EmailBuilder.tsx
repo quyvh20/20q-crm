@@ -17,7 +17,7 @@ import {
 } from '@dnd-kit/core';
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import {
-  Columns2, GripVertical, Heading, Image as ImageIcon, LayoutTemplate, Minus, MousePointerClick, MoveVertical, Type,
+  CodeXml, Columns2, GripVertical, Heading, Image as ImageIcon, LayoutTemplate, Minus, MousePointerClick, MoveVertical, Type,
 } from 'lucide-react';
 import { makeBlock, type BlockType } from './blocks';
 import { canPlaceIn, findBlock, LAYOUT_PRESETS, moveTo, type BlockAddress } from './blockUtils';
@@ -28,7 +28,7 @@ import { InspectorPanel, type InspectorMeta } from './InspectorPanel';
 import type { VariableGroup } from './mergeScope';
 
 export const PALETTE_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
-  Type, Heading, MousePointerClick, Image: ImageIcon, Columns2, Minus, MoveVertical,
+  Type, Heading, MousePointerClick, Image: ImageIcon, Columns2, Minus, MoveVertical, CodeXml,
 };
 
 type ActiveDrag =

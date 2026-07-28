@@ -67,7 +67,42 @@ const (
 	BlockDivider = "divider"
 	BlockSpacer  = "spacer"
 	BlockColumns = "columns"
+	// BlockHTML is an author-supplied raw HTML snippet (Klaviyo-style custom
+	// block). Content rides in Text; it is sanitized with the WIDE email policy
+	// (tables/inline styles kept, scripts and structural MJML stripped) and
+	// emitted through mj-raw.
+	BlockHTML = "html"
+	// BlockSocial renders mj-social icon links (network names gated to MJML's
+	// built-in icon set). BlockVideo is the email-safe video pattern: thumbnail
+	// image + watch button, both linking to Href. BlockQuote is a styled
+	// testimonial (Text = rich HTML, Label = attribution). BlockMenu is a
+	// horizontal nav of Items links.
+	BlockSocial = "social"
+	BlockVideo  = "video"
+	BlockQuote  = "quote"
+	BlockMenu   = "menu"
 )
+
+// SocialLink is one mj-social entry. Network must be in socialNetworks.
+type SocialLink struct {
+	Network string `json:"network"`
+	Href    string `json:"href"`
+}
+
+// LinkItem is one menu entry.
+type LinkItem struct {
+	Label string `json:"label"`
+	Href  string `json:"href"`
+}
+
+// FooterStyle customizes the always-present compliance footer. The unsubscribe
+// link and postal address ALWAYS render (CAN-SPAM/GDPR — the compile sentinel
+// enforces it); authors control the look and can add their own text above.
+type FooterStyle struct {
+	Bg    string `json:"bg,omitempty"`    // footer section background (#hex)
+	Color string `json:"color,omitempty"` // footer text color (#hex)
+	Text  string `json:"text,omitempty"`  // optional HTML shown above the compliance lines
+}
 
 // Block is one node in the document. Text-bearing blocks (text/heading) carry HTML
 // authored via the reused TipTap surface, embedding {{merge}} tokens. Other blocks
@@ -75,14 +110,35 @@ const (
 type Block struct {
 	ID    string  `json:"id"`
 	Type  string  `json:"type"`
-	Text  string  `json:"text,omitempty"`  // text/heading: serialized HTML w/ {{}} tokens
+	Text  string  `json:"text,omitempty"`  // text/heading/quote: serialized HTML w/ {{}} tokens; html: raw snippet
 	Level int     `json:"level,omitempty"` // heading: 1-3
-	Align string  `json:"align,omitempty"` // left|center|right
-	Label string  `json:"label,omitempty"` // button label
-	Href  string  `json:"href,omitempty"`  // button/image link
-	Src   string  `json:"src,omitempty"`   // image src
+	Align string  `json:"align,omitempty"` // left|center|right (text/heading/button/image/social)
+	Label string  `json:"label,omitempty"` // button label; video watch-button label; quote attribution
+	Href  string  `json:"href,omitempty"`  // button/image/video link
+	Src   string  `json:"src,omitempty"`   // image/video-thumbnail src
 	Alt   string  `json:"alt,omitempty"`   // image alt
 	Height int    `json:"height,omitempty"` // spacer px
+	Bg    string  `json:"bg,omitempty"`    // root blocks: section background (#hex)
+
+	// Per-block styling (all optional; zero value = compiler default):
+	Color     string `json:"color,omitempty"`     // text/heading text; divider line; quote accent (#hex)
+	Size      int    `json:"size,omitempty"`      // text/heading font px; social icon px
+	Thickness int    `json:"thickness,omitempty"` // divider px
+	Radius    int    `json:"radius,omitempty"`    // button/image border-radius px
+	WidthPx   int    `json:"width_px,omitempty"`  // image width px
+	PadY      *int   `json:"pad_y,omitempty"`     // section vertical padding override (0 allowed — pointer keeps 0 distinct from unset)
+	BtnBg     string `json:"btn_bg,omitempty"`    // button background (#hex)
+	BtnColor  string `json:"btn_color,omitempty"` // button text color (#hex)
+
+	// Device visibility (Brevo-style "Content visibility"). Implemented with
+	// media-query classes: clients without media-query support (old Outlook)
+	// show everything — the industry-standard caveat.
+	HideMobile  bool `json:"hide_mobile,omitempty"`
+	HideDesktop bool `json:"hide_desktop,omitempty"`
+
+	Social []SocialLink `json:"social,omitempty"` // social block entries
+	Items  []LinkItem   `json:"items,omitempty"`  // menu block entries
+
 	// Columns: each entry is one column's ordered sub-blocks (1 level deep only).
 	Columns [][]Block `json:"columns,omitempty"`
 }
@@ -90,4 +146,13 @@ type Block struct {
 // BlockDocument is the persisted body_json shape.
 type BlockDocument struct {
 	Blocks []Block `json:"blocks"`
+	// BodyBg colors the mj-body (the full-width backdrop AND, since sections
+	// default transparent, the content area behind unset-bg blocks).
+	BodyBg string `json:"body_bg,omitempty"`
+	// Global email styles (Klaviyo-style "Styles" panel).
+	Width      int          `json:"width,omitempty"`       // content width px (480-800; default 600)
+	FontFamily string       `json:"font_family,omitempty"` // key into fontStacks (allowlisted)
+	TextColor  string       `json:"text_color,omitempty"`  // default mj-text color (#hex)
+	LinkColor  string       `json:"link_color,omitempty"`  // <a> color (#hex)
+	Footer     *FooterStyle `json:"footer,omitempty"`      // compliance-footer styling
 }

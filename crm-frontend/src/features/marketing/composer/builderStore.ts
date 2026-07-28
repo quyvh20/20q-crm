@@ -24,12 +24,26 @@ const COALESCE_MS = 900;
 
 export const DEFAULT_SCOPE = ['contact', 'org', 'campaign'];
 
+/** DocStyles are the document-level "Styles" panel values (all optional; wire
+ *  keys live on BlockDocument). */
+export interface DocStyles {
+  width?: number;
+  fontFamily?: string;
+  textColor?: string;
+  linkColor?: string;
+  footerBg?: string;
+  footerColor?: string;
+  footerText?: string;
+}
+
 export interface BuilderSeed {
   name: string;
   subject: string;
   preheader: string;
   scope: string[];
   blocks: Block[];
+  bodyBg?: string;
+  styles?: DocStyles;
 }
 
 interface BuilderState {
@@ -38,6 +52,8 @@ interface BuilderState {
   preheader: string;
   scope: string[];
   blocks: Block[];
+  bodyBg: string;
+  styles: DocStyles;
   selectedId: string | null;
   dirty: boolean;
 
@@ -53,6 +69,9 @@ interface BuilderState {
   setName: (v: string) => void;
   setSubject: (v: string) => void;
   setPreheader: (v: string) => void;
+  setBodyBg: (v: string) => void;
+  patchStyles: (p: Partial<DocStyles>) => void;
+  convertToHtml: (html: string) => void;
   toggleScope: (root: string) => void;
 
   select: (id: string | null) => void;
@@ -79,6 +98,8 @@ const initial = () => ({
   preheader: '',
   scope: [...DEFAULT_SCOPE],
   blocks: [makeBlock('text')],
+  bodyBg: '',
+  styles: {} as DocStyles,
   selectedId: null as string | null,
   dirty: false,
   past: [] as Block[][],
@@ -127,6 +148,8 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
         preheader: seed.preheader,
         scope: seed.scope.length ? seed.scope : [...DEFAULT_SCOPE],
         blocks: seed.blocks.length ? seed.blocks : [makeBlock('text')],
+        bodyBg: seed.bodyBg ?? '',
+        styles: seed.styles ?? {},
       }),
 
     reset: () => set(initial()),
@@ -135,6 +158,16 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
     setName: (v) => set({ name: v, dirty: true }),
     setSubject: (v) => set({ subject: v, dirty: true }),
     setPreheader: (v) => set({ preheader: v, dirty: true }),
+    setBodyBg: (v) => set({ bodyBg: v, dirty: true }),
+    patchStyles: (p) => set((s) => ({ styles: { ...s.styles, ...p }, dirty: true })),
+
+    // Code view's one-way conversion: the whole design becomes a single
+    // editable html block. One history entry — undo restores the blocks.
+    convertToHtml: (html) => {
+      pushHistory();
+      const blk: Block = { ...makeBlock('html'), text: html };
+      applyBlocks([blk], { selectedId: blk.id });
+    },
     toggleScope: (root) =>
       set((s) => ({
         scope: s.scope.includes(root) ? s.scope.filter((r) => r !== root) : [...s.scope, root],

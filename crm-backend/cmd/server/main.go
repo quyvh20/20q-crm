@@ -1814,6 +1814,20 @@ func main() {
 				ON marketing_sequence_enrollments(org_id, sequence_workflow_id, segment_id) WHERE status = 'active'`},
 			{"sequence_enrollments feeder index", `CREATE INDEX IF NOT EXISTS idx_seq_enroll_active
 				ON marketing_sequence_enrollments(status, updated_at) WHERE status = 'active'`},
+			// Image library for the email builder (bytes in Postgres — the public
+			// serve route feeds recipients' mail clients, so no local-disk storage).
+			{"marketing_assets", `CREATE TABLE IF NOT EXISTS marketing_assets (
+				id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+				org_id       UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+				filename     VARCHAR(255) NOT NULL,
+				content_type VARCHAR(100) NOT NULL,
+				size_bytes   INT NOT NULL,
+				data         BYTEA NOT NULL,
+				created_by   UUID REFERENCES users(id) ON DELETE SET NULL,
+				created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			)`},
+			{"marketing_assets org index", `CREATE INDEX IF NOT EXISTS idx_marketing_assets_org
+				ON marketing_assets(org_id, created_at DESC)`},
 		}
 		for _, g := range marketingGuards {
 			if err := db.Exec(g.sql).Error; err != nil {
@@ -1837,6 +1851,7 @@ func main() {
 		db.Exec(`ALTER TABLE marketing_campaigns ENABLE ROW LEVEL SECURITY`)
 		db.Exec(`ALTER TABLE marketing_campaign_recipients ENABLE ROW LEVEL SECURITY`)
 		db.Exec(`ALTER TABLE marketing_sequence_enrollments ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`ALTER TABLE marketing_assets ENABLE ROW LEVEL SECURITY`)
 
 		// The suppression dedupe UNIQUE index is FUNCTIONAL: COALESCE(topic_id, zero)
 		// is load-bearing because Postgres treats NULL as DISTINCT in a unique index,
@@ -2562,10 +2577,42 @@ func main() {
 			}
 			return u.Email, nil
 		}
-		marketing.NewContentHandler(marketingRepo, marketingCompiler, marketingTestSender, callerEmail, autoLogger).RegisterRoutes(router,
+		marketingContentHandler := marketing.NewContentHandler(marketingRepo, marketingCompiler, marketingTestSender, callerEmail, autoLogger)
+		marketingContentHandler.RegisterRoutes(router,
 			integrationsProtected,
 			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
 		)
+		// Preview-as-recipient: the hydrator is the same context builder live sends
+		// use, so the preview is exactly what that contact would receive (footer
+		// unsub renders "#": no real one-click token is minted for previews).
+		if autoEngine != nil {
+			marketingContentHandler.SetRecipientPreview(
+				autoEngine.HydrateMarketingContext,
+				func(ctx context.Context, orgID uuid.UUID) (string, error) {
+					var name string
+					err := db.WithContext(ctx).Raw(`SELECT name FROM organizations WHERE id = ?`, orgID).Scan(&name).Error
+					return name, err
+				},
+				func(ctx context.Context, orgID uuid.UUID) (string, error) {
+					p, err := marketingRepo.GetProfile(ctx, orgID)
+					if err != nil || p == nil {
+						return "", err
+					}
+					return p.PhysicalPostalAddress, nil
+				},
+			)
+		}
+		// Image library (authed management + PUBLIC cached serve for recipients'
+		// mail clients — bare router, uuid-as-capability like unsubscribe tokens).
+		assetPublicBase := cfg.PublicAPIBaseURL
+		if assetPublicBase == "" {
+			assetPublicBase = cfg.FrontendURL // dev: vite proxies /api to the backend
+		}
+		marketing.NewAssetHandler(marketingRepo, assetPublicBase, autoLogger).RegisterRoutes(router,
+			integrationsProtected,
+			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
+		)
+		marketing.NewPublicAssetHandler(marketingRepo, integrationsIPLimiter).RegisterRoutes(router)
 
 		// ── Email marketing (M3: one-click unsubscribe + preference center +
 		// CAN-SPAM footer + sender profile + topics) ──────────────────────

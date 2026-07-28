@@ -34,6 +34,11 @@ export interface PreviewResult {
   validation_errors?: string[];
   warnings?: string[];
   compile_error?: string;
+  // Preview-as-recipient (contact_id was sent): html is RESOLVED for that
+  // contact, subject_resolved carries the interpolated subject.
+  subject_resolved?: string;
+  resolved_for?: string;
+  preview_contact_error?: string;
 }
 
 /** saveError is an Error carrying the backend's validation_errors for display. */
@@ -81,7 +86,7 @@ export async function removeContent(id: string): Promise<void> {
   if (!res.ok) throw apiError(res, json, 'Failed to delete content');
 }
 
-export async function previewContent(input: Omit<ContentInput, 'name'>): Promise<PreviewResult> {
+export async function previewContent(input: Omit<ContentInput, 'name'> & { contact_id?: string }): Promise<PreviewResult> {
   const res = await apiFetch('/api/marketing/content/preview', { method: 'POST', body: JSON.stringify(input) });
   const json = await parseJsonSafe(res);
   if (!res.ok) throw apiError(res, json, 'Failed to render preview');

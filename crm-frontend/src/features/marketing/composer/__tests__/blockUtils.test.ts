@@ -174,7 +174,8 @@ describe('duplicateById / cloneWithNewIds', () => {
 });
 
 describe('LAYOUT_PRESETS', () => {
-  const KNOWN = new Set(['text', 'heading', 'button', 'image', 'divider', 'spacer', 'columns']);
+  // Mirrors backend content_models.go block-type constants.
+  const KNOWN = new Set(['text', 'heading', 'button', 'image', 'divider', 'spacer', 'columns', 'html', 'social', 'video', 'quote', 'menu']);
 
   it('only emit backend-known types and column-legal interiors', () => {
     for (const preset of LAYOUT_PRESETS) {

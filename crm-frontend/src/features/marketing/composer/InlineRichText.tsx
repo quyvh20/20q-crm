@@ -19,6 +19,8 @@ interface Props {
   nested?: boolean;                 // inside a column (compiler renders 18px headings there)
   align?: 'left' | 'center' | 'right';
   readOnly?: boolean;               // mobile preview: contenteditable off
+  overrideSize?: number;            // block-level font-size override (px)
+  overrideColor?: string;           // block-level text color override (#hex)
 }
 
 /** headingSizePx mirrors compile.go: level 2→20px, 3→17px, else 24px; columns→18px. */
@@ -35,7 +37,7 @@ function headingSizePx(level: number | undefined, nested: boolean | undefined): 
  *  renders WITH the email's own typography (Arial #111827, compile.go constants)
  *  so what you type is what recipients get, and keeps state wire-format: chips
  *  serialize to bare tokens on every update, deserialize on load. */
-export const InlineRichText: React.FC<Props> = ({ html, variableGroups, onChange, active, variant, level, nested, align, readOnly }) => {
+export const InlineRichText: React.FC<Props> = ({ html, variableGroups, onChange, active, variant, level, nested, align, readOnly, overrideSize, overrideColor }) => {
   // Track the last html WE emitted so an external change (undo/redo) can be told
   // apart from the echo of our own onUpdate.
   const lastEmitted = useRef(html);
@@ -81,14 +83,15 @@ export const InlineRichText: React.FC<Props> = ({ html, variableGroups, onChange
     editor?.setEditable(!readOnly);
   }, [editor, readOnly]);
 
-  const fontSize = variant === 'heading' ? `${headingSizePx(level, nested)}px` : '15px';
+  const basePx = variant === 'heading' ? headingSizePx(level, nested) : 15;
+  const px = overrideSize && overrideSize >= 10 && overrideSize <= 60 ? overrideSize : basePx;
 
   return (
     <div className="relative">
       {active && !readOnly && editor && <FormatToolbar editor={editor} variant={variant} variableGroups={variableGroups} />}
       <div
         className={`email-rte ${variant === 'heading' ? 'email-rte-heading' : ''}`}
-        style={{ fontSize, textAlign: align ?? 'left' }}
+        style={{ fontSize: `${px}px`, textAlign: align ?? 'left', color: overrideColor || undefined }}
       >
         {editor ? <EditorContent editor={editor} /> : <div style={{ minHeight: '1.5em' }} />}
       </div>

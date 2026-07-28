@@ -26,6 +26,14 @@ type TestEmailSender interface {
 // (a test always goes to the caller, never an arbitrary address).
 type CallerEmailResolver func(ctx context.Context, orgID, userID uuid.UUID) (string, error)
 
+// RecipientHydrator builds the merge context for one contact (implemented by
+// automation.Engine.HydrateMarketingContext) so preview can render exactly what
+// a chosen recipient would receive.
+type RecipientHydrator func(ctx context.Context, orgID, contactID uuid.UUID, campaignName, orgName string, includeCompany bool) automation.EvalContext
+
+// PostalResolver returns the org's physical postal address for footer preview.
+type PostalResolver func(ctx context.Context, orgID uuid.UUID) (string, error)
+
 // ContentHandler serves the marketing campaign-content API (M6): CRUD, ad-hoc
 // preview/compile, and a test-send. Compilation (block JSON → email-safe HTML) and
 // merge-scope/fallback validation run at save; a save is BLOCKED if either fails —
@@ -35,7 +43,19 @@ type ContentHandler struct {
 	compiler     *Compiler
 	sender       TestEmailSender     // nil-tolerant: test-send 503s if unset
 	resolveEmail CallerEmailResolver // nil-tolerant
+	hydrator     RecipientHydrator   // nil-tolerant: preview-as-contact unavailable
+	orgName      OrgNameResolver     // nil-tolerant
+	postal       PostalResolver      // nil-tolerant
 	logger       *slog.Logger
+}
+
+// SetRecipientPreview wires the preview-as-contact dependencies post-construction
+// (the SetMarketingSendPreparer idiom — the hydrator lives on the automation
+// engine, which is built after the marketing handlers).
+func (h *ContentHandler) SetRecipientPreview(hydrator RecipientHydrator, orgName OrgNameResolver, postal PostalResolver) {
+	h.hydrator = hydrator
+	h.orgName = orgName
+	h.postal = postal
 }
 
 // NewContentHandler builds the handler.
@@ -75,6 +95,9 @@ type previewRequest struct {
 	Preheader  string          `json:"preheader"`
 	BodyJSON   json.RawMessage `json:"body_json"`
 	MergeScope []string        `json:"merge_scope"`
+	// ContactID (optional) renders the preview AS that recipient: merge tags
+	// resolved from their real record instead of staying literal tokens.
+	ContactID string `json:"contact_id"`
 }
 
 // List returns the org's campaign content (metadata; body included).
@@ -245,7 +268,8 @@ func (h *ContentHandler) Remove(c *gin.Context) {
 
 // Preview compiles ad-hoc body JSON (not persisted) for the live/dark-mode preview.
 func (h *ContentHandler) Preview(c *gin.Context) {
-	if _, _, ok := actorFromCtx(c); !ok {
+	orgID, _, ok := actorFromCtx(c)
+	if !ok {
 		return
 	}
 	var req previewRequest
@@ -264,14 +288,46 @@ func (h *ContentHandler) Preview(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{"compile_error": cerr.Error(), "validation_errors": verrs}})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+
+	out := gin.H{
 		"html":              res.HTML,
 		"plain_text":        res.PlainText,
 		"size_bytes":        res.SizeBytes,
 		"too_large":         res.TooLarge,
 		"validation_errors": verrs,
 		"warnings":          lintWarnings(doc, res),
-	}})
+	}
+
+	// Preview-as-recipient: hydrate the chosen contact's real merge context and
+	// resolve the compiled tokens exactly like a live send (footer unsub renders
+	// "#" — no real one-click token is minted for a preview).
+	if cid, perr := uuid.Parse(strings.TrimSpace(req.ContactID)); perr == nil && cid != uuid.Nil && h.hydrator != nil {
+		ctx := c.Request.Context()
+		orgNameStr := ""
+		if h.orgName != nil {
+			orgNameStr, _ = h.orgName(ctx, orgID)
+		}
+		postalStr := ""
+		if h.postal != nil {
+			postalStr, _ = h.postal(ctx, orgID)
+		}
+		hasCompany := false
+		for _, r := range req.MergeScope {
+			if r == ScopeCompany {
+				hasCompany = true
+			}
+		}
+		ec := h.hydrator(ctx, orgID, cid, "Preview", orgNameStr, hasCompany)
+		if ec.Contact == nil {
+			out["preview_contact_error"] = "contact not found"
+		} else {
+			out["html"] = RenderForRecipient(res.HTML, ec, FooterContext{OrgName: orgNameStr, PostalAddress: postalStr, UnsubURL: "#"})
+			out["subject_resolved"] = automation.InterpolateTemplate(req.Subject, ec)
+			out["resolved_for"] = req.ContactID
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": out})
 }
 
 // TestSend compiles the stored content, resolves merge tags (to their fallbacks —
@@ -360,6 +416,7 @@ func lintWarnings(doc BlockDocument, res CompileResult) []string {
 	var w []string
 	hasImageNoAlt := false
 	hasLink := false
+	hasRawHTML := false
 	var walk func([]Block)
 	walk = func(bs []Block) {
 		for _, b := range bs {
@@ -369,8 +426,11 @@ func lintWarnings(doc BlockDocument, res CompileResult) []string {
 			if b.Type == BlockButton && b.Href != "" {
 				hasLink = true
 			}
-			if b.Type == BlockText && strings.Contains(b.Text, "href=") {
+			if (b.Type == BlockText || b.Type == BlockHTML) && strings.Contains(b.Text, "href=") {
 				hasLink = true
+			}
+			if b.Type == BlockHTML && strings.TrimSpace(b.Text) != "" {
+				hasRawHTML = true
 			}
 			for _, col := range b.Columns {
 				walk(col)
@@ -380,6 +440,9 @@ func lintWarnings(doc BlockDocument, res CompileResult) []string {
 	walk(doc.Blocks)
 	if hasImageNoAlt {
 		w = append(w, "one or more images have no alt text (hurts accessibility and spam score)")
+	}
+	if hasRawHTML {
+		w = append(w, "contains a custom HTML block — it renders as-is, so send yourself a test before launching")
 	}
 	if !hasLink {
 		w = append(w, "no links found — most marketing emails need at least one call to action")

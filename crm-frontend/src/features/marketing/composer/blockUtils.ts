@@ -20,7 +20,7 @@ export interface FoundBlock extends BlockAddress {
 /** Block types that may live inside a column. Mirrors compile.go columnInner:
  *  spacer and columns are silently dropped there, so the builder refuses them. */
 export const COLUMN_ALLOWED: ReadonlySet<BlockType> = new Set([
-  'text', 'heading', 'button', 'image', 'divider',
+  'text', 'heading', 'button', 'image', 'divider', 'html', 'social', 'video', 'quote', 'menu',
 ]);
 
 export function canPlaceIn(parentId: string | null, type: BlockType): boolean {
@@ -214,6 +214,89 @@ export const LAYOUT_PRESETS: LayoutPreset[] = [
       text('<p>Wrap up with a single, clear next step.</p>', 'center'),
       button('Get started'),
       { id: newBlockId(), type: 'spacer', height: 24 },
+    ],
+  },
+  {
+    key: 'welcome',
+    label: 'Welcome',
+    description: 'Warm hello, what to expect, social links',
+    make: () => [
+      heading('<p>Welcome, {{contact.first_name|friend}}!</p>', 1, 'center'),
+      text('<p>Thanks for joining {{org.name}}. Here’s what you can expect from us — and where to find us.</p>', 'center'),
+      button('Explore your account'),
+      { id: newBlockId(), type: 'social', align: 'center', social: [
+        { network: 'facebook', href: '' }, { network: 'instagram', href: '' }, { network: 'linkedin', href: '' },
+      ] },
+    ],
+  },
+  {
+    key: 'newsletter',
+    label: 'Newsletter',
+    description: 'Menu, headline, two article teasers',
+    make: () => [
+      { id: newBlockId(), type: 'menu', items: [
+        { label: 'News', href: 'https://' }, { label: 'Products', href: 'https://' }, { label: 'Contact', href: 'https://' },
+      ] },
+      { id: newBlockId(), type: 'divider' },
+      heading('<p>This month at {{org.name}}</p>', 1),
+      {
+        id: newBlockId(),
+        type: 'columns',
+        columns: [
+          [image('Article one'), heading('<p>First story</p>', 3), text('<p>Two lines teasing the first story.</p>'), button('Read more')],
+          [image('Article two'), heading('<p>Second story</p>', 3), text('<p>Two lines teasing the second story.</p>'), button('Read more')],
+        ],
+      },
+    ],
+  },
+  {
+    key: 'promo',
+    label: 'Promotion',
+    description: 'Bold offer on a colored section with a big CTA',
+    make: () => [
+      {
+        id: newBlockId(), type: 'heading', level: 1, align: 'center', bg: '#0f172a', color: '#ffffff',
+        text: '<p>25% off — this week only</p>',
+      },
+      { id: newBlockId(), type: 'text', align: 'center', bg: '#0f172a', color: '#cbd5e1',
+        text: '<p>Use code <strong>SAVE25</strong> at checkout before Sunday.</p>' },
+      { id: newBlockId(), type: 'button', label: 'Shop the sale', href: 'https://', align: 'center', bg: '#0f172a', btn_bg: '#f59e0b', btn_color: '#111827', radius: 24, pad_y: 0 },
+      { id: newBlockId(), type: 'spacer', height: 24 },
+    ],
+  },
+  {
+    key: 'product',
+    label: 'Product feature',
+    description: 'Image beside copy with a buy button',
+    make: () => [
+      {
+        id: newBlockId(),
+        type: 'columns',
+        columns: [
+          [image('Product photo')],
+          [heading('<p>Meet the new one</p>', 2), text('<p>Three crisp sentences on why it matters.</p>'), button('Buy now')],
+        ],
+      },
+    ],
+  },
+  {
+    key: 'event',
+    label: 'Event / webinar',
+    description: 'Invitation with a video teaser and RSVP',
+    make: () => [
+      heading('<p>You’re invited</p>', 1, 'center'),
+      text('<p>Join us live — {{contact.first_name|friend}}, we saved you a seat.</p>', 'center'),
+      { id: newBlockId(), type: 'video', src: '', alt: 'Event teaser', href: 'https://', label: '▶ Watch the teaser' },
+      button('RSVP now'),
+    ],
+  },
+  {
+    key: 'testimonial',
+    label: 'Testimonial',
+    description: 'Customer quote with attribution and CTA',
+    make: () => [
+      { id: newBlockId(), type: 'quote', text: '<p>“Switching was the best decision we made this year.”</p>', label: 'A happy customer', color: '#2563eb' },
+      button('Read the case study'),
     ],
   },
 ];

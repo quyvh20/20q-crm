@@ -73,12 +73,22 @@ func ValidateContent(subject, preheader string, doc BlockDocument, scope []strin
 			check(field, blk.Href)
 			check(field, blk.Src)
 			check(field, blk.Alt)
+			for _, it := range blk.Items {
+				check(field, it.Label)
+				check(field, it.Href)
+			}
+			for _, s := range blk.Social {
+				check(field, s.Href)
+			}
 			for _, col := range blk.Columns {
 				walk(col)
 			}
 		}
 	}
 	walk(doc.Blocks)
+	if doc.Footer != nil {
+		check("footer", doc.Footer.Text)
+	}
 	return errs
 }
 
