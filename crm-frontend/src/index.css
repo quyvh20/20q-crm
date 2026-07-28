@@ -124,6 +124,56 @@
 .et-editor .ProseMirror a { color: hsl(var(--primary)); text-decoration: underline; }
 .et-editor .ProseMirror blockquote { border-left: 3px solid hsl(var(--border)); padding-left: 0.75rem; color: hsl(var(--muted-foreground)); }
 
+/* Drag-and-drop email builder canvas (M6.2 rebuild). The .email-canvas surface
+   deliberately uses the compiled email's literal colors/fonts (compile.go:
+   Arial, #111827, 15px/1.5, #414141 buttons) rather than app theme tokens — it
+   renders the EMAIL, which never follows the app's dark mode. */
+.email-canvas {
+  font-family: Arial, Helvetica, sans-serif;
+  color: #111827;
+}
+.email-rte { line-height: 1.5; }
+.email-rte .ProseMirror { outline: none; min-height: 1.5em; }
+.email-rte .ProseMirror:focus { outline: none; }
+/* Keep first/last paragraph margins: email clients render them (mj-text does
+   not reset <p>), so hiding them on canvas would be a WYSIWYG lie. */
+.email-rte .ProseMirror p { margin: 1em 0; }
+.email-rte .ProseMirror ul { list-style: disc; padding-left: 1.5em; margin: 1em 0; }
+.email-rte .ProseMirror ol { list-style: decimal; padding-left: 1.5em; margin: 1em 0; }
+.email-rte .ProseMirror a { color: #2563eb; text-decoration: underline; }
+.email-rte .ProseMirror blockquote { border-left: 3px solid #e5e7eb; padding-left: 0.75em; color: #6b7280; margin: 1em 0; }
+.email-rte-heading .ProseMirror { font-weight: 700; }
+
+/* mj-button's default rendering (compile.go emits attribute-less mj-button) */
+.email-button-preview {
+  display: inline-block;
+  background: #414141;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: normal;
+  line-height: 120%;
+  border-radius: 3px;
+  padding: 10px 25px;
+  cursor: default;
+  user-select: none;
+}
+
+/* Editor-only affordances inside the always-white canvas use FIXED grays —
+   theme tokens flip in dark mode and wash out on the white email surface. */
+.email-hint {
+  color: #6b7280;
+  border-color: #d1d5db;
+}
+.email-spacer-hatch {
+  background: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 6px,
+    rgba(107, 114, 128, 0.18) 6px,
+    rgba(107, 114, 128, 0.18) 7px
+  );
+}
+
 /* Inline merge-tag chip (rendered in-editor; stripped to {{path}} on save) */
 .merge-tag {
   display: inline-block;

@@ -1,65 +1,22 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useEditor, EditorContent } from '@tiptap/react';
-import StarterKit from '@tiptap/starter-kit';
-import { Bold, Italic, List, ListOrdered, Braces, Search } from 'lucide-react';
-import { MergeTag } from './mergeTag';
-import { serializeMergeTags, deserializeMergeTags } from './mergeTagHtml';
+import { Braces, Search } from 'lucide-react';
 import { isGuaranteed, type VariableGroup } from './mergeScope';
 
-interface Props {
-  initialHtml: string;                 // block text (bare {{tokens}})
-  variableGroups: VariableGroup[];     // pickable merge fields for the declared scope
-  onChange: (html: string) => void;    // emits clean {{token}} HTML on every edit
-  minHeight?: string;
-}
-
-/** RichTextEditor is the composer's text authoring surface: StarterKit formatting +
- *  the merge-tag chip node with mandatory-fallback capture. Chips round-trip via
- *  deserialize (load) / serialize (emit) of the bare {{path|fallback}} tokens. */
-export const RichTextEditor: React.FC<Props> = ({ initialHtml, variableGroups, onChange, minHeight = '6rem' }) => {
-  const editor = useEditor({
-    extensions: [StarterKit, MergeTag],
-    content: deserializeMergeTags(initialHtml || ''),
-    onUpdate: ({ editor }) => onChange(serializeMergeTags(editor.getHTML())),
-    editorProps: { attributes: { class: 'focus:outline-none', style: `min-height:${minHeight}` } },
-  });
-
-  if (!editor) {
-    return <div className="rounded-lg border border-border bg-background" style={{ minHeight }} />;
-  }
-
-  return (
-    <div className="et-editor overflow-visible rounded-lg border border-border bg-background">
-      <div className="flex items-center gap-1 border-b border-border bg-muted/40 px-2 py-1.5">
-        <TB active={editor.isActive('bold')} title="Bold" onClick={() => editor.chain().focus().toggleBold().run()}><Bold className="h-3.5 w-3.5" /></TB>
-        <TB active={editor.isActive('italic')} title="Italic" onClick={() => editor.chain().focus().toggleItalic().run()}><Italic className="h-3.5 w-3.5" /></TB>
-        <TB active={editor.isActive('bulletList')} title="Bullet list" onClick={() => editor.chain().focus().toggleBulletList().run()}><List className="h-3.5 w-3.5" /></TB>
-        <TB active={editor.isActive('orderedList')} title="Numbered list" onClick={() => editor.chain().focus().toggleOrderedList().run()}><ListOrdered className="h-3.5 w-3.5" /></TB>
-        <div className="mx-1 h-4 w-px bg-border" />
-        <MergeTagMenu variableGroups={variableGroups} onInsert={(path, fallback) => {
-          editor.chain().focus().insertContent({ type: 'mergeTag', attrs: { path, fallback } }).insertContent(' ').run();
-        }} />
-      </div>
-      <div className="px-3 py-2 text-sm">
-        <EditorContent editor={editor} />
-      </div>
-    </div>
-  );
-};
-
-const TB: React.FC<{ active: boolean; title: string; onClick: () => void; children: React.ReactNode }> = ({ active, title, onClick, children }) => (
-  <button type="button" title={title} onClick={onClick}
-    className={`flex h-7 w-7 items-center justify-center rounded transition-colors ${active ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground'}`}>
-    {children}
-  </button>
-);
-
-export const MergeTagMenu: React.FC<{ variableGroups: VariableGroup[]; onInsert: (path: string, fallback: string) => void }> = ({ variableGroups, onInsert }) => {
+/** MergeTagMenu is the two-step "insert variable" popover: a searchable grouped
+ *  field list, then a fallback capture step. A fallback is REQUIRED unless the
+ *  path is guaranteed (contact.email / org.name) — mirroring the backend's
+ *  mandatory-fallback validation — and may not contain { } or | (the
+ *  {{path|fallback}} grammar uses [^}], so those silently corrupt the token). */
+export const MergeTagMenu: React.FC<{
+  variableGroups: VariableGroup[];
+  onInsert: (path: string, fallback: string) => void;
+}> = ({ variableGroups, onInsert }) => {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [pending, setPending] = useState<{ path: string; label: string } | null>(null);
   const [fallback, setFallback] = useState('');
   const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -69,6 +26,12 @@ export const MergeTagMenu: React.FC<{ variableGroups: VariableGroup[]; onInsert:
   }, [open]);
 
   const reset = () => { setOpen(false); setSearch(''); setPending(null); setFallback(''); };
+  const escClose = (e: React.KeyboardEvent) => {
+    if (e.key !== 'Escape') return;
+    e.stopPropagation(); // don't let the page-level Escape also deselect the block
+    reset();
+    triggerRef.current?.focus();
+  };
 
   const groups = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -79,9 +42,6 @@ export const MergeTagMenu: React.FC<{ variableGroups: VariableGroup[]; onInsert:
   }, [variableGroups, search]);
 
   const guaranteed = pending ? isGuaranteed(pending.path) : false;
-  // Braces and the pipe can't appear in a fallback — the {{path|fallback}} grammar
-  // (FE + backend) uses [^}] for the fallback, so a '}' or '|' silently corrupts the
-  // token (renders literally, bypasses validation). Reject at authoring time.
   const fallbackInvalid = /[{}|]/.test(fallback);
   const canInsert = !!pending && !fallbackInvalid && (guaranteed || fallback.trim() !== '');
 
@@ -92,13 +52,14 @@ export const MergeTagMenu: React.FC<{ variableGroups: VariableGroup[]; onInsert:
   };
 
   return (
-    <div className="relative" ref={ref}>
-      <button type="button" onClick={() => (open ? reset() : setOpen(true))} title="Insert merge tag"
+    <div className="relative" ref={ref} onKeyDown={escClose}>
+      <button type="button" ref={triggerRef} onClick={() => (open ? reset() : setOpen(true))} title="Insert merge tag"
+        aria-expanded={open} aria-haspopup="dialog"
         className={`flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition-colors ${open ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground'}`}>
         <Braces className="h-3.5 w-3.5" /> Insert variable
       </button>
       {open && (
-        <div className="absolute left-0 top-full z-50 mt-1 flex max-h-80 w-72 flex-col overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl">
+        <div className="absolute right-0 top-full z-50 mt-1 flex max-h-80 w-72 flex-col overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl">
           {!pending ? (
             <>
               <div className="border-b border-border px-2 py-2">
@@ -149,4 +110,4 @@ export const MergeTagMenu: React.FC<{ variableGroups: VariableGroup[]; onInsert:
   );
 };
 
-export default RichTextEditor;
+export default MergeTagMenu;

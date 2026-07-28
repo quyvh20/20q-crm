@@ -1,14 +1,25 @@
+// The marketing email builder page (M6.2 rebuilt as a drag-and-drop editor):
+// full-height toolbar + palette / WYSIWYG canvas / inspector, document-level
+// undo/redo, and a server-compiled preview modal. The wire contract is unchanged
+// — the store's blocks ARE body_json.blocks (merge chips serialized to bare
+// {{path|fallback}} tokens on every edit) and save/preview/test-send hit the
+// same endpoints through the same React Query hooks.
+
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { AlertCircle, CheckCircle2, ArrowLeft, Send, Sun, Moon, Clock } from 'lucide-react';
+import {
+  AlertCircle, ArrowLeft, CheckCircle2, Eye, Monitor, Redo2, Send, Undo2,
+} from 'lucide-react';
 import { usePermissions } from '../../lib/auth';
 import AccessDeniedPanel from '../../components/common/AccessDeniedPanel';
-import { Button, Input, SpinnerBlock } from '@/components/ui';
-import { BlockComposer } from './composer/BlockComposer';
-import { MergeTagMenu } from './composer/RichTextEditor';
-import { token } from './composer/mergeTagHtml';
-import { variableGroupsForScope, SELECTABLE_SCOPES } from './composer/mergeScope';
-import { makeBlock, type Block } from './composer/blocks';
+import { useConfirm } from '../../components/common/ConfirmDialog';
+import { Badge, Button, SpinnerBlock } from '@/components/ui';
+import { EmailBuilder } from './composer/EmailBuilder';
+import { PreviewModal } from './composer/PreviewModal';
+import { useBuilderStore, DEFAULT_SCOPE } from './composer/builderStore';
+import type { Block } from './composer/blocks';
+import { variableGroupsForScope } from './composer/mergeScope';
+import type { Check } from './composer/InspectorPanel';
 import { useContent, useCreateContent, useUpdateContent } from './contentQueries';
 import { previewContent, testSendContent, type PreviewResult, type SaveError } from './contentApi';
 
@@ -29,34 +40,58 @@ const Editor: React.FC = () => {
   const createMut = useCreateContent();
   const updateMut = useUpdateContent();
 
-  const [name, setName] = useState('');
-  const [subject, setSubject] = useState('');
-  const [preheader, setPreheader] = useState('');
-  const [scope, setScope] = useState<string[]>(['contact', 'org', 'campaign']);
-  const [blocks, setBlocks] = useState<Block[]>([makeBlock('text')]);
+  const name = useBuilderStore((s) => s.name);
+  const subject = useBuilderStore((s) => s.subject);
+  const preheader = useBuilderStore((s) => s.preheader);
+  const scope = useBuilderStore((s) => s.scope);
+  const blocks = useBuilderStore((s) => s.blocks);
+  const dirty = useBuilderStore((s) => s.dirty);
+  const canUndo = useBuilderStore((s) => s.past.length > 0);
+  const canRedo = useBuilderStore((s) => s.future.length > 0);
+
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
   const [saveErrors, setSaveErrors] = useState<string[]>([]);
-  const [dark, setDark] = useState(false);
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [previewErr, setPreviewErr] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const { confirm, dialog } = useConfirm();
 
-  // Seed local state ONCE per id — a react-query background refetch must not clobber
-  // in-progress edits (the A5 SettingsLayout/seed-once trap).
+  // Below 768px the builder is read-only (the NextBuilder mobile pass): the
+  // canvas becomes a scrollable preview and editing chrome is hidden.
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 768);
+    check();
+    window.addEventListener('resize', check);
+    return () => window.removeEventListener('resize', check);
+  }, []);
+
+  // Seed the store ONCE per id — a react-query background refetch must not
+  // clobber in-progress edits (the A5 seed-once trap).
   const seededId = useRef<string | null>(null);
   useEffect(() => {
     if (isNew) {
-      if (seededId.current !== 'new') seededId.current = 'new';
+      if (seededId.current !== 'new') {
+        useBuilderStore.getState().hydrate({ name: '', subject: '', preheader: '', scope: [...DEFAULT_SCOPE], blocks: [] });
+        seededId.current = 'new';
+      }
       return;
     }
     if (data && seededId.current !== data.id) {
-      setName(data.name);
-      setSubject(data.subject);
-      setPreheader(data.preheader);
-      setScope(data.merge_scope?.length ? data.merge_scope : ['contact', 'org', 'campaign']);
-      setBlocks(data.body_json?.blocks?.length ? data.body_json.blocks : [makeBlock('text')]);
+      useBuilderStore.getState().hydrate({
+        name: data.name,
+        subject: data.subject,
+        preheader: data.preheader,
+        scope: data.merge_scope ?? [],
+        blocks: data.body_json?.blocks ?? [],
+      });
       seededId.current = data.id;
     }
   }, [isNew, data]);
+
+  // Leave the store clean for the next mount (a stale doc flashing on
+  // /marketing/content/new would look like data corruption).
+  useEffect(() => () => useBuilderStore.getState().reset(), []);
 
   const showToast = (msg: string, type: 'success' | 'error' = 'success') => {
     setToast({ msg, type });
@@ -65,10 +100,10 @@ const Editor: React.FC = () => {
 
   const variableGroups = useMemo(() => variableGroupsForScope(scope), [scope]);
 
-  // Debounced live preview (compiles server-side via /preview). The `cancelled`
-  // guard discards a superseded/unmounted response so an older slow compile can't
-  // overwrite a newer one (out-of-order race), and distinguishes "preview failed"
-  // from "preview says it's clean".
+  // Debounced live compile (server-side /preview): powers the Review checklist,
+  // the size badge and the preview modal. The `cancelled` guard discards a
+  // superseded/unmounted response (out-of-order race) and keeps "preview failed"
+  // distinct from "preview says it's clean".
   useEffect(() => {
     let cancelled = false;
     const t = setTimeout(() => {
@@ -79,20 +114,57 @@ const Editor: React.FC = () => {
     return () => { cancelled = true; clearTimeout(t); };
   }, [subject, preheader, blocks, scope]);
 
-  const toggleScope = (root: string) => {
-    setScope((s) => (s.includes(root) ? s.filter((r) => r !== root) : [...s, root]));
-  };
+  // Warn before discarding unsaved work.
+  useEffect(() => {
+    if (!dirty) return;
+    const h = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', h);
+    return () => window.removeEventListener('beforeunload', h);
+  }, [dirty]);
+
+  // Document-level undo/redo + Escape-deselect. Skipped while typing in inputs
+  // or TipTap (they own their local history / focus).
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (el?.closest('input, textarea, select, [contenteditable="true"]')) return;
+      const s = useBuilderStore.getState();
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        s.undo();
+      } else if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'))) {
+        e.preventDefault();
+        s.redo();
+      } else if (e.key === 'Escape') {
+        s.select(null);
+      }
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, []);
 
   const save = async () => {
     setSaveErrors([]);
-    const input = { name: name.trim(), subject, preheader, body_json: { blocks }, merge_scope: scope };
+    const s = useBuilderStore.getState();
+    const input = {
+      name: s.name.trim(),
+      subject: s.subject,
+      preheader: s.preheader,
+      body_json: { blocks: s.blocks },
+      merge_scope: s.scope,
+    };
     try {
       if (isNew) {
         const created = await createMut.mutateAsync(input);
+        // Claim the new id BEFORE navigating so the seed effect doesn't re-hydrate
+        // over live state when the detail query lands.
+        seededId.current = created.id;
+        s.markSaved();
         showToast('Content created');
         navigate(`/marketing/content/${created.id}`, { replace: true });
       } else {
         await updateMut.mutateAsync({ id: id as string, input });
+        s.markSaved();
         showToast('Saved');
       }
     } catch (e) {
@@ -116,129 +188,124 @@ const Editor: React.FC = () => {
 
   const busy = createMut.isPending || updateMut.isPending;
   const previewReady = preview !== null && !previewErr;
-  const checklist = buildChecklist(name, subject, preview, previewReady, saveErrors);
+  const checklist = buildChecklist(name, subject, blocks, preview, previewReady, saveErrors);
+  const store = useBuilderStore.getState();
+
+  const goBack = async () => {
+    // beforeunload only guards hard unloads — cover the in-app back path too.
+    if (dirty) {
+      const ok = await confirm({
+        title: 'Discard unsaved changes?',
+        body: 'This email has unsaved changes. Leaving now discards them.',
+        confirmLabel: 'Discard changes',
+        tone: 'danger',
+      });
+      if (!ok) return;
+    }
+    navigate('/marketing/content');
+  };
 
   return (
-    <div className="mx-auto w-full max-w-6xl">
+    <div className="-m-6 flex h-[calc(100%+3rem)] min-h-0 flex-col bg-background">
+      {dialog}
       {toast && (
-        <div className="fixed right-4 top-4 z-50 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm font-medium text-foreground shadow-lg">
+        <div
+          role={toast.type === 'error' ? 'alert' : 'status'}
+          className="fixed right-4 top-4 z-50 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm font-medium text-foreground shadow-lg"
+        >
           {toast.type === 'error' ? <AlertCircle className="h-4 w-4 text-destructive" /> : <CheckCircle2 className="h-4 w-4 text-primary" />}
           {toast.msg}
         </div>
       )}
 
-      <button onClick={() => navigate('/marketing/content')} className="mb-4 -ml-1 flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-        <ArrowLeft className="h-4 w-4" /> Back to content
-      </button>
+      {/* Toolbar */}
+      <div className="flex items-center gap-2 border-b border-border bg-card px-3 py-2">
+        <button
+          type="button"
+          onClick={goBack}
+          className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          <ArrowLeft className="h-4 w-4" /> Content
+        </button>
+        <div className="h-5 w-px bg-border" />
+        <input
+          value={name}
+          onChange={(e) => store.setName(e.target.value)}
+          placeholder="Untitled email"
+          aria-label="Content name"
+          maxLength={160}
+          disabled={isMobile}
+          className="min-w-0 flex-1 rounded-lg border border-transparent bg-transparent px-2 py-1.5 text-sm font-semibold text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+        />
+        {dirty && <Badge variant="warning">Unsaved</Badge>}
 
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Untitled campaign content" className="max-w-sm text-lg font-semibold" aria-label="Content name" />
-        <div className="flex items-center gap-2">
-          {!isNew && <Button variant="outline" onClick={testSend}><Send className="h-4 w-4" /> Send test</Button>}
-          <Button onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save'}</Button>
-        </div>
+        {!isMobile && (
+          <>
+            <div className="flex items-center gap-0.5">
+              <ToolbarIcon title="Undo (Ctrl+Z)" disabled={!canUndo} onClick={() => store.undo()}><Undo2 className="h-4 w-4" /></ToolbarIcon>
+              <ToolbarIcon title="Redo (Ctrl+Shift+Z)" disabled={!canRedo} onClick={() => store.redo()}><Redo2 className="h-4 w-4" /></ToolbarIcon>
+            </div>
+            <div className="h-5 w-px bg-border" />
+            {preview?.size_bytes != null && (
+              <span className={`hidden text-[11px] lg:inline ${preview.too_large ? 'font-medium text-destructive' : 'text-muted-foreground'}`}>
+                {Math.round(preview.size_bytes / 1024)} KB
+              </span>
+            )}
+            <Button variant="outline" size="sm" onClick={() => setPreviewOpen(true)}>
+              <Eye className="h-4 w-4" /> Preview
+            </Button>
+            {!isNew && (
+              <Button variant="outline" size="sm" onClick={testSend} title="Sends the last saved version to your own email">
+                <Send className="h-4 w-4" /> Send test
+              </Button>
+            )}
+            <Button size="sm" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save'}</Button>
+          </>
+        )}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        {/* Left: authoring */}
-        <div className="space-y-4">
-          <div>
-            <label className="mb-1 flex items-center justify-between text-xs font-medium text-muted-foreground">
-              Subject line
-              <MergeTagMenu variableGroups={variableGroups} onInsert={(p, f) => setSubject((s) => s + token(p, f))} />
-            </label>
-            <Input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Your subject…" />
-          </div>
-          <div>
-            <label className="mb-1 flex items-center justify-between text-xs font-medium text-muted-foreground">
-              Preheader <span className="font-normal">(inbox preview text)</span>
-              <MergeTagMenu variableGroups={variableGroups} onInsert={(p, f) => setPreheader((s) => s + token(p, f))} />
-            </label>
-            <Input value={preheader} onChange={(e) => setPreheader(e.target.value)} placeholder="Short summary shown in the inbox…" />
-          </div>
-
-          <div>
-            <p className="mb-1 text-xs font-medium text-muted-foreground">Merge scope</p>
-            <div className="flex flex-wrap gap-3">
-              {SELECTABLE_SCOPES.map((s) => (
-                <label key={s.root} className="flex items-center gap-1.5 text-sm text-foreground">
-                  <input type="checkbox" checked={scope.includes(s.root)} disabled={s.fixed} onChange={() => toggleScope(s.root)} />
-                  {s.label}
-                </label>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <p className="mb-2 text-xs font-medium text-muted-foreground">Content blocks</p>
-            <BlockComposer blocks={blocks} variableGroups={variableGroups} onChange={setBlocks} />
-          </div>
+      {isMobile && (
+        <div className="flex items-center gap-2 border-b border-border bg-amber-500/10 px-4 py-2 text-xs text-amber-700 dark:text-amber-400">
+          <Monitor className="h-3.5 w-3.5 shrink-0" />
+          The email builder needs a wider screen — this is a read-only preview.
         </div>
+      )}
 
-        {/* Right: preview + checklist */}
-        <div className="space-y-4 lg:sticky lg:top-4 lg:self-start">
-          <div className="rounded-xl border border-border bg-card">
-            <div className="flex items-center justify-between border-b border-border px-3 py-2">
-              <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Preview</span>
-              <div className="flex items-center gap-2">
-                {preview?.size_bytes != null && (
-                  <span className={`text-[11px] ${preview.too_large ? 'text-destructive' : 'text-muted-foreground'}`}>
-                    {Math.round(preview.size_bytes / 1024)} KB{preview.too_large ? ' (over 100KB!)' : ''}
-                  </span>
-                )}
-                <button onClick={() => setDark((d) => !d)} title="Toggle dark preview" className="rounded p-1 text-muted-foreground hover:text-foreground">
-                  {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-                </button>
-              </div>
-            </div>
-            {preview?.compile_error ? (
-              <div className="p-4 text-sm text-destructive">Couldn’t compile: {preview.compile_error}</div>
-            ) : previewErr ? (
-              <div className="p-4 text-sm text-muted-foreground">Preview unavailable — couldn’t reach the compiler. It’ll refresh on your next edit.</div>
-            ) : (
-              <iframe
-                title="Email preview"
-                // sandbox="" = opaque origin, no scripts/forms/same-origin. Static
-                // email HTML (tables, inline CSS, images) still renders; any script that
-                // somehow reached the compiled output cannot execute or touch the app.
-                sandbox=""
-                className="h-[32rem] w-full rounded-b-xl"
-                style={{ background: dark ? '#0b0b0c' : '#ffffff' }}
-                srcDoc={dark ? `<div style="background:#0b0b0c;padding:12px">${preview?.html ?? ''}</div>` : (preview?.html ?? '')}
-              />
-            )}
-          </div>
+      <EmailBuilder
+        variableGroups={variableGroups}
+        inspector={{ preview, previewErr, saveErrors, checklist }}
+        readOnly={isMobile}
+      />
 
-          <div className="rounded-xl border border-border bg-card p-3">
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Pre-send checklist</p>
-            <ul className="space-y-1.5 text-sm">
-              {checklist.map((c, i) => (
-                <li key={i} className={`flex items-start gap-2 ${c.ok === true ? 'text-foreground' : c.ok === 'pending' ? 'text-muted-foreground' : 'text-amber-600 dark:text-amber-400'}`}>
-                  {c.ok === true ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
-                    : c.ok === 'pending' ? <Clock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-                    : <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />}
-                  <span>{c.label}</span>
-                </li>
-              ))}
-            </ul>
-            {saveErrors.length > 0 && (
-              <div className="mt-3 rounded-lg border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
-                <p className="mb-1 font-medium">Merge-tag problems (blocking save):</p>
-                <ul className="list-inside list-disc space-y-0.5">{saveErrors.map((e, i) => <li key={i}>{e}</li>)}</ul>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
+      <PreviewModal open={previewOpen} onClose={() => setPreviewOpen(false)} preview={preview} previewErr={previewErr} />
     </div>
   );
 };
 
+const ToolbarIcon: React.FC<{ title: string; disabled?: boolean; onClick: () => void; children: React.ReactNode }> = ({ title, disabled, onClick, children }) => (
+  <button
+    type="button"
+    title={title}
+    aria-label={title}
+    disabled={disabled}
+    onClick={onClick}
+    className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent"
+  >
+    {children}
+  </button>
+);
+
 // ok: true = satisfied, false = failing, 'pending' = unknown until a preview lands.
-interface Check { label: string; ok: boolean | 'pending' }
-function buildChecklist(name: string, subject: string, preview: PreviewResult | null, previewReady: boolean, saveErrors: string[]): Check[] {
-  // Preview-derived rows are 'pending' until a successful compile — never green on a
-  // null/failed preview (which would be a false all-clear).
+function buildChecklist(
+  name: string,
+  subject: string,
+  blocks: Block[],
+  preview: PreviewResult | null,
+  previewReady: boolean,
+  saveErrors: string[],
+): Check[] {
+  // Preview-derived rows are 'pending' until a successful compile — never green on
+  // a null/failed preview (which would be a false all-clear).
   const pv = (cond: boolean): boolean | 'pending' => (previewReady ? cond : 'pending');
   const out: Check[] = [
     { label: 'Content has a name', ok: name.trim() !== '' },
@@ -247,6 +314,13 @@ function buildChecklist(name: string, subject: string, preview: PreviewResult | 
     { label: 'Compiled email is under 100KB', ok: pv(!preview?.too_large) },
     { label: 'Content compiles', ok: pv(!preview?.compile_error) },
   ];
+  // A seeded button ships href 'https://' — the backend lint counts any non-empty
+  // href as "has a link", so catch the dead placeholder client-side.
+  const buttons = blocks.flatMap((b) => (b.type === 'button' ? [b] : (b.columns ?? []).flat().filter((s) => s.type === 'button')));
+  if (buttons.length > 0) {
+    const ok = buttons.every((b) => { const h = (b.href ?? '').trim(); return h !== '' && h !== 'https://'; });
+    out.push({ label: 'Every button has a real link', ok });
+  }
   for (const w of preview?.warnings ?? []) out.push({ label: w, ok: false });
   return out;
 }
