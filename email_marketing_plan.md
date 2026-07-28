@@ -1,6 +1,6 @@
 # Email Marketing — Phased Plan
 
-> **Status:** Planning. **Deploy rule (load-bearing, not defensive):** Resend is the only sender — reuse `pkg/mailer/resend_mailer.go` (transactional) and `internal/automation/executor_email.go` (`send_email`), never a second provider. `golang-migrate` is dead on prod (dirty at v2; numbered `migrations/*.sql` do **not** run), so **every new non-automation table or column is created by an idempotent `CREATE TABLE/ALTER … IF NOT EXISTS` boot guard in `cmd/server/main.go`**, gets an explicit `ENABLE ROW LEVEL SECURITY` line + an entry in the pg_class RLS sweep (never `FORCE`), and keeps a mirrored dev-only `migrations/*.sql`. Every unique index uses the probe-and-refuse ritual; every non-zero-default column carries a DDL `DEFAULT` (GORM omits zero-values on insert).
+> **Status:** ✅ **SHIPPED — M1–M9 all built, reviewed, and deployed to production** (`main` @ `d222109`). Per-phase as-built details live in the `email-marketing-m1`…`m9` memory notes. Live marketing send stays gated on the B3 DKIM test (code deploys dormant). **Deploy rule (load-bearing, not defensive):** Resend is the only sender — reuse `pkg/mailer/resend_mailer.go` (transactional) and `internal/automation/executor_email.go` (`send_email`), never a second provider. `golang-migrate` is dead on prod (dirty at v2; numbered `migrations/*.sql` do **not** run), so **every new non-automation table or column is created by an idempotent `CREATE TABLE/ALTER … IF NOT EXISTS` boot guard in `cmd/server/main.go`**, gets an explicit `ENABLE ROW LEVEL SECURITY` line + an entry in the pg_class RLS sweep (never `FORCE`), and keeps a mirrored dev-only `migrations/*.sql`. Every unique index uses the probe-and-refuse ritual; every non-zero-default column carries a DDL `DEFAULT` (GORM omits zero-values on insert).
 >
 > **Every file path and line number cited below is a research pointer, not a guarantee — re-grep and confirm each one at implementation time.** Several cited line numbers are known to have drifted (e.g. `normalizeEmail` is at `ingest.go:720`, not `:712`; automation's `RegisterRoutes` signature is around `handlers.go:152-155`, not `:104-109`). The *substance* of each reference has been checked; the coordinates have not.
 >
@@ -73,7 +73,7 @@ These must exist **before the first bulk send merges** (they land in M1–M4, ah
 | **M6** | Email-safe content editor: block model → compile-to-email, preheader, merge fallbacks | Backend + composer | M3, **B2**, **B4** |
 | **M7** | **Bulk send engine**: snapshot roster + throttled lane, every gate enforced | Backend + campaign UI | **M1, M2, M3, M4, M5, M6, B1, B3** |
 | **M8** | Drip sequences over the automation engine + in-executor suppression | Backend + React Flow reuse | M1, M2, M3, M4, M5, M6 |
-| **M9** | Campaign analytics + A/B testing (MPP-aware) | Backend + dashboards | M4, M7 |
+| **M9** ✅ | Campaign analytics + A/B testing (MPP-aware) — **SHIPPED** | Backend + dashboards | M4, M7 |
 
 > **B4 — Merge-context scope (gates M6/M7).** Pin per-campaign hydration scope (contact-only vs an explicitly declared deal/company/custom-object context) **before M6's composer and M7's per-recipient hydration are built**, or the hydration path reworks and subjects/bodies render blank tokens at scale. Sequenced as an M5/M6 precondition.
 
@@ -390,6 +390,8 @@ Multi-step time-based nurture genuinely needs durable inter-step delays — the 
 ---
 
 ## M9 — Campaign analytics + A/B testing
+
+> ✅ **DONE — shipped to `main` (`3a4ef02` analytics + attribution, `09d939b` open/click tracking, `d222109` subject-line A/B) + deployed.** Attribution is via a Resend **tags round-trip** (campaign_id/contact_id → webhook `data.tags` → `event.campaign_id`) — the `marketing_campaign_recipients.variant` column drove A/B. Delivered **subject-line A/B** (hold via `scheduled_for` far-future, a decider ticker with a 2-proportion z-test at 95%, atomic mark+release); **content-variant A/B + preheader variants are deferred** (the variant model generalizes). Open/click tracking is enabled on the Resend domain via the Domains API but only *activates* once the Tracking CNAME is published. Adversarial review caught two real defects (A/B config dropped by the DTO; non-atomic winner release) — both fixed. As-built details: the `email-marketing-m9` memory note.
 
 ### Problem
 The M4 event ledger has no metrics layer, and there's no A/B testing. Apple MPP preloads every tracking pixel on delivery, inflating opens ~4pp and corrupting CTOR / send-time / winner selection.
