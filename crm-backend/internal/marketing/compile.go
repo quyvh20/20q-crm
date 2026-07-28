@@ -234,7 +234,15 @@ func buildMJML(doc BlockDocument, preheader string) string {
 	if doc.Width >= 480 && doc.Width <= 800 {
 		width = doc.Width
 	}
-	b.WriteString("</mj-head><mj-body" + bgAttr(doc.BodyBg) + fmt.Sprintf(` width="%dpx"`, width) + ">")
+	// ALWAYS emit an explicit body background. Without one, clients (and the
+	// editor preview) that honor the color-scheme metas paint their own dark
+	// canvas behind our fixed #111827 text — unreadable. Explicit color keeps
+	// the design's ground truth in both schemes.
+	bodyBg := "#ffffff"
+	if hexColorRe.MatchString(doc.BodyBg) {
+		bodyBg = doc.BodyBg
+	}
+	b.WriteString(fmt.Sprintf(`</mj-head><mj-body background-color=%q width="%dpx">`, bodyBg, width))
 	for _, blk := range doc.Blocks {
 		b.WriteString(compileBlock(blk, 0))
 	}

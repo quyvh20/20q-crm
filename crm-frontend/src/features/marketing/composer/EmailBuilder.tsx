@@ -17,7 +17,8 @@ import {
 } from '@dnd-kit/core';
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import {
-  CodeXml, Columns2, GripVertical, Heading, Image as ImageIcon, LayoutTemplate, Minus, MousePointerClick, MoveVertical, Type,
+  CirclePlay, CodeXml, Columns2, GripVertical, Heading, Image as ImageIcon, LayoutTemplate,
+  Menu as MenuIcon, Minus, MousePointerClick, MoveVertical, Quote as QuoteIcon, Share2, Type,
 } from 'lucide-react';
 import { makeBlock, type BlockType } from './blocks';
 import { canPlaceIn, findBlock, LAYOUT_PRESETS, moveTo, type BlockAddress } from './blockUtils';
@@ -27,8 +28,11 @@ import { BuilderCanvas } from './BuilderCanvas';
 import { InspectorPanel, type InspectorMeta } from './InspectorPanel';
 import type { VariableGroup } from './mergeScope';
 
+// Keys MUST cover every PALETTE entry's icon name — the ?? Type fallback
+// otherwise renders look-alike "T" tiles (the round-2 regression).
 export const PALETTE_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   Type, Heading, MousePointerClick, Image: ImageIcon, Columns2, Minus, MoveVertical, CodeXml,
+  Share2, CirclePlay, Quote: QuoteIcon, Menu: MenuIcon,
 };
 
 type ActiveDrag =

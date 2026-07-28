@@ -298,34 +298,36 @@ func (h *ContentHandler) Preview(c *gin.Context) {
 		"warnings":          lintWarnings(doc, res),
 	}
 
-	// Preview-as-recipient: hydrate the chosen contact's real merge context and
-	// resolve the compiled tokens exactly like a live send (footer unsub renders
-	// "#" — no real one-click token is minted for a preview).
+	// The preview always renders RESOLVED, like a send would: footer slots get
+	// the real org name/postal (unsub renders "#" — no one-click token is minted
+	// for previews). Without a chosen contact, tokens resolve to their fallbacks
+	// (exactly like test-send); with contact_id, to that recipient's real data.
+	ctx := c.Request.Context()
+	fc := FooterContext{UnsubURL: "#"}
+	if h.orgName != nil {
+		fc.OrgName, _ = h.orgName(ctx, orgID)
+	}
+	if h.postal != nil {
+		fc.PostalAddress, _ = h.postal(ctx, orgID)
+	}
+	resolvedCtx := automation.EvalContext{}
 	if cid, perr := uuid.Parse(strings.TrimSpace(req.ContactID)); perr == nil && cid != uuid.Nil && h.hydrator != nil {
-		ctx := c.Request.Context()
-		orgNameStr := ""
-		if h.orgName != nil {
-			orgNameStr, _ = h.orgName(ctx, orgID)
-		}
-		postalStr := ""
-		if h.postal != nil {
-			postalStr, _ = h.postal(ctx, orgID)
-		}
 		hasCompany := false
 		for _, r := range req.MergeScope {
 			if r == ScopeCompany {
 				hasCompany = true
 			}
 		}
-		ec := h.hydrator(ctx, orgID, cid, "Preview", orgNameStr, hasCompany)
+		ec := h.hydrator(ctx, orgID, cid, "Preview", fc.OrgName, hasCompany)
 		if ec.Contact == nil {
 			out["preview_contact_error"] = "contact not found"
 		} else {
-			out["html"] = RenderForRecipient(res.HTML, ec, FooterContext{OrgName: orgNameStr, PostalAddress: postalStr, UnsubURL: "#"})
+			resolvedCtx = ec
 			out["subject_resolved"] = automation.InterpolateTemplate(req.Subject, ec)
 			out["resolved_for"] = req.ContactID
 		}
 	}
+	out["html"] = RenderForRecipient(res.HTML, resolvedCtx, fc)
 
 	c.JSON(http.StatusOK, gin.H{"data": out})
 }

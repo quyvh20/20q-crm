@@ -174,7 +174,11 @@ export const PreviewModal: React.FC<Props> = ({ open, onClose, preview, previewE
             sandbox=""
             style={{ width, height: '60vh', background: dark ? '#0b0b0c' : '#ffffff' }}
             className="rounded-lg shadow-md ring-1 ring-black/5"
-            srcDoc={dark ? `<div style="background:#0b0b0c;padding:12px">${active.html}</div>` : active.html}
+            // The compiled email declares color-scheme "light dark" (for real
+            // dark-mode inboxes) — without pinning, the iframe follows the OS
+            // theme and paints a dark canvas under near-black text. The toggle
+            // switches the pinned scheme, approximating a dark-mode client.
+            srcDoc={`${active.html}<style>:root{color-scheme:${dark ? 'dark' : 'light'}}</style>`}
           />
         )}
       </div>
