@@ -26,6 +26,21 @@ export interface FooterStyle {
   text?: string; // optional HTML above the compliance lines
 }
 
+export interface BlockCondition {
+  field: string; // merge path (same catalog as merge tags)
+  op: string;    // key into COND_OPS
+  value?: string;
+}
+
+/** COND_OPS mirrors the backend condOps allowlist. */
+export const COND_OPS: { key: string; label: string; needsValue: boolean }[] = [
+  { key: 'exists', label: 'has a value', needsValue: false },
+  { key: 'not_exists', label: 'is empty', needsValue: false },
+  { key: 'eq', label: 'is', needsValue: true },
+  { key: 'neq', label: 'is not', needsValue: true },
+  { key: 'contains', label: 'contains', needsValue: true },
+];
+
 export interface Block {
   id: string;
   type: BlockType;
@@ -48,6 +63,7 @@ export interface Block {
   btn_color?: string;     // button text color (#hex)
   hide_mobile?: boolean;  // device visibility: hidden under 480px
   hide_desktop?: boolean; // device visibility: hidden at/over 480px
+  cond?: BlockCondition;  // show-only-if rule, evaluated per recipient at send (root blocks)
   social?: SocialLink[];  // social block entries
   items?: LinkItem[];     // menu block entries
   columns?: Block[][];    // columns: one sub-block list per column

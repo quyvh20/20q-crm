@@ -244,7 +244,11 @@ func buildMJML(doc BlockDocument, preheader string) string {
 	}
 	b.WriteString(fmt.Sprintf(`</mj-head><mj-body background-color=%q width="%dpx">`, bodyBg, width))
 	for _, blk := range doc.Blocks {
-		b.WriteString(compileBlock(blk, 0))
+		sec := compileBlock(blk, 0)
+		if sec != "" && ValidCondition(blk.Cond) {
+			sec = condStartMJML(blk.Cond) + sec + condEndMJML()
+		}
+		b.WriteString(sec)
 	}
 	b.WriteString(footerMJML(doc.Footer))
 	b.WriteString("</mj-body></mjml>")

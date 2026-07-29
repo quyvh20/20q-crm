@@ -95,6 +95,15 @@ type LinkItem struct {
 	Href  string `json:"href"`
 }
 
+// BlockCondition is one show-only-if rule. Field is a merge path (same catalog
+// as merge tags: contact.*, company.*, org.name, ...); Op is gated to
+// condOps at save time.
+type BlockCondition struct {
+	Field string `json:"field"`
+	Op    string `json:"op"` // exists | not_exists | eq | neq | contains
+	Value string `json:"value,omitempty"`
+}
+
 // FooterStyle customizes the always-present compliance footer. The unsubscribe
 // link and postal address ALWAYS render (CAN-SPAM/GDPR — the compile sentinel
 // enforces it); authors control the look and can add their own text above.
@@ -135,6 +144,11 @@ type Block struct {
 	// show everything — the industry-standard caveat.
 	HideMobile  bool `json:"hide_mobile,omitempty"`
 	HideDesktop bool `json:"hide_desktop,omitempty"`
+
+	// Cond shows the block only to recipients matching the rule — evaluated
+	// per recipient at RENDER time (the compiler embeds a marker; see
+	// ApplyConditions). Root blocks only.
+	Cond *BlockCondition `json:"cond,omitempty"`
 
 	Social []SocialLink `json:"social,omitempty"` // social block entries
 	Items  []LinkItem   `json:"items,omitempty"`  // menu block entries

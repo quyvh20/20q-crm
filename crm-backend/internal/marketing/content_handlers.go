@@ -311,6 +311,8 @@ func (h *ContentHandler) Preview(c *gin.Context) {
 		fc.PostalAddress, _ = h.postal(ctx, orgID)
 	}
 	resolvedCtx := automation.EvalContext{}
+	htmlForRender := res.HTML
+	viewingAsContact := false
 	if cid, perr := uuid.Parse(strings.TrimSpace(req.ContactID)); perr == nil && cid != uuid.Nil && h.hydrator != nil {
 		hasCompany := false
 		for _, r := range req.MergeScope {
@@ -323,11 +325,17 @@ func (h *ContentHandler) Preview(c *gin.Context) {
 			out["preview_contact_error"] = "contact not found"
 		} else {
 			resolvedCtx = ec
+			viewingAsContact = true
 			out["subject_resolved"] = automation.InterpolateTemplate(req.Subject, ec)
 			out["resolved_for"] = req.ContactID
 		}
 	}
-	out["html"] = RenderForRecipient(res.HTML, resolvedCtx, fc)
+	// Sample preview shows EVERY conditional block (markers stripped, content
+	// kept); view-as-contact evaluates conditions for real via RenderForRecipient.
+	if !viewingAsContact {
+		htmlForRender = StripConditionMarkers(htmlForRender)
+	}
+	out["html"] = RenderForRecipient(htmlForRender, resolvedCtx, fc)
 
 	c.JSON(http.StatusOK, gin.H{"data": out})
 }
@@ -359,10 +367,11 @@ func (h *ContentHandler) TestSend(c *gin.Context) {
 		return
 	}
 	// Empty context → every merge tag renders its fallback (proves the compile +
-	// fallback grammar end to end; real per-recipient hydration is M7).
+	// fallback grammar end to end; real per-recipient hydration is M7). A test
+	// shows every conditional block — strip the markers, keep the content.
 	var empty automation.EvalContext
 	subject := automation.InterpolateTemplate(row.Subject, empty)
-	body := automation.InterpolateTemplateHTML(row.BodyHTMLCompiled, empty)
+	body := automation.InterpolateTemplateHTML(StripConditionMarkers(row.BodyHTMLCompiled), empty)
 	if err := h.sender.SendTestEmail(c.Request.Context(), to, subject, body); err != nil {
 		h.logger.Error("marketing: content test-send failed", "error", err, "org_id", orgID.String())
 		abortErr(c, http.StatusBadGateway, "the email provider rejected the test send")

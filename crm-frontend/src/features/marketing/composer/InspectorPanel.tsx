@@ -1,9 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  AlertCircle, AlignCenter, AlignLeft, AlignRight, BookmarkPlus, CheckCircle2, Clock, Copy, Images, Monitor, MousePointerClick, Smartphone, Trash2, X,
+  AlertCircle, AlignCenter, AlignLeft, AlignRight, BookmarkPlus, CheckCircle2, Clock, Copy, Filter, Images, Monitor, MousePointerClick, Smartphone, Trash2, X,
 } from 'lucide-react';
 import { Button, Input, Select, Textarea } from '@/components/ui';
-import { FONT_OPTIONS, SOCIAL_NETWORKS, type Block, type LinkItem, type SocialLink } from './blocks';
+import { COND_OPS, FONT_OPTIONS, SOCIAL_NETWORKS, type Block, type BlockCondition, type LinkItem, type SocialLink } from './blocks';
 import { ImagePicker } from './ImagePicker';
 import Modal from '../../../components/common/Modal';
 import { useCreateSavedBlock } from '../savedBlocksQueries';
@@ -422,12 +422,74 @@ const BlockTab: React.FC<{ variableGroups: VariableGroup[] }> = ({ variableGroup
           <Field label="Vertical padding (px, blank = 20, 0 = flush)">
             <NumField value={b.pad_y} min={0} max={80} onChange={(pad_y) => patch({ pad_y })} />
           </Field>
+          <Field label="Show only if (per recipient)">
+            <ConditionEditor cond={b.cond} variableGroups={variableGroups} onChange={(cond) => patch({ cond })} />
+          </Field>
         </>
       ) : (
         <p className="text-[11px] text-muted-foreground">
           Backgrounds and padding are set on the whole columns block (select it on the canvas).
         </p>
       )}
+    </div>
+  );
+};
+
+/** ConditionEditor is the Brevo-style "show only if" rule: a merge field, an
+ *  operator, and (for comparisons) a value — evaluated per recipient at send.
+ *  The sample preview shows every conditional block; "view as contact" applies
+ *  the rules for real. */
+const ConditionEditor: React.FC<{
+  cond?: BlockCondition;
+  variableGroups: VariableGroup[];
+  onChange: (cond: BlockCondition | undefined) => void;
+}> = ({ cond, variableGroups, onChange }) => {
+  if (!cond) {
+    return (
+      <button
+        type="button"
+        onClick={() => onChange({ field: variableGroups[0]?.fields[0]?.path ?? 'contact.email', op: 'exists' })}
+        className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-border py-2 text-xs font-medium text-muted-foreground hover:border-ring hover:text-foreground"
+      >
+        <Filter className="h-3.5 w-3.5" /> Add condition
+      </button>
+    );
+  }
+  const opMeta = COND_OPS.find((o) => o.key === cond.op) ?? COND_OPS[0];
+  return (
+    <div className="space-y-1.5 rounded-lg border border-border p-2">
+      <div className="flex items-center gap-1.5">
+        <Select value={cond.field} onChange={(e) => onChange({ ...cond, field: e.target.value })} className="min-w-0 flex-1" aria-label="Condition field">
+          {variableGroups.map((g) => (
+            <optgroup key={g.key} label={g.label}>
+              {g.fields.map((f) => (
+                <option key={f.path} value={f.path}>{f.label}</option>
+              ))}
+            </optgroup>
+          ))}
+          {/* keep an out-of-catalog value (e.g. custom_fields.*) selectable */}
+          {!variableGroups.some((g) => g.fields.some((f) => f.path === cond.field)) && (
+            <option value={cond.field}>{cond.field}</option>
+          )}
+        </Select>
+        <button type="button" title="Remove condition" aria-label="Remove condition" onClick={() => onChange(undefined)}
+          className="shrink-0 rounded p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <Select value={cond.op} onChange={(e) => onChange({ ...cond, op: e.target.value })} className="w-32 shrink-0" aria-label="Condition operator">
+          {COND_OPS.map((o) => (
+            <option key={o.key} value={o.key}>{o.label}</option>
+          ))}
+        </Select>
+        {opMeta.needsValue && (
+          <Input value={cond.value ?? ''} onChange={(e) => onChange({ ...cond, value: e.target.value })} placeholder="value…" aria-label="Condition value" />
+        )}
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Recipients who don’t match skip this block. Check it with “view as contact” in the preview.
+      </p>
     </div>
   );
 };

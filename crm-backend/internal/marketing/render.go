@@ -63,6 +63,10 @@ func RenderForRecipient(compiledHTML string, ctx automation.EvalContext, fc Foot
 	extra["campaign"] = camp
 	ctx.Extra = extra
 
+	// Conditional content resolves FIRST — a dropped block's tokens never
+	// interpolate, and the markers never reach the recipient.
+	compiledHTML = ApplyConditions(compiledHTML, ctx)
+
 	// ReplaceAllStringFunc (not ReplaceAllString) so a `$` in the URL is never read as
 	// a submatch reference. The URL is HTML-escaped for the href-attribute context.
 	escaped := html.EscapeString(fc.UnsubURL)

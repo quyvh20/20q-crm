@@ -80,6 +80,21 @@ func ValidateContent(subject, preheader string, doc BlockDocument, scope []strin
 			for _, s := range blk.Social {
 				check(field, s.Href)
 			}
+			if blk.Cond != nil {
+				// The condition field is a merge path — same scope + known-leaf
+				// rules as a tag, minus the fallback requirement (a condition
+				// reading empty is a legitimate "no value" answer, not a blank
+				// render). The op must be allowlisted.
+				ref := automation.MergeRef{Path: strings.TrimSpace(blk.Cond.Field), Raw: "{{" + blk.Cond.Field + "}}", HasFallback: true}
+				if e := validateTag(ref, allowed); e != nil {
+					e.Field = field
+					e.Reason = "condition: " + e.Reason
+					errs = append(errs, *e)
+				}
+				if !condOps[blk.Cond.Op] {
+					errs = append(errs, ContentError{Field: field, Tag: blk.Cond.Op, Reason: "condition: unknown operator"})
+				}
+			}
 			for _, col := range blk.Columns {
 				walk(col)
 			}

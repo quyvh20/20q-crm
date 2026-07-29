@@ -2,7 +2,7 @@ import React, { useRef, useState } from 'react';
 import { useSortable, SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { useDroppable } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
-import { ChevronDown, ChevronUp, CirclePlay, CodeXml, Copy, GripVertical, Image as ImageIcon, Monitor, Share2, Smartphone, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronUp, CirclePlay, CodeXml, Copy, Filter, GripVertical, Image as ImageIcon, Monitor, Share2, Smartphone, Trash2 } from 'lucide-react';
 import type { Block } from './blocks';
 import { displayImageSrc } from '../assetsApi';
 import type { BlockAddress } from './blockUtils';
@@ -101,15 +101,28 @@ export const CanvasBlock: React.FC<CanvasBlockProps> = ({ block, parentId, colIn
             {block.type}
           </span>
 
-          {/* device-visibility badge — persistent so a hidden-on-X block is
-              never a surprise at send time */}
-          {block.hide_mobile !== block.hide_desktop && (
-            <span
-              title={block.hide_mobile ? 'Shown on desktop only' : 'Shown on mobile only'}
-              className="absolute left-2 bottom-1 z-20 flex items-center gap-0.5 rounded bg-card/90 px-1 py-px text-[9px] font-medium text-muted-foreground shadow-sm ring-1 ring-border"
-            >
-              {block.hide_mobile ? <Monitor className="h-2.5 w-2.5" /> : <Smartphone className="h-2.5 w-2.5" />}
-              {block.hide_mobile ? 'Desktop only' : 'Mobile only'}
+          {/* persistent targeting badges — a hidden-on-X or conditional block
+              must never be a surprise at send time */}
+          {(block.hide_mobile !== block.hide_desktop || block.cond) && (
+            <span className="absolute left-2 bottom-1 z-20 flex items-center gap-1">
+              {block.hide_mobile !== block.hide_desktop && (
+                <span
+                  title={block.hide_mobile ? 'Shown on desktop only' : 'Shown on mobile only'}
+                  className="flex items-center gap-0.5 rounded bg-card/90 px-1 py-px text-[9px] font-medium text-muted-foreground shadow-sm ring-1 ring-border"
+                >
+                  {block.hide_mobile ? <Monitor className="h-2.5 w-2.5" /> : <Smartphone className="h-2.5 w-2.5" />}
+                  {block.hide_mobile ? 'Desktop only' : 'Mobile only'}
+                </span>
+              )}
+              {block.cond && (
+                <span
+                  title={`Shown only if ${block.cond.field} ${block.cond.op}${block.cond.value ? ` "${block.cond.value}"` : ''}`}
+                  className="flex items-center gap-0.5 rounded bg-card/90 px-1 py-px text-[9px] font-medium text-muted-foreground shadow-sm ring-1 ring-border"
+                >
+                  <Filter className="h-2.5 w-2.5" />
+                  Conditional
+                </span>
+              )}
             </span>
           )}
 
