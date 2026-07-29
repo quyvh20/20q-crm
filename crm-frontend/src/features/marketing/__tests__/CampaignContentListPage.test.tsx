@@ -9,6 +9,7 @@ import { usePermissions } from '../../../lib/auth';
 vi.mock('../contentQueries', () => ({
   useContentList: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
   useRemoveContent: () => ({ mutate: vi.fn(), isPending: false }),
+  useCreateContent: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 import { useContentList } from '../contentQueries';
 
