@@ -169,13 +169,10 @@ export function makeBlock(type: BlockType): Block {
       ];
       break;
     case 'html':
-      b.text = [
-        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">',
-        '  <tr><td align="center" style="padding:16px 25px;">',
-        '    <!-- Your custom HTML -->',
-        '  </td></tr>',
-        '</table>',
-      ].join('\n');
+      // Deliberately EMPTY: the boilerplate lives as the code editor's
+      // placeholder, never as real content that ships if the author forgets
+      // to replace it. Empty html blocks compile to nothing.
+      b.text = '';
       break;
     case 'social':
       b.align = 'center';

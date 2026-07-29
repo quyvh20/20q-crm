@@ -23,6 +23,9 @@ type MarketingAsset struct {
 	ID          uuid.UUID  `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()" json:"id"`
 	OrgID       uuid.UUID  `gorm:"type:uuid;not null;index" json:"org_id"`
 	Filename    string     `gorm:"type:varchar(255);not null" json:"filename"`
+	// Folder is a flat organizational label ("" = unfiled) — same doctrine as
+	// template folders: folders exist implicitly as the distinct values.
+	Folder      string     `gorm:"type:varchar(80);not null;default:''" json:"folder"`
 	ContentType string     `gorm:"type:varchar(100);not null" json:"content_type"`
 	SizeBytes   int        `gorm:"type:int;not null" json:"size_bytes"`
 	Data        []byte     `gorm:"type:bytea;not null" json:"-"`
@@ -58,11 +61,19 @@ func (r *Repository) CreateAsset(ctx context.Context, a *MarketingAsset) error {
 func (r *Repository) ListAssetsByOrg(ctx context.Context, orgID uuid.UUID) ([]MarketingAsset, error) {
 	var rows []MarketingAsset
 	err := r.db.WithContext(ctx).
-		Select("id", "org_id", "filename", "content_type", "size_bytes", "created_by", "created_at").
+		Select("id", "org_id", "filename", "folder", "content_type", "size_bytes", "created_by", "created_at").
 		Where("org_id = ?", orgID).
 		Order("created_at DESC").
 		Find(&rows).Error
 	return rows, err
+}
+
+// UpdateAssetFolder moves an asset between folders (column-only write).
+func (r *Repository) UpdateAssetFolder(ctx context.Context, orgID, id uuid.UUID, folder string) (bool, error) {
+	res := r.db.WithContext(ctx).Model(&MarketingAsset{}).
+		Where("org_id = ? AND id = ?", orgID, id).
+		Update("folder", folder)
+	return res.RowsAffected > 0, res.Error
 }
 
 // CountAssetsByOrg supports the per-org cap.
@@ -120,6 +131,7 @@ func (h *AssetHandler) RegisterRoutes(router *gin.Engine, protected []gin.Handle
 	{
 		g.GET("", h.List)
 		g.POST("", h.Upload)
+		g.PUT("/:id/folder", h.SetFolder)
 		g.DELETE("/:id", h.Remove)
 	}
 }
@@ -133,11 +145,42 @@ func (h *AssetHandler) toJSON(a MarketingAsset) gin.H {
 	return gin.H{
 		"id":           a.ID,
 		"filename":     a.Filename,
+		"folder":       a.Folder,
 		"content_type": a.ContentType,
 		"size_bytes":   a.SizeBytes,
 		"created_at":   a.CreatedAt,
 		"url":          h.assetURL(a.ID),
 	}
+}
+
+// SetFolder moves an asset between folders.
+func (h *AssetHandler) SetFolder(c *gin.Context) {
+	orgID, _, ok := actorFromCtx(c)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		abortErr(c, http.StatusBadRequest, "invalid image id")
+		return
+	}
+	var req struct {
+		Folder string `json:"folder"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		abortErr(c, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	okUpd, err := h.repo.UpdateAssetFolder(c.Request.Context(), orgID, id, cleanFolder(req.Folder))
+	if err != nil {
+		abortErr(c, http.StatusInternalServerError, "could not move the image")
+		return
+	}
+	if !okUpd {
+		abortErr(c, http.StatusNotFound, "image not found")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"moved": true}})
 }
 
 // List returns the org's image library (newest first).
@@ -208,6 +251,7 @@ func (h *AssetHandler) Upload(c *gin.Context) {
 	a := &MarketingAsset{
 		OrgID:       orgID,
 		Filename:    name,
+		Folder:      cleanFolder(c.PostForm("folder")), // uploads land in the active folder
 		ContentType: ctype,
 		SizeBytes:   len(data),
 		Data:        data,

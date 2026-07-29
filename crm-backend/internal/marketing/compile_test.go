@@ -436,6 +436,28 @@ func TestSplitTopLevelMJML(t *testing.T) {
 	}
 }
 
+func TestCompile_EmptyHTMLBlockRendersNothing(t *testing.T) {
+	// The builder seeds html blocks EMPTY (the boilerplate is a placeholder,
+	// not content) — an untouched block must not ship an empty padded section.
+	c := NewCompiler()
+	withEmpty, err := c.Compile(context.Background(), BlockDocument{Blocks: []Block{
+		{ID: "h", Type: BlockHTML, Text: "   \n  "},
+		{ID: "cols", Type: BlockColumns, Columns: [][]Block{{{ID: "n", Type: BlockHTML, Text: ""}}, {{ID: "t", Type: BlockText, Text: "real"}}}},
+	}}, "")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	onlyReal, err := c.Compile(context.Background(), BlockDocument{Blocks: []Block{
+		{ID: "cols", Type: BlockColumns, Columns: [][]Block{{}, {{ID: "t", Type: BlockText, Text: "real"}}}},
+	}}, "")
+	if err != nil {
+		t.Fatalf("compile control: %v", err)
+	}
+	if withEmpty.HTML != onlyReal.HTML {
+		t.Fatalf("empty html blocks must compile to nothing (outputs differ)")
+	}
+}
+
 func between(s, a, b string) string {
 	i := strings.Index(s, a)
 	if i < 0 {

@@ -391,6 +391,9 @@ const BlockTab: React.FC<{ variableGroups: VariableGroup[] }> = ({ variableGroup
               spellCheck={false}
               className="font-mono text-xs leading-relaxed"
               aria-label="Custom HTML"
+              // The starter markup is a HINT, never content — an untouched html
+              // block ships nothing.
+              placeholder={'<table role="presentation" width="100%" cellpadding="0" cellspacing="0">\n  <tr><td align="center" style="padding:16px 25px;">\n    <!-- Your custom HTML -->\n  </td></tr>\n</table>'}
             />
           </div>
           <p className="text-[11px] text-muted-foreground">

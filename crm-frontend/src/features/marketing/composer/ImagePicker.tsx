@@ -1,10 +1,11 @@
-import React, { useRef, useState } from 'react';
-import { AlertCircle, ImagePlus, Loader2, Trash2 } from 'lucide-react';
+import React, { useMemo, useRef, useState } from 'react';
+import { AlertCircle, Folder, ImagePlus, Loader2, Search, Trash2 } from 'lucide-react';
 import Modal from '../../../components/common/Modal';
 import { useConfirm } from '../../../components/common/ConfirmDialog';
 import { Button, SpinnerBlock, EmptyState } from '@/components/ui';
 import { displayImageSrc } from '../assetsApi';
 import { useAssets, useRemoveAsset, useUploadAsset } from '../assetsQueries';
+import { folderIndex } from '../MediaLibraryPage';
 
 interface Props {
   open: boolean;
@@ -21,6 +22,20 @@ export const ImagePicker: React.FC<Props> = ({ open, onClose, onSelect }) => {
   const { confirm, dialog } = useConfirm();
   const fileRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [activeFolder, setActiveFolder] = useState(''); // '' = All, '~' = Unfiled
+
+  const rows = assets.data ?? [];
+  const folders = useMemo(() => folderIndex(rows), [rows]);
+  const visible = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return rows.filter((a) => {
+      const f = (a.folder ?? '').trim();
+      if (activeFolder === '~' && f !== '') return false;
+      if (activeFolder !== '' && activeFolder !== '~' && f !== activeFolder) return false;
+      return q === '' || a.filename.toLowerCase().includes(q) || f.toLowerCase().includes(q);
+    });
+  }, [rows, search, activeFolder]);
 
   const pickFile = () => fileRef.current?.click();
 
@@ -30,7 +45,8 @@ export const ImagePicker: React.FC<Props> = ({ open, onClose, onSelect }) => {
     if (!file) return;
     setError(null);
     try {
-      const created = await upload.mutateAsync(file);
+      const folder = activeFolder !== '' && activeFolder !== '~' ? activeFolder : '';
+      const created = await upload.mutateAsync({ file, folder });
       onSelect(created.url);
       onClose();
     } catch (err) {
@@ -58,13 +74,32 @@ export const ImagePicker: React.FC<Props> = ({ open, onClose, onSelect }) => {
       {dialog}
       <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp" className="hidden" onChange={onFile} aria-label="Upload image file" />
 
-      <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
-        <p className="text-xs text-muted-foreground">PNG, JPEG, GIF or WebP · up to 2 MB</p>
+      <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-2.5">
+        <div className="relative min-w-0 flex-1 max-w-52">
+          <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search images…"
+            aria-label="Search images"
+            className="w-full rounded-lg border border-border/60 bg-background py-1.5 pl-8 pr-2 text-xs text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+        </div>
         <Button size="sm" onClick={pickFile} disabled={upload.isPending}>
           {upload.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImagePlus className="h-4 w-4" />}
           Upload image
         </Button>
       </div>
+
+      {folders.named.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1 border-b border-border px-4 py-2" role="group" aria-label="Folders">
+          <PickerChip label="All" active={activeFolder === ''} onClick={() => setActiveFolder('')} />
+          {folders.unfiled > 0 && <PickerChip label="Unfiled" active={activeFolder === '~'} onClick={() => setActiveFolder('~')} />}
+          {folders.named.map(([name]) => (
+            <PickerChip key={name} label={name} active={activeFolder === name} onClick={() => setActiveFolder(name)} icon />
+          ))}
+        </div>
+      )}
 
       {error && (
         <div className="mx-4 mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -77,16 +112,18 @@ export const ImagePicker: React.FC<Props> = ({ open, onClose, onSelect }) => {
           <SpinnerBlock label="Loading images…" />
         ) : assets.isError ? (
           <p className="py-10 text-center text-sm text-destructive">Couldn’t load the image library.</p>
-        ) : (assets.data?.length ?? 0) === 0 ? (
+        ) : rows.length === 0 ? (
           <EmptyState
             icon={ImagePlus}
             title="No images yet"
             description="Upload your logo, product shots and banners once — reuse them in every email."
             action={<Button size="sm" onClick={pickFile}>Upload your first image</Button>}
           />
+        ) : visible.length === 0 ? (
+          <p className="py-8 text-center text-xs text-muted-foreground">No images match — clear the search or pick another folder.</p>
         ) : (
           <div className="grid grid-cols-3 gap-3 sm:grid-cols-4">
-            {assets.data!.map((a) => (
+            {visible.map((a) => (
               <div key={a.id} className="group relative">
                 <button
                   type="button"
@@ -116,5 +153,19 @@ export const ImagePicker: React.FC<Props> = ({ open, onClose, onSelect }) => {
     </Modal>
   );
 };
+
+const PickerChip: React.FC<{ label: string; active: boolean; onClick: () => void; icon?: boolean }> = ({ label, active, onClick, icon }) => (
+  <button
+    type="button"
+    aria-pressed={active}
+    onClick={onClick}
+    className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium transition-colors ${
+      active ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:border-ring hover:text-foreground'
+    }`}
+  >
+    {icon && <Folder className="h-2.5 w-2.5" />}
+    <span className="max-w-28 truncate">{label}</span>
+  </button>
+);
 
 export default ImagePicker;

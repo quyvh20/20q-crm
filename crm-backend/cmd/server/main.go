@@ -1843,6 +1843,8 @@ func main() {
 			// prod — this guard is the migration there).
 			{"marketing_campaign_content folder", `ALTER TABLE marketing_campaign_content
 				ADD COLUMN IF NOT EXISTS folder VARCHAR(80) NOT NULL DEFAULT ''`},
+			{"marketing_assets folder", `ALTER TABLE marketing_assets
+				ADD COLUMN IF NOT EXISTS folder VARCHAR(80) NOT NULL DEFAULT ''`},
 		}
 		for _, g := range marketingGuards {
 			if err := db.Exec(g.sql).Error; err != nil {

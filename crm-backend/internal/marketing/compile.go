@@ -273,6 +273,11 @@ func compileBlock(blk Block, depth int) string {
 		}
 		return section(fmt.Sprintf(`<mj-spacer height="%dpx" />`, h), blk)
 	case BlockHTML:
+		// An empty html block (the builder seeds them blank) renders NOTHING —
+		// not an empty padded section.
+		if strings.TrimSpace(blk.Text) == "" {
+			return ""
+		}
 		return section("<mj-raw>"+sanitizeRawHTML(blk.Text)+"</mj-raw>", blk)
 	case BlockSocial:
 		s := socialMJML(blk)
@@ -520,6 +525,9 @@ func columnInner(blk Block) string {
 	case BlockDivider:
 		return withVisClass(blk, dividerMJML(blk))
 	case BlockHTML:
+		if strings.TrimSpace(blk.Text) == "" {
+			return ""
+		}
 		return "<mj-raw>" + visWrapRaw(blk, sanitizeRawHTML(blk.Text)) + "</mj-raw>"
 	case BlockSocial:
 		return withVisClass(blk, socialMJML(blk))

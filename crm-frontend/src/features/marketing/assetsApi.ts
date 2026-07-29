@@ -6,6 +6,7 @@ import { apiFetch, parseJsonSafe, apiError, asArray } from '../../lib/api';
 export interface MarketingAsset {
   id: string;
   filename: string;
+  folder: string; // '' = unfiled
   content_type: string;
   size_bytes: number;
   created_at: string;
@@ -30,13 +31,24 @@ export async function listAssets(): Promise<MarketingAsset[]> {
   return asArray<MarketingAsset>(json.data, 'marketing assets');
 }
 
-export async function uploadAsset(file: File): Promise<MarketingAsset> {
+export async function uploadAsset(file: File, folder = ''): Promise<MarketingAsset> {
   const form = new FormData();
   form.append('file', file);
+  if (folder) form.append('folder', folder); // uploads land in the active folder
   const res = await apiFetch('/api/marketing/assets', { method: 'POST', body: form, timeoutMs: 30000 });
   const json = await parseJsonSafe(res);
   if (!res.ok) throw apiError(res, json, 'Upload failed');
   return json.data as MarketingAsset;
+}
+
+/** setAssetFolder moves an image between folders (column-only write). */
+export async function setAssetFolder(id: string, folder: string): Promise<void> {
+  const res = await apiFetch(`/api/marketing/assets/${id}/folder`, {
+    method: 'PUT',
+    body: JSON.stringify({ folder }),
+  });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Failed to move the image');
 }
 
 export async function removeAsset(id: string): Promise<void> {
