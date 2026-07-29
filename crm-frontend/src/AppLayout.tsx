@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   Menu, X, UserRound, Shield, LogOut, ListChecks, BookOpen,
   LayoutDashboard, Users, Building2, Handshake, Mic, Sparkles, Zap, BarChart3, Share2, Settings, ShieldOff, Globe, Mail, Send, Target, Megaphone, Repeat, Activity,
+  Images, Bookmark,
 } from "lucide-react";
 import { useAuth } from "./lib/auth";
 import { getThemePreference, setThemePreference, type ThemePreference } from "./lib/theme";
@@ -176,7 +177,13 @@ export default function AppLayout({ children, title }: AppLayoutProps) {
               <NavLink to="/marketing/campaigns" className={navItemClass}><Megaphone aria-hidden className={navIconClass} />Campaigns</NavLink>
               <NavLink to="/marketing/sequences" className={navItemClass}><Repeat aria-hidden className={navIconClass} />Sequences</NavLink>
               <NavLink to="/marketing/audiences" className={navItemClass}><Target aria-hidden className={navIconClass} />Audiences</NavLink>
-              <NavLink to="/marketing/content" className={navItemClass}><Mail aria-hidden className={navIconClass} />Email content</NavLink>
+
+              <p className={navSectionClass}>Content</p>
+              <NavLink to="/marketing/content" className={navItemClass}><Mail aria-hidden className={navIconClass} />Email templates</NavLink>
+              <NavLink to="/marketing/media" className={navItemClass}><Images aria-hidden className={navIconClass} />Media library</NavLink>
+              <NavLink to="/marketing/saved-blocks" className={navItemClass}><Bookmark aria-hidden className={navIconClass} />Saved blocks</NavLink>
+
+              <p className={navSectionClass}>Deliverability</p>
               <NavLink to="/marketing/sender-profile" className={navItemClass}><Send aria-hidden className={navIconClass} />Sender profile</NavLink>
               <NavLink to="/marketing/domains" className={navItemClass}><Globe aria-hidden className={navIconClass} />Sending domains</NavLink>
               <NavLink to="/marketing/suppressions" className={navItemClass}><ShieldOff aria-hidden className={navIconClass} />Suppression list</NavLink>

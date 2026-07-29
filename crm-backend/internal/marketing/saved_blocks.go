@@ -58,6 +58,14 @@ func (r *Repository) DeleteSavedBlockByID(ctx context.Context, orgID, id uuid.UU
 	return res.RowsAffected > 0, res.Error
 }
 
+// RenameSavedBlockByID updates a saved block's name.
+func (r *Repository) RenameSavedBlockByID(ctx context.Context, orgID, id uuid.UUID, name string) (bool, error) {
+	res := r.db.WithContext(ctx).Model(&SavedBlock{}).
+		Where("org_id = ? AND id = ?", orgID, id).
+		Update("name", name)
+	return res.RowsAffected > 0, res.Error
+}
+
 // ── Handler ──────────────────────────────────────────────────────────────────
 
 // SavedBlockHandler serves the saved-block library under marketing.manage.
@@ -82,6 +90,7 @@ func (h *SavedBlockHandler) RegisterRoutes(router *gin.Engine, protected []gin.H
 	{
 		g.GET("", h.List)
 		g.POST("", h.Create)
+		g.PUT("/:id", h.Rename)
 		g.DELETE("/:id", h.Remove)
 	}
 }
@@ -150,6 +159,45 @@ func (h *SavedBlockHandler) Create(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": row})
+}
+
+// Rename updates a saved block's name (name-only — the block content itself is
+// immutable; re-save from the builder to change it).
+func (h *SavedBlockHandler) Rename(c *gin.Context) {
+	orgID, _, ok := actorFromCtx(c)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		abortErr(c, http.StatusBadRequest, "invalid saved-block id")
+		return
+	}
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		abortErr(c, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		abortErr(c, http.StatusBadRequest, "name is required")
+		return
+	}
+	if len(name) > 120 {
+		name = name[:120]
+	}
+	okUpd, err := h.repo.RenameSavedBlockByID(c.Request.Context(), orgID, id, name)
+	if err != nil {
+		abortErr(c, http.StatusInternalServerError, "could not rename the saved block")
+		return
+	}
+	if !okUpd {
+		abortErr(c, http.StatusNotFound, "saved block not found")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"renamed": true}})
 }
 
 // Remove deletes a saved block. Content already using inserted COPIES is

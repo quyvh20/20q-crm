@@ -45,9 +45,9 @@ const Content: React.FC = () => {
         </div>
       )}
       <PageHeader
-        title="Email content"
-        description="Design email-safe marketing content with merge tags. Content compiles to bulletproof HTML and is reused by campaigns."
-        actions={<Button onClick={() => navigate('/marketing/content/new')}><Plus className="h-4 w-4" /> New content</Button>}
+        title="Email templates"
+        description="Design email-safe marketing content with merge tags. Templates compile to bulletproof HTML and are reused by campaigns and sequences."
+        actions={<Button onClick={() => navigate('/marketing/content/new')}><Plus className="h-4 w-4" /> New template</Button>}
       />
 
       {isLoading ? (
@@ -61,8 +61,8 @@ const Content: React.FC = () => {
           </div>
         </div>
       ) : rows.length === 0 ? (
-        <EmptyState icon={Mail} title="No email content yet" description="Create your first email to reuse across campaigns."
-          action={<Button onClick={() => navigate('/marketing/content/new')}><Plus className="h-4 w-4" /> New content</Button>} />
+        <EmptyState icon={Mail} title="No email templates yet" description="Create your first email to reuse across campaigns."
+          action={<Button onClick={() => navigate('/marketing/content/new')}><Plus className="h-4 w-4" /> New template</Button>} />
       ) : (
         <div className="space-y-2">
           {rows.map((c) => (

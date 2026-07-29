@@ -29,7 +29,7 @@ describe('CampaignContentListPage gating', () => {
     setPerms(false, false);
     renderPage();
     expect(screen.getByText(/loading/i)).toBeInTheDocument();
-    expect(screen.queryByText('Email content')).not.toBeInTheDocument();
+    expect(screen.queryByText('Email templates')).not.toBeInTheDocument();
   });
 
   it('denies without marketing.manage (with the friendly label)', () => {
@@ -42,9 +42,9 @@ describe('CampaignContentListPage gating', () => {
     setPerms(true, true);
     (useContentList as unknown as ReturnType<typeof vi.fn>).mockReturnValue({ data: [], isLoading: false, isError: false });
     renderPage();
-    expect(screen.getByText('Email content')).toBeInTheDocument();
-    expect(screen.getAllByText('New content').length).toBeGreaterThan(0); // header + empty-state actions
-    expect(screen.getByText('No email content yet')).toBeInTheDocument();
+    expect(screen.getByText('Email templates')).toBeInTheDocument();
+    expect(screen.getAllByText('New template').length).toBeGreaterThan(0); // header + empty-state actions
+    expect(screen.getByText('No email templates yet')).toBeInTheDocument();
   });
 
   it('shows an error state (not empty) when the list fetch fails', () => {

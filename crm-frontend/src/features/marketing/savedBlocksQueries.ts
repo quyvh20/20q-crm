@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { createSavedBlock, listSavedBlocks, removeSavedBlock } from './savedBlocksApi';
+import { createSavedBlock, listSavedBlocks, removeSavedBlock, renameSavedBlock } from './savedBlocksApi';
 import type { Block } from './composer/blocks';
 
 export const savedBlockKeys = {
@@ -14,6 +14,14 @@ export function useCreateSavedBlock() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ name, block }: { name: string; block: Block }) => createSavedBlock(name, block),
+    onSuccess: () => qc.invalidateQueries({ queryKey: savedBlockKeys.all }),
+  });
+}
+
+export function useRenameSavedBlock() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) => renameSavedBlock(id, name),
     onSuccess: () => qc.invalidateQueries({ queryKey: savedBlockKeys.all }),
   });
 }

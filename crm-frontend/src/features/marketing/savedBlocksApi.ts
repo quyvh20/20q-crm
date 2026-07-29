@@ -28,6 +28,15 @@ export async function createSavedBlock(name: string, block: Block): Promise<Save
   return json.data as SavedBlockRow;
 }
 
+export async function renameSavedBlock(id: string, name: string): Promise<void> {
+  const res = await apiFetch(`/api/marketing/saved-blocks/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ name }),
+  });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Could not rename the saved block');
+}
+
 export async function removeSavedBlock(id: string): Promise<void> {
   const res = await apiFetch(`/api/marketing/saved-blocks/${id}`, { method: 'DELETE' });
   const json = await parseJsonSafe(res);

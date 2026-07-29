@@ -55,6 +55,8 @@ import SuppressionListPage from './features/marketing/SuppressionListPage';
 import SendingDomainsPage from './features/marketing/SendingDomainsPage';
 import CampaignContentListPage from './features/marketing/CampaignContentListPage';
 import CampaignContentEditor from './features/marketing/CampaignContentEditor';
+import MediaLibraryPage from './features/marketing/MediaLibraryPage';
+import SavedBlocksPage from './features/marketing/SavedBlocksPage';
 import SenderProfilePage from './features/marketing/SenderProfilePage';
 import PreferenceCenterPage from './features/marketing/PreferenceCenterPage';
 import SegmentsPage from './features/marketing/SegmentsPage';
@@ -340,7 +342,17 @@ function App() {
             } />
             <Route path="/marketing/content" element={
               <ProtectedRoute>
-                <AppLayout title="Email content"><CampaignContentListPage /></AppLayout>
+                <AppLayout title="Email templates"><CampaignContentListPage /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/marketing/media" element={
+              <ProtectedRoute>
+                <AppLayout title="Media library"><MediaLibraryPage /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/marketing/saved-blocks" element={
+              <ProtectedRoute>
+                <AppLayout title="Saved blocks"><SavedBlocksPage /></AppLayout>
               </ProtectedRoute>
             } />
             <Route path="/marketing/sender-profile" element={

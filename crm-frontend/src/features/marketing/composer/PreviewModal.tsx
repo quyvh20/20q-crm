@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Check, Copy, Monitor, Moon, Smartphone, Sun } from 'lucide-react';
 import Modal from '../../../components/common/Modal';
+import { copyText } from '../../../lib/clipboard';
 import type { Contact } from '../../../lib/api';
 import { previewContent, type ContentInput, type PreviewResult } from '../contentApi';
 import { ContactPicker, contactLabel } from './ContactPicker';
@@ -50,12 +51,9 @@ export const PreviewModal: React.FC<Props> = ({ open, onClose, preview, previewE
 
   const copyHtml = async () => {
     if (!active?.html) return;
-    try {
-      await navigator.clipboard.writeText(active.html);
+    if (await copyText(active.html)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // clipboard unavailable (permissions) — nothing to do
     }
   };
 
