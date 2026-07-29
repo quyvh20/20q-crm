@@ -20,7 +20,7 @@ export interface FoundBlock extends BlockAddress {
 /** Block types that may live inside a column. Mirrors compile.go columnInner:
  *  spacer and columns are silently dropped there, so the builder refuses them. */
 export const COLUMN_ALLOWED: ReadonlySet<BlockType> = new Set([
-  'text', 'heading', 'button', 'image', 'divider', 'html', 'social', 'video', 'quote', 'menu',
+  'text', 'heading', 'button', 'image', 'divider', 'html', 'social', 'video', 'quote', 'menu', 'product',
 ]);
 
 export function canPlaceIn(parentId: string | null, type: BlockType): boolean {

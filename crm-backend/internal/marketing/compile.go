@@ -290,6 +290,8 @@ func compileBlock(blk Block, depth int) string {
 			return ""
 		}
 		return section(m, blk)
+	case BlockProduct:
+		return section(productMJML(blk), blk)
 	case BlockColumns:
 		if depth > 0 || len(blk.Columns) == 0 {
 			return "" // no nested columns; drop an empty/oversized columns block
@@ -472,6 +474,38 @@ func menuMJML(blk Block) string {
 	return `<mj-text align="center">` + strings.Join(parts, `&nbsp;&nbsp;&#8226;&nbsp;&nbsp;`) + `</mj-text>`
 }
 
+// productMJML renders the product card: optional image, bold title, sanitized
+// description, bold price, and a buy/view button. Every text part is
+// token-aware — merge tags in title/price/description resolve at send.
+func productMJML(blk Block) string {
+	var b strings.Builder
+	if strings.TrimSpace(blk.Src) != "" {
+		b.WriteString(imageMJML(blk))
+	}
+	align := alignOf(blk.Align)
+	if strings.TrimSpace(blk.Title) != "" {
+		titleColor := ""
+		if hexColorRe.MatchString(blk.Color) {
+			titleColor = fmt.Sprintf(` color=%q`, blk.Color)
+		}
+		b.WriteString(fmt.Sprintf(`<mj-text align=%q font-size="18px" font-weight="bold"%s padding-bottom="0">%s</mj-text>`, align, titleColor, mjmlText(blk.Title)))
+	}
+	if strings.TrimSpace(blk.Text) != "" {
+		b.WriteString(fmt.Sprintf(`<mj-text align=%q padding-top="6px" padding-bottom="0">%s</mj-text>`, align, sanitizeBlockHTML(blk.Text)))
+	}
+	if strings.TrimSpace(blk.Price) != "" {
+		b.WriteString(fmt.Sprintf(`<mj-text align=%q font-size="16px" font-weight="bold" padding-top="6px">%s</mj-text>`, align, mjmlText(blk.Price)))
+	}
+	if strings.TrimSpace(blk.Href) != "" || strings.TrimSpace(blk.Label) != "" {
+		btn := blk
+		if strings.TrimSpace(btn.Label) == "" {
+			btn.Label = "View product"
+		}
+		b.WriteString(buttonMJML(btn))
+	}
+	return b.String()
+}
+
 // columnInner renders a sub-block WITHOUT its own section wrapper (it is already
 // inside a column). Spacers and nested columns are refused (dropped). Device
 // visibility rides on each component's css-class (mj-raw content gets a div).
@@ -495,9 +529,67 @@ func columnInner(blk Block) string {
 		return withVisClass(blk, quoteMJML(blk))
 	case BlockMenu:
 		return withVisClass(blk, menuMJML(blk))
+	case BlockProduct:
+		// The card is multiple components; visibility wraps each (same approach
+		// as video's image+button pair, generalized via the marker-free path:
+		// inject the class into every top-level component tag).
+		return visWrapProduct(blk)
 	default:
 		return ""
 	}
+}
+
+// visWrapProduct applies the device-visibility class to each component of an
+// in-column product card.
+func visWrapProduct(blk Block) string {
+	if blk.HideMobile == blk.HideDesktop {
+		return productMJML(blk)
+	}
+	var out strings.Builder
+	if strings.TrimSpace(blk.Src) != "" {
+		out.WriteString(withVisClass(blk, imageMJML(blk)))
+	}
+	rest := blk
+	rest.Src = "" // already emitted
+	body := productMJML(rest)
+	// productMJML emits sibling mj-* components; tag each one.
+	for _, part := range splitTopLevelMJML(body) {
+		out.WriteString(withVisClass(blk, part))
+	}
+	return out.String()
+}
+
+// splitTopLevelMJML splits concatenated sibling mj-* components — the shapes
+// our builders emit: paired (<mj-text …>…</mj-text>) or self-closing
+// (<mj-image … />). Components of the same name never nest at this level.
+func splitTopLevelMJML(s string) []string {
+	var parts []string
+	for strings.HasPrefix(s, "<mj-") {
+		gt := strings.Index(s, ">")
+		if gt < 0 {
+			break
+		}
+		if s[gt-1] == '/' { // self-closing
+			parts = append(parts, s[:gt+1])
+			s = s[gt+1:]
+			continue
+		}
+		name := s[1:gt]
+		if sp := strings.IndexAny(name, " \t"); sp >= 0 {
+			name = name[:sp]
+		}
+		closeTag := "</" + name + ">"
+		i := strings.Index(s, closeTag)
+		if i < 0 {
+			break
+		}
+		parts = append(parts, s[:i+len(closeTag)])
+		s = s[i+len(closeTag):]
+	}
+	if s != "" {
+		parts = append(parts, s)
+	}
+	return parts
 }
 
 // withVisClass injects the device-visibility css-class into a component's
@@ -646,6 +738,13 @@ func blocksToPlainText(doc BlockDocument) string {
 					line += " — " + blk.Label
 				}
 				b.WriteString(line + "\n\n")
+			case BlockProduct:
+				for _, part := range []string{blk.Title, stripHTML(blk.Text), blk.Price, strings.TrimSpace(blk.Label + " " + blk.Href)} {
+					if strings.TrimSpace(part) != "" {
+						b.WriteString(part + "\n")
+					}
+				}
+				b.WriteString("\n")
 			case BlockVideo:
 				label := blk.Label
 				if strings.TrimSpace(label) == "" {

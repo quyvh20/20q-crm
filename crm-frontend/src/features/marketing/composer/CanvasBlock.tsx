@@ -430,6 +430,59 @@ const BlockBody: React.FC<{
         </div>
       );
 
+    case 'product': {
+      const align = block.align ?? 'left';
+      const showButton = (block.href ?? '').trim() !== '' || (block.label ?? '').trim() !== '';
+      const btnStyle: React.CSSProperties = {
+        background: block.btn_bg || undefined,
+        color: block.btn_color || undefined,
+        borderRadius: block.radius ? `${block.radius}px` : undefined,
+      };
+      return (
+        <div style={{ padding: sectionPad, background: sectionBg }}>
+          {block.src ? (
+            <div style={{ padding: COMPONENT_PAD, textAlign: 'center' }}>
+              <img
+                src={displayImageSrc(block.src)}
+                alt={block.alt ?? ''}
+                style={{ maxWidth: '100%', display: 'inline-block', width: block.width_px ? `${block.width_px}px` : undefined, borderRadius: block.radius ? `${block.radius}px` : undefined }}
+                draggable={false}
+              />
+            </div>
+          ) : (
+            <div style={{ padding: COMPONENT_PAD }}>
+              <div className="email-hint flex flex-col items-center gap-1 rounded border border-dashed py-6">
+                <ImageIcon className="h-5 w-5" />
+                <span className="text-xs">Product image — pick a record or set a URL in the inspector</span>
+              </div>
+            </div>
+          )}
+          <div style={{ padding: '10px 25px 0', textAlign: align, fontSize: 18, fontWeight: 700, color: block.color || undefined }}>
+            {block.title?.trim() || 'Product name'}
+          </div>
+          <div style={{ padding: '6px 25px 0' }}>
+            <InlineRichText
+              html={block.text ?? ''}
+              variableGroups={variableGroups}
+              onChange={onText}
+              active={selected}
+              variant="text"
+              align={block.align}
+              readOnly={readOnly}
+            />
+          </div>
+          {block.price?.trim() && (
+            <div style={{ padding: '6px 25px 0', textAlign: align, fontSize: 16, fontWeight: 700 }}>{block.price}</div>
+          )}
+          {showButton && (
+            <div style={{ padding: COMPONENT_PAD, textAlign: block.align === 'left' || block.align === 'right' ? block.align : 'center' }}>
+              <span className="email-button-preview" style={btnStyle}>{block.label?.trim() || 'View product'}</span>
+            </div>
+          )}
+        </div>
+      );
+    }
+
     case 'columns': {
       const cols = block.columns ?? [];
       return (

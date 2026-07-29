@@ -7,6 +7,7 @@ import { COND_OPS, FONT_OPTIONS, SOCIAL_NETWORKS, type Block, type BlockConditio
 import { ImagePicker } from './ImagePicker';
 import Modal from '../../../components/common/Modal';
 import { useCreateSavedBlock } from '../savedBlocksQueries';
+import { RecordFillPicker } from './RecordFillPicker';
 import { useBuilderStore } from './builderStore';
 import { MergeTagMenu } from './MergeTagMenu';
 import { token } from './mergeTagHtml';
@@ -269,6 +270,52 @@ const BlockTab: React.FC<{ variableGroups: VariableGroup[] }> = ({ variableGroup
         <MenuEditor value={b.items ?? []} onChange={(items) => patch({ items })} />
       )}
 
+      {b.type === 'product' && (
+        <>
+          <RecordFillPicker onFill={(p) => patch(p)} />
+          <Field label="Title">
+            <Input value={b.title ?? ''} onChange={(e) => patch({ title: e.target.value }, `title:${b.id}`)} placeholder="Product name" />
+          </Field>
+          <Field label="Price (free text)">
+            <Input value={b.price ?? ''} onChange={(e) => patch({ price: e.target.value }, `price:${b.id}`)} placeholder="$49 / month" />
+          </Field>
+          <Field label="Image">
+            <div className="flex gap-1.5">
+              <Button variant="outline" size="sm" className="shrink-0" onClick={() => setPickerOpen(true)}>
+                <Images className="h-4 w-4" /> Library
+              </Button>
+              <Input value={b.src ?? ''} onChange={(e) => patch({ src: e.target.value }, `src:${b.id}`)} placeholder="or paste a URL…" />
+            </div>
+          </Field>
+          <UrlHint value={b.src} />
+          <Field label="Button label">
+            <Input value={b.label ?? ''} onChange={(e) => patch({ label: e.target.value }, `label:${b.id}`)} placeholder="View product" />
+          </Field>
+          <Field label="Button link">
+            <Input value={b.href ?? ''} onChange={(e) => patch({ href: e.target.value }, `href:${b.id}`)} placeholder="https://…" />
+          </Field>
+          <UrlHint value={b.href} />
+          <Field label="Alignment">
+            <AlignPicker value={b.align} onChange={(align) => patch({ align })} />
+          </Field>
+          <Field label="Title color">
+            <ColorField label="Title color" value={b.color} onChange={(color) => patch({ color })} />
+          </Field>
+          <Field label="Button color">
+            <ColorField label="Button color" value={b.btn_bg} onChange={(btn_bg) => patch({ btn_bg })} />
+          </Field>
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="Image width (px)">
+              <NumField value={b.width_px} min={40} max={800} onChange={(width_px) => patch({ width_px })} />
+            </Field>
+            <Field label="Corner radius (px)">
+              <NumField value={b.radius} min={0} max={100} onChange={(radius) => patch({ radius })} />
+            </Field>
+          </div>
+          <p className="text-[11px] text-muted-foreground">Edit the description directly on the canvas.</p>
+        </>
+      )}
+
       {b.type === 'image' && (
         <>
           <Field label="Image">
@@ -408,7 +455,7 @@ const BlockTab: React.FC<{ variableGroups: VariableGroup[] }> = ({ variableGroup
         <VisibilityPicker block={b} onChange={(p) => patch(p)} />
       </Field>
 
-      {(b.type === 'image' || b.type === 'video') && (
+      {(b.type === 'image' || b.type === 'video' || b.type === 'product') && (
         <ImagePicker open={pickerOpen} onClose={() => setPickerOpen(false)} onSelect={(url) => patch({ src: url })} />
       )}
 

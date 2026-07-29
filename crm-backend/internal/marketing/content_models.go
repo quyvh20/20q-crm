@@ -81,6 +81,10 @@ const (
 	BlockVideo  = "video"
 	BlockQuote  = "quote"
 	BlockMenu   = "menu"
+	// BlockProduct is a product card (image + title + description + price +
+	// button). The builder fills it from a CRM record, but the stored content is
+	// a self-contained snapshot — sent emails never chase live record data.
+	BlockProduct = "product"
 )
 
 // SocialLink is one mj-social entry. Network must be in socialNetworks.
@@ -128,6 +132,8 @@ type Block struct {
 	Alt   string  `json:"alt,omitempty"`   // image alt
 	Height int    `json:"height,omitempty"` // spacer px
 	Bg    string  `json:"bg,omitempty"`    // root blocks: section background (#hex)
+	Title string  `json:"title,omitempty"` // product: name line
+	Price string  `json:"price,omitempty"` // product: price line (free text — currency their way)
 
 	// Per-block styling (all optional; zero value = compiler default):
 	Color     string `json:"color,omitempty"`     // text/heading text; divider line; quote accent (#hex)

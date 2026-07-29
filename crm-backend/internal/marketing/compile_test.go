@@ -391,6 +391,51 @@ func TestSniffImageType(t *testing.T) {
 	}
 }
 
+func TestCompile_ProductBlock(t *testing.T) {
+	c := NewCompiler()
+	doc := BlockDocument{Blocks: []Block{
+		{ID: "p", Type: BlockProduct, Src: "https://x.example.com/widget.png", Alt: "Widget",
+			Title: "The Widget {{contact.first_name|}}", Text: "<p>Our <strong>best</strong> widget yet.</p>",
+			Price: "$49", Label: "Buy now", Href: "https://x.example.com/buy",
+			BtnBg: "#16a34a", Radius: 8},
+		{ID: "cols", Type: BlockColumns, Columns: [][]Block{
+			{{ID: "np", Type: BlockProduct, Title: "Nested product", Price: "$9", Href: "https://x.example.com/n", HideMobile: true}},
+			{{ID: "t", Type: BlockText, Text: "beside it"}},
+		}},
+	}}
+	res, err := c.Compile(context.Background(), doc, "")
+	if err != nil {
+		t.Fatalf("compile product: %v", err)
+	}
+	html := res.HTML
+	for _, want := range []string{
+		"widget.png", "The Widget", "{{contact.first_name|}}", "best</strong> widget",
+		"$49", "Buy now", "x.example.com/buy", "#16a34a",
+		"Nested product", "$9", "View product", // default button label in the nested card
+		"hide-mobile", // visibility class applied to in-column product parts
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("%q missing from product output", want)
+		}
+	}
+	for _, want := range []string{"The Widget", "Our best widget yet.", "$49", "Buy now https://x.example.com/buy"} {
+		if !strings.Contains(res.PlainText, want) {
+			t.Fatalf("plaintext missing %q: %q", want, res.PlainText)
+		}
+	}
+}
+
+func TestSplitTopLevelMJML(t *testing.T) {
+	in := `<mj-text align="left">a</mj-text><mj-image src="x" /><mj-button href="y">b</mj-button>`
+	parts := splitTopLevelMJML(in)
+	if len(parts) != 3 {
+		t.Fatalf("expected 3 parts, got %d: %#v", len(parts), parts)
+	}
+	if !strings.HasPrefix(parts[1], "<mj-image") || !strings.HasSuffix(parts[1], "/>") {
+		t.Fatalf("self-closing part mis-split: %q", parts[1])
+	}
+}
+
 func between(s, a, b string) string {
 	i := strings.Index(s, a)
 	if i < 0 {

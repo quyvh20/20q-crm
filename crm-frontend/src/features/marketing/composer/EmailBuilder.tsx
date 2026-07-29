@@ -18,7 +18,7 @@ import {
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import {
   Bookmark, CirclePlay, CodeXml, Columns2, GripVertical, Heading, Image as ImageIcon, LayoutTemplate,
-  Menu as MenuIcon, Minus, MousePointerClick, MoveVertical, Quote as QuoteIcon, Share2, Type,
+  Menu as MenuIcon, Minus, MousePointerClick, MoveVertical, Package, Quote as QuoteIcon, Share2, Type,
 } from 'lucide-react';
 import { makeBlock, type Block, type BlockType } from './blocks';
 import { canPlaceIn, cloneWithNewIds, findBlock, LAYOUT_PRESETS, moveTo, type BlockAddress } from './blockUtils';
@@ -32,7 +32,7 @@ import type { VariableGroup } from './mergeScope';
 // otherwise renders look-alike "T" tiles (the round-2 regression).
 export const PALETTE_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   Type, Heading, MousePointerClick, Image: ImageIcon, Columns2, Minus, MoveVertical, CodeXml,
-  Share2, CirclePlay, Quote: QuoteIcon, Menu: MenuIcon,
+  Share2, CirclePlay, Quote: QuoteIcon, Menu: MenuIcon, Package,
 };
 
 type ActiveDrag =

@@ -73,6 +73,8 @@ func ValidateContent(subject, preheader string, doc BlockDocument, scope []strin
 			check(field, blk.Href)
 			check(field, blk.Src)
 			check(field, blk.Alt)
+			check(field, blk.Title)
+			check(field, blk.Price)
 			for _, it := range blk.Items {
 				check(field, it.Label)
 				check(field, it.Href)

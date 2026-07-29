@@ -8,7 +8,7 @@
 
 export type BlockType =
   | 'text' | 'heading' | 'button' | 'image' | 'divider' | 'spacer' | 'columns' | 'html'
-  | 'social' | 'video' | 'quote' | 'menu';
+  | 'social' | 'video' | 'quote' | 'menu' | 'product';
 
 export interface SocialLink {
   network: string; // gated server-side to MJML's built-in icon set
@@ -53,6 +53,8 @@ export interface Block {
   alt?: string;           // image alt
   height?: number;        // spacer px
   bg?: string;            // root blocks: section background (#hex)
+  title?: string;         // product: name line
+  price?: string;         // product: price line (free text)
   color?: string;         // text/heading color; divider line; quote accent (#hex)
   size?: number;          // text/heading font px; social icon px; button font px
   thickness?: number;     // divider px
@@ -131,6 +133,7 @@ export const PALETTE: BlockTypeMeta[] = [
   { type: 'video', label: 'Video', icon: 'CirclePlay' },
   { type: 'quote', label: 'Quote', icon: 'Quote' },
   { type: 'menu', label: 'Menu', icon: 'Menu' },
+  { type: 'product', label: 'Product', icon: 'Package' },
   { type: 'html', label: 'HTML', icon: 'CodeXml' },
 ];
 
@@ -197,6 +200,15 @@ export function makeBlock(type: BlockType): Block {
         { label: 'Shop', href: 'https://' },
         { label: 'About', href: 'https://' },
       ];
+      break;
+    case 'product':
+      b.title = 'Product name';
+      b.text = '<p>A short description of this product.</p>';
+      b.price = '';
+      b.label = 'View product';
+      b.href = 'https://';
+      b.src = '';
+      b.align = 'left';
       break;
     default:
       break;

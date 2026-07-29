@@ -434,7 +434,7 @@ func lintWarnings(doc BlockDocument, res CompileResult) []string {
 			if b.Type == BlockImage && strings.TrimSpace(b.Alt) == "" {
 				hasImageNoAlt = true
 			}
-			if b.Type == BlockButton && b.Href != "" {
+			if (b.Type == BlockButton || b.Type == BlockProduct) && b.Href != "" {
 				hasLink = true
 			}
 			if (b.Type == BlockText || b.Type == BlockHTML) && strings.Contains(b.Text, "href=") {
