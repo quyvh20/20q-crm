@@ -34,6 +34,9 @@ type CampaignContent struct {
 	ID                uuid.UUID      `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()" json:"id"`
 	OrgID             uuid.UUID      `gorm:"type:uuid;not null;index" json:"org_id"`
 	Name              string         `gorm:"type:varchar(160);not null" json:"name"`
+	// Folder is a flat organizational label ("" = unfiled). Folders exist
+	// implicitly as the distinct set of values — no separate table.
+	Folder            string         `gorm:"type:varchar(80);not null;default:''" json:"folder"`
 	Subject           string         `gorm:"type:varchar(998);not null;default:''" json:"subject"`
 	Preheader         string         `gorm:"type:varchar(255);not null;default:''" json:"preheader"`
 	// BodyJSON is the block/document model (the edit source). BodyHTMLCompiled is the

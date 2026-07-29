@@ -6,6 +6,7 @@ export interface CampaignContent {
   id: string;
   org_id: string;
   name: string;
+  folder: string; // '' = unfiled
   subject: string;
   preheader: string;
   body_json: BlockDocument;
@@ -24,6 +25,8 @@ export interface ContentInput {
   preheader: string;
   body_json: BlockDocument;
   merge_scope: string[];
+  // Omitted = keep the stored folder (the builder's save never touches it).
+  folder?: string;
 }
 
 export interface PreviewResult {
@@ -91,6 +94,17 @@ export async function previewContent(input: Omit<ContentInput, 'name'> & { conta
   const json = await parseJsonSafe(res);
   if (!res.ok) throw apiError(res, json, 'Failed to render preview');
   return (json.data ?? {}) as PreviewResult;
+}
+
+/** setContentFolder moves a template between folders without a full-replace
+ *  save (no recompile; a template with legacy validation issues stays movable). */
+export async function setContentFolder(id: string, folder: string): Promise<void> {
+  const res = await apiFetch(`/api/marketing/content/${id}/folder`, {
+    method: 'PUT',
+    body: JSON.stringify({ folder }),
+  });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Failed to move the template');
 }
 
 export async function testSendContent(id: string): Promise<string> {

@@ -1839,6 +1839,10 @@ func main() {
 			)`},
 			{"marketing_saved_blocks org index", `CREATE INDEX IF NOT EXISTS idx_marketing_saved_blocks_org
 				ON marketing_saved_blocks(org_id, created_at DESC)`},
+			// Template folders (an ALTER-added column via GORM fails silently on
+			// prod — this guard is the migration there).
+			{"marketing_campaign_content folder", `ALTER TABLE marketing_campaign_content
+				ADD COLUMN IF NOT EXISTS folder VARCHAR(80) NOT NULL DEFAULT ''`},
 		}
 		for _, g := range marketingGuards {
 			if err := db.Exec(g.sql).Error; err != nil {

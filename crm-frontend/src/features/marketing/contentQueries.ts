@@ -1,6 +1,6 @@
 // React Query layer for marketing campaign content (M6).
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listContent, getContent, createContent, updateContent, removeContent, type CampaignContent, type ContentInput } from './contentApi';
+import { listContent, getContent, createContent, updateContent, removeContent, setContentFolder, type CampaignContent, type ContentInput } from './contentApi';
 
 export const contentKeys = {
   all: ['marketing', 'content'] as const,
@@ -36,6 +36,14 @@ export function useUpdateContent() {
       qc.invalidateQueries({ queryKey: contentKeys.list() });
       qc.invalidateQueries({ queryKey: contentKeys.detail(vars.id) });
     },
+  });
+}
+
+export function useSetContentFolder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, folder }: { id: string; folder: string }) => setContentFolder(id, folder),
+    onSuccess: () => qc.invalidateQueries({ queryKey: contentKeys.all }),
   });
 }
 

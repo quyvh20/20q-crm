@@ -77,6 +77,7 @@ func (h *ContentHandler) RegisterRoutes(router *gin.Engine, protected []gin.Hand
 		g.POST("/preview", h.Preview)
 		g.GET("/:id", h.Get)
 		g.PUT("/:id", h.Update)
+		g.PUT("/:id/folder", h.SetFolder)
 		g.DELETE("/:id", h.Remove)
 		g.POST("/:id/test-send", h.TestSend)
 	}
@@ -88,6 +89,18 @@ type contentRequest struct {
 	Preheader  string          `json:"preheader"`
 	BodyJSON   json.RawMessage `json:"body_json"`
 	MergeScope []string        `json:"merge_scope"`
+	// Folder is a POINTER: nil (omitted) keeps the stored folder on update —
+	// the builder's save doesn't know about folders and must not wipe them.
+	Folder *string `json:"folder"`
+}
+
+// cleanFolder normalizes a folder label.
+func cleanFolder(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) > 80 {
+		s = s[:80]
+	}
+	return s
 }
 
 type previewRequest struct {
@@ -174,6 +187,9 @@ func (h *ContentHandler) Create(c *gin.Context) {
 		CompiledSizeBytes: res.SizeBytes,
 		CompiledAt:        &now,
 	}
+	if req.Folder != nil {
+		row.Folder = cleanFolder(*req.Folder)
+	}
 	if userID != uuid.Nil {
 		row.CreatedBy = &userID
 	}
@@ -228,6 +244,9 @@ func (h *ContentHandler) Update(c *gin.Context) {
 	}
 	now := time.Now()
 	row.Name = strings.TrimSpace(req.Name)
+	if req.Folder != nil {
+		row.Folder = cleanFolder(*req.Folder)
+	}
 	row.Subject = req.Subject
 	row.Preheader = req.Preheader
 	row.BodyJSON = datatypes.JSON(bodyJSON)
@@ -338,6 +357,38 @@ func (h *ContentHandler) Preview(c *gin.Context) {
 	out["html"] = RenderForRecipient(htmlForRender, resolvedCtx, fc)
 
 	c.JSON(http.StatusOK, gin.H{"data": out})
+}
+
+// SetFolder moves a template between folders WITHOUT the full-replace PUT: a
+// move must never re-compile or be blocked by content validation (a legacy
+// template with now-invalid tags still needs to be organizable).
+func (h *ContentHandler) SetFolder(c *gin.Context) {
+	orgID, _, ok := actorFromCtx(c)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		abortErr(c, http.StatusBadRequest, "invalid content id")
+		return
+	}
+	var req struct {
+		Folder string `json:"folder"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		abortErr(c, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	okUpd, err := h.repo.UpdateContentFolder(c.Request.Context(), orgID, id, cleanFolder(req.Folder))
+	if err != nil {
+		abortErr(c, http.StatusInternalServerError, "could not move the template")
+		return
+	}
+	if !okUpd {
+		abortErr(c, http.StatusNotFound, "content not found")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"moved": true}})
 }
 
 // TestSend compiles the stored content, resolves merge tags (to their fallbacks —

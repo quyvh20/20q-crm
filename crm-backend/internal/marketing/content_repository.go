@@ -44,6 +44,15 @@ func (r *Repository) UpdateContent(ctx context.Context, c *CampaignContent) erro
 	return r.db.WithContext(ctx).Save(c).Error
 }
 
+// UpdateContentFolder moves a template between folders (name-only column write —
+// deliberately NOT Save(), which would rewrite every column).
+func (r *Repository) UpdateContentFolder(ctx context.Context, orgID, id uuid.UUID, folder string) (bool, error) {
+	res := r.db.WithContext(ctx).Model(&CampaignContent{}).
+		Where("org_id = ? AND id = ?", orgID, id).
+		Update("folder", folder)
+	return res.RowsAffected > 0, res.Error
+}
+
 // SoftDeleteContent soft-deletes one content row within an org.
 func (r *Repository) SoftDeleteContent(ctx context.Context, orgID, id uuid.UUID) (bool, error) {
 	res := r.db.WithContext(ctx).Where("org_id = ? AND id = ?", orgID, id).Delete(&CampaignContent{})
