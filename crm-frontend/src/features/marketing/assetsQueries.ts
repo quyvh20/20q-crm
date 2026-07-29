@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { listAssets, removeAsset, setAssetFolder, uploadAsset } from './assetsApi';
+import { duplicateAsset, listAssets, removeAsset, setAssetFolder, uploadAsset } from './assetsApi';
 
 export const assetKeys = {
   all: ['marketing', 'assets'] as const,
@@ -13,6 +13,14 @@ export function useUploadAsset() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ file, folder }: { file: File; folder?: string }) => uploadAsset(file, folder),
+    onSuccess: () => qc.invalidateQueries({ queryKey: assetKeys.all }),
+  });
+}
+
+export function useDuplicateAsset() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: duplicateAsset,
     onSuccess: () => qc.invalidateQueries({ queryKey: assetKeys.all }),
   });
 }

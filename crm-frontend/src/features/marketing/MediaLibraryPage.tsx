@@ -7,7 +7,7 @@ import Modal from '../../components/common/Modal';
 import { Button, EmptyState, Input, PageHeader, SpinnerBlock } from '@/components/ui';
 import { copyText } from '../../lib/clipboard';
 import { displayImageSrc, type MarketingAsset } from './assetsApi';
-import { useAssets, useRemoveAsset, useSetAssetFolder, useUploadAsset } from './assetsQueries';
+import { useAssets, useDuplicateAsset, useRemoveAsset, useSetAssetFolder, useUploadAsset } from './assetsQueries';
 
 /** folderIndex derives the implicit folder set (same doctrine as templates). */
 export function folderIndex(rows: { folder?: string }[]) {
@@ -39,6 +39,8 @@ const Library: React.FC = () => {
   const remove = useRemoveAsset();
   const { confirm, dialog } = useConfirm();
   const moveMut = useSetAssetFolder();
+  const dupMut = useDuplicateAsset();
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -61,6 +63,18 @@ const Library: React.FC = () => {
       return a.filename.toLowerCase().includes(q) || f.toLowerCase().includes(q);
     });
   }, [rows, search, activeFolder]);
+
+  const duplicate = async (a: MarketingAsset) => {
+    setDuplicatingId(a.id);
+    try {
+      const created = await dupMut.mutateAsync(a.id);
+      showToast(`Duplicated as "${created.filename}"`);
+    } catch (err) {
+      setError((err as Error).message || 'Failed to duplicate');
+    } finally {
+      setDuplicatingId(null);
+    }
+  };
 
   const moveTo = async (a: MarketingAsset, folder: string) => {
     try {
@@ -195,6 +209,16 @@ const Library: React.FC = () => {
                   )}
                 </p>
                 <div className="mt-2 flex items-center gap-1">
+                  <button
+                    type="button"
+                    title="Duplicate image"
+                    aria-label={`Duplicate ${a.filename}`}
+                    disabled={duplicatingId === a.id}
+                    onClick={() => duplicate(a)}
+                    className="rounded-lg border border-border p-1.5 text-muted-foreground hover:border-ring hover:text-foreground disabled:opacity-50"
+                  >
+                    {duplicatingId === a.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Copy className="h-3 w-3" />}
+                  </button>
                   <button
                     type="button"
                     title="Move to folder"

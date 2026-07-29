@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AlertCircle, Bookmark, Check, CheckCircle2, Pencil, Trash2, X } from 'lucide-react';
+import { AlertCircle, Bookmark, Check, CheckCircle2, Copy, Loader2, Pencil, Trash2, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { usePermissions } from '../../lib/auth';
 import AccessDeniedPanel from '../../components/common/AccessDeniedPanel';
@@ -8,7 +8,7 @@ import { Button, EmptyState, Input, PageHeader, SpinnerBlock } from '@/component
 import { PALETTE_ICONS } from './composer/EmailBuilder';
 import { PALETTE } from './composer/blocks';
 import type { SavedBlockRow } from './savedBlocksApi';
-import { useRemoveSavedBlock, useRenameSavedBlock, useSavedBlocks } from './savedBlocksQueries';
+import { useCreateSavedBlock, useRemoveSavedBlock, useRenameSavedBlock, useSavedBlocks } from './savedBlocksQueries';
 
 /** SavedBlocksPage manages the reusable-block library. Blocks are CREATED from
  *  the builder (bookmark a block); here they're renamed and pruned. */
@@ -26,6 +26,8 @@ const Library: React.FC = () => {
   const blocks = useSavedBlocks();
   const rename = useRenameSavedBlock();
   const remove = useRemoveSavedBlock();
+  const create = useCreateSavedBlock();
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
   const { confirm, dialog } = useConfirm();
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -50,6 +52,20 @@ const Library: React.FC = () => {
       showToast('Renamed');
     } catch (err) {
       setError((err as Error).message || 'Rename failed');
+    }
+  };
+
+  // Duplicate rides the existing create endpoint — the row already carries the
+  // full block JSON.
+  const duplicate = async (row: SavedBlockRow) => {
+    setDuplicatingId(row.id);
+    try {
+      await create.mutateAsync({ name: `${row.name} (copy)`, block: row.block });
+      showToast(`Duplicated as "${row.name} (copy)"`);
+    } catch (err) {
+      setError((err as Error).message || 'Failed to duplicate');
+    } finally {
+      setDuplicatingId(null);
     }
   };
 
@@ -141,6 +157,11 @@ const Library: React.FC = () => {
                 </div>
                 {!editing && (
                   <div className="flex shrink-0 items-center gap-1">
+                    <button type="button" title="Duplicate" aria-label={`Duplicate ${row.name}`} disabled={duplicatingId === row.id}
+                      onClick={() => duplicate(row)}
+                      className="rounded-lg p-2 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50">
+                      {duplicatingId === row.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Copy className="h-4 w-4" />}
+                    </button>
                     <button type="button" title="Rename" aria-label={`Rename ${row.name}`} onClick={() => startRename(row)}
                       className="rounded-lg p-2 text-muted-foreground hover:bg-accent hover:text-foreground"><Pencil className="h-4 w-4" /></button>
                     <button type="button" title="Delete" aria-label={`Delete ${row.name}`} onClick={() => onDelete(row)}

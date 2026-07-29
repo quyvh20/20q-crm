@@ -131,6 +131,7 @@ func (h *AssetHandler) RegisterRoutes(router *gin.Engine, protected []gin.Handle
 	{
 		g.GET("", h.List)
 		g.POST("", h.Upload)
+		g.POST("/:id/duplicate", h.Duplicate)
 		g.PUT("/:id/folder", h.SetFolder)
 		g.DELETE("/:id", h.Remove)
 	}
@@ -263,6 +264,65 @@ func (h *AssetHandler) Upload(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": h.toJSON(*a)})
+}
+
+// copyFilename derives the duplicate's name, keeping the extension readable:
+// "logo.png" → "logo (copy).png"; "readme" → "readme (copy)".
+func copyFilename(name string) string {
+	base, ext := name, ""
+	if i := strings.LastIndex(name, "."); i > 0 {
+		base, ext = name[:i], name[i:]
+	}
+	out := base + " (copy)" + ext
+	if len(out) > 255 {
+		out = out[:255]
+	}
+	return out
+}
+
+// Duplicate copies an asset server-side (the bytes never round-trip through the
+// browser). The copy keeps the folder and gets its own uuid — sent emails
+// referencing the original are unaffected.
+func (h *AssetHandler) Duplicate(c *gin.Context) {
+	orgID, userID, ok := actorFromCtx(c)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		abortErr(c, http.StatusBadRequest, "invalid image id")
+		return
+	}
+	if n, err := h.repo.CountAssetsByOrg(c.Request.Context(), orgID); err == nil && n >= maxAssetsPerOrg {
+		abortErr(c, http.StatusUnprocessableEntity, "image library is full — delete unused images first")
+		return
+	}
+	src, err := h.repo.GetAssetByID(c.Request.Context(), id)
+	if err != nil {
+		abortErr(c, http.StatusInternalServerError, "could not load the image")
+		return
+	}
+	// GetAssetByID is unscoped (it also serves the public route) — enforce org
+	// ownership here, indistinguishable from absent.
+	if src == nil || src.OrgID != orgID {
+		abortErr(c, http.StatusNotFound, "image not found")
+		return
+	}
+	dup := &MarketingAsset{
+		OrgID:       orgID,
+		Filename:    copyFilename(src.Filename),
+		Folder:      src.Folder,
+		ContentType: src.ContentType,
+		SizeBytes:   src.SizeBytes,
+		Data:        src.Data,
+		CreatedBy:   &userID,
+	}
+	if err := h.repo.CreateAsset(c.Request.Context(), dup); err != nil {
+		h.logger.Error("marketing: asset duplicate failed", "error", err, "org_id", orgID.String())
+		abortErr(c, http.StatusInternalServerError, "could not duplicate the image")
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"data": h.toJSON(*dup)})
 }
 
 // Remove deletes an asset. Emails already sent keep referencing the URL — it

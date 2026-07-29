@@ -378,6 +378,20 @@ func TestCompile_DeviceVisibility(t *testing.T) {
 	}
 }
 
+func TestCopyFilename(t *testing.T) {
+	cases := map[string]string{
+		"logo.png":        "logo (copy).png",
+		"banner.final.jpg": "banner.final (copy).jpg",
+		"readme":          "readme (copy)",
+		".hidden":         ".hidden (copy)", // leading dot is not an extension
+	}
+	for in, want := range cases {
+		if got := copyFilename(in); got != want {
+			t.Fatalf("copyFilename(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestSniffImageType(t *testing.T) {
 	png := append([]byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}, make([]byte, 64)...)
 	if got := sniffImageType(png); got != "image/png" {

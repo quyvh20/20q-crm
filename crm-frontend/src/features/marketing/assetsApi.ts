@@ -41,6 +41,15 @@ export async function uploadAsset(file: File, folder = ''): Promise<MarketingAss
   return json.data as MarketingAsset;
 }
 
+/** duplicateAsset copies an image server-side (bytes never round-trip through
+ *  the browser); the copy keeps the folder and gets its own public URL. */
+export async function duplicateAsset(id: string): Promise<MarketingAsset> {
+  const res = await apiFetch(`/api/marketing/assets/${id}/duplicate`, { method: 'POST' });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Failed to duplicate the image');
+  return json.data as MarketingAsset;
+}
+
 /** setAssetFolder moves an image between folders (column-only write). */
 export async function setAssetFolder(id: string, folder: string): Promise<void> {
   const res = await apiFetch(`/api/marketing/assets/${id}/folder`, {
