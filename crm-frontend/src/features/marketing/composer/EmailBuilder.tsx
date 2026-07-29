@@ -17,11 +17,11 @@ import {
 } from '@dnd-kit/core';
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import {
-  CirclePlay, CodeXml, Columns2, GripVertical, Heading, Image as ImageIcon, LayoutTemplate,
+  Bookmark, CirclePlay, CodeXml, Columns2, GripVertical, Heading, Image as ImageIcon, LayoutTemplate,
   Menu as MenuIcon, Minus, MousePointerClick, MoveVertical, Quote as QuoteIcon, Share2, Type,
 } from 'lucide-react';
-import { makeBlock, type BlockType } from './blocks';
-import { canPlaceIn, findBlock, LAYOUT_PRESETS, moveTo, type BlockAddress } from './blockUtils';
+import { makeBlock, type Block, type BlockType } from './blocks';
+import { canPlaceIn, cloneWithNewIds, findBlock, LAYOUT_PRESETS, moveTo, type BlockAddress } from './blockUtils';
 import { useBuilderStore } from './builderStore';
 import { BlockPalette } from './BlockPalette';
 import { BuilderCanvas } from './BuilderCanvas';
@@ -38,7 +38,8 @@ export const PALETTE_ICONS: Record<string, React.ComponentType<{ className?: str
 type ActiveDrag =
   | { kind: 'block'; id: string; type: BlockType }
   | { kind: 'palette'; type: BlockType; label: string; icon: string }
-  | { kind: 'layout'; key: string; label: string };
+  | { kind: 'layout'; key: string; label: string }
+  | { kind: 'saved'; label: string; block: Block };
 
 interface Props {
   variableGroups: VariableGroup[];
@@ -109,6 +110,8 @@ export const EmailBuilder: React.FC<Props> = ({ variableGroups, inspector, readO
       setActiveDrag({ kind: 'palette', type: d.type as BlockType, label: String(d.label), icon: String(d.icon) });
     } else if (d.kind === 'layout') {
       setActiveDrag({ kind: 'layout', key: String(d.key), label: String(d.label) });
+    } else if (d.kind === 'saved') {
+      setActiveDrag({ kind: 'saved', label: String(d.label), block: d.block as Block });
     }
   };
 
@@ -166,7 +169,7 @@ export const EmailBuilder: React.FC<Props> = ({ variableGroups, inspector, readO
       }
       const legal = activeDrag.kind === 'layout'
         ? target.parentId === null // presets may contain columns/spacers — root only
-        : canPlaceIn(target.parentId, activeDrag.type);
+        : canPlaceIn(target.parentId, activeDrag.kind === 'saved' ? activeDrag.block.type : activeDrag.type);
       setDropHint(legal ? target : rootFallback(target, active, over));
       return;
     }
@@ -195,13 +198,15 @@ export const EmailBuilder: React.FC<Props> = ({ variableGroups, inspector, readO
 
     if (!drag) return;
 
-    if (drag.kind === 'palette' || drag.kind === 'layout') {
+    if (drag.kind === 'palette' || drag.kind === 'layout' || drag.kind === 'saved') {
       const hint = hintRef.current;
       setDropHint(null);
       if (!hint || !over) return;
       const blocks = drag.kind === 'palette'
         ? [makeBlock(drag.type)]
-        : LAYOUT_PRESETS.find((p) => p.key === drag.key)?.make() ?? [];
+        : drag.kind === 'saved'
+          ? [cloneWithNewIds(drag.block)]
+          : LAYOUT_PRESETS.find((p) => p.key === drag.key)?.make() ?? [];
       store.getState().insertBlocks(blocks, hint);
       return;
     }
@@ -268,6 +273,12 @@ export const EmailBuilder: React.FC<Props> = ({ variableGroups, inspector, readO
         {activeDrag?.kind === 'layout' && (
           <div className="flex w-48 items-center gap-2 rounded-lg border border-primary/50 bg-card px-3 py-2 text-sm font-medium text-foreground shadow-lg">
             <LayoutTemplate className="h-4 w-4 text-muted-foreground" />
+            {activeDrag.label}
+          </div>
+        )}
+        {activeDrag?.kind === 'saved' && (
+          <div className="flex w-48 items-center gap-2 rounded-lg border border-primary/50 bg-card px-3 py-2 text-sm font-medium text-foreground shadow-lg">
+            <Bookmark className="h-4 w-4 text-muted-foreground" />
             {activeDrag.label}
           </div>
         )}

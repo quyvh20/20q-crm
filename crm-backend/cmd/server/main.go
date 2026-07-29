@@ -1828,6 +1828,17 @@ func main() {
 			)`},
 			{"marketing_assets org index", `CREATE INDEX IF NOT EXISTS idx_marketing_assets_org
 				ON marketing_assets(org_id, created_at DESC)`},
+			// Reusable builder blocks (saved-block library).
+			{"marketing_saved_blocks", `CREATE TABLE IF NOT EXISTS marketing_saved_blocks (
+				id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+				org_id     UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+				name       VARCHAR(120) NOT NULL,
+				block      JSONB NOT NULL,
+				created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			)`},
+			{"marketing_saved_blocks org index", `CREATE INDEX IF NOT EXISTS idx_marketing_saved_blocks_org
+				ON marketing_saved_blocks(org_id, created_at DESC)`},
 		}
 		for _, g := range marketingGuards {
 			if err := db.Exec(g.sql).Error; err != nil {
@@ -1852,6 +1863,7 @@ func main() {
 		db.Exec(`ALTER TABLE marketing_campaign_recipients ENABLE ROW LEVEL SECURITY`)
 		db.Exec(`ALTER TABLE marketing_sequence_enrollments ENABLE ROW LEVEL SECURITY`)
 		db.Exec(`ALTER TABLE marketing_assets ENABLE ROW LEVEL SECURITY`)
+		db.Exec(`ALTER TABLE marketing_saved_blocks ENABLE ROW LEVEL SECURITY`)
 
 		// The suppression dedupe UNIQUE index is FUNCTIONAL: COALESCE(topic_id, zero)
 		// is load-bearing because Postgres treats NULL as DISTINCT in a unique index,
@@ -2613,6 +2625,11 @@ func main() {
 			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
 		)
 		marketing.NewPublicAssetHandler(marketingRepo, integrationsIPLimiter).RegisterRoutes(router)
+		// Saved-block library (reusable builder blocks).
+		marketing.NewSavedBlockHandler(marketingRepo, autoLogger).RegisterRoutes(router,
+			integrationsProtected,
+			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
+		)
 
 		// ── Email marketing (M3: one-click unsubscribe + preference center +
 		// CAN-SPAM footer + sender profile + topics) ──────────────────────

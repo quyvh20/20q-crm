@@ -1,10 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  AlertCircle, AlignCenter, AlignLeft, AlignRight, CheckCircle2, Clock, Copy, Images, Monitor, MousePointerClick, Smartphone, Trash2, X,
+  AlertCircle, AlignCenter, AlignLeft, AlignRight, BookmarkPlus, CheckCircle2, Clock, Copy, Images, Monitor, MousePointerClick, Smartphone, Trash2, X,
 } from 'lucide-react';
 import { Button, Input, Select, Textarea } from '@/components/ui';
 import { FONT_OPTIONS, SOCIAL_NETWORKS, type Block, type LinkItem, type SocialLink } from './blocks';
 import { ImagePicker } from './ImagePicker';
+import Modal from '../../../components/common/Modal';
+import { useCreateSavedBlock } from '../savedBlocksQueries';
 import { useBuilderStore } from './builderStore';
 import { MergeTagMenu } from './MergeTagMenu';
 import { token } from './mergeTagHtml';
@@ -131,6 +133,7 @@ const BlockTab: React.FC<{ variableGroups: VariableGroup[] }> = ({ variableGroup
       <div className="flex items-center justify-between">
         <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{b.type} settings</p>
         <div className="flex gap-1">
+          <SaveToLibrary block={b} />
           <button type="button" title="Duplicate block" aria-label="Duplicate block" onClick={() => duplicateBlock(b.id)}
             className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"><Copy className="h-4 w-4" /></button>
           <button type="button" title="Delete block" aria-label="Delete block" onClick={() => removeBlock(b.id)}
@@ -426,6 +429,59 @@ const BlockTab: React.FC<{ variableGroups: VariableGroup[] }> = ({ variableGroup
         </p>
       )}
     </div>
+  );
+};
+
+/** SaveToLibrary snapshots the selected block (nested content included — store
+ *  state is always wire-format) into the org's saved-block library. */
+const SaveToLibrary: React.FC<{ block: Block }> = ({ block }) => {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const create = useCreateSavedBlock();
+
+  const openModal = () => {
+    setName(`${block.type.charAt(0).toUpperCase()}${block.type.slice(1)} block`);
+    setError(null);
+    setOpen(true);
+  };
+
+  const save = async () => {
+    if (!name.trim()) return;
+    try {
+      await create.mutateAsync({ name: name.trim(), block });
+      setOpen(false);
+    } catch (e) {
+      setError((e as Error).message || 'Could not save the block');
+    }
+  };
+
+  return (
+    <>
+      <button type="button" title="Save to library" aria-label="Save block to library" onClick={openModal}
+        className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground">
+        <BookmarkPlus className="h-4 w-4" />
+      </button>
+      <Modal open={open} onClose={() => setOpen(false)} title="Save block to library" size="sm">
+        <div className="space-y-3">
+          <Field label="Name">
+            {/* no autoFocus — Modal's focus restore breaks with it */}
+            <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={120}
+              onKeyDown={(e) => { if (e.key === 'Enter') save(); }} placeholder="e.g. Footer CTA" />
+          </Field>
+          <p className="text-[11px] text-muted-foreground">
+            Saved blocks appear in the left rail for every email. Inserting one adds an independent copy.
+          </p>
+          {error && <p className="text-xs text-destructive">{error}</p>}
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" size="sm" onClick={() => setOpen(false)}>Cancel</Button>
+            <Button size="sm" onClick={save} disabled={create.isPending || !name.trim()}>
+              {create.isPending ? 'Saving…' : 'Save block'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    </>
   );
 };
 
