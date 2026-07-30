@@ -267,14 +267,19 @@ func main() {
 		// NULLs both columns at once (both FKs are ON DELETE SET NULL), so a re-run
 		// cannot resurrect a stale owner.
 		db.Exec(`UPDATE tasks SET created_by = assigned_to WHERE created_by IS NULL AND assigned_to IS NOT NULL`)
-		// Whatever is left is genuinely ownerless: no creator, no assignee, no link.
-		// Those rows stay readable only to a DataScopeAll role. That is the correct
-		// direction for a security fix, but it is a real behaviour change, so count
-		// it rather than let it happen silently.
-		var orphanTasks int64
-		db.Raw(`SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND created_by IS NULL AND assigned_to IS NULL AND contact_id IS NULL AND deal_id IS NULL`).Scan(&orphanTasks)
-		if orphanTasks > 0 {
-			log.Warn("tasks: rows with no creator, assignee or linked record are now visible only to org-wide (data_scope=all) roles — U0.1-ext row scope has no other handle on them", zap.Int64("tasks", orphanTasks))
+		// Whatever is left has no direct handle at all: no creator, no assignee.
+		// Count both shapes, because they degrade differently and reporting only the
+		// first would understate the change. Unlinked rows are readable solely by a
+		// DataScopeAll role. Linked rows survive only for callers who can reach the
+		// linked contact/deal, so a task whose record is owned by someone else — or
+		// owned by nobody — is equally dark despite not looking it.
+		var darkTasks, linkOnlyTasks int64
+		db.Raw(`SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND created_by IS NULL AND assigned_to IS NULL AND contact_id IS NULL AND deal_id IS NULL`).Scan(&darkTasks)
+		db.Raw(`SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND created_by IS NULL AND assigned_to IS NULL AND (contact_id IS NOT NULL OR deal_id IS NOT NULL)`).Scan(&linkOnlyTasks)
+		if darkTasks > 0 || linkOnlyTasks > 0 {
+			log.Warn("tasks: rows with neither creator nor assignee survived the created_by backfill — U0.1-ext row scope reaches them only through a linked record, if any",
+				zap.Int64("visible_only_to_data_scope_all", darkTasks),
+				zap.Int64("visible_only_via_linked_record", linkOnlyTasks))
 		}
 
 		db.AutoMigrate(&domain.Role{}, &domain.RolePermission{}, &domain.OrgUser{}, &domain.KnowledgeBaseEntry{}, &domain.AITokenUsage{}, &domain.RecordShare{}, &domain.OrgInvitation{}, &domain.ChatSession{}, &domain.ChatMessage{}, &domain.VoiceNote{})
@@ -1017,28 +1022,39 @@ func main() {
 		// next login, each recovering only by burning a backup code and re-enrolling.
 		// It does not even trim, so a trailing newline in a dashboard field does it.
 		//
-		// So prove the key against real rows instead. Sampling several keeps one
-		// corrupt or hand-edited secret from reading as a mismatch — a single
-		// successful open proves the key material.
+		// So prove the key against real rows instead. Newest-first, deliberately:
+		// the failure this guard exists to catch is rows sealed under a SUPERSEDED
+		// key, and nothing ever cleans up the secret of a user whose 2FA quietly
+		// broke and who never came back — so stale rows accumulate among the oldest.
+		// An unordered sample drifts toward exactly those and would make "none of
+		// these open" a much weaker proxy for "the key is wrong" than a log.Fatal
+		// needs. Sampling several rows rather than one still keeps a single corrupt
+		// secret from reading as a mismatch: one successful open proves the key.
 		var sealedTOTP []string
 		db.Raw(`SELECT totp_secret FROM users
 		         WHERE totp_secret IS NOT NULL AND totp_secret <> '' AND totp_enabled_at IS NOT NULL
+		         ORDER BY totp_enabled_at DESC
 		         LIMIT 20`).Scan(&sealedTOTP)
 		if err := usecase.ProbeTOTPKeyMaterial(sealedTOTP, cfg.TOTPEncKey, cfg.JWTSecret); err != nil {
-			if strings.TrimSpace(cfg.TOTPEncKey) != "" {
-				// The operator set TOTP_ENC_KEY and it does not match what sealed these
-				// rows. Refuse to boot: serving on would lock every enrolled user out of
-				// 2FA silently, and the fix (set it to the exact bytes previously in use
-				// — JWT_SECRET verbatim, if it was never set before) is only available
-				// while those rows are still sealed under the old key.
-				log.Fatal("TOTP_ENC_KEY does not decrypt the stored 2FA secrets — refusing to boot rather than lock every enrolled user out. It is hashed as a pre-image, so it must be set to the EXACT material previously in use (JWT_SECRET verbatim if TOTP_ENC_KEY was not set before), with no trailing whitespace.",
+			// Fatal ONLY for key material the operator actually introduced. The
+			// condition cannot be "TOTP_ENC_KEY is set", because totpKey falls back to
+			// JWT_SECRET when it is empty: setting it to JWT_SECRET verbatim — the
+			// documented cutover value — derives a bit-identical key, so it can only
+			// ever reproduce the behaviour this deployment already had. Keying the
+			// fatal on "is set" would mean a deployment whose JWT_SECRET was rotated
+			// long ago boots fine today, then crash-loops the ENTIRE CRM the moment
+			// the operator does the recommended thing. Differing material is the only
+			// case where refusing to boot prevents something new.
+			if strings.TrimSpace(cfg.TOTPEncKey) != "" && cfg.TOTPEncKey != cfg.JWTSecret {
+				log.Fatal("TOTP_ENC_KEY does not decrypt the stored 2FA secrets — refusing to boot rather than lock every enrolled user out. It is hashed as a pre-image, so it must be the EXACT material previously in use (JWT_SECRET verbatim if TOTP_ENC_KEY was not set before), with no trailing whitespace. To recover, correct the value or remove TOTP_ENC_KEY entirely and redeploy.",
 					zap.Int("sampled", len(sealedTOTP)), zap.Error(err))
 			}
-			// TOTP_ENC_KEY is unset, so the key came from JWT_SECRET and JWT_SECRET has
-			// changed since these rows were sealed. Not fatal — that is the behaviour
-			// this deployment already had, and failing the boot here would turn a 2FA
-			// problem into an outage — but it must not be silent.
-			log.Error("stored 2FA secrets do not decrypt with the key derived from JWT_SECRET — JWT_SECRET appears to have been rotated while TOTP_ENC_KEY was unset. Enrolled users must recover with a backup code and re-enroll.",
+			// Either TOTP_ENC_KEY is unset, or it equals JWT_SECRET — same derived key
+			// either way, so JWT_SECRET was rotated at some earlier point and these rows
+			// predate it. Not fatal: that is the behaviour this deployment already had,
+			// and failing the boot here would turn a 2FA problem into an outage. But it
+			// must not be silent.
+			log.Error("stored 2FA secrets do not decrypt with the key derived from JWT_SECRET — it appears to have been rotated at some point while TOTP_ENC_KEY was unset. Affected users must recover with a backup code and re-enroll.",
 				zap.Int("sampled", len(sealedTOTP)), zap.Error(err))
 		} else if len(sealedTOTP) > 0 {
 			log.Info("2FA key material verified against stored secrets", zap.Int("sampled", len(sealedTOTP)))

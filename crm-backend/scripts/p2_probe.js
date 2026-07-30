@@ -1,5 +1,6 @@
 // Phase-2 audit probe: login, fetch webhook token+secret, dump an existing workflow's JSON shape.
 const http = require('http');
+const https = require('https');
 const { baseURL, credentials } = require('./lib/seedenv');
 
 const BASE = baseURL();
@@ -8,9 +9,13 @@ function req(path, { method='GET', body, token } = {}) {
   return new Promise((resolve, reject) => {
     const data = body ? JSON.stringify(body) : null;
     const u = new URL(path, BASE);
-    const opts = { hostname: u.hostname, port: u.port, path: u.pathname + u.search, method,
+    // Pick the client from the scheme and default the port from it too. With
+    // `http` hardcoded and a bare `u.port`, an https SEED_BASE yields port '' and
+    // silently downgrades to plaintext :80 — carrying SEED_PASSWORD in the body.
+    const client = u.protocol === 'https:' ? https : http;
+    const opts = { hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80), path: u.pathname + u.search, method,
       headers: { 'Content-Type': 'application/json', ...(data?{'Content-Length':Buffer.byteLength(data)}:{}), ...(token?{Authorization:'Bearer '+token}:{}) } };
-    const r = http.request(opts, x => { let c=[]; x.on('data',b=>c.push(b)); x.on('end',()=>{ const raw=Buffer.concat(c).toString(); let j; try{j=JSON.parse(raw)}catch{}; resolve({status:x.statusCode, json:j, raw}); }); });
+    const r = client.request(opts, x => { let c=[]; x.on('data',b=>c.push(b)); x.on('end',()=>{ const raw=Buffer.concat(c).toString(); let j; try{j=JSON.parse(raw)}catch{}; resolve({status:x.statusCode, json:j, raw}); }); });
     r.on('error', reject); if (data) r.write(data); r.end();
   });
 }

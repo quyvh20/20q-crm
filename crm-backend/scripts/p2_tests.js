@@ -1,5 +1,6 @@
 // Phase-2 audit harness. Usage: node scripts/p2_tests.js <webhook|compat|nested|loop>
 const http = require('http');
+const https = require('https');
 const crypto = require('crypto');
 const { baseURL, credentials } = require('./lib/seedenv');
 
@@ -9,9 +10,13 @@ function req(path, { method='GET', body, token, rawBody, headers={} } = {}) {
   return new Promise((resolve, reject) => {
     const data = rawBody !== undefined ? rawBody : (body ? JSON.stringify(body) : null);
     const u = new URL(path, BASE);
-    const opts = { hostname:u.hostname, port:u.port, path:u.pathname+u.search, method,
+    // Pick the client from the scheme and default the port from it too. With
+    // `http` hardcoded and a bare `u.port`, an https SEED_BASE yields port '' and
+    // silently downgrades to plaintext :80 — carrying SEED_PASSWORD in the body.
+    const client = u.protocol === 'https:' ? https : http;
+    const opts = { hostname:u.hostname, port:u.port || (u.protocol === 'https:' ? 443 : 80), path:u.pathname+u.search, method,
       headers: { 'Content-Type':'application/json', ...(data!=null?{'Content-Length':Buffer.byteLength(data)}:{}), ...(token?{Authorization:'Bearer '+token}:{}), ...headers } };
-    const r = http.request(opts, x => { let c=[]; x.on('data',b=>c.push(b)); x.on('end',()=>{ const raw=Buffer.concat(c).toString(); let j; try{j=JSON.parse(raw)}catch{}; resolve({status:x.statusCode, json:j, raw}); }); });
+    const r = client.request(opts, x => { let c=[]; x.on('data',b=>c.push(b)); x.on('end',()=>{ const raw=Buffer.concat(c).toString(); let j; try{j=JSON.parse(raw)}catch{}; resolve({status:x.statusCode, json:j, raw}); }); });
     r.on('error', reject); if (data!=null) r.write(data); r.end();
   });
 }

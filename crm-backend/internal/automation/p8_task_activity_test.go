@@ -61,6 +61,9 @@ func TestCreateTask_OwnScope_DB(t *testing.T) {
 	require.NoError(t, db.Exec(`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS owner_user_id UUID`).Error)
 	// record_shares (in its real U6 shape) is created by setupTestDB — a local
 	// pre-U6 copy here would just lose the race and mislead the next reader.
+	// created_by mirrors the cmd/server/main.go boot guard (and migration 000069).
+	// TaskExecutor writes this table with a raw INSERT, so a fixture that omits a
+	// real column fails at SQLSTATE 42703 rather than at an assertion.
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS tasks (
 		id UUID PRIMARY KEY,
 		org_id UUID NOT NULL,
@@ -68,6 +71,7 @@ func TestCreateTask_OwnScope_DB(t *testing.T) {
 		contact_id UUID,
 		deal_id UUID,
 		assigned_to UUID,
+		created_by UUID,
 		due_at TIMESTAMPTZ,
 		priority TEXT DEFAULT 'medium',
 		created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -108,6 +112,19 @@ func TestCreateTask_OwnScope_DB(t *testing.T) {
 	assert.Equal(t, owner, got.ActorID, "the audit actor is the workflow author")
 	assert.Equal(t, "task", got.ObjectSlug)
 	assert.Equal(t, domain.ActionCreate, got.Action)
+
+	// created_by must be stamped with the workflow author (U0.1-ext). This action
+	// leaves assignee, contact and deal all optional, so created_by is frequently
+	// the ONLY handle taskScope has on the row — an unstamped task created by a
+	// schedule-triggered workflow is invisible to every row-scoped user in the org,
+	// permanently, and nothing else in the suite would notice.
+	// Scanned as a string, not *uuid.UUID: GORM hands a pgtype uuid back as a
+	// driver string and scanning it straight into the uuid type fails on the
+	// conversion, which would look like a stamping bug rather than a test bug.
+	var createdBy *string
+	require.NoError(t, db.Table("tasks").Where("org_id = ?", orgID).Select("created_by").Scan(&createdBy).Error)
+	require.NotNil(t, createdBy, "create_task must stamp created_by or the row is unreachable to row-scoped callers")
+	assert.Equal(t, owner.String(), *createdBy, "created_by is the workflow author, matching the audit actor")
 }
 
 func TestLogActivity_OwnScope_DB(t *testing.T) {

@@ -853,7 +853,10 @@ func TestIntegration_FullPipeline_VIPContact(t *testing.T) {
 	contactID := uuid.New()
 	repo := NewRepository(db)
 
-	// Create the tasks table (TaskExecutor writes directly to it)
+	// Create the tasks table (TaskExecutor writes directly to it).
+	// created_by mirrors the cmd/server/main.go boot guard (and migration 000069);
+	// the executor's raw INSERT names it, so omitting it here fails at SQLSTATE
+	// 42703 rather than at an assertion.
 	db.Exec(`CREATE TABLE IF NOT EXISTS tasks (
 		id UUID PRIMARY KEY,
 		org_id UUID NOT NULL,
@@ -861,6 +864,7 @@ func TestIntegration_FullPipeline_VIPContact(t *testing.T) {
 		contact_id UUID,
 		deal_id UUID,
 		assigned_to UUID,
+		created_by UUID,
 		due_at TIMESTAMPTZ,
 		priority TEXT DEFAULT 'medium',
 		created_at TIMESTAMPTZ DEFAULT NOW(),
