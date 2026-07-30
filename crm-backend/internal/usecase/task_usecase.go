@@ -56,7 +56,10 @@ func (uc *taskUseCase) Update(ctx context.Context, orgID uuid.UUID, id uuid.UUID
 		return nil, err
 	}
 	if task == nil {
-		return nil, fmt.Errorf("task not found")
+		// nil from the scoped GetByID means "not found or not visible to this
+		// caller" — a row-scoped user editing another rep's task lands here (404),
+		// not a silent success.
+		return nil, domain.ErrTaskNotFound
 	}
 
 	if input.Title != nil {

@@ -119,6 +119,7 @@ var (
 	// leak the catalog's history for no benefit.
 	ErrTemplateNotFound = NewAppError(http.StatusNotFound, "template not found")
 	ErrContactNotFound       = NewAppError(http.StatusNotFound, "contact not found")
+	ErrTaskNotFound          = NewAppError(http.StatusNotFound, "task not found")
 	// ErrContactEmailExists is the (org_id, email) unique-index violation surfaced
 	// as itself instead of a blanket 500. Two callers need to tell it apart from a
 	// genuine DB failure: the REST API (a re-submitted email is the caller's

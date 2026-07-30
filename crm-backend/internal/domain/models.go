@@ -275,6 +275,11 @@ type Task struct {
 	DealID      *uuid.UUID     `gorm:"type:uuid" json:"deal_id,omitempty"`
 	ContactID   *uuid.UUID     `gorm:"type:uuid" json:"contact_id,omitempty"`
 	AssignedTo  *uuid.UUID     `gorm:"type:uuid" json:"assigned_to,omitempty"`
+	// CreatedBy is the user who created the task (U0.1-ext). A task with no linked
+	// contact/deal is otherwise unreachable to a row-scoped caller unless it is
+	// assigned to them; stamping the creator keeps a rep's own unassigned/unlinked
+	// tasks visible to them. Stamped from the request caller in the repository.
+	CreatedBy   *uuid.UUID     `gorm:"type:uuid" json:"created_by,omitempty"`
 	DueAt       *time.Time     `json:"due_at,omitempty"`
 	CompletedAt *time.Time     `json:"completed_at,omitempty"`
 	Priority    string         `gorm:"size:20;not null;default:'medium'" json:"priority"`

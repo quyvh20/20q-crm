@@ -19,6 +19,8 @@ type fakePermRepo struct {
 	ensureCalls int
 	upserts     []domain.ObjectPermission
 	audits      []*domain.ObjectAudit
+	auditRows   []domain.AuditView // returned by ListAudit (the per-record history)
+	auditCalls  int
 	roles       []domain.Role
 	perms       []domain.ObjectPermission
 
@@ -73,7 +75,8 @@ func (f *fakePermRepo) WriteAudit(_ context.Context, a *domain.ObjectAudit) erro
 	return nil
 }
 func (f *fakePermRepo) ListAudit(context.Context, uuid.UUID, string, uuid.UUID, int) ([]domain.AuditView, error) {
-	return nil, nil
+	f.auditCalls++
+	return f.auditRows, nil
 }
 func (f *fakePermRepo) LoadOrgFieldAccess(context.Context, uuid.UUID) (map[uuid.UUID]map[string]map[string]string, error) {
 	f.loadFieldCalls++
@@ -342,6 +345,81 @@ func TestListRecordAudit_RequiresReadAccess(t *testing.T) {
 	// With read access the call goes through to the repo (which returns empty here).
 	if _, err := uc.ListRecordAudit(callerCtx(domain.RoleViewer), uuid.New(), "deal", uuid.New()); err != nil {
 		t.Fatalf("expected audit allowed for a readable object, got %v", err)
+	}
+}
+
+// fakeRecordReader stands in for RecordService.Get in ListRecordAudit tests: it
+// reports whether the row is reachable by the caller (rec) or not (err), and
+// counts calls so a test can prove the reachability gate ran.
+type fakeRecordReader struct {
+	rec   *domain.UniformRecord
+	err   error
+	calls int
+}
+
+func (f *fakeRecordReader) Get(context.Context, uuid.UUID, string, uuid.UUID) (*domain.UniformRecord, error) {
+	f.calls++
+	return f.rec, f.err
+}
+
+// A row-scoped role with audit.view (OLS read passes) must NOT read the change
+// history of a record it can't open: the reader 404s and the trail is never
+// fetched (U0.1-ext).
+func TestListRecordAudit_UnreachableRecordIs404(t *testing.T) {
+	rid := trid(domain.RoleManager)
+	repo := &fakePermRepo{
+		access: map[uuid.UUID]map[string]domain.ObjectAccess{rid: {"contact": {Read: true}}},
+		auditRows: []domain.AuditView{{
+			Changes: map[string]interface{}{"email": map[string]interface{}{"old": "a@x.com", "new": "b@x.com"}},
+		}},
+	}
+	uc := NewPermissionUseCase(repo, &fakeRegistryUC{})
+	reader := &fakeRecordReader{err: domain.ErrContactNotFound}
+	uc.SetRecordReader(reader)
+
+	_, err := uc.ListRecordAudit(callerCtx(domain.RoleManager), uuid.New(), "contact", uuid.New())
+	assertStatus(t, err, 404, "audit for a record the caller can't reach")
+
+	if reader.calls != 1 {
+		t.Fatalf("the reachability gate should run exactly once, ran %d", reader.calls)
+	}
+	if repo.auditCalls != 0 {
+		t.Fatalf("the trail must not be fetched for an unreachable record, ListAudit ran %d times", repo.auditCalls)
+	}
+}
+
+// A reachable record's history is returned, but FLS-hidden field values are
+// stripped from every diff — a field the caller can't read must not leak through
+// its change history (U0.1-ext).
+func TestListRecordAudit_StripsFLSHiddenValues(t *testing.T) {
+	rid := trid(domain.RoleManager)
+	repo := &fakePermRepo{
+		access: map[uuid.UUID]map[string]domain.ObjectAccess{rid: {"contact": {Read: true}}},
+		fieldAccess: map[uuid.UUID]map[string]map[string]string{
+			rid: {"contact": {"salary": string(domain.FieldLevelHidden)}},
+		},
+		auditRows: []domain.AuditView{{
+			Changes: map[string]interface{}{
+				"salary": map[string]interface{}{"old": 100, "new": 200},
+				"title":  map[string]interface{}{"old": "SDR", "new": "AE"},
+			},
+		}},
+	}
+	uc := NewPermissionUseCase(repo, &fakeRegistryUC{})
+	uc.SetRecordReader(&fakeRecordReader{rec: &domain.UniformRecord{}}) // reachable
+
+	entries, err := uc.ListRecordAudit(callerCtx(domain.RoleManager), uuid.New(), "contact", uuid.New())
+	if err != nil {
+		t.Fatalf("expected the trail for a reachable record, got %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected one audit row, got %d", len(entries))
+	}
+	if _, leaked := entries[0].Changes["salary"]; leaked {
+		t.Errorf("the FLS-hidden 'salary' value must be stripped from the audit diff: %v", entries[0].Changes)
+	}
+	if _, ok := entries[0].Changes["title"]; !ok {
+		t.Errorf("a visible field's history must survive: %v", entries[0].Changes)
 	}
 }
 
