@@ -248,9 +248,34 @@ func main() {
 		db.Exec(`CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts(owner_user_id)`)
 		// Task creator (U0.1-ext): row scope keeps a rep's own unlinked/unassigned
 		// tasks visible to them via created_by. golang-migrate is dead on prod, so
-		// boot-guard the column (000043 mirrors this for local/dev).
+		// boot-guard the column (000069 mirrors this for local/dev).
 		db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES users(id) ON DELETE SET NULL`)
 		db.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_created_by ON tasks(created_by)`)
+		// taskScope reaches a row-scoped caller's tasks through two correlated
+		// EXISTS subqueries on the linked contact/deal. tasks has only
+		// (org_id, assigned_to) indexed, so without these the predicate seq-scans
+		// every task in the org on each GET /api/tasks.
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_contact_id ON tasks(contact_id)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_deal_id ON tasks(deal_id)`)
+		// BACKFILL, and it is load-bearing rather than cosmetic. Adding the column
+		// leaves every pre-existing row at created_by = NULL, which narrows the read
+		// the moment this deploys: a task with no assignee and no reachable
+		// contact/deal becomes invisible AND un-editable (404) to every own/team
+		// scoped user, with no signal left in the row to recover the creator from.
+		// assigned_to is the only creator evidence the old schema retained, so adopt
+		// it. Idempotent: rows already stamped are untouched, and a hard-deleted user
+		// NULLs both columns at once (both FKs are ON DELETE SET NULL), so a re-run
+		// cannot resurrect a stale owner.
+		db.Exec(`UPDATE tasks SET created_by = assigned_to WHERE created_by IS NULL AND assigned_to IS NOT NULL`)
+		// Whatever is left is genuinely ownerless: no creator, no assignee, no link.
+		// Those rows stay readable only to a DataScopeAll role. That is the correct
+		// direction for a security fix, but it is a real behaviour change, so count
+		// it rather than let it happen silently.
+		var orphanTasks int64
+		db.Raw(`SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND created_by IS NULL AND assigned_to IS NULL AND contact_id IS NULL AND deal_id IS NULL`).Scan(&orphanTasks)
+		if orphanTasks > 0 {
+			log.Warn("tasks: rows with no creator, assignee or linked record are now visible only to org-wide (data_scope=all) roles — U0.1-ext row scope has no other handle on them", zap.Int64("tasks", orphanTasks))
+		}
 
 		db.AutoMigrate(&domain.Role{}, &domain.RolePermission{}, &domain.OrgUser{}, &domain.KnowledgeBaseEntry{}, &domain.AITokenUsage{}, &domain.RecordShare{}, &domain.OrgInvitation{}, &domain.ChatSession{}, &domain.ChatMessage{}, &domain.VoiceNote{})
 

@@ -88,11 +88,24 @@ func (e *TaskExecutor) Execute(ctx context.Context, run *WorkflowRun, action Act
 
 	taskID := uuid.New()
 
+	// created_by is the workflow author (P8 run-as-creator attribution), matching
+	// what log_activity does for activities. It is not cosmetic: taskScope
+	// (repository/task_repository.go) admits a row-scoped caller only via
+	// assigned_to, created_by, or a reachable contact/deal. assignee_field,
+	// contact and deal are all optional here, so without a creator a task born
+	// from a schedule/company/custom-object trigger with no assignee would be
+	// invisible to every row-scoped user in the org, permanently.
+	var creatorID *uuid.UUID
+	if caller, ok := domain.CallerFromContext(ctx); ok && caller.UserID != uuid.Nil {
+		id := caller.UserID
+		creatorID = &id
+	}
+
 	// Insert task directly into the tasks table (matches existing CRM schema)
 	err := e.db.WithContext(ctx).Exec(
-		`INSERT INTO tasks (id, org_id, title, contact_id, deal_id, assigned_to, due_at, priority, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
-		taskID, run.OrgID, title, contactID, dealID, assigneeID, dueAt, priority,
+		`INSERT INTO tasks (id, org_id, title, contact_id, deal_id, assigned_to, created_by, due_at, priority, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+		taskID, run.OrgID, title, contactID, dealID, assigneeID, creatorID, dueAt, priority,
 	).Error
 
 	if err != nil {

@@ -100,11 +100,23 @@ CRITICAL: If the transcript explicitly mentions actions, deliverables, or follow
 				}
 			}
 			
+			// CreatedBy is the user who requested the summary. This write bypasses
+			// taskRepository.Create (raw tx), so nothing else stamps it — and
+			// without it a summary task whose voice note carries neither a deal
+			// nor a contact is unreachable to every row-scoped caller (U0.1-ext
+			// taskScope admits assigned_to / created_by / reachable link only).
+			var createdBy *uuid.UUID
+			if job.UserID != uuid.Nil {
+				id := job.UserID
+				createdBy = &id
+			}
+
 			task := domain.Task{
 				OrgID:      job.OrgID,
 				Title:      item.Title,
 				DealID:     payload.DealID,
 				ContactID:  payload.ContactID,
+				CreatedBy:  createdBy,
 				DueAt:      dueAt,
 				Priority:   item.Priority,
 			}
