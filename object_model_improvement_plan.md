@@ -955,7 +955,7 @@ single change does more for tenant safety than any new table.
   hardcoded column is dropped.
 - **RLS enabled on every new table** in its creating migration (matching `000008`/`000013`).
 - **Local stack note:** when bringing the stack up locally, mind the `org_users` migration
-  gotcha; seed via `scripts/seed_local_account.js` (`local_admin@20q.com` / `password123`).
+  gotcha; seed via `scripts/seed_local_account.js` (requires `SEED_EMAIL` / `SEED_PASSWORD`).
 
 ---
 

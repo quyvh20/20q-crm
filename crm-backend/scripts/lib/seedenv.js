@@ -4,11 +4,10 @@
 //
 // FAIL-CLOSED BY DESIGN: there is no fallback credential here, not even a weak
 // one for localhost. A hardcoded default is exactly what put a working
-// production admin login (live_admin@20q.com / password123, pointed at the
-// Railway prod URL) into the tip of a PUBLIC repo for 105 days. Any default
-// string becomes a de-facto shared secret: it lands in docs, in shell history,
-// and eventually back in the repo. Exiting with an actionable message costs one
-// env var and cannot leak.
+// production admin login, pointed at the Railway prod URL, into the tip of a
+// PUBLIC repo for 105 days. Any default string becomes a de-facto shared secret:
+// it lands in docs, in shell history, and eventually back in the repo. Exiting
+// with an actionable message costs one env var and cannot leak.
 //
 // The remote guard is a SECOND, independent switch rather than something folded
 // into SEED_BASE, because the failure being prevented is not "no configuration"
