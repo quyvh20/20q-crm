@@ -4,8 +4,12 @@
 // has real data to pick from and run against.
 const http = require('http');
 const https = require('https');
+const { baseURL, credentials } = require('./lib/seedenv');
 
-const BASE = process.env.SEED_BASE || 'http://localhost:8080';
+// SEED_BASE still selects the target, but baseURL() now refuses any non-localhost
+// host unless SEED_ALLOW_REMOTE=1 is also set. This script writes heavily, and one
+// env var was all that stood between it and production.
+const BASE = baseURL();
 
 function request(path, body, token, method = 'POST') {
   return new Promise((resolve, reject) => {
@@ -40,8 +44,7 @@ const get = (path, token) => request(path, {}, token, 'GET');
 const patch = (path, body, token) => request(path, body, token, 'PATCH');
 
 async function main() {
-  const EMAIL = 'local_admin@20q.com';
-  const PASSWORD = 'password123';
+  const { email: EMAIL, password: PASSWORD } = credentials();
 
   console.log(`Target: ${BASE}`);
   console.log('1. Registering org...');
@@ -186,9 +189,12 @@ async function main() {
 
   console.log('\nSEED COMPLETE');
   console.log('-------------------------------');
-  console.log(`Admin:    ${EMAIL} / ${PASSWORD}  (owns Local Test Corp; admin in Acme DevCorp)`);
-  console.log(`Member:   ${SECOND_EMAIL} / ${PASSWORD}  (Sales Manager custom role, if invites are enabled)`);
-  console.log(`Dev org:  ${DEVOWNER_EMAIL} / ${PASSWORD}  (owns Acme DevCorp)`);
+  // The password is not echoed: the operator supplied it, and reprinting it into
+  // scrollback and CI logs is how it ends up pasted somewhere durable.
+  console.log(`Admin:    ${EMAIL}  (owns Local Test Corp; admin in Acme DevCorp)`);
+  console.log(`Member:   ${SECOND_EMAIL}  (Sales Manager custom role, if invites are enabled)`);
+  console.log(`Dev org:  ${DEVOWNER_EMAIL}  (owns Acme DevCorp)`);
+  console.log('All three use $SEED_PASSWORD.');
   console.log('-------------------------------');
 }
 main().catch(console.error);

@@ -5,11 +5,13 @@ register -> create custom object + company + records -> link -> resolve labels -
 tag (object_links path AND contact_tags path) -> remove -> delete-cascade.
 """
 import json
+import os
+import secrets
 import time
 import urllib.request
 import urllib.error
 
-BASE = "http://localhost:8080"
+BASE = os.environ.get("SEED_BASE", "http://localhost:8080")
 TOKEN = None
 PASS = 0
 
@@ -40,8 +42,13 @@ def ok(label):
 
 # 1. Register a fresh org/admin
 email = f"p4_{int(time.time())}@example.com"
+# Generated per run rather than a literal: the org is thrown away, nothing needs to
+# log back in, and a literal here would be one more password in a public repo — plus
+# the old "password123" is blocklisted by internal/usecase/password_policy.go and
+# would break the moment Register adopts validatePassword.
+password = "P4-" + secrets.token_urlsafe(16) + "!1"
 code, p = call("POST", "/api/auth/register", {
-    "org_name": "P4 Test Co", "email": email, "password": "password123",
+    "org_name": "P4 Test Co", "email": email, "password": password,
     "first_name": "P4", "last_name": "Tester",
 }, expect=201)
 TOKEN = p["data"]["access_token"]

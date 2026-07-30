@@ -1,11 +1,14 @@
 // Phase-2 audit harness. Usage: node scripts/p2_tests.js <webhook|compat|nested|loop>
 const http = require('http');
 const crypto = require('crypto');
+const { baseURL, credentials } = require('./lib/seedenv');
+
+const BASE = baseURL();
 
 function req(path, { method='GET', body, token, rawBody, headers={} } = {}) {
   return new Promise((resolve, reject) => {
     const data = rawBody !== undefined ? rawBody : (body ? JSON.stringify(body) : null);
-    const u = new URL(path, 'http://localhost:8080');
+    const u = new URL(path, BASE);
     const opts = { hostname:u.hostname, port:u.port, path:u.pathname+u.search, method,
       headers: { 'Content-Type':'application/json', ...(data!=null?{'Content-Length':Buffer.byteLength(data)}:{}), ...(token?{Authorization:'Bearer '+token}:{}), ...headers } };
     const r = http.request(opts, x => { let c=[]; x.on('data',b=>c.push(b)); x.on('end',()=>{ const raw=Buffer.concat(c).toString(); let j; try{j=JSON.parse(raw)}catch{}; resolve({status:x.statusCode, json:j, raw}); }); });
@@ -14,7 +17,8 @@ function req(path, { method='GET', body, token, rawBody, headers={} } = {}) {
 }
 const sleep = ms => new Promise(r=>setTimeout(r,ms));
 async function login() {
-  const l = await req('/api/auth/login', { method:'POST', body:{ email:'local_admin@20q.com', password:'password123' } });
+  const { email, password } = credentials();
+  const l = await req('/api/auth/login', { method:'POST', body:{ email, password } });
   return l.json.data.access_token;
 }
 async function pollRuns(token, wfId, { want='completed', tries=20, gap=700 } = {}) {

@@ -29,6 +29,41 @@ jobs:
       - name: Test
         run: go test -short -timeout 300s ./...
 
+  no-prod-credentials-in-scripts:
+    name: No prod host or credential in scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # This repo is PUBLIC. crm-backend/scripts/seed_live_account.js hardcoded a
+      # working production admin login (live_admin@20q.com / password123) pointed
+      # at the Railway prod URL, and it sat at the tip of the default branch for
+      # 105 days before anyone noticed. Editing the file could not un-leak it —
+      # only rotating the account server-side could.
+      #
+      # So gate the shape rather than the specific string: after the cleanup, no
+      # script has any business naming the production host or carrying a password
+      # literal. Credentials come from SEED_EMAIL / SEED_PASSWORD via
+      # scripts/lib/seedenv.js, which fails closed when they are unset. Same
+      # pattern as the internal/authzgate grep gate.
+      - name: Reject production host references under crm-backend/scripts
+        run: |
+          if grep -rn '20q-crm-production' crm-backend/scripts/; then
+            echo "::error::A script references the production host. These scripts WRITE data; point them at SEED_BASE instead."
+            exit 1
+          fi
+
+      - name: Reject hardcoded password literals under crm-backend/scripts
+        run: |
+          # The exclusions are the legitimate ways to obtain one: from the
+          # environment, from seedenv's credentials(), or freshly generated from a
+          # CSPRNG for a throwaway account. Anything else is a literal.
+          if grep -rniE "password['\"]?\s*[:=]\s*['\"][^'\"]+['\"]" crm-backend/scripts/ \
+               | grep -viE "SEED_PASSWORD|process\.env|os\.environ|credentials\(\)|password_policy|secrets\.|token_urlsafe|crypto\.|randomUUID"; then
+            echo "::error::A script carries a hardcoded password. Use credentials() from scripts/lib/seedenv.js."
+            exit 1
+          fi
+
   build:
     name: Build Binary
     runs-on: ubuntu-latest

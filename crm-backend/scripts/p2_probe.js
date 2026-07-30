@@ -1,9 +1,13 @@
 // Phase-2 audit probe: login, fetch webhook token+secret, dump an existing workflow's JSON shape.
 const http = require('http');
+const { baseURL, credentials } = require('./lib/seedenv');
+
+const BASE = baseURL();
+
 function req(path, { method='GET', body, token } = {}) {
   return new Promise((resolve, reject) => {
     const data = body ? JSON.stringify(body) : null;
-    const u = new URL(path, 'http://localhost:8080');
+    const u = new URL(path, BASE);
     const opts = { hostname: u.hostname, port: u.port, path: u.pathname + u.search, method,
       headers: { 'Content-Type': 'application/json', ...(data?{'Content-Length':Buffer.byteLength(data)}:{}), ...(token?{Authorization:'Bearer '+token}:{}) } };
     const r = http.request(opts, x => { let c=[]; x.on('data',b=>c.push(b)); x.on('end',()=>{ const raw=Buffer.concat(c).toString(); let j; try{j=JSON.parse(raw)}catch{}; resolve({status:x.statusCode, json:j, raw}); }); });
@@ -11,7 +15,8 @@ function req(path, { method='GET', body, token } = {}) {
   });
 }
 (async () => {
-  const login = await req('/api/auth/login', { method:'POST', body:{ email:'local_admin@20q.com', password:'password123' } });
+  const { email, password } = credentials();
+  const login = await req('/api/auth/login', { method:'POST', body:{ email, password } });
   const token = login.json?.data?.access_token;
   console.log('login', login.status, 'token?', !!token);
   const tk = await req('/api/webhooks/token', { token });
