@@ -11,24 +11,24 @@ import (
 // knownUnbound lists mapstructure keys that do NOT reach the Config struct from
 // the environment, deliberately left that way here.
 //
-// Both are live production bugs, and both are load-bearing enough that fixing
-// them silently inside an unrelated change would be worse than the bug:
-//
-//   - TOTP_ENC_KEY: cfg.TOTPEncKey is therefore always "" in production, so
-//     usecase/two_factor_crypto.go falls back to deriving the key from
-//     JWT_SECRET. Binding it now would flip the key material for any deployment
-//     that HAS set the variable, making every stored TOTP secret undecryptable
-//     and locking those users out of 2FA until they burn a backup code. The fix
-//     needs a re-encryption pass, not a one-line binding.
 //   - PADDLE_WEBHOOK_SECRET: the original cautionary tale, recorded in
 //     config.go's own comment.
 //
+// TOTP_ENC_KEY used to be the second entry, and it is worth recording how it
+// left. The objection to binding it was that doing so "would flip the key
+// material for any deployment that HAS set the variable" and therefore needed a
+// re-encryption pass. That is true only when the value DIFFERS from JWT_SECRET.
+// totpKey hashes its input, so TOTP_ENC_KEY is a pre-image rather than a key:
+// set it to the current JWT_SECRET verbatim and the derived AES key is
+// bit-identical, which decouples the two secrets with no re-encryption at all.
+// The order is set-the-variable, then deploy the binding, and cmd/server/main.go
+// probes real stored secrets at boot and refuses to start if they stop opening.
+//
 // Nothing may be added to this list to make a NEW key pass. That is the whole
-// value of the test: it cannot stop the two failures that already happened, but
-// it makes a third one impossible to introduce by omission — which is precisely
-// how both of these arrived.
+// value of the test: it cannot stop the failures that already happened, but it
+// makes another one impossible to introduce by omission — which is precisely how
+// both of these arrived.
 var knownUnbound = map[string]string{
-	"TOTP_ENC_KEY":          "fixing it needs a re-encryption pass; see the comment above",
 	"PADDLE_WEBHOOK_SECRET": "the original BindEnv omission, recorded in config.go",
 }
 

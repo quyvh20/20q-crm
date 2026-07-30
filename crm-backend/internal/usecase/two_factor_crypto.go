@@ -99,6 +99,37 @@ func decryptTOTPSecret(stored, encKey, jwtSecret string) (string, error) {
 	return string(plain), nil
 }
 
+// ProbeTOTPKeyMaterial reports whether the key derived from (encKey, jwtSecret)
+// can still open secrets that were sealed under the key this deployment used
+// before. It is the boot-time guard for the one change an operator cannot undo
+// by editing config: swapping the TOTP key material.
+//
+// Why it exists. totpKey hashes whatever material it is given, so TOTP_ENC_KEY
+// is a PRE-IMAGE, not the key itself — setting it to anything other than the
+// exact bytes currently in use (today: JWT_SECRET verbatim, since TOTP_ENC_KEY
+// had no viper binding and always resolved to "") silently produces a different
+// AES key. Nothing fails at boot, nothing fails on deploy; every enrolled user
+// simply cannot pass their second factor the next time they log in, and each has
+// to burn a backup code and re-enroll. It does not even trim, so a trailing
+// newline pasted into a dashboard field is enough to do it.
+//
+// Sampling several rows rather than one keeps a single corrupt or hand-edited
+// secret from being read as a key mismatch: one successful open proves the key.
+func ProbeTOTPKeyMaterial(sealedSecrets []string, encKey, jwtSecret string) error {
+	if len(sealedSecrets) == 0 {
+		return nil // nobody is enrolled — there is nothing this key could break
+	}
+	for _, s := range sealedSecrets {
+		if strings.TrimSpace(s) == "" {
+			continue
+		}
+		if _, err := decryptTOTPSecret(s, encKey, jwtSecret); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("two-factor: none of the %d sampled TOTP secrets decrypt with the configured key material", len(sealedSecrets))
+}
+
 // backupCodeAlphabet excludes the characters people misread when copying a code
 // off a screen under stress (0/O, 1/I/l). A recovery code that fails because it
 // was transcribed wrong is indistinguishable, to the user, from being locked out.

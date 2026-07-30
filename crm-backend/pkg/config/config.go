@@ -164,6 +164,18 @@ func LoadConfig() (*Config, error) {
 	viper.BindEnv("DATABASE_URL")
 	viper.BindEnv("REDIS_URL")
 	viper.BindEnv("JWT_SECRET")
+	// TOTP_ENC_KEY went unbound for its whole life, so cfg.TOTPEncKey always read
+	// "" in production and usecase/two_factor_crypto.go always fell back to
+	// deriving the TOTP key from JWT_SECRET — which meant JWT_SECRET could never be
+	// rotated without orphaning every stored 2FA secret.
+	//
+	// Binding it is only safe because the value is a PRE-IMAGE that gets hashed,
+	// not the key: set TOTP_ENC_KEY to the current JWT_SECRET verbatim and the
+	// derived AES key is bit-identical, so the two secrets decouple with no
+	// re-encryption pass. Set it to anything else and every enrolled user is locked
+	// out of their second factor. cmd/server/main.go probes a sample of real stored
+	// secrets at boot and refuses to start rather than let that happen quietly.
+	viper.BindEnv("TOTP_ENC_KEY")
 	viper.BindEnv("GOOGLE_CLIENT_ID")
 	viper.BindEnv("GOOGLE_CLIENT_SECRET")
 	viper.BindEnv("GOOGLE_REDIRECT_URL")

@@ -1008,6 +1008,42 @@ func main() {
 		db.Exec(`CREATE INDEX IF NOT EXISTS idx_2fa_challenge_expiry ON two_factor_challenges(expires_at)`)
 		db.Exec(`ALTER TABLE two_factor_challenges ENABLE ROW LEVEL SECURITY`)
 
+		// TOTP key-material guard. The stored seed is AES-GCM sealed under a key
+		// DERIVED from TOTP_ENC_KEY, falling back to JWT_SECRET when that is empty —
+		// and the derivation hashes whatever it is handed, so the env var is a
+		// pre-image, not the key. Change either secret to the wrong value and
+		// absolutely nothing fails here: the process boots, the deploy goes green,
+		// and every enrolled user simply cannot pass their second factor at their
+		// next login, each recovering only by burning a backup code and re-enrolling.
+		// It does not even trim, so a trailing newline in a dashboard field does it.
+		//
+		// So prove the key against real rows instead. Sampling several keeps one
+		// corrupt or hand-edited secret from reading as a mismatch — a single
+		// successful open proves the key material.
+		var sealedTOTP []string
+		db.Raw(`SELECT totp_secret FROM users
+		         WHERE totp_secret IS NOT NULL AND totp_secret <> '' AND totp_enabled_at IS NOT NULL
+		         LIMIT 20`).Scan(&sealedTOTP)
+		if err := usecase.ProbeTOTPKeyMaterial(sealedTOTP, cfg.TOTPEncKey, cfg.JWTSecret); err != nil {
+			if strings.TrimSpace(cfg.TOTPEncKey) != "" {
+				// The operator set TOTP_ENC_KEY and it does not match what sealed these
+				// rows. Refuse to boot: serving on would lock every enrolled user out of
+				// 2FA silently, and the fix (set it to the exact bytes previously in use
+				// — JWT_SECRET verbatim, if it was never set before) is only available
+				// while those rows are still sealed under the old key.
+				log.Fatal("TOTP_ENC_KEY does not decrypt the stored 2FA secrets — refusing to boot rather than lock every enrolled user out. It is hashed as a pre-image, so it must be set to the EXACT material previously in use (JWT_SECRET verbatim if TOTP_ENC_KEY was not set before), with no trailing whitespace.",
+					zap.Int("sampled", len(sealedTOTP)), zap.Error(err))
+			}
+			// TOTP_ENC_KEY is unset, so the key came from JWT_SECRET and JWT_SECRET has
+			// changed since these rows were sealed. Not fatal — that is the behaviour
+			// this deployment already had, and failing the boot here would turn a 2FA
+			// problem into an outage — but it must not be silent.
+			log.Error("stored 2FA secrets do not decrypt with the key derived from JWT_SECRET — JWT_SECRET appears to have been rotated while TOTP_ENC_KEY was unset. Enrolled users must recover with a backup code and re-enroll.",
+				zap.Int("sampled", len(sealedTOTP)), zap.Error(err))
+		} else if len(sealedTOTP) > 0 {
+			log.Info("2FA key material verified against stored secrets", zap.Int("sampled", len(sealedTOTP)))
+		}
+
 		// Personal API tokens (U6.5, migration 000042) — boot guard. Mirrors
 		// migrations/000042_api_tokens.up.sql exactly. The secret is stored as a SHA-256
 		// hash (not bcrypt: this is on the hot path of every API request), and the
