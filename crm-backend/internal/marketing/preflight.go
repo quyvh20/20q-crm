@@ -24,20 +24,21 @@ import (
 // internal/marketing deliberately does not import pkg/config, so these are passed
 // in as ALREADY-DERIVED booleans, ints and non-secret strings. No key material ever
 // crosses this boundary.
+// Every field is READ by Evaluate. Nothing is carried "for context": an unused
+// field on this struct is a standing invitation for a later edit to pass raw key
+// material across a boundary whose whole purpose is that key material never
+// crosses it.
 type PreflightEnv struct {
-	AppEnv               string
-	MailDisabled         bool
-	MailFrom             string
-	ResendAPIKeySet      bool
+	MailDisabled           bool
+	ResendAPIKeySet        bool
 	ResendWebhookSecretSet bool
-	ResendMaxRPS         int
 	// UnsubKeyVersions lists the keyring versions that PARSED. Reporting the version
 	// integers is safe and is the only useful thing that can be said about a signing
 	// key without leaking it.
-	UnsubKeyVersions []int
-	UnsubKeyPrimary  int
-	FrontendURL      string
-	PublicAPIBaseURL string
+	UnsubKeyVersions  []int
+	UnsubKeyPrimary   int
+	FrontendURL       string
+	PublicAPIBaseURL  string
 	SendWorkerStarted bool
 }
 
@@ -117,7 +118,7 @@ func (s *PreflightService) Evaluate(ctx context.Context, orgID uuid.UUID) (*doma
 		if err != nil {
 			a.add("sending_domain", "Verified sending domain", false, "could not check the sending domain")
 		} else {
-			a.add("sending_domain", "Verified sending domain", domOK, domainPreflightDetail(reason))
+			a.add("sending_domain", "Verified sending domain", domOK, knownDetail(domainReasonDetail(reason), reason))
 		}
 	}
 
@@ -127,7 +128,7 @@ func (s *PreflightService) Evaluate(ctx context.Context, orgID uuid.UUID) (*doma
 		a.add("sender_profile", "Sender profile complete", false, "could not load the sender profile")
 	default:
 		ok, reason := SenderProfileSendable(profile)
-		a.add("sender_profile", "Sender profile complete", ok, senderPreflightDetail(reason))
+		a.add("sender_profile", "Sender profile complete", ok, knownDetail(senderReasonDetail(reason), reason))
 	}
 
 	// The recipient-claim SQL INNER JOINs org_marketing_profile, so a missing row
@@ -193,36 +194,16 @@ func isLocalURL(u string) bool {
 	return strings.Contains(l, "localhost") || strings.Contains(l, "127.0.0.1") || strings.Contains(l, "[::1]")
 }
 
-func domainPreflightDetail(reason string) string {
-	switch reason {
-	case "", "ok":
-		return ""
-	case "no_domains":
-		return "no sending domain has been added for this org"
-	case "not_verified":
-		return "the domain's SPF/DKIM records have not verified yet"
-	case "no_dmarc":
-		return "no DMARC policy is published for the domain, so one-click unsubscribe is withheld by mailbox providers"
-	default:
-		return reason
+// knownDetail returns mapped only when the reason mapper actually RECOGNISED the
+// reason. Both shared mappers end in a pass-through default arm that echoes their
+// input, which is fine for the campaign composer but not here: this report is
+// pasted into support threads, so an opaque upstream string must not ride out in
+// it. A recognised reason is one the mapper rewrote into different words.
+func knownDetail(mapped, reason string) string {
+	if mapped == reason && strings.TrimSpace(reason) != "" {
+		return "not ready — see the sending domain and sender profile settings"
 	}
-}
-
-func senderPreflightDetail(reason string) string {
-	switch reason {
-	case "":
-		return ""
-	case "no_profile":
-		return "no sender profile has been saved"
-	case "marketing_paused":
-		return "marketing is paused for this org (auto-paused by the complaint-rate breaker, or paused manually)"
-	case "no_postal_address":
-		return "no physical postal address — CAN-SPAM requires one in every marketing footer"
-	case "no_from_name":
-		return "no from-name is set"
-	default:
-		return reason
-	}
+	return mapped
 }
 
 func lawfulBasisDetail(mailable, known int64) string {

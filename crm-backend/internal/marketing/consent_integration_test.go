@@ -22,14 +22,11 @@ import (
 
 func setupConsentSchema(t *testing.T, db *gorm.DB) {
 	t.Helper()
+	// NOTE: contacts is created by newCampaignTestDB, not here. A local
+	// CREATE TABLE IF NOT EXISTS would be a silent no-op against that existing
+	// table and would mask any future divergence between the two definitions.
 	stmts := []string{
 		`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`,
-		`CREATE TABLE IF NOT EXISTS contacts (
-			id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-			org_id UUID NOT NULL,
-			email TEXT,
-			deleted_at TIMESTAMPTZ
-		)`,
 		// Mirrors the cmd/server/main.go boot guard, including the UNIQUE the grant
 		// uses as its ON CONFLICT arbiter and the consent_granted_by column.
 		`CREATE TABLE IF NOT EXISTS contact_marketing_state (
@@ -50,12 +47,17 @@ func setupConsentSchema(t *testing.T, db *gorm.DB) {
 			updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			UNIQUE (org_id, email_normalized)
 		)`,
+		// The production shape, not a minimal one: soft_bounce_count and topic_id are
+		// exactly the columns that decide whether a row actually suppresses, so a
+		// fixture without them cannot express the cases the preview must get right.
 		`CREATE TABLE IF NOT EXISTS marketing_suppressions (
 			id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
 			org_id UUID NOT NULL,
 			email_normalized VARCHAR(320) NOT NULL,
 			reason VARCHAR(40) NOT NULL DEFAULT 'manual',
-			scope VARCHAR(20) NOT NULL DEFAULT 'all'
+			scope VARCHAR(20) NOT NULL DEFAULT 'all',
+			topic_id UUID,
+			soft_bounce_count INT NOT NULL DEFAULT 0
 		)`,
 	}
 	for _, s := range stmts {
@@ -204,6 +206,59 @@ func TestGrantLawfulBasis_DB(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, counts.Candidates, n, "preview and grant must not disagree")
 	})
+}
+
+// The preview's Suppressed number is shown to an operator as "will not be mailed"
+// and is frozen into the consent audit event, so it has to agree with the gate that
+// actually decides — Suppression.Suppresses — rather than counting any row that
+// happens to exist. Two shapes diverge: a soft bounce below the threshold, which
+// the M4 accumulator writes on the FIRST transient bounce and never prunes, and a
+// topic-scoped opt-out, which cannot apply to an org-level grant carrying no topic.
+func TestPreviewSuppressed_MirrorsTheSendGate_DB(t *testing.T) {
+	db := newCampaignTestDB(t)
+	setupConsentSchema(t, db)
+	repo := marketing.NewRepository(db)
+	ctx := context.Background()
+	orgID := uuid.New()
+	topicID := uuid.New()
+
+	rows := []struct {
+		email     string
+		reason    string
+		scope     string
+		softCount int
+		topic     *uuid.UUID
+	}{
+		{"blocked-all@x.com", "manual", "all", 0, nil},
+		{"blocked-mkt@x.com", "unsubscribe", "marketing", 0, nil},
+		{"soft-under@x.com", "soft_bounce", "all", 2, nil},   // advisory only
+		{"soft-over@x.com", "soft_bounce", "all", 3, nil},    // suppresses
+		{"topic-only@x.com", "unsubscribe", "marketing", 0, &topicID}, // other topic
+	}
+
+	ids := make([]uuid.UUID, 0, len(rows))
+	want := int64(0)
+	for _, r := range rows {
+		ids = append(ids, insConsentContact(t, db, orgID, r.email))
+		require.NoError(t, db.Exec(
+			`INSERT INTO marketing_suppressions (org_id, email_normalized, reason, scope, soft_bounce_count, topic_id)
+			 VALUES (?, ?, ?, ?, ?, ?)`, orgID, r.email, r.reason, r.scope, r.softCount, r.topic).Error)
+
+		// Derive the expectation from the REAL gate rather than restating it here,
+		// so the test cannot drift away from the code it is guarding.
+		s := marketing.Suppression{
+			Reason: r.reason, Scope: r.scope, SoftBounceCount: r.softCount, TopicID: r.topic,
+		}
+		if s.Suppresses(marketing.ChannelMarketing, nil) {
+			want++
+		}
+	}
+
+	counts, err := repo.PreviewLawfulBasisGrant(ctx, orgID, contactScope(ids...))
+	require.NoError(t, err)
+	require.Equal(t, int64(len(rows)), counts.Candidates)
+	require.Equal(t, want, counts.Suppressed,
+		"the preview's suppressed count must agree with Suppression.Suppresses, not merely count rows")
 }
 
 // The preflight numerator has to mirror HasLawfulBasis exactly. If they drift, the

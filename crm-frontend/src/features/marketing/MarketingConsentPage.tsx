@@ -40,7 +40,7 @@ export const MarketingConsentPage: React.FC = () => {
 };
 
 const ConsentContent: React.FC = () => {
-  const { data: bases, isLoading: basesLoading } = useGrantableBases();
+  const { data: bases, isLoading: basesLoading, isError: basesError } = useGrantableBases();
   const { data: segments } = useSegments();
   const preview = usePreviewGrant();
   const grant = useGrantLawfulBasis();
@@ -68,7 +68,14 @@ const ConsentContent: React.FC = () => {
     segment_ids: [segmentId],
     // Sent only for the CASL bases; the backend rejects an expiry on a standing
     // basis, so passing one unconditionally would 400 every other grant.
-    casl_expires_at: needsExpiry && expiresAt ? new Date(expiresAt).toISOString() : undefined,
+    //
+    // End of day in the VIEWER's timezone, not UTC midnight. A date input yields
+    // "YYYY-MM-DD", and new Date("2027-01-01") parses that as UTC midnight — which
+    // for anyone west of UTC is the previous local day, silently expiring consent
+    // up to a day early. A date-time string with no trailing Z is parsed as local
+    // time, which is what "this consent lasts through that date" means.
+    casl_expires_at:
+      needsExpiry && expiresAt ? new Date(`${expiresAt}T23:59:59`).toISOString() : undefined,
   });
 
   const onPreview = () => {
@@ -112,6 +119,16 @@ const ConsentContent: React.FC = () => {
 
       {basesLoading ? (
         <SpinnerBlock label="Loading…" />
+      ) : basesError ? (
+        // Without the basis list the picker is empty and the form is unusable. Say
+        // so, rather than rendering a form that can never be completed.
+        <div
+          role="alert"
+          className="flex items-start gap-2 rounded-xl border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive"
+        >
+          <AlertCircle aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>Could not load the available lawful bases. Reload the page to try again.</span>
+        </div>
       ) : (
         <div className="space-y-4 rounded-xl border border-border bg-card p-4">
           <div>
@@ -141,6 +158,7 @@ const ConsentContent: React.FC = () => {
                 id="consent-expiry"
                 type="date"
                 value={expiresAt}
+                min={new Date().toISOString().slice(0, 10)}
                 onChange={(e) => setExpiresAt(e.target.value)}
               />
               <p className="mt-1 text-xs text-muted-foreground">
@@ -159,7 +177,7 @@ const ConsentContent: React.FC = () => {
             </Select>
             <p className="mt-1 text-xs text-muted-foreground">
               Audiences are managed on the{' '}
-              <Link className="underline" to="/marketing/segments">Audiences</Link> page.
+              <Link className="underline" to="/marketing/audiences">Audiences</Link> page.
             </p>
           </div>
 
@@ -218,11 +236,16 @@ const ConsentContent: React.FC = () => {
         </div>
       )}
 
+      {/* Not dismissable while the write is in flight. Closing the dialog does not
+          cancel the request, so an Escape mid-grant would leave the operator with
+          no confirmation for a write that still commits. */}
       <Modal
         open={confirmOpen}
         onClose={() => setConfirmOpen(false)}
         title="Record this lawful basis?"
         size="md"
+        dismissable={!grant.isPending}
+        hideClose={grant.isPending}
       >
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground">
@@ -257,7 +280,9 @@ const ConsentContent: React.FC = () => {
           </dl>
 
           <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => setConfirmOpen(false)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setConfirmOpen(false)} disabled={grant.isPending}>
+              Cancel
+            </Button>
             <Button onClick={onConfirm} disabled={grant.isPending}>
               {grant.isPending ? 'Recording…' : 'Record basis'}
             </Button>

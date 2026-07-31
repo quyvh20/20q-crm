@@ -34,7 +34,12 @@ func (f *fakeConsentStore) PreviewLawfulBasisGrant(_ context.Context, _ uuid.UUI
 	return f.counts, nil
 }
 
-type fakeSegments struct{ q *domain.AudienceQuery }
+type fakeSegments struct {
+	q *domain.AudienceQuery
+	// missing makes Get report a segment that does not exist, which is how a
+	// deleted or mistyped id reaches the usecase.
+	missing bool
+}
 
 func (f *fakeSegments) AudienceQueryForSegments(_ context.Context, _ uuid.UUID, _, _ []uuid.UUID) (*domain.AudienceQuery, error) {
 	if f.q == nil {
@@ -42,10 +47,20 @@ func (f *fakeSegments) AudienceQueryForSegments(_ context.Context, _ uuid.UUID, 
 	}
 	return f.q, nil
 }
-func (f *fakeSegments) Get(_ context.Context, _, _ uuid.UUID) (*domain.Segment, error) { return nil, nil }
+
+func (f *fakeSegments) Get(_ context.Context, _, id uuid.UUID) (*domain.Segment, error) {
+	if f.missing {
+		return nil, nil
+	}
+	return &domain.Segment{ID: id, Type: domain.SegmentTypeDynamic}, nil
+}
 
 func newConsentUC(store *fakeConsentStore) *ConsentUseCase {
-	uc := NewConsentUseCase(store, &fakeSegments{}, nil, nil)
+	return newConsentUCWith(store, &fakeSegments{})
+}
+
+func newConsentUCWith(store *fakeConsentStore, segs *fakeSegments) *ConsentUseCase {
+	uc := NewConsentUseCase(store, segs, nil, nil)
 	uc.now = func() time.Time { return time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC) }
 	return uc
 }
@@ -103,9 +118,17 @@ func TestGrant_RefusesBasesThatWouldNotMakeAnyoneMailable(t *testing.T) {
 
 // The mirror of the above: everything we DO allow must genuinely make an address
 // mailable. If this fails, the grantable set and HasLawfulBasis have diverged.
+//
+// Iterates grantableBases — the map IsGrantableConsentBasis actually enforces —
+// rather than GrantableConsentBases(), which is only the display list. Adding an
+// entry to the map without the slice would otherwise slip through the very test
+// written to catch it.
 func TestGrantableBasesAreActuallyMailable(t *testing.T) {
 	future := time.Now().Add(24 * time.Hour)
-	for _, basis := range GrantableConsentBases() {
+	for basis, allowed := range grantableBases {
+		if !allowed {
+			continue
+		}
 		b := basis
 		st := &ContactMarketingState{MarketingStatus: StatusPending, ConsentBasis: &b}
 		if CASLImpliedBasis(basis) {
@@ -113,6 +136,26 @@ func TestGrantableBasesAreActuallyMailable(t *testing.T) {
 		}
 		if !st.HasLawfulBasis(time.Now()) {
 			t.Fatalf("grantable basis %q does not satisfy HasLawfulBasis — granting it would be a no-op", basis)
+		}
+	}
+}
+
+// The enforced set and the set offered to the UI must be the same set. If they
+// drift, the picker either offers a basis the API rejects, or hides one it accepts.
+func TestGrantableBasisListMatchesTheEnforcedSet(t *testing.T) {
+	listed := map[string]bool{}
+	for _, b := range GrantableConsentBases() {
+		if listed[b] {
+			t.Fatalf("GrantableConsentBases lists %q twice", b)
+		}
+		listed[b] = true
+		if !IsGrantableConsentBasis(b) {
+			t.Fatalf("%q is offered to the UI but rejected by the gate", b)
+		}
+	}
+	for basis, allowed := range grantableBases {
+		if allowed && !listed[basis] {
+			t.Fatalf("%q is accepted by the gate but never offered to the UI", basis)
 		}
 	}
 }
@@ -262,6 +305,33 @@ func TestGrant_ReportsRowsActuallyWritten(t *testing.T) {
 	}
 	if got.Suppressed != 2 {
 		t.Fatalf("want 2 suppressed surfaced, got %d", got.Suppressed)
+	}
+}
+
+// A segment deleted between page load and submit — or one mistyped uuid digit,
+// which parses fine — must be refused, not silently compiled into a zero-row
+// query. Otherwise the endpoint answers 200 with granted:0 and writes an audit
+// event for a grant that targeted nothing.
+func TestGrant_RefusesUnknownSegment(t *testing.T) {
+	store := &fakeConsentStore{}
+	uc := newConsentUCWith(store, &fakeSegments{missing: true})
+
+	_, err := uc.Grant(context.Background(), uuid.New(), uuid.New(), validGrant())
+	if err == nil {
+		t.Fatal("want refusal for a segment that does not resolve")
+	}
+	if got := codeOf(t, err); got != http.StatusNotFound {
+		t.Fatalf("want 404, got %d", got)
+	}
+	if store.grantCalls != 0 {
+		t.Fatal("nothing may be written when the audience does not resolve")
+	}
+}
+
+func TestPreview_RefusesUnknownSegment(t *testing.T) {
+	uc := newConsentUCWith(&fakeConsentStore{}, &fakeSegments{missing: true})
+	if _, err := uc.Preview(context.Background(), uuid.New(), validGrant()); err == nil {
+		t.Fatal("preview must refuse an unresolvable audience too")
 	}
 }
 

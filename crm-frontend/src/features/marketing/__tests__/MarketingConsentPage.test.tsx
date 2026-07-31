@@ -143,4 +143,35 @@ describe('MarketingConsentPage form', () => {
     // An expiry on a standing basis is a 400 — it must be omitted, not sent empty.
     expect(body.casl_expires_at).toBeUndefined();
   });
+
+  // A date input yields "YYYY-MM-DD", and new Date() on that parses as UTC
+  // midnight — which west of UTC is the PREVIOUS local day, expiring consent up to
+  // a day early. The value must represent the end of the chosen day locally.
+  it('sends a CASL expiry that does not lapse before the chosen day ends', () => {
+    renderPage();
+    fireEvent.change(screen.getByLabelText('Lawful basis'), {
+      target: { value: 'implied_transaction' },
+    });
+    fireEvent.change(screen.getByLabelText('Apply to audience'), { target: { value: 'seg-1' } });
+    fireEvent.change(screen.getByLabelText('Declared source'), { target: { value: 'orders' } });
+    fireEvent.change(screen.getByLabelText('Consent expires'), { target: { value: '2027-03-01' } });
+    fireEvent.click(screen.getByRole('button', { name: /review and record/i }));
+
+    const sent = previewMutate.mock.calls[0][0].casl_expires_at as string;
+    expect(sent).toBeDefined();
+
+    // Whatever the runner's timezone, the instant sent must be at or after the end
+    // of 2027-03-01 locally — never before it.
+    const endOfChosenDayLocal = new Date('2027-03-01T23:59:59').getTime();
+    expect(new Date(sent).getTime()).toBeGreaterThanOrEqual(endOfChosenDayLocal);
+  });
+
+  it('will not let a past expiry be picked', () => {
+    renderPage();
+    fireEvent.change(screen.getByLabelText('Lawful basis'), {
+      target: { value: 'implied_transaction' },
+    });
+    const input = screen.getByLabelText('Consent expires') as HTMLInputElement;
+    expect(input.min).toBe(new Date().toISOString().slice(0, 10));
+  });
 });

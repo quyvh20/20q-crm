@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"crm-backend/internal/domain"
 
@@ -86,7 +87,11 @@ func (uc *ConsentUseCase) validate(ctx context.Context, in *ConsentGrantInput) e
 	if in.Source == "" {
 		return badRequest("source is required: record where this basis comes from, e.g. \"2024 customer import\"")
 	}
-	if len(in.Source) > 64 {
+	// Counted in RUNES, not bytes: consent_source is VARCHAR(64), and Postgres
+	// measures that in characters. A byte check would let a 64-character
+	// multi-byte source through to a 22001 at insert time — a 500 where a 400
+	// belongs.
+	if utf8.RuneCountInString(in.Source) > 64 {
 		return badRequest("source must be 64 characters or fewer")
 	}
 
@@ -138,6 +143,25 @@ func (uc *ConsentUseCase) scopeFor(ctx context.Context, orgID uuid.UUID, in Cons
 	if len(in.ContactIDs) > 0 {
 		return GrantScope{ContactIDs: in.ContactIDs}, nil
 	}
+
+	// Every named segment must resolve, and this check has to happen HERE rather
+	// than being inferred downstream. AudienceQueryForSegments silently skips ids
+	// it cannot find and always returns a non-nil query — an entirely unresolvable
+	// list compiles to a zero-row "WHERE false" SELECT. Without this, deleting a
+	// segment between page load and submit (or one wrong digit in a uuid, which
+	// parses fine) yields 200 with granted:0 and an audit event recording a grant
+	// that targeted nothing. The mixed case is worse still: one valid id and one
+	// stale id silently narrows the population with no signal at all.
+	for _, id := range append(append([]uuid.UUID{}, in.SegmentIDs...), in.ExcludeSegmentIDs...) {
+		seg, err := uc.segments.Get(ctx, orgID, id)
+		if err != nil {
+			return GrantScope{}, err
+		}
+		if seg == nil {
+			return GrantScope{}, domain.NewAppError(http.StatusNotFound, "audience not found: "+id.String())
+		}
+	}
+
 	aud, err := uc.segments.AudienceQueryForSegments(ctx, orgID, in.SegmentIDs, in.ExcludeSegmentIDs)
 	if err != nil {
 		return GrantScope{}, err

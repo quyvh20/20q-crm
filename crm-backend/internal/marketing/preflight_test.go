@@ -35,10 +35,8 @@ func (f *fakePreflightStore) HasConsentUniqueConstraint(_ context.Context) (bool
 
 func healthyEnv() PreflightEnv {
 	return PreflightEnv{
-		AppEnv:                 "production",
 		ResendAPIKeySet:        true,
 		ResendWebhookSecretSet: true,
-		ResendMaxRPS:           8,
 		UnsubKeyVersions:       []int{1},
 		UnsubKeyPrimary:        1,
 		FrontendURL:            "https://app.example.com",
@@ -178,28 +176,63 @@ func TestPreflight_BlockingChecks(t *testing.T) {
 	}
 }
 
-// The report is shown to operators and shipped in support threads. It may say a key
-// is configured and which keyring versions parse; it may never say more.
+// The report is shown to operators and pasted into support threads. It may say a
+// key is configured and which keyring versions parse; it may never say more.
+//
+// This drives the sentinel through every field that IS echoed verbatim into a
+// detail string — the URLs, and the two pass-through default arms of the domain
+// and sender reason mappers. Asserting the sentinel is absent from a report that
+// was never given it would prove nothing.
 func TestPreflight_NeverLeaksSecretValues(t *testing.T) {
-	const apiKey = "re_super_secret_value"
-	const webhookSecret = "whsec_do_not_print_me"
+	const sentinel = "s3cr3t-do-not-print"
 
 	env := healthyEnv()
-	// Simulate the wiring having (incorrectly) been handed raw material: even then,
-	// nothing in the report may echo it. The struct carries booleans by design.
-	env.MailFrom = "marketing@example.com"
+	env.PublicAPIBaseURL = "https://api.example.com/" + sentinel
+	env.FrontendURL = "https://app.example.com/" + sentinel
 
-	got := evaluate(t, healthyStore(), env, &fakeDomainGate{ok: true}, &fakeTokenGate{ok: true})
+	store := healthyStore()
+	store.profile = nil // drives senderReasonDetail
+
+	got := evaluate(t, store, env, &fakeDomainGate{ok: false, reason: sentinel}, &fakeTokenGate{ok: true})
+
+	// The URL checks are the deliberate exception: those values are NOT secrets and
+	// an operator cannot fix a wrong one without seeing it. Everything else must be
+	// clean, and the reason-mapper pass-throughs are where an opaque upstream string
+	// would otherwise reach the response.
 	for _, c := range got.Checks {
-		blob := c.Key + c.Label + c.Detail
-		if strings.Contains(blob, apiKey) || strings.Contains(blob, webhookSecret) {
-			t.Fatalf("check %s leaked secret material: %q", c.Key, c.Detail)
+		switch c.Key {
+		case "public_api_base_url", "frontend_url":
+			continue
+		}
+		if strings.Contains(c.Key+c.Label+c.Detail, sentinel) {
+			t.Fatalf("check %s echoed an opaque upstream value: %q", c.Key, c.Detail)
 		}
 	}
 
-	// The unsubscribe detail should still be genuinely useful about the keyring.
+	// And the keyring detail must still be genuinely useful without being the key.
 	c := check(t, got, "unsubscribe_key")
 	if !strings.Contains(c.Detail, "versions") {
 		t.Fatalf("want keyring versions reported, got %q", c.Detail)
+	}
+	for _, v := range []string{sentinel, "MARKETING_UNSUB_KEY="} {
+		if strings.Contains(c.Detail, v) {
+			t.Fatalf("unsubscribe detail leaked %q: %s", v, c.Detail)
+		}
+	}
+}
+
+// The preflight's mailable predicate lives in SQL and cannot be unit-tested, but
+// the SHAPE of the coverage report can: a zero numerator must always block.
+func TestPreflight_CoverageNumbersAreReported(t *testing.T) {
+	store := healthyStore()
+	store.mailable = 7
+	store.known = 9
+
+	got := evaluate(t, store, healthyEnv(), &fakeDomainGate{ok: true}, &fakeTokenGate{ok: true})
+	if got.MailableContacts != 7 || got.KnownContacts != 9 {
+		t.Fatalf("coverage not surfaced: %+v", got)
+	}
+	if c := check(t, got, "lawful_basis"); !c.OK {
+		t.Fatal("a non-zero mailable count must pass")
 	}
 }

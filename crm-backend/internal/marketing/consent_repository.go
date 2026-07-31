@@ -162,13 +162,27 @@ func (r *Repository) PreviewLawfulBasisGrant(ctx context.Context, orgID uuid.UUI
 		return out, fmt.Errorf("preview skipped: %w", err)
 	}
 
-	// Suppressed addresses can be granted a basis but still will not be sent to.
+	// Addresses that will be granted a basis and still not sent to.
+	//
+	// This predicate MIRRORS Suppression.Suppresses(ChannelMarketing, nil) rather
+	// than counting any suppression row, and the difference is large in practice.
+	// A bare EXISTS over-reports two shapes that do not actually suppress: a
+	// soft_bounce row below the threshold (the M4 accumulator writes one on the
+	// FIRST transient bounce and nothing ever prunes it), and any topic-scoped
+	// marketing row (a grant is org-level and carries no topic, so a topic-scoped
+	// opt-out cannot apply). Over-reporting here is not cosmetic — the number is
+	// shown as "will not be mailed" in the confirmation dialog and is frozen into
+	// the consent audit event, so it must not claim more than the gate enforces.
 	supArgs := append([]any{}, srcArgs...)
-	supArgs = append(supArgs, orgID)
+	supArgs = append(supArgs, orgID, SoftBounceSuppressThreshold)
 	if err := r.db.WithContext(ctx).
 		Raw(`SELECT count(*) FROM `+src+` cand
-		     WHERE EXISTS (SELECT 1 FROM marketing_suppressions m
-		                   WHERE m.org_id = ? AND m.email_normalized = cand.email_normalized)`, supArgs...).
+		     WHERE EXISTS (
+		       SELECT 1 FROM marketing_suppressions m
+		       WHERE m.org_id = ? AND m.email_normalized = cand.email_normalized
+		         AND NOT (m.reason = 'soft_bounce' AND m.soft_bounce_count < ?)
+		         AND (m.scope = 'all' OR (m.scope = 'marketing' AND m.topic_id IS NULL))
+		     )`, supArgs...).
 		Scan(&out.Suppressed).Error; err != nil {
 		return out, fmt.Errorf("preview suppressed: %w", err)
 	}

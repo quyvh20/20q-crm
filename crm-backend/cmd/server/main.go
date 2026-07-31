@@ -2883,12 +2883,9 @@ func main() {
 		// go out?" is the whole point. Every secret is passed in already reduced to a
 		// boolean or a keyring VERSION — no key material crosses into the module.
 		marketingPreflightEnv := marketing.PreflightEnv{
-			AppEnv:                 cfg.AppEnv,
 			MailDisabled:           cfg.MailDisabled,
-			MailFrom:               cfg.MailFrom,
 			ResendAPIKeySet:        strings.TrimSpace(cfg.ResendAPIKey) != "",
 			ResendWebhookSecretSet: strings.TrimSpace(cfg.ResendWebhookSecret) != "",
-			ResendMaxRPS:           cfg.ResendMaxRPS,
 			FrontendURL:            cfg.FrontendURL,
 			PublicAPIBaseURL:       cfg.PublicAPIBaseURL,
 			SendWorkerStarted:      marketingSendWorkerStarted,
