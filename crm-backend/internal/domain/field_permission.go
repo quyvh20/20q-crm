@@ -20,7 +20,7 @@ import (
 // Keyed by (object_slug, field_key) rather than an object_fields(id) FK — the same
 // cross-stack identifier OLS/audit/links use — so custom-object fields (which live
 // in custom_object_defs.fields, not object_fields, until P7) are protectable too.
-// See migration 000017b for the full rationale.
+// See migration 000071 (renumbered from 000017b) for the full rationale.
 
 // FieldLevel is one role's access to one field.
 type FieldLevel string

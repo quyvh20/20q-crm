@@ -1,4 +1,18 @@
--- Migration 000017b: Field-Level Security (P5b, opt-in)
+-- Migration 000071: Field-Level Security (P5b, opt-in)
+-- ============================================================
+-- RENUMBERED from 000017b. golang-migrate's file source parses a filename with
+-- `^([0-9]+)_(.*)\.(down|up)\.(.*)$` — the digits must be followed immediately by
+-- an underscore, so the "b" made this pair unparseable, and the driver *silently*
+-- skips (`continue`s on) what it cannot parse. `migrate up` therefore exited 0 and
+-- reported "no change" while never creating this table on any fresh DB. Renumbered
+-- to the next free version rather than to 000018 so it does not collide with the
+-- migrations already applied on databases that migrated past 17.
+--
+-- Prod was never affected: golang-migrate is dirty at v2 there and these files do
+-- not run — the idempotent boot guard in cmd/server/main.go creates this table.
+-- Running it here at 71 instead of just after 17 is safe: nothing between the two
+-- points references field_permissions, and its FK targets (organizations, roles)
+-- are created much earlier (000010, 000028).
 -- ============================================================
 -- One table that lets an admin mark individual fields "sensitive" and control
 -- which roles can see/edit them. Enforced server-side inside RecordService —

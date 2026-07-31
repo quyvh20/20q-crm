@@ -29,7 +29,7 @@ func setupPermissions(t *testing.T) (orgID uuid.UUID, roleIDs map[string]uuid.UU
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS object_defs (id uuid PRIMARY KEY DEFAULT uuid_generate_v4(), org_id uuid NOT NULL, slug varchar NOT NULL, is_system boolean NOT NULL DEFAULT false, deleted_at timestamptz)`).Error)
 
 	runMigrationFile(t, db, "000017_object_security.up.sql")
-	runMigrationFile(t, db, "000017b_field_permissions.up.sql")
+	runMigrationFile(t, db, "000071_field_permissions.up.sql")
 
 	orgID = uuid.New()
 	require.NoError(t, db.Exec(`INSERT INTO organizations (id) VALUES (?)`, orgID).Error)
@@ -202,7 +202,7 @@ func TestWriteAndListAudit(t *testing.T) {
 	require.Len(t, other, 0)
 }
 
-func TestMigration000017b_UpDownRoundTrip(t *testing.T) {
+func TestMigration000071_UpDownRoundTrip(t *testing.T) {
 	db, cleanup := startPostgres(t)
 	defer cleanup()
 
@@ -210,14 +210,14 @@ func TestMigration000017b_UpDownRoundTrip(t *testing.T) {
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS organizations (id uuid PRIMARY KEY DEFAULT uuid_generate_v4())`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS roles (id uuid PRIMARY KEY DEFAULT uuid_generate_v4(), org_id uuid, name varchar, is_system boolean)`).Error)
 
-	runMigrationFile(t, db, "000017b_field_permissions.up.sql")
+	runMigrationFile(t, db, "000071_field_permissions.up.sql")
 	require.True(t, tableExists(t, db, "field_permissions"))
 
-	runMigrationFile(t, db, "000017b_field_permissions.down.sql")
+	runMigrationFile(t, db, "000071_field_permissions.down.sql")
 	require.False(t, tableExists(t, db, "field_permissions"))
 
 	// Re-up is self-consistent.
-	runMigrationFile(t, db, "000017b_field_permissions.up.sql")
+	runMigrationFile(t, db, "000071_field_permissions.up.sql")
 	require.True(t, tableExists(t, db, "field_permissions"))
 }
 
