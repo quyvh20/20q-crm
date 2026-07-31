@@ -5,6 +5,8 @@ import AccessDeniedPanel from '../../components/common/AccessDeniedPanel';
 import { Badge, Button, PageHeader, SpinnerBlock } from '@/components/ui';
 import { useDeliverability } from './analyticsQueries';
 import { useDomains } from './domainsQueries';
+import { usePreflight } from './consentQueries';
+import CheckList from './CheckList';
 
 const fmtPct = (r: number) => `${(r * 100).toFixed(2)}%`;
 
@@ -42,6 +44,8 @@ const OverviewContent: React.FC = () => {
         </div>
       </div>
 
+      <GoLivePreflight />
+
       {/* Deliverability rates */}
       {isLoading ? (
         <SpinnerBlock label="Loading deliverability…" />
@@ -64,6 +68,64 @@ const OverviewContent: React.FC = () => {
           </p>
         </div>
       )}
+    </div>
+  );
+};
+
+/** Every precondition for a marketing send actually reaching someone.
+ *
+ *  This panel exists because each of those preconditions fails silently. An unset
+ *  signing key, a sender-profile row that was never created, or contacts carrying
+ *  no lawful basis all present identically: a green pre-send checklist followed by
+ *  nothing arriving. Secrets are reported as configured/not — never a value. */
+const GoLivePreflight: React.FC = () => {
+  const { data, isLoading, isError } = usePreflight();
+
+  if (isLoading) {
+    return (
+      <div className="mb-4 rounded-xl border border-border bg-card p-4">
+        <SpinnerBlock label="Checking marketing readiness…" />
+      </div>
+    );
+  }
+  if (isError || !data) {
+    return (
+      <div className="mb-4 rounded-xl border border-border bg-card p-4 text-sm text-muted-foreground">
+        Marketing readiness is unavailable.
+      </div>
+    );
+  }
+
+  const noBasis = data.mailable_contacts === 0;
+
+  return (
+    <div className="mb-4 rounded-xl border border-border bg-card p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="text-sm font-semibold text-foreground">Go-live checklist</div>
+        <Badge variant={data.ready ? 'success' : 'warning'}>
+          {data.ready ? 'Ready to send' : 'Not ready'}
+        </Badge>
+      </div>
+
+      <CheckList checks={data.checks} />
+
+      <div className="mt-3 border-t border-border pt-3 text-xs text-muted-foreground">
+        {data.known_contacts === 0 ? (
+          <>
+            No marketing consent has been recorded yet.{' '}
+            <Link className="underline" to="/marketing/consent">Record a lawful basis</Link> before
+            launching, or every recipient will be suppressed.
+          </>
+        ) : (
+          <>
+            {data.mailable_contacts.toLocaleString()} of {data.known_contacts.toLocaleString()}{' '}
+            known addresses carry a lawful basis.{' '}
+            <Link className="underline" to="/marketing/consent">
+              {noBasis ? 'Record a lawful basis' : 'Manage lawful basis'}
+            </Link>
+          </>
+        )}
+      </div>
     </div>
   );
 };

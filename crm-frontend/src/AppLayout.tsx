@@ -3,7 +3,7 @@ import { NavLink, Link, useLocation, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   Menu, X, UserRound, Shield, LogOut, ListChecks, BookOpen,
-  LayoutDashboard, Users, Building2, Handshake, Mic, Sparkles, Zap, BarChart3, Share2, Settings, ShieldOff, Globe, Mail, Send, Target, Megaphone, Repeat, Activity,
+  LayoutDashboard, Users, Building2, Handshake, Mic, Sparkles, Zap, BarChart3, Share2, Settings, ShieldOff, ShieldCheck, Globe, Mail, Send, Target, Megaphone, Repeat, Activity,
   Images, Bookmark,
 } from "lucide-react";
 import { useAuth } from "./lib/auth";
@@ -187,6 +187,7 @@ export default function AppLayout({ children, title }: AppLayoutProps) {
               <NavLink to="/marketing/sender-profile" className={navItemClass}><Send aria-hidden className={navIconClass} />Sender profile</NavLink>
               <NavLink to="/marketing/domains" className={navItemClass}><Globe aria-hidden className={navIconClass} />Sending domains</NavLink>
               <NavLink to="/marketing/suppressions" className={navItemClass}><ShieldOff aria-hidden className={navIconClass} />Suppression list</NavLink>
+              <NavLink to="/marketing/consent" className={navItemClass}><ShieldCheck aria-hidden className={navIconClass} />Lawful basis</NavLink>
             </>
           )}
 

@@ -15,6 +15,7 @@ import { useSegments } from './segmentsQueries';
 import { useContentList } from './contentQueries';
 import { useTopics } from './senderProfileQueries';
 import SlideToConfirm from './SlideToConfirm';
+import CheckList from './CheckList';
 import CampaignAnalyticsPanel from './CampaignAnalyticsPanel';
 import { campaignStatusVariant } from './CampaignsListPage';
 import {
@@ -249,18 +250,7 @@ function CampaignEditor({ campaign }: { campaign: Campaign }) {
           {readiness.isLoading ? (
             <SpinnerBlock label="Checking…" />
           ) : (
-            <ul className="space-y-2">
-              {(readiness.data?.checks ?? []).map((c) => (
-                <li key={c.key} className="flex items-start gap-2 text-sm">
-                  {c.ok
-                    ? <CheckCircle2 aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-                    : <AlertCircle aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />}
-                  <span className={c.ok ? 'text-foreground' : 'text-muted-foreground'}>
-                    {c.label}{!c.ok && c.detail ? ` — ${c.detail}` : ''}
-                  </span>
-                </li>
-              ))}
-            </ul>
+            <CheckList checks={readiness.data?.checks ?? []} />
           )}
         </div>
 
