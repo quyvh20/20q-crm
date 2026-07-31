@@ -131,3 +131,23 @@ func (r *voiceNoteRepository) Delete(ctx context.Context, orgID, id uuid.UUID) e
 	}
 	return nil
 }
+
+// ExistsByFileURL reports whether a voice note the caller may READ carries this
+// stored file_url. It is the authorization check behind GET /api/voice/preview/…,
+// where the filename used to be the only thing standing between any authenticated
+// user and any org's recordings.
+//
+// Goes through voiceNoteScope, not a bare org_id match, so the preview honours the
+// same row scoping as every other read of this table — a rep who cannot open the
+// note cannot fetch its audio either.
+func (r *voiceNoteRepository) ExistsByFileURL(ctx context.Context, orgID uuid.UUID, fileURL string) (bool, error) {
+	var n int64
+	err := voiceNoteScope(r.db.WithContext(ctx), ctx, orgID).
+		Model(&domain.VoiceNote{}).
+		Where("voice_notes.file_url = ?", fileURL).
+		Count(&n).Error
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}

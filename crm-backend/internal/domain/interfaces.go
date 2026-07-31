@@ -1178,6 +1178,9 @@ type VoiceNoteRepository interface {
 	List(ctx context.Context, orgID uuid.UUID, f VoiceNoteFilter) ([]VoiceNote, error)
 	Update(ctx context.Context, v *VoiceNote) error
 	Delete(ctx context.Context, orgID, id uuid.UUID) error
+	// ExistsByFileURL authorizes the raw-file preview route, whose filename was
+	// otherwise the only thing gating one org's recordings from another's.
+	ExistsByFileURL(ctx context.Context, orgID uuid.UUID, fileURL string) (bool, error)
 }
 
 type VoiceNoteUseCase interface {
@@ -1187,4 +1190,7 @@ type VoiceNoteUseCase interface {
 	GetByID(ctx context.Context, orgID, id uuid.UUID) (*VoiceNote, error)
 	ApplyContactUpdates(ctx context.Context, orgID, id uuid.UUID) error
 	Delete(ctx context.Context, orgID, id uuid.UUID) error
+	// OwnsStoredFile reports whether this stored file belongs to a recording the
+	// caller may read. Fails CLOSED on a lookup error.
+	OwnsStoredFile(ctx context.Context, orgID uuid.UUID, fileURL string) bool
 }

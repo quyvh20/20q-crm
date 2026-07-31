@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 
@@ -37,29 +38,30 @@ func NewVoiceNoteUseCase(
 
 func (uc *voiceNoteUseCase) Upload(ctx context.Context, orgID, userID uuid.UUID, input domain.UploadVoiceNoteInput) (*domain.VoiceNote, string, error) {
 	storageMode := "local"
-	var fileURL string
 
-	if uc.cfg.R2BucketName != "" {
-		uploaded, err := uploadToR2(ctx, uc.cfg, input.AudioBytes, input.OriginalName)
-		if err != nil {
-			return nil, "", fmt.Errorf("R2 upload failed: %w", err)
-		}
-		fileURL = uploaded
-		storageMode = "r2"
-	} else {
-		// Native disk write fallback
-		if err := os.MkdirAll(filepath.Join("storage", "voice_notes"), 0755); err != nil {
-			return nil, "", fmt.Errorf("failed to create storage dir: %w", err)
-		}
-		noteID := uuid.New()
-		filename := fmt.Sprintf("%s_%s", noteID.String(), input.OriginalName)
-		filePath := filepath.Join("storage", "voice_notes", filename)
-		
-		if err := os.WriteFile(filePath, input.AudioBytes, 0644); err != nil {
-			return nil, "", fmt.Errorf("failed to save local file: %w", err)
-		}
-		fileURL = "/api/voice/preview/" + filename
+	// Sniff the bytes and REFUSE anything that is not an allowed audio container.
+	// The uploaded filename, its extension and the client's Content-Type header are
+	// all ignored: letting any of them reach the stored name is what turned an
+	// upload into same-origin stored XSS, since the preview handler derived the
+	// response Content-Type from the extension.
+	_, ext, ok := DetectVoiceMedia(input.AudioBytes)
+	if !ok {
+		return nil, "", domain.NewAppError(http.StatusUnsupportedMediaType,
+			"that file is not a supported audio recording")
 	}
+
+	if err := os.MkdirAll(filepath.Join("storage", "voice_notes"), 0755); err != nil {
+		return nil, "", fmt.Errorf("failed to create storage dir: %w", err)
+	}
+	// Entirely server-generated: <uuid><our extension>. No component of this name
+	// comes from the client.
+	filename := uuid.New().String() + ext
+	filePath := filepath.Join("storage", "voice_notes", filename)
+
+	if err := os.WriteFile(filePath, input.AudioBytes, 0644); err != nil {
+		return nil, "", fmt.Errorf("failed to save local file: %w", err)
+	}
+	fileURL := "/api/voice/preview/" + filename
 
 	status := "uploaded"
 	if input.AutoAnalyze {
@@ -238,6 +240,21 @@ func (uc *voiceNoteUseCase) Delete(ctx context.Context, orgID, id uuid.UUID) err
 	return uc.repo.Delete(ctx, orgID, id)
 }
 
-func uploadToR2(_ context.Context, cfg *config.Config, _ []byte, _ string) (string, error) {
-	return "", fmt.Errorf("R2 upload not implemented. Configure R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME, R2_PUBLIC_URL in .env and implement this function using the AWS S3-compatible SDK (bucket endpoint: %s.r2.cloudflarestorage.com)", cfg.R2BucketName)
+// The R2-bucket upload path is deliberately gone rather than left as a stub.
+//
+// It was a switch that made things WORSE when flipped: setting R2_BUCKET_NAME sent
+// every upload down a function that only ever returned an error, so the feature
+// broke on configuration rather than on absence. Storage stays local for now, which
+// means recordings do not survive a redeploy — a known, documented limitation
+// rather than a half-built escape hatch. Durable object storage is its own task.
+
+// OwnsStoredFile authorizes the raw-file preview route. Fails CLOSED: a lookup
+// error denies rather than serving, because the alternative is handing one org's
+// recording to another on a transient database blip.
+func (uc *voiceNoteUseCase) OwnsStoredFile(ctx context.Context, orgID uuid.UUID, fileURL string) bool {
+	ok, err := uc.repo.ExistsByFileURL(ctx, orgID, fileURL)
+	if err != nil {
+		return false
+	}
+	return ok
 }

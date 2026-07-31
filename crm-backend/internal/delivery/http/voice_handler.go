@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"crm-backend/internal/domain"
+	"crm-backend/internal/usecase"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -40,9 +41,12 @@ func (h *VoiceHandler) Upload(c *gin.Context) {
 		return
 	}
 
-	const maxSize = 500 << 20 // 500 MB
+	// 25 MB, down from 500 MB. The whole payload is read into memory below, so the
+	// old ceiling let a handful of concurrent uploads exhaust the process — and no
+	// voice memo is 500 MB. Roughly 4 hours of 16 kbps speech.
+	const maxSize = 25 << 20
 	if fileHeader.Size > maxSize {
-		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "audio file must be under 500 MB"})
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "audio file must be under 25 MB"})
 		return
 	}
 
@@ -53,9 +57,16 @@ func (h *VoiceHandler) Upload(c *gin.Context) {
 	}
 	defer file.Close()
 
-	audioBytes, err := io.ReadAll(file)
+	// LimitReader as well as the Size check: fileHeader.Size comes from the request,
+	// so it is a claim, not a fact. Read one byte past the cap to tell "exactly at
+	// the limit" from "lied about the size".
+	audioBytes, err := io.ReadAll(io.LimitReader(file, maxSize+1))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "cannot read file"})
+		return
+	}
+	if len(audioBytes) > maxSize {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "audio file must be under 25 MB"})
 		return
 	}
 
@@ -254,21 +265,60 @@ func (h *VoiceHandler) Analyze(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "analysis queued"})
 }
 
+// PreviewVoiceNote streams a stored recording.
+//
+// Two things here are load-bearing and must not be "simplified" away.
+//
+// ORG SCOPE: the filename alone used to be the whole authorization. Any
+// authenticated user of ANY org could fetch any recording by naming its file, so
+// knowing (or guessing) a filename crossed the tenant boundary. The name is now
+// resolved back to a voice note the CALLER'S org owns before a byte is served.
+//
+// CONTENT TYPE: served from our own extension mapping with nosniff, never from
+// net/http's extension lookup. Prod proxies /api through a Cloudflare Pages
+// Function, so this response is same-origin with the SPA — a file served as
+// text/html here executes with the session cookies in reach. Legacy rows still
+// carry uploader-chosen extensions, so this cannot be relaxed for them either.
 func (h *VoiceHandler) PreviewVoiceNote(c *gin.Context) {
+	orgUUID, ok := GetOrgID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
 	filename := c.Param("filename")
 	if filename == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "filename required"})
 		return
 	}
-
-	// Prevent directory traversal
 	cleanFileName := filepath.Base(filename)
-	filePath := filepath.Join("storage", "voice_notes", cleanFileName)
 
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+	// The stored file_url is the authorization record: it exists on exactly one
+	// voice note, and that note belongs to exactly one org.
+	if !h.uc.OwnsStoredFile(c.Request.Context(), orgUUID, "/api/voice/preview/"+cleanFileName) {
+		// 404, not 403 — a 403 would confirm the recording exists to a caller in
+		// another org.
 		c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
 		return
 	}
 
-	c.File(filePath)
+	filePath := filepath.Join("storage", "voice_notes", cleanFileName)
+	f, err := os.Open(filePath)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
+		return
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil || info.IsDir() {
+		c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
+		return
+	}
+
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Content-Type", usecase.ContentTypeForStoredVoiceFile(cleanFileName))
+	// ServeContent (not c.File) so the type we set is not overwritten by net/http's
+	// extension sniffing, while still getting Range support for the audio player.
+	http.ServeContent(c.Writer, c.Request, cleanFileName, info.ModTime(), f)
 }
