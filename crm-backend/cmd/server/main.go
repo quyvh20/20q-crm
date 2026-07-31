@@ -420,9 +420,12 @@ func main() {
 		db.Exec(`CREATE INDEX IF NOT EXISTS idx_object_audit_record ON object_audit(org_id, object_slug, record_id, created_at DESC)`)
 		db.Exec(`ALTER TABLE object_audit ENABLE ROW LEVEL SECURITY`)
 
-		// Field-Level Security (migration 000017b, P5b) — boot guard, since
-		// golang-migrate is authoritative only for fresh DBs and existing prod schema
-		// is maintained here. Mirrors migrations/000017b_field_permissions.up.sql
+		// Field-Level Security (migration 000071, renumbered from 000017b, P5b) —
+		// boot guard, since golang-migrate is authoritative only for fresh DBs and
+		// existing prod schema is maintained here. This guard is why prod has the
+		// table at all: as 000017b the file was unparseable to golang-migrate and was
+		// silently skipped, so no fresh DB ever got it from a migration until the
+		// renumber. Mirrors migrations/000071_field_permissions.up.sql
 		// exactly. Keyed by (org_id, role_id, object_slug, field_key) for the same
 		// reason object_permissions is slug-keyed: a custom object's fields aren't in
 		// object_fields until P7, and (slug, key) is the cross-stack field identifier.
