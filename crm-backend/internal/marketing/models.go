@@ -118,6 +118,41 @@ var validBases = map[string]bool{
 // IsValidConsentBasis reports whether s is a known consent basis.
 func IsValidConsentBasis(s string) bool { return validBases[s] }
 
+// grantableBases is the subset an administrator may bulk-declare on behalf of the
+// org. express and double_opt_in are EXCLUDED deliberately, and the exclusion is
+// load-bearing rather than cautious: HasLawfulBasis returns false for both at
+// status 'pending' (see the default arm below), so granting one would write a row,
+// return 200, and change nothing an operator could observe — a green button that
+// silently does nothing. An affirmative opt-in has to come from the subscriber,
+// through a real opt-in flow that promotes the status to 'subscribed'; it is not
+// something an admin can declare on their behalf.
+var grantableBases = map[string]bool{
+	BasisExistingBusinessRelationship: true,
+	BasisLegitimateInterest:           true,
+	BasisImpliedTransaction:           true,
+	BasisImpliedInquiry:               true,
+}
+
+// IsGrantableConsentBasis reports whether an admin bulk-grant may declare s.
+// Narrower than IsValidConsentBasis by design — see grantableBases.
+func IsGrantableConsentBasis(s string) bool { return grantableBases[s] }
+
+// GrantableConsentBases lists the declarable bases, for the API and the UI picker.
+func GrantableConsentBases() []string {
+	return []string{
+		BasisExistingBusinessRelationship,
+		BasisLegitimateInterest,
+		BasisImpliedTransaction,
+		BasisImpliedInquiry,
+	}
+}
+
+// CASLImpliedBasis reports whether s is a CASL implied basis, which expires and so
+// requires an explicit expiry on grant.
+func CASLImpliedBasis(s string) bool {
+	return s == BasisImpliedTransaction || s == BasisImpliedInquiry
+}
+
 // Suppression is one do-not-mail entry, keyed on a normalized email. It is EXEMPT
 // from contact-deletion tombstoning (RedactForRecord never names this table) so an
 // opt-out survives contact deletion, GDPR erasure, and CSV re-import.
@@ -187,6 +222,10 @@ type ContactMarketingState struct {
 	Region          *string    `gorm:"type:varchar(16)" json:"region,omitempty"`
 	CASLExpiresAt   *time.Time `gorm:"column:casl_expires_at" json:"casl_expires_at,omitempty"`
 	DoubleOptInAt   *time.Time `gorm:"column:double_opt_in_at" json:"double_opt_in_at,omitempty"`
+	// ConsentGrantedBy is the user who declared the basis via the admin bulk-grant.
+	// Nil for a basis that arrived any other way. Nulled by the GDPR collapse with
+	// the rest of the provenance.
+	ConsentGrantedBy *uuid.UUID `gorm:"type:uuid" json:"consent_granted_by,omitempty"`
 	CreatedAt       time.Time  `gorm:"not null;default:now()" json:"created_at"`
 	UpdatedAt       time.Time  `gorm:"not null;default:now()" json:"updated_at"`
 }

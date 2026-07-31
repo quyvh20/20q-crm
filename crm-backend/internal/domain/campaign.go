@@ -142,6 +142,34 @@ type LaunchCheck struct {
 	Label  string `json:"label"`
 	OK     bool   `json:"ok"`
 	Detail string `json:"detail,omitempty"`
+	// Severity distinguishes a blocker from an advisory finding. Empty means
+	// blocking, so the per-campaign readiness payload marshals byte-identically to
+	// what it did before this field existed and its renderer is untouched.
+	Severity string `json:"severity,omitempty"`
+}
+
+// SeverityWarn marks a preflight finding that does not stop a send but that an
+// operator should see — e.g. delivery webhooks unconfigured, which loses analytics
+// and auto-suppression without blocking a single message.
+const SeverityWarn = "warn"
+
+// MarketingPreflight is the org-level go-live report: every precondition for a real
+// marketing send, evaluated read-only.
+//
+// It reports whether each secret is CONFIGURED and, for keyrings, which versions
+// parse — never a value. The point is that an operator can answer "why did nothing
+// send?" without reading source, which is exactly the question that went
+// unanswerable when nothing granted a lawful basis and every campaign silently
+// suppressed its entire roster behind a green launch checklist.
+type MarketingPreflight struct {
+	// Ready is true when no BLOCKING check failed. Warnings do not clear it.
+	Ready  bool          `json:"ready"`
+	Checks []LaunchCheck `json:"checks"`
+	// MailableContacts / KnownContacts express lawful-basis coverage. A zero
+	// numerator against a non-zero denominator is the signature of the gap this
+	// preflight was built to surface.
+	MailableContacts int64 `json:"mailable_contacts"`
+	KnownContacts    int64 `json:"known_contacts"`
 }
 
 // LaunchReadiness is the whole checklist plus the derived all-green flag and the

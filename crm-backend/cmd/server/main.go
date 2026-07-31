@@ -1927,6 +1927,13 @@ func main() {
 				ADD COLUMN IF NOT EXISTS folder VARCHAR(80) NOT NULL DEFAULT ''`},
 			{"marketing_assets folder", `ALTER TABLE marketing_assets
 				ADD COLUMN IF NOT EXISTS folder VARCHAR(80) NOT NULL DEFAULT ''`},
+			// Who declared the lawful basis. The consent row is the durable per-address
+			// answer to "why did you mail this person?", and an auth_events entry is not
+			// enough on its own — that writer is best-effort and swallows its errors.
+			// Nullable by design: no DDL DEFAULT needed, and the GDPR collapse nulls it
+			// alongside the other provenance columns.
+			{"contact_marketing_state consent_granted_by", `ALTER TABLE contact_marketing_state
+				ADD COLUMN IF NOT EXISTS consent_granted_by UUID REFERENCES users(id) ON DELETE SET NULL`},
 		}
 		for _, g := range marketingGuards {
 			if err := db.Exec(g.sql).Error; err != nil {
@@ -2730,7 +2737,8 @@ func main() {
 		// never JWT_SECRET / INTEGRATION_ENC_KEY — a rotation of an unrelated secret
 		// must not break the CAN-SPAM 30-day-plus links already mailed. Absent key =
 		// links un-mintable (send gate blocks, public endpoint 4xxs); malformed = fatal.
-		marketingTokens := marketing.NewTokenService(buildMarketingUnsubRing(cfg, log))
+		marketingUnsubRing := buildMarketingUnsubRing(cfg, log)
+		marketingTokens := marketing.NewTokenService(marketingUnsubRing)
 		// Admin surface (sender profile + topics): reuses marketing.manage + the
 		// protected stack, exactly like M1/M2/M6.
 		marketing.NewProfileHandler(marketingRepo, autoLogger).RegisterRoutes(router,
@@ -2790,6 +2798,18 @@ func main() {
 			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
 		)
 
+		// ── R1: admin lawful-basis declaration ──
+		// Nothing else in the codebase writes a POSITIVE consent, so without this every
+		// marketing send suppressed 100% of its recipients with "no_lawful_basis" —
+		// after passing a fully green launch checklist. Deliberately mounted OUTSIDE
+		// the email-transport block below: an org must be able to record its consent
+		// position on a deployment that cannot send at all.
+		marketingConsentUC := marketing.NewConsentUseCase(marketingRepo, segmentUC, authRepo, autoLogger)
+		marketing.NewConsentHandler(marketingConsentUC, autoLogger).RegisterRoutes(router,
+			integrationsProtected,
+			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
+		)
+
 		// ── M9: campaign engagement analytics + org deliverability (read-only) ──
 		// Rolls up the M4 marketing_email_events ledger per campaign (attributed via the
 		// M9 send-time tags) + the org's rolling complaint/bounce rates against the SAME
@@ -2806,6 +2826,10 @@ func main() {
 		// across retries), re-checking the LIVE M1 suppression verdict at claim. Started
 		// only when an email transport is configured. LIVE deliverability of the
 		// one-click unsubscribe stays gated on the B3 DKIM test.
+		//
+		// marketingSendWorkerStarted is read by the preflight below: "the worker is not
+		// running" is otherwise indistinguishable from "the campaign is still draining".
+		marketingSendWorkerStarted := false
 		if autoEngine != nil {
 			sendRPS := cfg.ResendMaxRPS
 			if sendRPS <= 0 {
@@ -2819,6 +2843,7 @@ func main() {
 				cfg.PublicAPIBaseURL, cfg.FrontendURL, autoLogger,
 			)
 			go marketing.StartCampaignSender(context.Background(), campaignSender)
+			marketingSendWorkerStarted = true
 			go marketing.StartCampaignReaper(context.Background(), marketingRepo, autoLogger)
 			// M7.3: reclaim the roster rows of long-finished campaigns (keeps the campaign
 			// row for reporting). Runs regardless of send transport.
@@ -2851,6 +2876,34 @@ func main() {
 			)
 			go marketing.StartSequenceFeeder(context.Background(), marketing.NewSequenceFeeder(marketingRepo, segmentUC, autoEngine, autoLogger))
 		}
+
+		// ── R1: marketing go-live preflight (read-only) ──────────────────────
+		// Mounted OUTSIDE the transport guard on purpose: the report is most useful
+		// precisely on a deployment that cannot send, since answering "why did nothing
+		// go out?" is the whole point. Every secret is passed in already reduced to a
+		// boolean or a keyring VERSION — no key material crosses into the module.
+		marketingPreflightEnv := marketing.PreflightEnv{
+			AppEnv:                 cfg.AppEnv,
+			MailDisabled:           cfg.MailDisabled,
+			MailFrom:               cfg.MailFrom,
+			ResendAPIKeySet:        strings.TrimSpace(cfg.ResendAPIKey) != "",
+			ResendWebhookSecretSet: strings.TrimSpace(cfg.ResendWebhookSecret) != "",
+			ResendMaxRPS:           cfg.ResendMaxRPS,
+			FrontendURL:            cfg.FrontendURL,
+			PublicAPIBaseURL:       cfg.PublicAPIBaseURL,
+			SendWorkerStarted:      marketingSendWorkerStarted,
+		}
+		if marketingUnsubRing != nil {
+			marketingPreflightEnv.UnsubKeyVersions = marketingUnsubRing.Versions()
+			marketingPreflightEnv.UnsubKeyPrimary = marketingUnsubRing.Primary()
+		}
+		marketing.NewPreflightHandler(
+			marketing.NewPreflightService(marketingRepo, marketingDomainSvc, marketingTokens, marketingPreflightEnv, autoLogger),
+			autoLogger,
+		).RegisterRoutes(router,
+			integrationsProtected,
+			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
+		)
 
 		// ── L5.1 provider connector framework ────────────────────────────
 		// The registry holds the provider adapters that have shipped. It stays EMPTY

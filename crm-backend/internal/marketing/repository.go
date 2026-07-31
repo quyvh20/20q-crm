@@ -145,6 +145,7 @@ func (r *Repository) RedactMarketingStateForEmail(ctx context.Context, orgID uui
 		    casl_expires_at = NULL,
 		    double_opt_in_at = NULL,
 		    contact_id = NULL,
+		    consent_granted_by = NULL,
 		    updated_at = NOW()
 		WHERE org_id = ? AND email_normalized = ?`, orgID, emailNorm).Error
 }
