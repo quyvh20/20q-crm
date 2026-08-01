@@ -2548,8 +2548,19 @@ func main() {
 		// config value as every other one, and so a handler that is never told its
 		// environment defaults to production.
 		autoHandler.SetAppEnv(cfg.AppEnv)
+		// Deliberately NOT integrationsProtected. That stack authenticates with
+		// AuthMiddlewareWithAPITokens, and adopting it here would silently start
+		// accepting personal access tokens on /api/workflows/*, which are rejected
+		// today — a behaviour change for anyone scripting workflows, inherited as a
+		// side effect of a 2FA fix rather than chosen. The 2FA gate is what this
+		// needs, so take exactly that: plain AuthMiddleware (which sets the
+		// two_factor_pending key from the same shared helper) plus the enforcement.
+		// Widening to personal access tokens stays a separate, deliberate decision.
 		autoHandler.RegisterRoutes(router,
-			delivery.AuthMiddleware(cfg.JWTSecret, authRepo, redisClient),
+			[]gin.HandlerFunc{
+				delivery.AuthMiddleware(cfg.JWTSecret, authRepo, redisClient),
+				delivery.RequireTwoFactorSatisfied(),
+			},
 			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
 		)
 

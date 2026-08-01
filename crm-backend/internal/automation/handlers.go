@@ -150,9 +150,17 @@ func (h *Handler) InvalidateSchemaCache(orgID uuid.UUID) {
 }
 
 // RegisterRoutes registers all automation routes on the gin engine.
-func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc, requireCap func(string) gin.HandlerFunc) {
+//
+// `protected` is the full authenticated stack, matching every other module. It used
+// to be a single auth middleware, which made automation the ONE module not carrying
+// RequireTwoFactorSatisfied — so a workspace demanding 2FA still let a
+// non-enrolled member reach /api/webhooks/reveal-secret and read the org's
+// inbound-webhook signing secret. Order matters within the slice: the 2FA gate
+// reads a context key the auth middleware sets, so mounting it first (or alone)
+// silently passes everything.
+func (h *Handler) RegisterRoutes(router *gin.Engine, protected []gin.HandlerFunc, requireCap func(string) gin.HandlerFunc) {
 	workflows := router.Group("/api/workflows")
-	workflows.Use(authMiddleware)
+	workflows.Use(protected...)
 	{
 		// READS ARE MANAGE-GATED, and that is a deliberate tightening.
 		//
@@ -224,7 +232,7 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerF
 	// Webhook setup (P17): per-org inbound token + signing-secret management.
 	// Admin/manager only — these expose/rotate the org's signing credential.
 	webhooks := router.Group("/api/webhooks")
-	webhooks.Use(authMiddleware)
+	webhooks.Use(protected...)
 	{
 		webhooks.GET("/token", requireCap(domain.CapWorkflowsManage), h.GetWebhookToken)
 		webhooks.POST("/reveal-secret", requireCap(domain.CapWorkflowsManage), h.RevealWebhookSecret)

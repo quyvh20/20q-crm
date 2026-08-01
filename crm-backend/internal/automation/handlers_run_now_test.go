@@ -174,7 +174,7 @@ func TestRunNowHandler_RouteNotRoleGuarded(t *testing.T) {
 
 	// engine/repo/db are nil: the invalid-:id request returns 400 before any is touched.
 	h := &Handler{logger: handlerRunNowDiscardLogger()}
-	h.RegisterRoutes(router, authMiddleware, requireCap)
+	h.RegisterRoutes(router, []gin.HandlerFunc{authMiddleware}, requireCap)
 
 	// Invalid :id → handler returns 400 INVALID_ID before reaching repo/db/engine.
 	w := runNowITPostRun(router, "not-a-valid-uuid",

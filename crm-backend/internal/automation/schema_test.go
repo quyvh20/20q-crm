@@ -202,7 +202,7 @@ func TestGetWorkflowSchema_FullCoverage(t *testing.T) {
 		logger: slog.Default(),
 		db:     db,
 	}
-	handler.RegisterRoutes(router, fakeAuth, fakeRequireRole)
+	handler.RegisterRoutes(router, []gin.HandlerFunc{fakeAuth}, fakeRequireRole)
 
 	// --- Hit the endpoint ---
 	req := httptest.NewRequest(http.MethodGet, "/api/workflows/schema", nil)
@@ -428,7 +428,7 @@ func TestGetWorkflowSchema_Unauthenticated(t *testing.T) {
 		logger: slog.Default(),
 		db:     db,
 	}
-	handler.RegisterRoutes(router, noAuth, fakeRequireRole)
+	handler.RegisterRoutes(router, []gin.HandlerFunc{noAuth}, fakeRequireRole)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/workflows/schema", nil)
 	w := httptest.NewRecorder()
@@ -480,7 +480,7 @@ func TestGetWorkflowSchema_CrossOrgIsolation(t *testing.T) {
 		c.Next()
 	}
 	handler := &Handler{engine: makeEngine(db, nil), repo: NewRepository(db), logger: slog.Default(), db: db}
-	handler.RegisterRoutes(router, authA, func(string) gin.HandlerFunc { return func(c *gin.Context) { c.Next() } })
+	handler.RegisterRoutes(router, []gin.HandlerFunc{authA}, func(string) gin.HandlerFunc { return func(c *gin.Context) { c.Next() } })
 
 	req := httptest.NewRequest(http.MethodGet, "/api/workflows/schema", nil)
 	w := httptest.NewRecorder()
@@ -607,7 +607,7 @@ func TestGetWorkflowSchema_NoNPlus1_QueryCount(t *testing.T) {
 		logger: slog.Default(),
 		db:     db,
 	}
-	handler.RegisterRoutes(router, fakeAuth, fakeRequireRole)
+	handler.RegisterRoutes(router, []gin.HandlerFunc{fakeAuth}, fakeRequireRole)
 
 	// --- Reset counter and fire the request ---
 	atomic.StoreInt64(&queryCount, 0)
@@ -713,7 +713,7 @@ func TestGetWorkflowSchema_CacheHitAndInvalidate(t *testing.T) {
 		db:          db,
 		schemaCache: NewSchemaCache(60 * time.Second),
 	}
-	handler.RegisterRoutes(router, fakeAuth, fakeRequireRole)
+	handler.RegisterRoutes(router, []gin.HandlerFunc{fakeAuth}, fakeRequireRole)
 
 	// --- Request 1: cold cache (DB hit) ---
 	atomic.StoreInt64(&queryCount, 0)
@@ -834,7 +834,7 @@ func TestSchemaEndpoint_ReturnsAllCategories(t *testing.T) {
 		db:          db,
 		schemaCache: NewSchemaCache(60 * time.Second),
 	}
-	handler.RegisterRoutes(router, fakeAuth, func(string) gin.HandlerFunc {
+	handler.RegisterRoutes(router, []gin.HandlerFunc{fakeAuth}, func(string) gin.HandlerFunc {
 		return func(c *gin.Context) { c.Next() }
 	})
 
@@ -1012,7 +1012,7 @@ func TestSchemaEndpoint_ScopedByOrg(t *testing.T) {
 			db:          db,
 			schemaCache: NewSchemaCache(60 * time.Second),
 		}
-		handler.RegisterRoutes(router, auth, func(string) gin.HandlerFunc {
+		handler.RegisterRoutes(router, []gin.HandlerFunc{auth}, func(string) gin.HandlerFunc {
 			return func(c *gin.Context) { c.Next() }
 		})
 

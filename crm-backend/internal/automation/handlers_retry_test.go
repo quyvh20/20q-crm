@@ -282,7 +282,7 @@ func TestRetryRunHandler_RouteNotRoleGuarded(t *testing.T) {
 
 	// engine/repo/db nil: an invalid :runId returns 400 before any is touched.
 	h := &Handler{logger: handlerRunNowDiscardLogger()}
-	h.RegisterRoutes(router, authMiddleware, requireCap)
+	h.RegisterRoutes(router, []gin.HandlerFunc{authMiddleware}, requireCap)
 
 	w := retryITPost(router, "not-a-valid-uuid")
 
