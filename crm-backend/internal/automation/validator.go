@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"crm-backend/pkg/safedial"
+
 	"github.com/google/uuid"
 )
 
@@ -648,11 +650,36 @@ func validateActionParams(action ActionSpec, path string, result *ValidationResu
 			}
 		}
 	case ActionSendWebhook:
-		if _, ok := action.Params["url"]; !ok {
+		raw, ok := action.Params["url"]
+		if !ok {
 			result.Valid = false
 			result.Errors = append(result.Errors, ValidationError{
 				Field:   path + ".params.url",
 				Message: "send_webhook requires 'url' parameter",
+			})
+			break
+		}
+		// Defence in depth ONLY — never the control. The value is a template
+		// resolved at run time, so a URL that is literal here can still become
+		// anything at all when it runs; the address guard in the executor is what
+		// actually constrains the destination. What this catches is the honest
+		// mistake (a typo'd scheme, a pasted URL carrying credentials) at the point
+		// the author can still see it, rather than as a failed run days later.
+		// Templated values are skipped: their final shape is not knowable here.
+		if s, isStr := raw.(string); isStr && !strings.Contains(s, "{{") {
+			if err := safedial.ValidateURL(s); err != nil {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   path + ".params.url",
+					Message: "send_webhook url is not usable: " + err.Error(),
+				})
+			}
+		}
+		if t := toInt(action.Params["timeout_sec"]); t > maxWebhookTimeoutSec {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   path + ".params.timeout_sec",
+				Message: fmt.Sprintf("timeout_sec must be %d or less", maxWebhookTimeoutSec),
 			})
 		}
 	case ActionDelay:

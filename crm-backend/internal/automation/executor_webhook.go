@@ -9,21 +9,57 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"crm-backend/pkg/safedial"
 )
 
-// WebhookExecutor sends HTTP webhook requests.
-type WebhookExecutor struct{}
+// maxWebhookTimeoutSec bounds a single outbound call.
+//
+// The cap is not politeness. The engine runs a small fixed pool of workers, so a
+// saved timeout_sec of 86400 does not merely stall one workflow — it parks a worker
+// for a day, and a handful of them stop automation for the whole deployment. The
+// value was previously unbounded in the executor, in the save-time validator and in
+// the client-side schema alike.
+const maxWebhookTimeoutSec = 60
 
-// NewWebhookExecutor creates a new webhook executor.
+// WebhookExecutor sends HTTP webhook requests.
+type WebhookExecutor struct {
+	// allowPrivate disables the SSRF address guard. Set ONLY by tests, which drive
+	// real httptest servers on 127.0.0.1, and by an explicitly opted-in self-hosted
+	// deployment. See NewWebhookExecutorAllowingPrivate.
+	allowPrivate bool
+}
+
+// NewWebhookExecutor creates a webhook executor that refuses to reach private
+// network space.
 func NewWebhookExecutor() *WebhookExecutor {
 	return &WebhookExecutor{}
 }
 
+// NewWebhookExecutorAllowingPrivate creates an executor with the address guard OFF.
+//
+// Two legitimate callers: the integration tests, which point the real executor at
+// an httptest server bound to 127.0.0.1, and a single-tenant self-hosted deployment
+// whose webhook receivers genuinely live on a private network. It must never be
+// used on a multi-tenant deployment — with the guard off, any workflow author can
+// read whatever the platform's network can reach, because the response body comes
+// back to them as the action's output.
+func NewWebhookExecutorAllowingPrivate() *WebhookExecutor {
+	return &WebhookExecutor{allowPrivate: true}
+}
+
 // Execute sends an outbound webhook.
 func (e *WebhookExecutor) Execute(ctx context.Context, run *WorkflowRun, action ActionSpec, evalCtx EvalContext) (any, error) {
+	// Interpolated HERE, at run time, from template values that may come from
+	// trigger data rather than from the workflow author. That is exactly why the
+	// address check cannot live at save time.
 	url := getStringParam(action.Params, "url", evalCtx)
 	if url == "" {
 		return nil, fmt.Errorf("send_webhook: 'url' is required")
+	}
+	if err := safedial.ValidateURL(url); err != nil {
+		// Permanent: the same template resolves the same way on every retry.
+		return nil, fmt.Errorf("send_webhook: %w", err)
 	}
 
 	method := getStringParam(action.Params, "method", evalCtx)
@@ -37,6 +73,9 @@ func (e *WebhookExecutor) Execute(ctx context.Context, run *WorkflowRun, action 
 	timeoutSec := getIntParam(action.Params, "timeout_sec")
 	if timeoutSec <= 0 {
 		timeoutSec = 10
+	}
+	if timeoutSec > maxWebhookTimeoutSec {
+		timeoutSec = maxWebhookTimeoutSec
 	}
 
 	headers := getMapParam(action.Params, "headers", evalCtx)
@@ -60,9 +99,19 @@ func (e *WebhookExecutor) Execute(ctx context.Context, run *WorkflowRun, action 
 		req.Header.Set(k, v)
 	}
 
-	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
+	client := safedial.NewClient(safedial.Options{
+		AllowPrivate: e.allowPrivate,
+		Timeout:      time.Duration(timeoutSec) * time.Second,
+	})
 	resp, err := client.Do(req)
 	if err != nil {
+		// A blocked address is PERMANENT, and separating it from a transient network
+		// error matters twice over: retrying reaches the identical address, so the
+		// retry schedule is burned for nothing, and each retry re-issues the request
+		// the guard just refused.
+		if safedial.IsBlockedErr(err) {
+			return nil, fmt.Errorf("send_webhook: %w", err)
+		}
 		return nil, NewRetryableError(fmt.Errorf("send_webhook: network error: %w", err))
 	}
 	defer resp.Body.Close()
@@ -85,8 +134,11 @@ func (e *WebhookExecutor) Execute(ctx context.Context, run *WorkflowRun, action 
 		return nil, fmt.Errorf("send_webhook: client error %d", resp.StatusCode)
 	}
 
+	// Redacted(): the interpolated URL routinely carries a token in its query
+	// string, and this line lands in the platform's log store. Same reasoning as
+	// integrations/httpclient.go's redactURLError.
 	slog.Info("automation: webhook sent",
-		"url", url,
+		"url", req.URL.Redacted(),
 		"status", resp.StatusCode,
 		"workflow_run_id", run.ID.String(),
 	)

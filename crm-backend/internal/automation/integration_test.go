@@ -1159,7 +1159,12 @@ func TestIntegration_SendWebhook_500_RetriesAndFails(t *testing.T) {
 	require.NoError(t, db.Create(ver).Error)
 
 	// --- Use the REAL WebhookExecutor (not a mock) ---
-	webhookExec := NewWebhookExecutor()
+	// AllowingPrivate because httptest.NewServer binds 127.0.0.1, which the
+	// production executor refuses by design (SSRF guard). This test is about the
+	// engine driving a real HTTP round-trip, not about the address policy —
+	// executor_webhook_ssrf_test.go covers that, including that the production
+	// constructor blocks this exact address.
+	webhookExec := NewWebhookExecutorAllowingPrivate()
 	engine := makeEngine(db, map[string]ActionExecutor{
 		ActionSendWebhook: webhookExec,
 	})

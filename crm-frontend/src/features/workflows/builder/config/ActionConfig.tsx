@@ -1232,7 +1232,19 @@ const WebhookParams: React.FC<ParamProps> = ({ action, setParam }) => (
       rows={4}
       mono
     />
-    <Field label="Timeout (sec)" value={action.params.timeout_sec} onChange={(v) => setParam('timeout_sec', parseInt(String(v)) || 10)} type="number" placeholder="10" />
+    {/* Capped to match the server, which clamps to 60 and now rejects a larger
+        saved value. The engine runs a small fixed worker pool, so a long timeout
+        parks a worker rather than merely slowing one workflow. */}
+    <Field
+      label="Timeout (sec, max 60)"
+      value={action.params.timeout_sec}
+      onChange={(v) => {
+        const n = parseInt(String(v)) || 10;
+        setParam('timeout_sec', Math.min(Math.max(n, 1), 60));
+      }}
+      type="number"
+      placeholder="10"
+    />
   </div>
 );
 
