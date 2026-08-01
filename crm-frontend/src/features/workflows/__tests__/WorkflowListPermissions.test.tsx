@@ -5,12 +5,19 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { Workflow, WorkflowListResponse } from '../types';
 
 /**
- * U3 permission gating for WorkflowList. Server truth: GET list/detail/runs are
- * open to any member, but every workflow WRITE (create, toggle, delete — and
- * Duplicate, which opens the builder on a create) requires workflows.manage,
- * and ALL email-templates routes 403 even on GET without it. The list must stay
- * readable while those affordances hide for a non-manager, and Run Now must keep
- * its author fallback (run_any OR creator) independent of workflows.manage.
+ * Permission gating for WorkflowList.
+ *
+ * Server truth CHANGED in R2: the reads are no longer open to any member. The list
+ * response embeds each workflow's `steps`/`actions`, and a send_webhook step keeps
+ * its `headers` map verbatim — which is where an Authorization: Bearer for the
+ * called system lives. So the list itself was handing third-party credentials to
+ * anyone authenticated, and GET list/detail/runs are all workflows.manage-gated
+ * now. Without the capability there is nothing here to render, so the page shows
+ * the denied panel rather than a shell whose every request 403s.
+ *
+ * Run Now keeps its author fallback (run_any OR creator) for callers who CAN see
+ * the page — that check is unchanged, it simply no longer has a non-manage
+ * audience.
  */
 
 vi.mock('../api', () => ({
@@ -99,23 +106,22 @@ beforeEach(() => {
   );
 });
 
-describe('WorkflowList — write affordances hidden without workflows.manage', () => {
-  it('keeps the list readable but hides New Workflow, Email Templates, Duplicate, toggle, and Delete', async () => {
+describe('WorkflowList — the whole surface requires workflows.manage', () => {
+  // The security assertion. A workflow row carries its own definition, so
+  // "readable but read-only" is not a coherent state for this page: showing the
+  // list at all discloses any bearer token a send_webhook step holds.
+  it('shows nothing but the denied panel without workflows.manage', async () => {
     renderList();
 
-    // The rows themselves render — GET list is open to any member.
-    await screen.findByText('Welcome Email');
-    expect(screen.getByText('Deal Won Alert')).toBeInTheDocument();
+    // The panel renders CAPABILITY_LABELS' friendly name, not the raw code.
+    expect(await screen.findByText(/manage workflows/i)).toBeInTheDocument();
 
-    // Read-only affordances survive (run history GETs are open too).
-    expect(screen.getAllByRole('button', { name: /History/i })).toHaveLength(2);
-
-    // Every write affordance is gone.
+    expect(screen.queryByText('Welcome Email')).not.toBeInTheDocument();
+    expect(screen.queryByText('Deal Won Alert')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /History/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /New Workflow/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Email Templates/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Duplicate/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^(Deactivate|Activate)$/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Delete$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Run Now/i })).not.toBeInTheDocument();
   });
 
   it('shows all write affordances for a workflows.manage holder', async () => {
@@ -132,14 +138,16 @@ describe('WorkflowList — write affordances hidden without workflows.manage', (
     expect(screen.getAllByRole('button', { name: /^Delete$/ })).toHaveLength(2);
   });
 
-  it('keeps Run Now for the author even without run_any or manage (creator allowance)', async () => {
-    // Server truth: Run Now allows workflows.run_any OR being the author —
-    // workflows.manage plays no part, so hiding the write affordances must not
-    // take the author's Run Now with it.
-    mockPerms.user = { id: 'viewer-1' };
+  // The creator allowance is unchanged server-side (Run Now permits run_any OR
+  // being the author, with workflows.manage playing no part). What changed is who
+  // can reach the page to use it. Asserted with manage held, so a later refactor
+  // cannot quietly widen Run Now to every row.
+  it('offers Run Now only on the caller\'s own workflows without run_any', async () => {
+    mockPerms.canManage = true;
+    mockPerms.user = { id: 'author-me' };
     mockGetWorkflows.mockResolvedValue(
       listResponse([
-        makeWorkflow({ id: 'wf-mine', name: 'My Flow', created_by: 'viewer-1' }),
+        makeWorkflow({ id: 'wf-mine', name: 'My Flow', created_by: 'author-me' }),
         makeWorkflow({ id: 'wf-theirs', name: 'Their Flow', created_by: 'author-x' }),
       ]),
     );
@@ -147,7 +155,15 @@ describe('WorkflowList — write affordances hidden without workflows.manage', (
     renderList();
     await screen.findByText('My Flow');
 
-    // Exactly one control — on the workflow the viewer created.
     expect(screen.getAllByRole('button', { name: /Run Now/i })).toHaveLength(1);
+  });
+
+  it('offers Run Now on every workflow with run_any', async () => {
+    mockPerms.canManage = true;
+    mockPerms.canRunAny = true;
+    renderList();
+
+    await screen.findByText('Welcome Email');
+    expect(screen.getAllByRole('button', { name: /Run Now/i })).toHaveLength(2);
   });
 });

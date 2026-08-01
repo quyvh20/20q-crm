@@ -19,6 +19,7 @@ import { RunNowModal, canRunWorkflowNow } from './RunNowModal';
 import type { Workflow } from './types';
 import { TRIGGER_LABELS, STATUS_BADGE_VARIANT } from './types';
 import { useAuth, usePermissions } from '../../lib/auth';
+import AccessDeniedPanel from '../../components/common/AccessDeniedPanel';
 import {
   Badge,
   Button,
@@ -42,11 +43,14 @@ export const WorkflowList: React.FC = () => {
   const canRunAny = hasCapability('workflows.run_any');
   // Workflow writes (create/toggle/delete, and Duplicate — it opens the builder
   // on a create) plus every email-templates route (even the list GET) require
-  // workflows.manage server-side; the list/detail/history GETs are open to any
-  // member. Hide the affordances a non-manager would only 403 on. `can` is
-  // false until the capability fetch settles, so the controls appear once it
-  // loads rather than flashing for members who lack the grant.
-  const { can } = usePermissions();
+  // The ENTIRE workflows API is workflows.manage-gated now, reads included — a
+  // definition can hold third-party credentials in a send_webhook step's headers,
+  // and a run log holds each step's fetched output. So this is no longer "hide the
+  // affordances a non-manager would 403 on"; without the capability there is
+  // nothing on this page to show, and the outer gate below says so plainly instead
+  // of rendering a shell that fails every request. `can` is false until the
+  // capability fetch settles, so wait for `loaded` before deciding.
+  const { can, loaded: permsLoaded } = usePermissions();
   const canManage = can('workflows.manage');
 
   // Search term, active/inactive filter, and page all live in the URL query string,
@@ -141,6 +145,24 @@ export const WorkflowList: React.FC = () => {
       </Badge>
     );
   };
+
+  // Placed after every hook, not before, so the hook order never changes between
+  // renders. Waits for the capability fetch to settle first — deciding on a `can`
+  // that is still false-by-default would flash the denied panel at an admin.
+  if (!permsLoaded) {
+    return (
+      <div className="mx-auto w-full max-w-6xl">
+        <SpinnerBlock label="Loading…" />
+      </div>
+    );
+  }
+  if (!canManage) {
+    return (
+      <div className="mx-auto w-full max-w-6xl">
+        <AccessDeniedPanel capability="workflows.manage" what="automations" />
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto w-full max-w-6xl">

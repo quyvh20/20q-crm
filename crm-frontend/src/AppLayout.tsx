@@ -166,7 +166,12 @@ export default function AppLayout({ children, title }: AppLayoutProps) {
           <p className={navSectionClass}>Tools</p>
           <NavLink to="/voice" className={navItemClass}><Mic aria-hidden className={navIconClass} />Voice Notes</NavLink>
           <NavLink to="/ai" className={navItemClass}><Sparkles aria-hidden className={navIconClass} />AI Assistant</NavLink>
-          <NavLink to="/workflows" className={navItemClass}><Zap aria-hidden className={navIconClass} />Automations</NavLink>
+          {/* Workflow definitions can hold third-party credentials in a send_webhook
+              step's headers, so the whole surface is workflows.manage-gated on the
+              API. Hide the link to match, rather than leaving one that 403s. */}
+          {hasCapability('workflows.manage') && (
+            <NavLink to="/workflows" className={navItemClass}><Zap aria-hidden className={navIconClass} />Automations</NavLink>
+          )}
           <NavLink to="/reports" className={navItemClass}><BarChart3 aria-hidden className={navIconClass} />Reports</NavLink>
           <NavLink to="/shared-with-me" className={navItemClass}><Share2 aria-hidden className={navIconClass} />Shared with me</NavLink>
 

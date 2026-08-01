@@ -154,12 +154,29 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerF
 	workflows := router.Group("/api/workflows")
 	workflows.Use(authMiddleware)
 	{
+		// READS ARE MANAGE-GATED, and that is a deliberate tightening.
+		//
+		// Every write here was already gated while the reads were not, so any
+		// authenticated member — including a zero-capability Viewer — could list and
+		// open every workflow in the org. A workflow definition is not innocuous: a
+		// send_webhook step stores its `headers` map verbatim, which is where people
+		// put `Authorization: Bearer …` for the system they are calling. The read
+		// surface was therefore handing out third-party credentials at rest.
+		//
+		// Reusing the EXISTING workflows.manage rather than minting a workflows.view
+		// is what makes this shippable. Capabilities are data and
+		// DefaultRoleCapabilities is only a seed, so a brand-new capability is held by
+		// nobody until a backfill grants it — the page would go blank for every
+		// existing role in every org, admins included. admin and manager already hold
+		// workflows.manage, and the owner bypasses capability checks entirely, so
+		// nothing they can reach today changes. sales and viewer lose a surface they
+		// were never meant to have.
 		workflows.POST("", requireCap(domain.CapWorkflowsManage), h.CreateWorkflow)
-		workflows.GET("", h.ListWorkflows)
-		workflows.GET("/schema", h.GetWorkflowSchema)
-		workflows.GET("/schema/objects", h.GetSchemaObjects)
-		workflows.GET("/schema/objects/:slug/fields", h.GetSchemaObjectFields)
-		workflows.GET("/:id", h.GetWorkflow)
+		workflows.GET("", requireCap(domain.CapWorkflowsManage), h.ListWorkflows)
+		workflows.GET("/schema", requireCap(domain.CapWorkflowsManage), h.GetWorkflowSchema)
+		workflows.GET("/schema/objects", requireCap(domain.CapWorkflowsManage), h.GetSchemaObjects)
+		workflows.GET("/schema/objects/:slug/fields", requireCap(domain.CapWorkflowsManage), h.GetSchemaObjectFields)
+		workflows.GET("/:id", requireCap(domain.CapWorkflowsManage), h.GetWorkflow)
 		workflows.PUT("/:id", requireCap(domain.CapWorkflowsManage), h.UpdateWorkflow)
 		workflows.DELETE("/:id", requireCap(domain.CapWorkflowsManage), h.DeleteWorkflow)
 		workflows.POST("/:id/toggle", requireCap(domain.CapWorkflowsManage), h.ToggleWorkflow)
@@ -189,8 +206,14 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, authMiddleware gin.HandlerF
 		// creator allowance). A static route guard cannot express the creator check
 		// because it needs the loaded workflow's CreatedBy.
 		workflows.POST("/:id/run", h.RunNow)
-		workflows.GET("/:id/runs", h.ListRuns)
-		workflows.GET("/runs/:runId", h.GetRunDetail)
+		// Run reads are manage-gated for a second reason on top of the definition
+		// leak above: an action log stores each step's resolved OUTPUT, and for
+		// send_webhook that output is the fetched response body. Until the SSRF guard
+		// lands, this endpoint is the read-back channel that turns "the backend can be
+		// pointed at an internal address" into "and here is what it found". Every
+		// workflow's creator holds manage anyway, since POST "" requires it.
+		workflows.GET("/:id/runs", requireCap(domain.CapWorkflowsManage), h.ListRuns)
+		workflows.GET("/runs/:runId", requireCap(domain.CapWorkflowsManage), h.GetRunDetail)
 		// Retry a failed run (P21): re-queues it to resume from the failed step. Like Run
 		// Now, it carries no route-level capability guard — authorization (the
 		// workflows.run_any capability, or the workflow's creator) is enforced inside

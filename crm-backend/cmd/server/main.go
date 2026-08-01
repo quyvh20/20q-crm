@@ -59,6 +59,10 @@ func main() {
 	// missing variable into a silent rollback nobody attributes to it.
 	integrationCodec := buildIntegrationCodec(cfg, log)
 
+	// Same reasoning as above: raised here, before /health exists, so a refusal
+	// cannot be recorded as a healthy deploy first.
+	checkJWTSecret(cfg, log)
+
 	if cfg.SentryDSN != "" {
 		err := sentry.Init(sentry.ClientOptions{
 			Dsn:              cfg.SentryDSN,
@@ -3142,6 +3146,49 @@ func providerCredentialEnvSet(cfg *config.Config) []string {
 //
 // A nil *envelope.Codec is a valid value — every method on it returns
 // ErrNotConfigured — so callers do not need a nil check to stay safe.
+// defaultJWTSecret mirrors the viper default in pkg/config/config.go. Duplicated
+// rather than exported so that changing the default cannot silently disarm this
+// check — the test asserts the two are equal.
+const defaultJWTSecret = "dev-secret-change-me-in-production-32chars!"
+
+// jwtSecretFatal controls whether an insecure JWT_SECRET REFUSES the boot or only
+// screams about it.
+//
+// It is false for one deploy, on purpose. Nothing in the repo, the deploy config,
+// or any runtime signal can tell us whether production currently runs on the
+// default: refresh tokens are opaque and DB-backed rather than JWT-derived, so a
+// forgeable signing key looks exactly like a sound one from the outside. Shipping
+// the fatal blind would either do nothing or crash-loop production with no warning,
+// and there is no way to know which in advance.
+//
+// So the first deploy ANSWERS the question instead of betting on it: if the log
+// line below appears, prod is on the default. Once a deploy has come up clean, flip
+// this to true — it is deliberately one line and one test away.
+const jwtSecretFatal = false
+
+// checkJWTSecret refuses (or, for now, loudly reports) a production boot on the
+// shipped development signing key.
+//
+// The stake is total: JWT_SECRET signs the access tokens the API trusts, so a
+// publicly-known value lets anyone mint a token for any user in any org. The value
+// is in this repository, and this repository is public.
+func checkJWTSecret(cfg *config.Config, log *zap.Logger) {
+	// Same allowlist as every other environment gate here: anything that is not
+	// explicitly development or test is treated as production, so an unset or
+	// typo'd APP_ENV fails CLOSED. Production runs with it unset.
+	devLike := cfg.AppEnv == "development" || cfg.AppEnv == "test"
+	insecure := strings.TrimSpace(cfg.JWTSecret) == "" || cfg.JWTSecret == defaultJWTSecret
+	if !insecure || devLike {
+		return
+	}
+
+	const msg = "JWT_SECRET is unset or still the development default, which is published in this PUBLIC repository — anyone can mint an access token for any user in any org. Set a strong random JWT_SECRET on the host. IMPORTANT ORDER: if 2FA is in use, set TOTP_ENC_KEY to the CURRENT JWT_SECRET verbatim and deploy that FIRST, otherwise rotating JWT_SECRET makes every enrolled user's stored TOTP secret undecryptable."
+	if jwtSecretFatal {
+		log.Fatal(msg)
+	}
+	log.Error("SECURITY: "+msg, zap.String("action", "this boot was allowed so the problem is visible rather than an unexplained crash-loop; it will refuse to boot once jwtSecretFatal is enabled"))
+}
+
 func buildIntegrationCodec(cfg *config.Config, log *zap.Logger) *envelope.Codec {
 	configured := providerCredentialEnvSet(cfg)
 
