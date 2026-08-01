@@ -37,7 +37,23 @@ const (
 	// PurposeOAuthCodeVerifier is the PKCE code verifier held on an
 	// integration_oauth_states row between the connect redirect and the callback.
 	PurposeOAuthCodeVerifier Purpose = "oauth_code_verifier"
+	// PurposeWorkflowOrgWebhookSecret is the org's inbound-automation HMAC signing
+	// secret on automation_workflow_org_tokens. Its own namespace, not shared with
+	// PurposeConnectionWebhookSecret: they are different secrets on different
+	// tables, and a shared purpose would let a blob move between them.
+	PurposeWorkflowOrgWebhookSecret Purpose = "workflow_org_webhook_secret"
 )
+
+// IsSealed reports whether a stored value is one of this package's blobs.
+//
+// It is the discriminator a lazy migration needs: a column that used to hold
+// plaintext still does, for every row written before the change, and those rows
+// have to keep working while they are converted. Checking the prefix is enough —
+// an actual open still authenticates, so a value that merely LOOKS like a blob
+// fails there rather than here.
+func IsSealed(v string) bool {
+	return strings.HasPrefix(v, blobPrefix+".") || strings.HasPrefix(v, statelessPrefix+".")
+}
 
 // Binding is the context a ciphertext is cryptographically welded to. All three
 // fields go into the GCM additional data, so a blob copied to another org,

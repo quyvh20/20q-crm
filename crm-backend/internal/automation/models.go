@@ -95,9 +95,17 @@ func (WorkflowActionLog) TableName() string { return "automation_workflow_action
 
 // WorkflowOrgToken stores per-org webhook tokens for inbound webhook authentication.
 type WorkflowOrgToken struct {
-	OrgID     uuid.UUID `gorm:"type:uuid;primaryKey" json:"org_id"`
-	Token     string    `gorm:"size:64;uniqueIndex;not null" json:"token"`
-	Secret    string    `gorm:"size:128;not null" json:"-"`
+	OrgID uuid.UUID `gorm:"type:uuid;primaryKey" json:"org_id"`
+	Token string    `gorm:"size:64;uniqueIndex;not null" json:"token"`
+	// Secret holds the HMAC signing secret ENVELOPE-SEALED at rest, or plaintext on
+	// a deployment with no INTEGRATION_ENC_KEY and on rows written before sealing
+	// shipped. Never read it directly — go through Handler.openWebhookSecret, which
+	// handles both shapes.
+	//
+	// type:text, not size:128, and that is load-bearing rather than tidiness: a
+	// sealed 64-character secret is 212 characters, so the old varchar(128) would
+	// have errored on every write the moment sealing turned on.
+	Secret    string    `gorm:"type:text;not null" json:"-"`
 	CreatedAt time.Time `json:"created_at"`
 }
 

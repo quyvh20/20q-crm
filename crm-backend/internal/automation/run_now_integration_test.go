@@ -211,7 +211,7 @@ func TestRunNowIntegration_WorkflowResolutionScopedToOrg(t *testing.T) {
 
 	engine := makeEngine(db, map[string]ActionExecutor{})
 	defer engine.cancel()
-	handler := NewHandler(engine, db, slog.Default(), capAllow{}, nil)
+	handler := NewHandler(engine, db, slog.Default(), capAllow{}, nil, nil)
 	router := runNowITRouter(handler, orgA, userID)
 
 	// A valid in-org contact so the request fails only at workflow resolution.
@@ -261,7 +261,7 @@ func TestRunNowIntegration_EntityResolutionScopedToOrg(t *testing.T) {
 
 	engine := makeEngine(db, map[string]ActionExecutor{})
 	defer engine.cancel()
-	handler := NewHandler(engine, db, slog.Default(), capAllow{}, nil)
+	handler := NewHandler(engine, db, slog.Default(), capAllow{}, nil, nil)
 	router := runNowITRouter(handler, orgA, userID)
 
 	// --- Contact entity resolution (Req 3.2, 3.4) ---
@@ -330,7 +330,7 @@ func TestRunNowIntegration_IncompatibleRequestCreatesZeroRuns(t *testing.T) {
 
 	engine := makeEngine(db, map[string]ActionExecutor{})
 	defer engine.cancel()
-	handler := NewHandler(engine, db, slog.Default(), capAllow{}, nil)
+	handler := NewHandler(engine, db, slog.Default(), capAllow{}, nil, nil)
 	router := runNowITRouter(handler, orgID, userID)
 
 	// Real, in-org entities — so incompatibility is the sole rejection cause.
@@ -394,7 +394,7 @@ func TestRunNowIntegration_BypassesIdempotencyDedupe(t *testing.T) {
 
 	engine := makeEngine(db, map[string]ActionExecutor{})
 	defer engine.cancel()
-	handler := NewHandler(engine, db, slog.Default(), capAllow{}, nil)
+	handler := NewHandler(engine, db, slog.Default(), capAllow{}, nil, nil)
 	router := runNowITRouter(handler, orgID, userID)
 
 	wf := runNowITWorkflow(t, db, orgID, TriggerContactCreated)

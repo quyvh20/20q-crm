@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"crm-backend/internal/domain"
+	"crm-backend/internal/integrations/envelope"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -43,6 +44,10 @@ type Handler struct {
 	// authz stamps the P5a audit trail for the inbound-webhook contact upsert, which
 	// runs as the system actor (P8). nil (unit tests) simply skips the audit.
 	authz domain.RecordAuthorizer
+	// codec seals the org's inbound-webhook signing secret at rest (R2.2). nil is a
+	// valid "not configured" value and means the secret is stored in plaintext, as
+	// it was before; see webhook_secret.go for the read path that handles both.
+	codec *envelope.Codec
 	// draftAI backs the AI copilot's NL→draft endpoint (A7). nil disables it (the
 	// endpoint returns 503). Set via SetDraftAI from main.go.
 	draftAI draftAICaller
@@ -124,7 +129,10 @@ func (h *Handler) skipSignatureAllowed() bool {
 // and Retry authorize on workflows.run_any (there is no role-name fallback as of
 // P8), so a nil checker is a wiring bug and panics rather than silently failing
 // open. authz stamps the webhook-inbound audit trail (may be nil in unit tests).
-func NewHandler(engine *Engine, db *gorm.DB, logger *slog.Logger, capChecker domain.CapabilityChecker, authz domain.RecordAuthorizer) *Handler {
+// codec seals the org's inbound-webhook signing secret at rest. A nil codec is
+// valid and means "not configured": secrets are then stored in plaintext, as they
+// were before sealing shipped. See webhook_secret.go.
+func NewHandler(engine *Engine, db *gorm.DB, logger *slog.Logger, capChecker domain.CapabilityChecker, authz domain.RecordAuthorizer, codec *envelope.Codec) *Handler {
 	if capChecker == nil {
 		panic("automation.NewHandler: capChecker is required (Run Now / Retry authorize on workflows.run_any; the role-name fallback was removed in P8)")
 	}
@@ -137,6 +145,7 @@ func NewHandler(engine *Engine, db *gorm.DB, logger *slog.Logger, capChecker dom
 		schemaCache: NewSchemaCache(60 * time.Second),
 		capChecker:  capChecker,
 		authz:       authz,
+		codec:       codec,
 	}
 }
 
@@ -990,7 +999,17 @@ func (h *Handler) WebhookInbound(c *gin.Context) {
 			return
 		}
 
-		expectedSig := "sha256=" + computeHMAC(bodyBytes, token.Secret)
+		signingSecret, err := h.openWebhookSecret(token.OrgID, token.Secret)
+		if err != nil {
+			// Fail CLOSED. Computing an HMAC over a value we could not open would
+			// reject every legitimate call with a signature error pointing nowhere.
+			h.logger.Error("webhook inbound: cannot open signing secret", "error", err, "org_id", token.OrgID.String())
+			c.JSON(http.StatusInternalServerError, ErrorResponse{
+				Error: ErrorBody{Code: "INTERNAL_ERROR", Message: "webhook signing is misconfigured"},
+			})
+			return
+		}
+		expectedSig := "sha256=" + computeHMAC(bodyBytes, signingSecret)
 		if !hmac.Equal([]byte(sigHeader), []byte(expectedSig)) {
 			c.JSON(http.StatusUnauthorized, ErrorResponse{
 				Error: ErrorBody{Code: "UNAUTHORIZED", Message: "invalid signature"},
@@ -1329,10 +1348,20 @@ func (h *Handler) GetWebhookToken(c *gin.Context) {
 		return
 	}
 
+	// Masked from the OPENED secret: masking the stored blob would show characters
+	// of the ciphertext, which tells the operator nothing about the secret they
+	// hold. A failure here is not fatal — the mask is cosmetic — so degrade to a
+	// fixed placeholder rather than failing the whole settings page.
+	plain, err := h.openWebhookSecret(orgID, token.Secret)
+	if err != nil {
+		h.logger.Error("mask webhook secret: cannot open", "error", err, "org_id", orgID.String())
+		plain = ""
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"data": WebhookTokenResponse{
 			Token:        token.Token,
-			SecretMasked: maskSecret(token.Secret),
+			SecretMasked: maskSecret(plain),
 			URL:          inboundWebhookURL(requestScheme(c), c.Request.Host, token.Token),
 		},
 	})
@@ -1358,8 +1387,17 @@ func (h *Handler) RevealWebhookSecret(c *gin.Context) {
 		return
 	}
 
+	// Reveal is why this is ENCRYPTED rather than hashed: the operator has to be
+	// able to get the value back to paste into the sending system.
+	plain, err := h.openWebhookSecret(orgID, token.Secret)
+	if err != nil {
+		h.logger.Error("reveal webhook secret: cannot open", "error", err, "org_id", orgID.String())
+		h.errorResponse(c, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load webhook secret", nil)
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"data": WebhookSecretRevealResponse{Secret: token.Secret},
+		"data": WebhookSecretRevealResponse{Secret: plain},
 	})
 }
 
@@ -1384,7 +1422,13 @@ func (h *Handler) RegenerateWebhookSecret(c *gin.Context) {
 	}
 
 	newSecret := GenerateToken(64)
-	if err := h.repo.UpdateOrgSecret(c.Request.Context(), orgID, newSecret); err != nil {
+	stored, err := h.sealWebhookSecret(orgID, newSecret)
+	if err != nil {
+		h.logger.Error("rotate org webhook secret: seal failed", "error", err, "org_id", orgID.String())
+		h.errorResponse(c, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to rotate webhook secret", nil)
+		return
+	}
+	if err := h.repo.UpdateOrgSecret(c.Request.Context(), orgID, stored); err != nil {
 		h.logger.Error("rotate org webhook secret failed", "error", err)
 		h.errorResponse(c, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to rotate webhook secret", nil)
 		return
@@ -1411,10 +1455,14 @@ func (h *Handler) getOrCreateOrgToken(ctx context.Context, orgID uuid.UUID) (*Wo
 		return token, nil
 	}
 
+	stored, err := h.sealWebhookSecret(orgID, GenerateToken(64))
+	if err != nil {
+		return nil, fmt.Errorf("seal new webhook secret: %w", err)
+	}
 	token = &WorkflowOrgToken{
 		OrgID:  orgID,
 		Token:  GenerateToken(32),
-		Secret: GenerateToken(64),
+		Secret: stored,
 	}
 	if err := h.repo.CreateOrgToken(ctx, token); err != nil {
 		// A concurrent caller may have created the row (OrgID is the primary key)

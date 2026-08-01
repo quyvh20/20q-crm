@@ -2531,6 +2531,32 @@ func main() {
 			automation.WithCallerResolver(usecase.NewCallerResolver(authRepo)),
 		)
 		autoEngine.Start()
+
+		// R2.2: widen automation_workflow_org_tokens.secret, then seal any plaintext.
+		//
+		// The struct tag changed from size:128 to type:text, and gorm's AutoMigrate
+		// does emit the ALTER for that. But the engine only LOGS an AutoMigrate
+		// failure rather than stopping, so a swallowed error there would leave a
+		// varchar(128) column facing 212-character sealed values and every webhook
+		// write would fail. This costs one catalog lookup and removes that path.
+		if err := db.Exec(`
+			DO $$
+			BEGIN
+				IF to_regclass('public.automation_workflow_org_tokens') IS NOT NULL THEN
+					ALTER TABLE automation_workflow_org_tokens ALTER COLUMN secret TYPE text;
+				END IF;
+			END $$;`).Error; err != nil {
+			log.Error("automation: widening org webhook secret column failed", zap.Error(err))
+		}
+		// Seal rows written before this shipped. Idempotent — already-sealed rows are
+		// skipped — and bounded by the org count, one row each. Without it the lazy
+		// read would leave plaintext in the table indefinitely for any org that never
+		// rotates, so the column would be "encrypted" while most rows were not.
+		if n, err := automation.BackfillWebhookSecrets(context.Background(), db, integrationCodec); err != nil {
+			log.Error("automation: sealing existing webhook secrets failed", zap.Error(err))
+		} else if n > 0 {
+			log.Info("automation: sealed webhook secrets at rest", zap.Int("orgs", n))
+		}
 		// M8: reclaim terminal workflow runs + their action logs (both grew unbounded
 		// before now; drip sequences at thousands of recipients × steps make this the
 		// heaviest write volume in the schema). Independent of the email transport.
@@ -2538,7 +2564,12 @@ func main() {
 		// capChecker is REQUIRED (P8): Run Now / Retry authorize on workflows.run_any
 		// with no role-name fallback. authz (permissionUC) stamps the webhook-inbound
 		// contact upsert audit as the system actor.
-		autoHandler := automation.NewHandler(autoEngine, db, autoLogger, permissionUC, permissionUC)
+		// integrationCodec seals the org's inbound-webhook signing secret at rest
+		// (R2.2). It is the SAME codec the integrations module uses, under its own
+		// envelope Purpose so a blob cannot move between the two columns. Nil when
+		// INTEGRATION_ENC_KEY is unset, which keeps the secret in plaintext exactly
+		// as before rather than breaking webhook setup on such a deployment.
+		autoHandler := automation.NewHandler(autoEngine, db, autoLogger, permissionUC, permissionUC, integrationCodec)
 		// AI copilot (A7): the NL→draft endpoint runs a tool loop on the shared AI
 		// gateway (never saves; the client applies the draft through the same zod
 		// validation as a manual edit).

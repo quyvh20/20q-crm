@@ -150,7 +150,7 @@ func TestRetryRunHandler_ForeignOrgRunReturns404(t *testing.T) {
 
 	engine := makeEngine(db, map[string]ActionExecutor{})
 	defer engine.cancel()
-	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capAllow{}, nil)
+	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capAllow{}, nil, nil)
 	router := retryITRouter(handler, callerOrg, uuid.New(), "admin")
 
 	run := retryITSeedRun(t, db, ownerOrg, StatusFailed, []int{0})
@@ -188,7 +188,7 @@ func TestRetryRunHandler_RejectsNonFailedRun(t *testing.T) {
 
 			engine := makeEngine(db, map[string]ActionExecutor{})
 			defer engine.cancel()
-			handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capAllow{}, nil)
+			handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capAllow{}, nil, nil)
 			router := retryITRouter(handler, orgID, uuid.New(), "admin")
 
 			run := retryITSeedRun(t, db, orgID, status, []int{0})
@@ -221,7 +221,7 @@ func TestRetryRunHandler_FailedRunReturns200AndResets(t *testing.T) {
 
 	engine := makeEngine(db, map[string]ActionExecutor{})
 	defer engine.cancel()
-	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capAllow{}, nil)
+	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capAllow{}, nil, nil)
 	router := retryITRouter(handler, orgID, uuid.New(), "admin")
 
 	run := retryITSeedRun(t, db, orgID, StatusFailed, []int{0})
@@ -309,7 +309,7 @@ func TestRetryRunHandler_CreatorAllowanceAllowsNonPrivilegedCreator(t *testing.T
 
 	engine := makeEngine(db, map[string]ActionExecutor{})
 	defer engine.cancel()
-	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capDeny{}, nil)
+	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capDeny{}, nil, nil)
 	router := retryITRouter(handler, orgID, userID, "viewer") // non-privileged
 
 	// Workflow created BY the caller → creator allowance applies.
@@ -341,7 +341,7 @@ func TestRetryRunHandler_NonCreatorNonPrivilegedForbidden(t *testing.T) {
 
 	engine := makeEngine(db, map[string]ActionExecutor{})
 	defer engine.cancel()
-	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capDeny{}, nil)
+	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capDeny{}, nil, nil)
 	router := retryITRouter(handler, orgID, callerID, "viewer")
 
 	// Workflow created by SOMEONE ELSE → creator allowance does not apply.

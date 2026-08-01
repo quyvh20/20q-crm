@@ -215,7 +215,7 @@ func TestRunNowHandler_CreatorAllowanceAllowsNonPrivilegedCreator(t *testing.T) 
 
 	engine := makeEngine(db, map[string]ActionExecutor{})
 	defer engine.cancel()
-	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capDeny{}, nil)
+	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capDeny{}, nil, nil)
 	// Non-privileged caller ("viewer") — only the creator allowance can authorize this run.
 	router := runNowITRouterWithRole(handler, orgID, userID, "viewer")
 
@@ -256,7 +256,7 @@ func TestRunNowHandler_NonCreatorNonPrivilegedForbidden(t *testing.T) {
 
 	engine := makeEngine(db, map[string]ActionExecutor{})
 	defer engine.cancel()
-	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capDeny{}, nil)
+	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capDeny{}, nil, nil)
 	router := runNowITRouterWithRole(handler, orgID, callerID, "viewer")
 
 	// Workflow created by someone OTHER than the caller → creator allowance does not apply.
@@ -389,7 +389,7 @@ func TestRunNowHandler_EngineFailureReturns500NoRunID(t *testing.T) {
 
 	engine := makeEngine(db, map[string]ActionExecutor{})
 	defer engine.cancel()
-	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capAllow{}, nil)
+	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capAllow{}, nil, nil)
 	router := runNowITRouter(handler, orgID, userID)
 
 	// Seed a compatible contact workflow + in-org contact so the request reaches the
@@ -439,7 +439,7 @@ func TestRunNowHandler_SuccessReturns201WithIDAndStatus(t *testing.T) {
 
 	engine := makeEngine(db, map[string]ActionExecutor{})
 	defer engine.cancel()
-	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capAllow{}, nil)
+	handler := NewHandler(engine, db, handlerRunNowDiscardLogger(), capAllow{}, nil, nil)
 	router := runNowITRouter(handler, orgID, userID)
 
 	wf := runNowITWorkflow(t, db, orgID, TriggerContactCreated)
