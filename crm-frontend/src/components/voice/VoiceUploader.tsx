@@ -48,7 +48,7 @@ const ACCEPT_ATTR = [
   'audio/mp4', 'audio/x-m4a', 'audio/webm', 'video/webm',
 ].join(',');
 
-const MAX_BYTES = 500 * 1024 * 1024; // 500 MB
+const MAX_BYTES = 25 * 1024 * 1024; // 25 MB — must match the server cap in voice_handler.go
 
 
 const LANGUAGES = [
@@ -147,7 +147,7 @@ function validateFile(file: File): string | null {
 
   // Step 3 — Size
   if (file.size > MAX_BYTES) {
-    return `File is too large (${formatBytes(file.size)}). Maximum allowed: 500 MB`;
+    return `File is too large (${formatBytes(file.size)}). Maximum allowed: 25 MB`;
   }
 
   return null;
@@ -301,7 +301,7 @@ export default function VoiceUploader({
         <FileAudio aria-hidden className="h-5 w-5 text-primary" />
         <h3 className="text-base font-semibold tracking-tight">Upload Audio File</h3>
         <Badge variant="outline" className="ml-auto">
-          {ACCEPTED_TYPES.join(' · ')} · max 500 MB
+          {ACCEPTED_TYPES.join(' · ')} · max 25 MB
         </Badge>
       </div>
 
@@ -458,7 +458,7 @@ export default function VoiceUploader({
                 {isDragOver ? 'Drop your audio file here' : 'Drag & drop or click to browse'}
               </p>
               <p className="text-xs text-muted-foreground/70">
-                {ACCEPTED_TYPES.join(', ')} · Maximum 500 MB
+                {ACCEPTED_TYPES.join(', ')} · Maximum 25 MB
               </p>
             </>
           ) : (

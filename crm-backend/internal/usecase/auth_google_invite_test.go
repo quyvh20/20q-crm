@@ -265,8 +265,9 @@ func (f *fakeGoogleRepo) DeleteExpiredTwoFactorChallenges(context.Context) (int6
 func (f *fakeGoogleRepo) ClaimChallengeAttempt(context.Context, uuid.UUID, int) (bool, error) { return true, nil }
 func (f *fakeGoogleRepo) RevokeAllUserAPITokens(context.Context, uuid.UUID) (int64, error)    { return 0, nil }
 
-// TOTP replay guard (R2.3): claiming a step always succeeds in these fakes — the
-// CAS semantics are covered by the repository's own tests.
+// TOTP replay guard (R2.3): these fakes always grant the claim, so they exercise
+// the NON-replay path only. The guard's real behaviour is covered by
+// totp_consume_test.go (usecase) and two_factor_replay_test.go (repository).
 func (f *fakeGoogleRepo) ConsumeTOTPStep(_ context.Context, _ uuid.UUID, _ int64) (bool, error) {
 	return true, nil
 }

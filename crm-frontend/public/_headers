@@ -19,10 +19,11 @@
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
   Cross-Origin-Opener-Policy: same-origin
-  # microphone=(self) is REQUIRED, not an oversight: voice notes record audio in
-  # the browser, and denying it breaks that feature outright. Everything the app
-  # does not use is denied.
-  Permissions-Policy: accelerometer=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), fullscreen=(self), geolocation=(), gyroscope=(), magnetometer=(), microphone=(self), midi=(), payment=(), usb=(), xr-spatial-tracking=()
+  # Everything is denied, microphone included. Voice notes are FILE UPLOADS — the
+  # SPA calls neither getUserMedia nor MediaRecorder anywhere — so granting it
+  # would have widened the policy for a capability the app does not use. Re-grant
+  # microphone=(self) only if in-browser recording is ever added.
+  Permissions-Policy: accelerometer=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), fullscreen=(self), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), usb=(), xr-spatial-tracking=()
   # Notes on the non-obvious sources:
   #   style-src 'unsafe-inline' — React writes inline style attributes throughout.
   #   img-src https: — email templates and the media library reference remote art.

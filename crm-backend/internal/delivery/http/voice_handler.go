@@ -1,7 +1,9 @@
 package http
 
 import (
+	"errors"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -102,7 +104,17 @@ func (h *VoiceHandler) Upload(c *gin.Context) {
 
 	note, jobID, err := h.uc.Upload(ctx, orgUUID, userUUID, input)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		// The usecase returns a 415 AppError when the bytes are not audio. Blanket
+		// 500-with-err.Error() turned that into "internal error" plus whatever the
+		// wrapped message said — the user could not tell a rejected file from a
+		// broken server, and internal paths leaked into the response body.
+		var appErr *domain.AppError
+		if errors.As(err, &appErr) {
+			c.JSON(appErr.Code, gin.H{"error": appErr.Message})
+			return
+		}
+		log.Printf("voice upload failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save the recording"})
 		return
 	}
 

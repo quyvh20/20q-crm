@@ -25,6 +25,21 @@ func TestIsBlocked(t *testing.T) {
 		{"224.0.0.1", "multicast"},
 		{"ff02::1", "IPv6 multicast"},
 		{"fd00::1", "IPv6 unique-local"},
+		// The ranges netip.Addr's predicates do NOT cover — every one of these
+		// returned false from IsPrivate/IsLoopback/IsLinkLocal/IsMulticast, so each
+		// was dialled before the explicit deny table replaced that chain.
+		{"100.64.0.10", "carrier-grade NAT — Kubernetes pod space and all of Tailscale"},
+		{"100.127.255.254", "top of the CGNAT block"},
+		{"192.0.0.1", "IETF protocol assignments"},
+		{"198.18.0.1", "benchmark network"},
+		{"192.0.2.1", "TEST-NET-1"},
+		{"198.51.100.1", "TEST-NET-2"},
+		{"203.0.113.1", "TEST-NET-3"},
+		{"240.0.0.1", "reserved"},
+		{"255.255.255.255", "broadcast"},
+		{"2002::1", "6to4"},
+		{"64:ff9b::1", "NAT64"},
+		{"2001::1", "Teredo"},
 		// The bypass a naive check misses: the same private addresses spelled as
 		// IPv4-mapped IPv6.
 		{"::ffff:127.0.0.1", "IPv4-mapped loopback"},

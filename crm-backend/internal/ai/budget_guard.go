@@ -38,14 +38,28 @@ type planLimits struct {
 // deliberately easy to change, and an individual org can be moved between tiers
 // with a plan_tier UPDATE — data, not a deploy — so a wrong guess here is a
 // one-row fix rather than a release.
+// AIFeaturesAdvanced is TRUE on every tier, and that is deliberate rather than a
+// leftover of the old blanket unlock.
+//
+// Nothing in this codebase ever WRITES organizations.plan_tier — it is read here
+// and nowhere else, there is no plan-management surface, and no provisioning path
+// sets it. So every org sits on the column default, 'free', permanently. Gating
+// advanced tasks behind pro+ would therefore not tier anything: it would disable
+// deal scoring, meeting summaries, analytics and follow-ups for 100% of orgs, with
+// no in-product way to restore them. Worse, those run as queued jobs, so the user
+// sees a job fail rather than an upsell.
+//
+// The risk actually being closed here is COST — an unbounded budget lets one
+// runaway loop bill the platform, and the AI endpoints have no rate limit of their
+// own. Token caps close that without breaking the product. Turn the advanced gate
+// on in the same change that ships a way to set plan_tier, not before.
 var tierLimits = map[string]planLimits{
-	// ~1000 assistant exchanges a month. Enough to evaluate, not to run on.
-	"free": {MonthlyAITokens: 500_000, AIFeaturesAdvanced: false},
-	"starter": {MonthlyAITokens: 5_000_000, AIFeaturesAdvanced: false},
-	// advanced (meeting summaries, deal scoring, analytics, follow-ups) is pro+,
-	// which is what advancedTasks in gateway.go has always documented.
-	"pro":      {MonthlyAITokens: 25_000_000, AIFeaturesAdvanced: true},
-	"business": {MonthlyAITokens: 100_000_000, AIFeaturesAdvanced: true},
+	// Sized so the only tier anyone is actually on today is generous enough to run
+	// on, while still bounding a runaway loop.
+	"free":     {MonthlyAITokens: 5_000_000, AIFeaturesAdvanced: true},
+	"starter":  {MonthlyAITokens: 15_000_000, AIFeaturesAdvanced: true},
+	"pro":      {MonthlyAITokens: 50_000_000, AIFeaturesAdvanced: true},
+	"business": {MonthlyAITokens: 200_000_000, AIFeaturesAdvanced: true},
 }
 
 // ============================================================

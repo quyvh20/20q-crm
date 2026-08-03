@@ -110,10 +110,12 @@ func TestMatchTOTPStep_AgreesWithValidateTOTP(t *testing.T) {
 	}
 }
 
-// The replay itself, at the level the guard operates on: a second presentation of
-// the SAME code resolves to the same step, so the compare-and-swap — which only
-// accepts a step strictly greater than the last spent — refuses it.
-func TestReplayResolvesToAnAlreadySpentStep(t *testing.T) {
+// A replayed code resolves to the SAME step, which is the property the
+// compare-and-swap relies on. This asserts only that determinism; whether the CAS
+// then refuses it is tested against a real database in
+// repository/two_factor_replay_test.go, and the usecase's use of it in
+// TestConsumeSecondFactor_* below.
+func TestReplayResolvesToTheSameStep(t *testing.T) {
 	secret := testSecret(t)
 	code := codeAt(t, secret, time.Now())
 
@@ -127,11 +129,5 @@ func TestReplayResolvesToAnAlreadySpentStep(t *testing.T) {
 	}
 	if first != second {
 		t.Fatalf("the same code resolved to two steps (%d, %d); the guard would let it through", first, second)
-	}
-
-	// The CAS predicate: strictly greater than the last spent step.
-	lastSpent := first
-	if second > lastSpent {
-		t.Fatal("a replayed code would be treated as a new step")
 	}
 }
