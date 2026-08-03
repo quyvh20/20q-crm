@@ -294,6 +294,10 @@ type AuthRepository interface {
 	// ConsumeBackupCode burns one code; false means it was already spent (the guard
 	// is in the WHERE clause, so concurrent requests can't both win).
 	ConsumeBackupCode(ctx context.Context, id uuid.UUID) (bool, error)
+	// ConsumeTOTPStep claims a TOTP time-step, returning false when that step was
+	// already spent. Compare-and-swap in one statement: a code is valid for its
+	// whole window, so concurrent presentations must not both succeed.
+	ConsumeTOTPStep(ctx context.Context, userID uuid.UUID, step int64) (bool, error)
 	CountBackupCodesRemaining(ctx context.Context, userID uuid.UUID) (int, error)
 	CreateTwoFactorChallenge(ctx context.Context, ch *TwoFactorChallenge) error
 	GetTwoFactorChallengeByHash(ctx context.Context, tokenHash string) (*TwoFactorChallenge, error)

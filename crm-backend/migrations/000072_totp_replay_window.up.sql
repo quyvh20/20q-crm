@@ -1,0 +1,14 @@
+-- Makes a TOTP code single-use (R2.3).
+--
+-- A code is valid for its entire 30-second step, plus one step either side to
+-- absorb clock skew — so roughly a 90-second window in which the SAME six digits
+-- authenticate. Anyone who observes a code within that window (shoulder-surfed,
+-- phished, read off a lock-screen notification) can replay it. Recording the
+-- highest step already spent, and refusing anything at or below it, closes that.
+--
+-- Nullable on purpose: NULL means "no step spent yet" and the compare-and-swap
+-- treats it as -infinity, so existing users are unaffected until their next login.
+--
+-- Prod runs the same statement as a boot guard in cmd/server/main.go — golang-migrate
+-- is dead there, so this file is the local/dev mirror only.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_last_step BIGINT;

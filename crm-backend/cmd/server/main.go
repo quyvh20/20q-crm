@@ -998,6 +998,12 @@ func main() {
 		// correct" and "code correct". Keep both files in sync.
 		db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret TEXT`)
 		db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled_at TIMESTAMPTZ`)
+		// totp_last_step makes a TOTP code single-use (R2.3). A code is valid for its
+		// whole 30s window plus a step of skew either side, so without it an observed
+		// code can be replayed inside that window. Nullable: a NULL means "no step
+		// spent yet", which the compare-and-swap treats as -infinity. Mirrored by
+		// migration 000072.
+		db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_last_step BIGINT`)
 		db.Exec(`ALTER TABLE organizations ADD COLUMN IF NOT EXISTS require_two_factor BOOLEAN NOT NULL DEFAULT FALSE`)
 		db.Exec(`CREATE TABLE IF NOT EXISTS two_factor_backup_codes (
 			id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -2569,7 +2575,7 @@ func main() {
 		// envelope Purpose so a blob cannot move between the two columns. Nil when
 		// INTEGRATION_ENC_KEY is unset, which keeps the secret in plaintext exactly
 		// as before rather than breaking webhook setup on such a deployment.
-		autoHandler := automation.NewHandler(autoEngine, db, autoLogger, permissionUC, permissionUC, integrationCodec)
+		autoHandler := automation.NewHandler(autoEngine, db, autoLogger, permissionUC, permissionUC, integrationCodec, authRepo)
 		// AI copilot (A7): the NL→draft endpoint runs a tool loop on the shared AI
 		// gateway (never saves; the client applies the draft through the same zod
 		// validation as a manual edit).

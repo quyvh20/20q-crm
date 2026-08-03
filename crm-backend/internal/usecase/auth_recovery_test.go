@@ -835,3 +835,9 @@ func (f *fakeAuthRepo) DeleteExpiredTwoFactorChallenges(context.Context) (int64,
 
 func (f *fakeAuthRepo) ClaimChallengeAttempt(context.Context, uuid.UUID, int) (bool, error) { return true, nil }
 func (f *fakeAuthRepo) RevokeAllUserAPITokens(context.Context, uuid.UUID) (int64, error)    { return 0, nil }
+
+// TOTP replay guard (R2.3): claiming a step always succeeds in these fakes — the
+// CAS semantics are covered by the repository's own tests.
+func (f *fakeAuthRepo) ConsumeTOTPStep(_ context.Context, _ uuid.UUID, _ int64) (bool, error) {
+	return true, nil
+}

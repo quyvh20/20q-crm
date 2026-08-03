@@ -103,6 +103,13 @@ type User struct {
 	// code check, so a scan that never registered can't lock anyone out.
 	TotpSecret    *string    `gorm:"column:totp_secret;type:text" json:"-"`
 	TotpEnabledAt *time.Time `gorm:"column:totp_enabled_at" json:"-"`
+	// TotpLastStep is the highest TOTP time-step already spent, and it is what makes
+	// a code single-use. A code stays valid for its whole 30-second window (±1 step
+	// of clock skew), so without this an attacker who observes one — shoulder-surfed,
+	// phished, read from a notification — can replay it inside that window. Compared
+	// and advanced in one atomic UPDATE, so two concurrent logins cannot both spend
+	// the same step.
+	TotpLastStep *int64 `gorm:"column:totp_last_step" json:"-"`
 	// DefaultOrgID is the user's chosen home workspace (R2, P3). It is the durable,
 	// server-side memory that drives org selection at login/refresh so a multi-org
 	// user isn't asked to choose every time. Validated as an ACTIVE membership at

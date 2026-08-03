@@ -384,8 +384,26 @@ func (uc *authUseCase) VerifyTwoFactor(ctx context.Context, challengeToken, code
 func (uc *authUseCase) consumeSecondFactor(ctx context.Context, user *domain.User, code string) (bool, error) {
 	if user.TotpSecret != nil && *user.TotpSecret != "" {
 		secret, err := decryptTOTPSecret(*user.TotpSecret, uc.cfg.TOTPEncKey, uc.cfg.JWTSecret)
-		if err == nil && validateTOTP(code, secret) {
-			return true, nil
+		if err == nil {
+			if step, ok := matchTOTPStep(code, secret); ok {
+				// The code is arithmetically correct — now claim its time step, which
+				// is what makes it single-use. A code stays valid for its whole 30s
+				// window (±1 step of skew), so an observed code could otherwise be
+				// replayed inside it. Claiming FAILS when this step or a later one was
+				// already spent, and the claim is atomic so two concurrent logins
+				// presenting the same code cannot both win.
+				claimed, err := uc.authRepo.ConsumeTOTPStep(ctx, user.ID, step)
+				if err != nil {
+					return false, domain.ErrInternal
+				}
+				if claimed {
+					return true, nil
+				}
+				// A correct-but-already-spent code deliberately falls through to the
+				// backup-code path rather than returning early: the caller cannot
+				// distinguish a replay from a wrong code, and a legitimate user whose
+				// code was consumed simply waits for the next one.
+			}
 		}
 	}
 
@@ -412,17 +430,48 @@ func (uc *authUseCase) consumeSecondFactor(ctx context.Context, user *domain.Use
 	return false, nil
 }
 
+// totpPeriod is the TOTP step length in seconds (RFC 6238 default).
+const totpPeriod = 30
+
+// totpValidateOpts is the single definition of how a code is checked, so the
+// step-matching below cannot drift from what the library would have accepted.
+var totpValidateOpts = totp.ValidateOpts{
+	Period:    totpPeriod,
+	Skew:      1,
+	Digits:    otp.DigitsSix,
+	Algorithm: otp.AlgorithmSHA1,
+}
+
 // validateTOTP checks a code with ±1 time step of skew (±30s), which absorbs the
 // ordinary clock drift between a phone and a server without meaningfully widening
 // the window.
 func validateTOTP(code, secret string) bool {
-	ok, err := totp.ValidateCustom(code, secret, time.Now(), totp.ValidateOpts{
-		Period:    30,
-		Skew:      1,
-		Digits:    otp.DigitsSix,
-		Algorithm: otp.AlgorithmSHA1,
-	})
+	ok, err := totp.ValidateCustom(code, secret, time.Now(), totpValidateOpts)
 	return err == nil && ok
+}
+
+// matchTOTPStep reports WHICH time step a code belongs to, which is what a replay
+// guard needs and what ValidateCustom does not expose — it answers only yes/no
+// across the whole skew range, so it cannot say what to record as spent.
+//
+// The candidate steps are evaluated in the same order and over the same window the
+// library uses (current, then one either side), and each is validated through
+// ValidateCustom pinned to that step's own instant with skew 0. Re-deriving the
+// comparison by hand would risk accepting something the library would not; this
+// way the accept/reject decision stays the library's.
+func matchTOTPStep(code, secret string) (int64, bool) {
+	now := time.Now()
+	opts := totpValidateOpts
+	opts.Skew = 0
+
+	current := now.Unix() / totpPeriod
+	for _, step := range []int64{current, current - 1, current + 1} {
+		at := time.Unix(step*totpPeriod, 0)
+		if ok, err := totp.ValidateCustom(code, secret, at, opts); err == nil && ok {
+			return step, true
+		}
+	}
+	return 0, false
 }
 
 // newBackupCodeSet returns the plaintext codes (shown once) and their bcrypt

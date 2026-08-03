@@ -191,3 +191,25 @@ func (r *authRepository) RevokeAllUserAPITokens(ctx context.Context, userID uuid
 		Update("revoked_at", time.Now())
 	return res.RowsAffected, res.Error
 }
+
+// ConsumeTOTPStep claims a TOTP time-step for a user, returning false if that step
+// (or a later one) was already spent.
+//
+// The compare and the write are ONE statement on purpose. A TOTP code is valid for
+// its whole 30-second window, so two logins presenting the same code can arrive
+// concurrently; a read-then-write would let both observe the old value and both
+// succeed, which is precisely the replay this prevents. RowsAffected is the claim:
+// exactly one caller can move the value.
+//
+// A NULL totp_last_step means no step has ever been spent and is treated as
+// -infinity, so existing users are unaffected until their next login.
+func (r *authRepository) ConsumeTOTPStep(ctx context.Context, userID uuid.UUID, step int64) (bool, error) {
+	res := r.db.WithContext(ctx).
+		Model(&domain.User{}).
+		Where("id = ? AND (totp_last_step IS NULL OR totp_last_step < ?)", userID, step).
+		Update("totp_last_step", step)
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected == 1, nil
+}

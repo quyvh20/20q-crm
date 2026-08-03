@@ -24,11 +24,28 @@ type planLimits struct {
 	AIFeaturesAdvanced bool
 }
 
+// tierLimits is the per-plan monthly AI budget.
+//
+// These were all set to 10 billion tokens with advanced features on, under a
+// "temporary unlock" comment — which is to say there was no budget at all. Every
+// token here is billed to us by the provider, and the AI endpoints carry no rate
+// limit of their own, so an unbounded budget means one org's runaway loop (or one
+// abusive tenant) bills the whole platform with nothing to stop it. That is the
+// risk being closed; the tiering is a side effect of having a number at all.
+//
+// The numbers are sized to be generous rather than precise: free should be enough
+// to genuinely evaluate the AI features, not merely to see them work. They are
+// deliberately easy to change, and an individual org can be moved between tiers
+// with a plan_tier UPDATE — data, not a deploy — so a wrong guess here is a
+// one-row fix rather than a release.
 var tierLimits = map[string]planLimits{
-	"free":     {MonthlyAITokens: 10_000_000_000, AIFeaturesAdvanced: true}, // Temporary unlock advanced and high token count
-	"starter":  {MonthlyAITokens: 10_000_000_000, AIFeaturesAdvanced: true},
-	"pro":      {MonthlyAITokens: 10_000_000_000, AIFeaturesAdvanced: true},
-	"business": {MonthlyAITokens: 10_000_000_000, AIFeaturesAdvanced: true},
+	// ~1000 assistant exchanges a month. Enough to evaluate, not to run on.
+	"free": {MonthlyAITokens: 500_000, AIFeaturesAdvanced: false},
+	"starter": {MonthlyAITokens: 5_000_000, AIFeaturesAdvanced: false},
+	// advanced (meeting summaries, deal scoring, analytics, follow-ups) is pro+,
+	// which is what advancedTasks in gateway.go has always documented.
+	"pro":      {MonthlyAITokens: 25_000_000, AIFeaturesAdvanced: true},
+	"business": {MonthlyAITokens: 100_000_000, AIFeaturesAdvanced: true},
 }
 
 // ============================================================

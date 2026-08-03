@@ -48,6 +48,9 @@ type Handler struct {
 	// valid "not configured" value and means the secret is stored in plaintext, as
 	// it was before; see webhook_secret.go for the read path that handles both.
 	codec *envelope.Codec
+	// audit records credential access and destructive admin actions. nil (unit
+	// tests) skips the trail; see admin_audit.go.
+	audit domain.AuthEventWriter
 	// draftAI backs the AI copilot's NL→draft endpoint (A7). nil disables it (the
 	// endpoint returns 503). Set via SetDraftAI from main.go.
 	draftAI draftAICaller
@@ -132,7 +135,7 @@ func (h *Handler) skipSignatureAllowed() bool {
 // codec seals the org's inbound-webhook signing secret at rest. A nil codec is
 // valid and means "not configured": secrets are then stored in plaintext, as they
 // were before sealing shipped. See webhook_secret.go.
-func NewHandler(engine *Engine, db *gorm.DB, logger *slog.Logger, capChecker domain.CapabilityChecker, authz domain.RecordAuthorizer, codec *envelope.Codec) *Handler {
+func NewHandler(engine *Engine, db *gorm.DB, logger *slog.Logger, capChecker domain.CapabilityChecker, authz domain.RecordAuthorizer, codec *envelope.Codec, audit domain.AuthEventWriter) *Handler {
 	if capChecker == nil {
 		panic("automation.NewHandler: capChecker is required (Run Now / Retry authorize on workflows.run_any; the role-name fallback was removed in P8)")
 	}
@@ -146,6 +149,7 @@ func NewHandler(engine *Engine, db *gorm.DB, logger *slog.Logger, capChecker dom
 		capChecker:  capChecker,
 		authz:       authz,
 		codec:       codec,
+		audit:       audit,
 	}
 }
 
@@ -517,6 +521,11 @@ func (h *Handler) DeleteWorkflow(c *gin.Context) {
 	// deleted workflow (it already guards firing on the workflow being active).
 	_ = h.repo.CancelWorkflowTimers(c.Request.Context(), id, TimerKindSchedule)
 	_ = h.repo.CancelWorkflowTimers(c.Request.Context(), id, TimerKindDateField)
+
+	// Destroying a workflow silently removes automation an org may be relying on,
+	// and the definition itself is now unreadable through the API.
+	h.recordAdminEvent(c.Request.Context(), orgID, EventWorkflowDeleted,
+		map[string]any{"workflow_id": id.String()})
 
 	c.JSON(http.StatusOK, gin.H{"data": nil})
 }
@@ -1396,6 +1405,10 @@ func (h *Handler) RevealWebhookSecret(c *gin.Context) {
 		return
 	}
 
+	// The doc comment above has always called this "an explicit, auditable
+	// retrieval". Until now nothing recorded it.
+	h.recordAdminEvent(c.Request.Context(), orgID, EventWebhookSecretRevealed, nil)
+
 	c.JSON(http.StatusOK, gin.H{
 		"data": WebhookSecretRevealResponse{Secret: plain},
 	})
@@ -1433,6 +1446,10 @@ func (h *Handler) RegenerateWebhookSecret(c *gin.Context) {
 		h.errorResponse(c, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to rotate webhook secret", nil)
 		return
 	}
+
+	// A rotation invalidates every sender still signing with the old value, so it
+	// is the first thing to look for when inbound calls start failing.
+	h.recordAdminEvent(c.Request.Context(), orgID, EventWebhookSecretRotated, nil)
 
 	c.JSON(http.StatusOK, gin.H{
 		"data": WebhookSecretResponse{

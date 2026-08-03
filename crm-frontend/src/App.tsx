@@ -44,7 +44,6 @@ import ConversationLogPage from './pages/ConversationLogPage';
 import VoicePage from './pages/VoicePage';
 import { WorkflowList } from './features/workflows/WorkflowList';
 import { NextBuilder } from './features/workflows/builder/NextBuilder';
-import { BuilderDemo } from './features/workflows/builder/__demo__/BuilderDemo';
 import { RunHistory } from './features/workflows/RunHistory';
 import { EmailTemplatesPage } from './features/workflows/EmailTemplatesPage';
 import { EmailTemplateEditor } from './features/workflows/EmailTemplateEditor';
@@ -154,8 +153,6 @@ function App() {
       <BrowserRouter>
         <AuthProvider>
           <Routes>
-            {/* TEMP A3 visual-verification harness — remove after verifying. */}
-            <Route path="/builder-demo" element={<BuilderDemo />} />
             {/* Public routes */}
             <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
             {/* The 2FA login challenge (U6.4). Public because the caller has no

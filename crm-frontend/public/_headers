@@ -1,0 +1,36 @@
+# Security headers for the Cloudflare Pages deployment.
+#
+# NOTE ON SCOPE: prod proxies /api/* through a Pages Function, so these apply to
+# API JSON responses as well as to the SPA. That is harmless for everything here —
+# and for X-Content-Type-Options it is actively wanted, since the API serves
+# uploaded voice recordings.
+#
+# The CSP ships REPORT-ONLY on purpose. A wrong directive on a single-page app is
+# a white screen, and the only honest way to learn what the app actually loads is
+# to watch real reports. Promote to Content-Security-Policy once the report stream
+# is quiet — the policy below is the intended enforcing one, unchanged.
+
+/*
+  # 1 year. NOT preloaded: preload is a browser-baked commitment that is slow and
+  # painful to unwind, and it should be a deliberate decision rather than a side
+  # effect of adding headers.
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Cross-Origin-Opener-Policy: same-origin
+  # microphone=(self) is REQUIRED, not an oversight: voice notes record audio in
+  # the browser, and denying it breaks that feature outright. Everything the app
+  # does not use is denied.
+  Permissions-Policy: accelerometer=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), fullscreen=(self), geolocation=(), gyroscope=(), magnetometer=(), microphone=(self), midi=(), payment=(), usb=(), xr-spatial-tracking=()
+  # Notes on the non-obvious sources:
+  #   style-src 'unsafe-inline' — React writes inline style attributes throughout.
+  #   img-src https: — email templates and the media library reference remote art.
+  #   media-src blob: — voice-note playback uses object URLs.
+  #   frame-src 'self' — the email composer previews templates in srcdoc iframes
+  #     (both are sandboxed, and neither grants allow-scripts).
+  #   connect-src sentry — only reached when VITE_SENTRY_DSN is set.
+  # Turnstile is deliberately ABSENT: the SPA never loads it. Its site key is data
+  # this app hands to the customer for THEIR page, so the script runs on their
+  # origin, not ours.
+  Content-Security-Policy-Report-Only: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; media-src 'self' blob:; connect-src 'self' https://*.ingest.sentry.io https://*.ingest.us.sentry.io; frame-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
