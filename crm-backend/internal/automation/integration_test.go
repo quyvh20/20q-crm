@@ -87,6 +87,17 @@ func (e *failingExecutor) getCallCount() int {
 // connects GORM, runs AutoMigrate, and returns the DB + cleanup func.
 func setupTestDB(t *testing.T) (*gorm.DB, func()) {
 	t.Helper()
+
+	// Short mode skips the container, matching what internal/integrations,
+	// internal/marketing and internal/repository already do. Without this guard
+	// this package spent ~95s starting Docker containers inside CI's `backend-unit`
+	// job (`go test -short`), duplicating work the `automation` shard of
+	// backend-integration does properly — and making the "fast unit job" silently
+	// depend on a Docker daemon.
+	if testing.Short() {
+		t.Skip("skipping DB-backed test in short mode")
+	}
+
 	ctx := context.Background()
 
 	pgContainer, err := tcpostgres.Run(ctx,

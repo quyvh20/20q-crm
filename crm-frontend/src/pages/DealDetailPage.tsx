@@ -257,7 +257,7 @@ export default function DealDetailPage() {
                   abort.abort();
                   return;
                 }
-              } catch (e) {}
+              } catch { /* ignore malformed SSE frame */ }
             }
           }
         }

@@ -50,8 +50,19 @@ func buildPayload(t *testing.T, src *LeadSource) (map[string]any, []string, erro
 func TestTestLeadEmail_IsStableAndSourceScoped(t *testing.T) {
 	a, b := testSource(t, "", ""), testSource(t, "", "")
 
-	if testLeadEmail(a) != testLeadEmail(a) {
-		t.Error("the test identity must be stable, or every click creates another contact")
+	// Stability is the property that the SECOND click updates click one's contact
+	// instead of littering the CRM. Between the two clicks the source is re-read
+	// from the database and the admin may well have edited it, so the assertion
+	// that carries weight is over a DIFFERENT struct bearing the same id — not
+	// testLeadEmail(a) against itself, which a pure function satisfies vacuously
+	// and which would stay green even if the identity started keying off Name.
+	reloaded := testSource(t, `{"Work Email": {"target_key": "email"}}`, `["email","phone"]`)
+	reloaded.ID = a.ID
+	reloaded.Name = "Renamed Between Clicks"
+	reloaded.UpdatePolicy = UpdatePolicyOverwrite
+	if testLeadEmail(a) != testLeadEmail(reloaded) {
+		t.Errorf("the test identity must derive from the source id alone, or every click creates another contact: %s vs %s",
+			testLeadEmail(a), testLeadEmail(reloaded))
 	}
 	if testLeadEmail(a) == testLeadEmail(b) {
 		t.Error("two sources must not share a test identity")

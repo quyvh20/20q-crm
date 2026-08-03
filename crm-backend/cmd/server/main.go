@@ -140,7 +140,12 @@ func main() {
 		c.Set("request_id", reqID)
 		c.Header("X-Request-ID", reqID)
 
-		ctx := context.WithValue(c.Request.Context(), "request_id", reqID)
+		// domain.WithRequestID rather than a bare string key: context keys are
+		// compared by (type, value), so `"request_id"` sits in a namespace shared
+		// with every dependency in the binary and either shadows or is shadowed by
+		// anyone else's identically-named key (staticcheck SA1029). The private
+		// struct key in internal/domain cannot collide with anything.
+		ctx := domain.WithRequestID(c.Request.Context(), reqID)
 		c.Request = c.Request.WithContext(ctx)
 
 		start := time.Now()

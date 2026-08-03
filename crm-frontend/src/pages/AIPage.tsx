@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   BarChart3, Calendar, ClipboardList, DollarSign, Flame, Phone, Plus, Send, Sparkles,
@@ -81,10 +81,18 @@ export default function AIPage() {
   const { currentRole, workspaces } = useAuth();
   const navigate = useNavigate();
 
-  const workspaceContext: WorkspaceContext[] = (workspaces || []).map((w) => ({
-    org_name: w.org_name,
-    role: w.role,
-  }));
+  // `workspaces` comes from useAuth() and hydrates ASYNCHRONOUSLY — it is `[]` on
+  // the first render. This must be memoised on [workspaces] AND listed in
+  // sendMessage's dep array below; either half alone is broken. Without the dep,
+  // the useCallback captures the empty first-render array forever, so clicking a
+  // ROLE_SUGGESTIONS chip (which calls sendMessage directly and never touches
+  // `input`) posts workspace_context: [] and the assistant answers as if the user
+  // belonged to no workspace. Without the memo, a fresh array identity every
+  // render would make the useCallback re-create on every render, i.e. a no-op.
+  const workspaceContext: WorkspaceContext[] = useMemo(
+    () => (workspaces || []).map((w) => ({ org_name: w.org_name, role: w.role })),
+    [workspaces],
+  );
 
   const [sessionId, setSessionId] = useState<string>(() => loadSession().sessionId);
   const [messages, setMessages] = useState<ChatMessage[]>(() => loadSession().messages);
@@ -113,19 +121,6 @@ export default function AIPage() {
 
   const addMessage = useCallback((msg: ChatMessage) => {
     setMessages(prev => [...prev, msg]);
-  }, []);
-
-  const updateLastAssistant = useCallback((updater: (prev: string) => string) => {
-    setMessages(prev => {
-      const copy = [...prev];
-      for (let i = copy.length - 1; i >= 0; i--) {
-        if (copy[i].role === 'assistant') {
-          copy[i] = { ...copy[i], content: updater(copy[i].content) };
-          return copy;
-        }
-      }
-      return copy;
-    });
   }, []);
 
   const sendMessage = useCallback((text?: string, isConfirmed?: boolean, confirmedPayload?: ConfirmPayload) => {
@@ -223,7 +218,7 @@ export default function AIPage() {
       },
       workspaceContext,
     );
-  }, [input, streaming, messages, sessionId, addMessage, updateLastAssistant, navigate]);
+  }, [input, streaming, messages, sessionId, addMessage, navigate, workspaceContext]);
 
   const handleConfirm = (payload: ConfirmPayload) => {
     setPendingConfirm(null);

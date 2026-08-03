@@ -146,7 +146,7 @@ export default function VoiceLibrary({ contactId, dealId }: VoiceLibraryProps) {
                     )
                   );
                 }
-              } catch (e) {}
+              } catch { /* ignore malformed SSE frame */ }
             }
           }
         }

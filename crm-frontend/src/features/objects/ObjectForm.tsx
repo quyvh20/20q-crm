@@ -146,20 +146,31 @@ export default function ObjectForm({ schema, record, inline, onSaved, onCancel }
 
         {/* Mirror fields are read-only (their value is pulled from a linked record),
             so they have no editor here — they only render on the record's detail page. */}
-        {schema.fields.filter((field) => field.type !== 'mirror').map((field) => (
-          <div key={field.key} className="mb-4">
-            <Label className="mb-1">
-              {field.label}
-              {field.required && <span className="text-destructive"> *</span>}
-            </Label>
-            <FieldInput
-              field={field}
-              value={formData[field.key] ?? ''}
-              onChange={(val) => setField(field.key, val)}
-              relationOptions={field.type === 'relation' ? relationOptions[field.key] : undefined}
-            />
-          </div>
-        ))}
+        {schema.fields.filter((field) => field.type !== 'mirror').map((field) => {
+          // The visible <Label> used to be a bare SIBLING of the control, with no
+          // htmlFor and no wrapping — so there was neither an explicit nor an
+          // implicit association, and every schema-driven input on this form was
+          // announced by a screen reader with no name at all ("edit text, blank").
+          // The field key is unique within an object's schema, so it makes a
+          // stable per-field id; threading it into FieldInput restores the
+          // association for every field type at once.
+          const inputId = `object-field-${field.key}`;
+          return (
+            <div key={field.key} className="mb-4">
+              <Label htmlFor={inputId} className="mb-1">
+                {field.label}
+                {field.required && <span className="text-destructive"> *</span>}
+              </Label>
+              <FieldInput
+                id={inputId}
+                field={field}
+                value={formData[field.key] ?? ''}
+                onChange={(val) => setField(field.key, val)}
+                relationOptions={field.type === 'relation' ? relationOptions[field.key] : undefined}
+              />
+            </div>
+          );
+        })}
       </div>
 
       <div className="flex gap-2 border-t border-border bg-muted/30 px-6 py-4">

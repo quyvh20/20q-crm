@@ -1,0 +1,173 @@
+# golangci-lint configuration for crm-backend.
+#
+# ---------------------------------------------------------------------------
+# THIS GATE IS GREEN ON DAY ONE. That is the whole design constraint.
+# ---------------------------------------------------------------------------
+# Every linter below was measured individually against this tree and reported
+# ZERO issues. Verified with golangci-lint 2.12.2 (built with go1.26.1) against
+# commit e15c33b, plus the two staticcheck SA fixes landed alongside this file
+# (SA1029 in cmd/server/main.go, SA4000 in internal/integrations/testlead_test.go).
+# This config carries no `exclusions.rules` and no per-linter suppressions — if
+# it goes red, something genuinely regressed.
+#
+# For accuracy: the tree does contain three pre-existing `//nolint:errcheck`
+# directives (internal/ai/budget_guard.go, internal/worker/embedding_worker.go,
+# scripts/test_timeout/main_test.go). They are INERT under this config because
+# errcheck is not enabled — but errcheck is the highest-value second-wave
+# candidate, so whoever enables it should re-read those three rather than assume
+# a clean slate.
+#
+# The default linter set is NOT adoptable here: errcheck + govet + ineffassign +
+# staticcheck + unused reports 264 issues uncapped. A gate that starts red is a
+# gate everyone learns to ignore, so we start at zero and ratchet (see the
+# second-wave list at the bottom).
+#
+# RUN IT FROM INSIDE crm-backend/:
+#     golangci-lint run --max-issues-per-linter=0 --max-same-issues=0 ./...
+# This is a nested Go module; running from the repo root finds no packages.
+#
+# ---------------------------------------------------------------------------
+# DELIBERATELY ABSENT: gofmt, gofumpt, goimports, whitespace, wsl, lll
+# ---------------------------------------------------------------------------
+# Project doctrine: this tree is NOT gofmt-clean and is not going to be. Never
+# run `gofmt -w` / `goimports -w` over it. The backend gates are `go build`,
+# `go vet` and `go test` — formatting is not a correctness signal here, and a
+# tree-wide reformat would bury every real diff under whitespace churn.
+#
+# ---------------------------------------------------------------------------
+# TRAP: misspell must NOT set `locale`.
+# ---------------------------------------------------------------------------
+# Default (no locale) = 0 issues. Adding `locale: US` = 170 issues, because the
+# comments throughout this codebase are written in British English
+# ("behavioural", "dialled", "defence"). That is a house style, not a typo.
+# Do not add a locale to make misspell "stricter" — it only makes it wrong.
+#
+# ---------------------------------------------------------------------------
+# Other measured facts worth not rediscovering
+# ---------------------------------------------------------------------------
+#  * `gosimple` no longer exists in golangci-lint v2 — it was folded into
+#    staticcheck's S1* bucket. Enabling it by name is a hard config error.
+#  * Per-linter settings CANNOT be passed as CLI flags in v2. Anything under
+#    `linters.settings` only takes effect through this file.
+#  * The clean linters below are clean on MERIT, not for lack of surface:
+#    bodyclose sees 20 outbound HTTP call sites, rowserrcheck/sqlclosecheck see
+#    291 query sites, makezero sees 239 `make([]T, …)` sites, and copyloopvar
+#    sees 1258 range loops. Zero issues across that surface is a real result.
+
+version: "2"
+
+linters:
+  # Opt-in only. Every addition must be measured at zero before it lands.
+  default: none
+
+  enable:
+    # --- correctness: things that are outright bugs -----------------------
+    # govet: the standard vet suite (printf arg mismatches, lost struct tags,
+    # copied locks). Already a build gate for us; pinning it here means CI
+    # fails on it in one place rather than two.
+    - govet
+    # staticcheck, restricted to SA* below: the correctness bucket only.
+    - staticcheck
+    # ineffassign: a value assigned and never read. In this codebase that is
+    # usually a shadowed `err` — the assignment that was supposed to abort a
+    # write path being silently discarded.
+    - ineffassign
+    # nilnesserr: returns a nil error while a non-nil one is in hand. The
+    # RecordService write path funnels every object write through one place;
+    # swallowing an error there turns a rejected write into a reported success.
+    - nilnesserr
+    # asasalint: passing a []any straight into a variadic ...any (so it arrives
+    # as ONE argument, not N). We log with zap/slog key-value variadics all over
+    # the request path; this is how a structured log line silently loses fields.
+    - asasalint
+    # gocheckcompilerdirectives: a malformed `//go:` directive is treated as an
+    # ordinary comment by the compiler, so a mis-typed `//go:build` tag silently
+    # compiles a file into every build — including test-only or platform-only code.
+    - gocheckcompilerdirectives
+    # reassign: reassigning another package's exported variable at runtime, which
+    # mutates global state for every consumer in the process.
+    - reassign
+
+    # --- resource leaks: the ones that only show up under prod load -------
+    # bodyclose: an unclosed HTTP response body leaks a connection. Our outbound
+    # surface is exactly the code that runs on a schedule and at volume — Resend
+    # marketing sends, Svix delivery webhooks, send_webhook automation actions,
+    # provider lead pulls — so a leak here exhausts the pool on the long-running
+    # worker, not on a single request.
+    - bodyclose
+    # sqlclosecheck: an unclosed *sql.Rows holds its pooled connection until GC.
+    # 291 raw query sites, most of them in the reporting and audience-segment
+    # runners that build SQL dynamically.
+    - sqlclosecheck
+    # rowserrcheck: a missed rows.Err() after the scan loop. This is the WORST
+    # failure mode a reporting feature can have: a P9 report that hits a driver
+    # error mid-iteration just stops early and renders a short, plausible,
+    # WRONG table instead of erroring. Nobody notices a report that lies quietly.
+    - rowserrcheck
+    # fatcontext: a context repeatedly wrapped inside a loop, so each iteration
+    # deepens the chain. Our bulk-send fan-out and automation executor both loop
+    # over thousands of records per run.
+    - fatcontext
+    # durationcheck: multiplying two time.Durations (x * time.Second where x is
+    # already a Duration) — silently yields a nonsense timeout. We have durable
+    # delays, wait-until timers and retry backoffs all computed from config.
+    - durationcheck
+
+    # --- slice/loop semantics --------------------------------------------
+    # makezero: make([]T, n) followed by append, which leaves n zero values in
+    # front of the real data. This is the direct producer of the documented
+    # Go-nil-slice/bad-slice family that white-screens the frontend when a
+    # nested array arrives with phantom leading entries.
+    - makezero
+    # copyloopvar: flags now-redundant `x := x` loop-variable copies. Go 1.22+
+    # per-iteration semantics make them noise, and leaving them around teaches
+    # the next author that the old capture bug still needs guarding against.
+    - copyloopvar
+
+    # --- correctness-adjacent hygiene, all currently zero -----------------
+    # unconvert: a conversion to the type a value already has. Usually the
+    # fossil of a type that changed (uuid.UUID, datatypes.JSON) and a call site
+    # that was never revisited.
+    - unconvert
+    # exptostd: golang.org/x/exp helpers that now have a stdlib equivalent
+    # (maps/slices). Keeps us off an explicitly-unstable dependency.
+    - exptostd
+    # misspell: typos in comments and strings. Several of ours are user-visible
+    # (API error messages, CAN-SPAM footer copy). READ THE LOCALE TRAP ABOVE.
+    - misspell
+
+  settings:
+    staticcheck:
+      # SA* ONLY — the correctness bucket. Measured: SA* = 2 issues (both fixed
+      # in the same change that added this file), while the full default set is
+      # 70. Of those 70, 68 are S1*/ST*/QF* pure style — QF1012 alone accounts
+      # for 51 (`WriteString(fmt.Sprintf(…))` → `Fprintf`). Style checks are not
+      # worth 68 mandatory diffs across a working tree, and mixing them in makes
+      # a real SA finding invisible in the noise.
+      checks:
+        - "SA*"
+
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+
+# ---------------------------------------------------------------------------
+# SECOND WAVE — measured, in ascending cost. Ratchet these on one at a time,
+# fixing the findings in the same change that enables the linter, so the gate is
+# never knowingly red.
+# ---------------------------------------------------------------------------
+#   bidichk    (1 issue)  — the single hit is a DELIBERATE right-to-left test
+#                           vector; enable with a targeted exclusion for it.
+#   wastedassign (1)      — one assignment overwritten before it is read.
+#   unused     (8)        — eight genuinely-dead funcs; deleting them is the fix.
+#   staticcheck S1*  (+5) — widening `checks` to ["SA*", "S1*"] adds 5 issues.
+#                           Do NOT widen to ST*/QF*: that is the 68-issue style
+#                           bucket, 51 of it a single mechanical rule.
+#
+# NOT second wave, listed so nobody re-measures them: errcheck (the bulk of the
+# 264-issue default result) needs the unchecked-error backlog triaged first —
+# scheduler.go's AddFunc calls, main.go's AutoMigrate, ai/command_center.go's
+# json.Unmarshal — each of which is a real finding, not a formality.

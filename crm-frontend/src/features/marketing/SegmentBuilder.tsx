@@ -147,7 +147,14 @@ export default function SegmentBuilder({ fields, tags, initial, onChange }: Prop
   // a "runnable" flag it uses to gate the live count. typeOf is read through a ref
   // so the effect depends only on the tree, not on catalog identity.
   const emitRef = useRef({ onChange, typeOf });
-  emitRef.current = { onChange, typeOf };
+  // The ref refresh MUST stay in its own dependency-less effect declared ABOVE the
+  // emit effect: writing a ref during render is not concurrent-safe (a render that
+  // React throws away would still have mutated it). Dep-less effects re-run after
+  // every commit and effects fire in declaration order, so by the time the emit
+  // effect below runs, emitRef.current already holds this render's callbacks.
+  useEffect(() => {
+    emitRef.current = { onChange, typeOf };
+  });
   useEffect(() => {
     const { onChange: cb, typeOf: t } = emitRef.current;
     cb(toAST(root), nodeRunnable(root, t));

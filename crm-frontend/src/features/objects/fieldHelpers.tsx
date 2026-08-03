@@ -72,16 +72,25 @@ interface FieldInputProps {
   value: unknown;
   onChange: (val: unknown) => void;
   relationOptions?: RelationOption[];
+  /**
+   * DOM id for the control this renders. ObjectForm generates one per field and
+   * points its visible <Label htmlFor> at it; without it the schema-driven form
+   * has no label/control association at all and every input is announced with no
+   * accessible name. Optional so the component stays usable standalone, but
+   * ObjectForm — the only production caller — always supplies it.
+   */
+  id?: string;
 }
 
 // FieldInput is the single schema-driven editor for one field, used by ObjectForm
 // for every object. The same component renders a Deal's "value" and a custom
 // object's "budget" — there is no per-object form code.
-export function FieldInput({ field, value, onChange, relationOptions }: FieldInputProps) {
+export function FieldInput({ field, value, onChange, relationOptions, id }: FieldInputProps) {
   switch (field.type) {
     case 'number':
       return (
         <Input
+          id={id}
           type="number"
           value={value === '' || value === null || value === undefined ? '' : Number(value)}
           onChange={(e) => onChange(e.target.value === '' ? '' : Number(e.target.value))}
@@ -90,6 +99,7 @@ export function FieldInput({ field, value, onChange, relationOptions }: FieldInp
     case 'date':
       return (
         <Input
+          id={id}
           type="date"
           value={value ? String(value).slice(0, 10) : ''}
           onChange={(e) => onChange(e.target.value)}
@@ -98,6 +108,7 @@ export function FieldInput({ field, value, onChange, relationOptions }: FieldInp
     case 'url':
       return (
         <Input
+          id={id}
           type="url"
           value={String(value ?? '')}
           onChange={(e) => onChange(e.target.value)}
@@ -105,9 +116,13 @@ export function FieldInput({ field, value, onChange, relationOptions }: FieldInp
         />
       );
     case 'boolean':
+      // The checkbox is wrapped by its own "Yes" <label>, so it already has an
+      // implicit name. It still takes the id so ObjectForm's field <Label
+      // htmlFor> resolves to a real element rather than dangling.
       return (
         <label className="flex cursor-pointer items-center gap-2 text-sm text-foreground">
           <input
+            id={id}
             type="checkbox"
             checked={!!value}
             onChange={(e) => onChange(e.target.checked)}
@@ -118,7 +133,7 @@ export function FieldInput({ field, value, onChange, relationOptions }: FieldInp
       );
     case 'select':
       return (
-        <Select value={String(value ?? '')} onChange={(e) => onChange(e.target.value)}>
+        <Select id={id} value={String(value ?? '')} onChange={(e) => onChange(e.target.value)}>
           <option value="">— Select —</option>
           {(field.options || []).map((opt) => (
             <option key={opt} value={opt}>{opt}</option>
@@ -135,6 +150,7 @@ export function FieldInput({ field, value, onChange, relationOptions }: FieldInp
       if (field.target_slug || relationOptions) {
         return (
           <RelationPicker
+            id={id}
             value={value}
             onChange={onChange}
             options={relationOptions ?? []}
@@ -144,6 +160,7 @@ export function FieldInput({ field, value, onChange, relationOptions }: FieldInp
       }
       return (
         <Input
+          id={id}
           type="text"
           value={String(value ?? '')}
           onChange={(e) => onChange(e.target.value)}
@@ -154,6 +171,7 @@ export function FieldInput({ field, value, onChange, relationOptions }: FieldInp
     default:
       return (
         <Input
+          id={id}
           type="text"
           value={String(value ?? '')}
           onChange={(e) => onChange(e.target.value)}
@@ -172,11 +190,14 @@ export function FieldInput({ field, value, onChange, relationOptions }: FieldInp
 // if it wasn't preloaded. Without a targetSlug it falls back to filtering the
 // preloaded options client-side.
 function RelationPicker({
+  id,
   value,
   onChange,
   options,
   targetSlug,
 }: {
+  /** DOM id for the search box, so ObjectForm's <Label htmlFor> names it. */
+  id?: string;
   value: unknown;
   onChange: (val: unknown) => void;
   options: RelationOption[];
@@ -229,6 +250,7 @@ function RelationPicker({
   return (
     <div className="relative">
       <Input
+        id={id}
         type="text"
         // While the menu is open the input is the search box; closed, it shows the
         // current selection's label.

@@ -71,7 +71,7 @@ export default function MeetingSummary({ dealId, contactId, onClose, onTasksCrea
                   abort.abort(); // close connection
                   return;
                 }
-              } catch (e) {}
+              } catch { /* ignore malformed SSE frame */ }
             }
           }
         }

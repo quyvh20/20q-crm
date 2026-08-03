@@ -1583,6 +1583,13 @@ const Field: React.FC<FieldProps> = ({ label, value, onChange, placeholder, type
 
 // --- Template variables reference ---
 
+// Fixed widths for the loading-skeleton pills. These were `60 + Math.random() * 50`
+// computed inline in render, which is impure: the pills reshuffled on every
+// re-render during the schema fetch (visible flicker), and StrictMode's double
+// render produced two different layouts. A module-level constant keeps the
+// ragged-edge look while making the render idempotent.
+const SKELETON_PILL_WIDTHS = [92, 68, 105, 77, 61, 98, 84, 71];
+
 const TemplateHelp: React.FC = () => {
   const schema = useBuilderStore((s) => s.schema);
   const schemaLoading = useBuilderStore((s) => s.schemaLoading);
@@ -1603,11 +1610,11 @@ const TemplateHelp: React.FC = () => {
       <p className="text-xs text-muted-foreground mb-2">Available Template Variables</p>
       {schemaLoading ? (
         <div className="flex flex-wrap gap-1">
-          {[...Array(8)].map((_, i) => (
+          {SKELETON_PILL_WIDTHS.map((w, i) => (
             <div
               key={i}
               className="h-5 rounded bg-muted animate-pulse"
-              style={{ width: `${60 + Math.random() * 50}px` }}
+              style={{ width: `${w}px` }}
             />
           ))}
         </div>

@@ -810,7 +810,7 @@ export async function composeEmail(
         if (typeof textChunk === 'string') {
           onChunk(textChunk);
         }
-      } catch (e) {
+      } catch {
         // Parsing error, ignore invalid chunks.
       }
     }
@@ -2779,14 +2779,14 @@ export function uploadVoiceNote(
         try {
           const json = JSON.parse(xhr.responseText);
           resolve(json.data);
-        } catch (err) {
+        } catch {
           reject(new Error('Invalid response from server'));
         }
       } else {
         try {
           const json = JSON.parse(xhr.responseText);
           reject(new Error(json.error || 'Upload failed'));
-        } catch (err) {
+        } catch {
           reject(new Error('Upload failed'));
         }
       }

@@ -858,7 +858,7 @@ function LayoutForm({
   };
 
   const toggleRole = (id: string) =>
-    setSelectedRoles(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s; });
+    setSelectedRoles(prev => { const s = new Set(prev); if (s.has(id)) s.delete(id); else s.add(id); return s; });
 
   const save = async () => {
     if (!name.trim()) { setError('Name is required'); return; }

@@ -18,7 +18,13 @@ dev: ## Run development server with auto-reload (requires air if set)
 build: ## Build the Go binary
 	cd crm-backend && go build -o bin/$(BINARY_NAME) cmd/server/main.go
 
-test: ## Run go tests
+# This is the FULL suite, not a quick one: internal/repository,
+# internal/integrations and internal/automation self-provision postgres:16-alpine
+# and pgvector/pgvector:pg16 via testcontainers, so Docker must be running or
+# those packages fail. Expect ~40 min serially. CI shards it four ways
+# (.github/workflows/deploy.yml, job backend-integration); for the fast local
+# loop use `cd crm-backend && go test -short ./...` instead.
+test: ## Run go tests (FULL suite — needs Docker, ~40 min; use `go test -short` for the fast loop)
 	cd crm-backend && go test -v ./...
 
 clean: ## Clean built binaries
@@ -39,5 +45,11 @@ docker-down: ## Stop local database
 	docker-compose down
 
 # --- Quality ---
-lint: ## Run linter (requires golangci-lint)
-	golangci-lint run ./crm-backend/...
+# MUST cd into crm-backend first. The old form, `golangci-lint run
+# ./crm-backend/...` from the repo root, fails under golangci-lint v2 with
+# "directory prefix crm-backend does not contain main module or its selected
+# dependencies" — and does it insidiously: it still prints "0 issues." before
+# exiting 7, so it reads as a clean lint run unless you check $?.
+# The config it picks up is crm-backend/.golangci.yml, the same one CI uses.
+lint: ## Run linter (requires golangci-lint v2)
+	cd crm-backend && golangci-lint run ./...

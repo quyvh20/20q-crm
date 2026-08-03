@@ -18,6 +18,12 @@ export const MergeTagMenu: React.FC<{
   const ref = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
+  // Declared BEFORE the outside-click effect that closes over it. It only ever
+  // calls stable setState setters so no stale-closure bug was reachable, but
+  // referencing it above its declaration made React Compiler bail out of
+  // optimising the whole component. Pure statement reorder, no behaviour change.
+  const reset = () => { setOpen(false); setSearch(''); setPending(null); setFallback(''); };
+
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) reset(); };
@@ -25,7 +31,6 @@ export const MergeTagMenu: React.FC<{
     return () => document.removeEventListener('mousedown', handler);
   }, [open]);
 
-  const reset = () => { setOpen(false); setSearch(''); setPending(null); setFallback(''); };
   const escClose = (e: React.KeyboardEvent) => {
     if (e.key !== 'Escape') return;
     e.stopPropagation(); // don't let the page-level Escape also deselect the block

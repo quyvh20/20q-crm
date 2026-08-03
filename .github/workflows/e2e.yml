@@ -1,0 +1,314 @@
+# E2E — Playwright smoke suite
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# THIS WORKFLOW IS DELIBERATELY OUT OF THE MERGE-BLOCKING PATH
+# ─────────────────────────────────────────────────────────────────────────────
+# It is NOT in any `needs:` list in deploy.yml, and nothing waits on it. A
+# browser suite that drives four real services has a flake budget that a
+# freshly-written one has not yet earned; wiring it into the deploy gate on day
+# one buys a broken main branch, not confidence. Give it a few weeks of nightly
+# runs first. When it has proved boring, add it to `deploy-frontend`'s `needs:`
+# — and note that deploy.yml's header explains why that list is the ONLY gate
+# this repo has (no branch protection, no rulesets).
+#
+# BE HONEST ABOUT WHAT ACTUALLY RUNS THIS: this is a push-to-main shop. The most
+# recent pull-request-triggered run was 2026-06-03. The `pull_request` trigger
+# below is therefore near-dead weight in practice and is opt-in anyway (it needs
+# the `e2e` label). THE NIGHTLY SCHEDULE IS WHAT WILL ACTUALLY EXERCISE THIS
+# SUITE. If the nightly is ever disabled, this file stops being tested at all.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# SCOPE — what is covered, and one thing that is deliberately not
+# ─────────────────────────────────────────────────────────────────────────────
+# Four journeys: sign in; create a contact and see it in the list; a deal
+# appears on the pipeline board; marketing email content composes and the
+# server-rendered preview returns compiled HTML.
+#
+# THE WORKFLOW-BUILDER JOURNEY IS DEFERRED ON PURPOSE — recording that here so
+# its absence reads as a decision rather than an oversight. The builder is a
+# React Flow canvas with dagre auto-layout: node positions are computed and not
+# stable between runs, `nodes.tsx` carries no aria-labels and exactly one
+# <button>, and a workflow run is asynchronous with nothing polling for its
+# completion. Making that reliable was scoped as more work than the other four
+# journeys combined. It needs test hooks in the builder itself (stable testids
+# on nodes, and something observable when a run finishes) before a spec is worth
+# writing.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# NO NEW SECRETS
+# ─────────────────────────────────────────────────────────────────────────────
+# The suite's credentials are GENERATED PER RUN below and thrown away with the
+# containers. Nothing here reads a repository secret, so this workflow cannot
+# leak one, and enabling it costs no secret administration. Note the related
+# `no-prod-credentials-in-scripts` gate in deploy.yml, which greps
+# crm-backend/scripts/ for password literals: a credential must never be written
+# into a script there, only passed in as SEED_EMAIL / SEED_PASSWORD.
+
+name: E2E — Playwright smoke suite
+
+on:
+  schedule:
+    # 03:00 UTC nightly. This is the trigger that matters — see the header.
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+  # Opt-in per pull request: add the `e2e` label to run it. Guarded on the job
+  # so that labelling a PR with anything else does not start a 20-minute build.
+  pull_request:
+    types: [labeled]
+
+# A second run of the same PR/branch supersedes the first — these jobs are
+# expensive and the older answer is never the interesting one.
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: Playwright smoke suite
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.label.name == 'e2e'
+    # Generous but bounded. A green run is ~5 minutes end to end; anything past
+    # 30 is wedged, and a wedged browser job should not burn an hour.
+    timeout-minutes: 30
+
+    services:
+      # MUST be pgvector, not stock postgres:16. Migration 000001 does
+      # `CREATE EXTENSION vector` and `uuid-ossp`, and every table's primary key
+      # defaults to uuid_generate_v4(). Stock postgres fails on the first
+      # migration.
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: crm
+          POSTGRES_PASSWORD: crm
+          POSTGRES_DB: crm_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U crm -d crm_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgres://crm:crm@localhost:5432/crm_e2e?sslmode=disable
+      REDIS_URL: redis://localhost:6379
+      # REQUIRED. Without APP_ENV=development the server log.Fatal()s on a
+      # missing RESEND_API_KEY at boot, and this suite deliberately configures
+      # no mail provider.
+      APP_ENV: development
+      FRONTEND_URL: http://localhost:5173
+      PORT: '8080'
+      E2E_EMAIL: e2e@example.test
+      E2E_BASE_URL: http://localhost:5173
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # Single source of truth for the toolchain version.
+          go-version-file: crm-backend/go.mod
+          cache-dependency-path: crm-backend/go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: crm-frontend/package-lock.json
+
+      # ── Per-run credentials ────────────────────────────────────────────────
+      # Generated here, never stored. The password must satisfy
+      # crm-backend/internal/usecase/password_policy.go: at least 8 characters,
+      # at least one letter AND at least one non-letter, and not on the
+      # common-password blocklist. "E2e-<32 hex chars>!7" satisfies all three by
+      # construction — `openssl rand -hex` alone would not, since an all-digit
+      # output has no letter.
+      - name: Generate throwaway credentials
+        run: |
+          SEED_PASSWORD="E2e-$(openssl rand -hex 16)!7"
+          JWT_SECRET="$(openssl rand -hex 32)"
+          # Mask before export so neither can surface in a log line, even via a
+          # command that echoes its environment.
+          echo "::add-mask::$SEED_PASSWORD"
+          echo "::add-mask::$JWT_SECRET"
+          {
+            echo "SEED_PASSWORD=$SEED_PASSWORD"
+            echo "E2E_PASSWORD=$SEED_PASSWORD"
+            echo "JWT_SECRET=$JWT_SECRET"
+          } >> "$GITHUB_ENV"
+
+      # ── Database ───────────────────────────────────────────────────────────
+      # golang-migrate MUST run before the server. The boot guards in
+      # cmd/server/main.go only cover columns and tables ADDED after the fact —
+      # the base schema (users, organizations, contacts, deals) lives in
+      # migrations/000002_schema.up.sql. Booting the server against an empty
+      # database yields hundreds of "relation does not exist" errors and a 500
+      # from POST /api/auth/register.
+      - name: Install golang-migrate
+        run: |
+          curl -fsSL https://github.com/golang-migrate/migrate/releases/download/v4.18.1/migrate.linux-amd64.tar.gz \
+            | tar xvz migrate
+          sudo mv migrate /usr/local/bin/migrate
+          migrate -version
+
+      - name: Run migrations
+        run: migrate -path crm-backend/migrations -database "$DATABASE_URL" up
+
+      # ── Backend ────────────────────────────────────────────────────────────
+      # `go build -o bin/server cmd/server/main.go`, exactly this form. Building
+      # the package path (`go build ./cmd/server`) rewrites go.mod — it promotes
+      # bluemonday from an indirect to a direct dependency — and dirties the
+      # tree.
+      - name: Build backend
+        working-directory: crm-backend
+        run: go build -o bin/server cmd/server/main.go
+
+      - name: Start backend
+        working-directory: crm-backend
+        run: |
+          ./bin/server > "$RUNNER_TEMP/backend.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/backend.pid"
+
+      # Bounded retry on the real readiness endpoint — never a blind `sleep`.
+      # /health binds before the database connection is established, so this
+      # genuinely waits for the server rather than for a port to open.
+      - name: Wait for backend
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS -o /dev/null http://localhost:8080/health; then
+              echo "backend healthy after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::backend did not become healthy within 60s"
+          echo "----- backend.log -----"
+          cat "$RUNNER_TEMP/backend.log" || true
+          exit 1
+
+      # ── Seed ───────────────────────────────────────────────────────────────
+      # EXACTLY ONCE, against a database this workflow just created. The script
+      # is NOT idempotent: stages, tags, companies and deals duplicate on every
+      # run (only contacts dedupe, on their unique email).
+      #
+      # Its last three steps (the invitations and the second org) legitimately
+      # return 403 "please verify your email address" — invites sit behind
+      # RequireVerifiedEmail and this account's email is never confirmed. That
+      # is expected output, not a failure, and the specs do not depend on it.
+      #
+      # SEED_EMAIL must be passed explicitly and must equal E2E_EMAIL: seedenv.js
+      # `credentials()` fails closed when EITHER var is missing, and the specs
+      # sign in as this exact account. They are the same value on purpose — if
+      # they ever diverge the seed succeeds and every spec fails at the login
+      # form, which is a confusing way to learn about a typo.
+      - name: Seed test data
+        working-directory: crm-backend
+        env:
+          SEED_BASE: http://localhost:8080
+          SEED_EMAIL: ${{ env.E2E_EMAIL }}
+        run: node scripts/seed_local_account.js
+
+      # The seed script ends in `main().catch(console.error)` and its auth-failure
+      # path is a console.log followed by `return` — so it exits 0 even when it
+      # created nothing at all. Without this assertion "Seed test data" is a green
+      # step that guarantees nothing, and the first real signal would be four
+      # Playwright failures that look like UI bugs. Prove the account can actually
+      # authenticate before spending five minutes on a browser.
+      - name: Verify the seeded account can authenticate
+        run: |
+          code=$(curl -s -o "$RUNNER_TEMP/login.json" -w '%{http_code}' \
+            -X POST http://localhost:8080/api/auth/login \
+            -H 'Content-Type: application/json' \
+            -d "{\"email\":\"$E2E_EMAIL\",\"password\":\"$E2E_PASSWORD\"}")
+          if [ "$code" != "200" ]; then
+            echo "::error::Seeded account cannot log in (HTTP $code). The suite would fail at the login form."
+            echo "----- backend.log (tail) -----"
+            tail -n 100 "$RUNNER_TEMP/backend.log" || true
+            exit 1
+          fi
+          echo "seeded account authenticates"
+
+      # ── Frontend ───────────────────────────────────────────────────────────
+      - name: Install frontend dependencies
+        working-directory: crm-frontend
+        run: npm ci
+
+      - name: Install Playwright browser
+        working-directory: crm-frontend
+        run: npx playwright install --with-deps chromium
+
+      # VITE_API_URL is set to the EMPTY STRING deliberately. The SPA resolves
+      # its API base as `import.meta.env.VITE_API_URL ?? (DEV ? localhost:8080 :
+      # '')` in seven files; `??` is nullish, so an empty string survives it and
+      # every call becomes a relative /api/... which Vite's dev proxy forwards.
+      # That is a genuinely same-origin topology — first-party auth cookies, no
+      # CORS — which mirrors the production Cloudflare Pages Function proxy.
+      #
+      # `vite preview` is NOT an option here: vite.config.ts defines
+      # `server.proxy` only, and there is no `preview.proxy`, so a preview
+      # server would serve the SPA with nothing answering /api.
+      - name: Start frontend
+        working-directory: crm-frontend
+        env:
+          VITE_API_URL: ''
+          VITE_PROXY_TARGET: http://localhost:8080
+        run: |
+          npx vite --port 5173 --strictPort > "$RUNNER_TEMP/vite.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/vite.pid"
+
+      - name: Wait for frontend
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS -o /dev/null http://localhost:5173/; then
+              echo "frontend serving after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::vite did not start serving within 60s"
+          echo "----- vite.log -----"
+          cat "$RUNNER_TEMP/vite.log" || true
+          exit 1
+
+      - name: Run Playwright suite
+        working-directory: crm-frontend
+        run: npx playwright test
+
+      # ── Diagnostics ────────────────────────────────────────────────────────
+      # `if: always()` on both: the run that FAILED is the one whose report and
+      # server log are worth reading.
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: crm-frontend/e2e-artifacts.local/
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Upload server logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-logs
+          path: |
+            ${{ runner.temp }}/backend.log
+            ${{ runner.temp }}/vite.log
+          retention-days: 14
+          if-no-files-found: warn

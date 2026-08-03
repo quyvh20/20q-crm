@@ -1,3 +1,55 @@
+# CI/CD — Build, Test & Deploy
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# THE DEPLOY CONTRACT (read before changing any `needs:`)
+# ─────────────────────────────────────────────────────────────────────────────
+# This repo has NO branch protection and NO rulesets. Verified via
+# `gh api repos/:owner/:repo/branches/main/protection` and `.../rulesets`.
+# Consequence: the `needs:` lists in this file are the ONLY thing gating
+# anything. Deleting a name from a `needs:` list does not fail loudly — it
+# silently ships on red. That is literally the defect e15c33b had to fix
+# (deploy-frontend had no `needs:` at all and shipped over a red suite).
+# So: if you add a check job, add it to deploy-frontend's `needs:` too.
+#
+# FRONTEND deploys from THIS workflow (the `deploy-frontend` job below), gated
+# on every check job.
+#
+# BACKEND does NOT deploy from this workflow. `deploy-backend` is permanently
+# `if: ${{ false }}` (see its comment block). The backend ships via Railway's
+# GitHub auto-deploy, which watches pushes to main directly and knows nothing
+# about GitHub Actions.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# R3.6 — "gate the backend deploy on CI" is NOT something this file can do
+# ─────────────────────────────────────────────────────────────────────────────
+# Railway has a "Wait for CI" / "Check Suite must pass" setting. It is an OPS
+# TOGGLE in the Railway service settings (Settings → Deploy → Wait for CI). Only
+# the repo/Railway owner can flip it. Nothing in this YAML can enable, require,
+# or verify it, and no Actions job can block a Railway auto-deploy.
+#
+# Two consequences to weigh BEFORE flipping it — neither is hypothetical:
+#
+#  (a) Backend deploy latency becomes the wall clock of the SLOWEST check in
+#      this workflow, not the fastest. Today that is the `automation` shard of
+#      backend-integration (Docker/testcontainers, ~17 min measured locally).
+#      Right now a backend hotfix reaches prod in ~3–4 min; with the toggle on
+#      it would be ~20+ min. That is a real incident-response cost.
+#
+#  (b) ORDERING INVERSION. `deploy-frontend` runs inside THIS workflow, so it
+#      finishes as soon as the check suite is green — which is the same moment
+#      Railway would only just be STARTING the backend build. The frontend
+#      would therefore reach Cloudflare Pages several minutes BEFORE the new
+#      backend is live, inverting this project's documented ordering rule
+#      ("Railway backend first, Pages frontend second"). A push that adds a new
+#      API route would serve an SPA calling an endpoint that 404s until the
+#      Railway build lands.
+#
+# So the toggle is not a free win. If it is ever turned on, `deploy-frontend`
+# should first be moved out of this workflow (or made to wait on the Railway
+# deployment) so the ordering rule still holds. Documented here rather than
+# "fixed" because the fix is not ours to make from Actions.
+# ─────────────────────────────────────────────────────────────────────────────
+
 name: CI/CD — Build, Test & Deploy
 
 on:
@@ -5,10 +57,20 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+# Cancel superseded PR runs only. NOT on push: `deploy-frontend` runs inside
+# this workflow, and cancelling a push run mid `wrangler pages deploy` leaves
+# Cloudflare serving a half-published build that matches NO commit — the
+# deployed state and the repo state silently diverge. A wasted duplicate run on
+# main is much cheaper than that.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  test:
-    name: Vet & Test
+  backend-unit:
+    name: Backend Unit
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -17,20 +79,185 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # go-version-file, not a pinned literal: go.mod says go 1.26.1 and this
+      # job used to hardcode '1.23', so CI was compiling against a toolchain the
+      # module does not declare. Reading go.mod makes that drift impossible.
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version-file: crm-backend/go.mod
           cache-dependency-path: crm-backend/go.sum
 
       - name: Vet
         run: go vet ./...
 
-      - name: Test
+      # ./... UNFILTERED, deliberately. internal/authzgate and internal/rlsgate
+      # are source-scanning grep-gate tests: they read the tree and fail when a
+      # forbidden pattern reappears. They do NOT call testing.Short(), so they
+      # run here despite -short — but only because nothing narrows the package
+      # set. Never replace ./... with an explicit package list in this job; that
+      # would drop the gates without a single red build to tell you.
+      - name: Test (short)
         run: go test -short -timeout 300s ./...
 
+  backend-integration:
+    name: Backend Integration (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    # Runaway guard only, not a performance target: the slowest shard measures
+    # ~17 min. Without this a hung testcontainer would burn the 6-hour default.
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: crm-backend
+
+    # WHY THIS IS SHARDED. Measured per-package wall clock for the full
+    # (non -short) suite on a Windows dev box, all packages running at once:
+    # internal/automation 1034s, internal/integrations 782s, internal/repository
+    # 510s, internal/marketing 147s, EVERYTHING ELSE under 35s combined.
+    # Sharded, each package stops contending for the Docker daemon and gets
+    # faster: internal/automation re-measured ALONE at 494s, after R3 added 11
+    # more container-per-test cases to it. Both numbers sit well inside the
+    # 1800s -timeout and the 120-minute cap, and a Linux runner with native
+    # Docker should beat them rather than match them.
+    # Three packages are ~99% of the runtime, so one serial job
+    # would be the slowest thing in the pipeline (~40 min) and would set the
+    # deploy latency for the whole repo. Four parallel shards cut that to the
+    # length of the automation shard alone.
+    #
+    # fail-fast: false — with fail-fast on, the first red shard cancels the
+    # others and you learn about exactly one failure per push. These suites are
+    # slow enough that a second push to discover the second failure is expensive.
+    #
+    # No `services:` block on purpose: the suites self-provision
+    # postgres:16-alpine and pgvector/pgvector:pg16 through testcontainers, and
+    # ubuntu-latest ships a working Docker daemon. A `services:` postgres would
+    # be an unused second database.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: automation
+            packages: ./internal/automation/...
+          - shard: integrations
+            packages: ./internal/integrations/...
+          - shard: repository
+            packages: ./internal/repository/...
+          # `rest` is DERIVED, not enumerated, so a newly added package cannot
+          # quietly escape CI by not being on a list somebody forgot to update.
+          - shard: rest
+            packages: ''
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: crm-backend/go.mod
+          cache-dependency-path: crm-backend/go.sum
+
+      - name: Resolve packages for this shard
+        id: pkgs
+        run: |
+          if [ -n "${{ matrix.packages }}" ]; then
+            PKGS="${{ matrix.packages }}"
+          else
+            PKGS=$(go list ./... \
+              | grep -vE '/internal/(automation|integrations|repository)($|/)' \
+              | tr '\n' ' ')
+          fi
+          # An empty list is the dangerous case: `go test` with no arguments
+          # tests the package in the working directory, crm-backend/ has no test
+          # files there, and the job goes GREEN having tested nothing. Fail loud.
+          if [ -z "$(echo "$PKGS" | tr -d '[:space:]')" ]; then
+            echo "::error::Shard '${{ matrix.shard }}' resolved to an EMPTY package list — that is a green job testing nothing."
+            exit 1
+          fi
+          echo "Shard '${{ matrix.shard }}' packages: $PKGS"
+          echo "packages=$PKGS" >> "$GITHUB_OUTPUT"
+
+      # Fail FAST and LOUD if the daemon is missing, rather than discovering it
+      # 20 minutes later via the skip-detector below. See that step for why a
+      # missing daemon is dangerous rather than merely inconvenient.
+      - name: Assert Docker is available
+        run: docker info > /dev/null
+
+      # No -short: this is the job that actually exercises the Docker-backed
+      # repository/integration paths. -count=1 defeats the test result cache so
+      # a re-run genuinely re-runs. -v is required by the skip-detector below:
+      # `go test` only prints skip reasons in verbose mode.
+      - name: Test (full)
+        run: |
+          set -o pipefail
+          go test -count=1 -timeout 1800s -v ${{ steps.pkgs.outputs.packages }} \
+            2>&1 | tee "$RUNNER_TEMP/gotest-${{ matrix.shard }}.log"
+
+      # THE FAIL-OPEN THIS CLOSES. Every testcontainers helper in this repo ends
+      # its error path with `t.Skipf("Docker not available — …")`. That is right
+      # for a developer laptop and catastrophic here: a daemon hiccup or a Docker
+      # Hub pull failure turns every DB-backed test into a skip, the package
+      # reports `ok`, `go test` exits 0, this shard goes GREEN having asserted
+      # nothing — and because backend-integration is in deploy-frontend's
+      # `needs:`, and this repo has no branch protection, that green is the
+      # entire deploy gate. "A skipping suite is not a passing suite" is project
+      # doctrine; this is the step that enforces it.
+      #
+      # Deliberately NOT "fail on any skip": this tree has legitimate skips
+      # (live AI tests gated on CF_ACCOUNT_ID, PROD_DRAFT_JSON, tzdata). Only the
+      # two infrastructure-unavailable messages are treated as failures.
+      - name: Assert the Docker-backed tests actually ran
+        if: always()
+        run: |
+          log="$RUNNER_TEMP/gotest-${{ matrix.shard }}.log"
+          [ -f "$log" ] || exit 0
+          if grep -nE 'Docker not available|pgvector extension unavailable' "$log"; then
+            echo "::error::Shard '${{ matrix.shard }}' SKIPPED Docker-backed tests (see matches above). A skipping suite is not a passing suite — this shard gates the deploy."
+            exit 1
+          fi
+          echo "No infrastructure skips in shard '${{ matrix.shard }}'."
+
+  lint-go:
+    name: Lint Go
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: crm-backend/go.mod
+          cache-dependency-path: crm-backend/go.sum
+
+      # Config lives at crm-backend/.golangci.yml.
+      #
+      # That config deliberately enables NO gofmt / gofumpt / goimports linter.
+      # This tree is NOT gofmt-clean and that is project doctrine, not neglect:
+      # a formatter sweep would rewrite thousands of lines across files several
+      # streams are editing and bury every real diff. The Go gates here are
+      # `go build`, `go vet`, `go test`, and the non-formatting linters below.
+      # If you add a formatting linter, this job goes red on day one on code
+      # nobody touched. Don't.
+      #
+      # Action major v9, not v8. Both speak golangci-lint v2, but v8.0.0 was
+      # published 2025-05-04 — a YEAR before the v2.12.2 binary pinned below —
+      # so it would be an old action resolving a much newer release. v9 also
+      # runs on node24; node20 actions are on GitHub's deprecation path.
+      # The binary is pinned to the version developers run locally, so CI and a
+      # laptop cannot disagree about what "clean" means.
+      #
+      # --max-issues-per-linter=0 --max-same-issues=0 disable golangci-lint's
+      # default output truncation (50 / 3). Truncated output makes a first
+      # adoption pass look far smaller than it is.
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+          working-directory: crm-backend
+          args: --max-issues-per-linter=0 --max-same-issues=0
+
   frontend:
-    name: Frontend Typecheck & Test
+    name: Frontend
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -39,16 +266,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Node 22, matching deploy-frontend. These two jobs used to disagree
+      # (20 here, 22 there), so the version that tested the code was not the
+      # version that built the artifact. Unified UPWARD: production has built on
+      # 22 since 2026-05-06 and going back to 20 would revert a deliberate fix.
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
           cache-dependency-path: crm-frontend/package-lock.json
 
+      # npm ci, not npm install — install can silently resolve a different tree
+      # than the lockfile pins, which is exactly the drift CI exists to catch.
       - run: npm ci
 
       - name: Typecheck
         run: npx tsc -b
+
+      # `npm run lint:ci`, not a bare eslint: the script wraps eslint with a
+      # warning ceiling so the existing warning backlog doesn't have to be
+      # cleared in one commit while still ratcheting downward.
+      - name: Lint
+        run: npm run lint:ci
 
       # `npx vitest run`, not `npm test` — the package script is watch-mode and
       # would hang the runner.
@@ -93,7 +332,7 @@ jobs:
   build:
     name: Build Binary
     runs-on: ubuntu-latest
-    needs: test
+    needs: backend-unit
     defaults:
       run:
         working-directory: crm-backend
@@ -104,43 +343,66 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version-file: crm-backend/go.mod
           cache-dependency-path: crm-backend/go.sum
 
+      # Keep the `-o bin/server cmd/server/main.go` form EXACTLY. The tempting
+      # `go build ./cmd/server` rewrites go.mod (it promotes bluemonday from
+      # indirect to direct), which dirties the working tree on every developer
+      # machine that runs it.
       - name: Build
         run: go build -o bin/server cmd/server/main.go
 
-      - name: Upload artifact
+      # This job's value is the LINK STEP: `go vet` and `go test` never link
+      # cmd/server, so a broken main package can pass both. It costs ~28s.
+      # The artifact below is NOT consumed by anything — deploy-backend is
+      # disabled and Railway builds from source. It is kept only so a failed
+      # deploy can be diffed against a known-good binary by hand. Do not build a
+      # deploy path on it without changing that.
+      - name: Upload artifact (diagnostic only — no job consumes this)
         uses: actions/upload-artifact@v4
         with:
           name: server-binary
           path: crm-backend/bin/server
 
-  # Explicit backend deploy via the Railway CLI (RAILWAY_TOKEN repo secret) so a
-  # push to main deterministically ships — Railway's GitHub auto-deploy proved
-  # flaky (eaeec3f sat undeployed for 45+ minutes while CI was green; the "Build
-  # Binary" artifact was never consumed by anything). Two Railway-specific rules,
-  # both learned the hard way:
+  # ── DISABLED. Do not re-enable without reading all of this. ────────────────
+  #
+  # Explicit backend deploy via the Railway CLI (RAILWAY_TOKEN repo secret), so
+  # a push to main would deterministically ship. Written because Railway's
+  # GitHub auto-deploy proved flaky: eaeec3f sat undeployed for 45+ minutes
+  # while CI was green.
+  #
+  # Then the cure turned out worse than the disease. The CLI-built deployment
+  # that went live at 14:35 UTC 2026-07-10 served PRE-eaeec3f behavior despite a
+  # green build from an ef9dfee checkout — it REPLACED the working Railway
+  # GitHub auto-deploy build and regressed the copilot. Suspected cause: the CLI
+  # upload context vs the service's rootDirectory, plus build cache. Never
+  # explained, so this job stays off.
+  #
+  # CURRENT STATE OF THE WORLD (this is the part that used to contradict
+  # itself): Railway's GitHub auto-deploy IS the single backend deploy path.
+  # There is no double build, because this job never runs. Do NOT disable
+  # auto-deploy in the Railway service settings — with this job at `if: false`,
+  # that would leave the backend with NO deploy path at all.
+  #
+  # The "disable Railway auto-deploy so this job is the single path" step is
+  # part of the RE-ENABLE procedure, not current ops guidance. Re-enabling means,
+  # in order: (1) flip `if:` to the push/main condition, (2) verify the
+  # deployment with the /ai/health `build` fingerprint, which now identifies the
+  # running code so the 2026-07-10 failure would be observed rather than
+  # deduced, (3) only then turn off Railway's GitHub auto-deploy.
+  #
+  # Two Railway CLI rules, both learned the hard way, still apply if it is:
   #  - Run `railway up` from the REPO ROOT: the service sets rootDirectory
   #    /crm-backend, so uploading crm-backend/ as the context makes Railway look
   #    for crm-backend/crm-backend and fail ("Failed to read app source directory").
   #  - Use --ci, not --detach: --detach returns before the build runs, so a failed
   #    Railway build would leave this job green (a false positive). --ci streams
   #    the build and exits non-zero on failure.
-  # NOTE: Railway's GitHub auto-deploy may ALSO build each push (double build,
-  # same code — harmless but wasteful). Disable auto-deploy in the Railway service
-  # settings to make this job the single deploy path.
-  # TEMPORARILY DISABLED (if: false): the CLI-built deployment that went live at
-  # 14:35 UTC 2026-07-10 served PRE-eaeec3f behavior despite a green build from an
-  # ef9dfee checkout — it replaced the WORKING Railway GitHub auto-deploy build and
-  # regressed the copilot. Until that's explained (suspect: CLI upload context vs
-  # rootDirectory + build cache), Railway's GitHub auto-deploy is the single deploy
-  # path again. The /ai/health `build` fingerprint now identifies the running code,
-  # so a future re-enable can be verified instead of deduced.
   deploy-backend:
     name: Deploy Backend to Railway
     runs-on: ubuntu-latest
-    needs: test
+    needs: backend-unit
     if: ${{ false }}
 
     steps:
@@ -172,10 +434,18 @@ jobs:
   deploy-frontend:
     name: Deploy Frontend to Cloudflare Pages
     runs-on: ubuntu-latest
-    # Gated on the checks, which it was not before: this job had no `needs:` at
-    # all, so a red suite still shipped. Adding the frontend job without this
-    # would have achieved nothing.
-    needs: [test, frontend]
+    # EVERY check job is listed here on purpose. This job once had no `needs:`
+    # at all and shipped over a red suite; e15c33b added [test, frontend], which
+    # still left the credential gate and the Go linter gating nothing. Because
+    # this repo has no branch protection (see the header), this list is the
+    # entire gate. Adding a check job without adding it here achieves nothing.
+    needs:
+      - backend-unit
+      - backend-integration
+      - frontend
+      - lint-go
+      - no-prod-credentials-in-scripts
+      - build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     defaults:
       run:
@@ -191,8 +461,12 @@ jobs:
           cache: 'npm'
           cache-dependency-path: crm-frontend/package-lock.json
 
+      # npm ci, matching the `frontend` job. This step used to be
+      # `npm install --no-audit --no-fund`, which could resolve a different tree
+      # than the one the tests ran against — the deployed bundle would then be
+      # built from dependencies CI never exercised.
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci
 
       # No VITE_API_URL: the SPA calls a same-origin /api, which the Pages
       # Function in crm-frontend/functions/api proxies to the backend. This keeps
@@ -208,4 +482,3 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: pages deploy dist --project-name=20q-crm --branch=main --commit-dirty=true
           workingDirectory: crm-frontend
-

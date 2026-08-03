@@ -155,7 +155,7 @@ func (g *BudgetGuard) Record(ctx context.Context, orgID, userID uuid.UUID, task 
 	costUSD := estimateCost(model, in, out, cfg.CachedInputTokens, cfg.CacheCreationTokens)
 
 	reqID := "unknown"
-	if rid, ok := ctx.Value("request_id").(string); ok && rid != "" {
+	if rid := domain.RequestIDFromContext(ctx); rid != "" {
 		reqID = rid
 	}
 

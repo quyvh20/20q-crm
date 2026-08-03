@@ -3695,7 +3695,7 @@ describe('TestConditionSplit_BranchCollapseState', () => {
 
   it('toggling yes does not affect no', () => {
     let yesCollapsed = false;
-    let noCollapsed = false;
+    const noCollapsed = false;
 
     // Toggle yes
     yesCollapsed = !yesCollapsed;
@@ -3705,7 +3705,7 @@ describe('TestConditionSplit_BranchCollapseState', () => {
   });
 
   it('toggling no does not affect yes', () => {
-    let yesCollapsed = false;
+    const yesCollapsed = false;
     let noCollapsed = false;
 
     // Toggle no
@@ -3738,8 +3738,8 @@ describe('TestConditionSplit_BranchCollapseState', () => {
   it('collapse state is per condition instance (separate instances)', () => {
     // Simulate two separate condition nodes each with their own state
     let c1Yes = false;
-    let c1No = false;
-    let c2Yes = false;
+    const c1No = false;
+    const c2Yes = false;
     let c2No = false;
 
     c1Yes = !c1Yes; // Collapse c1's yes
@@ -3776,7 +3776,7 @@ describe('TestConditionSplit_BranchCollapseState', () => {
     );
 
     // Collapse yes branch
-    let yesCollapsed = true;
+    const yesCollapsed = true;
 
     // Add a new step to yes branch while collapsed
     useBuilderStore.getState().addStep(mkAction('y2'), 'c1', 'yes');

@@ -20,5 +20,13 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["vite.config.ts"]
+  /*
+   * e2e/ and playwright.config.ts are here so `npx tsc -b` — the check the
+   * `frontend` CI job runs — actually type-checks them. Playwright transpiles
+   * specs with esbuild, which strips types without checking them, so without
+   * this the E2E suite is the one deliverable in the repo with no static gate at
+   * all. It is not hypothetical: a `reducedMotion` key in the wrong place shipped
+   * exactly because nothing type-checked this file.
+   */
+  "include": ["vite.config.ts", "playwright.config.ts", "e2e"]
 }
