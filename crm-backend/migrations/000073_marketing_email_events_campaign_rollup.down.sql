@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_marketing_email_events_campaign_rollup;

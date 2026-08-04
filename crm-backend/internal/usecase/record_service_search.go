@@ -2,8 +2,6 @@ package usecase
 
 import (
 	"context"
-	"sort"
-	"strings"
 
 	"crm-backend/internal/domain"
 
@@ -43,7 +41,7 @@ func (s *recordService) indexRecord(ctx context.Context, orgID uuid.UUID, slug s
 	if err != nil || def == nil || !def.Searchable {
 		return
 	}
-	s.indexer.EnqueueRecord(orgID, slug, rec.ID, buildRecordContent(rec))
+	s.indexer.EnqueueRecord(orgID, slug, rec.ID, domain.BuildRecordContent(rec))
 }
 
 // unindexRecord removes a custom record from the generic index on delete. Errors
@@ -57,25 +55,8 @@ func (s *recordService) unindexRecord(ctx context.Context, orgID uuid.UUID, slug
 	_ = s.indexer.RemoveRecord(ctx, orgID, slug, id)
 }
 
-// buildRecordContent renders a record into the text that gets embedded and
-// fulltext-indexed: its display title followed by "key: value" for each non-empty
-// field. Field keys are sorted so the content (and thus the embedding) is
-// deterministic for a given record, independent of Go's map iteration order.
-func buildRecordContent(rec *domain.UniformRecord) string {
-	parts := make([]string, 0, len(rec.Fields)+1)
-	if rec.Display != "" {
-		parts = append(parts, rec.Display)
-	}
-
-	keys := make([]string, 0, len(rec.Fields))
-	for k := range rec.Fields {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		if v := displayString(rec.Fields[k]); v != "" {
-			parts = append(parts, k+": "+v)
-		}
-	}
-	return strings.Join(parts, " ")
-}
+// The content builder itself lives in domain.BuildRecordContent (R6.3). It moved
+// out of this package because the offline reconciliation sweep — which indexes the
+// records this online hook missed — has to produce byte-identical content for the
+// same row, and a second copy of the renderer would have drifted the first time
+// either side changed.

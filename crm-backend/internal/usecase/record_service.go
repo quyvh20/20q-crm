@@ -604,23 +604,12 @@ func (s *recordService) listCustom(ctx context.Context, orgID uuid.UUID, slug st
 // first-class field) and inside Fields, so the generic renderer, the report field
 // catalog and the list filters can address it like any other value without the
 // registry having to carry an owner field row.
+//
+// The projection itself lives in domain.CustomRecordToUniform (R6.3) so the
+// offline search-index reconciliation sweep, which does not go through this
+// service, indexes a record exactly as this write path would.
 func customToUniform(slug string, rec *domain.CustomObjectRecord) *domain.UniformRecord {
-	fields := map[string]interface{}{}
-	if len(rec.Data) > 0 {
-		_ = json.Unmarshal(rec.Data, &fields)
-	}
-	if rec.OwnerUserID != nil {
-		fields["owner_user_id"] = rec.OwnerUserID.String()
-	}
-	return &domain.UniformRecord{
-		ID:          rec.ID,
-		Object:      slug,
-		Display:     rec.DisplayName,
-		OwnerUserID: rec.OwnerUserID,
-		Fields:      fields,
-		CreatedAt:   rec.CreatedAt,
-		UpdatedAt:   rec.UpdatedAt,
-	}
+	return domain.CustomRecordToUniform(slug, rec)
 }
 
 // applyCustomDisplay overrides a custom record's title with the current value of

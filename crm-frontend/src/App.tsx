@@ -1,75 +1,114 @@
+import { Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import * as Sentry from '@sentry/react';
 import { AuthProvider, useAuth } from './lib/auth';
-import { SpinnerBlock } from '@/components/ui';
+import { Button, SpinnerBlock } from '@/components/ui';
+import { lazyRoute, lazyRouteNamed } from './lib/lazyRoute';
 import AppLayout from './AppLayout';
-import LoginPage from './pages/LoginPage';
-import RegisterPage from './pages/RegisterPage';
-import AuthCallbackPage from './pages/AuthCallbackPage';
-import ContactsPage from './pages/ContactsPage';
-import DealsPage from './pages/DealsPage';
-import DealDetailPage from './pages/DealDetailPage';
-import SettingsLayout, { SettingsIndexRedirect } from './pages/settings/SettingsLayout';
-import MembersSection from './pages/settings/MembersSection';
-import GroupsSection from './pages/settings/GroupsSection';
-import WorkspaceGeneralSection from './pages/settings/WorkspaceGeneralSection';
-import RoleDetailSection from './pages/settings/RoleDetailSection';
-import ProfileSection from './pages/settings/ProfileSection';
-import SecuritySection from './pages/settings/SecuritySection';
-import ApiTokensSection from './pages/settings/ApiTokensSection';
-import IntegrationsSection from './pages/settings/IntegrationsSection';
-import StarterTemplateSection from './pages/settings/StarterTemplateSection';
-import IntegrationSourceDetailSection from './pages/settings/IntegrationSourceDetailSection';
-import DeliveryLogSection from './pages/settings/DeliveryLogSection';
-import NotificationPreferencesSection from './pages/settings/NotificationPreferencesSection';
-import PipelineStagesManager from './components/settings/PipelineStagesManager';
-import ObjectsManager from './components/settings/ObjectsManager';
-import KnowledgeBase from './components/settings/KnowledgeBase';
-import RolesManager from './components/settings/RolesManager';
-import PermissionsManager from './components/settings/PermissionsManager';
-import FieldSecurityManager from './components/settings/FieldSecurityManager';
-import AuditLogViewer from './components/settings/AuditLogViewer';
-import CustomObjectPage from './pages/CustomObjectPage';
-import ObjectRecordPage from './pages/ObjectRecordPage';
-import TwoFactorChallengePage from './pages/TwoFactorChallengePage';
-import EnrollTwoFactorPage from './pages/EnrollTwoFactorPage';
-import AcceptInvitePage from './pages/AcceptInvitePage';
-import ChooseWorkspacePage from './pages/ChooseWorkspacePage';
-import NoWorkspacePage from './pages/NoWorkspacePage';
-import ForgotPasswordPage from './pages/ForgotPasswordPage';
-import ResetPasswordPage from './pages/ResetPasswordPage';
-import VerifyEmailPage from './pages/VerifyEmailPage';
-import ConversationLogPage from './pages/ConversationLogPage';
-import VoicePage from './pages/VoicePage';
-import { WorkflowList } from './features/workflows/WorkflowList';
-import { NextBuilder } from './features/workflows/builder/NextBuilder';
-import { RunHistory } from './features/workflows/RunHistory';
-import { EmailTemplatesPage } from './features/workflows/EmailTemplatesPage';
-import { EmailTemplateEditor } from './features/workflows/EmailTemplateEditor';
-import AIPage from './pages/AIPage';
-import SharedWithMePage from './pages/SharedWithMePage';
-import ReportsListPage from './features/reports/ReportsListPage';
-import SuppressionListPage from './features/marketing/SuppressionListPage';
-import MarketingConsentPage from './features/marketing/MarketingConsentPage';
-import SendingDomainsPage from './features/marketing/SendingDomainsPage';
-import CampaignContentListPage from './features/marketing/CampaignContentListPage';
-import CampaignContentEditor from './features/marketing/CampaignContentEditor';
-import MediaLibraryPage from './features/marketing/MediaLibraryPage';
-import SavedBlocksPage from './features/marketing/SavedBlocksPage';
-import SenderProfilePage from './features/marketing/SenderProfilePage';
-import PreferenceCenterPage from './features/marketing/PreferenceCenterPage';
-import SegmentsPage from './features/marketing/SegmentsPage';
-import SegmentEditorPage from './features/marketing/SegmentEditorPage';
-import CampaignsListPage from './features/marketing/CampaignsListPage';
-import CampaignComposerPage from './features/marketing/CampaignComposerPage';
-import SequencesListPage from './features/marketing/SequencesListPage';
-import SequenceDetailPage from './features/marketing/SequenceDetailPage';
-import MarketingOverviewPage from './features/marketing/MarketingOverviewPage';
-import ReportBuilderPage from './features/reports/ReportBuilderPage';
-import DashboardPage from './features/reports/DashboardPage';
-import TermsPage from './pages/legal/TermsPage';
-import PrivacyPage from './pages/legal/PrivacyPage';
+
+// ── ROUTE CHUNKS ────────────────────────────────────────────────────────────
+// Every page below is a separate lazily-loaded chunk. Before this the whole app
+// was ONE 3.75 MB script, so a visitor sitting on /login downloaded the React
+// Flow automation canvas, recharts, TipTap, the markdown editor and every Prism
+// grammar before the password field was interactive.
+//
+// `lazyRoute` is React.lazy plus a retry-then-reload policy — see
+// src/lib/lazyRoute.ts for why a split app needs one and a single-bundle app
+// does not.
+//
+// AppLayout is deliberately NOT lazy. It is the parent of every authenticated
+// page, so a lazy AppLayout would suspend BEFORE its lazy child ever rendered
+// and serialise two round trips on every signed-in page load. Keeping it in the
+// entry chunk costs unauthenticated visitors its weight once; making it lazy
+// would cost every signed-in visitor an extra RTT on every cold page.
+
+// Public / pre-workspace.
+const LoginPage = lazyRoute(() => import('./pages/LoginPage'));
+const TwoFactorChallengePage = lazyRoute(() => import('./pages/TwoFactorChallengePage'));
+const RegisterPage = lazyRoute(() => import('./pages/RegisterPage'));
+const ForgotPasswordPage = lazyRoute(() => import('./pages/ForgotPasswordPage'));
+const ResetPasswordPage = lazyRoute(() => import('./pages/ResetPasswordPage'));
+const VerifyEmailPage = lazyRoute(() => import('./pages/VerifyEmailPage'));
+const AuthCallbackPage = lazyRoute(() => import('./pages/AuthCallbackPage'));
+const AcceptInvitePage = lazyRoute(() => import('./pages/AcceptInvitePage'));
+const PreferenceCenterPage = lazyRoute(() => import('./features/marketing/PreferenceCenterPage'));
+const TermsPage = lazyRoute(() => import('./pages/legal/TermsPage'));
+const PrivacyPage = lazyRoute(() => import('./pages/legal/PrivacyPage'));
+const ChooseWorkspacePage = lazyRoute(() => import('./pages/ChooseWorkspacePage'));
+const NoWorkspacePage = lazyRoute(() => import('./pages/NoWorkspacePage'));
+const EnrollTwoFactorPage = lazyRoute(() => import('./pages/EnrollTwoFactorPage'));
+
+// Core records.
+const DashboardPage = lazyRoute(() => import('./features/reports/DashboardPage'));
+const ContactsPage = lazyRoute(() => import('./pages/ContactsPage'));
+const DealsPage = lazyRoute(() => import('./pages/DealsPage'));
+const DealDetailPage = lazyRoute(() => import('./pages/DealDetailPage'));
+const CustomObjectPage = lazyRoute(() => import('./pages/CustomObjectPage'));
+const ObjectRecordPage = lazyRoute(() => import('./pages/ObjectRecordPage'));
+const VoicePage = lazyRoute(() => import('./pages/VoicePage'));
+const AIPage = lazyRoute(() => import('./pages/AIPage'));
+const SharedWithMePage = lazyRoute(() => import('./pages/SharedWithMePage'));
+
+// Settings shell + sections. The shell and its index redirect live in the same
+// module, so they resolve to the same chunk.
+const SettingsLayout = lazyRoute(() => import('./pages/settings/SettingsLayout'));
+const SettingsIndexRedirect = lazyRouteNamed(
+  () => import('./pages/settings/SettingsLayout'),
+  'SettingsIndexRedirect',
+);
+const ProfileSection = lazyRoute(() => import('./pages/settings/ProfileSection'));
+const SecuritySection = lazyRoute(() => import('./pages/settings/SecuritySection'));
+const ApiTokensSection = lazyRoute(() => import('./pages/settings/ApiTokensSection'));
+const NotificationPreferencesSection = lazyRoute(() => import('./pages/settings/NotificationPreferencesSection'));
+const WorkspaceGeneralSection = lazyRoute(() => import('./pages/settings/WorkspaceGeneralSection'));
+const MembersSection = lazyRoute(() => import('./pages/settings/MembersSection'));
+const GroupsSection = lazyRoute(() => import('./pages/settings/GroupsSection'));
+const RolesManager = lazyRoute(() => import('./components/settings/RolesManager'));
+const RoleDetailSection = lazyRoute(() => import('./pages/settings/RoleDetailSection'));
+const PermissionsManager = lazyRoute(() => import('./components/settings/PermissionsManager'));
+const FieldSecurityManager = lazyRoute(() => import('./components/settings/FieldSecurityManager'));
+const StarterTemplateSection = lazyRoute(() => import('./pages/settings/StarterTemplateSection'));
+const ObjectsManager = lazyRoute(() => import('./components/settings/ObjectsManager'));
+const PipelineStagesManager = lazyRoute(() => import('./components/settings/PipelineStagesManager'));
+const IntegrationsSection = lazyRoute(() => import('./pages/settings/IntegrationsSection'));
+const DeliveryLogSection = lazyRoute(() => import('./pages/settings/DeliveryLogSection'));
+const IntegrationSourceDetailSection = lazyRoute(() => import('./pages/settings/IntegrationSourceDetailSection'));
+// The single heaviest route in the app: @uiw/react-md-editor drags in
+// rehype-prism-plus, which imports refractor/all — every Prism grammar there is.
+// ~630 kB gzip that used to be in the first byte every visitor downloaded, for
+// one admin settings screen.
+const KnowledgeBase = lazyRoute(() => import('./components/settings/KnowledgeBase'));
+const AuditLogViewer = lazyRoute(() => import('./components/settings/AuditLogViewer'));
+const ConversationLogPage = lazyRoute(() => import('./pages/ConversationLogPage'));
+
+// Automations (@xyflow/react + dagre live here and nowhere else).
+const WorkflowList = lazyRoute(() => import('./features/workflows/WorkflowList'));
+const EmailTemplatesPage = lazyRoute(() => import('./features/workflows/EmailTemplatesPage'));
+const EmailTemplateEditor = lazyRoute(() => import('./features/workflows/EmailTemplateEditor'));
+const RunHistory = lazyRoute(() => import('./features/workflows/RunHistory'));
+const NextBuilder = lazyRouteNamed(() => import('./features/workflows/builder/NextBuilder'), 'NextBuilder');
+
+// Reports (recharts + d3).
+const ReportsListPage = lazyRoute(() => import('./features/reports/ReportsListPage'));
+const ReportBuilderPage = lazyRoute(() => import('./features/reports/ReportBuilderPage'));
+
+// Marketing (TipTap + prosemirror + dnd-kit live here).
+const MarketingOverviewPage = lazyRoute(() => import('./features/marketing/MarketingOverviewPage'));
+const CampaignsListPage = lazyRoute(() => import('./features/marketing/CampaignsListPage'));
+const CampaignComposerPage = lazyRoute(() => import('./features/marketing/CampaignComposerPage'));
+const SequencesListPage = lazyRoute(() => import('./features/marketing/SequencesListPage'));
+const SequenceDetailPage = lazyRoute(() => import('./features/marketing/SequenceDetailPage'));
+const SegmentsPage = lazyRoute(() => import('./features/marketing/SegmentsPage'));
+const SegmentEditorPage = lazyRoute(() => import('./features/marketing/SegmentEditorPage'));
+const CampaignContentListPage = lazyRoute(() => import('./features/marketing/CampaignContentListPage'));
+const CampaignContentEditor = lazyRoute(() => import('./features/marketing/CampaignContentEditor'));
+const MediaLibraryPage = lazyRoute(() => import('./features/marketing/MediaLibraryPage'));
+const SavedBlocksPage = lazyRoute(() => import('./features/marketing/SavedBlocksPage'));
+const SenderProfilePage = lazyRoute(() => import('./features/marketing/SenderProfilePage'));
+const SendingDomainsPage = lazyRoute(() => import('./features/marketing/SendingDomainsPage'));
+const SuppressionListPage = lazyRoute(() => import('./features/marketing/SuppressionListPage'));
+const MarketingConsentPage = lazyRoute(() => import('./features/marketing/MarketingConsentPage'));
 
 // Initialize Sentry
 const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN;
@@ -90,6 +129,54 @@ if (SENTRY_DSN) {
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30_000, retry: 1 } },
 });
+
+/**
+ * Fallback for a route chunk that is still in flight on a COLD load — a hard
+ * navigation straight to a URL, where there is no previous screen to keep on
+ * display. Public routes have no app chrome, so this is a full-viewport
+ * spinner; authenticated routes get the finer-grained boundary inside
+ * AppLayout, which keeps the sidebar and header up and spins only the content
+ * area.
+ *
+ * In-app navigation does NOT reach either fallback: BrowserRouter wraps its
+ * location updates in React.startTransition (react-router 7 default), so React
+ * holds the CURRENT page on screen until the next chunk resolves instead of
+ * tearing it down for a spinner.
+ */
+function RouteFallback() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-background">
+      <SpinnerBlock />
+    </div>
+  );
+}
+
+/**
+ * Last-resort screen. It has always caught render errors; splitting the bundle
+ * gives it a new and much more likely customer — a chunk request that 404s
+ * because the user is on a bundle we redeployed out from under them, and that
+ * lazyRoute's reload guard has already tried once to fix.
+ *
+ * So it now offers the recovery instead of stating the problem: a reload is the
+ * fix for the stale-deploy case, and this component is mounted OUTSIDE
+ * BrowserRouter, so a reload is also the only navigation available to it.
+ */
+function AppErrorFallback() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-background p-8">
+      <div className="max-w-md text-center">
+        <h1 className="text-xl font-semibold tracking-tight text-foreground">Something went wrong</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          This page failed to load. If the app was updated while you had it open, reloading will pick
+          up the new version.
+        </p>
+        <Button className="mt-6" onClick={() => window.location.reload()}>
+          Reload the page
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 function ProtectedRoute({ children, requireWorkspace = true }: { children: React.ReactNode; requireWorkspace?: boolean }) {
   const { isAuthenticated, isLoading, needsChooser, hasActiveWorkspace } = useAuth();
@@ -149,9 +236,10 @@ function PublicRoute({ children }: { children: React.ReactNode }) {
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-    <Sentry.ErrorBoundary fallback={<p className="p-8 text-red-400">Something went wrong.</p>}>
+    <Sentry.ErrorBoundary fallback={<AppErrorFallback />}>
       <BrowserRouter>
         <AuthProvider>
+          <Suspense fallback={<RouteFallback />}>
           <Routes>
             {/* Public routes */}
             <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
@@ -419,6 +507,7 @@ function App() {
               </ProtectedRoute>
             } />
           </Routes>
+          </Suspense>
         </AuthProvider>
       </BrowserRouter>
     </Sentry.ErrorBoundary>

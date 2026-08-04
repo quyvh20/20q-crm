@@ -142,9 +142,9 @@ func TestBuildRecordContent_DeterministicAndComplete(t *testing.T) {
 		},
 	}
 	// Keys are sorted, empties dropped, display leads.
-	got := buildRecordContent(rec)
+	got := domain.BuildRecordContent(rec)
 	want := "Acme ticket count: 3 priority: high subject: Acme ticket"
 	if got != want {
-		t.Fatalf("buildRecordContent = %q, want %q", got, want)
+		t.Fatalf("domain.BuildRecordContent = %q, want %q", got, want)
 	}
 }

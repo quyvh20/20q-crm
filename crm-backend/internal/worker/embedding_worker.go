@@ -49,6 +49,11 @@ type EmbeddingWorker struct {
 	embedRepo   domain.RecordEmbeddingRepository
 	db          *gorm.DB
 	logger      *zap.Logger
+	// backlog feeds the periodic reconciliation sweep (R6.3), which repairs rows
+	// both queues dropped and backfills an object that was marked searchable after
+	// its records already existed. Wired by SetBacklog at startup; nil disables the
+	// sweep entirely. See embedding_reconciler.go.
+	backlog domain.RecordIndexBacklog
 }
 
 // NewEmbeddingWorker creates a worker pool.
@@ -83,28 +88,15 @@ func (w *EmbeddingWorker) Enqueue(job EmbedJob) {
 	}
 }
 
-// EnqueueContact adapts domain.Contact to EmbedJob and queues it.
+// EnqueueContact adapts domain.Contact to EmbedJob and queues it. The adaptation
+// itself lives in contactEmbedJob (embedding_reconciler.go) so the reconciliation
+// sweep, which processes contacts without the queue hop, embeds exactly the same
+// text this write path does.
 func (w *EmbeddingWorker) EnqueueContact(c *domain.Contact) {
 	if c == nil {
 		return
 	}
-	var compName *string
-	if c.Company != nil {
-		compName = &c.Company.Name
-	}
-	job := EmbedJob{
-		ContactID:    c.ID,
-		OrgID:        c.OrgID,
-		FirstName:    c.FirstName,
-		LastName:     c.LastName,
-		Email:        c.Email,
-		Phone:        c.Phone,
-		CompanyName:  compName,
-	}
-	if len(c.CustomFields) > 0 {
-		job.CustomFields = json.RawMessage(c.CustomFields)
-	}
-	w.Enqueue(job)
+	w.Enqueue(contactEmbedJob(c))
 }
 
 // ============================================================

@@ -69,6 +69,13 @@ func (r *Repository) AssignABTestCells(ctx context.Context, campaignID uuid.UUID
 // deduped event ledger to the roster on (campaign_id, email_normalized) → variant. Unique
 // via COUNT(DISTINCT email_normalized); the double LEFT JOIN fans out per recipient but
 // DISTINCT collapses it, so opened/clicked are distinct recipients, not raw events.
+//
+// Both JOIN conditions are exactly (org_id, campaign_id, email_normalized, event_type),
+// which is why idx_marketing_email_events_campaign_rollup (the R6.2 boot guard in
+// cmd/server/main.go) covers them: 95.3 ms → 6.1 ms on 590k events. This is the RECURRING
+// cost on that index rather than a per-page-load one — ClaimUndecidedABCampaigns drives
+// it from a 2-minute background ticker for every running A/B campaign, so it is paid
+// forever, unattended, and nobody watching a page would ever report it as slow.
 func (r *Repository) ABVariantMetrics(ctx context.Context, campaignID uuid.UUID) (map[string]ABVariantStat, error) {
 	type row struct {
 		Variant string

@@ -30,7 +30,12 @@ const (
 	defaultMaxBuckets = 50_000
 )
 
-// RateLimiter throttles the public capture endpoint.
+// RateLimiter throttles the app's UNAUTHENTICATED endpoints. Not a per-provider
+// limiter: one instance is shared by lead capture, the marketing unsubscribe and
+// preference-centre routes, the Resend delivery webhook, the Facebook/TikTok webhooks
+// and the public marketing-asset serve route (see NewHandler, NewPublicUnsubHandler,
+// NewResendWebhookHandler, NewPublicAssetHandler). The marketing send lane builds its
+// own instance with a per-second window to pace Resend.
 //
 // It FAILS CLOSED, which is the whole point and the opposite of the app's other
 // limiter (RateLimitByIP no-ops when Redis is nil and calls c.Next() when Redis
@@ -39,9 +44,14 @@ const (
 // billable email. A Redis blip must not become an unmetered write channel — so a
 // Redis failure degrades to a strict in-process bucket rather than to "allow".
 //
-// Per-process, not distributed: on multiple replicas the effective limit is
-// N×limit. Acceptable on single-replica Railway and documented rather than
-// pretended away.
+// DISTRIBUTED WHEN REDIS IS REACHABLE, which is the normal case: allowRedis counts
+// into a single shared key ("ratelimit:capture:"+key) incremented atomically by a
+// server-side script, so N replicas share ONE counter and the limit is exactly the
+// limit no matter how many pods are running. The per-process bucket is the FALLBACK
+// path only — a nil client (tests/dev) or a Redis error. It is on that path alone
+// that each replica keeps its own count and the effective ceiling becomes N×limit.
+// Acceptable, because it is reached only while Redis is already down and it still
+// bounds the endpoint; documented rather than pretended away.
 type RateLimiter struct {
 	redis  *redis.Client
 	limit  int

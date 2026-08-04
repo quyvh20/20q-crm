@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { Suspense, useEffect, useMemo, useState } from "react";
 import { NavLink, Link, useLocation, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -6,6 +6,7 @@ import {
   LayoutDashboard, Users, Building2, Handshake, Mic, Sparkles, Zap, BarChart3, Share2, Settings, ShieldOff, ShieldCheck, Globe, Mail, Send, Target, Megaphone, Repeat, Activity,
   Images, Bookmark,
 } from "lucide-react";
+import { SpinnerBlock } from "@/components/ui";
 import { useAuth } from "./lib/auth";
 import { getThemePreference, setThemePreference, type ThemePreference } from "./lib/theme";
 import GlobalSearch from "./components/common/GlobalSearch";
@@ -381,7 +382,16 @@ export default function AppLayout({ children, title }: AppLayoutProps) {
             )}
           </div>
         )}
+        {/* Route chunks are lazy (see App.tsx), so the page inside this <main>
+            can suspend. The boundary sits HERE rather than only around <Routes>
+            so a cold load of e.g. /contacts paints the sidebar, header and
+            workspace switcher immediately and spins only the content area —
+            instead of blanking the whole viewport and then popping the chrome
+            in. In-app navigation does not reach this fallback at all: react-router
+            wraps location updates in startTransition, so React keeps the previous
+            page mounted until the next chunk lands. */}
         <main className="flex-1 overflow-auto p-6">
+          <Suspense fallback={<SpinnerBlock className="h-full" />}>
           {children || (
             <div className="flex h-full items-center justify-center border-2 border-dashed border-muted rounded-xl">
               <div className="text-center">
@@ -390,6 +400,7 @@ export default function AppLayout({ children, title }: AppLayoutProps) {
               </div>
             </div>
           )}
+          </Suspense>
         </main>
       </div>
     </div>

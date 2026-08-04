@@ -1,0 +1,31 @@
+-- R6.2: per-campaign engagement rollup index for marketing_email_events.
+-- Dev/Docker/fresh-install mirror of the cmd/server/main.go boot guard (prod runs the
+-- boot guard — golang-migrate is dead there). Keep both files in sync.
+--
+-- Three queries filter this table on exactly this column prefix and nothing indexed it:
+--   marketing.Repository.CampaignAnalytics — the GROUP BY rollup
+--   marketing.Repository.CampaignAnalytics — the MPP-window LATERAL probe
+--   marketing.Repository.ABVariantMetrics  — the double LEFT JOIN, re-run by the A/B
+--                                            decider on a 2-minute ticker per campaign
+--
+-- The existing indexes are the svix dedupe UNIQUE(org_id, svix_id), the partial pending
+-- poll index, and (org_id, created_at); none of them starts with (org_id, campaign_id),
+-- so all three queries fell back to a full scan. Measured on PG16, 590k events / 200
+-- campaigns: the LATERAL probe took 43,089 ms (a full seq scan per open event) and drops
+-- to 6.13 ms; the rollup 40.8 → 0.84 ms; ABVariantMetrics 95.3 → 6.13 ms.
+--
+-- No INCLUDE (occurred_at): it only helps on a freshly-VACUUMed table, and this one is
+-- an ingest queue whose rows are UPDATEd (pending → processed) right after insert, so
+-- the visibility-map bit is clear exactly when a live campaign is being watched. See the
+-- boot guard's comment for the measurements.
+--
+-- Deliberately does NOT duplicate (org_id, created_at) —
+-- idx_marketing_email_events_org_created already serves DeliverabilityRates.
+--
+-- Plain CREATE INDEX, not CONCURRENTLY: a failed CIC leaves an indisvalid=f index that
+-- the planner never uses and that a later `CREATE INDEX IF NOT EXISTS` refuses to
+-- repair ("already exists, skipping"), which would strand the guard on a dead index
+-- forever. The build takes SHARE, so readers are unaffected; it blocks writers for the
+-- build (1.3 s at 590k rows, instant on an empty table).
+CREATE INDEX IF NOT EXISTS idx_marketing_email_events_campaign_rollup
+    ON marketing_email_events(org_id, campaign_id, event_type, email_normalized);

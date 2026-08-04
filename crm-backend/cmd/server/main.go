@@ -1958,6 +1958,94 @@ func main() {
 				log.Error("marketing boot guard failed", zap.String("what", g.what), zap.Error(err))
 			}
 		}
+
+		// R6.2: the per-campaign engagement rollup index. Mirrored by
+		// migrations/000073_marketing_email_events_campaign_rollup.up.sql.
+		//
+		// THREE separate queries filter marketing_email_events on exactly this column
+		// prefix, and none of them had an index that could serve it — the only existing
+		// indexes are the svix dedupe UNIQUE(org_id, svix_id), the partial pending poll
+		// index, and (org_id, created_at). None starts with (org_id, campaign_id), so
+		// every one of these fell back to a full scan:
+		//
+		//   marketing.Repository.CampaignAnalytics  — GROUP BY rollup
+		//   marketing.Repository.CampaignAnalytics  — the MPP-window LATERAL probe
+		//   marketing.Repository.ABVariantMetrics   — the double LEFT JOIN
+		//
+		// The LATERAL probe is the one that matters. It runs a correlated subquery per
+		// OPEN event, and with no usable index each of those becomes its own full seq
+		// scan of the whole table. MEASURED on a throwaway PG16 with 590k events / 200
+		// campaigns: 43,089 ms for one call — 750 inner loops × a 25k-page scan each.
+		// That is not a slow page, it is a guaranteed request timeout on
+		// GET /api/marketing/campaigns/:id/analytics plus a connection-pool drain, and
+		// it arrives the moment a single campaign accumulates real engagement.
+		// ABVariantMetrics is the recurring one: the A/B decider re-runs it on a
+		// 2-minute ticker for every running A/B campaign, forever.
+		//
+		//   query                    before        after
+		//   CampaignAnalytics rollup    40.8 ms     0.84 ms
+		//   MPP LATERAL probe       43,089    ms    6.13 ms
+		//   ABVariantMetrics            95.3 ms     6.13 ms
+		//
+		// NO `INCLUDE (occurred_at)`, and that was measured rather than assumed. It does
+		// make the LATERAL probe index-only (6.13 → 3.13 ms) on a freshly-VACUUMed
+		// table, for +19% index size (47 → 56 MB at 590k rows) paid on every webhook
+		// insert. But this table is an ingest QUEUE: the processor UPDATEs every row it
+		// ingests (pending → processed, claimed_at, attempts, processed_at), which clears
+		// the visibility-map bit for that page, so an index-only scan has to visit the
+		// heap anyway. Re-measured against rows in exactly that state — a LIVE campaign,
+		// i.e. the only time anyone is watching this page — the INCLUDE variant did 4,000
+		// Heap Fetches and came out at 3.70 ms median vs the plain index's 3.94 ms:
+		// indistinguishable. It buys nothing where it would matter and costs write
+		// amplification on the hottest path. Do not add it back without re-measuring on
+		// recently-UPDATEd rows.
+		//
+		// Deliberately NOT duplicating (org_id, created_at): DeliverabilityRates is the
+		// org+time-window query and idx_marketing_email_events_org_created already serves
+		// it correctly.
+		//
+		// LOCKING — plain CREATE INDEX, bounded, NOT CONCURRENTLY. All three verified by
+		// experiment on the throwaway DB:
+		//
+		//   - CONCURRENTLY is rejected because its failure mode is silent and permanent.
+		//     A failed CIC leaves the index with indisvalid=f, which the planner never
+		//     uses — and a later `CREATE INDEX IF NOT EXISTS` of the same name answers
+		//     "already exists, skipping" and leaves it invalid. The boot guard would then
+		//     no-op forever over a dead index. (It also cannot run inside the transaction
+		//     the lock_timeout needs.) Confirmed: after a forced CIC failure the index sat
+		//     at indisvalid=f and the IF NOT EXISTS guard did not repair it.
+		//   - Plain CREATE INDEX takes SHARE, which does NOT conflict with ACCESS SHARE:
+		//     readers are unaffected. It DOES conflict with ROW EXCLUSIVE, so it blocks
+		//     the Resend webhook's inserts for the build's duration — 1.3 s at 590k rows,
+		//     and instantaneous today (the table has 0 rows), which is the whole reason
+		//     this is being taken now rather than later.
+		//   - SET LOCAL lock_timeout inside the SAME transaction as the DDL, for the
+		//     reason internal/automation/repository.go documents at length: a bare
+		//     db.Exec("SET …") lands on whichever pooled connection is free and silently
+		//     does nothing. Verified: with one open INSERT transaction held on the table,
+		//     the guard gave up after 3.0 s with 55P03 and created nothing, instead of
+		//     parking every webhook insert behind a stray transaction.
+		//
+		// TWO PODS BOOTING AT ONCE is the normal case on a rolling deploy, and it is
+		// safe: verified by racing two of these guards, one built the index and the other
+		// lost the race on pg_class_relname_nsp_index, hit the 3 s timeout and rolled
+		// back — leaving exactly ONE valid, ready index. On timeout the index is simply
+		// absent and every query above falls back to today's plans (correct, just slow);
+		// the next boot retries. A loud, retryable miss, never a half-applied one.
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Exec(`SET LOCAL lock_timeout = '3s'`).Error; err != nil {
+				return err
+			}
+			return tx.Exec(`CREATE INDEX IF NOT EXISTS idx_marketing_email_events_campaign_rollup
+				ON marketing_email_events(org_id, campaign_id, event_type, email_normalized)`).Error
+		}); err != nil {
+			log.Error("marketing boot guard failed: campaign rollup index NOT created — "+
+				"CampaignAnalytics and ABVariantMetrics will full-scan marketing_email_events "+
+				"until the next uncontended boot",
+				zap.String("what", "marketing_email_events campaign rollup index"),
+				zap.String("lock_timeout", "3s"), zap.Error(err))
+		}
+
 		// Explicit RLS (defence in depth — the dynamic sweep below also covers these,
 		// but a newly-added table getting its own line is the house convention). Never
 		// FORCE: owner bypasses zero-policy RLS, and FORCE with no policy locks the app
@@ -2223,6 +2311,21 @@ func main() {
 		recordEmbeddingRepo := repository.NewRecordEmbeddingRepository(db)
 		embedWorker := worker.NewEmbeddingWorker(embedSvc, recordEmbeddingRepo, db, log, 200)
 		go embedWorker.Start(context.Background(), 5)
+
+		// Search-index reconciliation (R6.3). Both index paths are fire-and-forget
+		// enqueues that DROP when the queue is full and lose whatever is buffered on
+		// restart, and nothing ever noticed — a record that missed its enqueue was
+		// simply absent from search forever. The larger hole this also closes: ticking
+		// "searchable" on a custom object backfills nothing, so every record that
+		// existed before the flip stayed invisible to search until someone edited it.
+		//
+		// Fire-and-forget on context.Background() like the notification retention and
+		// digest sweeps below it; a failed pass logs and retries next tick and cannot
+		// fail boot. It is bounded (100 rows per arm per hourly pass, 25 per org) and
+		// takes a fleet-wide advisory lock, because each row it touches is a PAID
+		// embedding call and N replicas would otherwise pay N times for identical work.
+		embedWorker.SetBacklog(repository.NewRecordIndexBacklogRepository(db))
+		embedWorker.StartReconciler(context.Background())
 
 		// Object Registry repo (P2) — created early because OrgSettingsUseCase now
 		// backs its custom-field defs onto object_fields (P7), so it depends on this.

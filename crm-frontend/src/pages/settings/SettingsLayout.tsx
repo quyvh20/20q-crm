@@ -1,73 +1,18 @@
+import { Suspense } from 'react';
 import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../../lib/auth';
 import { DocumentTitle } from '../../lib/useDocumentTitle';
-import { Skeleton } from '@/components/ui';
-import {
-  Shield, Users, UsersRound, KeyRound, Boxes, Table2, EyeOff,
-  Target, Mail, Brain, ScrollText, MessageSquare, UserRound, Building2, Bell, Plug,
-  Sparkles, type LucideIcon,
-} from 'lucide-react';
+import { Skeleton, SpinnerBlock } from '@/components/ui';
+import { SETTINGS_SECTIONS, defaultSectionPath, visibleSections, type SettingsSection } from './sections';
 
 // The unified settings shell (U1): ONE routed area, grouped into Personal vs
 // Workspace, every section URL-addressable and capability-gated. A section a
 // member can't use doesn't render at all (the server still enforces every
 // action); the email-templates entry links out to the existing A5 library.
-
-type Can = (cap: string) => boolean;
-
-export interface SettingsSection {
-  path: string;            // route segment under /settings
-  label: string;
-  icon: LucideIcon;
-  group: 'personal' | 'workspace';
-  visible: (can: Can) => boolean;
-  /** Renders as a plain link to another route instead of a nested section. */
-  externalTo?: string;
-}
-
-export const SETTINGS_SECTIONS: SettingsSection[] = [
-  // Personal — available to every member.
-  { path: 'profile', label: 'Profile', icon: UserRound, group: 'personal', visible: () => true },
-  { path: 'security', label: 'Security', icon: Shield, group: 'personal', visible: () => true },
-  // Personal API tokens (U6.5) — self-scoped, so every member gets the page.
-  { path: 'api-tokens', label: 'API Tokens', icon: KeyRound, group: 'personal', visible: () => true },
-  { path: 'notifications', label: 'Notifications', icon: Bell, group: 'personal', visible: () => true },
-
-  // Workspace — admin/config surfaces, each behind the capability its API checks.
-  { path: 'general', label: 'General', icon: Building2, group: 'workspace', visible: (can) => can('org.settings') },
-  { path: 'members', label: 'Members', icon: Users, group: 'workspace', visible: (can) => can('members.manage') || can('members.invite') },
-  { path: 'groups', label: 'User Groups', icon: UsersRound, group: 'workspace', visible: (can) => can('groups.manage') },
-  { path: 'roles', label: 'Roles', icon: KeyRound, group: 'workspace', visible: (can) => can('roles.manage') },
-  { path: 'object-access', label: 'Object Access', icon: Table2, group: 'workspace', visible: (can) => can('roles.manage') },
-  { path: 'field-access', label: 'Field Access', icon: EyeOff, group: 'workspace', visible: (can) => can('roles.manage') },
-  // Sits directly above Objects & Fields and Pipeline because it is the one-click
-  // way to populate both. Gated on org.settings to match what
-  // POST /api/templates/:slug/apply itself enforces — a looser gate here would show
-  // a section whose only button 403s. Path is 'starter-templates', not 'templates':
-  // that one is taken by the Email Templates link below, and section paths must not
-  // prefix each other or the nav highlights two entries at once.
-  { path: 'starter-templates', label: 'Starter Templates', icon: Sparkles, group: 'workspace', visible: (can) => can('org.settings') },
-  { path: 'objects', label: 'Objects & Fields', icon: Boxes, group: 'workspace', visible: (can) => can('objects.manage') },
-  { path: 'pipeline', label: 'Pipeline', icon: Target, group: 'workspace', visible: (can) => can('pipeline.manage') },
-  { path: 'integrations', label: 'Integrations', icon: Plug, group: 'workspace', visible: (can) => can('integrations.manage') },
-  { path: 'templates', label: 'Email Templates', icon: Mail, group: 'workspace', visible: (can) => can('workflows.manage'), externalTo: '/workflows/email-templates' },
-  { path: 'knowledge', label: 'Knowledge Base', icon: Brain, group: 'workspace', visible: (can) => can('knowledge.manage') },
-  { path: 'audit', label: 'Audit Log', icon: ScrollText, group: 'workspace', visible: (can) => can('audit.view') },
-  { path: 'ai-logs', label: 'AI Logs', icon: MessageSquare, group: 'workspace', visible: (can) => can('members.manage') },
-];
-
-// visibleSections is exported for the command palette (settings destinations).
-export function visibleSections(can: Can): SettingsSection[] {
-  return SETTINGS_SECTIONS.filter((s) => s.visible(can));
-}
-
-// defaultSectionPath: where /settings lands. Admins go to their first workspace
-// section; a member with no admin capabilities lands on their personal Profile
-// page instead of a config screen they can't use.
-export function defaultSectionPath(can: Can): string {
-  const workspace = visibleSections(can).find((s) => s.group === 'workspace' && !s.externalTo);
-  return workspace ? workspace.path : 'profile';
-}
+//
+// The section REGISTRY itself lives in ./sections.ts, not here: the global
+// command palette needs it and the palette is in the eager entry chunk, so a
+// static import of this file from there would cancel this route's lazy split.
 
 // SettingsIndexRedirect sends a bare /settings to the member's default section
 // — once capabilities have loaded, so an admin isn't misrouted to Security.
@@ -180,7 +125,13 @@ export default function SettingsLayout() {
         </nav>
 
         <div className="flex-1 min-w-0">
-          <Outlet />
+          {/* Each settings section is its own lazy chunk (App.tsx). Its own
+              boundary, not AppLayout's, so a cold load of /settings/knowledge —
+              the heaviest chunk in the app — keeps this nav rail on screen and
+              spins only the panel beside it. */}
+          <Suspense fallback={<SpinnerBlock />}>
+            <Outlet />
+          </Suspense>
         </div>
       </div>
     </div>

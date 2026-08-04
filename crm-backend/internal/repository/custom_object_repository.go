@@ -331,6 +331,30 @@ func (r *customObjectRepository) ListRecords(ctx context.Context, orgID uuid.UUI
 		// This is how a custom object is listed by a relation value — e.g. all records
 		// whose "contact" field is X — powering reverse related lists for custom-object
 		// children. Keys are field keys, so this can never inject column names.
+		//
+		// NO GIN INDEX HELPS THIS. Adding `GIN (data jsonb_path_ops)` to "speed up the
+		// relation filters" is the obvious-looking move and it is a measured no-op: GIN
+		// jsonb_path_ops indexes ONLY the containment operator @>, and default jsonb_ops
+		// adds only the key-existence family ?/?|/?&. NEITHER opclass can serve `->>`
+		// equality. Verified on 200k rows with each opclass present in turn: the planner
+		// ignored both indexes entirely (it did not touch them even with enable_seqscan
+		// off) and the query walked the same 50,464 buffers as with no index at all. The
+		// cost of shipping one would be 24 MB (path_ops) or 34 MB (jsonb_ops) per 200k
+		// rows of pure write amplification on every record insert and update, for zero
+		// reads served.
+		//
+		// A GIN index IS usable if the predicate is rewritten to
+		// `data @> jsonb_build_object(key, val)` — measured 31.7 ms → 0.28 ms. That
+		// rewrite is NOT semantics-preserving and must not be made here: @> matches only
+		// when the stored value is a JSON *string*, so any numeric or boolean field would
+		// silently stop matching. It cannot be waved through as "these are all relation
+		// keys" either, because this map is not relation-only — record_handler.List
+		// promotes EVERY unreserved query param to a filter, and automation's
+		// find_records action (buildFilterMap) lets a workflow author filter on any field
+		// they like. The failure would be silent in both: an empty list and an automation
+		// that quietly stops matching, not an error. If this is ever revisited, the
+		// relation keys have to be resolved from object_fields and the two predicate
+		// forms applied per key.
 		for key, val := range f.Filters {
 			if key == "" || val == "" {
 				continue
@@ -363,6 +387,42 @@ func (r *customObjectRepository) ListRecords(ctx context.Context, orgID uuid.UUI
 		// between two page requests still shifts every later page by a row. The
 		// tiebreaker removes the tie non-determinism only. Converting custom objects
 		// to the keyset cursor the system objects use is a separate change.
+		//
+		// R6.2 DELIBERATELY DID NOT ADD the matching ordered index
+		//   (org_id, object_def_id, created_at DESC, id DESC) WHERE deleted_at IS NULL
+		// even though it is a spectacular win for THIS query, because it is a net
+		// regression for the filtered one above — and both come out of this one function.
+		//
+		// Measured on a throwaway PG16, 200k records across 4 object defs (50k each),
+		// heap in append order so created_at correlation is +1 as it is in prod:
+		//
+		//   query                        buffers before → after      time before → after
+		//   page 1, no filter               7,209 →     28 buffers    25.6 → 0.08 ms
+		//   the paired COUNT                                          19.3 → 9.15 ms
+		//   related-list relation filter    7,187 → 50,464 buffers    18.7 → 16.9 ms
+		//
+		// Wall time on the filtered query barely moves while everything is cached, which
+		// is why this looks safe until it isn't; the buffer count is the honest number
+		// and it is cache-independent. The ordered index makes the planner prefer it for
+		// the LIMIT, and it then walks EVERY entry for the object — 50,000 of them — to
+		// find 40, pinning a buffer per row instead of visiting each of 7,187 heap pages
+		// once in physical order with prefetch. The cost is independent of how many rows
+		// match and it cannot terminate early: a relation filter matching NOTHING still
+		// took 15.7 ms and read all 50k. That is fired up to 5× CONCURRENTLY per
+		// record-detail page load by related_lists_usecase.go, twice each (page + COUNT).
+		//
+		// It is not shipped because there is no safe fix to pair it with: the only index
+		// that serves `data ->> key = value` for a DYNAMIC key is none, GIN is a measured
+		// no-op (see the filter loop above), and the @> rewrite that would make GIN work
+		// changes matching semantics on numeric and boolean fields. Deferring costs
+		// nothing today — prod holds 38 custom_object_records, and the benefit above
+		// needs ~50k rows in a SINGLE object before it is even visible.
+		//
+		// Add it when either becomes true: an object crosses ~10k live records, or the
+		// related-list path moves off `data ->> key` onto object_links, which P4/P7
+		// already built as the universal relation store and which already has the right
+		// B-tree (idx_object_links_to). Re-measure the filtered query's BUFFERS, not its
+		// wall time, before believing it is safe.
 		Order("custom_object_records.created_at DESC, custom_object_records.id DESC").
 		Offset(f.Offset).
 		Limit(limit).

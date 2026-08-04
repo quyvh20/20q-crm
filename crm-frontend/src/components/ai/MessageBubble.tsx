@@ -1,10 +1,39 @@
 import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import bash from 'refractor/bash';
+import css from 'refractor/css';
+import diff from 'refractor/diff';
+import go from 'refractor/go';
+import graphql from 'refractor/graphql';
+import json from 'refractor/json';
+import markdown from 'refractor/markdown';
+import markup from 'refractor/markup';
+import python from 'refractor/python';
+import sql from 'refractor/sql';
+import tsx from 'refractor/tsx';
+import yaml from 'refractor/yaml';
 import { Check, Copy, Sparkles } from 'lucide-react';
 import type { ChatMessage } from './chatTypes';
+
+// `Prism` from react-syntax-highlighter bundles refractor/all — every one of the
+// ~290 Prism grammars, 575 kB raw / ~280 kB gzip, the single largest package in
+// the app and 3.3x the size of react-dom. `PrismLight` takes refractor/core and
+// only the grammars registered below, which is what an assistant answering CRM
+// questions actually emits. Registration is transitive: `tsx` pulls jsx +
+// typescript + javascript + markup, `markdown` pulls markup, and each grammar
+// self-registers its own short aliases (js, ts, py, sh, shell, yml, md, html,
+// xml), so a fence tagged with any of those still highlights.
+//
+// An unregistered language is NOT an error: highlight.js checks
+// `astGenerator.registered(language)` first and falls back to unhighlighted
+// plain text in the same styled block, so the worst case for an exotic fence is
+// monochrome code, never a crash.
+for (const language of [bash, css, diff, go, graphql, json, markdown, markup, python, sql, tsx, yaml]) {
+  SyntaxHighlighter.registerLanguage(language.displayName, language);
+}
 
 interface Props {
   message: ChatMessage;

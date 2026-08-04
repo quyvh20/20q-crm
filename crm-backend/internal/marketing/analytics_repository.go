@@ -33,6 +33,12 @@ type CampaignAnalytics struct {
 
 // CampaignAnalytics computes the per-campaign engagement rollup. Org-scoped (owner-less
 // table — org_id bind is the entire access story, no per-viewer predicate) and idempotent.
+//
+// BOTH queries below depend on idx_marketing_email_events_campaign_rollup
+// (org_id, campaign_id, event_type, email_normalized) — the R6.2 boot guard in
+// cmd/server/main.go. Without it neither has an index that can serve its predicate: the
+// only other indexes on this table start with (org_id, svix_id) or (org_id, created_at).
+// If you change the WHERE/GROUP BY columns here, change that index with them.
 func (r *Repository) CampaignAnalytics(ctx context.Context, orgID, campaignID uuid.UUID) (CampaignAnalytics, error) {
 	type grp struct {
 		EventType string
@@ -71,6 +77,13 @@ func (r *Repository) CampaignAnalytics(ctx context.Context, orgID, campaignID uu
 
 	// Engaged (MPP-excluded) unique opens: recipients with at least one open that is NOT
 	// within mppOpenWindow of their own delivery. Only run when there are opens at all.
+	//
+	// This is a CORRELATED subquery — it runs once per open event — so it is the query on
+	// this table with the sharpest index cliff. Unindexed, each of those inner runs is a
+	// full scan of the whole table: measured at 43,089 ms for ONE call on 590k events
+	// (750 inner loops), i.e. a request timeout and a pool drain rather than a slow page.
+	// With the rollup index it is 6.1 ms. The `a.Opened > 0` short-circuit is what kept
+	// this from being noticed — it only fires once a campaign has real engagement.
 	if a.Opened > 0 {
 		var engaged int64
 		if err := r.db.WithContext(ctx).Raw(`

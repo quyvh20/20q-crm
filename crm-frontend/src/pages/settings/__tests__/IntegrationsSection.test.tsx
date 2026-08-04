@@ -152,7 +152,7 @@ describe('IntegrationsSection', () => {
 // with no error to say why. This pins the entry and its capability gate.
 describe('Integrations settings registration', () => {
   it('is registered as a capability-gated workspace section', async () => {
-    const { SETTINGS_SECTIONS, visibleSections } = await import('../SettingsLayout');
+    const { SETTINGS_SECTIONS, visibleSections } = await import('../sections');
     const entry = SETTINGS_SECTIONS.find((s) => s.path === 'integrations');
     expect(entry, 'no SETTINGS_SECTIONS entry — the route would silently redirect').toBeDefined();
     expect(entry!.group).toBe('workspace');
@@ -165,7 +165,7 @@ describe('Integrations settings registration', () => {
   });
 
   it('does not change where a bare /settings lands', async () => {
-    const { defaultSectionPath } = await import('../SettingsLayout');
+    const { defaultSectionPath } = await import('../sections');
     // defaultSectionPath returns the FIRST visible workspace section. Inserting
     // integrations above 'general' would silently relocate every admin's landing
     // page — so an admin with both must still land on General.

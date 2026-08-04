@@ -3,7 +3,10 @@ import { Loader2, Search, Settings, Sparkles } from 'lucide-react';
 import { globalSearch, type SearchGroup } from '../../lib/api';
 import { recordPath } from '../../features/objects/recordRoutes';
 import { useAuth } from '../../lib/auth';
-import { visibleSections } from '../../pages/settings/SettingsLayout';
+// From ./sections, NOT from SettingsLayout: this component is mounted in
+// AppLayout and therefore lives in the eager entry chunk, so importing the
+// settings SHELL here would pin that lazy route into the first load.
+import { visibleSections } from '../../pages/settings/sections';
 import { ErrorState } from '@/components/ui';
 
 // GlobalSearch is the P6 cross-object search palette: one Ctrl+K box that spans
