@@ -148,6 +148,16 @@ func (e *Engine) LoadWorkflow(ctx context.Context, orgID, wfID uuid.UUID) (*Work
 // inserted=false when the idempotency key already exists (a duplicate enroll of the
 // same source-run+record is an idempotent no-op). Part of the Enroller port.
 func (e *Engine) EnrollRun(ctx context.Context, orgID uuid.UUID, target *Workflow, triggerCtx map[string]any, idempotencyKey string) (bool, error) {
+	return e.enrollRun(ctx, orgID, target, triggerCtx, idempotencyKey, false)
+}
+
+// enrollRun is the shared enroll body. durableKey routes the insert through
+// CreateRunWithDurableClaim, which records the idempotency key in a table no pruner
+// touches — set it ONLY for keys whose dedupe must outlive the 90-day run retention
+// (see RunIdempotencyClaim). A key scoped to its own source run, like the enroll_records
+// action's, must leave it false: those keys are meaningless once that run is pruned, and
+// claiming them would grow the claims table by one row per run forever.
+func (e *Engine) enrollRun(ctx context.Context, orgID uuid.UUID, target *Workflow, triggerCtx map[string]any, idempotencyKey string, durableKey bool) (bool, error) {
 	tc, err := json.Marshal(triggerCtx)
 	if err != nil {
 		return false, fmt.Errorf("marshal enroll trigger context: %w", err)
@@ -161,7 +171,11 @@ func (e *Engine) EnrollRun(ctx context.Context, orgID uuid.UUID, target *Workflo
 		TriggerContext:  datatypes.JSON(tc),
 		IdempotencyKey:  idempotencyKey,
 	}
-	inserted, err := e.repo.CreateRun(ctx, run)
+	createRun := e.repo.CreateRun
+	if durableKey {
+		createRun = e.repo.CreateRunWithDurableClaim
+	}
+	inserted, err := createRun(ctx, run)
 	if err != nil {
 		return false, fmt.Errorf("create enrolled run: %w", err)
 	}

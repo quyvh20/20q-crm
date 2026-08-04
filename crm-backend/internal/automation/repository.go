@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ErrNilTransaction is returned when a nil transaction is passed to a method that requires one.
@@ -32,6 +34,7 @@ func (r *Repository) AutoMigrate() error {
 		&Workflow{},
 		&WorkflowVersion{},
 		&WorkflowRun{},
+		&RunIdempotencyClaim{},
 		&WorkflowActionLog{},
 		&WorkflowOrgToken{},
 		&AutomationTimer{},
@@ -61,6 +64,16 @@ func (r *Repository) AutoMigrate() error {
 
 	// Backfill action_path from action_idx for legacy action logs (idempotent)
 	r.db.Exec(`UPDATE automation_workflow_action_logs SET action_path = action_idx::text WHERE action_path = '' OR action_path IS NULL`)
+
+	// Give every pre-existing sequence enrollment its durable claim. Logged rather than
+	// fatal: a boot must not fail on a data backfill, and the write path is correct with
+	// or without it — this only decides whether contacts enrolled BEFORE the claims table
+	// existed are protected from the re-mail defect (they are the ones at risk today).
+	if n, err := r.BackfillSequenceEnrollmentClaims(context.Background()); err != nil {
+		slog.Error("automation: backfilling sequence enrollment claims failed", "error", err)
+	} else if n > 0 {
+		slog.Info("automation: backfilled durable sequence enrollment claims", "count", n)
+	}
 
 	return nil
 }
@@ -265,7 +278,91 @@ func (r *Repository) GetActiveWorkflowsByTrigger(ctx context.Context, orgID uuid
 
 // --- WorkflowRun CRUD ---
 
+// CreateRunWithDurableClaim inserts a run whose idempotency key is a PERMANENT claim: the
+// key is also recorded in automation_run_idempotency_claims, a table no pruner touches, so
+// the dedupe outlives the run row that PruneCompletedRuns reclaims at 90 days. Returns
+// false when the key was already claimed — however long ago, and whether or not the run
+// that claimed it still exists. That is the whole fix for the sequence re-mail defect; see
+// RunIdempotencyClaim.
+//
+// Both writes share ONE transaction, so there is no window in which a run exists without
+// its claim. A crash in such a window would re-open the re-mail hole for that contact 90
+// days later, which is precisely the failure mode being closed.
+//
+// The run is inserted with ON CONFLICT DO NOTHING rather than by catching a duplicate-key
+// error the way CreateRun does: a failed statement poisons the surrounding transaction, so
+// the COMMIT would roll back the claim — losing the exact row this method exists to write.
+// RowsAffected == 0 on the run insert therefore means a live run already holds this key but
+// had no claim (a run created before this shipped, or before the backfill reached it); the
+// claim is still committed, healing that row in passing. The conflict is left untargeted
+// there, matching CreateRun's tolerance of a missing idx_wf_runs_wf_idemp.
+//
+// Concurrency needs no extra handling: two instances enrolling the same contact both reach
+// the claim insert, the second blocks on the unique index until the first commits, and then
+// reads RowsAffected == 0. Same mechanism that guarded the run index before, one table over.
+func (r *Repository) CreateRunWithDurableClaim(ctx context.Context, run *WorkflowRun) (bool, error) {
+	if run.ID == uuid.Nil {
+		run.ID = uuid.New()
+	}
+	var inserted bool
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		claim := &RunIdempotencyClaim{
+			ID:             uuid.New(),
+			OrgID:          run.OrgID,
+			WorkflowID:     run.WorkflowID,
+			IdempotencyKey: run.IdempotencyKey,
+		}
+		// Targeted at the claim's own unique index. An untargeted DO NOTHING would also
+		// swallow a primary-key collision and report it as "already claimed", which would
+		// drop a contact out of the drip forever with no error anywhere.
+		res := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "workflow_id"}, {Name: "idempotency_key"}},
+			DoNothing: true,
+		}).Create(claim)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			inserted = false // already claimed: this contact enrolled once, however long ago
+			return nil
+		}
+		runRes := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(run)
+		if runRes.Error != nil {
+			return runRes.Error
+		}
+		inserted = runRes.RowsAffected > 0
+		return nil
+	})
+	return inserted, err
+}
+
+// BackfillSequenceEnrollmentClaims writes a durable claim for every EXISTING sequence-
+// enrolled run that predates the claims table. Without it the fix would protect only
+// contacts enrolled from now on: everyone already mid-drip, or finished within the current
+// 90-day window, still loses their dedupe when the pruner reaches their run and still gets
+// re-mailed. The live population is exactly the population at risk.
+//
+// The discriminator is the run's own marketing tag, not the key's "seq:" prefix — the key
+// format belongs to package marketing, while the tag is stamped here (contactEnrollContext),
+// so this stays true if that format ever changes. Idempotent via ON CONFLICT, hence safe on
+// every boot; DISTINCT ON + ORDER BY keeps it deterministic (earliest claim wins) and holds
+// up even on a database whose own idx_wf_runs_wf_idemp went missing. Returns rows written.
+func (r *Repository) BackfillSequenceEnrollmentClaims(ctx context.Context) (int64, error) {
+	res := r.db.WithContext(ctx).Exec(`
+		INSERT INTO automation_run_idempotency_claims (id, org_id, workflow_id, idempotency_key, created_at)
+		SELECT DISTINCT ON (r.workflow_id, r.idempotency_key)
+			gen_random_uuid(), r.org_id, r.workflow_id, r.idempotency_key, COALESCE(r.created_at, NOW())
+		FROM automation_workflow_runs r
+		WHERE r.idempotency_key <> ''
+			AND r.trigger_context ->> ? IS NOT NULL
+		ORDER BY r.workflow_id, r.idempotency_key, r.created_at
+		ON CONFLICT (workflow_id, idempotency_key) DO NOTHING`, marketingEnrollmentKey)
+	return res.RowsAffected, res.Error
+}
+
 // CreateRun inserts a new workflow run. Returns false if idempotency key already exists.
+// The dedupe lasts only as long as the run row — PruneCompletedRuns reclaims it at 90 days.
+// A caller whose key must dedupe beyond that needs CreateRunWithDurableClaim instead.
 func (r *Repository) CreateRun(ctx context.Context, run *WorkflowRun) (bool, error) {
 	if run.ID == uuid.Nil {
 		run.ID = uuid.New()

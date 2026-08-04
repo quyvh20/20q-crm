@@ -23,6 +23,13 @@ const (
 // gorm.DeletedAt), matching PruneFiredTimers / PruneCompletedRoster. A never-finished
 // terminal row (finished_at NULL) falls back to created_at so it can still be reclaimed.
 // Returns the number of runs deleted.
+//
+// It deliberately does NOT touch automation_run_idempotency_claims. A run row used to be
+// the only record that a contact had been enrolled into a drip sequence, so deleting it
+// here silently released a dedupe that marketing had promised was permanent, and a segment
+// re-enrolled after the window re-mailed the whole sequence to contacts who had already
+// finished it. The claim row is now that record; it is narrow, it outlives the run on
+// purpose, and no retention rule may be extended over it. See RunIdempotencyClaim.
 func (r *Repository) PruneCompletedRuns(ctx context.Context, olderThan time.Duration) (int64, error) {
 	const cutoffPredicate = `status IN ('completed','failed','skipped')
 		AND COALESCE(finished_at, created_at) < NOW() - make_interval(secs => ?)`

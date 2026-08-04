@@ -173,8 +173,17 @@ func (f *SequenceFeeder) feedOne(ctx context.Context, e SequenceEnrollment) {
 }
 
 // sequenceEnrollKey is the deterministic per-(sequence, contact) idempotency key. Because
-// the run dedupe index is (workflow_id, idempotency_key) and workflow_id is the sequence,
-// this enrolls each contact into a given sequence at most once, forever.
+// the dedupe is on (workflow_id, idempotency_key) and workflow_id is the sequence, this
+// enrolls each contact into a given sequence at most once, forever.
+//
+// "Forever" is backed by automation_run_idempotency_claims, NOT by the workflow run row:
+// EnrollContact routes this key through automation's durable-claim path precisely because
+// the run row is reclaimed by the 90-day run pruner. While the run WAS the ledger, a
+// segment re-enrolled after that window re-mailed the entire drip to every contact who had
+// already completed it. Re-enrollment stays deliberately open (the marketing-side unique
+// index only forbids a second ACTIVE enrollment of the same sequence+segment) so that a
+// re-enrolled segment picks up its NEW members — the per-contact claim is what keeps the
+// existing members from being mailed twice.
 func sequenceEnrollKey(seqWFID, contactID uuid.UUID) string {
 	return fmt.Sprintf("seq:%s:contact:%s", seqWFID, contactID)
 }
