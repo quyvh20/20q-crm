@@ -1346,22 +1346,6 @@ describe('reorderSteps — actions sync', () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════
-// reorderActions shim
-// ═════════════════════════════════════════════════════════════════════
-describe('reorderActions shim', () => {
-  it('delegates to reorderSteps with parentId=null', () => {
-    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
-    useBuilderStore.getState().addStep(mkAction('a2'), null, null);
-    useBuilderStore.getState().addStep(mkAction('a3'), null, null);
-
-    useBuilderStore.getState().reorderActions(2, 0);
-
-    const ids = useBuilderStore.getState().steps.map((s) => s.id);
-    expect(ids).toEqual(['a3', 'a1', 'a2']);
-  });
-});
-
-// ═════════════════════════════════════════════════════════════════════
 // reorderSteps — mixed step types
 // ═════════════════════════════════════════════════════════════════════
 describe('reorderSteps — mixed types', () => {

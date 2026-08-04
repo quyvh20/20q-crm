@@ -276,7 +276,7 @@ func finalizeDraft(raw json.RawMessage) (*WorkflowDraft, *ValidationResult, erro
 		draft.Name = "Untitled workflow"
 	}
 
-	validation := ValidateWorkflowPayload(draft.Trigger, draft.Conditions, nil, draft.Steps)
+	validation := ValidateWorkflowPayload(draft.Trigger, draft.Conditions, draft.Steps)
 	return draft, validation, nil
 }
 

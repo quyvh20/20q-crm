@@ -64,8 +64,10 @@ export interface Workflow {
   is_active: boolean;
   trigger: TriggerSpec;
   conditions: ConditionGroup | null;
-  actions: ActionSpec[];
+  /** Canonical step tree. The deprecated flat `actions` mirror was removed from the
+   *  wire in R5 deploy 1 — derive any flat view locally (see store's flattenSteps). */
   steps?: WorkflowStep[];
+  /** Server-derived count of executable steps (actions + delays, branches included). */
   action_count: number;
   version: number;
   created_by: string;

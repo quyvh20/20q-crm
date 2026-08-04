@@ -18,66 +18,40 @@ type Workflow struct {
 	IsActive    bool           `gorm:"not null;default:false;index" json:"is_active"`
 	Trigger     datatypes.JSON `gorm:"type:jsonb;not null" json:"trigger"`
 	Conditions  datatypes.JSON `gorm:"type:jsonb" json:"conditions"`
-	// Actions is the DEPRECATED flat action list. Kept for rollback compatibility.
-	// All new workflows use Steps (recursive tree). The frontend always writes both.
-	// Target removal: 2026-09-01 (3 months after Steps GA).
-	// Before removal, read the FLAT_ACTIONS_TEARDOWN_GATE line Repository.AutoMigrate
-	// logs on every boot — it is the "no row would lose behaviour if this column were
-	// dropped" check, without needing a production SQL console.
+	// THE `actions` COLUMN IS DELIBERATELY ABSENT FROM THIS STRUCT (R5 deploy 1).
 	//
-	// DO NOT DELETE `default:'[]'::jsonb` FROM THIS TAG. It is not cosmetic. It is the
-	// single thing that lets the COLUMN outlive this FIELD, and removing it re-arms a
-	// production outage. It is also asserted in CI: TestFlatActionsColumnDefault reads
-	// `column_default` straight out of information_schema after AutoMigrate, on both
-	// tables, and fails if the tag is ever "tidied" away.
+	// Steps is now the ONLY representation of what a workflow does. The deprecated flat
+	// Actions field is gone from the model, from the API DTOs, from the validator and
+	// from the executor. The COLUMN, however, is still there — `actions jsonb NOT NULL`
+	// on both this table and automation_workflow_versions — and dropping it is R5
+	// deploy 2, deliberately a separate deploy so deploy 1 stays rollback-safe.
 	//
-	// AutoMigrate never DROPs a column, so deleting this field leaves `actions jsonb
-	// NOT NULL` in place while GORM stops naming it in INSERTs. Without a default,
-	// Postgres then rejects every workflow write —
+	// WHAT KEEPS WRITES WORKING WITH THE FIELD GONE: the column's DEFAULT '[]'::jsonb,
+	// applied by deploy 0 and verified live in production. GORM no longer names
+	// `actions` in its INSERTs, so without that default every workflow write would die
+	// on
 	//
 	//	ERROR: null value in column "actions" of relation "automation_workflows"
 	//	violates not-null constraint (SQLSTATE 23502)
 	//
-	// — which kills CreateWorkflow on its first statement and kills UpdateWorkflow on
-	// its version snapshot, rolling the whole update back. With the default present the
-	// same INSERT succeeds and the column fills itself with '[]'.
+	// — killing CreateWorkflow on its first statement and UpdateWorkflow on its version
+	// snapshot (which rolls the whole update back). With the default present the same
+	// INSERT succeeds and the column fills itself with '[]'.
 	//
-	// It has to live HERE rather than in a raw `ALTER TABLE … SET DEFAULT` alongside
-	// the index DDL in Repository.AutoMigrate. Measured against Postgres 16 with this
-	// GORM version: for a field tagged `not null` with NO `default:`, AutoMigrate
-	// actively emits `ALTER TABLE … ALTER COLUMN "actions" DROP DEFAULT`, because
-	// gorm's MigrateColumn sees a column default where the schema has none. Railway
-	// deploys are rolling, so any restart, rollback, crash-loop or scale event that
-	// boots a binary carrying the OLD tag silently disarms a raw Exec. Expressed in the
-	// tag, AutoMigrate SETS the default instead — on the already-existing column, not
-	// only at CREATE TABLE — and preserves it once the field is gone.
-	//
-	// Consequence, so nobody "fixes" it later: every AutoMigrate re-issues
-	// `ALTER TABLE … ALTER COLUMN "actions" SET DEFAULT '[]'::jsonb`, even when the
-	// default is already exactly that. gorm compares its own tag text against
-	// Postgres' introspected default AFTER the driver has stripped the `::jsonb` cast
-	// and the quotes, so a quoted default can never compare equal and the column is
-	// "altered" on every boot. It is catalog-only (~2 ms, no table rewrite, no data
-	// touched); a cast-free `default:'[]'` was measured and churns identically. A
-	// guarded check-then-ALTER of our own does not remove it either — the comparison
-	// and the ALTER both live inside gorm's MigrateColumn. This is the price of the
-	// guard, and it is far cheaper than the 23502 above.
-	//
-	// What is NOT free is the LOCK. SET DEFAULT takes ACCESS EXCLUSIVE on this table,
-	// and measured with one ordinary read transaction open, an unbounded boot made a
-	// plain `SELECT count(*)` here wait 10.0 s. Repository.migrateSchema therefore runs
-	// every model's migration under a bounded `SET LOCAL lock_timeout` — read the note
-	// there before touching either the tag or the migration path. On a steady-state
-	// boot a timeout is free (the ALTER only re-sets a default that is already right,
-	// and it was measured still present afterwards); on the FIRST boot carrying this
-	// tag it is not, because the default would then be absent until the next quiet
-	// boot. That boot logs an unmistakable Error when it happens.
-	//
-	// Ordering, which is the whole reason this is its own deploy: the tag must be live
-	// and past the point of rollback BEFORE the field is removed. A rollback to a
-	// pre-tag binary DROPs the default again — harmless while the field still exists
-	// (the INSERT still names the column), fatal once it does not.
-	Actions     datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'::jsonb" json:"actions"`
+	// Because no struct field declares the column any more, AutoMigrate neither creates
+	// nor maintains it: gorm cannot see it, so it never re-emits the
+	// `ALTER TABLE … SET DEFAULT` it used to churn on every boot (good — that ALTER took
+	// ACCESS EXCLUSIVE on this table), and it never DROPs it either (AutoMigrate never
+	// drops columns). On an EXISTING database the column and its default simply persist.
+	// On a database that has never seen a pre-teardown build there would be no column at
+	// all, which is why Repository.ensureLegacyActionsColumn re-asserts it — read the
+	// note there; it is what keeps the teardown gate meaningful and rollback possible.
+	// That guard also RESTORES the default when the column exists without one, which is
+	// the state a deploy-0 boot that lost its lock race leaves behind and which no
+	// longer self-heals through gorm now that the tag is gone.
+	// TestFlatActionsColumnDefault and TestEnsureLegacyActionsColumn_RestoresLostDefault
+	// are the CI assertions that the column and its default are still in place after
+	// AutoMigrate.
 	Steps       datatypes.JSON `gorm:"type:jsonb" json:"steps,omitempty"`
 	Version     int            `gorm:"not null;default:1" json:"version"`
 	CreatedBy   uuid.UUID      `gorm:"type:uuid;not null" json:"created_by"`
@@ -95,13 +69,12 @@ type WorkflowVersion struct {
 	Version    int            `gorm:"not null" json:"version"`
 	Trigger    datatypes.JSON `gorm:"type:jsonb;not null" json:"trigger"`
 	Conditions datatypes.JSON `gorm:"type:jsonb" json:"conditions"`
-	// Actions is DEPRECATED — see Workflow.Actions for details, including why
-	// `default:'[]'::jsonb` must stay in this tag too. This table is where the missing
-	// default does the most damage: the version snapshot is the SECOND statement in
-	// UpdateWorkflow's transaction, so its 23502 rolls the workflow UPDATE back with
-	// it — the write appears to have been rejected outright rather than half-applied,
-	// with nothing in the row to hint that the snapshot was the part that failed.
-	Actions    datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'::jsonb" json:"actions"`
+	// The `actions` column is absent from this struct too — see the note on Workflow.
+	// This table is where a missing column default would do the most damage: the version
+	// snapshot is the SECOND statement in UpdateWorkflow's transaction, so its 23502
+	// would roll the workflow UPDATE back with it — the write appears to have been
+	// rejected outright rather than half-applied, with nothing in the row to hint that
+	// the snapshot was the part that failed.
 	Steps      datatypes.JSON `gorm:"type:jsonb" json:"steps,omitempty"`
 	CreatedAt  time.Time      `json:"created_at"`
 }
@@ -321,11 +294,28 @@ type StepSpec struct {
 }
 
 
-// FlattenStepsToActions derives the deprecated flat actions list from a steps
-// tree: actions and delays in DFS order (branches inlined), condition nodes
-// dropped. Exact Go port of the frontend's former flattenSteps (store.ts) so
-// pre-A1 rows and server-derived rows are indistinguishable. Remove with the
-// Actions column (overhaul A8, scheduled 2026-09-01).
+// FlattenStepsToActions linearises a steps tree: actions and delays in DFS order
+// (branches inlined), condition nodes dropped.
+//
+// THIS FUNCTION OUTLIVED THE ACTIONS COLUMN ON PURPOSE. R5 listed it for removal
+// alongside the flat-Actions teardown; that was wrong. It has nothing to do with the
+// deprecated column any more — it is the shared "what does this workflow actually
+// do?" walk, and it has two live cross-package consumers that both make a SECURITY
+// or CORRECTNESS decision from its result:
+//
+//  1. usecase.shouldActivate (system_template_usecase.go) refuses to auto-activate a
+//     starter-template workflow if ANY flattened action fails
+//     domain.IsAutoActivatableAction. Return an empty slice here and every template
+//     workflow becomes auto-activatable — including ones carrying send_email or
+//     send_webhook, which is how a freshly-created workspace starts emailing a
+//     customer's contacts by itself. That is a fail-open regression, not a cleanup.
+//     Note that domain's allow-list contains "delay": that entry is only truthful
+//     because the delay branch below synthesises an ActionSpec{Type: ActionDelay}.
+//     Stop emitting those and the map entry silently becomes a lie.
+//  2. marketing.workflowHasMarketingSend (sequence_usecase.go) — the load-bearing
+//     "is this a drip sequence?" check, which must see into If/Else branches.
+//
+// Exact Go port of the frontend's former flattenSteps (store.ts).
 func FlattenStepsToActions(steps []StepSpec) []ActionSpec {
 	var result []ActionSpec
 	for _, step := range steps {
@@ -359,30 +349,6 @@ func FlattenStepsToActions(steps []StepSpec) []ActionSpec {
 		result = append(result, FlattenStepsToActions(step.NoSteps)...)
 	}
 	return result
-}
-
-// delayParamsFromMap converts a legacy action params map to a typed *DelayParams.
-func delayParamsFromMap(m map[string]any) *DelayParams {
-	if m == nil {
-		return nil
-	}
-	d := &DelayParams{}
-	switch v := m["duration_sec"].(type) {
-	case float64:
-		d.DurationSec = int(v)
-	case int:
-		d.DurationSec = v
-	}
-	d.UntilField, _ = m["until_field"].(string)
-	switch v := m["offset_days"].(type) {
-	case float64:
-		d.OffsetDays = int(v)
-	case int:
-		d.OffsetDays = v
-	}
-	d.AtTime, _ = m["at_time"].(string)
-	d.Timezone, _ = m["timezone"].(string)
-	return d
 }
 
 // EvalContext holds all the data available for template interpolation and condition evaluation.

@@ -512,7 +512,7 @@ func TestDoD_Validation_TreePasses(t *testing.T) {
 	require.NoError(t, err)
 
 	trigger := `{"type":"contact_created"}`
-	result := ValidateWorkflowPayload([]byte(trigger), nil, nil, stepsJSON)
+	result := ValidateWorkflowPayload([]byte(trigger), nil, stepsJSON)
 	assert.True(t, result.Valid, "DoD tree should pass validation: %+v", result.Errors)
 }
 

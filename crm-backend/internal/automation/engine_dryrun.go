@@ -16,8 +16,7 @@ import (
 // DryRun evaluates a workflow against a sample trigger context without any side
 // effects or a persisted Workflow_Run. It builds the eval context the same way a
 // real run does (buildEvalContext — hydrating deal→contact and company relations),
-// then walks the steps tree. Legacy actions-only workflows (no Steps) fall back to
-// a linear action list so they still preview.
+// then walks the steps tree.
 func (e *Engine) DryRun(orgID uuid.UUID, wf *Workflow, triggerContext map[string]any) TestRunResponse {
 	ctxJSON, _ := json.Marshal(triggerContext)
 	run := &WorkflowRun{OrgID: orgID, TriggerContext: datatypes.JSON(ctxJSON)}
@@ -25,60 +24,39 @@ func (e *Engine) DryRun(orgID uuid.UUID, wf *Workflow, triggerContext map[string
 }
 
 // dryRunWorkflow is the pure (no DB) core of a dry run. It mirrors the real driver
-// (processRun in engine.go): a steps-based workflow executes its tree and the
-// top-level wf.Conditions are IGNORED — processRun returns right after the steps
-// block, before the legacy top-level condition check (engine.go ~563 vs ~589), and
-// nothing else in the engine evaluates wf.Conditions for steps workflows. So the
-// top-level gate is applied here ONLY on the legacy flat-actions path (no steps
-// tree); per-step condition nodes are always evaluated by the walker. Getting this
-// wrong would invert run/skip for a migrated workflow that still carries a legacy
-// top-level conditions group alongside its steps.
+// (processRun in engine.go), and the top-level wf.Conditions are IGNORED — nothing in
+// the engine has ever evaluated wf.Conditions for a steps workflow, and since R5
+// deploy 1 removed the flat-actions branch there is no other kind of workflow. A row
+// migrated from the pre-A1 era can still carry a stale top-level conditions group
+// alongside its steps; honouring it here would invert run/skip against what the
+// engine actually does. Per-step condition nodes are always evaluated by the walker.
 func dryRunWorkflow(wf *Workflow, evalCtx EvalContext) TestRunResponse {
-	steps, usedStepsTree := stepsForDryRun(wf)
-	var conditions *ConditionGroup
-	if !usedStepsTree && len(wf.Conditions) > 0 && string(wf.Conditions) != "null" {
-		var cg ConditionGroup
-		if json.Unmarshal(wf.Conditions, &cg) == nil {
-			conditions = &cg
-		}
-	}
-	return evaluateDryRun(conditions, steps, evalCtx)
+	return evaluateDryRun(nil, stepsForDryRun(wf), evalCtx)
 }
 
-// stepsForDryRun returns the workflow's canonical steps and whether they came from
-// the steps tree (true) or were derived from the deprecated flat Actions (false) for
-// pre-A1 rows that never stored a tree (mirrors the frontend's loadWorkflow mapping).
-// The caller uses the flag to decide whether the top-level conditions gate applies.
-func stepsForDryRun(wf *Workflow) ([]StepSpec, bool) {
+// stepsForDryRun returns the workflow's steps tree, or nil when it has none (which
+// previews as a workflow that does nothing — the same thing processRun now treats as
+// a failure).
+func stepsForDryRun(wf *Workflow) []StepSpec {
 	if len(wf.Steps) > 0 && string(wf.Steps) != "null" {
 		var steps []StepSpec
-		if json.Unmarshal(wf.Steps, &steps) == nil && len(steps) > 0 {
-			return steps, true
+		if json.Unmarshal(wf.Steps, &steps) == nil {
+			return steps
 		}
 	}
-	var actions []ActionSpec
-	if len(wf.Actions) > 0 {
-		_ = json.Unmarshal(wf.Actions, &actions)
-	}
-	steps := make([]StepSpec, 0, len(actions))
-	for _, a := range actions {
-		if a.Type == ActionDelay {
-			sec := 0
-			if v, ok := a.Params["duration_sec"]; ok {
-				sec = toInt(v)
-			}
-			steps = append(steps, StepSpec{Type: "delay", ID: a.ID, Delay: &DelayParams{DurationSec: sec}})
-			continue
-		}
-		act := a
-		steps = append(steps, StepSpec{Type: "action", ID: a.ID, Action: &act})
-	}
-	return steps, false
+	return nil
 }
 
 // evaluateDryRun is the pure core (no DB): it applies the top-level condition gate
 // and walks the tree. Exposed at package level so it can be unit-tested with a
 // hand-built EvalContext.
+//
+// The only production caller (dryRunWorkflow) passes nil conditions and always will:
+// no workflow has a top-level gate any more, since the one execution path that
+// evaluated wf.Conditions was the flat-actions branch of processRun. The parameter
+// stays because it is what defines ConditionResult and the "workflow conditions not
+// met" skip reason in the response contract — but do NOT wire wf.Conditions back into
+// it without changing processRun to match, or the preview will disagree with the run.
 func evaluateDryRun(conditions *ConditionGroup, steps []StepSpec, evalCtx EvalContext) TestRunResponse {
 	conditionResult := true
 	if conditions != nil && (conditions.Op != "" || conditions.Field != "" || len(conditions.Rules) > 0) {
@@ -204,7 +182,8 @@ func actionTypeOf(step StepSpec) string {
 	return ""
 }
 
-// toInt coerces a JSON-decoded number (float64) or int to int for the delay fallback.
+// toInt coerces a JSON-decoded number (float64) or int to int. Used by the validator
+// to read numeric action params out of the untyped params map.
 func toInt(v any) int {
 	switch n := v.(type) {
 	case float64:

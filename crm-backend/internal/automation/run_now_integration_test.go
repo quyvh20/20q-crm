@@ -99,9 +99,7 @@ func runNowITWorkflowCreatedBy(t *testing.T, db *gorm.DB, orgID uuid.UUID, trigg
 	t.Helper()
 
 	trigger, _ := json.Marshal(TriggerSpec{Type: triggerType})
-	actions, _ := json.Marshal([]ActionSpec{
-		{ID: "action_0", Type: "test_action", Params: map[string]any{}},
-	})
+	steps := actionStepsJSON(t, ActionSpec{ID: "action_0", Type: "test_action", Params: map[string]any{}})
 
 	wf := &Workflow{
 		ID:        uuid.New(),
@@ -109,7 +107,7 @@ func runNowITWorkflowCreatedBy(t *testing.T, db *gorm.DB, orgID uuid.UUID, trigg
 		Name:      "run-now-it-" + uuid.New().String()[:8],
 		IsActive:  true,
 		Trigger:   datatypes.JSON(trigger),
-		Actions:   datatypes.JSON(actions),
+		Steps:     steps,
 		Version:   1,
 		CreatedBy: createdBy,
 	}
@@ -120,7 +118,7 @@ func runNowITWorkflowCreatedBy(t *testing.T, db *gorm.DB, orgID uuid.UUID, trigg
 		WorkflowID: wf.ID,
 		Version:    1,
 		Trigger:    wf.Trigger,
-		Actions:    wf.Actions,
+		Steps:      wf.Steps,
 		CreatedAt:  time.Now(),
 	}
 	require.NoError(t, db.Create(ver).Error)

@@ -238,19 +238,20 @@ func workflowHasMarketingSend(wf *automation.Workflow) bool {
 	return false
 }
 
-// flattenWorkflowActions returns the workflow's actions in DFS order. It prefers the
-// Steps tree (branches inlined) and falls back to the deprecated flat Actions list, so
-// it stays correct once the Actions column is removed.
+// flattenWorkflowActions returns the workflow's actions in DFS order, branches
+// inlined. The steps tree is now the only source: the deprecated flat Actions fallback
+// that used to sit under this was removed with the field in R5 deploy 1, exactly as
+// this function's contract always anticipated. A workflow with no steps executes
+// nothing, so reporting no actions is the truth.
 func flattenWorkflowActions(wf *automation.Workflow) []automation.ActionSpec {
-	if len(wf.Steps) > 0 {
-		var steps []automation.StepSpec
-		if err := json.Unmarshal(wf.Steps, &steps); err == nil && len(steps) > 0 {
-			return automation.FlattenStepsToActions(steps)
-		}
+	if len(wf.Steps) == 0 {
+		return nil
 	}
-	var actions []automation.ActionSpec
-	_ = json.Unmarshal(wf.Actions, &actions)
-	return actions
+	var steps []automation.StepSpec
+	if err := json.Unmarshal(wf.Steps, &steps); err != nil {
+		return nil
+	}
+	return automation.FlattenStepsToActions(steps)
 }
 
 func (uc *SequenceUseCase) segmentName(ctx context.Context, orgID, segID uuid.UUID, cache map[uuid.UUID]string) string {

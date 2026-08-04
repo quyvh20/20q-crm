@@ -222,21 +222,21 @@ func TestDryRunWorkflow_StepsIgnoreTopLevelConditions(t *testing.T) {
 	}
 }
 
-// The legacy flat-actions path DOES honor top-level conditions (engine.go:589), so a
-// no-steps workflow whose group fails skips everything.
-func TestDryRunWorkflow_LegacyActionsHonorTopLevelConditions(t *testing.T) {
+// A workflow with NO steps previews as nothing at all — no steps, and the gate
+// reported open. It is the same thing processRun now treats as a failed run, and it
+// replaces the old legacy-flat-actions preview: there is no second definition format
+// left to fall back to.
+func TestDryRunWorkflow_NoStepsPreviewsNothing(t *testing.T) {
 	wf := &Workflow{
-		Actions:    mustDRJSON([]ActionSpec{{ID: "a1", Type: "send_email", Params: map[string]any{"subject": "hi"}}}),
 		Conditions: mustDRJSON(ConditionGroup{Field: "contact.tier", Operator: "eq", Value: "gold"}),
 	}
 	ctx := EvalContext{Contact: map[string]any{"tier": "silver"}}
 	res := dryRunWorkflow(wf, ctx)
 
-	if res.ConditionResult {
-		t.Errorf("legacy actions workflow should honor top-level conditions (fail here)")
+	if len(res.Steps) != 0 {
+		t.Errorf("a workflow with no steps must preview no steps, got %+v", res.Steps)
 	}
-	s := byStepID(res.Steps)["a1"]
-	if s.Status != "skip" || s.Reason != "workflow conditions not met" {
-		t.Errorf("legacy step should skip with reason 'workflow conditions not met', got %q/%q", s.Status, s.Reason)
+	if !res.ConditionResult {
+		t.Errorf("there is no top-level gate any more, so condition_result must be true")
 	}
 }

@@ -2,6 +2,7 @@ package automation
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,18 +10,19 @@ import (
 	"gorm.io/datatypes"
 )
 
+// ActionCount is derived from the steps tree — the only source since R5 deploy 1
+// removed the flat Actions fallback ToWorkflowResponse used to fall back to.
 func TestToWorkflowResponse_ActionCount(t *testing.T) {
-	actions := []ActionSpec{
-		{Type: "send_email", ID: "a1", Params: map[string]any{"to": "x"}},
-		{Type: "delay", ID: "a2", Params: map[string]any{"duration_sec": 60}},
-	}
-	actionsJSON, _ := json.Marshal(actions)
+	stepsJSON, _ := json.Marshal([]StepSpec{
+		{Type: "action", ID: "a1", Action: &ActionSpec{Type: "send_email", ID: "a1", Params: map[string]any{"to": "x"}}},
+		{Type: "delay", ID: "a2", Delay: &DelayParams{DurationSec: 60}},
+	})
 
 	wf := &Workflow{
 		ID:        uuid.New(),
 		OrgID:     uuid.New(),
 		Name:      "Test",
-		Actions:   datatypes.JSON(actionsJSON),
+		Steps:     datatypes.JSON(stepsJSON),
 		Version:   1,
 		CreatedBy: uuid.New(),
 		CreatedAt: time.Now(),
@@ -33,12 +35,12 @@ func TestToWorkflowResponse_ActionCount(t *testing.T) {
 	}
 }
 
-func TestToWorkflowResponse_NilActions(t *testing.T) {
+func TestToWorkflowResponse_NilSteps(t *testing.T) {
 	wf := &Workflow{
 		ID:        uuid.New(),
 		OrgID:     uuid.New(),
 		Name:      "Test",
-		Actions:   nil,
+		Steps:     nil,
 		Version:   1,
 		CreatedBy: uuid.New(),
 		CreatedAt: time.Now(),
@@ -47,16 +49,16 @@ func TestToWorkflowResponse_NilActions(t *testing.T) {
 
 	resp := ToWorkflowResponse(wf)
 	if resp.ActionCount != 0 {
-		t.Fatalf("expected ActionCount=0 for nil actions, got %d", resp.ActionCount)
+		t.Fatalf("expected ActionCount=0 for nil steps, got %d", resp.ActionCount)
 	}
 }
 
-func TestToWorkflowResponse_EmptyActionsArray(t *testing.T) {
+func TestToWorkflowResponse_EmptyStepsArray(t *testing.T) {
 	wf := &Workflow{
 		ID:        uuid.New(),
 		OrgID:     uuid.New(),
 		Name:      "Test",
-		Actions:   datatypes.JSON([]byte(`[]`)),
+		Steps:     datatypes.JSON([]byte(`[]`)),
 		Version:   1,
 		CreatedBy: uuid.New(),
 		CreatedAt: time.Now(),
@@ -69,12 +71,12 @@ func TestToWorkflowResponse_EmptyActionsArray(t *testing.T) {
 	}
 }
 
-func TestToWorkflowResponse_InvalidActionsJSON(t *testing.T) {
+func TestToWorkflowResponse_InvalidStepsJSON(t *testing.T) {
 	wf := &Workflow{
 		ID:        uuid.New(),
 		OrgID:     uuid.New(),
 		Name:      "Test",
-		Actions:   datatypes.JSON([]byte(`{not an array}`)),
+		Steps:     datatypes.JSON([]byte(`{not an array}`)),
 		Version:   1,
 		CreatedBy: uuid.New(),
 		CreatedAt: time.Now(),
@@ -92,7 +94,7 @@ func TestToWorkflowResponseWithRun(t *testing.T) {
 		ID:        uuid.New(),
 		OrgID:     uuid.New(),
 		Name:      "Test",
-		Actions:   datatypes.JSON([]byte(`[{"type":"send_email","id":"a1","params":{"to":"x"}}]`)),
+		Steps:     datatypes.JSON([]byte(`[{"type":"action","id":"a1","action":{"type":"send_email","id":"a1","params":{"to":"x"}}}]`)),
 		Version:   1,
 		CreatedBy: uuid.New(),
 		CreatedAt: time.Now(),
@@ -119,7 +121,7 @@ func TestToWorkflowResponseWithRun_NilStatus(t *testing.T) {
 		ID:        uuid.New(),
 		OrgID:     uuid.New(),
 		Name:      "Test",
-		Actions:   datatypes.JSON([]byte(`[]`)),
+		Steps:     datatypes.JSON([]byte(`[]`)),
 		Version:   1,
 		CreatedBy: uuid.New(),
 		CreatedAt: time.Now(),
@@ -175,6 +177,118 @@ func TestToWorkflowResponse_FieldMapping(t *testing.T) {
 	if resp.CreatedAt != "2026-04-23T10:00:00Z" {
 		t.Fatalf("CreatedAt format mismatch: %s", resp.CreatedAt)
 	}
+}
+
+// TestToWorkflowResponse_DerivedActionsForCachedBundles covers the ONE reason
+// WorkflowResponse still has an `actions` field after deploy 1 removed every other
+// trace of the flat list: a browser tab holding the PRE-DEPLOY bundle.
+//
+// That bundle's store does `actions: changed ? flattenSteps(steps) : (wf.actions || [])`,
+// its zod schema requires actions.min(1), handleSave early-returns when validate() fails
+// and nothing renders store.errors. Emit no actions and such a tab loads workflows fine,
+// shows their steps fine, and then SILENTLY REFUSES TO SAVE, with no toast, no error and
+// no crash to explain it. `crm-frontend/public/_headers` sets no Cache-Control, so a
+// reload fixes it — but a CRM tab left open all day never reloads.
+//
+// So the assertions here are the old bundle's requirements, not ours:
+//
+//	non-empty for any workflow with steps  → its actions.min(1) save guard passes
+//	`[]` and never null for a steps-less one → no `.find` / `.map` on null
+//	derived from steps, never from the column → correct with the column already empty
+//
+// Delete this test WITH the field in deploy 2, once no cached bundle can still be live.
+func TestToWorkflowResponse_DerivedActionsForCachedBundles(t *testing.T) {
+	// An If/Else workflow: the only action lives INSIDE a branch. FlattenStepsToActions
+	// recurses, so it still reaches the old bundle — a non-recursive derivation would
+	// hand it actions=[] and wedge saving on exactly the workflows that have branches.
+	stepsJSON, err := json.Marshal([]StepSpec{
+		{
+			Type: "condition",
+			ID:   "c1",
+			YesSteps: []StepSpec{
+				{Type: "action", ID: "a1", Action: &ActionSpec{Type: "send_email", ID: "a1", Params: map[string]any{"to": "x@test.com"}}},
+			},
+			NoSteps: []StepSpec{
+				{Type: "delay", ID: "d1", Delay: &DelayParams{DurationSec: 60}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal steps: %v", err)
+	}
+
+	wf := &Workflow{
+		ID: uuid.New(), OrgID: uuid.New(), Name: "branchy",
+		Steps: datatypes.JSON(stepsJSON), Version: 1, CreatedBy: uuid.New(),
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+
+	resp := ToWorkflowResponse(wf)
+	if len(resp.Actions) != 2 {
+		t.Fatalf("expected the branch action AND the branch delay to be flattened, got %d: %+v",
+			len(resp.Actions), resp.Actions)
+	}
+	if resp.Actions[0].ID != "a1" || resp.Actions[0].Type != "send_email" {
+		t.Fatalf("expected the nested send_email first, got %+v", resp.Actions[0])
+	}
+	if resp.Actions[1].ID != "d1" || resp.Actions[1].Type != ActionDelay {
+		t.Fatalf("expected the nested delay synthesised as an action, got %+v", resp.Actions[1])
+	}
+	if resp.ActionCount != len(resp.Actions) {
+		t.Fatalf("action_count (%d) and the derived actions (%d) disagree about the same tree",
+			resp.ActionCount, len(resp.Actions))
+	}
+
+	// The wire shape, not just the Go value: the field has to be named `actions`, and it
+	// must never marshal as null (a null array is how this frontend white-screens).
+	raw, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	if !strings.Contains(string(raw), `"actions":[{`) {
+		t.Fatalf("response must carry a non-empty `actions` array for cached bundles: %s", raw)
+	}
+
+	t.Run("a steps-less workflow emits [] rather than null", func(t *testing.T) {
+		empty := ToWorkflowResponse(&Workflow{
+			ID: uuid.New(), OrgID: uuid.New(), Name: "no steps",
+			Version: 1, CreatedBy: uuid.New(), CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		})
+		if empty.Actions == nil {
+			t.Fatal("Actions must be a non-nil empty slice; nil marshals to JSON null")
+		}
+		if len(empty.Actions) != 0 {
+			t.Fatalf("expected no derived actions, got %+v", empty.Actions)
+		}
+		raw, err := json.Marshal(empty)
+		if err != nil {
+			t.Fatalf("marshal response: %v", err)
+		}
+		if !strings.Contains(string(raw), `"actions":[]`) {
+			t.Fatalf("expected `\"actions\":[]` on the wire, got %s", raw)
+		}
+	})
+
+	t.Run("the derivation reads steps, never a stored column", func(t *testing.T) {
+		// There is no Actions field on the model to set — that is the point — so the
+		// proof is that a workflow whose steps say one thing produces exactly that,
+		// with the database's `actions` column (whatever it holds) never consulted.
+		one, err := json.Marshal([]StepSpec{{
+			Type: "action", ID: "solo",
+			Action: &ActionSpec{Type: "create_task", ID: "solo", Params: map[string]any{"title": "t"}},
+		}})
+		if err != nil {
+			t.Fatalf("marshal steps: %v", err)
+		}
+		got := ToWorkflowResponse(&Workflow{
+			ID: uuid.New(), OrgID: uuid.New(), Name: "solo",
+			Steps: datatypes.JSON(one), Version: 1, CreatedBy: uuid.New(),
+			CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		})
+		if len(got.Actions) != 1 || got.Actions[0].Type != "create_task" {
+			t.Fatalf("derived actions must mirror the steps tree, got %+v", got.Actions)
+		}
+	})
 }
 
 func TestToRunResponse_Basic(t *testing.T) {

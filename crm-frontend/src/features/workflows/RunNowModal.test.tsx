@@ -80,7 +80,6 @@ function makeWorkflow(over: Partial<Workflow> = {}): Workflow {
     is_active: true,
     trigger: { type: 'contact_created' },
     conditions: null,
-    actions: [],
     action_count: 0,
     version: 1,
     created_by: 'user-1',

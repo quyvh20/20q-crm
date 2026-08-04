@@ -191,7 +191,20 @@ func setupTestDB(t *testing.T) (*gorm.DB, func()) {
 	return db, cleanup
 }
 
-// createTestWorkflow inserts a workflow + version with N actions.
+// createTestWorkflow inserts a workflow + version whose definition is N sequential
+// action steps (action_0 … action_{N-1}, all of type "test_action").
+//
+// It used to seed a flat actions array with steps left NULL, which is how most of the
+// engine's DB-backed tests reached the legacy execution path. That path is gone (R5
+// deploy 1), so the same shape is now expressed as a linear steps tree. Nothing these
+// tests actually assert was about the flat list — they are about run creation, retry,
+// resume, pruning and version pinning — but two consequences of the move ARE visible
+// in their assertions and are called out where they land:
+//
+//   - resume state lives in the ACTION LOGS (keyed by structural path), not in the
+//     run's completed_actions / current_action_idx columns, which the steps executor
+//     never writes;
+//   - an action log carries action_path ("0", "1", …), not action_idx.
 func createTestWorkflow(t *testing.T, db *gorm.DB, orgID uuid.UUID, numActions int) *Workflow {
 	t.Helper()
 
@@ -204,7 +217,7 @@ func createTestWorkflow(t *testing.T, db *gorm.DB, orgID uuid.UUID, numActions i
 			Params: map[string]any{"index": float64(i)},
 		}
 	}
-	actionsJSON, _ := json.Marshal(actions)
+	stepsJSON := actionStepsJSON(t, actions...)
 
 	wf := &Workflow{
 		ID:        uuid.New(),
@@ -212,7 +225,7 @@ func createTestWorkflow(t *testing.T, db *gorm.DB, orgID uuid.UUID, numActions i
 		Name:      fmt.Sprintf("integration-test-%s", uuid.New().String()[:8]),
 		IsActive:  true,
 		Trigger:   datatypes.JSON(trigger),
-		Actions:   datatypes.JSON(actionsJSON),
+		Steps:     stepsJSON,
 		Version:   1,
 		CreatedBy: uuid.New(),
 	}
@@ -223,7 +236,7 @@ func createTestWorkflow(t *testing.T, db *gorm.DB, orgID uuid.UUID, numActions i
 		WorkflowID: wf.ID,
 		Version:    1,
 		Trigger:    wf.Trigger,
-		Actions:    wf.Actions,
+		Steps:      wf.Steps,
 		CreatedAt:  time.Now(),
 	}
 	require.NoError(t, db.Create(ver).Error)
@@ -310,9 +323,12 @@ func TestIntegration_KillAndResume(t *testing.T) {
 	// Verify crash state: action[0] committed, action[1] rolled back
 	crashedRun, err := repo.GetRunByID(context.Background(), run.ID)
 	require.NoError(t, err)
-	completedSet := GetCompletedActionIndices(crashedRun)
-	assert.True(t, completedSet[0], "action[0] committed before crash")
-	assert.False(t, completedSet[1], "action[1] tx rolled back")
+	// Completed steps are keyed by step id / structural path, not by integer index:
+	// the steps executor writes both forms into completed_actions (syncRunCompleted),
+	// and GetCompletedActionIndices reads only the retired integer shape.
+	completedSet := completedStepKeys(t, crashedRun)
+	assert.True(t, completedSet["action_0"], "action[0] committed before crash")
+	assert.False(t, completedSet["action_1"], "action[1] tx rolled back")
 	assert.Equal(t, int64(2), executor.getCallCount(), "executor called for action[0] and action[1]")
 
 	// --- Phase 2: Recovery ---
@@ -334,8 +350,8 @@ func TestIntegration_KillAndResume(t *testing.T) {
 	assert.Equal(t, StatusCompleted, finalRun.Status)
 	assert.NotNil(t, finalRun.FinishedAt)
 
-	finalCompleted := GetCompletedActionIndices(finalRun)
-	assert.True(t, finalCompleted[0] && finalCompleted[1] && finalCompleted[2])
+	finalCompleted := completedStepKeys(t, finalRun)
+	assert.True(t, finalCompleted["action_0"] && finalCompleted["action_1"] && finalCompleted["action_2"])
 	assert.Equal(t, int64(4), executor.getCallCount(),
 		"total: action[0]×1 + action[1]×2 + action[2]×1 = 4")
 	assert.Equal(t, []int{0, 1, 1, 2}, executor.getCalls())
@@ -398,12 +414,20 @@ func TestIntegration_CreateWorkflow_HappyAndValidation(t *testing.T) {
 	router.GET("/api/workflows", handler.ListWorkflows)
 
 	// --- Happy path: valid workflow ---
+	//
+	// The body carries `steps`, not `actions`. This test used to post an actions-only
+	// body and expect 201; R5 deploy 1 made that a 400 on purpose (the workflow it
+	// created would have executed nothing), and TestCreateWorkflow_RequiresSteps asserts
+	// the rejection. What is being tested HERE is the create/list round trip, so it
+	// sends what a real client sends.
 	payload := map[string]any{
 		"name":        "Test Workflow",
 		"description": "Integration test",
 		"trigger":     map[string]any{"type": "contact_created"},
-		"actions": []map[string]any{
-			{"type": "send_email", "id": "a1", "params": map[string]any{"to": "{{contact.email}}"}},
+		"steps": []map[string]any{
+			{"type": "action", "id": "a1", "action": map[string]any{
+				"type": "send_email", "id": "a1", "params": map[string]any{"to": "{{contact.email}}"},
+			}},
 		},
 	}
 	body, _ := json.Marshal(payload)
@@ -441,8 +465,10 @@ func TestIntegration_CreateWorkflow_HappyAndValidation(t *testing.T) {
 	badPayload := map[string]any{
 		"name":    "Bad Workflow",
 		"trigger": map[string]any{"type": "nonexistent_trigger"},
-		"actions": []map[string]any{
-			{"type": "send_email", "id": "a1", "params": map[string]any{"to": "x"}},
+		"steps": []map[string]any{
+			{"type": "action", "id": "a1", "action": map[string]any{
+				"type": "send_email", "id": "a1", "params": map[string]any{"to": "x@y.com"},
+			}},
 		},
 	}
 	body2, _ := json.Marshal(badPayload)
@@ -467,8 +493,10 @@ func TestIntegration_CreateWorkflow_HappyAndValidation(t *testing.T) {
 				},
 			},
 		},
-		"actions": []map[string]any{
-			{"type": "send_email", "id": "a1", "params": map[string]any{"to": "x@y.com"}},
+		"steps": []map[string]any{
+			{"type": "action", "id": "a1", "action": map[string]any{
+				"type": "send_email", "id": "a1", "params": map[string]any{"to": "x@y.com"},
+			}},
 		},
 	}
 	body3, _ := json.Marshal(badOperatorPayload)
@@ -636,23 +664,21 @@ func TestIntegration_RetryableAction_ExhaustsRetries(t *testing.T) {
 
 	// Create workflow with 1 action of type "failing_action"
 	trigger, _ := json.Marshal(map[string]any{"type": "contact_created"})
-	actions, _ := json.Marshal([]ActionSpec{
-		{ID: "a1", Type: "failing_action", Params: map[string]any{}},
-	})
+	steps := actionStepsJSON(t, ActionSpec{ID: "a1", Type: "failing_action", Params: map[string]any{}})
 	wf := &Workflow{
 		ID:        uuid.New(),
 		OrgID:     orgID,
 		Name:      "retry-exhaust-test",
 		IsActive:  true,
 		Trigger:   datatypes.JSON(trigger),
-		Actions:   datatypes.JSON(actions),
+		Steps:     steps,
 		Version:   1,
 		CreatedBy: uuid.New(),
 	}
 	require.NoError(t, db.Create(wf).Error)
 	ver := &WorkflowVersion{
 		ID: uuid.New(), WorkflowID: wf.ID, Version: 1,
-		Trigger: wf.Trigger, Actions: wf.Actions, CreatedAt: time.Now(),
+		Trigger: wf.Trigger, Steps: wf.Steps, CreatedAt: time.Now(),
 	}
 	require.NoError(t, db.Create(ver).Error)
 
@@ -748,23 +774,21 @@ func TestIntegration_WebhookInbound_E2E(t *testing.T) {
 
 	// Create a workflow triggered by contact_created
 	trigger, _ := json.Marshal(map[string]any{"type": "contact_created"})
-	actions, _ := json.Marshal([]ActionSpec{
-		{ID: "email1", Type: "test_action", Params: map[string]any{"to": "{{contact.email}}"}},
-	})
+	steps := actionStepsJSON(t, ActionSpec{ID: "email1", Type: "test_action", Params: map[string]any{"to": "{{contact.email}}"}})
 	wf := &Workflow{
 		ID:        uuid.New(),
 		OrgID:     orgID,
 		Name:      "webhook-e2e-test",
 		IsActive:  true,
 		Trigger:   datatypes.JSON(trigger),
-		Actions:   datatypes.JSON(actions),
+		Steps:     steps,
 		Version:   1,
 		CreatedBy: uuid.New(),
 	}
 	require.NoError(t, db.Create(wf).Error)
 	ver := &WorkflowVersion{
 		ID: uuid.New(), WorkflowID: wf.ID, Version: 1,
-		Trigger: wf.Trigger, Actions: wf.Actions, CreatedAt: time.Now(),
+		Trigger: wf.Trigger, Steps: wf.Steps, CreatedAt: time.Now(),
 	}
 	require.NoError(t, db.Create(ver).Error)
 
@@ -884,58 +908,74 @@ func TestIntegration_FullPipeline_VIPContact(t *testing.T) {
 
 	// --- Build the workflow ---
 	// Trigger: contact_created
-	// Conditions: contact.tags contains "vip"
-	// Actions: send_email → delay 1s → create_task
+	// Steps:   IF contact.tags contains "vip" THEN send_email -> delay 1s -> create_task
+	//
+	// The "vip" gate is a CONDITION STEP, not the workflow's top-level Conditions
+	// group. It used to be the latter, which only ever worked because the flat-actions
+	// branch of processRun evaluated it; a steps workflow has never consulted
+	// wf.Conditions, and since R5 deploy 1 nothing does. Expressing the gate as a step
+	// is what the builder emits and what the engine actually enforces.
+	//
+	// The 1s wait is an ACTION-shaped delay ({"type":"action","action":{"type":"delay"}}),
+	// NOT a delay step. That is deliberate: it is the shape that routes through
+	// DelayExecutor (a synchronous in-process sleep) rather than handleDelayStep's
+	// durable wake_at parking, so this pipeline still completes inside one processRun
+	// and still produces a `delay` action log between the email and the task. It is
+	// also this file's end-to-end proof that the shape is reachable and executes --
+	// see TestDelayAsActionStep_IsReachable for the unit-level version.
 
 	trigger, _ := json.Marshal(TriggerSpec{Type: TriggerContactCreated})
 
-	conditions, _ := json.Marshal(ConditionGroup{
-		Op: "AND",
-		Rules: []ConditionRule{{
-			Field:    "contact.tags",
-			Operator: "contains",
-			Value:    "vip",
-		}},
-	})
-
-	actions, _ := json.Marshal([]ActionSpec{
-		{
-			ID:   "email_vip",
-			Type: ActionSendEmail,
-			Params: map[string]any{
-				"to":        "{{contact.email}}",
-				"subject":   "Welcome VIP!",
-				"body_html": "<h1>Hello {{contact.first_name}}</h1>",
-			},
+	vipSteps := []StepSpec{{
+		Type: "condition",
+		ID:   "vip_gate",
+		Condition: &ConditionGroup{
+			Op: "AND",
+			Rules: []ConditionRule{{
+				Field:    "contact.tags",
+				Operator: "contains",
+				Value:    "vip",
+			}},
 		},
-		{
-			ID:   "delay_1s",
-			Type: ActionDelay,
-			Params: map[string]any{
-				"duration_sec": float64(1),
+		YesSteps: actionSteps(
+			ActionSpec{
+				ID:   "email_vip",
+				Type: ActionSendEmail,
+				Params: map[string]any{
+					"to":        "{{contact.email}}",
+					"subject":   "Welcome VIP!",
+					"body_html": "<h1>Hello {{contact.first_name}}</h1>",
+				},
 			},
-		},
-		{
-			ID:   "create_followup",
-			Type: ActionCreateTask,
-			Params: map[string]any{
-				"title":       "Follow up with VIP: {{contact.first_name}}",
-				"priority":    "high",
-				"due_in_days": float64(3),
+			ActionSpec{
+				ID:   "delay_1s",
+				Type: ActionDelay,
+				Params: map[string]any{
+					"duration_sec": float64(1),
+				},
 			},
-		},
-	})
+			ActionSpec{
+				ID:   "create_followup",
+				Type: ActionCreateTask,
+				Params: map[string]any{
+					"title":       "Follow up with VIP: {{contact.first_name}}",
+					"priority":    "high",
+					"due_in_days": float64(3),
+				},
+			},
+		),
+	}}
+	stepsJSON, _ := json.Marshal(vipSteps)
 
 	wf := &Workflow{
-		ID:         uuid.New(),
-		OrgID:      orgID,
-		Name:       "VIP Welcome Pipeline",
-		IsActive:   true,
-		Trigger:    datatypes.JSON(trigger),
-		Conditions: datatypes.JSON(conditions),
-		Actions:    datatypes.JSON(actions),
-		Version:    1,
-		CreatedBy:  uuid.New(),
+		ID:        uuid.New(),
+		OrgID:     orgID,
+		Name:      "VIP Welcome Pipeline",
+		IsActive:  true,
+		Trigger:   datatypes.JSON(trigger),
+		Steps:     datatypes.JSON(stepsJSON),
+		Version:   1,
+		CreatedBy: uuid.New(),
 	}
 	require.NoError(t, db.Create(wf).Error)
 
@@ -944,8 +984,7 @@ func TestIntegration_FullPipeline_VIPContact(t *testing.T) {
 		WorkflowID: wf.ID,
 		Version:    1,
 		Trigger:    wf.Trigger,
-		Conditions: wf.Conditions,
-		Actions:    wf.Actions,
+		Steps:      wf.Steps,
 		CreatedAt:  time.Now(),
 	}
 	require.NoError(t, db.Create(ver).Error)
@@ -1001,7 +1040,13 @@ func TestIntegration_FullPipeline_VIPContact(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, StatusCompleted, finalRun.Status, "run must complete")
 	assert.NotNil(t, finalRun.FinishedAt, "FinishedAt must be set")
-	assert.Equal(t, 3, finalRun.CurrentActionIdx, "all 3 actions executed")
+	// current_action_idx is a flat-executor artifact and stays 0: the steps executor
+	// records progress by step id / structural path instead, in completed_actions and
+	// in the action logs (both asserted below).
+	done := completedStepKeys(t, finalRun)
+	for _, id := range []string{"email_vip", "delay_1s", "create_followup"} {
+		assert.True(t, done[id], "step %s must be recorded completed", id)
+	}
 
 	// --- Verify: email sent with correct address ---
 	emailExec.mu.Lock()
@@ -1059,31 +1104,32 @@ func TestIntegration_FullPipeline_NonVIP_Skipped(t *testing.T) {
 	orgID := uuid.New()
 	repo := NewRepository(db)
 
-	// Same workflow as above
+	// Same workflow as above: the vip gate is a condition step whose NO branch is empty.
 	trigger, _ := json.Marshal(TriggerSpec{Type: TriggerContactCreated})
-	conditions, _ := json.Marshal(ConditionGroup{
-		Op: "AND",
-		Rules: []ConditionRule{{
-			Field:    "contact.tags",
-			Operator: "contains",
-			Value:    "vip",
-		}},
-	})
-	actions, _ := json.Marshal([]ActionSpec{
-		{ID: "a1", Type: ActionSendEmail, Params: map[string]any{"to": "x@y.com"}},
-	})
+	stepsJSON, _ := json.Marshal([]StepSpec{{
+		Type: "condition",
+		ID:   "vip_gate",
+		Condition: &ConditionGroup{
+			Op: "AND",
+			Rules: []ConditionRule{{
+				Field:    "contact.tags",
+				Operator: "contains",
+				Value:    "vip",
+			}},
+		},
+		YesSteps: actionSteps(ActionSpec{ID: "a1", Type: ActionSendEmail, Params: map[string]any{"to": "x@y.com"}}),
+	}})
 
 	wf := &Workflow{
 		ID: uuid.New(), OrgID: orgID, Name: "VIP-only",
 		IsActive: true, Trigger: datatypes.JSON(trigger),
-		Conditions: datatypes.JSON(conditions), Actions: datatypes.JSON(actions),
+		Steps:   datatypes.JSON(stepsJSON),
 		Version: 1, CreatedBy: uuid.New(),
 	}
 	require.NoError(t, db.Create(wf).Error)
 	ver := &WorkflowVersion{
 		ID: uuid.New(), WorkflowID: wf.ID, Version: 1,
-		Trigger: wf.Trigger, Conditions: wf.Conditions,
-		Actions: wf.Actions, CreatedAt: time.Now(),
+		Trigger: wf.Trigger, Steps: wf.Steps, CreatedAt: time.Now(),
 	}
 	require.NoError(t, db.Create(ver).Error)
 
@@ -1114,10 +1160,15 @@ func TestIntegration_FullPipeline_NonVIP_Skipped(t *testing.T) {
 
 	finalRun, err := repo.GetRunByID(context.Background(), run.ID)
 	require.NoError(t, err)
-	assert.Equal(t, StatusSkipped, finalRun.Status,
-		"run must be SKIPPED when conditions not met")
+	// COMPLETED, not SKIPPED. A failing condition STEP takes its (empty) no branch and
+	// the run finishes normally -- StatusSkipped was only ever produced by the flat
+	// path's top-level conditions gate, whose sole producer (Engine.skipRun) went with
+	// it. What the test is actually about is unchanged and asserted next: a contact
+	// that fails the gate causes ZERO actions to execute.
+	assert.Equal(t, StatusCompleted, finalRun.Status,
+		"the run completes down the empty no-branch")
 	assert.Equal(t, int64(0), executor.getCallCount(),
-		"no actions should execute when conditions fail")
+		"no actions should execute when the condition step fails")
 }
 
 // ============================================================
@@ -1146,26 +1197,24 @@ func TestIntegration_SendWebhook_500_RetriesAndFails(t *testing.T) {
 
 	// --- Create workflow with send_webhook action ---
 	trigger, _ := json.Marshal(TriggerSpec{Type: TriggerContactCreated})
-	actions, _ := json.Marshal([]ActionSpec{
-		{
-			ID:   "webhook_500",
-			Type: ActionSendWebhook,
-			Params: map[string]any{
-				"url":    srv.URL,
-				"method": "POST",
-			},
+	steps := actionStepsJSON(t, ActionSpec{
+		ID:   "webhook_500",
+		Type: ActionSendWebhook,
+		Params: map[string]any{
+			"url":    srv.URL,
+			"method": "POST",
 		},
 	})
 
 	wf := &Workflow{
 		ID: uuid.New(), OrgID: orgID, Name: "webhook-retry-test",
 		IsActive: true, Trigger: datatypes.JSON(trigger),
-		Actions: datatypes.JSON(actions), Version: 1, CreatedBy: uuid.New(),
+		Steps: steps, Version: 1, CreatedBy: uuid.New(),
 	}
 	require.NoError(t, db.Create(wf).Error)
 	ver := &WorkflowVersion{
 		ID: uuid.New(), WorkflowID: wf.ID, Version: 1,
-		Trigger: wf.Trigger, Actions: wf.Actions, CreatedAt: time.Now(),
+		Trigger: wf.Trigger, Steps: wf.Steps, CreatedAt: time.Now(),
 	}
 	require.NoError(t, db.Create(ver).Error)
 
@@ -1291,22 +1340,26 @@ func TestIntegration_DeactivateMidRun_CompletesButNoNewRuns(t *testing.T) {
 	orgID := uuid.New()
 	repo := NewRepository(db)
 
-	// Workflow with 2 actions: test_action (instant) + delay 1s
+	// Workflow with 2 steps: test_action (instant) + an ACTION-shaped delay of 1s.
+	// Action-shaped so it runs synchronously through DelayExecutor and the in-flight
+	// run is still in flight when the workflow is deactivated below — a delay STEP
+	// would park the run on wake_at instead and this test would be measuring the
+	// sweeper, not deactivation.
 	trigger, _ := json.Marshal(TriggerSpec{Type: TriggerContactCreated})
-	actions, _ := json.Marshal([]ActionSpec{
-		{ID: "a1", Type: "test_action", Params: map[string]any{}},
-		{ID: "a2", Type: ActionDelay, Params: map[string]any{"duration_sec": float64(1)}},
-	})
+	steps := actionStepsJSON(t,
+		ActionSpec{ID: "a1", Type: "test_action", Params: map[string]any{}},
+		ActionSpec{ID: "a2", Type: ActionDelay, Params: map[string]any{"duration_sec": float64(1)}},
+	)
 
 	wf := &Workflow{
 		ID: uuid.New(), OrgID: orgID, Name: "deactivation-test",
 		IsActive: true, Trigger: datatypes.JSON(trigger),
-		Actions: datatypes.JSON(actions), Version: 1, CreatedBy: uuid.New(),
+		Steps: steps, Version: 1, CreatedBy: uuid.New(),
 	}
 	require.NoError(t, db.Create(wf).Error)
 	ver := &WorkflowVersion{
 		ID: uuid.New(), WorkflowID: wf.ID, Version: 1,
-		Trigger: wf.Trigger, Actions: wf.Actions, CreatedAt: time.Now(),
+		Trigger: wf.Trigger, Steps: wf.Steps, CreatedAt: time.Now(),
 	}
 	require.NoError(t, db.Create(ver).Error)
 
@@ -1447,7 +1500,6 @@ func TestIntegration_RecursiveTreeExecution(t *testing.T) {
 		Name:      "Tree-based workflow",
 		IsActive:  true,
 		Trigger:   datatypes.JSON(triggerJSON),
-		Actions:   datatypes.JSON("[]"),
 		Steps:     datatypes.JSON(stepsJSON),
 		Version:   1,
 		CreatedBy: uuid.New(),
@@ -1459,7 +1511,6 @@ func TestIntegration_RecursiveTreeExecution(t *testing.T) {
 		WorkflowID: wf.ID,
 		Version:    1,
 		Trigger:    wf.Trigger,
-		Actions:    wf.Actions,
 		Steps:      wf.Steps,
 		CreatedAt:  time.Now(),
 	}
@@ -1612,18 +1663,16 @@ func TestIntegration_WebhookInbound_AsyncTriggerSurvivesRequestCancel(t *testing
 
 	// Active contact_created workflow.
 	trigger, _ := json.Marshal(map[string]any{"type": "contact_created"})
-	actions, _ := json.Marshal([]ActionSpec{
-		{ID: "a1", Type: "test_action", Params: map[string]any{"to": "{{contact.email}}"}},
-	})
+	steps := actionStepsJSON(t, ActionSpec{ID: "a1", Type: "test_action", Params: map[string]any{"to": "{{contact.email}}"}})
 	wf := &Workflow{
 		ID: uuid.New(), OrgID: orgID, Name: "webhook-async-ctx-test",
 		IsActive: true, Trigger: datatypes.JSON(trigger),
-		Actions: datatypes.JSON(actions), Version: 1, CreatedBy: uuid.New(),
+		Steps: steps, Version: 1, CreatedBy: uuid.New(),
 	}
 	require.NoError(t, db.Create(wf).Error)
 	ver := &WorkflowVersion{
 		ID: uuid.New(), WorkflowID: wf.ID, Version: 1,
-		Trigger: wf.Trigger, Actions: wf.Actions, CreatedAt: time.Now(),
+		Trigger: wf.Trigger, Steps: wf.Steps, CreatedAt: time.Now(),
 	}
 	require.NoError(t, db.Create(ver).Error)
 

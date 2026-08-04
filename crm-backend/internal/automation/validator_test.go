@@ -10,14 +10,14 @@ import (
 func TestValidateWorkflowPayload_ValidFull(t *testing.T) {
 	trigger := `{"type":"contact_created"}`
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"{{contact.email}}"}}]`
-	result := ValidateWorkflowPayload([]byte(trigger), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(trigger), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if !result.Valid {
 		t.Fatalf("expected valid, got errors: %+v", result.Errors)
 	}
 }
 
 func TestValidateWorkflowPayload_EmptyTrigger(t *testing.T) {
-	result := ValidateWorkflowPayload(nil, nil, []byte(`[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`))
+	result := ValidateWorkflowPayload(nil, nil, stepsFromActionsJSON(t, []byte(`[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`)))
 	if result.Valid {
 		t.Fatal("expected invalid for nil trigger")
 	}
@@ -32,29 +32,59 @@ func TestValidateWorkflowPayload_EmptyTrigger(t *testing.T) {
 	}
 }
 
-func TestValidateWorkflowPayload_EmptyActions(t *testing.T) {
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, nil)
-	if result.Valid {
-		t.Fatal("expected invalid for nil actions")
+// A workflow with NO steps is rejected, and the error names `steps`. This is R5's
+// stated "done when": before deploy 1 a body with no steps fell through to the flat
+// actions validator, so an actions-only payload (and, worse, `steps: []`) produced a
+// live workflow that executed nothing.
+func TestValidateWorkflowPayload_NoSteps_Rejected(t *testing.T) {
+	for name, steps := range map[string][]byte{
+		"nil":         nil,
+		"empty bytes": {},
+		"jsonb null":  []byte(`null`),
+		"empty array": []byte(`[]`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, steps)
+			if result.Valid {
+				t.Fatal("expected invalid: a workflow with no steps executes nothing")
+			}
+			found := false
+			for _, e := range result.Errors {
+				if e.Field == "steps" {
+					found = true
+					if !strings.Contains(e.Message, "at least one step") {
+						t.Errorf("the message must tell the author what to do, got: %q", e.Message)
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("expected an error on the `steps` field, got: %+v", result.Errors)
+			}
+		})
 	}
 }
 
-func TestValidateWorkflowPayload_EmptyActionsArray(t *testing.T) {
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(`[]`))
+// An actions-only body — what a pre-R5 client sends — is rejected rather than silently
+// accepted, because `actions` is no longer a request field at all.
+func TestValidateWorkflowPayload_ActionsOnlyBody_Rejected(t *testing.T) {
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, nil)
 	if result.Valid {
-		t.Fatal("expected invalid for empty actions array")
+		t.Fatal("expected invalid for an actions-only body")
+	}
+	if len(result.Errors) == 0 || result.Errors[len(result.Errors)-1].Field != "steps" {
+		t.Fatalf("expected the steps error, got: %+v", result.Errors)
 	}
 }
 
 func TestValidateWorkflowPayload_InvalidTriggerJSON(t *testing.T) {
-	result := ValidateWorkflowPayload([]byte(`{bad json`), nil, []byte(`[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`))
+	result := ValidateWorkflowPayload([]byte(`{bad json`), nil, stepsFromActionsJSON(t, []byte(`[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`)))
 	if result.Valid {
 		t.Fatal("expected invalid for bad trigger JSON")
 	}
 }
 
 func TestValidateWorkflowPayload_UnknownTriggerType(t *testing.T) {
-	result := ValidateWorkflowPayload([]byte(`{"type":"unknown_trigger"}`), nil, []byte(`[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`))
+	result := ValidateWorkflowPayload([]byte(`{"type":"unknown_trigger"}`), nil, stepsFromActionsJSON(t, []byte(`[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`)))
 	if result.Valid {
 		t.Fatal("expected invalid for unknown trigger type")
 	}
@@ -65,7 +95,7 @@ func TestValidateWorkflowPayload_AllTriggerTypes(t *testing.T) {
 	for _, tt := range types {
 		trigger, _ := json.Marshal(TriggerSpec{Type: tt})
 		actions := []byte(`[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`)
-		result := ValidateWorkflowPayload(trigger, nil, actions)
+		result := ValidateWorkflowPayload(trigger, nil, stepsFromActionsJSON(t, actions))
 		if !result.Valid {
 			t.Fatalf("trigger type %s: expected valid, got errors: %+v", tt, result.Errors)
 		}
@@ -75,7 +105,7 @@ func TestValidateWorkflowPayload_AllTriggerTypes(t *testing.T) {
 func TestValidateWorkflowPayload_DealStageChanged_RequiresParams(t *testing.T) {
 	trigger := `{"type":"deal_stage_changed"}`
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`
-	result := ValidateWorkflowPayload([]byte(trigger), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(trigger), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid — deal_stage_changed requires params")
 	}
@@ -84,7 +114,7 @@ func TestValidateWorkflowPayload_DealStageChanged_RequiresParams(t *testing.T) {
 func TestValidateWorkflowPayload_DealStageChanged_RequiresToStage(t *testing.T) {
 	trigger := `{"type":"deal_stage_changed","params":{"other":"value"}}`
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`
-	result := ValidateWorkflowPayload([]byte(trigger), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(trigger), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid — deal_stage_changed requires to_stage")
 	}
@@ -93,7 +123,7 @@ func TestValidateWorkflowPayload_DealStageChanged_RequiresToStage(t *testing.T) 
 func TestValidateWorkflowPayload_DealStageChanged_Valid(t *testing.T) {
 	trigger := `{"type":"deal_stage_changed","params":{"to_stage":"won"}}`
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`
-	result := ValidateWorkflowPayload([]byte(trigger), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(trigger), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if !result.Valid {
 		t.Fatalf("expected valid, got errors: %+v", result.Errors)
 	}
@@ -102,7 +132,7 @@ func TestValidateWorkflowPayload_DealStageChanged_Valid(t *testing.T) {
 func TestValidateWorkflowPayload_DealStageChanged_WildcardToStage(t *testing.T) {
 	trigger := `{"type":"deal_stage_changed","params":{"to_stage":"*"}}`
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`
-	result := ValidateWorkflowPayload([]byte(trigger), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(trigger), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if !result.Valid {
 		t.Fatalf("expected valid with wildcard '*' to_stage, got errors: %+v", result.Errors)
 	}
@@ -111,7 +141,7 @@ func TestValidateWorkflowPayload_DealStageChanged_WildcardToStage(t *testing.T) 
 func TestValidateWorkflowPayload_DealStageChanged_EmptyToStage(t *testing.T) {
 	trigger := `{"type":"deal_stage_changed","params":{"to_stage":""}}`
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`
-	result := ValidateWorkflowPayload([]byte(trigger), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(trigger), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid — empty to_stage must be rejected")
 	}
@@ -120,7 +150,7 @@ func TestValidateWorkflowPayload_DealStageChanged_EmptyToStage(t *testing.T) {
 func TestValidateWorkflowPayload_DealStageChanged_WithFromStage(t *testing.T) {
 	trigger := `{"type":"deal_stage_changed","params":{"to_stage":"won","from_stage":"qualified"}}`
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`
-	result := ValidateWorkflowPayload([]byte(trigger), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(trigger), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if !result.Valid {
 		t.Fatalf("expected valid with from_stage, got errors: %+v", result.Errors)
 	}
@@ -129,7 +159,7 @@ func TestValidateWorkflowPayload_DealStageChanged_WithFromStage(t *testing.T) {
 func TestValidateWorkflowPayload_DealStageChanged_WildcardFromStage(t *testing.T) {
 	trigger := `{"type":"deal_stage_changed","params":{"to_stage":"won","from_stage":"*"}}`
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`
-	result := ValidateWorkflowPayload([]byte(trigger), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(trigger), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if !result.Valid {
 		t.Fatalf("expected valid with wildcard from_stage, got errors: %+v", result.Errors)
 	}
@@ -138,7 +168,7 @@ func TestValidateWorkflowPayload_DealStageChanged_WildcardFromStage(t *testing.T
 func TestValidateWorkflowPayload_DealStageChanged_EmptyFromStage(t *testing.T) {
 	trigger := `{"type":"deal_stage_changed","params":{"to_stage":"won","from_stage":""}}`
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`
-	result := ValidateWorkflowPayload([]byte(trigger), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(trigger), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid — empty from_stage must be rejected")
 	}
@@ -147,7 +177,7 @@ func TestValidateWorkflowPayload_DealStageChanged_EmptyFromStage(t *testing.T) {
 func TestValidateWorkflowPayload_NoActivityDays_RequiresParams(t *testing.T) {
 	trigger := `{"type":"no_activity_days"}`
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`
-	result := ValidateWorkflowPayload([]byte(trigger), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(trigger), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid — no_activity_days requires params")
 	}
@@ -156,7 +186,7 @@ func TestValidateWorkflowPayload_NoActivityDays_RequiresParams(t *testing.T) {
 func TestValidateWorkflowPayload_NoActivityDays_RequiresDays(t *testing.T) {
 	trigger := `{"type":"no_activity_days","params":{"entity":"contact"}}`
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`
-	result := ValidateWorkflowPayload([]byte(trigger), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(trigger), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid — no_activity_days requires days")
 	}
@@ -165,7 +195,7 @@ func TestValidateWorkflowPayload_NoActivityDays_RequiresDays(t *testing.T) {
 func TestValidateWorkflowPayload_NoActivityDays_RequiresEntity(t *testing.T) {
 	trigger := `{"type":"no_activity_days","params":{"days":7}}`
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`
-	result := ValidateWorkflowPayload([]byte(trigger), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(trigger), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid — no_activity_days requires entity")
 	}
@@ -174,7 +204,7 @@ func TestValidateWorkflowPayload_NoActivityDays_RequiresEntity(t *testing.T) {
 func TestValidateWorkflowPayload_NoActivityDays_InvalidEntity(t *testing.T) {
 	trigger := `{"type":"no_activity_days","params":{"days":7,"entity":"invoice"}}`
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`
-	result := ValidateWorkflowPayload([]byte(trigger), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(trigger), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid — entity must be contact or deal")
 	}
@@ -183,7 +213,7 @@ func TestValidateWorkflowPayload_NoActivityDays_InvalidEntity(t *testing.T) {
 func TestValidateWorkflowPayload_NoActivityDays_Valid(t *testing.T) {
 	trigger := `{"type":"no_activity_days","params":{"days":7,"entity":"contact"}}`
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`
-	result := ValidateWorkflowPayload([]byte(trigger), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(trigger), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if !result.Valid {
 		t.Fatalf("expected valid, got errors: %+v", result.Errors)
 	}
@@ -191,103 +221,103 @@ func TestValidateWorkflowPayload_NoActivityDays_Valid(t *testing.T) {
 
 // --- Action validation ---
 
-func TestValidateActions_UnknownType(t *testing.T) {
+func TestValidateStepAction_UnknownType(t *testing.T) {
 	actions := `[{"type":"unknown_action","id":"a1","params":{}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid for unknown action type")
 	}
 }
 
-func TestValidateActions_DuplicateIDs(t *testing.T) {
+func TestValidateStepAction_DuplicateIDs(t *testing.T) {
 	actions := `[{"type":"send_email","id":"dup","params":{"to":"x@test.com"}},{"type":"delay","id":"dup","params":{"duration_sec":60}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid for duplicate action IDs")
 	}
 }
 
-func TestValidateActions_EmptyID(t *testing.T) {
+func TestValidateStepAction_EmptyID(t *testing.T) {
 	actions := `[{"type":"send_email","id":"","params":{"to":"x@test.com"}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid for empty action ID")
 	}
 }
 
-func TestValidateActions_SendEmail_RequiresTo(t *testing.T) {
+func TestValidateStepAction_SendEmail_RequiresTo(t *testing.T) {
 	actions := `[{"type":"send_email","id":"a1","params":{"subject":"hi"}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid — send_email requires 'to'")
 	}
 }
 
-func TestValidateActions_CreateTask_RequiresTitle(t *testing.T) {
+func TestValidateStepAction_CreateTask_RequiresTitle(t *testing.T) {
 	actions := `[{"type":"create_task","id":"a1","params":{"priority":"high"}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid — create_task requires 'title'")
 	}
 }
 
-func TestValidateActions_AssignUser_RequiresEntityAndStrategy(t *testing.T) {
+func TestValidateStepAction_AssignUser_RequiresEntityAndStrategy(t *testing.T) {
 	actions := `[{"type":"assign_user","id":"a1","params":{}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid — assign_user requires entity and strategy")
 	}
 }
 
-func TestValidateActions_AssignUser_InvalidStrategy(t *testing.T) {
+func TestValidateStepAction_AssignUser_InvalidStrategy(t *testing.T) {
 	actions := `[{"type":"assign_user","id":"a1","params":{"entity":"contact","strategy":"random"}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid — invalid strategy")
 	}
 }
 
-func TestValidateActions_AssignUser_SpecificRequiresUserID(t *testing.T) {
+func TestValidateStepAction_AssignUser_SpecificRequiresUserID(t *testing.T) {
 	actions := `[{"type":"assign_user","id":"a1","params":{"entity":"contact","strategy":"specific"}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid — specific strategy requires user_id")
 	}
 }
 
-func TestValidateActions_AssignUser_SpecificValid(t *testing.T) {
+func TestValidateStepAction_AssignUser_SpecificValid(t *testing.T) {
 	actions := `[{"type":"assign_user","id":"a1","params":{"entity":"contact","strategy":"specific","user_id":"abc-123"}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if !result.Valid {
 		t.Fatalf("expected valid, got errors: %+v", result.Errors)
 	}
 }
 
-func TestValidateActions_SendWebhook_RequiresURL(t *testing.T) {
+func TestValidateStepAction_SendWebhook_RequiresURL(t *testing.T) {
 	actions := `[{"type":"send_webhook","id":"a1","params":{"method":"POST"}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid — send_webhook requires 'url'")
 	}
 }
 
-func TestValidateActions_Delay_RequiresDurationSec(t *testing.T) {
+func TestValidateStepAction_Delay_RequiresDurationSec(t *testing.T) {
 	actions := `[{"type":"delay","id":"a1","params":{}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid — delay requires 'duration_sec'")
 	}
 }
 
-func TestValidateActions_Delay_ZeroDuration(t *testing.T) {
+func TestValidateStepAction_Delay_ZeroDuration(t *testing.T) {
 	actions := `[{"type":"delay","id":"a1","params":{"duration_sec":0}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid — duration_sec=0 must be rejected")
 	}
 	found := false
 	for _, e := range result.Errors {
-		if e.Field == "actions[0].params.duration_sec" && e.Message == "duration_sec must be a positive integer" {
+		if e.Field == "steps[0].action.params.duration_sec" && e.Message == "duration_sec must be a positive integer" {
 			found = true
 		}
 	}
@@ -296,24 +326,24 @@ func TestValidateActions_Delay_ZeroDuration(t *testing.T) {
 	}
 }
 
-func TestValidateActions_Delay_NegativeDuration(t *testing.T) {
+func TestValidateStepAction_Delay_NegativeDuration(t *testing.T) {
 	actions := `[{"type":"delay","id":"a1","params":{"duration_sec":-10}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid — negative duration_sec must be rejected")
 	}
 }
 
-func TestValidateActions_Delay_ExceedsMax(t *testing.T) {
+func TestValidateStepAction_Delay_ExceedsMax(t *testing.T) {
 	// 2592001 seconds = 30 days + 1 second
 	actions := `[{"type":"delay","id":"a1","params":{"duration_sec":2592001}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid — duration_sec exceeds 30-day max")
 	}
 	found := false
 	for _, e := range result.Errors {
-		if e.Field == "actions[0].params.duration_sec" {
+		if e.Field == "steps[0].action.params.duration_sec" {
 			found = true
 		}
 	}
@@ -322,34 +352,34 @@ func TestValidateActions_Delay_ExceedsMax(t *testing.T) {
 	}
 }
 
-func TestValidateActions_Delay_ExactlyAtMax(t *testing.T) {
+func TestValidateStepAction_Delay_ExactlyAtMax(t *testing.T) {
 	// 2592000 seconds = exactly 30 days — should be valid
 	actions := `[{"type":"delay","id":"a1","params":{"duration_sec":2592000}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if !result.Valid {
 		t.Fatalf("expected valid at exactly 30 days, got errors: %+v", result.Errors)
 	}
 }
 
-func TestValidateActions_Delay_ValidDuration(t *testing.T) {
+func TestValidateStepAction_Delay_ValidDuration(t *testing.T) {
 	// 3600 seconds = 1 hour
 	actions := `[{"type":"delay","id":"a1","params":{"duration_sec":3600}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if !result.Valid {
 		t.Fatalf("expected valid for 3600s, got errors: %+v", result.Errors)
 	}
 }
 
-func TestValidateActions_Delay_FractionalSeconds(t *testing.T) {
+func TestValidateStepAction_Delay_FractionalSeconds(t *testing.T) {
 	// 60.5 is not a whole number — must be rejected
 	actions := `[{"type":"delay","id":"a1","params":{"duration_sec":60.5}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid — fractional duration_sec must be rejected")
 	}
 	found := false
 	for _, e := range result.Errors {
-		if e.Field == "actions[0].params.duration_sec" {
+		if e.Field == "steps[0].action.params.duration_sec" {
 			found = true
 		}
 	}
@@ -358,7 +388,7 @@ func TestValidateActions_Delay_FractionalSeconds(t *testing.T) {
 	}
 }
 
-func TestValidateActions_AllTypesValid(t *testing.T) {
+func TestValidateStepAction_AllTypesValid(t *testing.T) {
 	actions := `[
 		{"type":"send_email","id":"a1","params":{"to":"x@test.com"}},
 		{"type":"create_task","id":"a2","params":{"title":"t"}},
@@ -366,16 +396,16 @@ func TestValidateActions_AllTypesValid(t *testing.T) {
 		{"type":"send_webhook","id":"a4","params":{"url":"https://x.com"}},
 		{"type":"delay","id":"a5","params":{"duration_sec":60}}
 	]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if !result.Valid {
 		t.Fatalf("expected valid, got errors: %+v", result.Errors)
 	}
 }
 
-func TestValidateActions_InvalidJSON(t *testing.T) {
+func TestValidateSteps_InvalidJSON(t *testing.T) {
 	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(`{not json`))
 	if result.Valid {
-		t.Fatal("expected invalid for bad actions JSON")
+		t.Fatal("expected invalid for bad steps JSON")
 	}
 }
 
@@ -384,7 +414,7 @@ func TestValidateActions_InvalidJSON(t *testing.T) {
 func TestValidateConditions_ValidSimple(t *testing.T) {
 	cond := `{"op":"AND","rules":[{"field":"contact.email","operator":"eq","value":"x@y.com"}]}`
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), []byte(cond), []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), []byte(cond), stepsFromActionsJSON(t, []byte(actions)))
 	if !result.Valid {
 		t.Fatalf("expected valid, got errors: %+v", result.Errors)
 	}
@@ -392,7 +422,7 @@ func TestValidateConditions_ValidSimple(t *testing.T) {
 
 func TestValidateConditions_InvalidJSON(t *testing.T) {
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), []byte(`{bad`), []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), []byte(`{bad`), stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid for bad condition JSON")
 	}
@@ -400,7 +430,7 @@ func TestValidateConditions_InvalidJSON(t *testing.T) {
 
 func TestValidateConditions_NullIsSkipped(t *testing.T) {
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), []byte(`null`), []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), []byte(`null`), stepsFromActionsJSON(t, []byte(actions)))
 	if !result.Valid {
 		t.Fatalf("expected valid when conditions=null, got errors: %+v", result.Errors)
 	}
@@ -410,7 +440,7 @@ func TestValidateConditions_DepthExceeded(t *testing.T) {
 	// depth 4 — exceeds max of 3
 	cond := `{"op":"AND","rules":[{"op":"OR","rules":[{"op":"AND","rules":[{"op":"OR","rules":[{"field":"x","operator":"eq","value":"y"}]}]}]}]}`
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), []byte(cond), []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), []byte(cond), stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid — condition depth exceeds 3")
 	}
@@ -419,7 +449,7 @@ func TestValidateConditions_DepthExceeded(t *testing.T) {
 func TestValidateConditions_EmptyField(t *testing.T) {
 	cond := `{"op":"AND","rules":[{"field":"","operator":"eq","value":"x"}]}`
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"x@test.com"}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), []byte(cond), []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), []byte(cond), stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid for empty field in condition rule")
 	}
@@ -427,17 +457,17 @@ func TestValidateConditions_EmptyField(t *testing.T) {
 
 // --- Template warnings ---
 
-func TestValidateActions_TemplateWarnings(t *testing.T) {
+func TestValidateStepAction_TemplateWarnings(t *testing.T) {
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"{{unknown_root.field}}"}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if len(result.Warnings) == 0 {
 		t.Fatal("expected template warning for unknown root")
 	}
 }
 
-func TestValidateActions_ValidTemplateNoWarning(t *testing.T) {
+func TestValidateStepAction_ValidTemplateNoWarning(t *testing.T) {
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"{{contact.email}}"}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if len(result.Warnings) != 0 {
 		t.Fatalf("expected no warnings, got: %+v", result.Warnings)
 	}
@@ -445,40 +475,40 @@ func TestValidateActions_ValidTemplateNoWarning(t *testing.T) {
 
 // --- Email validation ---
 
-func TestValidateActions_SendEmail_InvalidTo(t *testing.T) {
+func TestValidateStepAction_SendEmail_InvalidTo(t *testing.T) {
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"notanemail"}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid — 'notanemail' is not a valid email")
 	}
 }
 
-func TestValidateActions_SendEmail_ValidToEmail(t *testing.T) {
+func TestValidateStepAction_SendEmail_ValidToEmail(t *testing.T) {
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"user@example.com"}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if !result.Valid {
 		t.Fatalf("expected valid, got errors: %+v", result.Errors)
 	}
 }
 
-func TestValidateActions_SendEmail_ValidToTemplate(t *testing.T) {
+func TestValidateStepAction_SendEmail_ValidToTemplate(t *testing.T) {
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"{{contact.email}}"}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if !result.Valid {
 		t.Fatalf("expected valid, got errors: %+v", result.Errors)
 	}
 }
 
-func TestValidateActions_SendEmail_InvalidCC(t *testing.T) {
+func TestValidateStepAction_SendEmail_InvalidCC(t *testing.T) {
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"a@b.com","cc":"bad, also-bad"}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if result.Valid {
 		t.Fatal("expected invalid — CC contains invalid email addresses")
 	}
 	// Should have errors for both invalid addresses
 	foundCC := false
 	for _, e := range result.Errors {
-		if e.Field == "actions[0].params.cc" {
+		if e.Field == "steps[0].action.params.cc" {
 			foundCC = true
 		}
 	}
@@ -487,17 +517,17 @@ func TestValidateActions_SendEmail_InvalidCC(t *testing.T) {
 	}
 }
 
-func TestValidateActions_SendEmail_ValidCC(t *testing.T) {
+func TestValidateStepAction_SendEmail_ValidCC(t *testing.T) {
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"a@b.com","cc":"x@y.com, z@w.com"}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if !result.Valid {
 		t.Fatalf("expected valid, got errors: %+v", result.Errors)
 	}
 }
 
-func TestValidateActions_SendEmail_CCWithTemplate(t *testing.T) {
+func TestValidateStepAction_SendEmail_CCWithTemplate(t *testing.T) {
 	actions := `[{"type":"send_email","id":"a1","params":{"to":"a@b.com","cc":"{{contact.email}}, manager@co.com"}}]`
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(actions))
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsFromActionsJSON(t, []byte(actions)))
 	if !result.Valid {
 		t.Fatalf("expected valid, got errors: %+v", result.Errors)
 	}
@@ -534,8 +564,7 @@ func TestValidateSteps_TreeDepth_AtMax_Valid(t *testing.T) {
 	steps := buildNestedConditionSteps(MaxStepTreeDepth)
 	stepsJSON, _ := json.Marshal(steps)
 	trigger := []byte(`{"type":"contact_created"}`)
-	actions := []byte(`[]`)
-	result := ValidateWorkflowPayload(trigger, nil, actions, stepsJSON)
+	result := ValidateWorkflowPayload(trigger, nil, stepsJSON)
 	if !result.Valid {
 		t.Fatalf("expected valid at depth=%d, got errors: %+v", MaxStepTreeDepth, result.Errors)
 	}
@@ -546,8 +575,7 @@ func TestValidateSteps_TreeDepth_ExceedsMax_Invalid(t *testing.T) {
 	steps := buildNestedConditionSteps(MaxStepTreeDepth + 1)
 	stepsJSON, _ := json.Marshal(steps)
 	trigger := []byte(`{"type":"contact_created"}`)
-	actions := []byte(`[]`)
-	result := ValidateWorkflowPayload(trigger, nil, actions, stepsJSON)
+	result := ValidateWorkflowPayload(trigger, nil, stepsJSON)
 	if result.Valid {
 		t.Fatalf("expected invalid at depth=%d, got valid", MaxStepTreeDepth+1)
 	}
@@ -605,7 +633,7 @@ func TestValidateSteps_EmptyBranches_NilBoth(t *testing.T) {
 		NoSteps:  nil,
 	}}
 	stepsJSON, _ := json.Marshal(steps)
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(`[]`), stepsJSON)
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsJSON)
 	if !result.Valid {
 		t.Fatalf("expected valid with nil branches, got errors: %+v", result.Errors)
 	}
@@ -623,7 +651,7 @@ func TestValidateSteps_EmptyBranches_EmptySlices(t *testing.T) {
 		NoSteps:  []StepSpec{},
 	}}
 	stepsJSON, _ := json.Marshal(steps)
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(`[]`), stepsJSON)
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsJSON)
 	if !result.Valid {
 		t.Fatalf("expected valid with empty branches, got errors: %+v", result.Errors)
 	}
@@ -645,7 +673,7 @@ func TestValidateSteps_EmptyBranches_OnePopulatedOneNil(t *testing.T) {
 		NoSteps: nil,
 	}}
 	stepsJSON, _ := json.Marshal(steps)
-	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, []byte(`[]`), stepsJSON)
+	result := ValidateWorkflowPayload([]byte(`{"type":"contact_created"}`), nil, stepsJSON)
 	if !result.Valid {
 		t.Fatalf("expected valid with one populated branch, got errors: %+v", result.Errors)
 	}
@@ -666,7 +694,7 @@ func TestValidation_EmptyBranches_Valid(t *testing.T) {
 	stepsJSON, _ := json.Marshal(steps)
 	trigger := `{"type":"contact_created"}`
 
-	result := ValidateWorkflowPayload([]byte(trigger), nil, nil, stepsJSON)
+	result := ValidateWorkflowPayload([]byte(trigger), nil, stepsJSON)
 	if !result.Valid {
 		t.Fatalf("empty branches should be valid, got errors: %+v", result.Errors)
 	}
@@ -676,19 +704,21 @@ func TestValidation_NilBranches_Valid(t *testing.T) {
 	stepsJSON := []byte(`[{"type":"condition","id":"c1","condition":{"op":"AND","rules":[{"field":"contact.email","operator":"eq","value":"x"}]}}]`)
 	trigger := `{"type":"contact_created"}`
 
-	result := ValidateWorkflowPayload([]byte(trigger), nil, nil, stepsJSON)
+	result := ValidateWorkflowPayload([]byte(trigger), nil, stepsJSON)
 	if !result.Valid {
 		t.Fatalf("nil branches should be valid, got errors: %+v", result.Errors)
 	}
 }
 
-func TestValidation_EmptyStepsList_FallsBackToActions(t *testing.T) {
+// The inverse of the old TestValidation_EmptyStepsList_FallsBackToActions: there is
+// nothing to fall back TO, so `steps: []` is now a hard rejection. That fallback is
+// what let a "green" save produce a workflow the engine walked over zero steps.
+func TestValidation_EmptyStepsList_Rejected(t *testing.T) {
 	trigger := `{"type":"contact_created"}`
-	actions := `[{"type":"send_email","id":"a1","params":{"to":"a@b.com"}}]`
 
-	result := ValidateWorkflowPayload([]byte(trigger), nil, []byte(actions), []byte("[]"))
-	if !result.Valid {
-		t.Fatalf("empty steps should fall back to actions, got errors: %+v", result.Errors)
+	result := ValidateWorkflowPayload([]byte(trigger), nil, []byte("[]"))
+	if result.Valid {
+		t.Fatal("an empty steps list must be rejected, not silently accepted")
 	}
 }
 

@@ -87,30 +87,34 @@ func TestValidateDelayParams_WaitUntilLiftsCap(t *testing.T) {
 	assert.False(t, res.Valid, "a fixed delay is still capped at 30 days")
 }
 
-// TestValidateActions_WaitUntilDelayFlat guards the deprecated flat-actions
-// validation path: a wait-until delay expressed as an actions-only body (no steps)
-// must validate the same as in the steps tree. Regression — the flat path used to
-// require duration_sec>0 and ignore until_field, wrongly rejecting a valid delay.
-func TestValidateActions_WaitUntilDelayFlat(t *testing.T) {
+// TestValidateWaitUntilDelayAsActionStep guards a wait-until delay authored as an
+// ACTION step — {"type":"action","action":{"type":"delay",...}} — rather than as a
+// delay step. It was TestValidateActions_WaitUntilDelayFlat, covering the same params
+// through the flat actions array; the array is gone but the code under test
+// (validateActionParams's ActionDelay branch) is NOT, because that action shape is
+// still reachable and still executes through DelayExecutor.
+//
+// The original regression stands: this branch used to require duration_sec>0 and
+// ignore until_field, wrongly rejecting a valid wait-until delay with a 400.
+func TestValidateWaitUntilDelayAsActionStep(t *testing.T) {
 	trigger := []byte(`{"type":"deal_stage_changed","params":{"to_stage":"s1"}}`)
 
-	// Actions-only body (no steps arg) → forces the validateActions path.
-	valid := []byte(`[{"type":"delay","id":"d1","params":{"until_field":"deal.expected_close_at","offset_days":-3,"at_time":"09:00","timezone":"UTC"}}]`)
+	valid := stepsFromActionsJSON(t, []byte(`[{"type":"delay","id":"d1","params":{"until_field":"deal.expected_close_at","offset_days":-3,"at_time":"09:00","timezone":"UTC"}}]`))
 	res := ValidateWorkflowPayload(trigger, nil, valid)
-	assert.True(t, res.Valid, "wait-until delay in a flat actions body is valid: %+v", res.Errors)
+	assert.True(t, res.Valid, "wait-until delay as an action step is valid: %+v", res.Errors)
 
 	// duration_sec absent is fine in wait-until mode (it's ignored).
-	noDur := []byte(`[{"type":"delay","id":"d1","params":{"until_field":"deal.expected_close_at"}}]`)
+	noDur := stepsFromActionsJSON(t, []byte(`[{"type":"delay","id":"d1","params":{"until_field":"deal.expected_close_at"}}]`))
 	res = ValidateWorkflowPayload(trigger, nil, noDur)
 	assert.True(t, res.Valid, "wait-until delay without duration_sec is valid: %+v", res.Errors)
 
-	// A malformed at_time is still rejected on the flat path.
-	badTime := []byte(`[{"type":"delay","id":"d1","params":{"until_field":"deal.x","at_time":"99:99"}}]`)
+	// A malformed at_time is still rejected.
+	badTime := stepsFromActionsJSON(t, []byte(`[{"type":"delay","id":"d1","params":{"until_field":"deal.x","at_time":"99:99"}}]`))
 	res = ValidateWorkflowPayload(trigger, nil, badTime)
-	assert.False(t, res.Valid, "invalid at_time rejected on the flat path")
+	assert.False(t, res.Valid, "invalid at_time rejected")
 
-	// A fixed delay on the flat path still requires a positive duration_sec.
-	badFixed := []byte(`[{"type":"delay","id":"d1","params":{"duration_sec":0}}]`)
+	// A fixed delay still requires a positive duration_sec.
+	badFixed := stepsFromActionsJSON(t, []byte(`[{"type":"delay","id":"d1","params":{"duration_sec":0}}]`))
 	res = ValidateWorkflowPayload(trigger, nil, badFixed)
 	assert.False(t, res.Valid, "fixed delay with duration_sec=0 still rejected")
 }

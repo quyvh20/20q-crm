@@ -11,12 +11,34 @@ import {
 import { useSequences, useCreateSequence } from './sequencesQueries';
 import { useSegments } from './segmentsQueries';
 import { useWorkflowsList } from '../workflows/queries';
-import type { Workflow } from '../workflows/types';
+import type { Workflow, WorkflowStep } from '../workflows/types';
 import { SEQUENCE_STATUS_LABEL, sequenceStatusVariant } from './sequencesApi';
 
 // A workflow is usable as a drip sequence only if it actually sends marketing mail.
+// Walks the canonical steps tree — including both If/Else branches — because the flat
+// `actions` mirror this used to read was removed from the wire in R5 deploy 1. The old
+// mirror was just a flattening of this same tree, so the verdict matches it PROVIDED
+// the tree arrives populated. That is a verified precondition, not a property of the
+// format: checked against production on 2026-08-04 by querying workflows and
+// workflow_versions for a null-or-empty `steps` — 0 of 29 workflows, 0 of 72 version
+// snapshots, 0 blocking rows. Re-run that check before trusting this on another
+// dataset, because a steps-less row degrades silently: it reads as "no marketing
+// send" and can never be enrolled here, and the same row opens in the builder as an
+// empty canvas whose next Save overwrites the real definition. Neither is repairable
+// frontend-side — the wire no longer carries the flat actions to reconstruct from.
 function hasMarketingSend(w: Workflow): boolean {
-  return (w.actions ?? []).some((a) => a.type === 'send_email' && (a.params as { channel?: unknown } | undefined)?.channel === 'marketing');
+  // Array.isArray rather than `?? []`: a non-array `steps` off the wire would make
+  // `.some` throw, and an exception here white-screens the whole page, where a false
+  // only greys out one option in the picker.
+  const walk = (steps: WorkflowStep[] | undefined): boolean =>
+    (Array.isArray(steps) ? steps : []).some((s) => {
+      const a = s?.action;
+      if (a?.type === 'send_email' && (a.params as { channel?: unknown } | undefined)?.channel === 'marketing') {
+        return true;
+      }
+      return walk(s?.yes_steps) || walk(s?.no_steps);
+    });
+  return walk(w.steps);
 }
 
 // 'schedule' is the only trigger that fires without a per-record context; every other

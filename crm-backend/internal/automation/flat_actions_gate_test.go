@@ -16,26 +16,27 @@ import (
 	"gorm.io/gorm"
 )
 
-// flat_actions_gate_test.go covers R5 DEPLOY 0: the `actions` column default that lets
-// the column outlive the Go field, the actions→steps backfill that runs on every boot,
-// and the log line that reports whether the deprecated Actions field can be removed yet.
+// flat_actions_gate_test.go covers the R5 teardown gate: the `actions` column that now
+// outlives its Go field, and the log line that reports whether the column itself can be
+// dropped (deploy 2) without losing behaviour.
 //
-// MigrateFlatActionsToSteps had ZERO tests before this file, which is how it shipped a
-// defect that made some rows permanently un-gateable: a row with actions = '[]' was
-// rewritten to steps = 'null'::jsonb (json.Marshal of a nil slice), which still matches
-// the migration's own WHERE clause — so the row was re-written on every boot, forever,
-// and could never satisfy the gate.
+// WHAT DEPLOY 1 CHANGED HERE. The actions→steps BACKFILL is gone, and with it the two
+// tests that covered it (TestStepsFromFlatActions, TestMigrateFlatActionsToSteps). There
+// is nothing left to back-fill: production's gate was verified CLEAR before the code was
+// removed, no writer produces a flat action list any more, and the Go code can no longer
+// read the column through the model at all. The GATE stays, precisely because the column
+// stays — it is how the deploy-1 soak confirms nothing regressed, and it reads the
+// column through raw SQL rather than a struct field, which is why it still works.
 //
-// THE THREE THINGS HERE THAT ARE LOAD-BEARING RATHER THAN DESCRIPTIVE:
+// THE TWO THINGS HERE THAT ARE LOAD-BEARING RATHER THAN DESCRIPTIVE:
 //
-//  1. TestFlatActionsColumnDefault — the only assertion anywhere that deploy 0's actual
-//     change (a struct tag) reached the database. Every other test in this file passes
-//     with the tag deleted.
+//  1. TestFlatActionsColumnDefault — the only assertion anywhere that the column and its
+//     DEFAULT '[]'::jsonb survive. Deploy 0 made that a struct tag; deploy 1 deleted the
+//     field, so it is now Repository.ensureLegacyActionsColumn that has to keep it, and
+//     this test is what proves that swap did not drop it on the floor.
 //  2. The blocking-vs-inert split (TestFlatActionsGate_BlockingVsInert) — the gate must
 //     be clearable, and it is only clearable if "steps are empty" and "the teardown is
 //     unsafe" are answered separately.
-//  3. The updated_at assertions — they are what keeps the backfill converging now that
-//     its predicate deliberately re-selects already-converged rows.
 //
 // Everything here asserts on the STORED jsonb text, not on a Go struct round-trip. The
 // distinctions that matter — SQL NULL vs jsonb 'null' vs '[]' — are invisible once a
@@ -52,11 +53,14 @@ const (
 // ── Seeding ───────────────────────────────────────────────────────────────────
 
 // flatGateWorkflow inserts one automation_workflows row with EXACT control over the
-// `actions` and `steps` jsonb. Raw SQL rather than the GORM model on purpose: the
-// states this file is about (steps SQL-NULL vs jsonb 'null'; actions '[]' vs 'null' vs
-// a non-array object) are states datatypes.JSON cannot express unambiguously, and
-// seeding through the model is how a test ends up asserting against a value it never
-// actually created.
+// `actions` and `steps` jsonb.
+//
+// Raw SQL rather than the GORM model, for two reasons that now stack. It was always
+// deliberate: the states this file is about (steps SQL-NULL vs jsonb 'null'; actions
+// '[]' vs 'null' vs a non-array object) are states datatypes.JSON cannot express
+// unambiguously, and seeding through the model is how a test ends up asserting against
+// a value it never actually created. Since R5 deploy 1 it is also the ONLY option: no
+// Go struct declares `actions` any more, so there is no model field to set.
 func flatGateWorkflow(t *testing.T, db *gorm.DB, orgID uuid.UUID, actions string, steps *string, softDeleted bool) uuid.UUID {
 	t.Helper()
 	id := uuid.New()
@@ -93,9 +97,20 @@ func flatGateVersion(t *testing.T, db *gorm.DB, workflowID uuid.UUID, version in
 func flatGateJSONPtr(v string) *string { return &v }
 
 // flatGateActions renders a flat actions list the way the pre-Steps frontend stored it.
+// Nothing WRITES this shape any more; the seeders use it to plant the legacy rows the
+// gate exists to score.
 func flatGateActions(t *testing.T, actions ...ActionSpec) string {
 	t.Helper()
 	raw, err := json.Marshal(actions)
+	require.NoError(t, err)
+	return string(raw)
+}
+
+// flatGateStepsText renders the steps tree equivalent to a flat action list — what a
+// row looks like once someone has given it a real steps tree.
+func flatGateStepsText(t *testing.T, actions ...ActionSpec) string {
+	t.Helper()
+	raw, err := json.Marshal(actionSteps(actions...))
 	require.NoError(t, err)
 	return string(raw)
 }
@@ -162,23 +177,26 @@ func flatGateStillSelected(t *testing.T, db *gorm.DB, table string, id uuid.UUID
 
 // ── DB-backed: the column default the whole teardown ordering rests on ────────
 
-// TestFlatActionsColumnDefault is the ONLY thing in the repo that asserts R5 deploy 0's
-// one load-bearing change actually reached the database.
+// TestFlatActionsColumnDefault is the ONLY thing in the repo that asserts the `actions`
+// column and its default are still there — and deploy 1 makes it matter MORE, not less.
 //
-// Deploy 0 exists to put `default:'[]'::jsonb` on both Actions tags and get it past the
-// point of rollback BEFORE deploy 1 deletes the Go field. AutoMigrate never DROPs a
-// column, so after deploy 1 the column is still `actions jsonb NOT NULL` while GORM has
-// stopped naming it in INSERTs — and the column default is the only thing that fills it.
-// Without it every workflow write dies on
+// Deploy 0 put `default:'[]'::jsonb` on both Actions struct tags and got it past the
+// point of rollback. Deploy 1 then deleted the fields, which means gorm can no longer
+// see the column at all: it does not create it, does not maintain its default, and (as
+// always) does not drop it. On every existing database the column and default simply
+// persist, and they are the only reason writes still work — GORM has stopped naming
+// `actions` in its INSERTs, so without the default every workflow write dies on
 //
 //	ERROR: null value in column "actions" … violates not-null constraint (SQLSTATE 23502)
 //
 // killing CreateWorkflow on its first statement and UpdateWorkflow on its version
 // snapshot (which rolls the whole update back).
 //
-// A struct tag is deletable by a merge conflict or by anyone "tidying" the model, and
-// every other test in this file passes with the tag gone — verified by overlaying a
-// models.go without it. Nothing else in the tree reads column_default. This does.
+// On a FRESH database — which is exactly what this test runs against — nothing would
+// create the column at all, and the gate below would read UNKNOWN forever while a
+// rollback to a deploy-0 binary would reject every write. Repository.ensureLegacyActionsColumn
+// is what closes that, and this test is what proves it ran. Nothing else in the tree
+// reads column_default.
 func TestFlatActionsColumnDefault(t *testing.T) {
 	db, cleanup := setupTestDB(t) // runs Repository.AutoMigrate
 	defer cleanup()
@@ -190,10 +208,15 @@ func TestFlatActionsColumnDefault(t *testing.T) {
 			Nullable string `gorm:"column:is_nullable"`
 			Found    bool   `gorm:"column:found"`
 		}
+		// table_schema = current_schema(), exactly like the guard's own probe:
+		// information_schema.columns spans EVERY schema, so an unqualified table_name
+		// match would let a stray copy of the table in another namespace answer for the
+		// one we write to — and this assertion would then agree with the bug.
 		require.NoError(t, db.Raw(`
 			SELECT column_default, is_nullable, true AS found
 			FROM information_schema.columns
-			WHERE table_name = ? AND column_name = 'actions'`, table).Scan(&row).Error)
+			WHERE table_schema = current_schema()
+			  AND table_name = ? AND column_name = 'actions'`, table).Scan(&row).Error)
 		require.True(t, row.Found, "%s has no `actions` column at all", table)
 
 		// NOT NULL is the other half of the trap: a nullable column would survive the
@@ -207,12 +230,12 @@ func TestFlatActionsColumnDefault(t *testing.T) {
 		// does the most damage (its 23502 rolls the workflow UPDATE back with it).
 		if !assert.NotNil(t, row.Default,
 			"%s.actions has NO column default.\n"+
-				"AutoMigrate did not set it, which means `default:'[]'::jsonb` is missing from the\n"+
-				"Actions struct tag in models.go (or a boot ALTER timed out before applying it).\n"+
+				"No Go struct declares this column any more, so gorm did not set it — the only thing\n"+
+				"that does is Repository.ensureLegacyActionsColumn, called from AutoMigrate.\n"+
 				"That default is not cosmetic: it is the single thing that lets this COLUMN outlive\n"+
-				"the Go FIELD during the R5 teardown. Ship deploy 1 without it and every workflow\n"+
-				"write returns 500 with SQLSTATE 23502 (null value in column \"actions\"), with every\n"+
-				"workflow UPDATE rolled back by its version-snapshot INSERT. Restore the tag.", table) {
+				"the Go FIELD during the R5 teardown. Without it every workflow write returns 500\n"+
+				"with SQLSTATE 23502 (null value in column \"actions\"), with every workflow UPDATE\n"+
+				"rolled back by its version-snapshot INSERT.", table) {
 			continue
 		}
 		assert.Equal(t, want, *row.Default,
@@ -221,74 +244,185 @@ func TestFlatActionsColumnDefault(t *testing.T) {
 	}
 }
 
-// ── Pure logic (no DB — runs in CI's -short unit job too) ─────────────────────
+// flatGateColumnDefault reads `actions`' column_default IN THE SCHEMA WRITES GO TO,
+// returning found=false when the column is absent there. Schema-qualified for the same
+// reason the guard's probe is: information_schema.columns spans every schema on the
+// database.
+func flatGateColumnDefault(t *testing.T, db *gorm.DB, table string) (def *string, found bool) {
+	t.Helper()
+	var row struct {
+		Default *string `gorm:"column:column_default"`
+		Found   bool    `gorm:"column:found"`
+	}
+	require.NoError(t, db.Raw(`
+		SELECT column_default, true AS found
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = ? AND column_name = 'actions'`, table).Scan(&row).Error)
+	return row.Default, row.Found
+}
 
-// TestStepsFromFlatActions pins the conversion, and above all pins the one case that
-// used to produce the four bytes `null`: an EMPTY actions array. `var steps []StepSpec`
-// with a loop body that never runs marshals to "null", not "[]".
-func TestStepsFromFlatActions(t *testing.T) {
-	t.Run("empty actions array converts to an empty steps array, never to null", func(t *testing.T) {
-		steps, ok := stepsFromFlatActions(datatypes.JSON([]byte(`[]`)))
-		require.True(t, ok, "an empty actions array IS convertible — it converts to no steps")
-		assert.Equal(t, "[]", string(steps),
-			"json.Marshal of a nil slice is `null`; writing that back re-selects the row on every boot")
-	})
+// TestEnsureLegacyActionsColumn_RestoresALostDefault is SCENARIO A: the column exists,
+// is NOT NULL, and carries NO default.
+//
+// TestFlatActionsColumnDefault cannot reach this state — it runs against a fresh
+// container, where the guard takes its ADD COLUMN … DEFAULT path and the default is
+// there by construction. Scenario A is the state PRODUCTION can be in, and the one an
+// existence-only guard (`if n > 0 { continue }`) leaves broken forever:
+//
+//   - deploy 0 applied the default under migrationLockTimeout ("3s"), so a boot that
+//     lost its lock wait abandoned the ALTER and logged 55P03;
+//   - deploy 1 removed the struct tag, so gorm can no longer see the column and the
+//     "the next uncontended boot applies it" self-healing that used to make a lock-timeout
+//     miss survivable no longer exists for THIS column;
+//   - nothing else in the tree sets it.
+//
+// Left unrepaired, every POST /api/workflows dies on its first INSERT and every PUT dies
+// on its version snapshot (rolling the workflow UPDATE back with it) — SQLSTATE 23502,
+// permanently. So the assertion is not only "the default came back" but "a write that
+// never names `actions`, which is all GORM emits now, succeeds on BOTH tables".
+func TestEnsureLegacyActionsColumn_RestoresALostDefault(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	repo := NewRepository(db)
+	tables := []string{flatGateWorkflowsTable, flatGateVersionsTable}
 
-	t.Run("actions convert to action and delay steps", func(t *testing.T) {
-		raw := flatGateActions(t,
-			ActionSpec{ID: "a1", Type: "send_email", Params: map[string]any{"to": "x@example.com"}},
-			ActionSpec{ID: "d1", Type: "delay", Params: map[string]any{"duration_sec": 90}},
-		)
-		out, ok := stepsFromFlatActions(datatypes.JSON([]byte(raw)))
-		require.True(t, ok)
-		steps := flatGateParseSteps(t, string(out))
+	// Put the database INTO scenario A. DROP DEFAULT only: the column stays, and stays
+	// NOT NULL — that combination is the whole point.
+	for _, table := range tables {
+		require.NoError(t, db.Exec(`ALTER TABLE `+table+` ALTER COLUMN actions DROP DEFAULT`).Error)
+		def, found := flatGateColumnDefault(t, db, table)
+		require.True(t, found, "precondition: %s must still HAVE the column", table)
+		require.Nil(t, def, "precondition: %s.actions must have NO default", table)
+	}
 
-		require.Len(t, steps, 2)
-		assert.Equal(t, "action", steps[0].Type)
-		assert.Equal(t, "a1", steps[0].ID)
-		require.NotNil(t, steps[0].Action)
-		assert.Equal(t, "send_email", steps[0].Action.Type)
-		assert.Equal(t, "x@example.com", steps[0].Action.Params["to"])
+	// Prove the state is genuinely broken before the guard runs, so the repair below is
+	// not asserting against a database that was fine all along.
+	brokenWF := &Workflow{
+		OrgID: uuid.New(), Name: "pre-repair",
+		Trigger:   datatypes.JSON(`{"type":"contact_created"}`),
+		Steps:     actionStepsJSON(t, ActionSpec{ID: "a1", Type: "send_email", Params: map[string]any{"to": "x@test.com"}}),
+		CreatedBy: uuid.New(),
+	}
+	require.Error(t, repo.CreateWorkflow(context.Background(), brokenWF),
+		"a column that is NOT NULL with no default must reject an INSERT that omits it — "+
+			"if this ever passes, re-read whether the column is still NOT NULL")
 
-		assert.Equal(t, "delay", steps[1].Type)
-		assert.Equal(t, "d1", steps[1].ID)
-		require.NotNil(t, steps[1].Delay)
-		assert.Equal(t, 90, steps[1].Delay.DurationSec)
-		assert.Nil(t, steps[1].Action, "a delay step carries no action")
-	})
+	repo.ensureLegacyActionsColumn()
 
-	t.Run("every action gets its OWN action pointer", func(t *testing.T) {
-		// A shared pointer would give every step the last action's params — the classic
-		// loop-variable capture. Go 1.22+ makes this safe; the assertion keeps it that way.
-		raw := flatGateActions(t,
-			ActionSpec{ID: "a1", Type: "send_email"},
-			ActionSpec{ID: "a2", Type: "create_task"},
-		)
-		out, ok := stepsFromFlatActions(datatypes.JSON([]byte(raw)))
-		require.True(t, ok)
-		steps := flatGateParseSteps(t, string(out))
-		require.Len(t, steps, 2)
-		require.NotNil(t, steps[0].Action)
-		require.NotNil(t, steps[1].Action)
-		assert.Equal(t, "send_email", steps[0].Action.Type)
-		assert.Equal(t, "create_task", steps[1].Action.Type)
-	})
-
-	t.Run("unconvertible blobs report not-ok rather than writing something wrong", func(t *testing.T) {
-		for name, raw := range map[string]string{
-			"jsonb null":        `null`,
-			"a JSON object":     `{"type":"send_email"}`,
-			"a JSON string":     `"send_email"`,
-			"a JSON number":     `7`,
-			"an absent column":  ``,
-			"malformed garbage": `[{`,
-		} {
-			out, ok := stepsFromFlatActions(datatypes.JSON([]byte(raw)))
-			assert.False(t, ok, "%s must not convert", name)
-			assert.Nil(t, out, "%s must not produce a value to write", name)
+	for _, table := range tables {
+		def, found := flatGateColumnDefault(t, db, table)
+		require.True(t, found, "%s lost its column entirely", table)
+		// assert, not require: both tables are reported in one run, because the versions
+		// table is where a missing default does the most damage.
+		if !assert.NotNil(t, def,
+			"%s.actions still has NO default after the guard ran.\n"+
+				"An existence-only check (`if n > 0 { continue }`) is what leaves this state\n"+
+				"permanent: nothing else in the tree can set this default now that no struct\n"+
+				"tag declares the column, so every workflow write 500s with SQLSTATE 23502.", table) {
+			continue
 		}
+		assert.Equal(t, `'[]'::jsonb`, *def, "%s.actions default", table)
+	}
+
+	// The behaviour the default exists for, on BOTH tables in one statement pair:
+	// CreateWorkflow INSERTs the workflow and then its version snapshot, and neither
+	// INSERT names `actions`.
+	wf := &Workflow{
+		OrgID: uuid.New(), Name: "post-repair",
+		Trigger:   datatypes.JSON(`{"type":"contact_created"}`),
+		Steps:     actionStepsJSON(t, ActionSpec{ID: "a1", Type: "send_email", Params: map[string]any{"to": "x@test.com"}}),
+		CreatedBy: uuid.New(),
+	}
+	require.NoError(t, repo.CreateWorkflow(context.Background(), wf),
+		"after the repair a workflow write must succeed — this is the 500 the guard prevents")
+
+	for _, table := range tables {
+		var stored struct {
+			Actions string `gorm:"column:actions"`
+		}
+		require.NoError(t, db.Raw(
+			`SELECT actions::text AS actions FROM `+table+` ORDER BY created_at DESC LIMIT 1`).
+			Scan(&stored).Error)
+		assert.Equal(t, "[]", stored.Actions,
+			"%s.actions must fill itself from the DEFAULT, since nothing writes it", table)
+	}
+
+	t.Run("running again is a no-op that issues no DDL at all", func(t *testing.T) {
+		// The steady-state property stated in the guard's comment, asserted rather than
+		// assumed: `ALTER TABLE` takes ACCESS EXCLUSIVE even when it changes nothing, so
+		// a guard that re-alters on every boot is the per-boot lock deploy 0 removed.
+		// An event trigger is the only way to see DDL that a catalog read cannot.
+		require.NoError(t, db.Exec(`CREATE TABLE flatgate_ddl_log (tag text)`).Error)
+		require.NoError(t, db.Exec(`
+			CREATE FUNCTION flatgate_record_ddl() RETURNS event_trigger AS $$
+			BEGIN INSERT INTO flatgate_ddl_log(tag) VALUES (tg_tag); END $$ LANGUAGE plpgsql`).Error)
+		require.NoError(t, db.Exec(
+			`CREATE EVENT TRIGGER flatgate_ddl ON ddl_command_end EXECUTE FUNCTION flatgate_record_ddl()`).Error)
+		t.Cleanup(func() {
+			_ = db.Exec(`DROP EVENT TRIGGER IF EXISTS flatgate_ddl`).Error
+			_ = db.Exec(`DROP FUNCTION IF EXISTS flatgate_record_ddl()`).Error
+			_ = db.Exec(`DROP TABLE IF EXISTS flatgate_ddl_log`).Error
+		})
+
+		ddlCount := func() int64 {
+			var n int64
+			require.NoError(t, db.Raw(`SELECT count(*) FROM flatgate_ddl_log`).Scan(&n).Error)
+			return n
+		}
+
+		repo.ensureLegacyActionsColumn()
+		assert.Zero(t, ddlCount(),
+			"a healthy database must issue ZERO DDL: the check-then-ALTER shape exists "+
+				"precisely so a boot does not take ACCESS EXCLUSIVE on these tables")
+
+		// …and the trigger is genuinely watching: break one table again and the guard
+		// does exactly one repair.
+		require.NoError(t, db.Exec(
+			`ALTER TABLE `+flatGateWorkflowsTable+` ALTER COLUMN actions DROP DEFAULT`).Error)
+		before := ddlCount()
+		repo.ensureLegacyActionsColumn()
+		assert.Equal(t, before+1, ddlCount(), "exactly one ALTER, for the one broken table")
+		def, _ := flatGateColumnDefault(t, db, flatGateWorkflowsTable)
+		require.NotNil(t, def)
+		assert.Equal(t, `'[]'::jsonb`, *def)
 	})
 }
+
+// TestEnsureLegacyActionsColumn_ProbesOnlyTheCurrentSchema pins the schema qualification.
+//
+// information_schema.columns spans EVERY schema on the database. With an unqualified
+// `table_name = ?`, a copy of the table in any other namespace — an old restore, a
+// per-tenant schema, a staging clone — answers the question, and the guard skips the
+// schema we actually write to. The observable failure is the worst-case one: no column
+// at all in `public`, so the teardown gate reads UNKNOWN forever and a rollback rejects
+// every write, while the probe cheerfully reports the column exists.
+func TestEnsureLegacyActionsColumn_ProbesOnlyTheCurrentSchema(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	repo := NewRepository(db)
+
+	// A decoy in another schema that DOES have the column…
+	require.NoError(t, db.Exec(`CREATE SCHEMA flatgate_other`).Error)
+	require.NoError(t, db.Exec(
+		`CREATE TABLE flatgate_other.`+flatGateWorkflowsTable+` (id uuid, actions jsonb NOT NULL DEFAULT '[]'::jsonb)`).Error)
+
+	// …while the schema we write to has lost it.
+	require.NoError(t, db.Exec(`ALTER TABLE `+flatGateWorkflowsTable+` DROP COLUMN actions`).Error)
+	_, found := flatGateColumnDefault(t, db, flatGateWorkflowsTable)
+	require.False(t, found, "precondition: the current schema must have no `actions` column")
+
+	repo.ensureLegacyActionsColumn()
+
+	def, found := flatGateColumnDefault(t, db, flatGateWorkflowsTable)
+	require.True(t, found,
+		"the guard skipped a missing column because ANOTHER schema had one — its probe must "+
+			"be scoped with `table_schema = current_schema()`")
+	require.NotNil(t, def)
+	assert.Equal(t, `'[]'::jsonb`, *def)
+}
+
+// ── Pure logic (no DB — runs in CI's -short unit job too) ─────────────────────
 
 // TestFlatActionsGateCounts_ClearedAndInert pins the separation the gate is built on:
 // Cleared() answers "may the column be dropped", Inert() answers "does anything execute
@@ -315,155 +449,6 @@ func TestFlatActionsGateCounts_ClearedAndInert(t *testing.T) {
 		"Inert counts the EMPTY-steps rows (2+4) — the ones that run and do nothing")
 }
 
-// ── DB-backed: the backfill ───────────────────────────────────────────────────
-
-func TestMigrateFlatActionsToSteps(t *testing.T) {
-	db, cleanup := setupTestDB(t)
-	defer cleanup()
-	repo := NewRepository(db)
-	ctx := context.Background()
-	orgID := uuid.New()
-
-	t.Run("a flat-actions row converts to a steps tree, in BOTH tables", func(t *testing.T) {
-		actions := flatGateActions(t,
-			ActionSpec{ID: "a1", Type: "send_email", Params: map[string]any{"to": "x@example.com"}},
-			ActionSpec{ID: "d1", Type: "delay", Params: map[string]any{"duration_sec": 60}},
-		)
-		// steps SQL-NULL on the workflow, jsonb 'null' on the version: both halves of the
-		// migration's WHERE clause, one per table.
-		wfID := flatGateWorkflow(t, db, orgID, actions, nil, false)
-		verID := flatGateVersion(t, db, wfID, 1, actions, flatGateJSONPtr(`null`))
-
-		require.NoError(t, repo.MigrateFlatActionsToSteps(ctx))
-
-		for table, id := range map[string]uuid.UUID{
-			flatGateWorkflowsTable: wfID,
-			flatGateVersionsTable:  verID,
-		} {
-			steps := flatGateParseSteps(t, flatGateSteps(t, db, table, id))
-			require.Len(t, steps, 2, "table %s", table)
-			assert.Equal(t, "action", steps[0].Type)
-			assert.Equal(t, "a1", steps[0].ID)
-			require.NotNil(t, steps[0].Action)
-			assert.Equal(t, "send_email", steps[0].Action.Type)
-			assert.Equal(t, "delay", steps[1].Type)
-			require.NotNil(t, steps[1].Delay)
-			assert.Equal(t, 60, steps[1].Delay.DurationSec)
-			assert.False(t, flatGateStillSelected(t, db, table, id),
-				"table %s: a converted row must not be re-selected next boot", table)
-		}
-	})
-
-	t.Run("actions='[]' becomes steps='[]', NOT 'null'", func(t *testing.T) {
-		wfID := flatGateWorkflow(t, db, orgID, `[]`, nil, false)
-		verID := flatGateVersion(t, db, wfID, 2, `[]`, nil)
-
-		require.NoError(t, repo.MigrateFlatActionsToSteps(ctx))
-
-		assert.Equal(t, "[]", flatGateSteps(t, db, flatGateWorkflowsTable, wfID),
-			"the defect wrote 'null' here, which re-matches the migration's own WHERE clause")
-		assert.Equal(t, "[]", flatGateSteps(t, db, flatGateVersionsTable, verID))
-		// These rows ARE re-selected next boot (the predicate now includes '[]') and
-		// that is fine: rule 2 skips the UPDATE, so nothing churns — asserted by the
-		// updated_at subtest below. What matters is that they no longer BLOCK.
-		gate, err := repo.CountFlatActionsGate(ctx)
-		require.NoError(t, err)
-		assert.True(t, gate.Cleared(),
-			"an empty-actions row loses nothing when the column is dropped: %+v", gate)
-	})
-
-	// The row shape finding 2 is about: real flat actions with steps ALREADY '[]'. It is
-	// creatable through the live API today (handlers.go's hasSteps("[]") is false, so
-	// nothing derives actions from steps and validateActions accepts it), the OLD
-	// predicate could never reach it, and the gate blocked on it — a permanently
-	// BLOCKED gate with no automated remedy.
-	t.Run("real actions with steps='[]' ARE reachable and get converted", func(t *testing.T) {
-		actions := flatGateActions(t,
-			ActionSpec{ID: "a1", Type: "send_email", Params: map[string]any{"to": "y@example.com"}})
-		wfID := flatGateWorkflow(t, db, orgID, actions, flatGateJSONPtr(`[]`), false)
-		verID := flatGateVersion(t, db, wfID, 3, actions, flatGateJSONPtr(`[]`))
-
-		before, err := repo.CountFlatActionsGate(ctx)
-		require.NoError(t, err)
-		require.False(t, before.Cleared(),
-			"precondition: this row's behaviour lives ONLY in `actions`, so it blocks: %+v", before)
-
-		require.NoError(t, repo.MigrateFlatActionsToSteps(ctx))
-
-		for table, id := range map[string]uuid.UUID{
-			flatGateWorkflowsTable: wfID,
-			flatGateVersionsTable:  verID,
-		} {
-			steps := flatGateParseSteps(t, flatGateSteps(t, db, table, id))
-			require.Len(t, steps, 1, "table %s: the empty steps array must be replaced, not kept", table)
-			require.NotNil(t, steps[0].Action)
-			assert.Equal(t, "send_email", steps[0].Action.Type, "table %s", table)
-		}
-
-		after, err := repo.CountFlatActionsGate(ctx)
-		require.NoError(t, err)
-		assert.True(t, after.Cleared(),
-			"the backfill must be able to UNBLOCK the gate on its own, without a SQL console: %+v", after)
-	})
-
-	t.Run("a second run does not rewrite anything — no updated_at churn", func(t *testing.T) {
-		// One row of each converged shape: an empty-actions row (the churn defect's own
-		// case) and a real one.
-		empty := flatGateWorkflow(t, db, orgID, `[]`, nil, false)
-		full := flatGateWorkflow(t, db, orgID,
-			flatGateActions(t, ActionSpec{ID: "a1", Type: "send_email"}), nil, false)
-
-		require.NoError(t, repo.MigrateFlatActionsToSteps(ctx))
-		emptyAt := flatGateUpdatedAt(t, db, empty)
-		fullAt := flatGateUpdatedAt(t, db, full)
-
-		// A bare second call would be satisfied by clock resolution alone, so make the
-		// gap unambiguous: any UPDATE after this point lands on a visibly later stamp.
-		time.Sleep(50 * time.Millisecond)
-		require.NoError(t, repo.MigrateFlatActionsToSteps(ctx))
-
-		// The empty-actions row is STILL selected every boot — '[]' is in the predicate
-		// on purpose — so this assertion is exactly the one that proves rule 2 (skip the
-		// UPDATE when the value would not change) is a LIVE anti-churn control and not
-		// the unreachable guard it was once documented as. It is also what holds if rule
-		// 1's empty-slice fix is ever reverted.
-		require.True(t, flatGateStillSelected(t, db, flatGateWorkflowsTable, empty),
-			"precondition: the widened predicate re-selects this row on every boot")
-		assert.True(t, emptyAt.Equal(flatGateUpdatedAt(t, db, empty)),
-			"selected but NOT rewritten — rule 2 is what stops the every-boot updated_at churn")
-		assert.True(t, fullAt.Equal(flatGateUpdatedAt(t, db, full)),
-			"a converged row must not be re-written")
-		assert.Equal(t, "[]", flatGateSteps(t, db, flatGateWorkflowsTable, empty))
-	})
-
-	t.Run("unconvertible rows are left alone and do not error the boot", func(t *testing.T) {
-		jsonbNull := flatGateWorkflow(t, db, orgID, `null`, nil, false)
-		notAnArray := flatGateWorkflow(t, db, orgID, `{"type":"send_email"}`, nil, false)
-		verNull := flatGateVersion(t, db, jsonbNull, 1, `null`, nil)
-		verObject := flatGateVersion(t, db, notAnArray, 1, `{"type":"send_email"}`, nil)
-
-		before := map[uuid.UUID]time.Time{
-			jsonbNull:  flatGateUpdatedAt(t, db, jsonbNull),
-			notAnArray: flatGateUpdatedAt(t, db, notAnArray),
-		}
-
-		// The boot must survive them. This is the assertion that keeps a hand-written
-		// row, or an older schema's blob, from taking the whole server down.
-		require.NoError(t, repo.MigrateFlatActionsToSteps(ctx))
-
-		for _, id := range []uuid.UUID{jsonbNull, notAnArray} {
-			assert.Equal(t, flatGateSQLNull, flatGateSteps(t, db, flatGateWorkflowsTable, id),
-				"an unconvertible row must be left exactly as found, not stamped with '[]'")
-			assert.True(t, before[id].Equal(flatGateUpdatedAt(t, db, id)))
-			assert.True(t, flatGateStillSelected(t, db, flatGateWorkflowsTable, id),
-				"it stays selected — that is honest, and the gate is what makes it visible")
-		}
-		for _, id := range []uuid.UUID{verNull, verObject} {
-			assert.Equal(t, flatGateSQLNull, flatGateSteps(t, db, flatGateVersionsTable, id))
-		}
-	})
-}
-
 // TestFlatActionsGate_VersionsTableHasNoDeletedAt pins the schema asymmetry the gate's
 // two halves are built on: automation_workflows is soft-deleted, automation_workflow_versions
 // is not. Adding `deleted_at IS NULL` to the versions query would be a SQL error, not a
@@ -484,26 +469,26 @@ func TestFlatActionsGate_VersionsTableHasNoDeletedAt(t *testing.T) {
 			count(*) FILTER (WHERE table_name = 'automation_workflows')          AS workflows,
 			count(*) FILTER (WHERE table_name = 'automation_workflow_versions')  AS versions
 		FROM information_schema.columns
-		WHERE table_name IN ('automation_workflows','automation_workflow_versions')
+		WHERE table_schema = current_schema()
+		  AND table_name IN ('automation_workflows','automation_workflow_versions')
 		  AND column_name = 'deleted_at'`).Scan(&cols).Error)
 	assert.Equal(t, int64(1), cols.Workflows, "automation_workflows is soft-deleted")
 	assert.Equal(t, int64(0), cols.Versions,
 		"automation_workflow_versions has NO deleted_at; the gate must not predicate on one")
 
-	// A soft-deleted workflow is skipped by the migration (GORM scopes the Find to
-	// deleted_at IS NULL) while its version row is still converted. That asymmetry is
-	// deliberate: the workflow can never run again, but its version snapshot is what an
-	// in-flight run executes.
+	// And the gate applies that asymmetry: a soft-deleted workflow whose behaviour lives
+	// only in `actions` does NOT block (it can never run again), while its version
+	// snapshot DOES (an in-flight run pins the snapshot, not the live workflow).
 	actions := flatGateActions(t, ActionSpec{ID: "a1", Type: "send_email"})
 	deletedWF := flatGateWorkflow(t, db, orgID, actions, nil, true)
-	itsVersion := flatGateVersion(t, db, deletedWF, 1, actions, nil)
+	flatGateVersion(t, db, deletedWF, 1, actions, nil)
 
-	require.NoError(t, repo.MigrateFlatActionsToSteps(ctx))
-
-	assert.Equal(t, flatGateSQLNull, flatGateSteps(t, db, flatGateWorkflowsTable, deletedWF),
-		"a soft-deleted workflow is not migrated — it can never run")
-	assert.Len(t, flatGateParseSteps(t, flatGateSteps(t, db, flatGateVersionsTable, itsVersion)), 1,
-		"its version snapshot IS migrated — an in-flight run still pins it")
+	c, err := repo.CountFlatActionsGate(ctx)
+	require.NoError(t, err)
+	assert.Zero(t, c.WorkflowsBlocking,
+		"a soft-deleted workflow can never run, so it must not wedge the gate")
+	assert.Equal(t, int64(1), c.VersionsBlocking,
+		"its version snapshot still counts — that table has no deleted_at to scope by")
 }
 
 // ── DB-backed: the boot diagnostic ────────────────────────────────────────────
@@ -524,9 +509,7 @@ func TestFlatActionsGate_CountsAndVerdict(t *testing.T) {
 	require.True(t, start.Cleared(), "an empty database clears the gate: %+v", start)
 
 	good := flatGateActions(t, ActionSpec{ID: "a1", Type: "send_email"})
-	goodSteps, ok := stepsFromFlatActions(datatypes.JSON([]byte(good)))
-	require.True(t, ok)
-	goodStepsText := string(goodSteps)
+	goodStepsText := flatGateStepsText(t, ActionSpec{ID: "a1", Type: "send_email"})
 
 	// The seeded mix. Every row below is here to move exactly one number.
 	missingA := flatGateWorkflow(t, db, orgID, good, nil, false)                     // steps SQL NULL
@@ -692,7 +675,10 @@ func TestFlatActionsGate_BlockingVsInert(t *testing.T) {
 		assert.Contains(t, logLine(t), `"verdict":"BLOCKED"`)
 	})
 
-	t.Run("BLOCKING: real actions with steps='[]' — the API-creatable shape", func(t *testing.T) {
+	// This shape is no longer CREATABLE — ValidateWorkflowPayload rejects steps='[]'
+	// outright now that there is no flat fallback to fall through to — but rows created
+	// before that landed still exist, and the gate still has to score them correctly.
+	t.Run("BLOCKING: real actions with steps='[]' (a legacy row)", func(t *testing.T) {
 		wf := flatGateWorkflow(t, db, orgID, real, flatGateJSONPtr(`[]`), false)
 		t.Cleanup(func() { require.NoError(t, db.Exec(`DELETE FROM automation_workflows WHERE id = ?`, wf).Error) })
 
@@ -703,19 +689,20 @@ func TestFlatActionsGate_BlockingVsInert(t *testing.T) {
 		assert.Equal(t, int64(1), c.Inert(), "it is BOTH: it executes nothing today AND blocks the teardown")
 		assert.False(t, c.Cleared())
 
-		// And the backfill can now reach it, so this is a blocker with a remedy.
-		require.NoError(t, repo.MigrateFlatActionsToSteps(ctx))
+		// The remedy is now a human writing a steps tree, not a boot-time backfill.
+		goodStepsText := flatGateStepsText(t, ActionSpec{ID: "a1", Type: "send_email"})
+		require.NoError(t, db.Exec(
+			`UPDATE automation_workflows SET steps = ?::jsonb WHERE id = ?`, goodStepsText, wf).Error)
 		after, err := repo.CountFlatActionsGate(ctx)
 		require.NoError(t, err)
 		assert.True(t, after.Cleared(), "%+v", after)
 		assert.Zero(t, after.Inert())
 	})
 
-	t.Run("BLOCKING: an unconvertible actions blob the backfill cannot fix", func(t *testing.T) {
+	t.Run("BLOCKING: an unconvertible actions blob nobody can convert automatically", func(t *testing.T) {
 		wf := flatGateWorkflow(t, db, orgID, `{"type":"send_email"}`, nil, false)
 		t.Cleanup(func() { require.NoError(t, db.Exec(`DELETE FROM automation_workflows WHERE id = ?`, wf).Error) })
 
-		require.NoError(t, repo.MigrateFlatActionsToSteps(ctx))
 		c, err := repo.CountFlatActionsGate(ctx)
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), c.WorkflowsBlocking,
@@ -724,9 +711,7 @@ func TestFlatActionsGate_BlockingVsInert(t *testing.T) {
 	})
 
 	t.Run("a version snapshot blocks even when its workflow is fine", func(t *testing.T) {
-		goodSteps, ok := stepsFromFlatActions(datatypes.JSON([]byte(real)))
-		require.True(t, ok)
-		goodStepsText := string(goodSteps)
+		goodStepsText := flatGateStepsText(t, ActionSpec{ID: "a1", Type: "send_email"})
 		wf := flatGateWorkflow(t, db, orgID, real, &goodStepsText, false)
 		ver := flatGateVersion(t, db, wf, 1, real, nil)
 		t.Cleanup(func() {

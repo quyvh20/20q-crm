@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"math/rand"
 	"reflect"
-	"sort"
 	"strings"
 	"testing"
 	"testing/quick"
@@ -148,30 +147,22 @@ func laHasExactErrorField(result *ValidationResult, field string) bool {
 	return false
 }
 
-// paramErrorSuffixes returns the sorted set of "<suffix>|<message>" pairs for
-// every error whose field starts with prefix, with the prefix stripped. This
-// lets flat-array and steps-tree errors be compared independent of their
-// structural prefix.
-func paramErrorSuffixes(result *ValidationResult, prefix string) []string {
-	var out []string
-	for _, e := range result.Errors {
-		if strings.HasPrefix(e.Field, prefix) {
-			out = append(out, strings.TrimPrefix(e.Field, prefix)+"|"+e.Message)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
-// validateLogActivityFlat builds a single-action flat workflow payload around
-// the given params and runs the real validator.
-func validateLogActivityFlat(t *testing.T, params map[string]any) *ValidationResult {
+// validateLogActivityStep builds a single-action-step workflow payload around the given
+// params and runs the real validator.
+//
+// It was validateLogActivityFlat, wrapping the params in a flat actions array. The flat
+// array is gone (R5 deploy 1) but not one of the RULES these properties assert is: they
+// all live in validateActionParams, which validateStepsRecursive still calls for every
+// action step. Only the reported field path moved, from `actions[0].params.…` to
+// `steps[0].action.params.…`, and every assertion below matches on the SUFFIX
+// ("params.activity_type", "params.title") so the properties read identically either way.
+func validateLogActivityStep(t *testing.T, params map[string]any) *ValidationResult {
 	t.Helper()
-	actionsJSON, err := json.Marshal([]ActionSpec{{Type: ActionLogActivity, ID: "a1", Params: params}})
+	stepsJSON, err := json.Marshal(actionSteps(ActionSpec{Type: ActionLogActivity, ID: "a1", Params: params}))
 	if err != nil {
-		t.Fatalf("marshal actions: %v", err)
+		t.Fatalf("marshal steps: %v", err)
 	}
-	return ValidateWorkflowPayload([]byte(validTriggerJSONLA), nil, actionsJSON)
+	return ValidateWorkflowPayload([]byte(validTriggerJSONLA), nil, stepsJSON)
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -201,7 +192,7 @@ func TestLogActivity_Property1_InvalidActivityTypeRejected(t *testing.T) {
 		if in.Present {
 			params["activity_type"] = in.AT
 		}
-		result := validateLogActivityFlat(t, params)
+		result := validateLogActivityStep(t, params)
 		return !result.Valid && laHasErrorWithFieldSuffix(result, "params.activity_type")
 	}
 	cfg := &quick.Config{MaxCount: pbtIterations, Rand: rand.New(rand.NewSource(1))}
@@ -237,7 +228,7 @@ func TestLogActivity_Property2_BlankTitleRejected(t *testing.T) {
 		if in.Present {
 			params["title"] = in.Title
 		}
-		result := validateLogActivityFlat(t, params)
+		result := validateLogActivityStep(t, params)
 		return !result.Valid && laHasErrorWithFieldSuffix(result, "params.title")
 	}
 	cfg := &quick.Config{MaxCount: pbtIterations, Rand: rand.New(rand.NewSource(2))}
@@ -268,10 +259,10 @@ func (prop3Input) Generate(r *rand.Rand, _ int) reflect.Value {
 func TestLogActivity_Property3_ValidTypeAndTitleNoError(t *testing.T) {
 	f := func(in prop3Input) bool {
 		params := map[string]any{"activity_type": in.AT, "title": in.Title}
-		result := validateLogActivityFlat(t, params)
-		// No error may be reported for this action (actions[0].*), and the
+		result := validateLogActivityStep(t, params)
+		// No error may be reported for this action (steps[0].action.*), and the
 		// overall result must be valid.
-		return result.Valid && !laHasErrorWithFieldPrefix(result, "actions[0]")
+		return result.Valid && !laHasErrorWithFieldPrefix(result, stepActionPath)
 	}
 	cfg := &quick.Config{MaxCount: pbtIterations, Rand: rand.New(rand.NewSource(3))}
 	if err := quick.Check(f, cfg); err != nil {
@@ -280,70 +271,22 @@ func TestLogActivity_Property3_ValidTypeAndTitleNoError(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Property 4 — flat-array and steps-tree validation are equivalent
+// Property 4 — RETIRED with the feature it compared against (R5 deploy 1)
 // ─────────────────────────────────────────────────────────────────────────
-
-type prop4Input struct {
-	PresentAT    bool
-	AT           any
-	PresentTitle bool
-	Title        any
-}
-
-func (prop4Input) Generate(r *rand.Rand, _ int) reflect.Value {
-	pa, av := genAnyActivityType(r)
-	pt, tv := genAnyTitle(r)
-	return reflect.ValueOf(prop4Input{PresentAT: pa, AT: av, PresentTitle: pt, Title: tv})
-}
-
-// Feature: log-activity-action, Property 4: For any log_activity action (valid
-// or invalid), validating it inside the flat actions array and inside an
-// equivalent single-step "action" steps tree produces the same number and kind
-// of validation errors, with field paths differing only by their structural
-// prefix (actions[0].params... vs steps[0].action.params...).
 //
-// **Validates: Requirements 2.6**
-func TestLogActivity_Property4_FlatAndStepsEquivalent(t *testing.T) {
-	f := func(in prop4Input) bool {
-		params := map[string]any{}
-		if in.PresentAT {
-			params["activity_type"] = in.AT
-		}
-		if in.PresentTitle {
-			params["title"] = in.Title
-		}
-
-		actionsJSON, err := json.Marshal([]ActionSpec{{Type: ActionLogActivity, ID: "a1", Params: params}})
-		if err != nil {
-			t.Fatalf("marshal actions: %v", err)
-		}
-		stepsJSON, err := json.Marshal([]StepSpec{{
-			Type:   "action",
-			ID:     "a1",
-			Action: &ActionSpec{Type: ActionLogActivity, ID: "a1", Params: params},
-		}})
-		if err != nil {
-			t.Fatalf("marshal steps: %v", err)
-		}
-
-		flat := ValidateWorkflowPayload([]byte(validTriggerJSONLA), nil, actionsJSON)
-		// When steps are present, actions are ignored; pass "[]" for actions.
-		steps := ValidateWorkflowPayload([]byte(validTriggerJSONLA), nil, []byte("[]"), stepsJSON)
-
-		flatErrs := paramErrorSuffixes(flat, "actions[0]")
-		stepErrs := paramErrorSuffixes(steps, "steps[0].action")
-
-		if !reflect.DeepEqual(flatErrs, stepErrs) {
-			t.Logf("flat/steps error mismatch for params=%#v\n  flat=%v\n  steps=%v", params, flatErrs, stepErrs)
-			return false
-		}
-		return flat.Valid == steps.Valid
-	}
-	cfg := &quick.Config{MaxCount: pbtIterations, Rand: rand.New(rand.NewSource(4))}
-	if err := quick.Check(f, cfg); err != nil {
-		t.Fatalf("Property 4 (flat vs steps equivalence) failed: %v", err)
-	}
-}
+// Property 4 asserted that validating a log_activity action inside the flat actions
+// array and inside an equivalent single-step tree produced the same errors, differing
+// only by the structural prefix (actions[0].params… vs steps[0].action.params…).
+//
+// There is no flat array to compare against any more, so the property is not failing —
+// it is unstateable. It is recorded here rather than silently deleted because it is
+// what MADE the deploy-1 test rewrite mechanical: it is the evidence that re-expressing
+// a flat-actions assertion as a steps assertion changes the path and nothing else. The
+// rules it covered are not lost — Properties 1-3 above now exercise exactly the same
+// validateActionParams code through the surviving entry point.
+//
+// paramErrorSuffixes, which existed to strip those two prefixes for comparison, went
+// with it.
 
 // ─────────────────────────────────────────────────────────────────────────
 // Example + smoke tests (Requirements 1.1, 1.2, 1.3, 2.7)
@@ -366,8 +309,8 @@ func TestLogActivity_RegisteredInValidActionTypes(t *testing.T) {
 // Req 1.3: a workflow with a valid log_activity action validates with no
 // unknown-action-type error, and is overall Valid when it is the only action.
 func TestLogActivity_ValidActionHasNoUnknownTypeError(t *testing.T) {
-	actions := `[{"type":"log_activity","id":"a1","params":{"activity_type":"call","title":"Logged a call with {{contact.first_name}}"}}]`
-	result := ValidateWorkflowPayload([]byte(validTriggerJSONLA), nil, []byte(actions))
+	steps := stepsFromActionsJSON(t, []byte(`[{"type":"log_activity","id":"a1","params":{"activity_type":"call","title":"Logged a call with {{contact.first_name}}"}}]`))
+	result := ValidateWorkflowPayload([]byte(validTriggerJSONLA), nil, steps)
 	if !result.Valid {
 		t.Fatalf("expected valid, got errors: %+v", result.Errors)
 	}
@@ -381,19 +324,19 @@ func TestLogActivity_ValidActionHasNoUnknownTypeError(t *testing.T) {
 // Req 2.7: a workflow with TWO invalid log_activity actions reports BOTH errors
 // (validation continues across actions instead of stopping at the first).
 func TestLogActivity_TwoInvalidActionsBothReported(t *testing.T) {
-	actions := `[{"type":"log_activity","id":"a1","params":{}},{"type":"log_activity","id":"a2","params":{}}]`
-	result := ValidateWorkflowPayload([]byte(validTriggerJSONLA), nil, []byte(actions))
+	steps := stepsFromActionsJSON(t, []byte(`[{"type":"log_activity","id":"a1","params":{}},{"type":"log_activity","id":"a2","params":{}}]`))
+	result := ValidateWorkflowPayload([]byte(validTriggerJSONLA), nil, steps)
 	if result.Valid {
 		t.Fatal("expected invalid for two misconfigured log_activity actions")
 	}
-	if !laHasExactErrorField(result, "actions[0].params.activity_type") {
-		t.Fatalf("expected error for actions[0].params.activity_type, got: %+v", result.Errors)
+	if !laHasExactErrorField(result, "steps[0].action.params.activity_type") {
+		t.Fatalf("expected error for steps[0].action.params.activity_type, got: %+v", result.Errors)
 	}
-	if !laHasExactErrorField(result, "actions[1].params.activity_type") {
-		t.Fatalf("expected error for actions[1].params.activity_type, got: %+v", result.Errors)
+	if !laHasExactErrorField(result, "steps[1].action.params.activity_type") {
+		t.Fatalf("expected error for steps[1].action.params.activity_type, got: %+v", result.Errors)
 	}
 	// Both missing-title errors should also be present for completeness.
-	if !laHasExactErrorField(result, "actions[0].params.title") || !laHasExactErrorField(result, "actions[1].params.title") {
+	if !laHasExactErrorField(result, "steps[0].action.params.title") || !laHasExactErrorField(result, "steps[1].action.params.title") {
 		t.Fatalf("expected title errors for both actions, got: %+v", result.Errors)
 	}
 }

@@ -1,4 +1,4 @@
-import type { Workflow, WorkflowRun, WorkflowStep, RunDetailResponse, WorkflowListResponse, TestRunResponse, ActionSpec, TriggerSpec, ConditionGroup } from './types';
+import type { Workflow, WorkflowRun, WorkflowStep, RunDetailResponse, WorkflowListResponse, TestRunResponse, TriggerSpec, ConditionGroup } from './types';
 // apiFetch (bearer + credentials + 401→refresh + optional timeout) and parseJsonSafe
 // (the defensive body reader) are both shared from lib/api — single source of truth.
 import { apiFetch, parseJsonSafe, apiError } from '../../lib/api';
@@ -31,10 +31,8 @@ export async function createWorkflow(data: {
   description?: string;
   trigger: TriggerSpec;
   conditions?: ConditionGroup | null;
-  /** Steps are canonical (A1); the server derives the deprecated flat actions. */
+  /** Steps are the only accepted shape (R5 deploy 1 removed the flat actions field). */
   steps?: WorkflowStep[];
-  /** Deprecated: only for legacy actions-only payloads; ignored when steps present. */
-  actions?: ActionSpec[];
 }): Promise<Workflow> {
   const res = await apiFetch('/api/workflows', {
     method: 'POST',
@@ -56,10 +54,8 @@ export async function updateWorkflow(id: string, data: {
   description?: string;
   trigger?: TriggerSpec;
   conditions?: ConditionGroup | null;
-  /** Steps are canonical (A1); the server derives the deprecated flat actions. */
+  /** Steps are the only accepted shape (R5 deploy 1 removed the flat actions field). */
   steps?: WorkflowStep[];
-  /** Deprecated: only for legacy actions-only payloads; ignored when steps present. */
-  actions?: ActionSpec[];
 }): Promise<Workflow> {
   const res = await apiFetch(`/api/workflows/${id}`, {
     method: 'PUT',

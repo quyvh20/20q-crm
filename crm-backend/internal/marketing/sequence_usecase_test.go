@@ -36,10 +36,19 @@ func TestWorkflowHasMarketingSend(t *testing.T) {
 			wf:   &automation.Workflow{Steps: datatypes.JSON(`[{"type":"action","id":"s1","action":{"type":"create_task","id":"s1","params":{}}}]`)},
 			want: false,
 		},
+		// The deprecated flat-Actions FALLBACK is gone (R5 deploy 1) — flattenWorkflowActions
+		// reads the steps tree and nothing else, exactly as its contract always said it
+		// would once the column went. A workflow with no steps executes nothing, so it is
+		// not a drip sequence.
 		{
-			name: "falls back to deprecated Actions when Steps is empty",
-			wf:   &automation.Workflow{Actions: datatypes.JSON(`[{"type":"send_email","id":"s1","params":{"channel":"marketing","content_id":"x"}}]`)},
-			want: true,
+			name: "no steps at all is not a drip sequence",
+			wf:   &automation.Workflow{},
+			want: false,
+		},
+		{
+			name: "unparseable steps is not a drip sequence",
+			wf:   &automation.Workflow{Steps: datatypes.JSON(`{not a steps array`)},
+			want: false,
 		},
 	}
 	for _, c := range cases {

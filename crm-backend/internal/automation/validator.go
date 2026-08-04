@@ -25,8 +25,26 @@ type ValidationResult struct {
 	Warnings []string          `json:"warnings,omitempty"`
 }
 
-// ValidateWorkflowPayload validates trigger, conditions, and actions/steps payloads.
-func ValidateWorkflowPayload(triggerJSON, conditionsJSON, actionsJSON []byte, stepsJSON ...[]byte) *ValidationResult {
+// hasSteps reports whether a steps JSON payload holds a non-empty tree. SQL NULL
+// (no bytes), the jsonb scalar `null` and the empty array `[]` all mean "no tree".
+//
+// The '[]' case is the one that matters and it is not hypothetical: while the flat
+// actions fallback existed, `steps: []` fell THROUGH to validateActions, so a
+// workflow that executed nothing could be created through the live API and then sat
+// permanently un-gateable (see the R5 teardown gate's inert-row counts). Requiring a
+// non-empty tree is what closes that.
+func hasSteps(steps []byte) bool {
+	return len(steps) > 0 && string(steps) != "null" && string(steps) != "[]"
+}
+
+// ValidateWorkflowPayload validates a workflow's trigger, conditions and steps tree.
+//
+// A NON-EMPTY STEPS TREE IS REQUIRED. The deprecated flat `actions` array is gone
+// (R5 deploy 1) along with the fallback that used to validate it, so there is no
+// longer any shape of payload that produces a workflow with nothing to execute. Both
+// an actions-only body and an explicit `steps: []` are rejected here with an error on
+// the `steps` field; the handlers surface it as a 400.
+func ValidateWorkflowPayload(triggerJSON, conditionsJSON, stepsJSON []byte) *ValidationResult {
 	result := &ValidationResult{Valid: true}
 
 	// Validate trigger
@@ -37,17 +55,16 @@ func ValidateWorkflowPayload(triggerJSON, conditionsJSON, actionsJSON []byte, st
 		validateConditions(conditionsJSON, result)
 	}
 
-	// Validate steps (recursive tree) or legacy actions (flat array)
-	var steps []byte
-	if len(stepsJSON) > 0 {
-		steps = stepsJSON[0]
+	if !hasSteps(stepsJSON) {
+		result.Valid = false
+		result.Errors = append(result.Errors, ValidationError{
+			Field: "steps",
+			Message: "a workflow needs at least one step — add an action, condition or delay " +
+				"to the canvas. (The deprecated flat 'actions' list is no longer accepted.)",
+		})
+		return result
 	}
-
-	if len(steps) > 0 && string(steps) != "null" && string(steps) != "[]" {
-		validateSteps(steps, result)
-	} else {
-		validateActions(actionsJSON, result)
-	}
+	validateSteps(stepsJSON, result)
 
 	return result
 }
@@ -486,69 +503,10 @@ func validateConditionRules(rules []ConditionRule, path string, result *Validati
 	}
 }
 
-func validateActions(data []byte, result *ValidationResult) {
-	if len(data) == 0 {
-		result.Valid = false
-		result.Errors = append(result.Errors, ValidationError{
-			Field:   "actions",
-			Message: "actions array is required",
-		})
-		return
-	}
-
-	var actions []ActionSpec
-	if err := json.Unmarshal(data, &actions); err != nil {
-		result.Valid = false
-		result.Errors = append(result.Errors, ValidationError{
-			Field:   "actions",
-			Message: fmt.Sprintf("invalid actions JSON: %s", err.Error()),
-		})
-		return
-	}
-
-	if len(actions) == 0 {
-		result.Valid = false
-		result.Errors = append(result.Errors, ValidationError{
-			Field:   "actions",
-			Message: "at least one action is required",
-		})
-		return
-	}
-
-	// Check for duplicate action IDs
-	idSet := make(map[string]bool)
-	for i, action := range actions {
-		actionPath := fmt.Sprintf("actions[%d]", i)
-
-		if action.ID == "" {
-			result.Valid = false
-			result.Errors = append(result.Errors, ValidationError{
-				Field:   actionPath + ".id",
-				Message: "action id is required",
-			})
-		} else if idSet[action.ID] {
-			result.Valid = false
-			result.Errors = append(result.Errors, ValidationError{
-				Field:   actionPath + ".id",
-				Message: fmt.Sprintf("duplicate action id: '%s'", action.ID),
-			})
-		} else {
-			idSet[action.ID] = true
-		}
-
-		if !ValidActionTypes[action.Type] {
-			result.Valid = false
-			result.Errors = append(result.Errors, ValidationError{
-				Field:   actionPath + ".type",
-				Message: fmt.Sprintf("unknown action type: '%s'", action.Type),
-			})
-		}
-
-		// Type-specific validation
-		validateActionParams(action, actionPath, result)
-	}
-}
-
+// validateActionParams runs the per-action-type parameter checks. Its ONLY caller is
+// validateStepsRecursive (case "action") — the flat-array entry point that used to
+// share it is gone. Every rule below is therefore live on the steps path, reported at
+// `steps[…].action.params.…`.
 func validateActionParams(action ActionSpec, path string, result *ValidationResult) {
 	switch action.Type {
 	case ActionSendEmail:
@@ -683,11 +641,17 @@ func validateActionParams(action ActionSpec, path string, result *ValidationResu
 			})
 		}
 	case ActionDelay:
+		// A delay reaches this branch when it is authored as an ACTION step —
+		// {"type":"action","action":{"type":"delay",…}} — rather than as a delay STEP.
+		// That shape is still reachable through the API (ValidActionTypes contains
+		// "delay", so validateStepsRecursive accepts it) and it executes through
+		// DelayExecutor rather than the durable wake_at path, so its params must still
+		// be checked here. See TestDelayAsActionStep_IsReachable.
+		//
 		// Wait-until delay (A4.4): until_field set → validate at_time/timezone if
 		// present and skip the fixed-duration checks (a field-based wait can be
-		// months out). Mirrors validateDelayParams so this deprecated flat-actions
-		// path agrees with the canonical steps path — otherwise a wait-until delay
-		// in an actions-only body would be wrongly rejected with 400.
+		// months out). Mirrors validateDelayParams so an action-shaped delay agrees
+		// with a delay step.
 		if uf, _ := action.Params["until_field"].(string); uf != "" {
 			if at, ok := action.Params["at_time"].(string); ok && at != "" {
 				if _, _, valid := parseHHMM(at); !valid {

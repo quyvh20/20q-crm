@@ -8,7 +8,7 @@ import type { Workflow, WorkflowListResponse } from '../types';
  * Permission gating for WorkflowList.
  *
  * Server truth CHANGED in R2: the reads are no longer open to any member. The list
- * response embeds each workflow's `steps`/`actions`, and a send_webhook step keeps
+ * response embeds each workflow's full `steps` tree, and a send_webhook step keeps
  * its `headers` map verbatim — which is where an Authorization: Bearer for the
  * called system lives. So the list itself was handing third-party credentials to
  * anyone authenticated, and GET list/detail/runs are all workflows.manage-gated
@@ -66,7 +66,6 @@ function makeWorkflow(over: Partial<Workflow> = {}): Workflow {
     is_active: true,
     trigger: { type: 'contact_created' },
     conditions: null,
-    actions: [],
     action_count: 0,
     version: 1,
     created_by: 'author-x',

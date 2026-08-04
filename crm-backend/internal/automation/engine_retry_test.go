@@ -2,7 +2,6 @@ package automation
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -66,12 +65,17 @@ func (e *failOnceExecutor) getCalls() []int {
 }
 
 // TestIntegration_RetryRun_ResumesFromFailedStep:
-//  1. Runs a 3-action workflow; action[1] fails non-retryably on the first pass.
-//  2. Asserts the run is FAILED with action[0,1] completed, action[2] not.
+//  1. Runs a 3-step workflow; action[2] fails non-retryably on the first pass.
+//  2. Asserts the run is FAILED with step[0,1] holding SUCCESS logs and step[2] not.
 //  3. Calls RetryRun and asserts the run is back to PENDING with retry bookkeeping cleared
-//     but CompletedActions preserved, and that it was re-queued on the jobs channel.
+//     but those success logs preserved, and that it was re-queued on the jobs channel.
 //  4. Re-processes and asserts the run COMPLETES, that action[0] and action[1] are NOT
 //     re-executed, and that execution resumed exactly at the failed step (calls == [0,1,2,2]).
+//
+// Progress is read from the ACTION LOGS rather than the run's completed_actions column.
+// That is where the steps executor keeps it: processRun rebuilds the completed set by
+// walking the success logs' structural paths, and completed_actions / current_action_idx
+// are written by nobody since R5 deploy 1 removed the flat executor.
 func TestIntegration_RetryRun_ResumesFromFailedStep(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping DB-backed integration test in short mode")
@@ -81,7 +85,7 @@ func TestIntegration_RetryRun_ResumesFromFailedStep(t *testing.T) {
 	defer cleanup()
 
 	orgID := uuid.New()
-	wf := createTestWorkflow(t, db, orgID, 3) // flat actions action_0..2
+	wf := createTestWorkflow(t, db, orgID, 3) // steps action_0..2 at paths "0".."2"
 	repo := NewRepository(db)
 	exec := newFailOnceExecutor(2) // fail at the LAST action (action[2]) on the first pass
 
@@ -108,10 +112,13 @@ func TestIntegration_RetryRun_ResumesFromFailedStep(t *testing.T) {
 	failedRun, err := repo.GetRunByID(context.Background(), run.ID)
 	require.NoError(t, err)
 	require.Equal(t, StatusFailed, failedRun.Status, "run must fail at action[2] on the first pass")
-	completed := GetCompletedActionIndices(failedRun)
-	assert.True(t, completed[0], "action[0] completed before the failure")
-	assert.True(t, completed[1], "action[1] completed before the failure")
-	assert.False(t, completed[2], "the failed action[2] must not be marked completed")
+	failedLogs, err := repo.GetActionLogsByRunID(context.Background(), run.ID)
+	require.NoError(t, err)
+	byPath := logStatusesByPath(failedLogs)
+	assert.Equal(t, 1, byPath["0"][LogStatusSuccess], "action[0] completed before the failure")
+	assert.Equal(t, 1, byPath["1"][LogStatusSuccess], "action[1] completed before the failure")
+	assert.Zero(t, byPath["2"][LogStatusSuccess], "the failed action[2] must not be marked completed")
+	assert.Equal(t, 1, byPath["2"][LogStatusFailed], "action[2] has a failed log")
 	assert.Equal(t, []int{0, 1, 2}, exec.getCalls(), "first pass runs action[0], action[1], then fails at action[2]")
 
 	// --- Manual retry: resume, do not restart ---
@@ -123,8 +130,13 @@ func TestIntegration_RetryRun_ResumesFromFailedStep(t *testing.T) {
 	assert.Equal(t, 0, pendingRun.RetryCount, "retry resets the retry counter")
 	assert.Empty(t, pendingRun.LastError, "retry clears the last error")
 	assert.Nil(t, pendingRun.FinishedAt, "retry clears the terminal finished_at marker")
-	assert.True(t, GetCompletedActionIndices(pendingRun)[0] && GetCompletedActionIndices(pendingRun)[1],
-		"completed actions[0,1] are preserved across retry (resume from failure point)")
+	pendingLogs, err := repo.GetActionLogsByRunID(context.Background(), run.ID)
+	require.NoError(t, err)
+	pendingByPath := logStatusesByPath(pendingLogs)
+	assert.Equal(t, 1, pendingByPath["0"][LogStatusSuccess],
+		"the success log for step[0] survives the retry reset — it IS the resume state")
+	assert.Equal(t, 1, pendingByPath["1"][LogStatusSuccess],
+		"the success log for step[1] survives the retry reset")
 
 	// RetryRun enqueues the run; drain it so a single processRun mirrors a worker pop.
 	select {
@@ -229,8 +241,8 @@ func TestIntegration_RetryRun_RaceWithCrashRecovery(t *testing.T) {
 // workflow version the run was pinned to at creation, NOT a newer edited version. A run
 // pinned to v1 (one action) fails; the workflow is then edited to v2 (a second action is
 // added); the retry must still execute only v1's action. This is consistent with resume
-// semantics — CompletedActions / CurrentActionIdx index into the pinned version, so adopting
-// a newer version mid-run would corrupt the resume point.
+// semantics — the resume state is keyed by structural path into the pinned version's steps
+// tree, so adopting a newer version mid-run would corrupt the resume point.
 func TestIntegration_RetryRun_UsesPinnedWorkflowVersion(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping DB-backed integration test in short mode")
@@ -270,13 +282,11 @@ func TestIntegration_RetryRun_UsesPinnedWorkflowVersion(t *testing.T) {
 	require.Equal(t, 1, failed.WorkflowVersion)
 	require.Equal(t, []int{0}, exec.getCalls())
 
-	// Edit the workflow → v2 with a SECOND action. The failed run stays pinned to v1.
-	twoActions, _ := json.Marshal([]ActionSpec{
-		{ID: "action_0", Type: "test_action", Params: map[string]any{}},
-		{ID: "action_1", Type: "test_action", Params: map[string]any{}},
-	})
-	wf.Actions = datatypes.JSON(twoActions)
-	wf.Steps = nil // keep the flat-actions path; UpdateWorkflow snapshots whatever is set
+	// Edit the workflow → v2 with a SECOND step. The failed run stays pinned to v1.
+	wf.Steps = actionStepsJSON(t,
+		ActionSpec{ID: "action_0", Type: "test_action", Params: map[string]any{}},
+		ActionSpec{ID: "action_1", Type: "test_action", Params: map[string]any{}},
+	)
 	require.NoError(t, repo.UpdateWorkflow(context.Background(), wf))
 	require.Equal(t, 2, wf.Version, "editing the workflow must bump it to v2")
 
@@ -382,9 +392,12 @@ func TestIntegration_RetryRun_DefinitionOfDone(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, StatusFailed, failed.Status, "run fails after the initial attempt + 3 auto-retries")
 	require.Equal(t, 4, exec.action2Calls, "action[2] attempted 4 times in the auto phase (initial + 3 retries)")
-	completed := GetCompletedActionIndices(failed)
-	require.True(t, completed[0] && completed[1], "action[0,1] completed before action[2] failed")
-	require.False(t, completed[2], "the failed action[2] is not marked completed")
+	autoLogs, err := repo.GetActionLogsByRunID(context.Background(), run.ID)
+	require.NoError(t, err)
+	autoByPath := logStatusesByPath(autoLogs)
+	require.Equal(t, 1, autoByPath["0"][LogStatusSuccess], "action[0] completed before action[2] failed")
+	require.Equal(t, 1, autoByPath["1"][LogStatusSuccess], "action[1] completed before action[2] failed")
+	require.Zero(t, autoByPath["2"][LogStatusSuccess], "the failed action[2] is not marked completed")
 
 	// --- Manual retry: pending → resume → action[2] re-executes (0,1 skipped) → completed. ---
 	require.NoError(t, engine.RetryRun(context.Background(), run.ID))
@@ -404,29 +417,27 @@ func TestIntegration_RetryRun_DefinitionOfDone(t *testing.T) {
 	require.Equal(t, StatusCompleted, final.Status, "the resumed run completes")
 	assert.Equal(t, 5, exec.action2Calls, "action[2] ran a 5th time on the manual resume and succeeded")
 
-	// --- Verify action_logs: action[0]=1, action[1]=1, action[2]=5. ---
+	// --- Verify action_logs, keyed by STRUCTURAL PATH: "0"=1, "1"=1, "2"=5. ---
 	logs, err := repo.GetActionLogsByRunID(context.Background(), run.ID)
 	require.NoError(t, err)
 
-	perIdx := map[int]int{}
-	statusOf := map[int]map[string]int{}
-	for _, l := range logs {
-		perIdx[l.ActionIdx]++
-		if statusOf[l.ActionIdx] == nil {
-			statusOf[l.ActionIdx] = map[string]int{}
+	statusOf := logStatusesByPath(logs)
+	perPath := map[string]int{}
+	for path, counts := range statusOf {
+		for _, n := range counts {
+			perPath[path] += n
 		}
-		statusOf[l.ActionIdx][l.Status]++
 	}
 
-	assert.Equal(t, 1, perIdx[0], "action[0] has exactly one log entry (ran once, never re-executed)")
-	assert.Equal(t, 1, perIdx[1], "action[1] has exactly one log entry")
-	assert.Equal(t, 5, perIdx[2], "action[2] has five log entries")
+	assert.Equal(t, 1, perPath["0"], "action[0] has exactly one log entry (ran once, never re-executed)")
+	assert.Equal(t, 1, perPath["1"], "action[1] has exactly one log entry")
+	assert.Equal(t, 5, perPath["2"], "action[2] has five log entries")
 
-	assert.Equal(t, LogStatusSuccess, onlyStatus(statusOf[0]), "action[0]'s single entry is success")
-	assert.Equal(t, LogStatusSuccess, onlyStatus(statusOf[1]), "action[1]'s single entry is success")
-	assert.Equal(t, 3, statusOf[2][LogStatusRetrying], "action[2]: three retrying entries (auto)")
-	assert.Equal(t, 1, statusOf[2][LogStatusFailed], "action[2]: one failed entry (auto budget exhausted)")
-	assert.Equal(t, 1, statusOf[2][LogStatusSuccess], "action[2]: one success entry (manual resume)")
+	assert.Equal(t, LogStatusSuccess, onlyStatus(statusOf["0"]), "action[0]'s single entry is success")
+	assert.Equal(t, LogStatusSuccess, onlyStatus(statusOf["1"]), "action[1]'s single entry is success")
+	assert.Equal(t, 3, statusOf["2"][LogStatusRetrying], "action[2]: three retrying entries (auto)")
+	assert.Equal(t, 1, statusOf["2"][LogStatusFailed], "action[2]: one failed entry (auto budget exhausted)")
+	assert.Equal(t, 1, statusOf["2"][LogStatusSuccess], "action[2]: one success entry (manual resume)")
 }
 
 // onlyStatus returns the single status key in a {status: count} map (count is assumed 1),

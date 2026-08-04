@@ -697,12 +697,13 @@ func (uc *systemTemplateUseCase) applyWorkflows(
 			continue
 		}
 
-		// Actions is NOT NULL and must be derived, never hand-written. A nil flatten
-		// result (condition-only tree) has to become [] or the insert violates the column.
+		// The flattened action list is what shouldActivate inspects below. It is NOT
+		// persisted any more — the deprecated `actions` column lost its Go field in R5
+		// deploy 1 and now fills itself from its own DEFAULT — but the flatten call is
+		// NOT dead with it: it is the ONLY thing that lets the activation policy see
+		// actions buried inside If/Else branches. Feed shouldActivate an empty slice and
+		// every template workflow becomes auto-activatable, send_email included.
 		actions := automation.FlattenStepsToActions(steps)
-		if actions == nil {
-			actions = []automation.ActionSpec{}
-		}
 		params, resolveErr := resolveTriggerParams(w.Trigger, stageIDs)
 		if resolveErr != nil {
 			result.Items = append(result.Items, domain.TemplateApplyItem{
@@ -720,10 +721,9 @@ func (uc *systemTemplateUseCase) applyWorkflows(
 			})
 			continue
 		}
-		actionsJSON, _ := json.Marshal(actions)
 		stepsJSON, _ := json.Marshal(steps)
 
-		if vr := automation.ValidateWorkflowPayload(triggerJSON, nil, actionsJSON, stepsJSON); vr != nil && !vr.Valid {
+		if vr := automation.ValidateWorkflowPayload(triggerJSON, nil, stepsJSON); vr != nil && !vr.Valid {
 			msgs := make([]string, 0, len(vr.Errors))
 			for _, e := range vr.Errors {
 				msgs = append(msgs, e.Field+": "+e.Message)
@@ -742,7 +742,6 @@ func (uc *systemTemplateUseCase) applyWorkflows(
 			Description: w.Description,
 			IsActive:    active,
 			Trigger:     triggerJSON,
-			Actions:     actionsJSON,
 			Steps:       stepsJSON,
 			// CreatedBy is the workflow's SECURITY PRINCIPAL at run time — an
 			// unresolvable author degrades to a restricted caller under which record

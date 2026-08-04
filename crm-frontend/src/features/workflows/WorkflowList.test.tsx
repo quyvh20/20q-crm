@@ -131,7 +131,6 @@ function makeWorkflow(over: Partial<Workflow> = {}): Workflow {
     is_active: true,
     trigger: { type: 'contact_created' },
     conditions: null,
-    actions: [],
     action_count: 0,
     version: 1,
     created_by: 'user-1',
@@ -248,6 +247,40 @@ describe('WorkflowList — run-started toast and View run link', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/workflows/wf-contact/history', {
       state: { highlightRunId: 'run-started-1' },
     });
+  });
+});
+
+// ── R5 deploy 1: the per-row step count comes from the server, not a flat mirror ──
+// The row used to render `wf.action_count || wf.actions?.length || 0`, and the flat
+// `actions` array is gone from the wire. Nothing else pins this column, so a
+// regression to a blank or always-zero count would ship silently.
+describe('WorkflowList — action count column', () => {
+  it('renders the server-derived count for each row, pluralised', async () => {
+    mockGetWorkflows.mockResolvedValue(
+      listResponse([
+        makeWorkflow({ id: 'wf-many', name: 'Long Drip', action_count: 4 }),
+        makeWorkflow({ id: 'wf-one', name: 'Single Step', action_count: 1 }),
+      ]),
+    );
+
+    renderList();
+    await screen.findByText('Long Drip');
+
+    // action_count counts actions AND delays across both If/Else branches, so a
+    // branching workflow legitimately reports more than its root list length.
+    expect(screen.getByText('4 actions')).toBeInTheDocument();
+    expect(screen.getByText('1 action')).toBeInTheDocument();
+  });
+
+  it('renders a genuinely empty workflow as "0 actions"', async () => {
+    mockGetWorkflows.mockResolvedValue(
+      listResponse([makeWorkflow({ id: 'wf-empty', name: 'Empty Flow', action_count: 0 })]),
+    );
+
+    renderList();
+    await screen.findByText('Empty Flow');
+
+    expect(screen.getByText('0 actions')).toBeInTheDocument();
   });
 });
 

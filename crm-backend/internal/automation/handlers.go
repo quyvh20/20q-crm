@@ -258,30 +258,6 @@ func (h *Handler) RegisterRoutes(router *gin.Engine, protected []gin.HandlerFunc
 
 // --- Workflow CRUD ---
 
-// hasSteps reports whether a steps JSON payload holds a non-empty tree.
-func hasSteps(steps datatypes.JSON) bool {
-	return len(steps) > 0 && string(steps) != "null" && string(steps) != "[]"
-}
-
-// deriveActionsFromSteps re-derives the deprecated flat actions column from
-// the canonical steps tree so legacy consumers (TestRun, the flat execution
-// path) keep working until the column's scheduled removal (A8, 2026-09-01).
-func deriveActionsFromSteps(stepsJSON datatypes.JSON) (datatypes.JSON, error) {
-	var steps []StepSpec
-	if err := json.Unmarshal(stepsJSON, &steps); err != nil {
-		return nil, err
-	}
-	flat := FlattenStepsToActions(steps)
-	if flat == nil {
-		flat = []ActionSpec{}
-	}
-	out, err := json.Marshal(flat)
-	if err != nil {
-		return nil, err
-	}
-	return datatypes.JSON(out), nil
-}
-
 // CreateWorkflow handles POST /api/workflows
 func (h *Handler) CreateWorkflow(c *gin.Context) {
 	orgID, userID := h.getContext(c)
@@ -295,20 +271,10 @@ func (h *Handler) CreateWorkflow(c *gin.Context) {
 		return
 	}
 
-	// Steps are the canonical format: when present, the deprecated flat actions
-	// column is derived server-side and any client-sent actions are ignored.
-	// Actions-only bodies stay accepted until the column's removal (A8).
-	if hasSteps(req.Steps) {
-		derived, err := deriveActionsFromSteps(req.Steps)
-		if err != nil {
-			h.errorResponse(c, http.StatusBadRequest, "VALIDATION_FAILED", "invalid steps JSON: "+err.Error(), nil)
-			return
-		}
-		req.Actions = derived
-	}
-
-	// Validate JSON payloads
-	result := ValidateWorkflowPayload(req.Trigger, req.Conditions, req.Actions, req.Steps)
+	// Steps are now the ONLY accepted format. A body with no steps (or an empty tree)
+	// is rejected by the validator with a message naming `steps` — see
+	// ValidateWorkflowPayload. Nothing derives a flat action list any more.
+	result := ValidateWorkflowPayload(req.Trigger, req.Conditions, req.Steps)
 	if !result.Valid {
 		h.errorResponse(c, http.StatusBadRequest, "VALIDATION_FAILED", "workflow payload validation failed", result.Errors)
 		return
@@ -320,7 +286,6 @@ func (h *Handler) CreateWorkflow(c *gin.Context) {
 		Description: req.Description,
 		Trigger:     req.Trigger,
 		Conditions:  req.Conditions,
-		Actions:     req.Actions,
 		Steps:       req.Steps,
 		CreatedBy:   userID,
 	}
@@ -468,26 +433,13 @@ func (h *Handler) UpdateWorkflow(c *gin.Context) {
 	if req.Conditions != nil {
 		wf.Conditions = req.Conditions
 	}
-	if req.Actions != nil {
-		wf.Actions = req.Actions
-	}
 	if req.Steps != nil {
 		wf.Steps = req.Steps
 	}
 
-	// Steps are canonical: re-derive the deprecated flat actions from the
-	// effective steps tree, overriding any client-sent actions (A1).
-	if hasSteps(wf.Steps) {
-		derived, err := deriveActionsFromSteps(wf.Steps)
-		if err != nil {
-			h.errorResponse(c, http.StatusBadRequest, "VALIDATION_FAILED", "invalid steps JSON: "+err.Error(), nil)
-			return
-		}
-		wf.Actions = derived
-	}
-
-	// Re-validate
-	result := ValidateWorkflowPayload(wf.Trigger, wf.Conditions, wf.Actions, wf.Steps)
+	// Re-validate. An update that blanks the steps tree is rejected for the same reason
+	// a create with no steps is: it would leave a live workflow that executes nothing.
+	result := ValidateWorkflowPayload(wf.Trigger, wf.Conditions, wf.Steps)
 	if !result.Valid {
 		h.errorResponse(c, http.StatusBadRequest, "VALIDATION_FAILED", "workflow payload validation failed", result.Errors)
 		return

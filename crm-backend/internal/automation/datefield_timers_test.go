@@ -134,13 +134,11 @@ func createDateFieldWF(t *testing.T, repo *Repository, orgID uuid.UUID, object, 
 	}})
 	steps := []StepSpec{{Type: "action", ID: "a1", Action: &ActionSpec{ID: "a1", Type: "test_action", Params: map[string]any{}}}}
 	stepsJSON, _ := json.Marshal(steps)
-	actJSON, _ := json.Marshal(FlattenStepsToActions(steps))
 	wf := &Workflow{
 		OrgID:     orgID,
 		Name:      "df-" + uuid.NewString()[:8],
 		IsActive:  active,
 		Trigger:   datatypes.JSON(trig),
-		Actions:   datatypes.JSON(actJSON),
 		Steps:     datatypes.JSON(stepsJSON),
 		CreatedBy: uuid.New(),
 	}

@@ -42,13 +42,12 @@ func (e *idRecordingExecutor) executed() []string {
 }
 
 // createStepsWorkflow inserts an active workflow + pinned version whose
-// definition is the given steps tree (canonical A1 format; flat actions derived).
+// definition is the given steps tree — the only definition format there is.
 func createStepsWorkflow(t *testing.T, db *gorm.DB, orgID uuid.UUID, steps []StepSpec) *Workflow {
 	t.Helper()
 
 	trigger, _ := json.Marshal(map[string]any{"type": "webhook_inbound"})
 	stepsJSON, _ := json.Marshal(steps)
-	actionsJSON, _ := json.Marshal(FlattenStepsToActions(steps))
 
 	wf := &Workflow{
 		ID:        uuid.New(),
@@ -56,7 +55,6 @@ func createStepsWorkflow(t *testing.T, db *gorm.DB, orgID uuid.UUID, steps []Ste
 		Name:      fmt.Sprintf("delay-test-%s", uuid.New().String()[:8]),
 		IsActive:  true,
 		Trigger:   datatypes.JSON(trigger),
-		Actions:   datatypes.JSON(actionsJSON),
 		Steps:     datatypes.JSON(stepsJSON),
 		Version:   1,
 		CreatedBy: uuid.New(),
@@ -68,7 +66,6 @@ func createStepsWorkflow(t *testing.T, db *gorm.DB, orgID uuid.UUID, steps []Ste
 		WorkflowID: wf.ID,
 		Version:    1,
 		Trigger:    wf.Trigger,
-		Actions:    wf.Actions,
 		Steps:      wf.Steps,
 	}
 	require.NoError(t, db.Create(ver).Error)
@@ -418,32 +415,16 @@ func TestFlattenStepsToActions(t *testing.T) {
 	assert.Empty(t, FlattenStepsToActions(nil))
 }
 
-func TestDeriveActionsFromSteps(t *testing.T) {
+// hasSteps is now a CONTROL rather than a routing hint: it is what
+// ValidateWorkflowPayload rejects a workflow on, and what processRun refuses to
+// execute. The '[]' case is the one with history — while the flat fallback existed,
+// steps='[]' fell through to the actions validator and produced a live workflow that
+// executed nothing.
+func TestHasSteps(t *testing.T) {
 	assert.False(t, hasSteps(nil))
 	assert.False(t, hasSteps(datatypes.JSON(`null`)))
 	assert.False(t, hasSteps(datatypes.JSON(`[]`)))
 	assert.True(t, hasSteps(datatypes.JSON(`[{"type":"action","id":"a1"}]`)))
-
-	stepsJSON := datatypes.JSON(`[
-		{"type":"action","id":"a1","action":{"id":"a1","type":"send_email","params":{"to":"x"}}},
-		{"type":"delay","id":"d1","delay":{"duration_sec":60}}
-	]`)
-	derived, err := deriveActionsFromSteps(stepsJSON)
-	require.NoError(t, err)
-	var actions []ActionSpec
-	require.NoError(t, json.Unmarshal(derived, &actions))
-	require.Len(t, actions, 2)
-	assert.Equal(t, "a1", actions[0].ID)
-	assert.Equal(t, ActionDelay, actions[1].Type)
-
-	// An all-condition tree (no executable steps) derives an empty array, not null.
-	condOnly := datatypes.JSON(`[{"type":"condition","id":"c1","condition":{"field":"x","operator":"eq","value":1}}]`)
-	derived, err = deriveActionsFromSteps(condOnly)
-	require.NoError(t, err)
-	assert.Equal(t, `[]`, string(derived))
-
-	_, err = deriveActionsFromSteps(datatypes.JSON(`{not valid`))
-	require.Error(t, err)
 }
 
 func TestHasAnyStepStarted_MatchesStructuralPaths(t *testing.T) {

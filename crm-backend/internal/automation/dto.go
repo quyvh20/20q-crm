@@ -10,22 +10,31 @@ import (
 // --- Request DTOs ---
 
 // CreateWorkflowRequest is the request body for creating a workflow.
+//
+// There is no `actions` field: the flat action list was removed in R5 deploy 1 and a
+// non-empty `steps` tree is now REQUIRED (see ValidateWorkflowPayload). An
+// actions-only body is not silently ignored — it is rejected with a 400 naming
+// `steps`, because silently accepting one would create a workflow that runs nothing.
+//
+// The asymmetry with WorkflowResponse.Actions (which still exists, derived) is
+// deliberate and temporary: the API must stop ACCEPTING a flat list immediately, but it
+// keeps EMITTING one for one more deploy so cached bundles can still save. Read the
+// field comment there before deleting either half.
 type CreateWorkflowRequest struct {
 	Name        string          `json:"name" binding:"required,min=1,max=200"`
 	Description string          `json:"description" binding:"max=1000"`
 	Trigger     datatypes.JSON  `json:"trigger" binding:"required"`
 	Conditions  datatypes.JSON  `json:"conditions"`
-	Actions     datatypes.JSON  `json:"actions"`
 	Steps       datatypes.JSON  `json:"steps"`
 }
 
-// UpdateWorkflowRequest is the request body for updating a workflow.
+// UpdateWorkflowRequest is the request body for updating a workflow. See
+// CreateWorkflowRequest on the absent `actions` field.
 type UpdateWorkflowRequest struct {
 	Name        *string         `json:"name" binding:"omitempty,min=1,max=200"`
 	Description *string         `json:"description" binding:"omitempty,max=1000"`
 	Trigger     datatypes.JSON  `json:"trigger"`
 	Conditions  datatypes.JSON  `json:"conditions"`
-	Actions     datatypes.JSON  `json:"actions"`
 	Steps       datatypes.JSON  `json:"steps"`
 }
 
@@ -59,8 +68,38 @@ type WorkflowResponse struct {
 	IsActive      bool           `json:"is_active"`
 	Trigger       datatypes.JSON `json:"trigger"`
 	Conditions    datatypes.JSON `json:"conditions"`
-	Actions       datatypes.JSON `json:"actions"`
 	Steps         datatypes.JSON `json:"steps,omitempty"`
+	// Actions is a COMPATIBILITY SHIM FOR CACHED FRONTEND BUNDLES. REMOVE IN R5 DEPLOY 2,
+	// with the column, the gate and this comment — not before.
+	//
+	// It is NOT the deprecated column. Nothing reads `actions` from the database any
+	// more; this is FlattenStepsToActions(steps), derived on the way out, so it is
+	// correct on a database where the column is empty and it disappears cleanly when
+	// this field goes.
+	//
+	// WHY IT HAS TO SURVIVE ONE MORE DEPLOY. A browser tab that loaded the pre-deploy-1
+	// bundle and was never reloaded (a CRM tab left open all day — `public/_headers`
+	// sets no Cache-Control, so only a reload revalidates) keeps its own copy of the
+	// builder store, which does `actions: changed ? flattenSteps(steps) : (wf.actions || [])`.
+	// Drop the field and that store loads every workflow with actions = [], which does
+	// not crash — it does something quieter and worse:
+	//
+	//   - its zod schema requires actions.min(1), handleSave early-returns on a failed
+	//     validate(), and nothing renders store.errors, so SAVE SILENTLY DOES NOTHING,
+	//     with no toast and no error text anywhere near the button;
+	//   - ActionConfig resolves the selected node with actions.find(...), gets undefined
+	//     and renders a blank config panel for every action and delay node;
+	//   - the sequences page's drip picker lists nothing.
+	//
+	// Emitting the derived list keeps those tabs fully working until they reload: the
+	// old bundle's SAVE payload is already steps-only (buildSavePayload), so its copy of
+	// `actions` never had to survive a round trip — it only has to be non-empty for the
+	// save to be attempted at all.
+	//
+	// The REQUEST DTOs are a separate question and are already right: CreateWorkflowRequest
+	// and UpdateWorkflowRequest have no `actions` field, so the API cannot be talked into
+	// accepting a flat list even by a client that sends one.
+	Actions       []ActionSpec   `json:"actions"`
 	ActionCount   int            `json:"action_count"`
 	Version       int            `json:"version"`
 	CreatedBy     uuid.UUID      `json:"created_by"`
@@ -265,18 +304,27 @@ func ToEmailTemplateResponse(t *EmailTemplate) EmailTemplateResponse {
 
 // ToWorkflowResponse converts a Workflow model to a response DTO.
 func ToWorkflowResponse(wf *Workflow) WorkflowResponse {
-	// Count actions from JSON array or steps tree
-	var actionCount int
+	// The steps tree is the only source of BOTH the action count and the derived
+	// `actions` compatibility list. There is no flat-Actions fallback any more: a
+	// workflow with no steps genuinely executes nothing, so reporting 0 (and an empty
+	// list) is the truth rather than a degraded reading.
+	var steps []StepSpec
 	if len(wf.Steps) > 0 && string(wf.Steps) != "null" {
-		var steps []StepSpec
-		if err := json.Unmarshal(wf.Steps, &steps); err == nil {
-			actionCount = countStepsList(steps)
+		if err := json.Unmarshal(wf.Steps, &steps); err != nil {
+			steps = nil
 		}
-	} else if wf.Actions != nil {
-		var actions []json.RawMessage
-		if err := json.Unmarshal(wf.Actions, &actions); err == nil {
-			actionCount = len(actions)
-		}
+	}
+
+	// Derived, never read from the deprecated column — see the field comment on
+	// WorkflowResponse.Actions, and delete both in deploy 2. FlattenStepsToActions
+	// recurses into If/Else branches, so an action buried in a branch still reaches an
+	// old cached bundle, which is what its actions.min(1) save guard needs.
+	//
+	// Non-nil on purpose: a nil slice marshals to JSON `null`, and a null array is how
+	// this frontend white-screens on `.map` / `.find`.
+	actions := FlattenStepsToActions(steps)
+	if actions == nil {
+		actions = []ActionSpec{}
 	}
 
 	return WorkflowResponse{
@@ -287,9 +335,9 @@ func ToWorkflowResponse(wf *Workflow) WorkflowResponse {
 		IsActive:    wf.IsActive,
 		Trigger:     wf.Trigger,
 		Conditions:  wf.Conditions,
-		Actions:     wf.Actions,
 		Steps:       wf.Steps,
-		ActionCount: actionCount,
+		Actions:     actions,
+		ActionCount: countStepsList(steps),
 		Version:     wf.Version,
 		CreatedBy:   wf.CreatedBy,
 		CreatedAt:   wf.CreatedAt.Format("2006-01-02T15:04:05Z"),

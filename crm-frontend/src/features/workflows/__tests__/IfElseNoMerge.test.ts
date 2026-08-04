@@ -29,7 +29,6 @@ function makeWf(steps: WorkflowStep[]): Workflow {
     is_active: false,
     trigger: { type: 'contact_created' },
     conditions: null,
-    actions: [],
     steps,
     action_count: 0,
     version: 1,

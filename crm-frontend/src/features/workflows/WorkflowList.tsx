@@ -331,8 +331,11 @@ export const WorkflowList: React.FC = () => {
                     <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
                       <Zap aria-hidden className="h-3.5 w-3.5" /> {TRIGGER_LABELS[wf.trigger?.type] || 'Unknown'}
                     </span>
+                    {/* action_count is server-derived from the canonical steps tree
+                        (actions + delays, both branches included), so it survived the
+                        removal of the flat `actions` wire field it used to fall back to. */}
                     <span className="text-xs text-muted-foreground">
-                      {wf.action_count || wf.actions?.length || 0} action{(wf.action_count || wf.actions?.length || 0) !== 1 ? 's' : ''}
+                      {wf.action_count ?? 0} action{(wf.action_count ?? 0) !== 1 ? 's' : ''}
                     </span>
                     <span className="text-xs text-muted-foreground">
                       v{wf.version}

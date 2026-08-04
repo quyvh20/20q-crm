@@ -68,10 +68,9 @@ interface BuilderState {
   setDescription: (desc: string) => void;
   setTrigger: (t: TriggerSpec) => void;
   setConditions: (c: ConditionGroup | null) => void;
-  insertAction: (action: ActionSpec, index: number) => void;
+  /** Patch the ActionSpec carried by a step. Keyed by step/action id — the config
+   *  panel resolves the selected action out of the local flattened `actions` view. */
   updateAction: (id: string, patch: Partial<ActionSpec>) => void;
-  removeAction: (id: string) => void;
-  reorderActions: (fromIdx: number, toIdx: number) => void;
   addStep: (step: WorkflowStep, parentId: string | null, branch: 'yes' | 'no' | null, index?: number) => void;
   updateStep: (id: string, patch: Partial<WorkflowStep>) => void;
   removeStep: (id: string) => void;
@@ -703,26 +702,8 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
 
   setConditions: (conditions) => set({ conditions, isDirty: true }),
 
-  insertAction: (action, index) => {
-    const step: WorkflowStep = {
-      id: action.id,
-      type: action.type === 'delay' ? 'delay' : 'action',
-      action: action.type === 'delay' ? undefined : action,
-      delay: action.type === 'delay' ? { duration_sec: Number(action.params?.duration_sec) || 60 } : undefined,
-    };
-    get().addStep(step, null, null, index);
-  },
-
   updateAction: (id, patch) => {
     get().updateStep(id, { action: patch as ActionSpec });
-  },
-
-  removeAction: (id) => {
-    get().removeStep(id);
-  },
-
-  reorderActions: (fromIdx, toIdx) => {
-    get().reorderSteps(null, null, fromIdx, toIdx);
   },
 
   addStep: (step, parentId, branch, index) =>
@@ -1193,18 +1174,23 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
   },
 
   applyLoadedWorkflow: (wf) => {
-    const rawSteps = wf.steps && wf.steps.length > 0
-      ? wf.steps
-      : (wf.actions || []).map((a) => ({
-          id: a.id,
-          type: a.type === 'delay' ? 'delay' : 'action',
-          action: a.type === 'delay' ? undefined : a,
-          params: a.type === 'delay' ? a.params : undefined,
-        } as WorkflowStep));
+    // Steps are the ONLY stored shape: R5 deploy 1 dropped the legacy actions→steps
+    // mapping from this loader, and the server stopped echoing the flat `actions`
+    // mirror at all.
+    //
+    // That rests on a PRECONDITION rather than an invariant — verified against
+    // production on 2026-08-04 by querying workflows and workflow_versions for a
+    // null-or-empty `steps`: 0 of 29 workflows, 0 of 72 version snapshots, 0 blocking
+    // rows. Re-run that check before assuming it holds on another dataset. If a
+    // steps-less row ever did appear it fails SILENTLY: the builder opens on an empty
+    // canvas with no warning, and the next Save overwrites the old definition.
+    // There is no frontend fix for that — the wire no longer carries the flat actions
+    // the removed mapping rebuilt steps from — which is exactly why the dependency is
+    // written down here.
+    const rawSteps = wf.steps ?? [];
     // Auto-split on open: a saved workflow may contain steps after a condition (a
     // merge). Copy them into both branches so the branches no longer rejoin. If this
-    // changed anything, mark dirty + notice so a Save persists the cleanup; re-derive
-    // actions from the rewritten tree. Otherwise behave exactly as before.
+    // changed anything, mark dirty + notice so a Save persists the cleanup.
     const { steps, changed } = normalizeMergesInList(rawSteps);
     set({
       workflowId: wf.id,
@@ -1214,7 +1200,9 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       isActive: wf.is_active,
       trigger: wf.trigger,
       conditions: wf.conditions,
-      actions: changed ? flattenSteps(steps) : (wf.actions || []),
+      // The flattened view is always derived locally now — ActionConfig resolves the
+      // selected node out of it, and validate() walks it for per-action rules.
+      actions: flattenSteps(steps),
       steps,
       isDirty: changed,
       autoSplitNotice: changed,
@@ -1366,11 +1354,14 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
   },
 }));
 
-// The steps↔actions subscribe back-sync was removed in overhaul A1: steps are
-// the canonical format (the server derives the deprecated flat list itself).
-// The in-memory `actions` view is still maintained by the tree mutations via
-// flattenSteps because the builder's ActionConfig resolves the selected action
-// from it; code that seeds state directly must set `steps` (loadWorkflow maps
-// legacy actions-only workflows explicitly).
+// The steps↔actions subscribe back-sync was removed in overhaul A1: steps are the
+// canonical format. R5 deploy 1 then removed the flat `actions` field from the wire
+// entirely — it is neither sent nor read.
+//
+// `BuilderState.actions` that remains is a purely LOCAL, in-memory flattened view of
+// the step tree, re-derived by flattenSteps on every tree mutation and on load. It is
+// load-bearing: the builder's ActionConfig resolves the selected node out of it, and
+// validate() walks it for the per-action-type rules. Code that seeds state directly
+// must set `steps` — `actions` is a projection of the tree, never an input.
 
 

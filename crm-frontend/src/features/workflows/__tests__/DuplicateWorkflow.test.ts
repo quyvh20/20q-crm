@@ -28,7 +28,6 @@ function makeSource(over: Partial<Workflow> = {}): Workflow {
     is_active: true,
     trigger: { type: 'contact_created' },
     conditions: { op: 'AND', rules: [{ field: 'contact.email', operator: 'is_not_empty' }] },
-    actions: [{ id: 'a1', type: 'send_email', params: { to: '{{contact.email}}', subject: 'Hi' } }],
     steps: [{ id: 'a1', type: 'action', action: { id: 'a1', type: 'send_email', params: { to: '{{contact.email}}', subject: 'Hi' } } }],
     action_count: 1,
     version: 3,
@@ -70,23 +69,12 @@ describe('store.duplicateFrom', () => {
     expect(s.description).toBe('Greets new contacts');
     expect(s.trigger).toEqual(source.trigger);
     expect(s.conditions).toEqual(source.conditions);
-    expect(s.actions).toEqual(source.actions);
     expect(s.steps).toEqual(source.steps);
-  });
-
-  it('clones a workflow stored as flat actions (no steps) by normalizing into the step tree', async () => {
-    // Legacy/flat workflow: actions present, steps omitted. loadWorkflow normalizes
-    // actions → steps, and the clone inherits that normalized tree.
-    const source = makeSource({ steps: undefined });
-    mockGetWorkflow.mockResolvedValue(source);
-
-    await useBuilderStore.getState().duplicateFrom('wf-src');
-    const s = useBuilderStore.getState();
-
-    expect(s.workflowId).toBeNull();
-    expect(s.steps).toHaveLength(1);
-    expect(s.steps[0]).toMatchObject({ id: 'a1', type: 'action' });
-    expect(s.actions).toEqual(source.actions);
+    // The local flattened `actions` view is derived from the loaded step tree — the
+    // server no longer sends a flat actions mirror to copy.
+    expect(s.actions).toEqual([
+      { id: 'a1', type: 'send_email', params: { to: '{{contact.email}}', subject: 'Hi' } },
+    ]);
   });
 
   it('prefixes "Copy of" even when duplicating an existing copy', async () => {

@@ -97,7 +97,7 @@ func TestDoD_LogActivity_WebhookToTimeline(t *testing.T) {
 	// Workflow: contact_created -> log_activity (note). Title references the source
 	// where it actually lands (contact.custom_fields.source); body is a literal.
 	trigger, _ := json.Marshal(map[string]any{"type": "contact_created"})
-	actions, _ := json.Marshal([]ActionSpec{{
+	steps := actionStepsJSON(t, ActionSpec{
 		ID:   "log1",
 		Type: ActionLogActivity,
 		Params: map[string]any{
@@ -105,16 +105,16 @@ func TestDoD_LogActivity_WebhookToTimeline(t *testing.T) {
 			"title":         "New lead from {{contact.custom_fields.source}}",
 			"body":          "Auto-logged",
 		},
-	}})
+	})
 	wf := &Workflow{
 		ID: uuid.New(), OrgID: orgID, Name: "log-activity-dod",
-		IsActive: true, Trigger: datatypes.JSON(trigger), Actions: datatypes.JSON(actions),
+		IsActive: true, Trigger: datatypes.JSON(trigger), Steps: steps,
 		Version: 1, CreatedBy: uuid.New(),
 	}
 	require.NoError(t, db.Create(wf).Error)
 	require.NoError(t, db.Create(&WorkflowVersion{
 		ID: uuid.New(), WorkflowID: wf.ID, Version: 1,
-		Trigger: wf.Trigger, Actions: wf.Actions, CreatedAt: time.Now(),
+		Trigger: wf.Trigger, Steps: wf.Steps, CreatedAt: time.Now(),
 	}).Error)
 
 	// Fire the real inbound webhook with source=typeform.

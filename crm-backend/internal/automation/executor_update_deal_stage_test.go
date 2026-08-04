@@ -364,22 +364,22 @@ func TestUpdateRecord_DealStageChange_DoesNotReTrigger(t *testing.T) {
 	// Active workflow: on any deal_stage_changed → move the deal to the won stage.
 	// Trigger has no params, so the engine's from/to stage filter is a no-op.
 	trigger, _ := json.Marshal(map[string]any{"type": TriggerDealStageChanged})
-	actions, _ := json.Marshal([]ActionSpec{
-		{ID: "ur1", Type: ActionUpdateRecord, Params: map[string]any{
+	steps := actionStepsJSON(t,
+		ActionSpec{ID: "ur1", Type: ActionUpdateRecord, Params: map[string]any{
 			"updates": []any{
 				map[string]any{"field": "deal.stage", "op": "set", "value": wonStageID.String()},
 			},
 		}},
-	})
+	)
 	wf := &Workflow{
 		ID: uuid.New(), OrgID: orgID, Name: "move-stage-on-stage-change",
-		IsActive: true, Trigger: datatypes.JSON(trigger), Actions: datatypes.JSON(actions),
+		IsActive: true, Trigger: datatypes.JSON(trigger), Steps: steps,
 		Version: 1, CreatedBy: uuid.New(),
 	}
 	require.NoError(t, db.Create(wf).Error)
 	require.NoError(t, db.Create(&WorkflowVersion{
 		ID: uuid.New(), WorkflowID: wf.ID, Version: 1,
-		Trigger: wf.Trigger, Actions: wf.Actions, CreatedAt: time.Now(),
+		Trigger: wf.Trigger, Steps: wf.Steps, CreatedAt: time.Now(),
 	}).Error)
 
 	repo := NewRepository(db)

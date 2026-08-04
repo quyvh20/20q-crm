@@ -853,81 +853,17 @@ func TestExecuteSteps_ResumeAfterCrashInBranch(t *testing.T) {
 	assert.Nil(t, evalCtx.Actions["no_1"])
 }
 
-// TestExecuteSteps_OldWorkflowWithActionsOnly_StillRuns proves that a legacy workflow
-// with only flat actions[] (steps=null) still dispatches correctly via the legacy
-// execution path. This validates backward compatibility after the steps migration.
+// TestExecuteSteps_OldWorkflowWithActionsOnly_StillRuns is RETIRED (R5 deploy 1).
 //
-// Scenario:
-//   WorkflowVersion.Steps  = nil (old workflow, never migrated)
-//   WorkflowVersion.Actions = [send_email, create_task]
-//   → Engine must take the legacy path (CurrentActionIdx-based iteration)
-func TestExecuteSteps_OldWorkflowWithActionsOnly_StillRuns(t *testing.T) {
-	emailExec := &fakeExecutor{output: map[string]any{"sent": true}}
-	taskExec := &fakeExecutor{output: map[string]any{"task_id": "t1"}}
-
-	executors := map[string]ActionExecutor{
-		"send_email":  emailExec,
-		"create_task": taskExec,
-	}
-
-	// Simulate a legacy WorkflowVersion: actions populated, steps nil
-	actionsJSON := []byte(`[
-		{"type":"send_email","id":"a1","params":{"to":"user@example.com"}},
-		{"type":"create_task","id":"a2","params":{"title":"Follow up"}}
-	]`)
-
-	var stepsJSON []byte = nil // NULL — old workflow
-
-	// Verify dispatch decision: steps is nil → must take legacy path
-	hasSteps := len(stepsJSON) > 0 && string(stepsJSON) != "null"
-	assert.False(t, hasSteps, "steps must be nil/empty for legacy workflow")
-
-	// Parse legacy actions
-	var actions []ActionSpec
-	err := json.Unmarshal(actionsJSON, &actions)
-	assert.NoError(t, err)
-	assert.Len(t, actions, 2)
-
-	// Execute via legacy path: iterate by index with CurrentActionIdx
-	run := &WorkflowRun{ID: uuid.New(), CurrentActionIdx: 0}
-	completedSet := make(map[int]bool)
-	evalCtx := EvalContext{
-		Contact: map[string]any{"email": "user@example.com"},
-		Actions: make(map[string]any),
-	}
-
-	for i := run.CurrentActionIdx; i < len(actions); i++ {
-		if completedSet[i] {
-			continue // Idempotency
-		}
-
-		action := actions[i]
-		executor, ok := executors[action.Type]
-		assert.True(t, ok, "executor for %s must exist", action.Type)
-
-		output, execErr := executor.Execute(context.Background(), run, action, evalCtx)
-		assert.NoError(t, execErr)
-
-		evalCtx.Actions[action.ID] = output
-		completedSet[i] = true
-		run.CurrentActionIdx = i + 1
-	}
-
-	// Both actions executed in order
-	assert.Equal(t, []string{"a1"}, emailExec.calls)
-	assert.Equal(t, []string{"a2"}, taskExec.calls)
-
-	// CurrentActionIdx advanced past all actions
-	assert.Equal(t, 2, run.CurrentActionIdx)
-
-	// All indices completed
-	assert.True(t, completedSet[0])
-	assert.True(t, completedSet[1])
-
-	// EvalCtx populated
-	assert.Equal(t, map[string]any{"sent": true}, evalCtx.Actions["a1"])
-	assert.Equal(t, map[string]any{"task_id": "t1"}, evalCtx.Actions["a2"])
-}
+// It asserted that a workflow with steps=NULL and a flat actions[] still dispatched
+// "via the legacy execution path". There is no legacy execution path: processRun now
+// fails a pinned version with no steps tree instead of walking an action array. The
+// test also never touched production code -- it hand-rolled the index loop in its own
+// body -- so it could not have caught the removal either way.
+//
+// Nothing it covered is uncovered: the ordering, idempotency-skip and eval-context
+// propagation it demonstrated are asserted against the real executor by
+// TestExecuteSteps_* above and by the DB-backed resume tests in engine_retry_test.go.
 
 // ═══════════════════════════════════════════════════════════════════
 // Empty branch safety tests (pitfall #6)

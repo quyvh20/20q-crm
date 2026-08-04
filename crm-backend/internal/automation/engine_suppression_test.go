@@ -54,13 +54,11 @@ func createDealUpdatedWF(t *testing.T, repo *Repository, orgID uuid.UUID) *Workf
 	trig, _ := json.Marshal(map[string]any{"type": "deal_updated"})
 	steps := []StepSpec{{Type: "action", ID: "a1", Action: &ActionSpec{ID: "a1", Type: "test_action", Params: map[string]any{}}}}
 	stepsJSON, _ := json.Marshal(steps)
-	actJSON, _ := json.Marshal(FlattenStepsToActions(steps))
 	wf := &Workflow{
 		OrgID:     orgID,
 		Name:      "enroll-" + uuid.NewString()[:8],
 		IsActive:  true,
 		Trigger:   datatypes.JSON(trig),
-		Actions:   datatypes.JSON(actJSON),
 		Steps:     datatypes.JSON(stepsJSON),
 		CreatedBy: uuid.New(),
 	}

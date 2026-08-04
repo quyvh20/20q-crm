@@ -726,221 +726,67 @@ func (e *Engine) processRun(runID uuid.UUID) {
 	// e.ctx (system) — only action side-effects run under execCtx.
 	execCtx := e.actorContext(e.ctx, run)
 
-	// Check if this is a steps-based (P13 tree) workflow
-	if len(ver.Steps) > 0 && string(ver.Steps) != "null" {
-		var steps []StepSpec
-		if err := json.Unmarshal(ver.Steps, &steps); err != nil {
-			e.failRun(run, fmt.Errorf("parse steps: %w", err))
-			return
-		}
-
-		// Rebuild resume state from action logs. Success logs mark steps
-		// completed; waiting logs are parked delay steps. Logs are keyed by
-		// structural path, so alias them back to step IDs via the tree walk —
-		// step outputs must stay addressable as {{actions.<id>}} after resume.
-		state := newStepsExecState()
-		pathToID := stepPathIndex(steps, "", "")
-		for i := range actionLogs {
-			lg := &actionLogs[i]
-			id := pathToID[lg.ActionPath]
-			switch lg.Status {
-			case LogStatusSuccess:
-				state.markCompleted(id, lg.ActionPath)
-				if len(lg.Output) > 0 && string(lg.Output) != "null" {
-					var outputVal any
-					if err := json.Unmarshal(lg.Output, &outputVal); err == nil {
-						evalCtx.Actions[lg.ActionPath] = outputVal
-						if id != "" {
-							evalCtx.Actions[id] = outputVal
-						}
-					}
-				}
-			case LogStatusWaiting:
-				logCopy := *lg
-				state.waiting[lg.ActionPath] = &logCopy
-				state.started[lg.ActionPath] = true
-				if id != "" {
-					state.started[id] = true
-				}
-			}
-		}
-
-		e.logger.Info("automation: starting steps execution", "run_id", runID.String(), "steps_count", len(steps))
-		completed, execErr := e.executeStepsWithState(execCtx, steps, run, state, &evalCtx, "", "")
-		e.logger.Info("automation: finished steps execution", "run_id", runID.String(), "completed", completed, "execErr", execErr)
-		if execErr != nil {
-			return
-		}
-		if completed {
-			now := time.Now()
-			run.Status = StatusCompleted
-			run.FinishedAt = &now
-			if err := e.repo.UpdateRunStandalone(e.ctx, run); err != nil {
-				e.logger.Error("automation: failed to mark run completed", "error", err)
-			}
-			e.logger.Info("automation: run completed", "run_id", run.ID.String())
-		}
+	// Steps are the ONLY execution format (R5 deploy 1 removed the flat-actions
+	// branch). A pinned version with no steps tree has nothing to execute, so it fails
+	// loudly rather than silently completing as a no-op — the production teardown gate
+	// was verified CLEAR (zero null-steps and zero empty-steps rows across all
+	// workflows and version snapshots) before this branch was removed, so reaching the
+	// failure below means something regressed and wants investigating, not swallowing.
+	if !hasSteps(ver.Steps) {
+		e.failRun(run, fmt.Errorf("workflow version %d has no steps to execute", run.WorkflowVersion))
+		return
+	}
+	var steps []StepSpec
+	if err := json.Unmarshal(ver.Steps, &steps); err != nil {
+		e.failRun(run, fmt.Errorf("parse steps: %w", err))
 		return
 	}
 
-	// Parse legacy flat actions
-	var actions []ActionSpec
-	if err := json.Unmarshal(ver.Actions, &actions); err != nil {
-		e.failRun(run, fmt.Errorf("parse actions: %w", err))
-		return
-	}
-
-	// Populate evalCtx.Actions from successful action logs for legacy flat actions
-	for _, log := range actionLogs {
-		if log.Status == LogStatusSuccess {
-			if log.ActionIdx >= 0 && log.ActionIdx < len(actions) {
-				actionID := actions[log.ActionIdx].ID
-				if len(log.Output) > 0 && string(log.Output) != "null" {
-					var outputVal any
-					if err := json.Unmarshal(log.Output, &outputVal); err == nil {
-						evalCtx.Actions[actionID] = outputVal
+	// Rebuild resume state from action logs. Success logs mark steps
+	// completed; waiting logs are parked delay steps. Logs are keyed by
+	// structural path, so alias them back to step IDs via the tree walk —
+	// step outputs must stay addressable as {{actions.<id>}} after resume.
+	state := newStepsExecState()
+	pathToID := stepPathIndex(steps, "", "")
+	for i := range actionLogs {
+		lg := &actionLogs[i]
+		id := pathToID[lg.ActionPath]
+		switch lg.Status {
+		case LogStatusSuccess:
+			state.markCompleted(id, lg.ActionPath)
+			if len(lg.Output) > 0 && string(lg.Output) != "null" {
+				var outputVal any
+				if err := json.Unmarshal(lg.Output, &outputVal); err == nil {
+					evalCtx.Actions[lg.ActionPath] = outputVal
+					if id != "" {
+						evalCtx.Actions[id] = outputVal
 					}
 				}
 			}
-		}
-	}
-
-	// Evaluate conditions
-	if ver.Conditions != nil && len(ver.Conditions) > 0 {
-		var conditions ConditionGroup
-		if err := json.Unmarshal(ver.Conditions, &conditions); err == nil {
-			if !EvaluateConditions(conditions, evalCtx) {
-				e.skipRun(run)
-				return
+		case LogStatusWaiting:
+			logCopy := *lg
+			state.waiting[lg.ActionPath] = &logCopy
+			state.started[lg.ActionPath] = true
+			if id != "" {
+				state.started[id] = true
 			}
 		}
 	}
 
-	// Phase 3: Execute actions sequentially
-	completedSet := GetCompletedActionIndices(run)
-
-	for i := run.CurrentActionIdx; i < len(actions); i++ {
-		if e.ctx.Err() != nil {
-			return // Engine shutting down
-		}
-
-		if completedSet[i] {
-			continue // Idempotency: already completed
-		}
-
-		action := actions[i]
-
-		// Create pre-execution action log (standalone tx, informational).
-		// Loss on crash is acceptable — the action hasn't executed yet.
-		actionLog := &WorkflowActionLog{
-			ID:         uuid.New(),
-			RunID:      run.ID,
-			ActionIdx:  i,
-			ActionType: action.Type,
-			Status:     "running",
-			AttemptNo:  run.RetryCount + 1,
-			CreatedAt:  time.Now(),
-		}
-
-		inputJSON, _ := json.Marshal(action.Params)
-		actionLog.Input = datatypes.JSON(inputJSON)
-		e.repo.CreateActionLogStandalone(e.ctx, actionLog)
-
-		startTime := time.Now()
-		output, execErr := e.executeAction(execCtx, run, action, evalCtx)
-		durationMs := time.Since(startTime).Milliseconds()
-
-		actionLog.DurationMs = durationMs
-
-		if execErr != nil {
-			if run.RetryCount < 3 && isRetryable(execErr) {
-				// Retryable failure: atomically update action log + run
-				run.RetryCount++
-				retryAt := time.Now().Add(backoff(run.RetryCount))
-				run.NextRetryAt = &retryAt
-				run.Status = StatusPending
-				run.CurrentActionIdx = i
-				run.LastError = execErr.Error()
-
-				actionLog.Status = LogStatusRetrying
-				actionLog.Error = execErr.Error()
-
-				if err := e.commitActionAndRun(actionLog, run); err != nil {
-					e.logger.Error("automation: commit retry tx failed", "error", err, "run_id", run.ID.String())
-				}
-
-				e.logger.Warn("automation: action failed, scheduling retry",
-					"run_id", run.ID.String(),
-					"action_idx", i,
-					"retry_count", run.RetryCount,
-					"next_retry_at", retryAt,
-				)
-				return
-			}
-
-			// Non-retryable or max retries exceeded: atomically fail
-			now := time.Now()
-			run.Status = StatusFailed
-			run.LastError = execErr.Error()
-			run.FinishedAt = &now
-
-			actionLog.Status = LogStatusFailed
-			actionLog.Error = execErr.Error()
-
-			if err := e.commitActionAndRun(actionLog, run); err != nil {
-				e.logger.Error("automation: commit failure tx failed", "error", err, "run_id", run.ID.String())
-			}
-
-			e.logger.Error("automation: run failed",
-				"run_id", run.ID.String(),
-				"action_idx", i,
-				"error", execErr,
-			)
-			return
-		}
-
-		// Success: update eval context with action output
-		if evalCtx.Actions == nil {
-			evalCtx.Actions = make(map[string]any)
-		}
-		evalCtx.Actions[action.ID] = output
-
-		// Mark action as completed
-		completedSet[i] = true
-		var completedSlice []int
-		for idx := range completedSet {
-			completedSlice = append(completedSlice, idx)
-		}
-		completedJSON, _ := SetCompletedActions(completedSlice)
-		run.CompletedActions = datatypes.JSON(completedJSON)
-		run.CurrentActionIdx = i + 1
-
-		// Prepare action log for success
-		actionLog.Status = LogStatusSuccess
-		if output != nil {
-			outputJSON, _ := json.Marshal(output)
-			actionLog.Output = datatypes.JSON(outputJSON)
-		}
-
-		// If this was the last action, mark run as completed in the same tx
-		if i+1 >= len(actions) {
-			now := time.Now()
-			run.Status = StatusCompleted
-			run.FinishedAt = &now
-		}
-
-		// Atomically commit action log + run update (§13.3 compliance)
-		if err := e.commitActionAndRun(actionLog, run); err != nil {
-			e.logger.Error("automation: commit success tx failed", "error", err, "run_id", run.ID.String())
-			return
-		}
+	e.logger.Info("automation: starting steps execution", "run_id", runID.String(), "steps_count", len(steps))
+	completed, execErr := e.executeStepsWithState(execCtx, steps, run, state, &evalCtx, "", "")
+	e.logger.Info("automation: finished steps execution", "run_id", runID.String(), "completed", completed, "execErr", execErr)
+	if execErr != nil {
+		return
 	}
-
-	if run.Status == StatusCompleted {
-		e.logger.Info("automation: run completed",
-			"run_id", run.ID.String(),
-			"actions_count", len(actions),
-		)
+	if completed {
+		now := time.Now()
+		run.Status = StatusCompleted
+		run.FinishedAt = &now
+		if err := e.repo.UpdateRunStandalone(e.ctx, run); err != nil {
+			e.logger.Error("automation: failed to mark run completed", "error", err)
+		}
+		e.logger.Info("automation: run completed", "run_id", run.ID.String())
 	}
 }
 
@@ -1342,15 +1188,13 @@ func (e *Engine) failRun(run *WorkflowRun, err error) {
 	e.logger.Error("automation: run failed", "run_id", run.ID.String(), "error", err)
 }
 
-// skipRun marks a run as skipped. Uses standalone tx because there is no
-// associated action log to keep atomic (conditions not met).
-func (e *Engine) skipRun(run *WorkflowRun) {
-	now := time.Now()
-	run.Status = StatusSkipped
-	run.FinishedAt = &now
-	e.repo.UpdateRunStandalone(e.ctx, run)
-	e.logger.Info("automation: run skipped (conditions not met)", "run_id", run.ID.String())
-}
+// skipRun is GONE, and StatusSkipped now has no producer. Its only caller was the
+// flat-actions path's top-level wf.Conditions gate, removed in R5 deploy 1. A
+// steps-based workflow has never consulted wf.Conditions — processRun returned before
+// that check, and per-step condition nodes do the gating instead — so nothing changed
+// for any live workflow. StatusSkipped stays defined because historical rows carry it
+// and readers (run history, sequence progress counts, the pruner) still have to
+// account for them.
 
 // Repo returns the engine's repository for external use (handlers, etc).
 func (e *Engine) Repo() *Repository {
