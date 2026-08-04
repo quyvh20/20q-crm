@@ -21,8 +21,63 @@ type Workflow struct {
 	// Actions is the DEPRECATED flat action list. Kept for rollback compatibility.
 	// All new workflows use Steps (recursive tree). The frontend always writes both.
 	// Target removal: 2026-09-01 (3 months after Steps GA).
-	// Before removal: run migration to verify all workflows have Steps populated.
-	Actions     datatypes.JSON `gorm:"type:jsonb;not null" json:"actions"`
+	// Before removal, read the FLAT_ACTIONS_TEARDOWN_GATE line Repository.AutoMigrate
+	// logs on every boot — it is the "no row would lose behaviour if this column were
+	// dropped" check, without needing a production SQL console.
+	//
+	// DO NOT DELETE `default:'[]'::jsonb` FROM THIS TAG. It is not cosmetic. It is the
+	// single thing that lets the COLUMN outlive this FIELD, and removing it re-arms a
+	// production outage. It is also asserted in CI: TestFlatActionsColumnDefault reads
+	// `column_default` straight out of information_schema after AutoMigrate, on both
+	// tables, and fails if the tag is ever "tidied" away.
+	//
+	// AutoMigrate never DROPs a column, so deleting this field leaves `actions jsonb
+	// NOT NULL` in place while GORM stops naming it in INSERTs. Without a default,
+	// Postgres then rejects every workflow write —
+	//
+	//	ERROR: null value in column "actions" of relation "automation_workflows"
+	//	violates not-null constraint (SQLSTATE 23502)
+	//
+	// — which kills CreateWorkflow on its first statement and kills UpdateWorkflow on
+	// its version snapshot, rolling the whole update back. With the default present the
+	// same INSERT succeeds and the column fills itself with '[]'.
+	//
+	// It has to live HERE rather than in a raw `ALTER TABLE … SET DEFAULT` alongside
+	// the index DDL in Repository.AutoMigrate. Measured against Postgres 16 with this
+	// GORM version: for a field tagged `not null` with NO `default:`, AutoMigrate
+	// actively emits `ALTER TABLE … ALTER COLUMN "actions" DROP DEFAULT`, because
+	// gorm's MigrateColumn sees a column default where the schema has none. Railway
+	// deploys are rolling, so any restart, rollback, crash-loop or scale event that
+	// boots a binary carrying the OLD tag silently disarms a raw Exec. Expressed in the
+	// tag, AutoMigrate SETS the default instead — on the already-existing column, not
+	// only at CREATE TABLE — and preserves it once the field is gone.
+	//
+	// Consequence, so nobody "fixes" it later: every AutoMigrate re-issues
+	// `ALTER TABLE … ALTER COLUMN "actions" SET DEFAULT '[]'::jsonb`, even when the
+	// default is already exactly that. gorm compares its own tag text against
+	// Postgres' introspected default AFTER the driver has stripped the `::jsonb` cast
+	// and the quotes, so a quoted default can never compare equal and the column is
+	// "altered" on every boot. It is catalog-only (~2 ms, no table rewrite, no data
+	// touched); a cast-free `default:'[]'` was measured and churns identically. A
+	// guarded check-then-ALTER of our own does not remove it either — the comparison
+	// and the ALTER both live inside gorm's MigrateColumn. This is the price of the
+	// guard, and it is far cheaper than the 23502 above.
+	//
+	// What is NOT free is the LOCK. SET DEFAULT takes ACCESS EXCLUSIVE on this table,
+	// and measured with one ordinary read transaction open, an unbounded boot made a
+	// plain `SELECT count(*)` here wait 10.0 s. Repository.migrateSchema therefore runs
+	// every model's migration under a bounded `SET LOCAL lock_timeout` — read the note
+	// there before touching either the tag or the migration path. On a steady-state
+	// boot a timeout is free (the ALTER only re-sets a default that is already right,
+	// and it was measured still present afterwards); on the FIRST boot carrying this
+	// tag it is not, because the default would then be absent until the next quiet
+	// boot. That boot logs an unmistakable Error when it happens.
+	//
+	// Ordering, which is the whole reason this is its own deploy: the tag must be live
+	// and past the point of rollback BEFORE the field is removed. A rollback to a
+	// pre-tag binary DROPs the default again — harmless while the field still exists
+	// (the INSERT still names the column), fatal once it does not.
+	Actions     datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'::jsonb" json:"actions"`
 	Steps       datatypes.JSON `gorm:"type:jsonb" json:"steps,omitempty"`
 	Version     int            `gorm:"not null;default:1" json:"version"`
 	CreatedBy   uuid.UUID      `gorm:"type:uuid;not null" json:"created_by"`
@@ -40,8 +95,13 @@ type WorkflowVersion struct {
 	Version    int            `gorm:"not null" json:"version"`
 	Trigger    datatypes.JSON `gorm:"type:jsonb;not null" json:"trigger"`
 	Conditions datatypes.JSON `gorm:"type:jsonb" json:"conditions"`
-	// Actions is DEPRECATED — see Workflow.Actions for details.
-	Actions    datatypes.JSON `gorm:"type:jsonb;not null" json:"actions"`
+	// Actions is DEPRECATED — see Workflow.Actions for details, including why
+	// `default:'[]'::jsonb` must stay in this tag too. This table is where the missing
+	// default does the most damage: the version snapshot is the SECOND statement in
+	// UpdateWorkflow's transaction, so its 23502 rolls the workflow UPDATE back with
+	// it — the write appears to have been rejected outright rather than half-applied,
+	// with nothing in the row to hint that the snapshot was the part that failed.
+	Actions    datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'::jsonb" json:"actions"`
 	Steps      datatypes.JSON `gorm:"type:jsonb" json:"steps,omitempty"`
 	CreatedAt  time.Time      `json:"created_at"`
 }

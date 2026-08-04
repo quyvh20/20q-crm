@@ -28,9 +28,28 @@ func NewRepository(db *gorm.DB) *Repository {
 	return &Repository{db: db}
 }
 
-// AutoMigrate creates/updates tables and indexes for the automation engine.
-func (r *Repository) AutoMigrate() error {
-	if err := r.db.AutoMigrate(
+// migrationLockTimeout bounds how long ONE statement in the schema-migration path will
+// wait for a table lock before giving up. See migrateSchema for why it exists and what
+// happens when it fires.
+//
+// 3 seconds: long enough to ride out ordinary request-length transactions on a busy
+// engine table, short enough that a boot cannot park the automation tables behind a
+// report query or an idle-in-transaction session for minutes.
+const migrationLockTimeout = "3s"
+
+// setMigrationLockTimeoutSQL is migrationLockTimeout as SQL. Postgres' SET does not take
+// bind parameters, so the value is a literal and the two constants MUST stay in sync —
+// migrationLockTimeout is only ever used for logging and documentation.
+const setMigrationLockTimeoutSQL = `SET LOCAL lock_timeout = '3s'`
+
+// automationModels is the migration set. Order is the order they are migrated in.
+//
+// None of these structs declares a relationship to another (no belongs-to/has-many
+// fields, no FK constraints between them), so migrating them ONE AT A TIME loses nothing
+// that gorm's ReorderModels would otherwise have arranged. That independence is what
+// makes migrateSchema's per-model transaction safe.
+func automationModels() []any {
+	return []any{
 		&Workflow{},
 		&WorkflowVersion{},
 		&WorkflowRun{},
@@ -40,8 +59,145 @@ func (r *Repository) AutoMigrate() error {
 		&AutomationTimer{},
 		&EmailTemplate{},
 		&AssignCursor{},
-	); err != nil {
+	}
+}
+
+// migrateSchema runs gorm's AutoMigrate one model at a time, each inside its own
+// transaction that first bounds `lock_timeout`.
+//
+// WHY THIS IS NOT A PLAIN r.db.AutoMigrate(...) ANY MORE
+//
+// Steady-state boots are not DDL-free. gorm re-emits
+// `ALTER TABLE automation_workflows ALTER COLUMN "actions" SET DEFAULT '[]'::jsonb`
+// on EVERY boot, on two of the engine's hottest tables — because the postgres driver's
+// parseDefaultValueValue (driver/postgres migrator.go) strips the `::jsonb` cast and the
+// surrounding quotes off the introspected default before comparing it to the struct tag,
+// so a quoted default can never compare equal. The tag cannot be dropped (see
+// Workflow.Actions: it is what lets the column outlive the field), and a guarded
+// check-then-ALTER of our own does not help — gorm's comparison happens inside
+// MigrateColumn and emits gorm's own ALTER regardless of what we do first. MEASURED, not
+// assumed: with gorm's SQL logger capturing every statement, a second AutoMigrate over
+// an ALREADY-CORRECT schema emitted exactly two `SET DEFAULT '[]'::jsonb` — one per
+// table — and a contended one was caught in pg_stat_activity waiting on Lock for
+// `ALTER TABLE "automation_workflows" ALTER COLUMN "actions" SET DEFAULT '[]'::jsonb`.
+//
+// The work is catalog-only (~2 ms, no table rewrite). The LOCK is not: ACCESS EXCLUSIVE
+// queues behind any open transaction touching the table, and every reader that arrives
+// afterwards queues behind the ALTER. Measured on postgres:16-alpine with one ordinary
+// read transaction held open, an unbounded boot made a plain `SELECT count(*)` on
+// automation_workflows wait 10.0 s — the whole time the reader held its snapshot. Every
+// deploy, restart, rollback, crash-loop and scale event pays that.
+//
+// MECHANISM, chosen by measurement. `SET LOCAL` inside the SAME transaction that runs
+// the DDL is the only option here that is both correct and self-contained:
+//
+//   - a bare r.db.Exec("SET lock_timeout = …") is the trap: gorm hands each statement
+//     whichever pooled connection is free, so the SET very likely lands on a DIFFERENT
+//     connection than the one AutoMigrate's DDL runs on, and does nothing.
+//   - a DSN `options=-c lock_timeout=…` or an `ALTER ROLE` would work, but both apply to
+//     every connection the process makes — they change runtime query behaviour far
+//     outside the migration path, and neither is settable from this package.
+//   - pinning a raw *sql.Conn and doing a session-level `SET lock_timeout` on it would
+//     also be provably correct, but it means hand-building a gorm.DB around that conn as
+//     its ConnPool — more moving parts than a transaction, for the same guarantee.
+//   - `SET LOCAL` is scoped to the transaction AND the transaction is pinned to one
+//     connection, so the timeout provably applies to the DDL. Per-model rather than one
+//     big transaction so each table's ACCESS EXCLUSIVE is taken and released on its own
+//     instead of every table's lock being held until the last one commits.
+//
+// VERIFIED, not assumed, by re-running the experiment above against this code: the boot
+// ALTER now fails in 3.1 s with `canceling statement due to lock timeout (SQLSTATE
+// 55P03)` instead of waiting, and the concurrent plain `SELECT count(*)` waits 1.6 s
+// instead of 10.0 s — it is released the moment the ALTER leaves the lock queue.
+//
+// ON TIMEOUT the ALTER does NOT run, and that is the deliberate trade. A silently
+// skipped SET DEFAULT is exactly the state R5 deploy 1 must not ship into, so it is not
+// allowed to be silent: the failure is logged at ERROR naming the column and the 23502
+// it re-arms, AND returned, so the engine's own "migration failed" Error fires too. Two
+// different failures are being defended against and they have two different detectors —
+// a DELETED TAG is caught in CI by TestFlatActionsColumnDefault (which reads
+// column_default out of information_schema after AutoMigrate), and a TIMED-OUT BOOT is
+// caught in production by that log line. Neither substitutes for the other.
+//
+// A loud, retryable, self-healing miss on a contended boot is strictly safer than the
+// alternative: an unbounded ALTER that stalls every read of the automation tables for as
+// long as one stray transaction stays open. The next uncontended boot fixes it. And in
+// steady state the ALTER is a no-op re-set of a default that is ALREADY correct, so a
+// timeout costs nothing at all — measured: after a boot whose ALTER timed out, the
+// column default was still '[]'::jsonb. The only boot where a timeout genuinely loses
+// something is the FIRST one that applies the tag, which is precisely the boot the
+// deploy-0/deploy-1 ordering exists to make someone verify before moving on.
+//
+// A lock timeout on ONE table does not abandon the other eight: they are independent, a
+// busy automation_workflows says nothing about automation_timers, and skipping them
+// would mean an unrelated new column never lands while one table stays hot. Every model
+// is attempted, the timeouts are joined and returned so AutoMigrate still reports
+// failure, and any OTHER migration error still aborts immediately — a genuine schema
+// error is not something to push past.
+func (r *Repository) migrateSchema() error {
+	var timeouts []error
+	for _, model := range automationModels() {
+		err := r.migrateModelWithLockTimeout(model)
+		switch {
+		case err == nil:
+		case isLockTimeoutErr(err):
+			timeouts = append(timeouts, err)
+		default:
+			return err
+		}
+	}
+	return errors.Join(timeouts...)
+}
+
+// migrateModelWithLockTimeout migrates one model under a bounded lock_timeout.
+func (r *Repository) migrateModelWithLockTimeout(model any) error {
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		// SET LOCAL, not SET: scoped to this transaction, on this transaction's pinned
+		// connection — the same one tx.AutoMigrate's DDL runs on.
+		if err := tx.Exec(setMigrationLockTimeoutSQL).Error; err != nil {
+			return fmt.Errorf("set lock_timeout: %w", err)
+		}
+		return tx.AutoMigrate(model)
+	})
+	if err == nil {
+		return nil
+	}
+	if isLockTimeoutErr(err) {
+		slog.Error("automation: SCHEMA MIGRATION GAVE UP ON A TABLE LOCK — the migration for this model "+
+			"did NOT run, so its schema may be incomplete. This includes the `actions` column DEFAULT "+
+			"'[]'::jsonb that the flat-Actions teardown depends on; without it, a build with the Actions "+
+			"field removed rejects every workflow write with SQLSTATE 23502. Find the long-running "+
+			"transaction on the automation tables and re-deploy.",
+			"model", fmt.Sprintf("%T", model), "lock_timeout", migrationLockTimeout, "error", err)
 		return err
+	}
+	slog.Error("automation: schema migration failed", "model", fmt.Sprintf("%T", model), "error", err)
+	return err
+}
+
+// isLockTimeoutErr reports whether err is Postgres' lock_not_available (SQLSTATE 55P03),
+// i.e. a statement that abandoned its lock wait rather than queueing behind it. Matched
+// on the rendered error so this does not have to reach for the pgx error types through
+// gorm's driver.
+func isLockTimeoutErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "55P03") || strings.Contains(msg, "lock timeout")
+}
+
+// AutoMigrate creates/updates tables and indexes for the automation engine.
+func (r *Repository) AutoMigrate() error {
+	// migrateSchema returns EITHER a hard migration error (returned immediately, as
+	// before) OR joined lock timeouts. A timeout is transient and leaves the previous
+	// boot's schema in place, so it must not suppress everything below it — least of
+	// all the teardown-gate line, which is the one diagnostic per boot the whole R5
+	// decision rests on and which would otherwise be missing from exactly the boots
+	// that logged an error. The error is still reported, at the end.
+	schemaErr := r.migrateSchema()
+	if schemaErr != nil && !isLockTimeoutErr(schemaErr) {
+		return schemaErr
 	}
 
 	// Composite indexes per spec
@@ -59,8 +215,28 @@ func (r *Repository) AutoMigrate() error {
 	// functional unique index, hence raw SQL like the timers indexes above).
 	r.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_email_templates_org_name ON automation_email_templates (org_id, lower(name)) WHERE deleted_at IS NULL`)
 
-	// Run data migration from actions -> steps
-	_ = r.MigrateFlatActionsToSteps(context.Background())
+	// Run data migration from actions -> steps. Logged rather than fatal, for the same
+	// reason as the claims backfill below — but it must not be SILENT either: this is
+	// the backfill the flat-Actions teardown gate is waiting on, and a swallowed error
+	// here is exactly how the gate would sit un-converged for months with nobody
+	// noticing. The gate line logged immediately after reports the resulting counts.
+	if err := r.MigrateFlatActionsToSteps(context.Background()); err != nil {
+		slog.Error("automation: flat actions → steps backfill failed", "error", err)
+	}
+
+	// Report the R5 teardown gate to the logs. Pure diagnostic: it reads the gate's
+	// counts and says whether the deprecated Actions field can be removed yet. It
+	// cannot fail boot — CountFlatActionsGate's error is logged and swallowed inside.
+	//
+	// slog.Default() is load-bearing and the coupling is invisible from here: this line
+	// only reaches Railway because cmd/server/main.go calls slog.SetDefault(autoLogger)
+	// a few statements before autoEngine.Start() (which is what calls AutoMigrate), so
+	// the package default IS the engine's JSON handler on stdout. Delete or move that
+	// SetDefault and the single line the whole teardown decision rests on quietly
+	// reverts to slog's built-in text handler on STDERR — still emitted, no error, just
+	// not where anyone greps. Anything that reorders main.go's logger setup must keep
+	// SetDefault ahead of the engine start.
+	r.LogFlatActionsGate(context.Background(), slog.Default())
 
 	// Backfill action_path from action_idx for legacy action logs (idempotent)
 	r.db.Exec(`UPDATE automation_workflow_action_logs SET action_path = action_idx::text WHERE action_path = '' OR action_path IS NULL`)
@@ -75,7 +251,9 @@ func (r *Repository) AutoMigrate() error {
 		slog.Info("automation: backfilled durable sequence enrollment claims", "count", n)
 	}
 
-	return nil
+	// Non-nil only when a boot ALTER abandoned its lock wait; already logged loudly, per
+	// model, by migrateModelWithLockTimeout.
+	return schemaErr
 }
 
 // --- Workflow CRUD ---
@@ -709,90 +887,361 @@ func searchSubstring(s, substr string) bool {
 	return false
 }
 
+// --- Flat actions → steps: the backfill and its teardown gate ---
+
+// flatActionsBackfillStats reports what ONE MigrateFlatActionsToSteps pass did to ONE
+// table. Every field is logged; the numbers are what tell you whether the pass is
+// converging or spinning.
+type flatActionsBackfillStats struct {
+	// Converted is how many rows were actually rewritten with a steps tree.
+	Converted int
+	// Unconvertible is how many rows there is no honest conversion for: `actions` is
+	// absent or jsonb 'null', or it is valid JSON that is not an array of actions.
+	// Deliberately left untouched — but counted, and surfaced again by the teardown
+	// gate, because these are exactly the rows that will never satisfy it and someone
+	// has to decide what to do with them by hand.
+	//
+	// Not every one of these is a problem: since '[]' joined the selection predicate,
+	// a row with steps = '[]' and actions = 'null' is selected, counted here, and yet
+	// loses nothing when the Actions column is dropped. The gate is the authority on
+	// which rows actually block the teardown (CountFlatActionsGate's blocking counts);
+	// this number only says how many rows the backfill declined to rewrite.
+	Unconvertible int
+	// Failed is how many UPDATEs errored. Previously discarded with `_ =`.
+	Failed int
+}
+
+func (s flatActionsBackfillStats) touched() bool {
+	return s.Converted > 0 || s.Unconvertible > 0 || s.Failed > 0
+}
+
+// stepsFromFlatActions converts a stored flat `actions` blob into the equivalent steps
+// tree. ok is false for a blob with no honest conversion: absent, jsonb 'null', or
+// valid JSON that is not an array of actions.
+//
+// An EMPTY actions array converts to an EMPTY steps array, and that is the whole point
+// of this being a function rather than an inline loop. `var steps []StepSpec` left nil
+// when the loop body never ran, and json.Marshal of a nil slice is the four bytes
+// `null` — so a row with actions = '[]' was rewritten to steps = 'null'::jsonb, which
+// still matches the migration's own WHERE clause. Every boot re-selected it, re-wrote
+// it, and bumped updated_at, forever, and it could never satisfy the teardown gate.
+// `[]` is also simply the truthful answer: a workflow with no actions has no steps.
+func stepsFromFlatActions(raw datatypes.JSON) (datatypes.JSON, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, false
+	}
+	var actions []ActionSpec
+	if err := json.Unmarshal(raw, &actions); err != nil {
+		return nil, false
+	}
+	steps := make([]StepSpec, 0, len(actions))
+	for i := range actions {
+		action := actions[i]
+		if action.Type == "delay" {
+			steps = append(steps, StepSpec{
+				Type:  "delay",
+				ID:    action.ID,
+				Delay: delayParamsFromMap(action.Params),
+			})
+			continue
+		}
+		steps = append(steps, StepSpec{
+			Type:   "action",
+			ID:     action.ID,
+			Action: &action,
+		})
+	}
+	stepsJSON, err := json.Marshal(steps)
+	if err != nil {
+		return nil, false
+	}
+	return datatypes.JSON(stepsJSON), true
+}
+
+// flatActionsBackfillPredicate selects every row the backfill may still have work for:
+// no steps tree at all (SQL NULL or jsonb 'null'), or an EMPTY one. Shared by both
+// tables so the two halves cannot drift apart, and stated once so it can be compared
+// against the gate's own predicate (CountFlatActionsGate) at a glance.
+const flatActionsBackfillPredicate = `steps IS NULL OR steps = 'null'::jsonb OR steps = '[]'::jsonb`
+
 // MigrateFlatActionsToSteps automatically converts older flat actions workflows to recursive steps tree.
 //
 // DEPRECATED: Legacy actions→steps conversion.
 // Deadline: 2026-09-01. After this date, remove this fallback and require Steps.
-// Before removing, verify zero rows from:
+// Before removing, read the FLAT_ACTIONS_TEARDOWN_GATE log line (LogFlatActionsGate),
+// which reports the gate's counts on every boot.
 //
-//	SELECT count(*) FROM automation_workflows
-//	WHERE (steps IS NULL OR steps::text = 'null') AND deleted_at IS NULL;
+// SELECTION: steps SQL NULL, jsonb 'null', OR the empty array '[]'.
+//
+// '[]' is in the predicate deliberately, and it is the fix for a gate that could be
+// permanently BLOCKED with no automated remedy. A workflow with REAL flat actions and
+// steps = '[]' is creatable through the live API today — handlers.go's hasSteps('[]')
+// is false, so nothing derives actions from steps and validation falls through to
+// validateActions, which passes — and the old predicate (`steps IS NULL OR steps =
+// 'null'`) could never reach such a row. The gate, meanwhile, counts steps = '[]' as
+// unsatisfied. Disjoint sets: the backfill could not fix what the gate blocked on, so
+// the teardown would sit BLOCKED on every boot forever and the 2026-09-01 deadline
+// would pass with nobody able to green-light it.
+//
+// Runs on every boot, so it must CONVERGE: a row it has already handled must not be
+// rewritten again. Two rules enforce that, and BOTH are live controls —
+//
+//  1. never write a value that still leaves the row un-converged
+//     (see stepsFromFlatActions on the '[]' → 'null' defect). This is what stops an
+//     empty-actions row from being re-selected and re-written on every boot forever.
+//  2. never issue the UPDATE at all when the value would not change.
+//
+// Rule 2 was previously documented here as unreachable. It is NOT, on two counts.
+// Measured: under a mutation that reverts rule 1's empty-slice fix, the updated_at
+// assertions in flat_actions_gate_test.go still hold — and they hold BECAUSE rule 2
+// fires. It is the live anti-churn control the moment rule 1 regresses. And since '[]'
+// joined the predicate above it is unconditionally live in steady state: an
+// actions = '[]' row is selected on every boot, converts to exactly the '[]' already
+// stored, and rule 2 is the only reason no UPDATE is issued and no updated_at moves.
+// Delete neither rule on the strength of the other.
+//
+// Soft-deleted workflows are skipped, because GORM scopes the Find below to
+// `deleted_at IS NULL`. That is pre-existing behaviour and it matches the gate, which
+// only counts live workflows. Their VERSION rows are still converted — that table has
+// no soft delete — so a deleted workflow can never wedge the gate.
 func (r *Repository) MigrateFlatActionsToSteps(ctx context.Context) error {
+	var errs []error
+
 	// 1. Migrate workflows table
 	var workflows []Workflow
-	if err := r.db.WithContext(ctx).Where("steps IS NULL OR steps = 'null'::jsonb").Find(&workflows).Error; err != nil {
-		return err
+	if err := r.db.WithContext(ctx).Where(flatActionsBackfillPredicate).Find(&workflows).Error; err != nil {
+		return fmt.Errorf("scan workflows needing steps: %w", err)
 	}
-	for _, wf := range workflows {
-		if len(wf.Actions) == 0 || string(wf.Actions) == "null" {
+	var wfStats flatActionsBackfillStats
+	for i := range workflows {
+		wf := &workflows[i]
+		steps, ok := stepsFromFlatActions(wf.Actions)
+		if !ok {
+			wfStats.Unconvertible++
 			continue
 		}
-		var actions []ActionSpec
-		if err := json.Unmarshal(wf.Actions, &actions); err != nil {
+		if string(steps) == string(wf.Steps) {
+			continue // rule 2 — a LIVE control, see the convergence note on this function
+		}
+		if err := r.db.WithContext(ctx).Model(&Workflow{}).
+			Where("id = ?", wf.ID).Update("steps", steps).Error; err != nil {
+			wfStats.Failed++
+			errs = append(errs, fmt.Errorf("workflow %s: %w", wf.ID, err))
 			continue
 		}
-		var steps []StepSpec
-		for _, action := range actions {
-			if action.Type == "delay" {
-				steps = append(steps, StepSpec{
-					Type:  "delay",
-					ID:    action.ID,
-					Delay: delayParamsFromMap(action.Params),
-				})
-			} else {
-				a := action
-				steps = append(steps, StepSpec{
-					Type:   "action",
-					ID:     action.ID,
-					Action: &a,
-				})
-			}
-		}
-		stepsJSON, err := json.Marshal(steps)
-		if err != nil {
-			continue
-		}
-		wf.Steps = datatypes.JSON(stepsJSON)
-		_ = r.db.WithContext(ctx).Model(&wf).Update("steps", wf.Steps).Error
+		wfStats.Converted++
+	}
+	if wfStats.touched() {
+		slog.Info("automation: flat actions → steps backfill (workflows)",
+			"converted", wfStats.Converted, "unconvertible", wfStats.Unconvertible,
+			"failed", wfStats.Failed)
 	}
 
 	// 2. Migrate workflow versions table
 	var versions []WorkflowVersion
-	if err := r.db.WithContext(ctx).Where("steps IS NULL OR steps = 'null'::jsonb").Find(&versions).Error; err != nil {
-		return err
+	if err := r.db.WithContext(ctx).Where(flatActionsBackfillPredicate).Find(&versions).Error; err != nil {
+		return errors.Join(append(errs, fmt.Errorf("scan workflow versions needing steps: %w", err))...)
 	}
-	for _, ver := range versions {
-		if len(ver.Actions) == 0 || string(ver.Actions) == "null" {
+	var verStats flatActionsBackfillStats
+	for i := range versions {
+		ver := &versions[i]
+		steps, ok := stepsFromFlatActions(ver.Actions)
+		if !ok {
+			verStats.Unconvertible++
 			continue
 		}
-		var actions []ActionSpec
-		if err := json.Unmarshal(ver.Actions, &actions); err != nil {
+		if string(steps) == string(ver.Steps) {
+			continue // rule 2 — a LIVE control, see the convergence note on this function
+		}
+		if err := r.db.WithContext(ctx).Model(&WorkflowVersion{}).
+			Where("id = ?", ver.ID).Update("steps", steps).Error; err != nil {
+			verStats.Failed++
+			errs = append(errs, fmt.Errorf("workflow version %s: %w", ver.ID, err))
 			continue
 		}
-		var steps []StepSpec
-		for _, action := range actions {
-			if action.Type == "delay" {
-				steps = append(steps, StepSpec{
-					Type:  "delay",
-					ID:    action.ID,
-					Delay: delayParamsFromMap(action.Params),
-				})
-			} else {
-				a := action
-				steps = append(steps, StepSpec{
-					Type:   "action",
-					ID:     action.ID,
-					Action: &a,
-				})
-			}
-		}
-		stepsJSON, err := json.Marshal(steps)
-		if err != nil {
-			continue
-		}
-		ver.Steps = datatypes.JSON(stepsJSON)
-		_ = r.db.WithContext(ctx).Model(&ver).Update("steps", ver.Steps).Error
+		verStats.Converted++
 	}
-	return nil
+	if verStats.touched() {
+		slog.Info("automation: flat actions → steps backfill (versions)",
+			"converted", verStats.Converted, "unconvertible", verStats.Unconvertible,
+			"failed", verStats.Failed)
+	}
+
+	return errors.Join(errs...)
+}
+
+// FlatActionsGateLogPrefix is the stable, greppable prefix of the teardown-gate log
+// line. Grep Railway for it; every boot emits exactly one, cleared or not.
+const FlatActionsGateLogPrefix = "automation: FLAT_ACTIONS_TEARDOWN_GATE"
+
+// FlatActionsGateCounts is the flat-Actions teardown gate expressed as numbers.
+//
+// It answers TWO questions, and keeping them apart is the point:
+//
+//	"Is it safe to drop the Actions column?"  → the *Blocking counts. Cleared().
+//	"Do any rows execute nothing at runtime?" → the *EmptySteps counts. Inert().
+//
+// They are not the same question. A row with actions = '[]' AND steps = '[]' loses
+// NOTHING when the column is dropped — yet it runs the steps interpreter over zero
+// steps and reports itself COMPLETED having done nothing. Reporting that row as a
+// teardown blocker (which the first cut of this gate did, by never reading `actions` at
+// all) would print verdict=BLOCKED on every boot forever with no automated remedy.
+// Dropping it from the report entirely would hide a real runtime defect. So both are
+// counted, and only one of them decides the verdict.
+type FlatActionsGateCounts struct {
+	// WorkflowsMissingSteps counts LIVE workflows with no steps tree at all
+	// (steps IS NULL, or jsonb 'null'). These still execute off flat actions.
+	WorkflowsMissingSteps int64
+	// WorkflowsEmptySteps counts LIVE workflows whose steps are an EMPTY array.
+	//
+	// This is the count a naive `steps IS NOT NULL` gate misses, and it is why the gate
+	// is a set of numbers rather than one. processRun takes the steps path whenever
+	// `len(steps) > 0 && string(steps) != "null"` (engine.go), and "[]" satisfies both
+	// — so an empty-steps row runs the steps interpreter over zero steps and reports
+	// itself COMPLETED having executed nothing. It passes a `steps IS NOT NULL` gate
+	// while being exactly as broken as a row that has no steps at all.
+	WorkflowsEmptySteps int64
+	// VersionsMissingSteps counts version snapshots with no steps tree. Runs execute
+	// the PINNED VERSION, not the live workflow, so a migrated workflow with an
+	// unmigrated version snapshot still runs off flat actions.
+	VersionsMissingSteps int64
+	// VersionsEmptySteps counts version snapshots whose steps are an empty array.
+	VersionsEmptySteps int64
+
+	// WorkflowsBlocking counts LIVE workflows that would LOSE BEHAVIOUR if the Actions
+	// column were dropped today: `actions` holds something (not SQL NULL, not jsonb
+	// 'null', not '[]') AND steps are missing or empty, so the flat column is the only
+	// place that behaviour exists.
+	//
+	// This — not the four counts above — is the true teardown predicate. Rows whose
+	// `actions` is unconvertible (a JSON object rather than an array) count too: the
+	// backfill cannot rewrite them, so a human has to look before anything is dropped.
+	WorkflowsBlocking int64
+	// VersionsBlocking is the same predicate over version snapshots. Runs execute the
+	// PINNED VERSION, so a fully-migrated workflow with a blocking version snapshot is
+	// still a blocker.
+	VersionsBlocking int64
+}
+
+// Cleared reports whether the TEARDOWN is safe: no row anywhere would lose behaviour if
+// the Actions column were dropped. It deliberately ignores the empty-steps counts — see
+// the type comment, and Inert() for the other question.
+func (c FlatActionsGateCounts) Cleared() bool {
+	return c.WorkflowsBlocking == 0 && c.VersionsBlocking == 0
+}
+
+// Inert reports how many rows have an EMPTY steps array. processRun takes the steps path
+// whenever `len(steps) > 0 && string(steps) != "null"` (engine.go), and "[]" satisfies
+// both — so these rows run the steps interpreter over zero steps and report themselves
+// COMPLETED having executed nothing. That is a real defect, and a SEPARATE one from the
+// teardown: it is not a reason to keep the Actions column.
+func (c FlatActionsGateCounts) Inert() int64 {
+	return c.WorkflowsEmptySteps + c.VersionsEmptySteps
+}
+
+// CountFlatActionsGate measures the teardown gate.
+//
+// The workflows half is scoped to `deleted_at IS NULL` — a soft-deleted workflow never
+// runs, so it cannot block anything. The versions half is NOT, and deliberately: that
+// table has no deleted_at column at all (adding the predicate is a SQL error, not a
+// stricter query), and a version snapshot outlives its workflow's soft delete while
+// in-flight runs still pin it.
+//
+// Raw SQL with FILTER rather than a Model().Count() per number: two round trips instead
+// of six, and it keeps each table's three numbers consistent with one another by
+// construction — they come from a single scan under a single snapshot.
+func (r *Repository) CountFlatActionsGate(ctx context.Context) (FlatActionsGateCounts, error) {
+	type gateRow struct {
+		MissingSteps int64 `gorm:"column:missing_steps"`
+		EmptySteps   int64 `gorm:"column:empty_steps"`
+		Blocking     int64 `gorm:"column:blocking"`
+	}
+	// blocking is the only one of the three that reads `actions`, and that is what makes
+	// the verdict precise: "steps are missing or empty" AND "the flat column still holds
+	// the behaviour". An empty `actions` (SQL NULL, jsonb 'null' or '[]') has nothing to
+	// lose, so it is reported in the other two numbers and blocks nothing.
+	const gateSelect = `
+		SELECT
+			count(*) FILTER (WHERE steps IS NULL OR steps::text = 'null') AS missing_steps,
+			count(*) FILTER (WHERE steps::text = '[]') AS empty_steps,
+			count(*) FILTER (
+				WHERE (steps IS NULL OR steps::text = 'null' OR steps::text = '[]')
+				  AND actions IS NOT NULL AND actions::text <> 'null' AND actions::text <> '[]'
+			) AS blocking
+		FROM `
+
+	var out FlatActionsGateCounts
+	var wf gateRow
+	if err := r.db.WithContext(ctx).
+		Raw(gateSelect + `automation_workflows WHERE deleted_at IS NULL`).
+		Scan(&wf).Error; err != nil {
+		return out, fmt.Errorf("count workflows gate: %w", err)
+	}
+	var ver gateRow
+	if err := r.db.WithContext(ctx).
+		Raw(gateSelect + `automation_workflow_versions`).
+		Scan(&ver).Error; err != nil {
+		return out, fmt.Errorf("count workflow versions gate: %w", err)
+	}
+	out.WorkflowsMissingSteps = wf.MissingSteps
+	out.WorkflowsEmptySteps = wf.EmptySteps
+	out.WorkflowsBlocking = wf.Blocking
+	out.VersionsMissingSteps = ver.MissingSteps
+	out.VersionsEmptySteps = ver.EmptySteps
+	out.VersionsBlocking = ver.Blocking
+	return out, nil
+}
+
+// LogFlatActionsGate emits ONE greppable line reporting the teardown gate.
+//
+// It exists so that "have all workflows been migrated off flat actions?" is answerable
+// from Railway logs by anyone, instead of requiring a production SQL console — which
+// is the only reason the R5 teardown has been sitting behind an unmeasured gate.
+//
+// Never returns an error and never panics the boot: a gate that could break a deploy
+// would be worse than the ambiguity it removes, so a failed count is logged at Warn
+// with verdict=UNKNOWN and that is the end of it. The prefix is identical in every
+// outcome, so one grep finds them all.
+//
+// TWO independent signals, deliberately readable apart (see FlatActionsGateCounts):
+//
+//	verdict=CLEAR|BLOCKED|UNKNOWN  — may the Actions field be removed?
+//	inert_rows=N                   — how many rows execute NOTHING at runtime?
+//
+// inert_rows never changes the verdict. It is its own defect and its own fix; a row
+// that does nothing is not a reason to keep a column it does not use. It does raise the
+// level to Warn, because a workflow silently completing without acting is not something
+// to bury at Info — so "CLEAR at Warn" means "tear down when you like, and separately,
+// go look at those rows".
+func (r *Repository) LogFlatActionsGate(ctx context.Context, log *slog.Logger) {
+	if log == nil {
+		log = slog.Default()
+	}
+	c, err := r.CountFlatActionsGate(ctx)
+	if err != nil {
+		log.Warn(FlatActionsGateLogPrefix+" verdict=UNKNOWN — the gate query itself failed; the teardown is NOT cleared by this boot",
+			"verdict", "UNKNOWN", "error", err)
+		return
+	}
+	attrs := []any{
+		"workflows_blocking", c.WorkflowsBlocking,
+		"versions_blocking", c.VersionsBlocking,
+		"inert_rows", c.Inert(),
+		"workflows_missing_steps", c.WorkflowsMissingSteps,
+		"workflows_empty_steps", c.WorkflowsEmptySteps,
+		"versions_missing_steps", c.VersionsMissingSteps,
+		"versions_empty_steps", c.VersionsEmptySteps,
+	}
+	switch {
+	case !c.Cleared():
+		log.Warn(FlatActionsGateLogPrefix+" verdict=BLOCKED — some rows still hold flat actions their steps tree does not (workflows_blocking/versions_blocking); dropping the Actions column would LOSE that behaviour, so do NOT remove the Actions field yet",
+			append(attrs, "verdict", "BLOCKED")...)
+	case c.Inert() > 0:
+		log.Warn(FlatActionsGateLogPrefix+" verdict=CLEAR — the teardown is SAFE: ZERO rows would lose behaviour if the Actions column were dropped. SEPARATELY, inert_rows rows have an EMPTY steps array and so execute NOTHING at runtime; that is its own defect and it does not block the teardown",
+			append(attrs, "verdict", "CLEAR")...)
+	default:
+		log.Info(FlatActionsGateLogPrefix+" verdict=CLEAR — every count is ZERO: no row would lose behaviour if the Actions column were dropped, and no row has an empty steps tree, so the deprecated Actions field is safe to remove",
+			append(attrs, "verdict", "CLEAR")...)
+	}
 }
 
