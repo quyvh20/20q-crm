@@ -45,7 +45,7 @@ func (r *recordingMarketingRedactor) RedactMarketingStateForEmail(_ context.Cont
 }
 
 func newCollapseUC(repo domain.ContactRepository, red MarketingStateRedactor) domain.ContactUseCase {
-	uc := NewContactUseCase(repo, nil)
+	uc := NewContactUseCase(repo, nil, &fakeAuthorizer{})
 	if red != nil {
 		uc.(interface {
 			SetMarketingStateRedactor(MarketingStateRedactor)

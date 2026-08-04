@@ -157,7 +157,7 @@ func seedTwins(t *testing.T) (*importFakeRepo, uuid.UUID, uuid.UUID) {
 // success and changed nothing.
 func TestBulkImport_OverwriteTargetsTheExactEmail(t *testing.T) {
 	repo, realID, imposterID := seedTwins(t)
-	uc := NewContactUseCase(repo, nil)
+	uc := NewContactUseCase(repo, nil, nil)
 
 	csv := "first_name,last_name,email\nRobert,Smithers,bob@example.com\n"
 	res, err := uc.BulkImport(context.Background(), uuid.New(), newCSV(csv), "contacts.csv", "overwrite")
@@ -191,7 +191,7 @@ func TestBulkImport_TagsLandOnTheExactEmail(t *testing.T) {
 	// The near-miss already has tags. Losing these is the data loss.
 	existingTag := uuid.New()
 	repo.tagsByContact = map[uuid.UUID][]uuid.UUID{imposterID: {existingTag}}
-	uc := NewContactUseCase(repo, nil)
+	uc := NewContactUseCase(repo, nil, nil)
 
 	csv := "first_name,last_name,email,tags\nRobert,Smithers,bob@example.com,vip\n"
 	_, err := uc.BulkImport(context.Background(), uuid.New(), newCSV(csv), "contacts.csv", "overwrite")
@@ -216,7 +216,7 @@ func TestBulkImport_TagsOnNewContactSkipTheNearMiss(t *testing.T) {
 		},
 		tagsByContact: map[uuid.UUID][]uuid.UUID{},
 	}
-	uc := NewContactUseCase(repo, nil)
+	uc := NewContactUseCase(repo, nil, nil)
 
 	csv := "first_name,last_name,email,tags\nCarol,Jones,carol@example.com,vip\n"
 	_, err := uc.BulkImport(context.Background(), uuid.New(), newCSV(csv), "contacts.csv", "skip")
@@ -240,7 +240,7 @@ func TestBulkImport_TagPassDoesNotWipeANearMissTags(t *testing.T) {
 	repo, realID, imposterID := seedTwins(t)
 	keep := uuid.New()
 	repo.tagsByContact = map[uuid.UUID][]uuid.UUID{imposterID: {keep}}
-	uc := NewContactUseCase(repo, nil)
+	uc := NewContactUseCase(repo, nil, nil)
 
 	csv := "first_name,last_name,email,tags\nBob,Smith,bob@example.com,newsletter\n"
 	_, err := uc.BulkImport(context.Background(), uuid.New(), newCSV(csv), "contacts.csv", "skip")
@@ -256,7 +256,7 @@ func TestBulkImport_TagPassDoesNotWipeANearMissTags(t *testing.T) {
 // LOWER(email) = LOWER(?), not a raw equality.
 func TestBulkImport_OverwriteIsCaseInsensitive(t *testing.T) {
 	repo, realID, _ := seedTwins(t)
-	uc := NewContactUseCase(repo, nil)
+	uc := NewContactUseCase(repo, nil, nil)
 
 	csv := "first_name,last_name,email\nRobert,Smithers,BOB@Example.COM\n"
 	_, err := uc.BulkImport(context.Background(), uuid.New(), newCSV(csv), "contacts.csv", "overwrite")

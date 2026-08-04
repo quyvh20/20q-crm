@@ -324,6 +324,14 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			contacts.PUT("/:id", olsOn("contact", domain.ActionEdit), contactHandler.Update)
 			contacts.DELETE("/:id", olsOn("contact", domain.ActionDelete), contactHandler.Delete)
 			contacts.POST("/import", olsOn("contact", domain.ActionCreate), contactHandler.Import)
+			// bulk-action MULTIPLEXES two verbs (delete, assign_tag) over one route,
+			// and a route gate can only express ONE action — so this ActionEdit is a
+			// floor, not the gate. The real per-verb check is inside the dispatch
+			// (usecase.bulkActionRequires): "delete" additionally requires
+			// ActionDelete. Do NOT "fix" this line to ActionDelete — the four OLS
+			// bits are independent, so that would demand delete permission to TAG a
+			// contact. Leaving it at ActionEdit keeps the coarse gate strictly
+			// narrower than the fine one; it can never admit what the dispatch denies.
 			contacts.POST("/bulk-action", olsOn("contact", domain.ActionEdit), contactHandler.BulkAction)
 		}
 

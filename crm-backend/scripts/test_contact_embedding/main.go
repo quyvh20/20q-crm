@@ -55,7 +55,9 @@ func main() {
 	go embedWorker.Start(context.Background(), 1)
 
 	contactRepo := repository.NewContactRepository(db)
-	contactUseCase := usecase.NewContactUseCase(contactRepo, embedWorker)
+	// nil authorizer: this probe only creates + embeds a contact. Bulk actions are
+	// the only path that needs one, and a nil authorizer refuses them outright.
+	contactUseCase := usecase.NewContactUseCase(contactRepo, embedWorker, nil)
 
 	orgID := uuid.New()
 	// Optionally create a dummy org record if foreign keys require it

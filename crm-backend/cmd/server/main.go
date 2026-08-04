@@ -2363,8 +2363,9 @@ func main() {
 		layoutHandler := delivery.NewObjectLayoutHandler(layoutUC)
 
 		contactRepo := repository.NewContactRepository(db)
-		contactUseCase := usecase.NewContactUseCase(contactRepo, embedWorker, embedSvc)
-		contactHandler := delivery.NewContactHandler(contactUseCase)
+		// contactUseCase is built below, after permissionUC: its bulk-action dispatch
+		// takes the OLS authorizer as a constructor argument (the bulk endpoint
+		// multiplexes delete and assign_tag, so the route gate can't decide it).
 
 		companyRepo := repository.NewCompanyRepository(db)
 		companyUseCase := usecase.NewCompanyUseCase(companyRepo)
@@ -2400,6 +2401,13 @@ func main() {
 		// to auth_events alongside member/role changes.
 		permissionUC := usecase.NewPermissionUseCase(permissionRepo, objectRegistryUC, authRepo)
 		permissionHandler := delivery.NewPermissionHandler(permissionUC)
+
+		// Contacts, now that the authorizer exists. POST /contacts/bulk-action
+		// dispatches BOTH delete and assign_tag, so its permission is decided per
+		// verb inside the usecase against this same permissionUC — the identical
+		// Authorize call the route middleware makes.
+		contactUseCase := usecase.NewContactUseCase(contactRepo, embedWorker, permissionUC, embedSvc)
+		contactHandler := delivery.NewContactHandler(contactUseCase)
 
 		// Object Registry handler — constructed here (after permissionUC) so it can
 		// receive both the layout usecase (P8) and the OLS/FLS authorizer (P5a/P5b).

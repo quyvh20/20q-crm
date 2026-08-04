@@ -351,14 +351,6 @@ export async function updateContact(id: string, data: Partial<Contact> & { tag_i
   return json.data as Contact;
 }
 
-export async function deleteContact(id: string) {
-  const res = await apiFetch(`/api/contacts/${id}`, { method: 'DELETE' });
-  if (!res.ok) {
-    const json = await res.json().catch(() => ({}));
-    throw apiError(res, json, 'Failed to delete contact');
-  }
-}
-
 export async function importContacts(file: File, conflictMode: 'skip' | 'overwrite' = 'skip') {
   const formData = new FormData();
   formData.append('file', file);
@@ -369,25 +361,6 @@ export async function importContacts(file: File, conflictMode: 'skip' | 'overwri
   const json = await parseJsonSafe(res);
   if (!res.ok) throw apiError(res, json, 'Import failed');
   return json.data as ImportResult;
-}
-
-export interface BulkActionResult {
-  affected: number;
-  message: string;
-}
-
-export async function bulkAction(
-  action: 'delete' | 'assign_tag',
-  contactIds: string[],
-  tagId?: string,
-): Promise<BulkActionResult> {
-  const res = await apiFetch('/api/contacts/bulk-action', {
-    method: 'POST',
-    body: JSON.stringify({ action, contact_ids: contactIds, tag_id: tagId ?? null }),
-  });
-  const json = await parseJsonSafe(res);
-  if (!res.ok) throw apiError(res, json, 'Bulk action failed');
-  return json.data as BulkActionResult;
 }
 
 // ============================================================

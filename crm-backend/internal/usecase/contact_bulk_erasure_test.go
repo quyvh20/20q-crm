@@ -57,7 +57,11 @@ func (r *recordingRedactor) RedactForRecords(_ context.Context, _ uuid.UUID, ids
 }
 
 func newBulkUC(repo domain.ContactRepository, red LeadLedgerRedactor) domain.ContactUseCase {
-	uc := NewContactUseCase(repo, nil)
+	// A permissive authorizer: these tests are about WHICH ids get erased, not about
+	// who may erase them (that is contact_bulk_action_authz_test.go in the delivery
+	// layer). Passing one explicitly rather than nil keeps the erasure guarantees
+	// reachable — a nil authorizer refuses every bulk action.
+	uc := NewContactUseCase(repo, nil, &fakeAuthorizer{})
 	if red != nil {
 		uc.(interface{ SetLeadLedgerRedactor(LeadLedgerRedactor) }).SetLeadLedgerRedactor(red)
 	}

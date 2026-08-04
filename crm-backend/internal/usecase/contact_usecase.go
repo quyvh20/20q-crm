@@ -46,6 +46,11 @@ type contactUseCase struct {
 	contactRepo domain.ContactRepository
 	queue       domain.EmbeddingQueue
 	embedSvc    *ai.EmbeddingService
+	// authz is the SAME Object-Level Security engine the route middleware calls
+	// (permissionUC). BulkAction needs it because that one endpoint multiplexes two
+	// different verbs — see the bulkActionRequires table below. NOT nil-tolerant:
+	// a nil authorizer refuses every bulk action rather than waving it through.
+	authz domain.RecordAuthorizer
 	// ledgerRedactor strips the personal data the lead-capture ledger holds about a
 	// contact when that contact is deleted. Nil-tolerant: unset in unit tests and in
 	// any build without the integrations module.
@@ -88,8 +93,14 @@ type MarketingStateRedactor interface {
 // startup (interface assertion, so usecase never imports the marketing module).
 func (uc *contactUseCase) SetMarketingStateRedactor(r MarketingStateRedactor) { uc.marketingRedactor = r }
 
-func NewContactUseCase(repo domain.ContactRepository, queue domain.EmbeddingQueue, embedSvc ...*ai.EmbeddingService) domain.ContactUseCase {
-	uc := &contactUseCase{contactRepo: repo, queue: queue}
+// NewContactUseCase builds the contact usecase. authz is the Object-Level Security
+// engine (permissionUC) and is a REQUIRED positional parameter rather than a
+// setter: BulkAction is the one contact operation whose permission cannot be
+// decided at the route, so every construction site has to say out loud what
+// authorizes it. Passing nil is legal (scripts and unit tests that never bulk-act)
+// and makes BulkAction fail closed.
+func NewContactUseCase(repo domain.ContactRepository, queue domain.EmbeddingQueue, authz domain.RecordAuthorizer, embedSvc ...*ai.EmbeddingService) domain.ContactUseCase {
+	uc := &contactUseCase{contactRepo: repo, queue: queue, authz: authz}
 	if len(embedSvc) > 0 {
 		uc.embedSvc = embedSvc[0]
 	}
@@ -296,9 +307,56 @@ func (uc *contactUseCase) Count(ctx context.Context, orgID uuid.UUID) (int64, er
 // BulkAction — delete or assign tag to multiple contacts
 // ============================================================
 
+// contactObjectSlug is the Object-Level Security object the contact routes govern
+// — the same literal router.go passes to olsOn("contact", …).
+const contactObjectSlug = "contact"
+
+// bulkActionRequires maps each bulk verb to the Object-Level Security action it
+// needs. It is the gate, not a lookup table for one: BulkAction refuses any verb
+// absent from this map, so a third action cannot be added to the dispatch below
+// without someone stating which OLS bit authorizes it.
+//
+// This exists because POST /contacts/bulk-action MULTIPLEXES two different verbs
+// over one route, and a route-level middleware can only express one action. The
+// route was gated ActionEdit, which is right for assign_tag and wrong for delete:
+// the four OLS bits are independent (domain.ObjectAccess.Allows is a flat switch),
+// so the default sales role — {Read, Create, Edit: true, Delete: false} — could
+// bulk-delete contacts it was explicitly denied deleting one at a time. Flipping
+// the ROUTE to ActionDelete is not the fix; it would demand delete permission to
+// tag a contact. The decision has to happen where the verb is known.
+//
+// It lives in the usecase rather than the handler so it covers every caller, not
+// just this one HTTP route — the delete branch permanently redacts the lead ledger
+// and the marketing-consent provenance, which un-deleting a contact does not
+// restore, so a second delivery surface reaching BulkAction must not be able to
+// arrive ungated.
+var bulkActionRequires = map[string]domain.RecordAction{
+	"delete":     domain.ActionDelete,
+	"assign_tag": domain.ActionEdit,
+}
+
 func (uc *contactUseCase) BulkAction(ctx context.Context, orgID uuid.UUID, input domain.BulkActionInput) (*domain.BulkActionResult, error) {
 	if len(input.ContactIDs) == 0 {
 		return nil, domain.NewAppError(400, "contact_ids must not be empty")
+	}
+
+	required, known := bulkActionRequires[input.Action]
+	if !known {
+		return nil, domain.NewAppError(400, "unsupported action: must be 'delete' or 'assign_tag'")
+	}
+	if uc.authz == nil {
+		// Unwired authorizer: refuse rather than fall through ungated. The
+		// constructor makes this a deliberate choice at every call site, so
+		// reaching here means a build that never intended to serve bulk actions.
+		log.Printf("contact bulk action %q refused: no record authorizer wired", input.Action)
+		return nil, domain.NewAppError(403, "bulk actions are not available")
+	}
+	// The SAME call the route middleware makes (see requireObjectAccess in
+	// delivery/http/middleware.go): one authorization path, so the API-token scope
+	// intersection, the owner bypass and the callerless-trusted-call rule cannot
+	// drift from the rest of the app.
+	if err := uc.authz.Authorize(ctx, orgID, contactObjectSlug, required); err != nil {
+		return nil, err
 	}
 
 	switch input.Action {
@@ -362,6 +420,10 @@ func (uc *contactUseCase) BulkAction(ctx context.Context, orgID uuid.UUID, input
 		}, nil
 
 	default:
+		// Unreachable while this switch and bulkActionRequires agree. Kept as the
+		// closing half of the pair: a verb added HERE and not to the table is
+		// refused above, and a verb added to the TABLE and not here lands on this
+		// line — either way the request is denied rather than silently dropped.
 		return nil, domain.NewAppError(400, "unsupported action: must be 'delete' or 'assign_tag'")
 	}
 }
