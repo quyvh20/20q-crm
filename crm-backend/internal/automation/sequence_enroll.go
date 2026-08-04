@@ -19,9 +19,17 @@ const marketingEnrollmentKey = "_marketing_enrollment_id"
 // marketing sequence feeder (M8) uses to enroll a segment one contact at a time —
 // bypassing the 100-capped enroll_records action AND keeping the full depth-2 headroom
 // for any enroll steps inside the sequence itself (a depth-0 run is one whose context
-// omits _enroll_depth). inserted=false ⇒ the (workflow_id, idempotency_key) already
-// existed (an idempotent re-feed no-op), so a contact enrolls into a given sequence at
+// omits _enroll_depth). inserted=false ⇒ the (workflow_id, idempotency_key) was already
+// claimed (an idempotent re-feed no-op), so a contact enrolls into a given sequence at
 // most once.
+//
+// "At most once" here means FOREVER, and that word is load-bearing: re-enrolling a segment
+// into a sequence is allowed once the first enrollment completes (the marketing-side guard
+// is a partial index over ACTIVE rows only), so the feeder re-walks the whole segment and
+// asks to enroll every contact again. This is therefore the one enroll path that takes the
+// durable-claim route: its dedupe is recorded in automation_run_idempotency_claims and
+// survives the 90-day run pruner that used to delete the only copy of it. Every other
+// caller goes through EnrollRun and keeps the run-lifetime dedupe.
 func (e *Engine) EnrollContact(ctx context.Context, orgID uuid.UUID, target *Workflow, contactID, enrollmentID uuid.UUID, idempotencyKey string) (bool, error) {
 	fields := loadContactForTrigger(ctx, e.db, orgID, contactID)
 	if fields == nil {
@@ -31,7 +39,7 @@ func (e *Engine) EnrollContact(ctx context.Context, orgID uuid.UUID, target *Wor
 		fields = map[string]any{"id": contactID.String()}
 	}
 	tc := contactEnrollContext(fields, contactID, triggerTypeOf(target.Trigger), enrollmentID)
-	return e.EnrollRun(ctx, orgID, target, tc, idempotencyKey)
+	return e.enrollRun(ctx, orgID, target, tc, idempotencyKey, true)
 }
 
 // contactEnrollContext builds the trigger context for a sequence-enrolled contact run.

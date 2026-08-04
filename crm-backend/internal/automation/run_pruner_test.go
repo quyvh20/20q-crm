@@ -240,50 +240,56 @@ func seqEnrollKey(seqWFID, contactID uuid.UUID) string {
 	return fmt.Sprintf("seq:%s:contact:%s", seqWFID, contactID)
 }
 
-// TestRunPrunerErasesTheSequenceEnrollDedupe documents a CONFIRMED live defect. It
-// asserts what the code does today, not what it should do — read the whole comment before
-// "fixing" the assertions.
+// seqTestContact prepares the contacts fixture EnrollContact hydrates from, and returns a
+// fresh contact. loadContactForTrigger selects company_id; the shared contacts fixture
+// predates that column, and without it the enrol still succeeds but falls back to a minimal
+// context — quietly ceasing to exercise the real hydration path.
+func seqTestContact(t *testing.T, db *gorm.DB, org uuid.UUID) uuid.UUID {
+	t.Helper()
+	require.NoError(t, db.Exec(`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS company_id UUID`).Error)
+	id := uuid.New()
+	require.NoError(t, db.Exec(`INSERT INTO contacts (id, org_id, first_name, last_name, email)
+		VALUES (?, ?, 'Ada', 'Lovelace', ?)`, id, org, "ada-"+id.String()[:8]+"@example.com").Error)
+	return id
+}
+
+func claimCount(t *testing.T, db *gorm.DB, wfID uuid.UUID, key string) int64 {
+	t.Helper()
+	return runRowCount(t, db,
+		`SELECT count(*) FROM automation_run_idempotency_claims WHERE workflow_id = ? AND idempotency_key = ?`,
+		wfID, key)
+}
+
+// TestSequenceReEnrollmentSurvivesTheRunPruner is the regression test for a CONFIRMED live
+// defect: a contact who had already received an entire drip sequence received the whole
+// thing again, from step 1, whenever the segment was re-enrolled more than 90 days later.
 //
-// THE HAZARD: a contact who already received an entire drip sequence can receive the
-// whole thing again, from step 1, if the segment is re-enrolled more than 90 days later.
+// It was a four-link chain, and the fix cuts link 2:
+//  1. internal/marketing/sequence_feeder.go — sequenceEnrollKey is the per-(sequence,
+//     contact) idempotency key, promising to enrol each contact into a given sequence
+//     "at most once, FOREVER".
+//  2. That promise used to rest on exactly one artifact: the unique index
+//     idx_wf_runs_wf_idemp on automation_workflow_runs (workflow_id, idempotency_key) —
+//     the run ROW was the whole enrolment ledger. It is not any more. EnrollContact now
+//     routes through CreateRunWithDurableClaim, which records the key in
+//     automation_run_idempotency_claims (RunIdempotencyClaim) in the SAME transaction as
+//     the run. That table is the ledger, and no pruner touches it.
+//  3. internal/automation/run_pruner.go — PruneCompletedRuns still hard-deletes terminal
+//     runs 90 days after they finish, drip enrolments included. It must: those rows are
+//     the heaviest write volume in the schema. It simply no longer deletes the dedupe.
+//  4. cmd/server/main.go — the marketing-side guard is a PARTIAL unique index (WHERE
+//     status = 'active'), so re-enrolling the same (sequence, segment) after the first
+//     completes is still allowed, ON PURPOSE: that is how a re-enrolled segment picks up
+//     its NEW members. The feeder re-walks the entire segment and asks to enrol everyone;
+//     the per-contact claim is what makes the already-drip'd contacts no-ops.
 //
-// The chain, all four links verified by this test:
-//  1. internal/marketing/sequence_feeder.go:175-180 — sequenceEnrollKey is the per-
-//     (sequence, contact) idempotency key, and its doc comment promises it "enrolls each
-//     contact into a given sequence at most once, FOREVER".
-//  2. internal/automation/repository.go:48 — that promise is enforced by exactly one
-//     thing: the unique index idx_wf_runs_wf_idemp on
-//     automation_workflow_runs (workflow_id, idempotency_key). The run ROW is the ledger.
-//     There is no separate enrolment-history table.
-//  3. internal/automation/run_pruner.go:26 — PruneCompletedRuns hard-deletes terminal
-//     runs 90 days after they finish. A completed drip enrolment is exactly such a row.
-//     Deleting it deletes the only record that the contact was ever enrolled.
-//  4. cmd/server/main.go:1908-1909 — the enrolment guard on the marketing side is a
-//     PARTIAL unique index (WHERE status = 'active'), so once the first enrolment of
-//     (sequence, segment) completes, re-enrolling the same pair is permitted. The feeder
-//     then walks the segment again and re-enrols every contact whose dedupe row has aged
-//     out.
-//
-// So "forever" is really "for 90 days". The window is a package const with no env knob
-// (run_pruner.go:13), and nothing in either subsystem references the other.
-//
-// Fixing it is out of scope for R3. A fix has to give the enrolment ledger a life
-// independent of the run row — e.g. a marketing_sequence_enrollment_contacts table
-// written at enrol time, or excluding runs whose trigger_context carries
-// _marketing_enrollment_id from the pruner (which only defers the problem), or making the
-// pruner's retention longer than the longest sequence and stating that as the guarantee.
-//
-// WHEN THAT FIX LANDS: this test will fail at the final assertion. That is the intended
-// signal. Flip it back to require.False and rename it to
-// TestSequenceReEnrollmentSurvivesTheRunPruner.
-func TestRunPrunerErasesTheSequenceEnrollDedupe(t *testing.T) {
+// So the test prunes the enrolment run and re-enrols with the identical key, asserting the
+// enrol is refused AND that nothing dispatchable is left behind. If it fails, "forever" has
+// silently decayed back to "for 90 days" and live contacts are being re-mailed.
+func TestSequenceReEnrollmentSurvivesTheRunPruner(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 	ctx := context.Background()
-	// loadContactForTrigger selects company_id; the shared contacts fixture predates it.
-	// Without this the enrol still works but falls back to a minimal context, which would
-	// quietly stop exercising the real hydration path.
-	require.NoError(t, db.Exec(`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS company_id UUID`).Error)
 
 	repo := NewRepository(db)
 	engine := makeEngine(db, map[string]ActionExecutor{})
@@ -291,19 +297,18 @@ func TestRunPrunerErasesTheSequenceEnrollDedupe(t *testing.T) {
 
 	org := uuid.New()
 	seq := createTestWorkflow(t, db, org, 1)
-	contact := uuid.New()
-	require.NoError(t, db.Exec(`INSERT INTO contacts (id, org_id, first_name, last_name, email)
-		VALUES (?, ?, 'Ada', 'Lovelace', ?)`, contact, org, "ada-"+contact.String()[:8]+"@example.com").Error)
+	contact := seqTestContact(t, db, org)
 
 	key := seqEnrollKey(seq.ID, contact)
 
-	// 1. First enrolment: the contact starts the drip.
+	// 1. First enrolment: the contact starts the drip, and the claim is written with it.
 	inserted, err := engine.EnrollContact(ctx, org, seq, contact, uuid.New(), key)
 	require.NoError(t, err)
 	require.True(t, inserted, "first enrolment creates the run")
+	require.Equal(t, int64(1), claimCount(t, db, seq.ID, key),
+		"the enrolment is recorded in the durable ledger, not only in the run row")
 
-	// 2. While the run row exists, the dedupe works exactly as documented — this is the
-	//    control that proves the pruner (and nothing else) is what breaks it below.
+	// 2. While the run row exists, the dedupe works exactly as documented.
 	again, err := engine.EnrollContact(ctx, org, seq, contact, uuid.New(), key)
 	require.NoError(t, err)
 	require.False(t, again, "with the run row present, a re-enrol is correctly a no-op")
@@ -318,20 +323,203 @@ func TestRunPrunerErasesTheSequenceEnrollDedupe(t *testing.T) {
 	require.Equal(t, int64(1), n, "the completed enrolment run is past the 90-day window")
 	require.Equal(t, int64(0), runRowCount(t, db,
 		`SELECT count(*) FROM automation_workflow_runs WHERE workflow_id = ? AND idempotency_key = ?`, seq.ID, key),
-		"the only record of the enrolment is gone")
+		"the run row is reclaimed, as it must be")
 
-	// 4. The same contact, the same sequence, the same idempotency key — and it enrols.
+	// 4. The same contact, the same sequence, the same idempotency key — and the claim,
+	//    which the pruner does not touch, refuses it.
 	reEnrolled, err := engine.EnrollContact(ctx, org, seq, contact, uuid.New(), key)
 	require.NoError(t, err)
-	assert.True(t, reEnrolled,
-		"CONFIRMED DEFECT (see this test's doc comment): after the 90-day run pruner removes the "+
-			"dedupe row, the identical sequenceEnrollKey enrols the contact a second time. If this "+
-			"assertion starts failing, the re-mail bug has been fixed — flip it to require.False.")
+	assert.False(t, reEnrolled,
+		"once the run pruner has removed the run row, the identical sequenceEnrollKey must STILL "+
+			"be refused: the enrolment ledger is automation_run_idempotency_claims, which no "+
+			"pruner touches. A true here is the re-mail defect, live again.")
 
-	// And the second enrolment is a real, dispatchable run, not an inert row: it is
-	// pending, so the scheduler picks it up and the contact is mailed step 1 again.
+	// A refused enrol must leave NOTHING dispatchable behind — not even an inert row. A
+	// pending run here is picked up by the scheduler and mails the contact step 1 again.
+	assert.Equal(t, int64(0), runRowCount(t, db,
+		`SELECT count(*) FROM automation_workflow_runs WHERE workflow_id = ? AND idempotency_key = ?`,
+		seq.ID, key),
+		"the refused re-enrolment queues nothing — the contact does not re-enter the drip")
+	assert.Equal(t, int64(1), claimCount(t, db, seq.ID, key),
+		"the claim outlived the run that used to carry the dedupe")
+}
+
+// TestPruneCompletedRuns_LeavesDurableClaimsAlone pins the pruner's side of the contract
+// directly, without going through the enroll path.
+//
+// The claims table is the one table in this package with NO retention rule, which reads
+// like an oversight to anyone tidying up growth later — and PruneCompletedRuns is exactly
+// where such a tidy-up would land, since it already deletes from two tables in one
+// transaction. Adding a third DELETE here restores the re-mail defect in full, silently.
+func TestPruneCompletedRuns_LeavesDurableClaimsAlone(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	repo := NewRepository(db)
+	ctx := context.Background()
+	org, wf := uuid.New(), uuid.New()
+
+	// An ancient claim whose run is long gone — the steady state after a drip completes
+	// and ages out. Nothing about it is "recent" enough to be spared by a time window.
+	require.NoError(t, db.Create(&RunIdempotencyClaim{
+		ID: uuid.New(), OrgID: org, WorkflowID: wf, IdempotencyKey: "seq:ancient:contact:x",
+	}).Error)
+	require.NoError(t, db.Exec(`UPDATE automation_run_idempotency_claims
+		SET created_at = NOW() - make_interval(days => 3650) WHERE workflow_id = ?`, wf).Error)
+
+	// A terminal run so the pruner has real work to do on the same call.
+	doomed := mkPruneRun(t, db, org, wf, StatusCompleted, 400, 2, true)
+
+	n, err := repo.PruneCompletedRuns(ctx, runPruneRetention)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), n)
+	assert.Equal(t, int64(0), runRowCount(t, db, `SELECT count(*) FROM automation_workflow_runs WHERE id = ?`, doomed))
+
+	assert.Equal(t, int64(1), runRowCount(t, db, `SELECT count(*) FROM automation_run_idempotency_claims`),
+		"a ten-year-old claim is not garbage — it IS the enrolment ledger, and no retention rule may reach it")
+}
+
+// TestDurableClaimIsOnlyWrittenByTheSequencePath is the other half of the bound: the claims
+// table must stay narrow.
+//
+// EnrollRun backs the enroll_records action, whose key (enrollIdempotencyKey) is scoped to
+// its SOURCE RUN and so is meaningless once that run is pruned. If it were routed through
+// the durable path too — an easy "fix them all consistently" edit — the claims table would
+// gain one immortal row per enrolled record per run, recreating exactly the unbounded
+// growth PruneCompletedRuns exists to prevent, on a table nothing reclaims.
+func TestDurableClaimIsOnlyWrittenByTheSequencePath(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	engine := makeEngine(db, map[string]ActionExecutor{})
+	defer engine.cancel()
+
+	org := uuid.New()
+	wf := createTestWorkflow(t, db, org, 1)
+	sourceRun := uuid.New()
+	record := uuid.New()
+	key := enrollIdempotencyKey(sourceRun, wf.ID, record)
+
+	inserted, err := engine.EnrollRun(ctx, org, wf, map[string]any{"entity_id": record.String()}, key)
+	require.NoError(t, err)
+	require.True(t, inserted)
+
+	assert.Equal(t, int64(0), runRowCount(t, db, `SELECT count(*) FROM automation_run_idempotency_claims`),
+		"a run-scoped idempotency key must not buy a permanent row; its dedupe dies with its run, by design")
+	// It still dedupes for the run's own lifetime, which is all it ever promised.
+	again, err := engine.EnrollRun(ctx, org, wf, map[string]any{"entity_id": record.String()}, key)
+	require.NoError(t, err)
+	assert.False(t, again, "the run-lifetime dedupe still works")
+}
+
+// TestBackfillSequenceEnrollmentClaims_ProtectsPreExistingEnrollments covers the population
+// that is actually at risk right now.
+//
+// Every contact enrolled BEFORE the claims table shipped has a run row and no claim. The
+// write-path fix does nothing for them: their run is still the only ledger, and the pruner
+// still reaches it, so they still get re-mailed — for the whole 90 days it takes the last
+// pre-fix run to age out. The boot backfill (called from AutoMigrate) is what closes that,
+// so this test builds a genuine pre-fix row via the non-durable EnrollRun path, backfills,
+// prunes, and then demands the re-enrol be refused.
+func TestBackfillSequenceEnrollmentClaims_ProtectsPreExistingEnrollments(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := NewRepository(db)
+	engine := makeEngine(db, map[string]ActionExecutor{})
+	defer engine.cancel()
+
+	org := uuid.New()
+	seq := createTestWorkflow(t, db, org, 1)
+	contact := seqTestContact(t, db, org)
+	key := seqEnrollKey(seq.ID, contact)
+
+	// Exactly what the pre-fix code wrote: the marketing-tagged run, and nothing else.
+	tc := contactEnrollContext(map[string]any{"id": contact.String()}, contact, triggerTypeOf(seq.Trigger), uuid.New())
+	inserted, err := engine.EnrollRun(ctx, org, seq, tc, key)
+	require.NoError(t, err)
+	require.True(t, inserted)
+	require.Equal(t, int64(0), claimCount(t, db, seq.ID, key), "a pre-fix enrolment has no claim")
+
+	// A run with no marketing tag — the backfill must not sweep it in. Its key is scoped
+	// to a source run, so an immortal claim for it would be both wrong and unbounded.
+	otherKey := enrollIdempotencyKey(uuid.New(), seq.ID, uuid.New())
+	_, err = engine.EnrollRun(ctx, org, seq, map[string]any{"entity_id": uuid.New().String()}, otherKey)
+	require.NoError(t, err)
+
+	n, err := repo.BackfillSequenceEnrollmentClaims(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n, "only the marketing-tagged run is claimed")
+	assert.Equal(t, int64(1), claimCount(t, db, seq.ID, key))
+	assert.Equal(t, int64(0), claimCount(t, db, seq.ID, otherKey),
+		"an untagged, run-scoped key is not a sequence enrolment and gets no permanent row")
+
+	// Idempotent: AutoMigrate calls it on every boot.
+	n, err = repo.BackfillSequenceEnrollmentClaims(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), n, "a second boot writes nothing")
+
+	// Now age the legacy run out and confirm the backfilled claim holds the line.
+	require.NoError(t, db.Exec(`UPDATE automation_workflow_runs
+		SET status = 'completed', finished_at = NOW() - make_interval(days => 100)
+		WHERE workflow_id = ? AND idempotency_key = ?`, seq.ID, key).Error)
+	_, err = repo.PruneCompletedRuns(ctx, runPruneRetention)
+	require.NoError(t, err)
+
+	reEnrolled, err := engine.EnrollContact(ctx, org, seq, contact, uuid.New(), key)
+	require.NoError(t, err)
+	assert.False(t, reEnrolled,
+		"a contact enrolled before the claims table existed must be protected too — otherwise the "+
+			"fix leaves the entire live population exposed until their runs age out")
+}
+
+// TestDurableClaimHealsARunThatHasNoClaimYet covers the branch where the claim insert
+// succeeds but the run insert conflicts.
+//
+// This is the transition state: a live pre-fix run holds the key, with no claim. The enrol
+// must still be refused (the run row's own index does that), but it must ALSO leave the
+// claim behind — committed, not rolled back with the conflicting run insert. Getting that
+// wrong is invisible: the enrol is refused today and re-mails in 90 days, which is the
+// original bug wearing the fix's clothes. It is also why the run is inserted with ON
+// CONFLICT DO NOTHING rather than by catching a duplicate-key error, which would poison the
+// transaction and take the claim down with it.
+func TestDurableClaimHealsARunThatHasNoClaimYet(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := NewRepository(db)
+	engine := makeEngine(db, map[string]ActionExecutor{})
+	defer engine.cancel()
+
+	org := uuid.New()
+	seq := createTestWorkflow(t, db, org, 1)
+	contact := seqTestContact(t, db, org)
+	key := seqEnrollKey(seq.ID, contact)
+
+	// A pre-fix run, still live, never backfilled.
+	tc := contactEnrollContext(map[string]any{"id": contact.String()}, contact, triggerTypeOf(seq.Trigger), uuid.New())
+	inserted, err := engine.EnrollRun(ctx, org, seq, tc, key)
+	require.NoError(t, err)
+	require.True(t, inserted)
+	require.Equal(t, int64(0), claimCount(t, db, seq.ID, key))
+
+	// The feeder comes back round on the same contact.
+	again, err := engine.EnrollContact(ctx, org, seq, contact, uuid.New(), key)
+	require.NoError(t, err)
+	assert.False(t, again, "the live run row still dedupes")
+	assert.Equal(t, int64(1), claimCount(t, db, seq.ID, key),
+		"and the claim is committed on the way past, so the dedupe survives the pruner")
 	assert.Equal(t, int64(1), runRowCount(t, db,
-		`SELECT count(*) FROM automation_workflow_runs WHERE workflow_id = ? AND idempotency_key = ? AND status = ?`,
-		seq.ID, key, StatusPending),
-		"the duplicate enrolment is queued for execution — the contact re-enters the drip at step 1")
+		`SELECT count(*) FROM automation_workflow_runs WHERE workflow_id = ? AND idempotency_key = ?`, seq.ID, key),
+		"no duplicate run was created")
+
+	// And the healed claim genuinely holds once the run is reclaimed.
+	require.NoError(t, db.Exec(`UPDATE automation_workflow_runs
+		SET status = 'completed', finished_at = NOW() - make_interval(days => 100)
+		WHERE workflow_id = ? AND idempotency_key = ?`, seq.ID, key).Error)
+	_, err = repo.PruneCompletedRuns(ctx, runPruneRetention)
+	require.NoError(t, err)
+
+	reEnrolled, err := engine.EnrollContact(ctx, org, seq, contact, uuid.New(), key)
+	require.NoError(t, err)
+	assert.False(t, reEnrolled, "the healed claim is a real claim")
 }

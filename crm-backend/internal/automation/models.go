@@ -75,6 +75,37 @@ type WorkflowRun struct {
 
 func (WorkflowRun) TableName() string { return "automation_workflow_runs" }
 
+// RunIdempotencyClaim is a PERMANENT record that a (workflow_id, idempotency_key) pair has
+// been used. It exists because the run row is not a durable ledger: PruneCompletedRuns
+// hard-deletes terminal runs 90 days after they finish (run_pruner.go), and that row was
+// the ONLY artifact backing the marketing sequence feeder's promise that a contact enrolls
+// into a given sequence at most once, forever (marketing/sequence_feeder.go). Deleting it
+// released the dedupe, so a segment re-enrolled after the window re-mailed the entire drip
+// to every contact who had already completed it.
+//
+// Only keys whose dedupe must outlive their run write here — today just the M8 sequence
+// feeder, through EnrollContact. Ordinary runs stay out, including the enroll_records
+// action, whose key is scoped to its SOURCE RUN (enrollIdempotencyKey) and is therefore
+// meaningless once that run is pruned; claiming those would grow this table by one row per
+// run and recreate the unbounded growth the pruner exists to prevent.
+//
+// NO PRUNER MAY TOUCH THIS TABLE. Its cost is one narrow row per (sequence, contact) that
+// lives forever, which is the irreducible price of a "forever" guarantee — and a fraction
+// of the run row plus N action logs whose deletion it makes safe.
+//
+// The unique index is declared as a GORM tag rather than a fire-and-forget Exec like the
+// other automation indexes: it IS the guarantee, so its creation error must surface through
+// AutoMigrate's checked return instead of being swallowed.
+type RunIdempotencyClaim struct {
+	ID             uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	OrgID          uuid.UUID `gorm:"type:uuid;not null;index" json:"org_id"`
+	WorkflowID     uuid.UUID `gorm:"type:uuid;not null;uniqueIndex:idx_wf_idemp_claims_wf_key" json:"workflow_id"`
+	IdempotencyKey string    `gorm:"size:100;not null;uniqueIndex:idx_wf_idemp_claims_wf_key" json:"idempotency_key"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+func (RunIdempotencyClaim) TableName() string { return "automation_run_idempotency_claims" }
+
 // WorkflowActionLog records the result of each action step within a run.
 type WorkflowActionLog struct {
 	ID         uuid.UUID      `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
