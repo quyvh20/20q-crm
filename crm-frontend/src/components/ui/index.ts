@@ -10,3 +10,4 @@ export { Skeleton } from "./skeleton";
 export { Spinner, SpinnerBlock } from "./spinner";
 export { PageHeader } from "./page-header";
 export { EmptyState } from "./empty-state";
+export { ErrorState } from "./error-state";

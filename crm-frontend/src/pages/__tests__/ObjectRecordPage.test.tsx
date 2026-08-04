@@ -51,6 +51,8 @@ import {
   getObjectRecordUnified,
   deleteObjectRecordUnified,
   updateObjectRecordUnified,
+  listRecordRelatedLists,
+  listRecordTags,
 } from '../../lib/api';
 import ObjectRecordPage from '../ObjectRecordPage';
 
@@ -250,5 +252,54 @@ describe('ObjectRecordPage', () => {
     // Error surfaces in the modal and we did NOT navigate away.
     expect(await screen.findByText('not allowed')).toBeInTheDocument();
     expect(screen.getByTestId('loc').textContent).toBe('/objects/contact/records/p1');
+  });
+});
+
+// R4 follow-up: the per-endpoint fallback caught the related-list and tag
+// requests into [], so a failure and an actually-empty record produced the same
+// page. `mockRejectedValueOnce` (not mockRejectedValue) because
+// clearAllMocks keeps implementations — a permanent rejection would leak here.
+describe('ObjectRecordPage does not fold a failed panel into an empty one', () => {
+  it('names the related-records failure and leaves the record itself rendered', async () => {
+    vi.mocked(getObjectSchema).mockResolvedValue(contactSchema);
+    vi.mocked(getObjectRecordUnified).mockResolvedValue(contactRecord);
+    vi.mocked(listRecordRelatedLists).mockRejectedValueOnce(
+      new Error('related lists unavailable (reference: 3ab19c04)'),
+    );
+
+    renderPage();
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent("Couldn't load this contact's related records.");
+    expect(alert).toHaveTextContent('related lists unavailable (reference: 3ab19c04)');
+    // Only the panel that failed is named — the tags loaded fine.
+    expect(alert).not.toHaveTextContent('and tags');
+    // The record itself still paints; a broken side panel is not a broken page.
+    expect(screen.getByText('jane@example.com')).toBeInTheDocument();
+  });
+
+  it('names the tag failure when that is the request that broke', async () => {
+    vi.mocked(getObjectSchema).mockResolvedValue(contactSchema);
+    vi.mocked(getObjectRecordUnified).mockResolvedValue(contactRecord);
+    vi.mocked(listRecordTags).mockRejectedValueOnce(new Error('tag service down'));
+
+    renderPage();
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent("Couldn't load this contact's tags.");
+    expect(alert).toHaveTextContent('tag service down');
+  });
+
+  it('clears the panel failure when Retry succeeds', async () => {
+    vi.mocked(getObjectSchema).mockResolvedValue(contactSchema);
+    vi.mocked(getObjectRecordUnified).mockResolvedValue(contactRecord);
+    vi.mocked(listRecordRelatedLists).mockRejectedValueOnce(new Error('boom'));
+
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: /Retry/ }));
+
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+    expect((await screen.findAllByText('Jane Smith')).length).toBeGreaterThan(0);
   });
 });

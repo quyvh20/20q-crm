@@ -4,6 +4,7 @@ import { globalSearch, type SearchGroup } from '../../lib/api';
 import { recordPath } from '../../features/objects/recordRoutes';
 import { useAuth } from '../../lib/auth';
 import { visibleSections } from '../../pages/settings/SettingsLayout';
+import { ErrorState } from '@/components/ui';
 
 // GlobalSearch is the P6 cross-object search palette: one Ctrl+K box that spans
 // every searchable object (custom objects + contacts), grouped by object, backed
@@ -31,6 +32,8 @@ export default function GlobalSearch() {
   const [groups, setGroups] = useState<SearchGroup[]>([]);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
+  // A search that FAILED must not render as a search that found nothing.
+  const [searchError, setSearchError] = useState<unknown>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
@@ -64,8 +67,10 @@ export default function GlobalSearch() {
       try {
         const res = await globalSearch(query, 6);
         setGroups(res.groups);
-      } catch {
+        setSearchError(null);
+      } catch (e) {
         setGroups([]);
+        setSearchError(e);
       } finally {
         setLoading(false);
         setSearched(true);
@@ -196,7 +201,13 @@ export default function GlobalSearch() {
           </div>
         )}
 
-        {searched && !loading && totalHits === 0 && settingsHits.length === 0 && (
+        {searched && !loading && searchError != null && (
+          <div className="p-3">
+            <ErrorState compact title="Search failed." error={searchError} />
+          </div>
+        )}
+
+        {searched && !loading && searchError == null && totalHits === 0 && settingsHits.length === 0 && (
           <div className="p-5 text-center text-[13px] text-muted-foreground">No results for "{query}"</div>
         )}
       </div>

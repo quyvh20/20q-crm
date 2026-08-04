@@ -24,6 +24,7 @@ import {
   Badge,
   Button,
   EmptyState,
+  ErrorState,
   Input,
   PageHeader,
   SpinnerBlock,
@@ -67,7 +68,7 @@ export const WorkflowList: React.FC = () => {
 
   // Server state via React Query (A3.4). keepPreviousData (in the hook) keeps the
   // current rows visible while a new page/search/filter loads.
-  const { data, isLoading: loading, isFetching } = useWorkflowsList({ active: filterActive, q: q || undefined, page, size: 20 });
+  const { data, isLoading: loading, isFetching, error: loadError, refetch } = useWorkflowsList({ active: filterActive, q: q || undefined, page, size: 20 });
   const workflows = data?.workflows ?? [];
   const total = data?.total ?? 0;
   const toggleMutation = useToggleWorkflow();
@@ -284,6 +285,10 @@ export const WorkflowList: React.FC = () => {
       {/* Table */}
       {loading ? (
         <SpinnerBlock label="Loading…" />
+      ) : loadError ? (
+        // "No workflows yet" would tell someone whose automations are running
+        // that their workspace has none.
+        <ErrorState title="Couldn't load your workflows." error={loadError} onRetry={() => refetch()} />
       ) : workflows.length === 0 ? (
         <EmptyState
           icon={Zap}

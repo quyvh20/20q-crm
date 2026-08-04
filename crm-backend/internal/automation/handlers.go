@@ -452,6 +452,10 @@ func (h *Handler) UpdateWorkflow(c *gin.Context) {
 		return
 	}
 
+	// Captured BEFORE the in-place mutation below, so the date_field reconcile can
+	// tell a trigger-params change from the many saves that touch everything else.
+	prevTrigger := wf.Trigger
+
 	if req.Name != nil {
 		wf.Name = *req.Name
 	}
@@ -495,6 +499,17 @@ func (h *Handler) UpdateWorkflow(c *gin.Context) {
 	}
 
 	h.armWorkflowTimers(c.Request.Context(), wf)
+
+	// armWorkflowTimers only cancels date_field timers when the workflow is NOT an
+	// active date_field workflow, so editing an ACTIVE one's trigger left the timers
+	// it had already armed on the old configuration: a changed offset/time keeps
+	// firing at the old moment, and a changed OBJECT orphans the old object's timers where
+	// no write will ever revisit them (ActiveDateFieldWorkflowsForObject filters on
+	// the new slug) while the scheduler fires them regardless. Rebuilding the set is
+	// the fix; the guard keeps a rename or a step edit from triggering a table scan.
+	if dateFieldReconcileNeededOnUpdate(prevTrigger, wf) {
+		h.scheduleDateFieldReconcile(wf)
+	}
 
 	c.JSON(http.StatusOK, gin.H{"data": ToWorkflowResponse(wf)})
 }
@@ -551,6 +566,13 @@ func (h *Handler) ToggleWorkflow(c *gin.Context) {
 
 	// Arm (now-active) or cancel (now-inactive) the workflow's schedule timer.
 	h.armWorkflowTimers(c.Request.Context(), wf)
+
+	// This is the ONLY route that can switch a date_field workflow on, and until R4.4
+	// switching it on armed nothing: timers were materialized per-record on WRITES, so
+	// "30 days before renewal" fired for nobody whose renewal date was already stored
+	// — i.e. for the entire existing book of business. Backfill it. Async and
+	// self-cancelling for anything that is not an active date_field workflow.
+	h.scheduleDateFieldReconcile(wf)
 
 	c.JSON(http.StatusOK, gin.H{"data": ToWorkflowResponse(wf)})
 }

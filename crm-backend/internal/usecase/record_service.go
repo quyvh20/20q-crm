@@ -156,14 +156,29 @@ func (s *recordService) allocateAndSetNumber(ctx context.Context, orgID uuid.UUI
 
 const defaultRecordLimit = 25
 
+// maxRecordLimit caps an over-large page instead of throwing it away. Asking for
+// 200 used to RESET the page to 25 — a caller who wanted more got dramatically
+// FEWER, silently, and a client that trusted its own page size then walked the
+// list wrong.
+//
+// 100 is not a taste call: it is the largest value every downstream repository
+// accepts. Each of them resets (does not clamp) above its own ceiling — contacts
+// and custom objects at 100, companies at 100, deals at 200 — so anything above
+// 100 here would be quietly re-floored to 25 or 20 one layer down. Raising this
+// means raising those first.
+const maxRecordLimit = 100
+
 // List returns one uniform page of records for an object, system or custom.
 func (s *recordService) List(ctx context.Context, orgID uuid.UUID, slug string, in domain.RecordListInput) (*domain.RecordList, error) {
 	if err := s.authorize(ctx, orgID, slug, domain.ActionRead); err != nil {
 		return nil, err
 	}
 	limit := in.Limit
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 {
 		limit = defaultRecordLimit
+	}
+	if limit > maxRecordLimit {
+		limit = maxRecordLimit
 	}
 
 	in.Limit = limit

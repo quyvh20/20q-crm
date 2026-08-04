@@ -6,7 +6,7 @@ import AccessDeniedPanel from '../../components/common/AccessDeniedPanel';
 import Modal from '../../components/common/Modal';
 import { useConfirm } from '../../components/common/ConfirmDialog';
 import {
-  Badge, Button, EmptyState, Input, PageHeader, SpinnerBlock,
+  Badge, Button, EmptyState, ErrorState, Input, PageHeader, SpinnerBlock,
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableShell,
 } from '@/components/ui';
 import { useSegments, useCreateSegment, useDeleteSegment, useSegmentCount } from './segmentsQueries';
@@ -29,7 +29,7 @@ const SegmentsPage: React.FC = () => {
 
 const SegmentsContent: React.FC = () => {
   const navigate = useNavigate();
-  const { data: segments, isLoading } = useSegments();
+  const { data: segments, isLoading, error: loadError, refetch } = useSegments();
   const createMutation = useCreateSegment();
   const deleteMutation = useDeleteSegment();
   const { confirm, dialog } = useConfirm();
@@ -80,6 +80,8 @@ const SegmentsContent: React.FC = () => {
 
       {isLoading ? (
         <SpinnerBlock label="Loading…" />
+      ) : loadError ? (
+        <ErrorState title="Couldn't load your audiences." error={loadError} onRetry={() => refetch()} />
       ) : rows.length === 0 ? (
         <EmptyState
           icon={Users}

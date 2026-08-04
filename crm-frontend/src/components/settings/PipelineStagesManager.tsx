@@ -10,7 +10,7 @@ import {
   seedDefaultStages,
   type PipelineStage,
 } from '../../lib/api';
-import { Badge, Button, EmptyState, Input, Skeleton } from '@/components/ui';
+import { Badge, Button, EmptyState, ErrorState, Input, Skeleton } from '@/components/ui';
 
 const COLORS = [
   '#6366F1', '#3B82F6', '#06B6D4', '#10B981',
@@ -111,7 +111,7 @@ export default function PipelineStagesManager() {
   const [error, setError] = useState('');
   const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
 
-  const { data: stages = [], isLoading } = useQuery<PipelineStage[]>({
+  const { data: stages = [], isLoading, error: loadError, refetch } = useQuery<PipelineStage[]>({
     queryKey: ['stages'],
     queryFn: getStages,
   });
@@ -156,7 +156,7 @@ export default function PipelineStagesManager() {
           <p className="text-sm text-muted-foreground mt-0.5">Define the stages deals move through in your sales pipeline.</p>
         </div>
         <div className="flex gap-2">
-          {stages.length === 0 && (
+          {stages.length === 0 && !loadError && (
             <Button variant="outline" onClick={() => seedMut.mutate()} disabled={seedMut.isPending}>
               <Sparkles aria-hidden /> {seedMut.isPending ? 'Seeding…' : 'Seed Defaults'}
             </Button>
@@ -171,13 +171,17 @@ export default function PipelineStagesManager() {
         <div className="rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>
       )}
 
-      {stages.length === 0 && !showAdd && (
+      {/* A failed load must not offer to "Seed Defaults" — the stages very
+          likely exist, and the empty state's advice is for a fresh workspace. */}
+      {loadError ? (
+        <ErrorState title="Couldn't load your pipeline stages." error={loadError} onRetry={() => refetch()} />
+      ) : stages.length === 0 && !showAdd ? (
         <EmptyState
           icon={Target}
           title="No pipeline stages yet"
           description={'Click "Seed Defaults" to get started quickly, or add your own.'}
         />
-      )}
+      ) : null}
 
       <div className="space-y-2">
         {stages.map(stage => (

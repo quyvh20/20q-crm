@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"strings"
 
@@ -18,6 +17,14 @@ type companyRepository struct {
 
 func NewCompanyRepository(db *gorm.DB) domain.CompanyRepository {
 	return &companyRepository{db: db}
+}
+
+// companySortColumns is deliberately a one-entry whitelist: CompanyFilter exposes
+// no SortBy, so newest-first is the only ordering a caller can reach. It is a map
+// rather than a constant so that adding a sortable column here also, and
+// necessarily, teaches the cursor about it.
+var companySortColumns = map[string]keysetColumn{
+	"created_at": {col: "companies.created_at", kind: keysetTime},
 }
 
 // ============================================================
@@ -46,17 +53,16 @@ func (r *companyRepository) List(ctx context.Context, orgID uuid.UUID, f domain.
 		query = query.Where("companies.custom_fields ->> ? = ?", k, v)
 	}
 
-	// Keyset cursor: base64(id)
-	if f.Cursor != "" {
-		decoded, err := base64.StdEncoding.DecodeString(f.Cursor)
-		if err == nil {
-			query = query.Where("companies.id < ?", string(decoded))
-		}
-	}
+	// Keyset cursor + ORDER BY, emitted together so they cannot disagree. The
+	// cursor used to be base64(id) while the sort was created_at DESC: ids are
+	// UUIDv4 and uncorrelated with time, so "Load more" repeated some companies and
+	// lost others outright. See keyset_cursor.go.
+	ord := newKeysetOrdering(companySortColumns, "created_at", "companies.id", "", "")
+	query = ord.applyCursor(query, f.Cursor)
 
 	var companies []domain.Company
 	if err := query.
-		Order("companies.created_at DESC, companies.id DESC").
+		Order(ord.orderClause()).
 		Limit(limit + 1).
 		Find(&companies).Error; err != nil {
 		return nil, "", err
@@ -66,7 +72,7 @@ func (r *companyRepository) List(ctx context.Context, orgID uuid.UUID, f domain.
 	if len(companies) > limit {
 		companies = companies[:limit]
 		last := companies[len(companies)-1]
-		nextCursor = base64.StdEncoding.EncodeToString([]byte(last.ID.String()))
+		nextCursor = ord.nextCursor(last.CreatedAt, last.ID)
 	}
 
 	return companies, nextCursor, nil

@@ -5,7 +5,7 @@ import { useEmailTemplates, useDeleteEmailTemplate, useTestSendEmailTemplate } f
 import { WorkflowsTabs } from './WorkflowsTabs';
 import { usePermissions } from '../../lib/auth';
 import AccessDeniedPanel from '../../components/common/AccessDeniedPanel';
-import { Button, EmptyState, PageHeader, SpinnerBlock } from '@/components/ui';
+import { Button, EmptyState, ErrorState, PageHeader, SpinnerBlock } from '@/components/ui';
 import type { EmailTemplate } from './api';
 
 /** Email templates library (A5). Token-styled (consistent with the new builder),
@@ -42,7 +42,10 @@ export const EmailTemplatesPage: React.FC = () => {
 
 const EmailTemplatesContent: React.FC = () => {
   const navigate = useNavigate();
-  const { data, isLoading } = useEmailTemplates();
+  // `error` is not optional to read: without it a failed list falls straight
+  // through to `templates = []` and the page tells a workspace with a full
+  // library that it has none and should go make one.
+  const { data, isLoading, error: loadError, refetch } = useEmailTemplates();
   const deleteMutation = useDeleteEmailTemplate();
   const testSend = useTestSendEmailTemplate();
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
@@ -96,6 +99,12 @@ const EmailTemplatesContent: React.FC = () => {
 
       {isLoading ? (
         <SpinnerBlock label="Loading…" />
+      ) : loadError ? (
+        <ErrorState
+          title="Couldn't load your email templates."
+          error={loadError}
+          onRetry={() => refetch()}
+        />
       ) : templates.length === 0 ? (
         <EmptyState
           icon={Mail}

@@ -24,12 +24,23 @@ import (
 //   - the unique (workflow_id, dedupe_key) index + the run's occurrence-derived
 //     idempotency key give exactly-once firing even under re-materialization/retry.
 //
-// Scope note: materialization is write-driven. Records that already exist when a
-// date_field workflow is activated are armed on their NEXT write — a full backfill
-// scan of pre-existing records is a deliberate follow-up (kept out to avoid a
-// generic per-object record scan). Config changes (field/offset/time) apply to
-// timers materialized AFTER the change; already-armed timers fire with the config
-// captured at materialization.
+// Scope note: materialization here is write-driven, and that ALONE is not the whole
+// lifecycle any more. Two things this header used to declare out of scope are now in
+// datefield_backfill.go, which owns the whole-workflow reconcile:
+//
+//   - Pre-existing records. Activating a date_field workflow used to arm nothing —
+//     "30 days before renewal" fired for nobody whose renewal date was already stored,
+//     i.e. for the entire existing book. ToggleWorkflow now runs a backfill scan
+//     (reconcileDateFieldTimers), so activation arms what already exists.
+//   - Config changes. A field/offset/time/timezone edit used to leave already-armed
+//     timers pinned to the OLD config forever, and an OBJECT change orphaned the old
+//     object's timers where nothing would ever revisit them. UpdateWorkflow now
+//     reconciles when the trigger params actually change, which cancels the whole
+//     pending set before re-arming at the new config.
+//
+// What is still write-driven, and still lives here: an individual record's timer as
+// its date moves, and its cancellation when the record is deleted or its date cleared.
+// See datefield_backfill.go's header for the ordering the reconcile depends on.
 
 const TimerKindDateField = "date_field"
 

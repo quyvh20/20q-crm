@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"strings"
 
@@ -18,6 +17,54 @@ type dealRepository struct {
 
 func NewDealRepository(db *gorm.DB) domain.DealRepository {
 	return &dealRepository{db: db}
+}
+
+// dealSortColumns is the whitelist behind DealFilter.SortBy — the only thing
+// between a caller-supplied sort_by and an fmt.Sprintf into Order().
+//
+// created_at and title are NOT NULL in the schema. value and probability are NOT —
+// migrations/000002_schema.up.sql declares `value NUMERIC(15,2) DEFAULT 0` and
+// `probability INT DEFAULT 0 CHECK (…)`, DEFAULT without NOT NULL, and no boot
+// guard in main.go adds one. (An earlier version of this comment asserted the
+// opposite; TestKeysetWhitelists_AgreeWithSchemaNullability now reads
+// information_schema and the migration so the claim cannot go stale again.)
+//
+// They carry nullAs rather than nullable because domain.Deal holds them as float64
+// and int, which cannot represent NULL: a NULL scans back as 0, so the cursor
+// minted from such a row says 0 whatever the column held, and the ORDER BY has to
+// agree. `nullable: true` looks like the fix and is not — it is worse than the bug
+// it appears to close: the null arms switch on a nil cursor value that a
+// non-pointer field never produces, so DESC still dead-stops after the null block
+// (2 of 8 rows), and ASC starts REPEATING already-served rows once a null block
+// straddles a page boundary, because the "…OR value IS NULL" arm re-admits the
+// whole non-null head. Both were reproduced against real Postgres; see
+// TestPagination_Deals_NullNumericColumnsWalkExactlyOnce.
+//
+// Consequence worth knowing: a NULL-valued deal now sorts as 0 rather than under
+// Postgres's default NULL placement. That matches what the row already presents
+// everywhere else — the API serialises Value 0 for it and the UI renders $0 — so a
+// deal shown as $0 no longer jumps to the top of a highest-value-first list.
+var dealSortColumns = map[string]keysetColumn{
+	"created_at":  {col: "deals.created_at", kind: keysetTime},
+	"value":       {col: "deals.value", kind: keysetNumber, nullAs: "0"},
+	"probability": {col: "deals.probability", kind: keysetNumber, nullAs: "0"},
+	"title":       {col: "deals.title", kind: keysetText},
+}
+
+// dealSortValue reads the sort column off the last row of a page so the cursor
+// carries the same value the ORDER BY compared. The default arm must match
+// newKeysetOrdering's defaultKey below.
+func dealSortValue(d *domain.Deal, key string) any {
+	switch key {
+	case "value":
+		return d.Value
+	case "probability":
+		return d.Probability
+	case "title":
+		return d.Title
+	default:
+		return d.CreatedAt
+	}
 }
 
 // ============================================================
@@ -59,35 +106,17 @@ func (r *dealRepository) List(ctx context.Context, orgID uuid.UUID, f domain.Dea
 		query = query.Where("deals.custom_fields ->> ? = ?", k, v)
 	}
 
-	if f.Cursor != "" {
-		decoded, err := base64.StdEncoding.DecodeString(f.Cursor)
-		if err == nil {
-			query = query.Where("deals.id < ?", string(decoded))
-		}
-	}
+	// ── Sort + keyset cursor ─────────────────────────────────────────────────
+	// One ordering object emits BOTH the predicate and the ORDER BY. They used to
+	// be written 22 lines apart and disagreed — the cursor compared ids while the
+	// sort compared created_at — which repeated and skipped rows on every "Load
+	// more". See keyset_cursor.go.
+	ord := newKeysetOrdering(dealSortColumns, "created_at", "deals.id", f.SortBy, f.SortOrder)
+	query = ord.applyCursor(query, f.Cursor)
 
 	var deals []domain.Deal
-
-	// ── Sort clause ──────────────────────────────────────────────────────────
-	// Whitelist prevents SQL injection; default is newest-first.
-	allowedSort := map[string]string{
-		"value":       "deals.value",
-		"probability": "deals.probability",
-		"created_at":  "deals.created_at",
-		"title":       "deals.title",
-	}
-	sortCol := "deals.created_at"
-	if col, ok := allowedSort[f.SortBy]; ok {
-		sortCol = col
-	}
-	dir := "DESC"
-	if strings.ToUpper(f.SortOrder) == "ASC" {
-		dir = "ASC"
-	}
-	orderClause := fmt.Sprintf("%s %s, deals.id %s", sortCol, dir, dir)
-
 	if err := query.
-		Order(orderClause).
+		Order(ord.orderClause()).
 		Limit(limit + 1).
 		Find(&deals).Error; err != nil {
 		return nil, "", err
@@ -97,7 +126,7 @@ func (r *dealRepository) List(ctx context.Context, orgID uuid.UUID, f domain.Dea
 	if len(deals) > limit {
 		deals = deals[:limit]
 		last := deals[len(deals)-1]
-		nextCursor = base64.StdEncoding.EncodeToString([]byte(last.ID.String()))
+		nextCursor = ord.nextCursor(dealSortValue(&last, ord.key), last.ID)
 	}
 
 	return deals, nextCursor, nil

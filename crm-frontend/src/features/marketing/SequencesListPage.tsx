@@ -5,7 +5,7 @@ import { usePermissions } from '../../lib/auth';
 import AccessDeniedPanel from '../../components/common/AccessDeniedPanel';
 import Modal from '../../components/common/Modal';
 import {
-  Badge, Button, EmptyState, PageHeader, Select, SpinnerBlock,
+  Badge, Button, EmptyState, ErrorState, PageHeader, Select, SpinnerBlock,
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableShell,
 } from '@/components/ui';
 import { useSequences, useCreateSequence } from './sequencesQueries';
@@ -36,7 +36,7 @@ const SequencesListPage: React.FC = () => {
 
 const SequencesContent: React.FC = () => {
   const navigate = useNavigate();
-  const { data: sequences = [], isLoading } = useSequences();
+  const { data: sequences = [], isLoading, error: loadError, refetch } = useSequences();
   const createMutation = useCreateSequence();
   const { data: wfData } = useWorkflowsList({});
   const workflows = wfData?.workflows ?? [];
@@ -75,6 +75,8 @@ const SequencesContent: React.FC = () => {
 
       {isLoading ? (
         <SpinnerBlock label="Loading sequences…" />
+      ) : loadError ? (
+        <ErrorState title="Couldn't load your sequence enrollments." error={loadError} onRetry={() => refetch()} />
       ) : sequences.length === 0 ? (
         <EmptyState
           icon={Repeat}

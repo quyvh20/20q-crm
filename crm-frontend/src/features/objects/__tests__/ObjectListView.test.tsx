@@ -180,6 +180,110 @@ describe('ObjectListView renders any object from its schema', () => {
     expect(screen.getByText('Import')).toBeInTheDocument();
   });
 
+  it('shows an error state — not the empty state — when the list request fails', async () => {
+    vi.mocked(getObjectSchema).mockResolvedValue(dealSchema);
+    vi.mocked(listObjectRecordsUnified).mockRejectedValue(
+      new Error('the service is temporarily unavailable (reference: 9f3c1a2b)'),
+    );
+
+    renderView('deal');
+
+    // The failure is named, with the server's own correlation id.
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent("Couldn't load deals.");
+    expect(alert).toHaveTextContent('the service is temporarily unavailable (reference: 9f3c1a2b)');
+
+    // …and the empty-state copy, which would tell the user their org has no
+    // deals and to go create one, is NOT rendered.
+    expect(screen.queryByText('No deals yet.')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Click "Add Deal"/)).not.toBeInTheDocument();
+    // Nor the "Showing 0 deals" footer, which reads as a confirmed count.
+    expect(screen.queryByText(/Showing 0 deals/)).not.toBeInTheDocument();
+  });
+
+  it('retries the failed list and renders the records once it succeeds', async () => {
+    vi.mocked(getObjectSchema).mockResolvedValue(dealSchema);
+    // A flag, not a call counter: mounting fires the list twice (the slug-reset
+    // effect hands `filters`/`tagIds` fresh identities, which re-derives
+    // fetchFirstPage), so "the Nth call" is not a stable way to say "before the
+    // retry".
+    let down = true;
+    vi.mocked(listObjectRecordsUnified).mockImplementation(async () => {
+      if (down) throw new Error('boom');
+      return {
+        records: [record({ object: 'deal', display: 'Acme renewal', fields: { title: 'Acme renewal' } })],
+        next_cursor: undefined,
+      };
+    });
+
+    renderView('deal');
+
+    const retry = await screen.findByRole('button', { name: /Retry/ });
+    down = false;
+    fireEvent.click(retry);
+
+    expect((await screen.findAllByText('Acme renewal')).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('says so when Load more fails, and keeps the rows already loaded', async () => {
+    vi.mocked(getObjectSchema).mockResolvedValue(dealSchema);
+    // Keyed on the CURSOR, not on a call index: page one always succeeds, any
+    // paged request always fails.
+    vi.mocked(listObjectRecordsUnified).mockImplementation(async (_slug, params) => {
+      if (params?.cursor) throw new Error('gateway timeout');
+      return {
+        records: [record({ object: 'deal', display: 'Acme renewal', fields: { title: 'Acme renewal' } })],
+        next_cursor: 'cursor-1',
+      };
+    });
+
+    renderView('deal');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent("Couldn't load more.");
+    expect(alert).toHaveTextContent('gateway timeout');
+    // The page we already had survives the failure…
+    expect((await screen.findAllByText('Acme renewal')).length).toBeGreaterThan(0);
+    // …and the button re-labels itself instead of silently doing nothing again.
+    expect(await screen.findByRole('button', { name: 'Try again' })).toBeInTheDocument();
+  });
+
+  it('does not render a record twice when a later page repeats it', async () => {
+    vi.mocked(getObjectSchema).mockResolvedValue(projectSchema);
+    // OFFSET paging over a non-total ordering hands page 2 a row page 1 already
+    // had. Rows are keyed by record id, so an un-deduped concat gives React two
+    // rows with the same key — it keeps one, and a click on the survivor can
+    // navigate to the OTHER record's detail page.
+    vi.mocked(listObjectRecordsUnified).mockImplementation(async (_slug, params) => {
+      const apollo = record({ id: 'p1', object: 'project', display: 'Apollo', fields: { name: 'Apollo' } });
+      if (params?.cursor) {
+        return {
+          records: [
+            apollo,
+            record({ id: 'p2', object: 'project', display: 'Gemini', fields: { name: 'Gemini' } }),
+          ],
+          next_cursor: undefined,
+        };
+      }
+      return { records: [apollo], next_cursor: 'cursor-1' };
+    });
+
+    renderView('project');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
+
+    // Gemini proves page 2 was applied at all…
+    expect(await screen.findByRole('link', { name: 'Gemini' })).toBeInTheDocument();
+    // …and Apollo is on the page exactly once, so no two rows share a key.
+    expect(screen.getAllByRole('link', { name: 'Apollo' })).toHaveLength(1);
+    expect(screen.getAllByRole('row')).toHaveLength(3); // header + 2 records
+    // The footer counts real rows, not fetched ones.
+    expect(screen.getByText('Showing 2 projects')).toBeInTheDocument();
+  });
+
   it('navigates a deal row to the bespoke /deals/:id page', async () => {
     vi.mocked(getObjectSchema).mockResolvedValue(dealSchema);
     vi.mocked(listObjectRecordsUnified).mockResolvedValue({

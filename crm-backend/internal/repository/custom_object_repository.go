@@ -347,7 +347,23 @@ func (r *customObjectRepository) ListRecords(ctx context.Context, orgID uuid.UUI
 
 	var records []domain.CustomObjectRecord
 	err := scoped(r.db.WithContext(ctx)).
-		Order("custom_object_records.created_at DESC").
+		// The id is the tiebreaker that makes this a TOTAL order, and it is not
+		// cosmetic. created_at defaults to NOW(), which in Postgres is
+		// transaction-start time, so every record written inside one transaction —
+		// a bulk import, the industry-template seed, an automation create loop —
+		// shares a created_at to the microsecond. Ordering by created_at alone leaves
+		// those ties unordered, and nothing obliges the page-1 and page-2 queries to
+		// break them the same way: they are separate queries with different
+		// LIMIT+OFFSET, so Postgres may pick a different sort strategy for each. The
+		// observable result is a record returned on two pages while another is never
+		// returned at all — the same defect R4.2 fixed on deals/companies/contacts,
+		// on the list /objects/<custom-slug> renders through the very same view.
+		//
+		// This is still OFFSET paging, NOT keyset: an insert or delete landing
+		// between two page requests still shifts every later page by a row. The
+		// tiebreaker removes the tie non-determinism only. Converting custom objects
+		// to the keyset cursor the system objects use is a separate change.
+		Order("custom_object_records.created_at DESC, custom_object_records.id DESC").
 		Offset(f.Offset).
 		Limit(limit).
 		Find(&records).Error

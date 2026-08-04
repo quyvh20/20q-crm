@@ -103,6 +103,151 @@ describe('ObjectKanban groups stage-bearing records into columns', () => {
   });
 });
 
+describe('ObjectKanban pages the board (R4.1)', () => {
+  it('follows next_cursor across pages and shows every card', async () => {
+    vi.mocked(getStages).mockResolvedValue(stages);
+    const pages: Record<string, { records: UniformRecord[]; next_cursor?: string }> = {
+      '': { records: [rec({ id: 'a', display: 'Acme', fields: { stage: 's1' } })], next_cursor: 'c1' },
+      c1: { records: [rec({ id: 'b', display: 'Globex', fields: { stage: 's2' } })], next_cursor: 'c2' },
+      c2: { records: [rec({ id: 'c', display: 'Initech', fields: { stage: 's1' } })], next_cursor: undefined },
+    };
+    vi.mocked(listObjectRecordsUnified).mockImplementation(async (_slug, params) => pages[params?.cursor ?? '']);
+
+    render(<ObjectKanban schema={dealSchema} stageKey="stage" onCardClick={vi.fn()} />);
+
+    expect(await screen.findByText('Acme')).toBeInTheDocument();
+    expect(await screen.findByText('Globex')).toBeInTheDocument();
+    expect(await screen.findByText('Initech')).toBeInTheDocument();
+    expect(vi.mocked(listObjectRecordsUnified)).toHaveBeenCalledTimes(3);
+    // Nothing was truncated, so no notice.
+    expect(screen.queryByText(/Showing the first/)).not.toBeInTheDocument();
+  });
+
+  it('stops at the cap and says the board is a prefix, without inventing a total', async () => {
+    vi.mocked(getStages).mockResolvedValue(stages);
+    // Every page is full and every page claims another — an unbounded object.
+    let n = 0;
+    vi.mocked(listObjectRecordsUnified).mockImplementation(async () => ({
+      records: Array.from({ length: 100 }, () => rec({ id: `r${n++}`, display: `Deal ${n}`, fields: { stage: 's1' } })),
+      next_cursor: `c${n}`,
+    }));
+
+    render(<ObjectKanban schema={dealSchema} stageKey="stage" onCardClick={vi.fn()} />);
+
+    expect(await screen.findByText('Showing the first 500 — refine with filters.')).toBeInTheDocument();
+    // 500 / 100 per page = exactly 5 round trips, then it stops asking.
+    expect(vi.mocked(listObjectRecordsUnified)).toHaveBeenCalledTimes(5);
+    // No fabricated "of N" — RecordList carries no total.
+    expect(screen.queryByText(/of \d/)).not.toBeInTheDocument();
+  });
+
+  it('drops duplicate ids across pages so dnd-kit never sees the same draggable twice', async () => {
+    vi.mocked(getStages).mockResolvedValue(stages);
+    const dup = rec({ id: 'same', display: 'Acme', fields: { stage: 's1' } });
+    const pages: Record<string, { records: UniformRecord[]; next_cursor?: string }> = {
+      '': { records: [dup], next_cursor: 'c1' },
+      c1: { records: [dup], next_cursor: undefined },
+    };
+    vi.mocked(listObjectRecordsUnified).mockImplementation(async (_slug, params) => pages[params?.cursor ?? '']);
+
+    render(<ObjectKanban schema={dealSchema} stageKey="stage" onCardClick={vi.fn()} />);
+
+    await waitFor(() => expect(vi.mocked(listObjectRecordsUnified)).toHaveBeenCalledTimes(2));
+    expect(screen.getAllByText('Acme')).toHaveLength(1);
+  });
+
+  it('stops after the page ceiling even when every page repeats the same records', async () => {
+    vi.mocked(getStages).mockResolvedValue(stages);
+    // The pathological cursor: it always advances, and always returns records
+    // we have already seen. Deduping means the accumulator never grows, so a
+    // count-based stop condition alone would loop until the tab died.
+    let issued = 0;
+    vi.mocked(listObjectRecordsUnified).mockImplementation(async () => {
+      issued += 1;
+      return {
+        records: [rec({ id: 'same', display: 'Acme', fields: { stage: 's1' } })],
+        next_cursor: `cursor-${issued}`,
+      };
+    });
+
+    render(<ObjectKanban schema={dealSchema} stageKey="stage" onCardClick={vi.fn()} />);
+
+    await screen.findByText('Acme');
+    // The notice counts what is ON the board, not the cap. Five pages that all
+    // repeated one record leave exactly one card, and the old copy's literal
+    // "500" told the user they were looking at 500 deals.
+    await waitFor(() =>
+      expect(screen.getByText('Showing the first 1 — refine with filters.')).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/Showing the first 500/)).not.toBeInTheDocument();
+    expect(vi.mocked(listObjectRecordsUnified)).toHaveBeenCalledTimes(5);
+    expect(screen.getAllByText('Acme')).toHaveLength(1);
+  });
+});
+
+describe('ObjectKanban tells a failure apart from an empty board (R4.3)', () => {
+  it('does NOT claim the workspace has no stages when the stage request fails', async () => {
+    vi.mocked(getStages).mockRejectedValue(new Error('upstream unavailable (reference: 4b1e)'));
+    vi.mocked(listObjectRecordsUnified).mockResolvedValue({ records: [], next_cursor: undefined });
+
+    render(<ObjectKanban schema={dealSchema} stageKey="stage" onCardClick={vi.fn()} />);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent("Couldn't load the pipeline stages.");
+    expect(alert).toHaveTextContent('upstream unavailable (reference: 4b1e)');
+    // The old code sent the user to Settings to create stages that already exist.
+    expect(screen.queryByText(/No pipeline stages yet/)).not.toBeInTheDocument();
+  });
+
+  it('shows the stage failure immediately, without waiting on the record page', async () => {
+    vi.mocked(getStages).mockRejectedValue(new Error('stage service down'));
+    // The record request never settles. The stage outcome is already known, so
+    // the board must not hold "Loading board..." over a decided failure.
+    vi.mocked(listObjectRecordsUnified).mockImplementation(
+      () => new Promise(() => {}) as ReturnType<typeof listObjectRecordsUnified>,
+    );
+
+    render(<ObjectKanban schema={dealSchema} stageKey="stage" onCardClick={vi.fn()} />);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent("Couldn't load the pipeline stages.");
+    expect(alert).toHaveTextContent('stage service down');
+    expect(screen.queryByText(/Loading board/)).not.toBeInTheDocument();
+  });
+
+  it('keeps the columns but flags the failure when the records request fails', async () => {
+    vi.mocked(getStages).mockResolvedValue(stages);
+    vi.mocked(listObjectRecordsUnified).mockRejectedValue(new Error('gateway timeout'));
+
+    render(<ObjectKanban schema={dealSchema} stageKey="stage" onCardClick={vi.fn()} />);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent("Couldn't load deals.");
+    expect(alert).toHaveTextContent('gateway timeout');
+    // Stages loaded fine, so the board chrome stays.
+    expect(screen.getByText('New')).toBeInTheDocument();
+    expect(screen.getByText('Won')).toBeInTheDocument();
+  });
+
+  it('re-runs both requests when Retry is clicked', async () => {
+    vi.mocked(getStages).mockResolvedValue(stages);
+    let down = true;
+    vi.mocked(listObjectRecordsUnified).mockImplementation(async () => {
+      if (down) throw new Error('gateway timeout');
+      return { records: [rec({ id: 'a', display: 'Acme', fields: { stage: 's1' } })], next_cursor: undefined };
+    });
+
+    render(<ObjectKanban schema={dealSchema} stageKey="stage" onCardClick={vi.fn()} />);
+
+    const retry = await screen.findByRole('button', { name: /Retry/ });
+    down = false;
+    fireEvent.click(retry);
+
+    expect(await screen.findByText('Acme')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+  });
+});
+
 describe('ObjectKanban OLS edit gate (U3)', () => {
   it('disables card dragging when the role lacks edit access, keeping clicks', async () => {
     objectAccess['deal.edit'] = false;
@@ -154,7 +299,58 @@ describe('ObjectKanban OLS edit gate (U3)', () => {
     });
 
     expect(updateObjectRecordUnified).toHaveBeenCalledWith('deal', 'r1', { stage: 's2' });
-    // The failure is said out loud instead of a silent snap-back.
-    expect(await screen.findByText(/can't edit deal records/)).toBeInTheDocument();
+    // The failure is said out loud instead of a silent snap-back — and it goes
+    // through ErrorState, so it carries role="alert". A hand-rolled div left a
+    // screen-reader user with a card that silently jumped back to where it was.
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent("Couldn't move the card.");
+    expect(alert).toHaveTextContent(/can't edit deal records/);
+  });
+
+  it('reverts only the dragged card, keeping a page that landed mid-drag', async () => {
+    vi.mocked(getStages).mockResolvedValue(stages);
+
+    // Page 2 is held open so it can be made to land AFTER the drag starts.
+    let releasePage2: (v: { records: UniformRecord[]; next_cursor?: string }) => void = () => {};
+    const page2 = new Promise<{ records: UniformRecord[]; next_cursor?: string }>((res) => { releasePage2 = res; });
+    vi.mocked(listObjectRecordsUnified).mockImplementation(async (_slug, params) =>
+      params?.cursor
+        ? page2
+        : { records: [rec({ id: 'r1', display: 'Acme', fields: { stage: 's1' } })], next_cursor: 'c1' },
+    );
+
+    // Likewise the PATCH: it must still be in flight when page 2 arrives.
+    let rejectPatch: (e: Error) => void = () => {};
+    vi.mocked(updateObjectRecordUnified).mockImplementation(
+      () => new Promise((_res, rej) => { rejectPatch = rej; }) as ReturnType<typeof updateObjectRecordUnified>,
+    );
+
+    render(<ObjectKanban schema={dealSchema} stageKey="stage" onCardClick={vi.fn()} />);
+    await screen.findByText('Acme');
+
+    // Drag r1 from New -> Won. The PATCH hangs.
+    await act(async () => { dragEnd!({ active: { id: 'r1' }, over: { id: 's2' } }); });
+
+    // Page 2 lands while the PATCH is still open.
+    await act(async () => {
+      releasePage2({ records: [rec({ id: 'r2', display: 'Globex', fields: { stage: 's1' } })], next_cursor: undefined });
+      await page2;
+    });
+    expect(await screen.findByText('Globex')).toBeInTheDocument();
+
+    // Now the PATCH fails.
+    await act(async () => {
+      rejectPatch(new Error('nope'));
+      await Promise.resolve();
+    });
+
+    // The revert restores r1's stage WITHOUT discarding the page that arrived
+    // in between — the old `setRecords(prev)` snapshot dropped Globex entirely.
+    expect(await screen.findByText('nope')).toBeInTheDocument();
+    expect(screen.getByText('Globex')).toBeInTheDocument();
+    expect(screen.getByText('Acme')).toBeInTheDocument();
+    // Both cards are back in "New" (count 2), and "Won" is empty again.
+    expect(screen.getByText('New').parentElement).toHaveTextContent(/New\s*2/);
+    expect(screen.getByText('Won').parentElement).toHaveTextContent(/Won\s*0/);
   });
 });

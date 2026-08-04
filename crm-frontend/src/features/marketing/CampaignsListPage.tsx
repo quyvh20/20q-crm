@@ -6,7 +6,7 @@ import AccessDeniedPanel from '../../components/common/AccessDeniedPanel';
 import Modal from '../../components/common/Modal';
 import { useConfirm } from '../../components/common/ConfirmDialog';
 import {
-  Badge, Button, EmptyState, Input, PageHeader, SpinnerBlock,
+  Badge, Button, EmptyState, ErrorState, Input, PageHeader, SpinnerBlock,
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableShell,
 } from '@/components/ui';
 import { useCampaigns, useCreateCampaign, useDeleteCampaign } from './campaignsQueries';
@@ -41,7 +41,7 @@ const CampaignsListPage: React.FC = () => {
 
 const CampaignsContent: React.FC = () => {
   const navigate = useNavigate();
-  const { data: campaigns, isLoading } = useCampaigns();
+  const { data: campaigns, isLoading, error: loadError, refetch } = useCampaigns();
   const createMutation = useCreateCampaign();
   const deleteMutation = useDeleteCampaign();
   const { confirm, dialog } = useConfirm();
@@ -87,6 +87,8 @@ const CampaignsContent: React.FC = () => {
 
       {isLoading ? (
         <SpinnerBlock label="Loading…" />
+      ) : loadError ? (
+        <ErrorState title="Couldn't load your campaigns." error={loadError} onRetry={() => refetch()} />
       ) : rows.length === 0 ? (
         <EmptyState icon={Megaphone} title="No campaigns yet" description="Create a campaign to send to one of your audiences." />
       ) : (

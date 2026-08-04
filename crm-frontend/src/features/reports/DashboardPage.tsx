@@ -9,6 +9,7 @@ import {
 } from '../../lib/api';
 import { Button } from '../../components/ui/button';
 import { EmptyState } from '../../components/ui/empty-state';
+import { ErrorState } from '../../components/ui/error-state';
 import { PageHeader } from '../../components/ui/page-header';
 import { Skeleton } from '../../components/ui/skeleton';
 import ReportChart from './charts/ReportChart';
@@ -33,7 +34,7 @@ export default function DashboardPage() {
   // pass and leave the second with nothing to show.
   const [showTemplatePicker, setShowTemplatePicker] = useState(consumeTemplatePickerPending);
 
-  const { data: widgets = [], isLoading } = useQuery<DashboardWidget[]>({
+  const { data: widgets = [], isLoading, error: widgetsError, refetch: refetchWidgets } = useQuery<DashboardWidget[]>({
     queryKey: ['dashboard-widgets'],
     queryFn: listDashboardWidgets,
   });
@@ -108,6 +109,15 @@ export default function DashboardPage() {
           <Skeleton className="h-72 rounded-xl" />
           <Skeleton className="h-72 rounded-xl" />
         </div>
+      ) : widgetsError ? (
+        // Failing to LOAD the pinned widgets is not the same as having pinned
+        // none — the empty state's "pin a report here" advice is for someone
+        // whose dashboard really is bare.
+        <ErrorState
+          title="Couldn't load your dashboard."
+          error={widgetsError}
+          onRetry={() => refetchWidgets()}
+        />
       ) : widgets.length === 0 ? (
         <EmptyState
           icon={BarChart3}

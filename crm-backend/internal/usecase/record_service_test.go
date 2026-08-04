@@ -378,6 +378,48 @@ func TestList_Deal_PassesThroughKeysetCursor(t *testing.T) {
 	}
 }
 
+// R4.1. An over-large limit is CLAMPED to the ceiling, not reset to the default.
+// The old `if limit <= 0 || limit > 100 { limit = 25 }` did the latter: a caller
+// asking for 200 rows silently received 25, so a client that trusted its own page
+// size walked the list wrong — and asking for MORE got you dramatically FEWER,
+// which is the sort of thing nobody thinks to test for.
+//
+// The ceiling stays at 100 on purpose. Every downstream repository RESETS (not
+// clamps) above its own limit — contacts and custom objects at 100, companies at
+// 100, deals at 200 — so 100 is the largest value all of them honour. Raising
+// maxRecordLimit without raising those first would silently re-floor a big page to
+// 25 or 20 one layer down, reintroducing exactly this bug.
+func TestList_LimitIsClampedNotReset(t *testing.T) {
+	cases := []struct {
+		name string
+		in   int
+		want int
+	}{
+		{"zero falls back to the default", 0, defaultRecordLimit},
+		{"negative falls back to the default", -5, defaultRecordLimit},
+		{"one is honoured", 1, 1},
+		{"just under the ceiling", 99, 99},
+		{"exactly the ceiling", maxRecordLimit, maxRecordLimit},
+		{"one over the ceiling clamps, not resets", maxRecordLimit + 1, maxRecordLimit},
+		{"far over the ceiling clamps", 200, maxRecordLimit},
+		{"absurd limit clamps", 1_000_000, maxRecordLimit},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			deal := &fakeDealUC{}
+			svc := newTestService(nil, nil, deal)
+
+			if _, err := svc.List(context.Background(), uuid.New(), "deal", domain.RecordListInput{Limit: tc.in}); err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			if deal.listGot.Limit != tc.want {
+				t.Errorf("Limit %d forwarded as %d, want %d", tc.in, deal.listGot.Limit, tc.want)
+			}
+		})
+	}
+}
+
 func TestSystemPrecedenceOverCustomSlug(t *testing.T) {
 	// A rogue custom object reusing the "deal" slug must not shadow the system object.
 	custom := &fakeCustomObjUC{def: &domain.CustomObjectDef{ID: uuid.New(), Slug: "deal"}}

@@ -2,8 +2,6 @@ package repository
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -24,27 +22,34 @@ func NewContactRepository(db *gorm.DB) domain.ContactRepository {
 	return &contactRepository{db: db}
 }
 
-// cursor encodes created_at + id for stable pagination
-type cursorData struct {
-	CreatedAt time.Time `json:"c"`
-	ID        uuid.UUID `json:"i"`
+// contactSortColumns is the whitelist behind ContactFilter.SortBy.
+//
+// email is the one nullable sort column in the app, and it is why keyset_cursor.go
+// carries null arms at all: a row-value comparison against NULL yields NULL, not
+// true, so a naive (email, id) < (?, ?) drops every contact without an address
+// from every page after the first — they would simply disappear from a sorted
+// list. The arms follow Postgres's DEFAULT null placement, which orderClause
+// leaves untouched, so adopting this changed nobody's ordering.
+var contactSortColumns = map[string]keysetColumn{
+	"created_at": {col: "contacts.created_at", kind: keysetTime},
+	"name":       {col: "contacts.first_name", kind: keysetText},
+	"email":      {col: "contacts.email", kind: keysetText, nullable: true},
 }
 
-func encodeCursor(c cursorData) string {
-	b, _ := json.Marshal(c)
-	return base64.StdEncoding.EncodeToString(b)
-}
-
-func decodeCursor(s string) (cursorData, error) {
-	b, err := base64.StdEncoding.DecodeString(s)
-	if err != nil {
-		return cursorData{}, err
+// contactSortValue reads the sort column off the last row of a page. The default
+// arm must match the defaultKey passed to newKeysetOrdering in List.
+func contactSortValue(c *domain.Contact, key string) any {
+	switch key {
+	case "name":
+		return c.FirstName
+	case "email":
+		if c.Email == nil {
+			return nil // NULL, not a typed nil — the predicate switches on exactly this
+		}
+		return *c.Email
+	default:
+		return c.CreatedAt
 	}
-	var c cursorData
-	if err := json.Unmarshal(b, &c); err != nil {
-		return cursorData{}, err
-	}
-	return c, nil
 }
 
 // phoneSearchVariants decides whether a search term is a phone number and, if so,
@@ -205,37 +210,17 @@ func (r *contactRepository) List(ctx context.Context, orgID uuid.UUID, f domain.
 		query = query.Where("contacts.id IN (SELECT contact_id FROM contact_tags WHERE tag_id IN ?)", f.TagIDs)
 	}
 
-	// Cursor pagination (keyset)
-	if f.Cursor != "" {
-		cur, err := decodeCursor(f.Cursor)
-		if err == nil {
-			query = query.Where(
-				"(contacts.created_at, contacts.id) < (?, ?)",
-				cur.CreatedAt, cur.ID,
-			)
-		}
-	}
+	// ── Sort + keyset cursor ─────────────────────────────────────────────────
+	// The predicate and the ORDER BY come from ONE resolved ordering. Before that,
+	// the cursor compared (created_at, id) unconditionally while the ORDER BY
+	// already honoured f.SortBy — correct only for as long as created_at stayed the
+	// single reachable ordering, and silently wrong the moment it did not.
+	ord := newKeysetOrdering(contactSortColumns, "created_at", "contacts.id", f.SortBy, f.SortOrder)
+	query = ord.applyCursor(query, f.Cursor)
 
 	var contacts []domain.Contact
-
-	// ── Sort clause ──────────────────────────────────────────────────────────
-	allowedContactSort := map[string]string{
-		"created_at": "contacts.created_at",
-		"name":       "contacts.first_name",
-		"email":      "contacts.email",
-	}
-	sortCol := "contacts.created_at"
-	if col, ok := allowedContactSort[f.SortBy]; ok {
-		sortCol = col
-	}
-	dir := "DESC"
-	if strings.ToUpper(f.SortOrder) == "ASC" {
-		dir = "ASC"
-	}
-	orderClause := fmt.Sprintf("%s %s, contacts.id %s", sortCol, dir, dir)
-
 	err := query.
-		Order(orderClause).
+		Order(ord.orderClause()).
 		Limit(limit + 1). // fetch one extra to determine if there's a next page
 		Find(&contacts).Error
 	if err != nil {
@@ -244,12 +229,9 @@ func (r *contactRepository) List(ctx context.Context, orgID uuid.UUID, f domain.
 
 	var nextCursor string
 	if len(contacts) > limit {
-		last := contacts[limit-1]
-		nextCursor = encodeCursor(cursorData{
-			CreatedAt: last.CreatedAt,
-			ID:        last.ID,
-		})
 		contacts = contacts[:limit]
+		last := contacts[len(contacts)-1]
+		nextCursor = ord.nextCursor(contactSortValue(&last, ord.key), last.ID)
 	}
 
 	return contacts, nextCursor, nil

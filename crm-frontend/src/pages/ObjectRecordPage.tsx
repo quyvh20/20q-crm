@@ -20,7 +20,7 @@ import { listPath } from '../features/objects/recordRoutes';
 import ShareRecordModal from '../components/records/ShareRecordModal';
 import AccessDeniedPanel from '../components/common/AccessDeniedPanel';
 import Modal from '../components/common/Modal';
-import { Badge, Button, EmptyState, Skeleton } from '@/components/ui';
+import { Badge, Button, EmptyState, ErrorState, Skeleton } from '@/components/ui';
 import { usePermissions } from '../lib/auth';
 import { MarketingStatusBadge } from '../features/marketing/MarketingStatusBadge';
 
@@ -63,6 +63,13 @@ export default function ObjectRecordPage() {
   const [relatedLists, setRelatedLists] = useState<RelatedList[] | null>(null);
   const [recordTags, setRecordTags] = useState<Tag[] | null>(null);
   const [allTags, setAllTags] = useState<Tag[] | null>(null);
+  // A failed panel request is NOT an empty panel. Both of these used to be
+  // caught into [], so a contact with ten open deals rendered "No related
+  // records" — the exact same page a contact with none renders. The record
+  // still paints (schema + record are what matter); the failure is said out
+  // loud above it instead of being folded into the content.
+  const [relatedError, setRelatedError] = useState<unknown>(null);
+  const [tagsError, setTagsError] = useState<unknown>(null);
   // Server-resolved display strings (composite endpoint only). undefined means
   // "not provided" — ObjectDetailView then resolves them itself, as before.
   const [relationLabels, setRelationLabels] = useState<Record<string, string> | undefined>(undefined);
@@ -86,6 +93,8 @@ export default function ObjectRecordPage() {
     setRelatedLists(null);
     setRecordTags(null);
     setAllTags(null);
+    setRelatedError(null);
+    setTagsError(null);
     setRelationLabels(undefined);
     setMirrorValues(undefined);
     setEffectiveLevel(undefined);
@@ -113,8 +122,21 @@ export default function ObjectRecordPage() {
 
     // Fallback: fire all requests at once — related lists and tags only need
     // slug+id (known from URL params), so nothing waits on anything else.
-    const relatedP = listRecordRelatedLists(slug, id).catch(() => [] as RelatedList[]);
-    const tagsP = listRecordTags(slug, id).catch(() => [] as Tag[]);
+    //
+    // The handlers are attached at CREATION, not after the await below: these
+    // are already in flight, and a rejection that lands before a handler exists
+    // is an unhandled rejection. They record WHY, then resolve to an empty
+    // panel so the rest of the page still paints.
+    const relatedP = listRecordRelatedLists(slug, id).catch((e: unknown) => {
+      if (fresh()) setRelatedError(e);
+      return [] as RelatedList[];
+    });
+    const tagsP = listRecordTags(slug, id).catch((e: unknown) => {
+      if (fresh()) setTagsError(e);
+      return [] as Tag[];
+    });
+    // The full tag vocabulary only populates the "add a tag" picker; its absence
+    // costs an affordance, not information, so it stays a silent fallback.
     const allTagsP = getTags().catch(() => [] as Tag[]);
 
     // First paint needs only schema + record; the slower panels hydrate in
@@ -140,6 +162,16 @@ export default function ObjectRecordPage() {
   }, [load]);
 
   const backToList = () => navigate(slug ? listPath(slug) : '/');
+
+  // Name only what actually failed — claiming the related records broke when it
+  // was the tags is the same class of lie as claiming there are none.
+  const panelError = relatedError ?? tagsError;
+  const panelWhat =
+    relatedError != null && tagsError != null
+      ? 'related records and tags'
+      : relatedError != null
+        ? 'related records'
+        : 'tags';
 
   const closeDelete = () => {
     setConfirmingDelete(false);
@@ -251,6 +283,17 @@ export default function ObjectRecordPage() {
           </div>
         )}
       </div>
+
+      {/* A panel that failed to load says so, instead of rendering as empty. */}
+      {panelError != null && (
+        <ErrorState
+          compact
+          className="mb-4"
+          title={`Couldn't load this ${schema.label.toLowerCase()}'s ${panelWhat}.`}
+          error={panelError}
+          onRetry={load}
+        />
+      )}
 
       {/* Body: inline edit form when editing, layout-driven detail otherwise.
           Editing happens on the page itself (no slide-over) so the record stays

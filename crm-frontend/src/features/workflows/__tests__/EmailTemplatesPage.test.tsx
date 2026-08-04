@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
 /**
@@ -42,7 +42,12 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockPerms.loaded = true;
   mockPerms.canManage = false;
-  useEmailTemplatesMock.mockReturnValue({ data: { templates: [], total: 0 }, isLoading: false });
+  useEmailTemplatesMock.mockReturnValue({
+    data: { templates: [], total: 0 },
+    isLoading: false,
+    error: null,
+    refetch: vi.fn(),
+  });
 });
 
 describe('EmailTemplatesPage — workflows.manage gate', () => {
@@ -67,6 +72,33 @@ describe('EmailTemplatesPage — workflows.manage gate', () => {
     // Header + empty-state each offer a create.
     expect(screen.getAllByRole('button', { name: /New template/i })).not.toHaveLength(0);
     expect(screen.queryByText("You don't have access to this")).not.toBeInTheDocument();
+  });
+
+  it('shows the failure — not "No email templates yet" — when the list request fails', () => {
+    mockPerms.canManage = true;
+    const refetch = vi.fn();
+    useEmailTemplatesMock.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      error: new Error('the service is temporarily unavailable (reference: 7c04ab9e)'),
+      refetch,
+    });
+
+    renderPage();
+
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent("Couldn't load your email templates.");
+    expect(alert).toHaveTextContent('the service is temporarily unavailable (reference: 7c04ab9e)');
+
+    // The old code fell through to `data?.templates ?? []` and told a workspace
+    // with a full library that it had none and should go make one.
+    expect(screen.queryByText('No email templates yet')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('Create a template once and reuse it across workflows.'),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Retry/ }));
+    expect(refetch).toHaveBeenCalledTimes(1);
   });
 
   it('shows neither the denied panel nor the library while permissions are loading (no denied flash)', () => {

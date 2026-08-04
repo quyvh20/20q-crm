@@ -3,7 +3,7 @@ import { AlertCircle, CheckCircle2, ShieldOff, Trash2, Plus } from 'lucide-react
 import { usePermissions } from '../../lib/auth';
 import AccessDeniedPanel from '../../components/common/AccessDeniedPanel';
 import {
-  Badge, Button, EmptyState, Input, PageHeader, Select, SpinnerBlock,
+  Badge, Button, EmptyState, ErrorState, Input, PageHeader, Select, SpinnerBlock,
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableShell,
 } from '@/components/ui';
 import { useSuppressions, useAddSuppression, useRemoveSuppression } from './queries';
@@ -63,7 +63,7 @@ const SuppressionListContent: React.FC = () => {
   }, [rawQ]);
 
   const params = useMemo(() => ({ q, reason: reasonFilter }), [q, reasonFilter]);
-  const { data, isLoading } = useSuppressions(params);
+  const { data, isLoading, error: loadError, refetch } = useSuppressions(params);
   const addMutation = useAddSuppression();
   const removeMutation = useRemoveSuppression();
 
@@ -171,6 +171,11 @@ const SuppressionListContent: React.FC = () => {
 
       {isLoading ? (
         <SpinnerBlock label="Loading…" />
+      ) : loadError ? (
+        // "No suppressions yet" on a failed load reads as "nobody has
+        // unsubscribed" — the single most dangerous thing this page could
+        // imply. Never let a failure render as a clean list.
+        <ErrorState title="Couldn't load the suppression list." error={loadError} onRetry={() => refetch()} />
       ) : rows.length === 0 ? (
         <EmptyState
           icon={ShieldOff}

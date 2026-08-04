@@ -421,7 +421,11 @@ func (cc *CommandCenter) intentAnalytics(
 	scope := effectiveScope(caller)
 	// This is a row-scoped pipeline/revenue SUMMARY (own/team/all, applied at the
 	// repo), not the org-wide forecast — so it needs no analytics.view gate.
-	filter := domain.DealFilter{Limit: 500}
+	// 200, not 500: dealRepository.List RESETS any limit above 200 to 50, so asking
+	// for 500 quietly summed at most 50 deals and presented the result as the org's
+	// pipeline total. 200 is the repo's real ceiling — raise that first if this ever
+	// needs more.
+	filter := domain.DealFilter{Limit: 200}
 
 	deals, _, err := cc.dealRepo.List(ctx, orgID, filter)
 	if err != nil {

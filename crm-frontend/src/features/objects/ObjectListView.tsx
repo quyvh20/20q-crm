@@ -19,6 +19,7 @@ import Modal from '../../components/common/Modal';
 import {
   Button,
   EmptyState,
+  ErrorState,
   Input,
   PageHeader,
   Select,
@@ -62,6 +63,15 @@ interface RelationOption {
 
 const LIMIT = 25;
 const MAX_COLUMNS = 4;
+// The backend clamps any limit above 100 down to 100 (usecase.maxRecordLimit),
+// so 100 is the largest page a single request can return. Relation dropdowns
+// want more than that, so they PAGE to a cap rather than asking for one huge
+// page the server would silently shrink.
+const RELATION_PAGE_SIZE = 100;
+const RELATION_OPTION_CAP = 200;
+// Request-count stop condition, independent of how many records come back, so a
+// cursor that never terminates cannot turn this into an endless fetch loop.
+const RELATION_MAX_PAGES = Math.ceil(RELATION_OPTION_CAP / RELATION_PAGE_SIZE);
 
 // ObjectListView renders any object — system or custom — from its registry
 // schema: one table, one schema-driven filter bar, one search box, one
@@ -85,6 +95,10 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
   const [nextCursor, setNextCursor] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  // A failed list is NOT an empty list. Held separately from `records` so the
+  // renderer can tell "the org has no deals" apart from "we could not ask".
+  const [loadError, setLoadError] = useState<unknown>(null);
+  const [moreError, setMoreError] = useState<unknown>(null);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [panel, setPanel] = useState<Panel>(null);
@@ -160,20 +174,34 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
   }, []);
 
   // Load options for each filterable relation field from its target object.
+  //
+  // This fetch does double duty: it fills the filter dropdown AND it is the map
+  // `relationLabel` reads to render relation CELLS. A target outside the fetched
+  // window has no label, and formatFieldValue falls back to the raw value — i.e.
+  // a bare UUID in the Company column. It used to ask for a single page of 200,
+  // which the server reset to 25; now it pages to RELATION_OPTION_CAP, and each
+  // page is published as it lands so labels resolve progressively.
   useEffect(() => {
     let cancelled = false;
     relationFields.forEach((f) => {
-      listObjectRecordsUnified(f.target_slug as string, { limit: 200 })
-        .then((page) => {
+      const target = f.target_slug as string;
+      (async () => {
+        const acc: RelationOption[] = [];
+        let cursor: string | undefined;
+        let fetched = 0;
+        do {
+          const page = await listObjectRecordsUnified(target, { limit: RELATION_PAGE_SIZE, cursor });
+          fetched += 1;
+          // Re-checked after EVERY await: a slug switch mid-page must not keep
+          // paging, and must not write into the new object's option map.
           if (cancelled) return;
-          setRelationOptions((prev) => ({
-            ...prev,
-            [f.key]: page.records.map((r) => ({ id: r.id, label: r.display || r.id })),
-          }));
-        })
-        .catch(() => {
-          /* a relation we can't enumerate is simply not filterable */
-        });
+          acc.push(...page.records.map((r) => ({ id: r.id, label: r.display || r.id })));
+          cursor = page.next_cursor;
+          setRelationOptions((prev) => ({ ...prev, [f.key]: [...acc] }));
+        } while (cursor && acc.length < RELATION_OPTION_CAP && fetched < RELATION_MAX_PAGES);
+      })().catch(() => {
+        /* a relation we can't enumerate is simply not filterable */
+      });
     });
     return () => {
       cancelled = true;
@@ -235,9 +263,12 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
       const page = await listObjectRecordsUnified(slug, listParams());
       setRecords(page.records);
       setNextCursor(page.next_cursor);
-    } catch {
+      setLoadError(null);
+      setMoreError(null);
+    } catch (e) {
       setRecords([]);
       setNextCursor(undefined);
+      setLoadError(e);
     } finally {
       setLoading(false);
     }
@@ -252,10 +283,28 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
     setLoadingMore(true);
     try {
       const page = await listObjectRecordsUnified(slug, listParams(nextCursor));
-      setRecords((prev) => [...prev, ...page.records]);
+      // Drop ids we already hold — the same guard ObjectKanban runs, for the
+      // same reason. Rows are keyed by record id, so one repeat gives React two
+      // rows with the same key: it keeps one, and a click on the survivor opens
+      // whichever record won reconciliation. OFFSET paging over a non-total
+      // ordering (equal created_at, custom objects) is enough to produce that.
+      setRecords((prev) => {
+        const seen = new Set(prev.map((r) => r.id));
+        const fresh: UniformRecord[] = [];
+        for (const r of page.records) {
+          if (seen.has(r.id)) continue;
+          seen.add(r.id);
+          fresh.push(r);
+        }
+        // Nothing new: keep the identity so the table doesn't re-render for free.
+        return fresh.length === 0 ? prev : [...prev, ...fresh];
+      });
       setNextCursor(page.next_cursor);
-    } catch {
-      /* keep what we have */
+      setMoreError(null);
+    } catch (e) {
+      // Keep the rows we already have, but say why the button did nothing —
+      // a "Load more" that silently no-ops reads as a dead button.
+      setMoreError(e);
     } finally {
       setLoadingMore(false);
     }
@@ -432,8 +481,16 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
         </div>
       )}
 
-      {/* Records table */}
-      {!loading && records.length === 0 ? (
+      {/* Records table. The error branch comes FIRST: a failed request must not
+          fall through to "No deals yet", which is advice for a different
+          situation entirely. */}
+      {!loading && loadError ? (
+        <ErrorState
+          title={`Couldn't load ${schema.label_plural.toLowerCase()}.`}
+          error={loadError}
+          onRetry={fetchFirstPage}
+        />
+      ) : !loading && records.length === 0 ? (
         <EmptyState
           icon={Search}
           title={emptyMessage}
@@ -505,16 +562,26 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
 
       {/* Load more */}
       {nextCursor && (
-        <div className="mt-4 flex justify-center">
+        <div className="mt-4 flex flex-col items-center gap-2">
+          {moreError != null && (
+            <ErrorState
+              compact
+              title="Couldn't load more."
+              error={moreError}
+              className="max-w-xl"
+            />
+          )}
           <Button variant="outline" size="sm" onClick={loadMore} disabled={loadingMore}>
-            {loadingMore ? 'Loading...' : 'Load more'}
+            {loadingMore ? 'Loading...' : moreError ? 'Try again' : 'Load more'}
           </Button>
         </div>
       )}
 
-      <p className="mt-3 text-center text-xs text-muted-foreground">
-        Showing {records.length} {schema.label_plural.toLowerCase()}
-      </p>
+      {!loadError && (
+        <p className="mt-3 text-center text-xs text-muted-foreground">
+          Showing {records.length} {schema.label_plural.toLowerCase()}
+        </p>
+      )}
       </>
       )}
 

@@ -6,6 +6,7 @@ import { useAuth } from '../../lib/auth';
 import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { EmptyState } from '../../components/ui/empty-state';
+import { ErrorState } from '../../components/ui/error-state';
 import { PageHeader } from '../../components/ui/page-header';
 import { Skeleton } from '../../components/ui/skeleton';
 import { REPORT_TEMPLATES } from './templates';
@@ -26,7 +27,7 @@ function ChartIcon({ chart }: { chart?: ReportChart }) {
 export default function ReportsListPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { data: reports = [], isLoading } = useQuery<Report[]>({
+  const { data: reports = [], isLoading, error, refetch } = useQuery<Report[]>({
     queryKey: ['reports'],
     queryFn: listReports,
   });
@@ -45,6 +46,10 @@ export default function ReportsListPage() {
 
       {isLoading ? (
         <Skeleton className="h-40 rounded-xl" />
+      ) : error ? (
+        // A failed list is not an empty list: "No reports yet" would tell someone
+        // whose reports exist to go and build them again.
+        <ErrorState title="Couldn't load your reports." error={error} onRetry={() => refetch()} />
       ) : reports.length === 0 ? (
         <EmptyState
           icon={BarChart3}
