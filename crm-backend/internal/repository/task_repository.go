@@ -3,12 +3,30 @@ package repository
 import (
 	"context"
 	"errors"
+	"strings"
+	"time"
 
 	"crm-backend/internal/domain"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
+
+// taskOrdering is the sole ordering for /api/tasks (R8.1): due date first (no
+// due date sorts last), id as the tiebreaker. It reuses the R4.2 keyset
+// machinery so the ORDER BY and the cursor predicate cannot drift apart —
+// see keyset_cursor.go's doc comment for why that drift is the actual bug
+// class this guards against.
+// due_at is nullable (a task can have no due date) — kept as a real
+// nullable column (not folded via nullAs) so cursorPredicate's null arms
+// apply, and Postgres's ASC default (NULLS LAST) puts no-due-date tasks at
+// the end without an explicit NULLS clause.
+var taskOrdering = keysetOrdering{
+	key:   "due_at",
+	idCol: "tasks.id",
+	col:   keysetColumn{col: "tasks.due_at", kind: keysetTime, nullable: true},
+	dir:   "ASC",
+}
 
 type taskRepository struct {
 	db *gorm.DB
@@ -68,7 +86,7 @@ func taskScope(db *gorm.DB, ctx context.Context, orgID uuid.UUID) *gorm.DB {
 	)`, args...)
 }
 
-func (r *taskRepository) List(ctx context.Context, orgID uuid.UUID, f domain.TaskFilter) ([]domain.Task, error) {
+func (r *taskRepository) List(ctx context.Context, orgID uuid.UUID, f domain.TaskFilter) (domain.TaskListResult, error) {
 	query := taskScope(r.db.WithContext(ctx), ctx, orgID)
 
 	if f.DealID != nil {
@@ -87,13 +105,51 @@ func (r *taskRepository) List(ctx context.Context, orgID uuid.UUID, f domain.Tas
 			query = query.Where("tasks.completed_at IS NULL")
 		}
 	}
+	if f.Q != nil && strings.TrimSpace(*f.Q) != "" {
+		query = query.Where("tasks.title ILIKE ?", "%"+strings.TrimSpace(*f.Q)+"%")
+	}
+	// due_at range: a NULL due_at can never satisfy either bound (R8.1 doc
+	// comment on TaskFilter) — an explicit inequality does that for free,
+	// since NULL compared to anything is neither true nor false.
+	if f.DueAfter != nil {
+		query = query.Where("tasks.due_at >= ?", *f.DueAfter)
+	}
+	if f.DueBefore != nil {
+		query = query.Where("tasks.due_at <= ?", *f.DueBefore)
+	}
+
+	limit := f.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+
+	cursorStr := ""
+	if f.Cursor != nil {
+		cursorStr = *f.Cursor
+	}
+	query = taskOrdering.applyCursor(query, cursorStr)
 
 	var tasks []domain.Task
 	err := query.
-		Order("COALESCE(tasks.due_at, '9999-12-31') ASC, tasks.created_at DESC").
-		Limit(200).
+		Order(taskOrdering.orderClause()).
+		Limit(limit + 1).
 		Find(&tasks).Error
-	return tasks, err
+	if err != nil {
+		return domain.TaskListResult{}, err
+	}
+
+	var next *string
+	if len(tasks) > limit {
+		tasks = tasks[:limit]
+		last := tasks[len(tasks)-1]
+		var dueVal any
+		if last.DueAt != nil {
+			dueVal = *last.DueAt
+		}
+		c := taskOrdering.nextCursor(dueVal, last.ID)
+		next = &c
+	}
+	return domain.TaskListResult{Tasks: tasks, NextCursor: next}, nil
 }
 
 func (r *taskRepository) GetByID(ctx context.Context, orgID, id uuid.UUID) (*domain.Task, error) {
@@ -147,4 +203,26 @@ func (r *taskRepository) SoftDelete(ctx context.Context, orgID, id uuid.UUID) er
 		return domain.ErrTaskNotFound
 	}
 	return nil
+}
+
+// DueForReminder is callerless (the reminder scanner runs org-agnostic, no
+// caller in ctx) and so is unrestricted by taskScope by design — it must see
+// every org's due tasks to remind every org. now is injected by the caller
+// (not time.Now() here) so the scanner's tick and this query use one clock.
+func (r *taskRepository) DueForReminder(ctx context.Context, now time.Time, lookahead time.Duration, limit int) ([]domain.Task, error) {
+	today := now.Truncate(24 * time.Hour)
+	var tasks []domain.Task
+	err := r.db.WithContext(ctx).
+		Where("completed_at IS NULL").
+		Where("due_at IS NOT NULL AND due_at <= ?", now.Add(lookahead)).
+		Where("last_reminded_at IS NULL OR last_reminded_at < ?", today).
+		Order("due_at ASC").
+		Limit(limit).
+		Find(&tasks).Error
+	return tasks, err
+}
+
+func (r *taskRepository) MarkReminded(ctx context.Context, id uuid.UUID, at time.Time) error {
+	return r.db.WithContext(ctx).Model(&domain.Task{}).Where("id = ?", id).
+		Update("last_reminded_at", at).Error
 }

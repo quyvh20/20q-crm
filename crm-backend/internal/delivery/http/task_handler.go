@@ -2,6 +2,8 @@ package http
 
 import (
 	"net/http"
+	"strconv"
+	"time"
 
 	"crm-backend/internal/domain"
 
@@ -45,13 +47,37 @@ func (h *TaskHandler) List(c *gin.Context) {
 		v := completedStr == "true"
 		filter.Completed = &v
 	}
+	if q := c.Query("q"); q != "" {
+		filter.Q = &q
+	}
+	if dueBeforeStr := c.Query("due_before"); dueBeforeStr != "" {
+		if t, err := time.Parse(time.RFC3339, dueBeforeStr); err == nil {
+			filter.DueBefore = &t
+		}
+	}
+	if dueAfterStr := c.Query("due_after"); dueAfterStr != "" {
+		if t, err := time.Parse(time.RFC3339, dueAfterStr); err == nil {
+			filter.DueAfter = &t
+		}
+	}
+	if cursor := c.Query("cursor"); cursor != "" {
+		filter.Cursor = &cursor
+	}
+	if limitStr := c.Query("limit"); limitStr != "" {
+		if n, err := strconv.Atoi(limitStr); err == nil {
+			filter.Limit = n
+		}
+	}
 
-	tasks, err := h.taskUC.List(c.Request.Context(), orgID, filter)
+	result, err := h.taskUC.List(c.Request.Context(), orgID, filter)
 	if err != nil {
 		handleAppError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, domain.Success(tasks))
+	c.JSON(http.StatusOK, domain.Success(gin.H{
+		"tasks":       result.Tasks,
+		"next_cursor": result.NextCursor,
+	}))
 }
 
 // POST /api/tasks

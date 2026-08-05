@@ -49,6 +49,7 @@ const ObjectRecordPage = lazyRoute(() => import('./pages/ObjectRecordPage'));
 const VoicePage = lazyRoute(() => import('./pages/VoicePage'));
 const AIPage = lazyRoute(() => import('./pages/AIPage'));
 const SharedWithMePage = lazyRoute(() => import('./pages/SharedWithMePage'));
+const TasksPage = lazyRoute(() => import('./pages/TasksPage'));
 
 // Settings shell + sections. The shell and its index redirect live in the same
 // module, so they resolve to the same chunk.
@@ -419,6 +420,11 @@ function App() {
             <Route path="/shared-with-me" element={
               <ProtectedRoute>
                 <AppLayout title="Shared with me"><SharedWithMePage /></AppLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/tasks" element={
+              <ProtectedRoute>
+                <AppLayout title="Tasks"><TasksPage /></AppLayout>
               </ProtectedRoute>
             } />
             <Route path="/reports" element={

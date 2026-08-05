@@ -364,11 +364,12 @@ func (cc *CommandCenter) intentMyTasks(
 		Completed:  &completed,
 	}
 
-	tasks, err := cc.taskRepo.List(ctx, orgID, filter)
+	result, err := cc.taskRepo.List(ctx, orgID, filter)
 	if err != nil {
 		cc.logger.Error("intent_my_tasks failed", zap.Error(err))
 		return &IntentResult{Text: "⚠️ Could not load tasks right now. Please try again."}
 	}
+	tasks := result.Tasks
 
 	if len(tasks) == 0 {
 		return &IntentResult{Text: "✅ You have no pending tasks. You're all caught up!"}

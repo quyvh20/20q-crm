@@ -202,6 +202,7 @@ var NotificationEventTypes = []NotificationEventType{
 	// to quieten integration alerts could only do it by muting everything, taking their
 	// workflow notifications with it.
 	{Key: "integration_health", Label: "Lead source health", Description: "Alerts when a lead source or a connected account stops working, and when it recovers."},
+	{Key: "task_reminder", Label: "Task reminders", Description: "A reminder when one of your tasks is due or overdue (R8.1)."},
 }
 
 // ChannelPref is the per-event-type toggle pair. An ABSENT override (not the zero

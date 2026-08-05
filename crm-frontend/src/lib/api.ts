@@ -648,17 +648,46 @@ export interface TaskFilter {
   contact_id?: string;
   assigned_to?: string;
   completed?: boolean;
+  q?: string;
+  due_before?: string;
+  due_after?: string;
+  cursor?: string;
+  limit?: number;
 }
 
-export async function getTasks(filter: TaskFilter = {}): Promise<Task[]> {
+export interface TaskPage {
+  tasks: Task[];
+  next_cursor: string | null;
+}
+
+function taskFilterParams(filter: TaskFilter): URLSearchParams {
   const params = new URLSearchParams();
   if (filter.deal_id) params.set('deal_id', filter.deal_id);
   if (filter.contact_id) params.set('contact_id', filter.contact_id);
   if (filter.assigned_to) params.set('assigned_to', filter.assigned_to);
   if (filter.completed !== undefined) params.set('completed', String(filter.completed));
-  const res = await apiFetch(`/api/tasks?${params.toString()}`);
+  if (filter.q) params.set('q', filter.q);
+  if (filter.due_before) params.set('due_before', filter.due_before);
+  if (filter.due_after) params.set('due_after', filter.due_after);
+  if (filter.cursor) params.set('cursor', filter.cursor);
+  if (filter.limit) params.set('limit', String(filter.limit));
+  return params;
+}
+
+// getTasks returns just the page's tasks — the convenience shape most callers
+// (record-detail panels) want when they aren't paging.
+export async function getTasks(filter: TaskFilter = {}): Promise<Task[]> {
+  const page = await getTasksPage(filter);
+  return page.tasks;
+}
+
+// getTasksPage is getTasks plus the next-page cursor, for callers that page
+// (the /tasks list view).
+export async function getTasksPage(filter: TaskFilter = {}): Promise<TaskPage> {
+  const res = await apiFetch(`/api/tasks?${taskFilterParams(filter).toString()}`);
   const json = await parseJsonSafe(res);
-  return (json.data || []) as Task[];
+  const data = (json.data || {}) as Partial<TaskPage>;
+  return { tasks: data.tasks || [], next_cursor: data.next_cursor ?? null };
 }
 
 export async function createTask(data: {

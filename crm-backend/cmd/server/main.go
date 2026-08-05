@@ -266,6 +266,10 @@ func main() {
 		// every task in the org on each GET /api/tasks.
 		db.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_contact_id ON tasks(contact_id)`)
 		db.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_deal_id ON tasks(deal_id)`)
+		// R8.1 due-task reminder scanner: dedupes a reminder to once per calendar
+		// day (compared against this column, not a separate ledger table).
+		db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS last_reminded_at TIMESTAMPTZ`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_due_reminder ON tasks(due_at) WHERE completed_at IS NULL`)
 		// BACKFILL, and it is load-bearing rather than cosmetic. Adding the column
 		// leaves every pre-existing row at created_by = NULL, which narrows the read
 		// the moment this deploys: a task with no assignee and no reachable
@@ -2511,8 +2515,6 @@ func main() {
 		searchHandler := delivery.NewSearchHandler(searchUC)
 
 		taskRepo := repository.NewTaskRepository(db)
-		taskUseCase := usecase.NewTaskUseCase(taskRepo)
-		taskHandler := delivery.NewTaskHandler(taskUseCase)
 
 		userRepo := repository.NewUserRepository(db)
 		userHandler := delivery.NewUserHandler(userRepo)
@@ -2575,6 +2577,11 @@ func main() {
 		notificationUC := usecase.NewNotificationUseCase(notificationRepo, notificationPrefRepo, authRepo, mailerSvc, redisClient, cfg.FrontendURL)
 		notificationHandler := delivery.NewNotificationHandler(notificationUC)
 
+		// R8.1: the task usecase needs notificationUC for its due-reminder scanner,
+		// so it's constructed here rather than alongside taskRepo above.
+		taskUseCase := usecase.NewTaskUseCase(taskRepo, notificationUC)
+		taskHandler := delivery.NewTaskHandler(taskUseCase)
+
 		// Personal API tokens (U6.5). The repo is passed to RegisterRoutes as well:
 		// the protected group's middleware authenticates a PAT by hash on every
 		// request (that read IS the revocation check, which is why it isn't cached).
@@ -2611,6 +2618,25 @@ func main() {
 				}
 			}
 			ticker := time.NewTicker(1 * time.Hour)
+			defer ticker.Stop()
+			for range ticker.C {
+				run()
+			}
+		}()
+		// R8.1 due-task reminder scanner: every 15 minutes, notify the assignee
+		// (or creator, if unassigned) of any incomplete task due within the next
+		// 15 minutes or already overdue. last_reminded_at (repo-side) caps this
+		// at one reminder per task per calendar day regardless of tick frequency.
+		go func() {
+			run := func() {
+				if n, err := taskUseCase.RunDueReminders(context.Background(), 15*time.Minute); err != nil {
+					log.Warn("tasks: due-reminder scan failed", zap.Error(err))
+				} else if n > 0 {
+					log.Info("tasks: due reminders sent", zap.Int("count", n))
+				}
+			}
+			run()
+			ticker := time.NewTicker(15 * time.Minute)
 			defer ticker.Stop()
 			for range ticker.C {
 				run()

@@ -290,6 +290,9 @@ type Task struct {
 	DueAt       *time.Time     `json:"due_at,omitempty"`
 	CompletedAt *time.Time     `json:"completed_at,omitempty"`
 	Priority    string         `gorm:"size:20;not null;default:'medium'" json:"priority"`
+	// LastRemindedAt dedupes the due-task reminder scanner (R8.1): a task is
+	// reminded at most once per calendar day. Not exposed over the API.
+	LastRemindedAt *time.Time `gorm:"column:last_reminded_at" json:"-"`
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
 	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`

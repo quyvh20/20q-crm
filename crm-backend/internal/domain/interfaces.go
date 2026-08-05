@@ -970,6 +970,25 @@ type TaskFilter struct {
 	ContactID  *uuid.UUID `form:"contact_id"`
 	AssignedTo *uuid.UUID `form:"assigned_to"`
 	Completed  *bool      `form:"completed"`
+	// Q is a case-insensitive substring match against the task title.
+	Q *string `form:"q"`
+	// DueBefore/DueAfter bound tasks.due_at (inclusive). A nil DueAt never
+	// matches either bound — "no due date" tasks are excluded by any due-range
+	// filter, matching the R8.1 "Today"/"Overdue" views.
+	DueBefore *time.Time `form:"due_before" time_format:"2006-01-02T15:04:05Z07:00"`
+	DueAfter  *time.Time `form:"due_after" time_format:"2006-01-02T15:04:05Z07:00"`
+	// Cursor is the opaque keyset cursor from the previous page's response
+	// (base64 JSON of the last row's due_at+id). Nil starts from the top.
+	Cursor *string `form:"cursor"`
+	// Limit caps page size; <=0 or >100 clamps to 100 (mirrors R4.1's Kanban fix).
+	Limit int `form:"limit"`
+}
+
+// TaskListResult carries a page of tasks plus the cursor for the next page
+// (nil when exhausted).
+type TaskListResult struct {
+	Tasks      []Task
+	NextCursor *string
 }
 
 type CreateTaskInput struct {
@@ -990,15 +1009,25 @@ type UpdateTaskInput struct {
 }
 
 type TaskRepository interface {
-	List(ctx context.Context, orgID uuid.UUID, f TaskFilter) ([]Task, error)
+	List(ctx context.Context, orgID uuid.UUID, f TaskFilter) (TaskListResult, error)
 	GetByID(ctx context.Context, orgID, id uuid.UUID) (*Task, error)
 	Create(ctx context.Context, t *Task) error
 	Update(ctx context.Context, t *Task) error
 	SoftDelete(ctx context.Context, orgID, id uuid.UUID) error
+	// DueForReminder returns incomplete tasks whose due_at has passed (or is
+	// within the lookahead window) and haven't been reminded today. Callerless
+	// (used only by the reminder scanner), unrestricted by row scope.
+	DueForReminder(ctx context.Context, now time.Time, lookahead time.Duration, limit int) ([]Task, error)
+	MarkReminded(ctx context.Context, id uuid.UUID, at time.Time) error
 }
 
 type TaskUseCase interface {
-	List(ctx context.Context, orgID uuid.UUID, f TaskFilter) ([]Task, error)
+	// RunDueReminders scans across every org for incomplete tasks due within
+	// lookahead and not yet reminded today, and returns how many reminders it
+	// sent. Driven by a main.go ticker (R8.1) — not org-scoped, since it has
+	// to see every org's due tasks in one pass.
+	RunDueReminders(ctx context.Context, lookahead time.Duration) (int, error)
+	List(ctx context.Context, orgID uuid.UUID, f TaskFilter) (TaskListResult, error)
 	Create(ctx context.Context, orgID uuid.UUID, input CreateTaskInput) (*Task, error)
 	Update(ctx context.Context, orgID uuid.UUID, id uuid.UUID, input UpdateTaskInput) (*Task, error)
 	Delete(ctx context.Context, orgID uuid.UUID, id uuid.UUID) error

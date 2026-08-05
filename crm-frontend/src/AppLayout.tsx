@@ -3,7 +3,7 @@ import { NavLink, Link, useLocation, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   Menu, X, UserRound, Shield, LogOut, ListChecks, BookOpen,
-  LayoutDashboard, Users, Building2, Handshake, Mic, Sparkles, Zap, BarChart3, Share2, Settings, ShieldOff, ShieldCheck, Globe, Mail, Send, Target, Megaphone, Repeat, Activity,
+  LayoutDashboard, Users, Building2, Handshake, Mic, Sparkles, Zap, BarChart3, Share2, Settings, ShieldOff, ShieldCheck, Globe, Mail, Send, Target, Megaphone, Repeat, Activity, CheckSquare,
   Images, Bookmark,
 } from "lucide-react";
 import { SpinnerBlock } from "@/components/ui";
@@ -165,6 +165,7 @@ export default function AppLayout({ children, title }: AppLayoutProps) {
           })}
 
           <p className={navSectionClass}>Tools</p>
+          <NavLink to="/tasks" className={navItemClass}><CheckSquare aria-hidden className={navIconClass} />Tasks</NavLink>
           <NavLink to="/voice" className={navItemClass}><Mic aria-hidden className={navIconClass} />Voice Notes</NavLink>
           <NavLink to="/ai" className={navItemClass}><Sparkles aria-hidden className={navIconClass} />AI Assistant</NavLink>
           {/* Workflow definitions can hold third-party credentials in a send_webhook

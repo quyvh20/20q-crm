@@ -14,6 +14,7 @@ import {
 import { formatFieldValue } from './fieldHelpers';
 import RecordTags from './RecordTags';
 import RelatedLists from './RelatedLists';
+import TaskPanel from './TaskPanel';
 
 interface ObjectDetailViewProps {
   schema: ObjectSchema;
@@ -364,6 +365,11 @@ export default function ObjectDetailView({
       {/* Tags (uniform across every object). The former free-text "link any
           record" panel was replaced by schema-driven related lists below. */}
       <RecordTags slug={schema.slug} recordId={record.id} prefetchedTags={prefetchedTags} prefetchedAllTags={prefetchedAllTags} />
+
+      {/* Tasks (R8.1): Task only has a contact_id FK today (no generic
+          record link), so this only renders for contacts — deals keep their
+          own inline panel on DealDetailPage, companies get neither yet. */}
+      {schema.slug === 'contact' && <TaskPanel contactId={record.id} />}
 
       {/* Schema-driven reverse related lists (e.g. a Contact's Deals), derived
           from relation fields that point back at this record. */}

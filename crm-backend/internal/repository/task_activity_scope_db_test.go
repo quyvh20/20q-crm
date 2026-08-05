@@ -134,8 +134,9 @@ func TestTaskScope_DB(t *testing.T) {
 	unreachable := []uuid.UUID{onOtherContact, unlinkedOther}
 
 	// List, own scope: exactly the reachable set.
-	got, err := repo.List(ownCtx(me), org, domain.TaskFilter{})
+	gotResult, err := repo.List(ownCtx(me), org, domain.TaskFilter{})
 	require.NoError(t, err)
+	got := gotResult.Tasks
 	gotIDs := map[uuid.UUID]bool{}
 	for _, tk := range got {
 		gotIDs[tk.ID] = true
@@ -149,9 +150,9 @@ func TestTaskScope_DB(t *testing.T) {
 	}
 
 	// List, all scope: every task in the org.
-	all, err := repo.List(allCtx(other), org, domain.TaskFilter{})
+	allResult, err := repo.List(allCtx(other), org, domain.TaskFilter{})
 	require.NoError(t, err)
-	assert.Len(t, all, 7, "an all-scoped caller sees every task")
+	assert.Len(t, allResult.Tasks, 7, "an all-scoped caller sees every task")
 
 	// GetByID: reachable found, unreachable is (nil, nil) — indistinguishable from
 	// a non-existent id, so a row-scoped user can't probe for it.
@@ -193,10 +194,10 @@ func TestTaskCreate_StampsCreatedByFromCaller_DB(t *testing.T) {
 	require.NotNil(t, tk.CreatedBy, "Create should stamp created_by from the caller")
 	assert.Equal(t, me, *tk.CreatedBy)
 
-	got, err := repo.List(ownCtx(me), org, domain.TaskFilter{})
+	gotResult, err := repo.List(ownCtx(me), org, domain.TaskFilter{})
 	require.NoError(t, err)
-	require.Len(t, got, 1, "my own unlinked/unassigned task must be visible to me")
-	assert.Equal(t, tk.ID, got[0].ID)
+	require.Len(t, gotResult.Tasks, 1, "my own unlinked/unassigned task must be visible to me")
+	assert.Equal(t, tk.ID, gotResult.Tasks[0].ID)
 }
 
 func TestActivityScope_DB(t *testing.T) {

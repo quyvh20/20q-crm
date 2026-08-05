@@ -2,10 +2,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ReactElement } from 'react';
 import { render, screen, cleanup, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ObjectSchema, UniformRecord, LayoutSection } from '../../../lib/api';
 
 // Relation values render as <Link>, so the view must be inside a Router.
-const renderInRouter = (ui: ReactElement) => render(<MemoryRouter>{ui}</MemoryRouter>);
+// TaskPanel (R8.1, rendered for contact schemas) needs a QueryClient.
+const renderInRouter = (ui: ReactElement) => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>{ui}</MemoryRouter>
+    </QueryClientProvider>
+  );
+};
 
 // Mock the API: ObjectDetailView resolves native relation FIELDS to labels via
 // getObjectRecordUnified, and embeds RecordRelations (which reads links/tags).
@@ -25,6 +34,10 @@ vi.mock('../../../lib/api', () => ({
   // (members first, /api/users as the fallback for a role that can't list them).
   getWorkspaceMembers: vi.fn().mockResolvedValue([]),
   getUsers: vi.fn().mockResolvedValue([]),
+  // R8.1 TaskPanel, rendered for contact schemas.
+  getTasks: vi.fn().mockResolvedValue([]),
+  createTask: vi.fn(),
+  updateTask: vi.fn(),
 }));
 
 import { getObjectRecordUnified } from '../../../lib/api';

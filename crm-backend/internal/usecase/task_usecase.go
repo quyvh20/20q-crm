@@ -11,14 +11,66 @@ import (
 )
 
 type taskUseCase struct {
-	taskRepo domain.TaskRepository
+	taskRepo    domain.TaskRepository
+	notifyUC    domain.NotificationUseCase
 }
 
-func NewTaskUseCase(taskRepo domain.TaskRepository) domain.TaskUseCase {
-	return &taskUseCase{taskRepo: taskRepo}
+func NewTaskUseCase(taskRepo domain.TaskRepository, notifyUC domain.NotificationUseCase) domain.TaskUseCase {
+	return &taskUseCase{taskRepo: taskRepo, notifyUC: notifyUC}
 }
 
-func (uc *taskUseCase) List(ctx context.Context, orgID uuid.UUID, f domain.TaskFilter) ([]domain.Task, error) {
+// dueReminderScanLimit caps one scan pass (no-silent-caps doctrine: a scan
+// that hits it logs how many it left for next tick rather than pretending it
+// caught up).
+const dueReminderScanLimit = 500
+
+func (uc *taskUseCase) RunDueReminders(ctx context.Context, lookahead time.Duration) (int, error) {
+	now := time.Now()
+	tasks, err := uc.taskRepo.DueForReminder(ctx, now, lookahead, dueReminderScanLimit)
+	if err != nil {
+		return 0, err
+	}
+	sent := 0
+	for _, t := range tasks {
+		// The reminder goes to whoever can act on the task: the assignee, else
+		// the creator (an unassigned task the creator left for themselves).
+		// Neither present means nobody to notify — mark it reminded anyway so
+		// the scanner doesn't re-read it forever.
+		recipient := t.AssignedTo
+		if recipient == nil {
+			recipient = t.CreatedBy
+		}
+		if recipient != nil {
+			link := ""
+			if t.DealID != nil {
+				link = "/deals/" + t.DealID.String()
+			} else if t.ContactID != nil {
+				link = "/objects/contact/" + t.ContactID.String()
+			}
+			body := t.Title
+			if t.DueAt != nil && t.DueAt.Before(now) {
+				body = t.Title + " (overdue)"
+			}
+			if _, err := uc.notifyUC.Create(ctx, domain.NotificationCreateInput{
+				OrgID:      t.OrgID,
+				UserID:     *recipient,
+				Type:       "task_reminder",
+				Title:      "Task due",
+				Body:       body,
+				Link:       link,
+				EntityType: "task",
+				EntityID:   &t.ID,
+			}); err != nil {
+				continue
+			}
+			sent++
+		}
+		_ = uc.taskRepo.MarkReminded(ctx, t.ID, now)
+	}
+	return sent, nil
+}
+
+func (uc *taskUseCase) List(ctx context.Context, orgID uuid.UUID, f domain.TaskFilter) (domain.TaskListResult, error) {
 	return uc.taskRepo.List(ctx, orgID, f)
 }
 
