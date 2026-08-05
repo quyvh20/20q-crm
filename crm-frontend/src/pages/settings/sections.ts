@@ -1,7 +1,7 @@
 import {
   Shield, Users, UsersRound, KeyRound, Boxes, Table2, EyeOff,
   Target, Mail, Brain, ScrollText, MessageSquare, UserRound, Building2, Bell, Plug,
-  Sparkles, type LucideIcon,
+  Sparkles, Users2, type LucideIcon,
 } from 'lucide-react';
 
 // The settings section REGISTRY, split out of SettingsLayout.tsx.
@@ -57,6 +57,11 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   // prefix each other or the nav highlights two entries at once.
   { path: 'starter-templates', label: 'Starter Templates', icon: Sparkles, group: 'workspace', visible: (can) => can('org.settings') },
   { path: 'objects', label: 'Objects & Fields', icon: Boxes, group: 'workspace', visible: (can) => can('objects.manage') },
+  // R8.3: contact merge is capability-agnostic on the backend (it checks the
+  // contact object's own edit+delete OLS bits, per caller), but the settings
+  // shell's capability list has no per-object entry — objects.manage is the
+  // closest existing "workspace data hygiene" gate.
+  { path: 'duplicates', label: 'Duplicates', icon: Users2, group: 'workspace', visible: (can) => can('objects.manage') },
   { path: 'pipeline', label: 'Pipeline', icon: Target, group: 'workspace', visible: (can) => can('pipeline.manage') },
   { path: 'integrations', label: 'Integrations', icon: Plug, group: 'workspace', visible: (can) => can('integrations.manage') },
   { path: 'templates', label: 'Email Templates', icon: Mail, group: 'workspace', visible: (can) => can('workflows.manage'), externalTo: '/workflows/email-templates' },

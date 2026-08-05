@@ -336,6 +336,85 @@ func (r *contactRepository) FindByNormalizedPhone(ctx context.Context, orgID uui
 	return out, nil
 }
 
+// ListPhoneDuplicateGroups groups active contacts by normalized phone digits.
+// It re-derives the digit set with the same regexp_replace expression as the
+// (idx_contacts_org_phone_digits) index, then hands each group to
+// FindByNormalizedPhone rather than re-implementing its row shape/limit here.
+func (r *contactRepository) ListPhoneDuplicateGroups(ctx context.Context, orgID uuid.UUID) ([]domain.DuplicateGroup, error) {
+	var digitsList []string
+	err := r.db.WithContext(ctx).Model(&domain.Contact{}).
+		Select("regexp_replace(phone, '[^0-9]', '', 'g') AS digits").
+		Where("org_id = ? AND deleted_at IS NULL AND phone IS NOT NULL AND phone <> ''", orgID).
+		Group("digits").
+		Having("COUNT(*) > 1 AND length(regexp_replace(phone, '[^0-9]', '', 'g')) >= 7").
+		Order("digits").
+		Pluck("digits", &digitsList).Error
+	if err != nil {
+		return nil, err
+	}
+	groups := make([]domain.DuplicateGroup, 0, len(digitsList))
+	for _, d := range digitsList {
+		contacts, err := r.FindByNormalizedPhone(ctx, orgID, d)
+		if err != nil {
+			return nil, err
+		}
+		if len(contacts) > 1 {
+			groups = append(groups, domain.DuplicateGroup{Key: d, Contacts: contacts})
+		}
+	}
+	return groups, nil
+}
+
+// MergeRepoint is documented on the interface (domain.ContactRepository). The
+// object_links INSERTs target the table's own partial unique index
+// (uix_object_links_unique) with ON CONFLICT DO NOTHING, so a link that
+// already exists on the survivor is silently skipped rather than duplicated
+// — no pre-read/dedup pass needed. The loser's ORIGINAL edges are left alone
+// here on purpose: RecordService.Delete's cascade removes them when the
+// caller deletes the loser afterward, so this never soft-deletes a link out
+// from under a merge that failed partway.
+func (r *contactRepository) MergeRepoint(ctx context.Context, orgID, survivorID, loserID uuid.UUID) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec(`
+			INSERT INTO object_links (id, org_id, from_slug, from_id, to_slug, to_id, relation_key, created_by, created_at)
+			SELECT uuid_generate_v4(), org_id, from_slug, ?, to_slug, to_id, relation_key, created_by, NOW()
+			FROM object_links
+			WHERE org_id = ? AND from_slug = 'contact' AND from_id = ? AND deleted_at IS NULL
+			ON CONFLICT (org_id, from_slug, from_id, relation_key, to_slug, to_id) WHERE deleted_at IS NULL DO NOTHING
+		`, survivorID, orgID, loserID).Error; err != nil {
+			return fmt.Errorf("repoint outgoing links: %w", err)
+		}
+		if err := tx.Exec(`
+			INSERT INTO object_links (id, org_id, from_slug, from_id, to_slug, to_id, relation_key, created_by, created_at)
+			SELECT uuid_generate_v4(), org_id, from_slug, from_id, to_slug, ?, relation_key, created_by, NOW()
+			FROM object_links
+			WHERE org_id = ? AND to_slug = 'contact' AND to_id = ? AND deleted_at IS NULL
+			ON CONFLICT (org_id, from_slug, from_id, relation_key, to_slug, to_id) WHERE deleted_at IS NULL DO NOTHING
+		`, survivorID, orgID, loserID).Error; err != nil {
+			return fmt.Errorf("repoint incoming links: %w", err)
+		}
+		if err := tx.Exec(`UPDATE tasks SET contact_id = ? WHERE contact_id = ? AND org_id = ?`,
+			survivorID, loserID, orgID).Error; err != nil {
+			return fmt.Errorf("repoint tasks: %w", err)
+		}
+		if err := tx.Exec(`UPDATE activities SET contact_id = ? WHERE contact_id = ? AND org_id = ?`,
+			survivorID, loserID, orgID).Error; err != nil {
+			return fmt.Errorf("repoint activities: %w", err)
+		}
+		// contact_tags has no org_id column (see object_link_repository.go's
+		// legacy-bridge comment) — the org check already happened one level up,
+		// via the two contactRepo.GetByID calls the usecase makes before this.
+		if err := tx.Exec(`INSERT INTO contact_tags (contact_id, tag_id) SELECT ?, tag_id FROM contact_tags WHERE contact_id = ? ON CONFLICT DO NOTHING`,
+			survivorID, loserID).Error; err != nil {
+			return fmt.Errorf("repoint contact_tags: %w", err)
+		}
+		if err := tx.Exec(`DELETE FROM contact_tags WHERE contact_id = ?`, loserID).Error; err != nil {
+			return fmt.Errorf("clear loser contact_tags: %w", err)
+		}
+		return nil
+	})
+}
+
 // ============================================================
 // Create
 // ============================================================

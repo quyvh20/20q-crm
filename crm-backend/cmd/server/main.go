@@ -2423,6 +2423,10 @@ func main() {
 		// OLS + writes the audit trail (P5a) — the security chokepoint.
 		linkRepo := repository.NewLinkRepository(db)
 		recordService := usecase.NewRecordService(customObjUC, orgSettingsUC, contactUseCase, companyUseCase, dealUseCase, linkRepo, tagRepo, permissionUC)
+		// R8.3 merge is its own usecase (not a ContactUseCase method) because it
+		// depends on recordService, and recordService's contact adapter wraps
+		// contactUseCase — folding merge in there would be a dependency cycle.
+		contactMergeHandler := delivery.NewContactMergeHandler(usecase.NewContactMergeUseCase(contactRepo, permissionUC, recordService))
 		// Human-readable record numbers (DEAL-0001): allocate on create, resolve on read.
 		recordService.SetNumberRepo(repository.NewRecordNumberRepository(db))
 		// The per-record audit trail 404s the history of a record the caller can't
@@ -2647,7 +2651,7 @@ func main() {
 		voiceNoteUC := usecase.NewVoiceNoteUseCase(voiceNoteRepo, aiJobQueue, cfg, contactRepo)
 		voiceHandler := delivery.NewVoiceHandler(voiceNoteUC)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, layoutHandler, roleHandler, roleAccessHandler, auditHandler, reportHandler, reportShareHandler, reportCommentHandler, dashboardHandler, userGroupHandler, notificationHandler, apiTokenHandler, templateHandler, cfg, db, redisClient, authRepo, apiTokenRepo, permissionUC)
+		delivery.RegisterRoutes(router, authHandler, contactHandler, contactMergeHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, layoutHandler, roleHandler, roleAccessHandler, auditHandler, reportHandler, reportShareHandler, reportCommentHandler, dashboardHandler, userGroupHandler, notificationHandler, apiTokenHandler, templateHandler, cfg, db, redisClient, authRepo, apiTokenRepo, permissionUC)
 
 		// --- Workflow Automation Engine ---
 		memHandler := logger.NewMemoryHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))

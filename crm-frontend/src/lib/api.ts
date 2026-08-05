@@ -382,6 +382,29 @@ export async function bulkContactAction(
   return json.data as BulkActionResult;
 }
 
+// R8.3: duplicate detection + merge (contacts first).
+export interface DuplicateGroup {
+  key: string;
+  contacts: Contact[];
+}
+
+export async function listContactDuplicates(): Promise<DuplicateGroup[]> {
+  const res = await apiFetch('/api/contacts/duplicates');
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Failed to load duplicates');
+  return (json.data || []) as DuplicateGroup[];
+}
+
+export async function mergeContacts(survivorId: string, loserId: string): Promise<Contact> {
+  const res = await apiFetch('/api/contacts/merge', {
+    method: 'POST',
+    body: JSON.stringify({ survivor_id: survivorId, loser_id: loserId }),
+  });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Merge failed');
+  return json.data as Contact;
+}
+
 export async function importContacts(file: File, conflictMode: 'skip' | 'overwrite' = 'skip') {
   const formData = new FormData();
   formData.append('file', file);

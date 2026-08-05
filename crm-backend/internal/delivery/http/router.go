@@ -9,7 +9,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, objectRegistryHandler *ObjectRegistryHandler, recordHandler *RecordHandler, permissionHandler *PermissionHandler, searchHandler *SearchHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, voiceHandler *VoiceHandler, layoutHandler *ObjectLayoutHandler, roleHandler *RoleHandler, roleAccessHandler *RoleAccessHandler, auditHandler *AuditHandler, reportHandler *ReportHandler, reportShareHandler *ReportShareHandler, reportCommentHandler *ReportCommentHandler, dashboardHandler *DashboardHandler, groupHandler *UserGroupHandler, notificationHandler *NotificationHandler, apiTokenHandler *APITokenHandler, templateHandler *SystemTemplateHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository, apiTokenRepo domain.APITokenRepository, permissionUC domain.PermissionUseCase) {
+func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, contactMergeHandler *ContactMergeHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, objectRegistryHandler *ObjectRegistryHandler, recordHandler *RecordHandler, permissionHandler *PermissionHandler, searchHandler *SearchHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, voiceHandler *VoiceHandler, layoutHandler *ObjectLayoutHandler, roleHandler *RoleHandler, roleAccessHandler *RoleAccessHandler, auditHandler *AuditHandler, reportHandler *ReportHandler, reportShareHandler *ReportShareHandler, reportCommentHandler *ReportCommentHandler, dashboardHandler *DashboardHandler, groupHandler *UserGroupHandler, notificationHandler *NotificationHandler, apiTokenHandler *APITokenHandler, templateHandler *SystemTemplateHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository, apiTokenRepo domain.APITokenRepository, permissionUC domain.PermissionUseCase) {
 	// Mark every request context as HTTP-originated so the permission engine can
 	// flag a callerless HTTP call reaching Authorize (a route mounted outside
 	// AuthMiddleware) instead of silently treating it as a trusted in-process
@@ -319,6 +319,11 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			// Read routes carry the same OLS gate as the writes (U0.1) — without
 			// it, revoking 'read' in the permissions grid only bit on /registry.
 			contacts.GET("", olsOn("contact", domain.ActionRead), contactHandler.List)
+			// R8.3: registered before /:id below so "duplicates"/"merge" are matched
+			// as static segments, not swallowed by :id (see the export.csv precedent
+			// on the registry routes).
+			contacts.GET("/duplicates", olsOn("contact", domain.ActionEdit), contactMergeHandler.ListDuplicates)
+			contacts.POST("/merge", olsOn("contact", domain.ActionEdit), contactMergeHandler.Merge)
 			contacts.GET("/:id", olsOn("contact", domain.ActionRead), contactHandler.GetByID)
 			contacts.POST("", olsOn("contact", domain.ActionCreate), contactHandler.Create)
 			contacts.PUT("/:id", olsOn("contact", domain.ActionEdit), contactHandler.Update)

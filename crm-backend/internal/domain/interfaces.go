@@ -736,6 +736,26 @@ type ContactRepository interface {
 	BulkDeleteByIDs(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID) ([]Contact, error)
 	BulkAssignTag(ctx context.Context, orgID uuid.UUID, contactIDs []uuid.UUID, tagID uuid.UUID) (int64, error)
 	SemanticSearch(ctx context.Context, orgID uuid.UUID, vec []float32, threshold float32, limit int) ([]Contact, error)
+	// ListPhoneDuplicateGroups is R8.3's candidate finder: active contacts
+	// sharing a normalized phone (>=7 digits, so a handful of garbage-short
+	// numbers can't group as "duplicates"). Exact email collisions can't exist
+	// among active contacts (the (org_id, email) unique index refuses them), so
+	// phone is the only cheap, always-available signal until R6.2's pg_trgm
+	// lands a name-similarity pass.
+	ListPhoneDuplicateGroups(ctx context.Context, orgID uuid.UUID) ([]DuplicateGroup, error)
+	// MergeRepoint moves every cross-reference from loser to survivor —
+	// object_links (both directions), tasks, activities, contact_tags — in one
+	// transaction. It does not touch the contact rows themselves: the caller
+	// unions CustomFields and deletes the loser separately, through
+	// RecordService, so audit/link-cascade fire the normal way.
+	MergeRepoint(ctx context.Context, orgID, survivorID, loserID uuid.UUID) error
+}
+
+// DuplicateGroup is a set of contacts a candidate finder thinks may be the
+// same person, keyed by whatever signal grouped them (phone digits today).
+type DuplicateGroup struct {
+	Key      string    `json:"key"`
+	Contacts []Contact `json:"contacts"`
 }
 
 type BulkActionInput struct {

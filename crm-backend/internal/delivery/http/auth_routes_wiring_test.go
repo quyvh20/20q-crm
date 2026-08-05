@@ -69,6 +69,7 @@ func wiredRouter(t *testing.T, authUC *fakeAuthUC, tokenUC *fakeAPITokenUC, repo
 		// These three are the only handlers RegisterRoutes calls a method ON
 		// (SetFieldMasker), so they must be real values rather than typed nils.
 		NewContactHandler(nil),
+		(*ContactMergeHandler)(nil),
 		NewCompanyHandler(nil),
 		(*TagHandler)(nil),
 		NewDealHandler(nil),
