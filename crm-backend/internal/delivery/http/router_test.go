@@ -33,6 +33,8 @@ func TestRegisterObjectRegistryRoutes(t *testing.T) {
 		"GET /api/registry/objects/:slug/schema":                       false,
 		"PUT /api/registry/objects/:slug/number-prefix":                false,
 		"GET /api/registry/objects/:slug/records":                      false,
+		"GET /api/registry/objects/:slug/records/export.csv":           false,
+		"POST /api/registry/objects/:slug/import":                      false,
 		"GET /api/registry/objects/:slug/records/:id":                  false,
 		"GET /api/registry/objects/:slug/records/:id/page":             false,
 		"GET /api/registry/objects/:slug/records/:id/related-lists":    false,

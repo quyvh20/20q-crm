@@ -5,6 +5,7 @@ import {
   ArrowUp,
   ArrowUpDown,
   Check,
+  Download,
   LayoutGrid,
   List,
   Plus,
@@ -18,6 +19,7 @@ import {
 import {
   getObjectSchema,
   listObjectRecordsUnified,
+  exportRecordsCsv,
   getTags,
   getStages,
   bulkContactAction,
@@ -27,10 +29,12 @@ import {
   type RecordSort,
   type Tag,
 } from '../../lib/api';
+import { useAuth } from '../../lib/auth';
 import { formatFieldValue } from './fieldHelpers';
 import ObjectForm from './ObjectForm';
 import ObjectKanban from './ObjectKanban';
 import ImportModal from '../../components/contacts/ImportModal';
+import GenericImportModal from './GenericImportModal';
 import Modal from '../../components/common/Modal';
 import { useConfirm } from '../../components/common/ConfirmDialog';
 import {
@@ -132,7 +136,10 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
   // button that would only 403. Fails open while permissions are still loading —
   // the server enforces regardless.
   const { canAccess } = usePermissions();
+  const { hasCapability } = useAuth();
   const canCreate = canAccess(slug, 'create');
+  const canExport = hasCapability('data.export');
+  const [exporting, setExporting] = useState(false);
   const openRecord = useCallback(
     (rec: UniformRecord) => navigate(recordPath(slug, rec.id)),
     [navigate, slug],
@@ -154,7 +161,10 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
   const [sortInfo, setSortInfo] = useState<RecordSort | null>(null);
 
   // CSV import is a contact-specific affordance (the bulk importer is contact-aware).
-  const supportsImport = slug === 'contact';
+  // Contacts keep the dedup/company-resolution-aware ImportModal; every other
+  // object gets the generic column-mapped importer (R8.2).
+  const supportsImport = true;
+  const useGenericImport = slug !== 'contact';
 
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -465,6 +475,29 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
     [q, filters, tagIds, semantic, supportsSemantic, sortBy, sortOrder],
   );
 
+  // handleExport downloads the CURRENT filtered view as CSV (R8.2) — same
+  // q/filters/tags/sort as listParams(), minus cursor/limit (the export
+  // endpoint pages internally, capped server-side).
+  const handleExport = useCallback(async () => {
+    setExporting(true);
+    try {
+      const blob = await exportRecordsCsv(slug, listParams());
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${slug}-export-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      // Best-effort: a failed export just leaves nothing downloaded — the user
+      // can retry, and a toast primitive isn't in this file yet (R7.4).
+    } finally {
+      setExporting(false);
+    }
+  }, [slug, listParams]);
+
   const fetchFirstPage = useCallback(async () => {
     setLoading(true);
     try {
@@ -722,6 +755,11 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
                 <Upload aria-hidden /> Import
               </Button>
             )}
+            {canExport && (
+              <Button variant="outline" onClick={handleExport} disabled={exporting}>
+                <Download aria-hidden /> {exporting ? 'Exporting…' : 'Export'}
+              </Button>
+            )}
             {canCreate && (
               <Button onClick={() => setPanel({ mode: 'create' })}>
                 <Plus aria-hidden /> Add {schema.label}
@@ -731,7 +769,17 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
         }
       />
 
-      {showImport && (
+      {showImport && useGenericImport && (
+        <GenericImportModal
+          schema={schema}
+          onClose={() => setShowImport(false)}
+          onSuccess={() => {
+            setShowImport(false);
+            fetchFirstPage();
+          }}
+        />
+      )}
+      {showImport && !useGenericImport && (
         <ImportModal
           onClose={() => setShowImport(false)}
           onSuccess={() => {

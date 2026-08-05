@@ -1,6 +1,9 @@
 package http
 
 import (
+	"encoding/csv"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -276,6 +279,171 @@ func (h *RecordHandler) Delete(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": "deleted", "error": nil})
+}
+
+// ============================================================
+// Import / export (R8.2)
+// ============================================================
+
+// BulkImport handles POST /api/registry/objects/:slug/import — the generic
+// column-mapped importer for companies/deals/custom objects (contacts keep
+// the older contact-specific /api/contacts/import, which does dedup/company
+// resolution this generic path does not attempt). Accepts a CSV file plus a
+// `mapping` form field: JSON `{csv_header: field_key}`, built client-side
+// against the object's schema. Writes through RecordService.BulkCreate, so
+// FLS/OLS/validation and automation-suppression all come from there.
+func (h *RecordHandler) BulkImport(c *gin.Context) {
+	orgID := c.MustGet("org_id").(uuid.UUID)
+	userID := c.MustGet("user_id").(uuid.UUID)
+	slug := c.Param("slug")
+
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": "file is required"})
+		return
+	}
+	var mapping map[string]string
+	if err := json.Unmarshal([]byte(c.PostForm("mapping")), &mapping); err != nil || len(mapping) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": "mapping is required: JSON object of {csv_header: field_key}"})
+		return
+	}
+
+	file, err := fileHeader.Open()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": "failed to read file"})
+		return
+	}
+	defer file.Close()
+
+	rows, err := csv.NewReader(file).ReadAll()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": "failed to parse CSV: " + err.Error()})
+		return
+	}
+	if len(rows) < 2 {
+		c.JSON(http.StatusBadRequest, gin.H{"data": nil, "error": "file must contain a header row and at least one data row"})
+		return
+	}
+
+	colIdx := map[string]int{}
+	for i, col := range rows[0] {
+		colIdx[col] = i
+	}
+
+	writes := make([]domain.RecordWriteInput, 0, len(rows)-1)
+	for _, row := range rows[1:] {
+		fields := map[string]interface{}{}
+		for csvHeader, fieldKey := range mapping {
+			idx, ok := colIdx[csvHeader]
+			if !ok || idx >= len(row) {
+				continue
+			}
+			val := strings.TrimSpace(row[idx])
+			if val != "" {
+				fields[fieldKey] = val
+			}
+		}
+		if len(fields) > 0 {
+			writes = append(writes, domain.RecordWriteInput{Fields: fields})
+		}
+	}
+
+	result, err := h.svc.BulkCreate(c.Request.Context(), orgID, userID, slug, writes)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result, "error": nil})
+}
+
+// exportPageLimit caps how many records ExportCSV pulls per RecordService.List
+// call — the CapDataExport cap is on WHO can export, not how much; this is the
+// no-silent-caps guard on volume (see the truncation notice below).
+const exportPageLimit = 200
+
+// exportRowCap is the hard ceiling on one export, mirroring bulkCreateRowCap's
+// reasoning: a truncated export must say so, not read as complete.
+const exportRowCap = 20000
+
+// ExportCSV handles GET /api/registry/objects/:slug/records/export.csv. It
+// streams through RecordService.List exactly like the list view (same filters,
+// same cursor), so OLS/FLS apply per row identically — no separate security
+// path to keep in sync.
+func (h *RecordHandler) ExportCSV(c *gin.Context) {
+	orgID := c.MustGet("org_id").(uuid.UUID)
+	slug := c.Param("slug")
+
+	filters := map[string]string{}
+	for key, vals := range c.Request.URL.Query() {
+		if reservedListParams[key] || len(vals) == 0 || vals[0] == "" {
+			continue
+		}
+		filters[key] = vals[0]
+	}
+	var tagIDs []uuid.UUID
+	for _, raw := range c.QueryArray("tag_ids") {
+		for _, part := range strings.Split(raw, ",") {
+			if id, err := uuid.Parse(strings.TrimSpace(part)); err == nil {
+				tagIDs = append(tagIDs, id)
+			}
+		}
+	}
+
+	schema, err := h.registry.GetSchema(c.Request.Context(), orgID, slug)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", `attachment; filename="`+csvSafe(slug)+`-export.csv"`)
+	w := csv.NewWriter(c.Writer)
+
+	header := []string{"id", "number", "display"}
+	for _, f := range schema.Fields {
+		header = append(header, f.Key)
+	}
+	_ = w.Write(header)
+
+	cursor := c.Query("cursor")
+	written := 0
+	for {
+		page, err := h.svc.List(c.Request.Context(), orgID, slug, domain.RecordListInput{
+			Limit:     exportPageLimit,
+			Q:         c.Query("q"),
+			Cursor:    cursor,
+			Filters:   filters,
+			TagIDs:    tagIDs,
+			Semantic:  c.Query("semantic") == "true",
+			SortBy:    c.Query("sort_by"),
+			SortOrder: c.Query("sort_order"),
+		})
+		if err != nil {
+			// Headers are already flushed to the client at this point, so a mid-stream
+			// error can't become a JSON error response — best-effort log-and-stop.
+			break
+		}
+		for _, rec := range page.Records {
+			if written >= exportRowCap {
+				break
+			}
+			row := []string{rec.ID.String(), csvSafe(rec.Number), csvSafe(rec.Display)}
+			for _, f := range schema.Fields {
+				cell := ""
+				if val, ok := rec.Fields[f.Key]; ok && val != nil {
+					cell = fmt.Sprint(val)
+				}
+				row = append(row, csvSafe(cell))
+			}
+			_ = w.Write(row)
+			written++
+		}
+		if page.NextCursor == "" || written >= exportRowCap {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	w.Flush()
 }
 
 // ============================================================

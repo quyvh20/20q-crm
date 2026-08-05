@@ -366,6 +366,14 @@ type RecordWriteInput struct {
 	Fields map[string]interface{} `json:"fields"`
 }
 
+// BulkCreateResult is what a generic import reports back — the same shape as
+// the contact-specific domain.ImportResult, minus the contact-only fields.
+type BulkCreateResult struct {
+	Created      int      `json:"created"`
+	Errors       int      `json:"errors"`
+	ErrorDetails []string `json:"error_details,omitempty"`
+}
+
 // RecordEventEmitter fires an automation trigger after a write. It mirrors the
 // per-handler emitter callbacks (ContactEventEmitter, CustomObjectEventEmitter)
 // so the uniform write path keeps automation working without RecordService
@@ -381,6 +389,12 @@ type RecordService interface {
 	List(ctx context.Context, orgID uuid.UUID, slug string, in RecordListInput) (*RecordList, error)
 	Get(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID) (*UniformRecord, error)
 	Create(ctx context.Context, orgID, userID uuid.UUID, slug string, in RecordWriteInput) (*UniformRecord, error)
+	// BulkCreate is the R8.2 importer's write path: one row at a time through the
+	// same validation/OLS/FLS as Create, but with automation events suppressed
+	// for the whole batch (see domain.WithAutomationSuppressed) so a 500-row
+	// import doesn't enroll 500 automation runs. A row's error is collected, not
+	// returned — a bad row must not abort the rows after it.
+	BulkCreate(ctx context.Context, orgID, userID uuid.UUID, slug string, rows []RecordWriteInput) (*BulkCreateResult, error)
 	Update(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID, in RecordWriteInput) (*UniformRecord, error)
 	Delete(ctx context.Context, orgID uuid.UUID, slug string, id uuid.UUID) error
 	// SetEventEmitter wires the automation trigger callback, called once at

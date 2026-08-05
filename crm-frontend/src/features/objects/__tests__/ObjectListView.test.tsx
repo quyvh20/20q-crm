@@ -33,6 +33,8 @@ vi.mock('../../../lib/auth', () => ({
     canAccess: (slug: string, action: string) => objectAccess[`${slug}.${action}`] ?? true,
     loaded: true,
   }),
+  // R8.2: the Export button gates on data.export via useAuth().hasCapability.
+  useAuth: () => ({ hasCapability: () => true }),
 }));
 
 import {

@@ -311,6 +311,45 @@ func (s *recordService) Create(ctx context.Context, orgID, userID uuid.UUID, slu
 	return uniform, nil
 }
 
+// bulkCreateRowCap is the hard ceiling on one BulkCreate call (no-silent-caps
+// doctrine: ErrorDetails calls out any row past it as "not attempted", so a
+// truncated import never reads as a fully-succeeded one).
+const bulkCreateRowCap = 5000
+
+func (s *recordService) BulkCreate(ctx context.Context, orgID, userID uuid.UUID, slug string, rows []domain.RecordWriteInput) (*domain.BulkCreateResult, error) {
+	// One authorize check up front — Create() re-checks per row too, but this
+	// gives an immediate 403 for a caller with no create rights at all, instead
+	// of a result payload that's all per-row errors.
+	if err := s.authorize(ctx, orgID, slug, domain.ActionCreate); err != nil {
+		return nil, err
+	}
+
+	truncated := false
+	if len(rows) > bulkCreateRowCap {
+		rows = rows[:bulkCreateRowCap]
+		truncated = true
+	}
+
+	// L0 doctrine: bulk imports are silenced like lead-ingest, for the whole
+	// batch — one WithAutomationSuppressed wrap here, not per-row, so every
+	// Create() call below inherits it through ctx.
+	ctx = domain.WithAutomationSuppressed(ctx)
+
+	result := &domain.BulkCreateResult{}
+	for i, row := range rows {
+		if _, err := s.Create(ctx, orgID, userID, slug, row); err != nil {
+			result.Errors++
+			result.ErrorDetails = append(result.ErrorDetails, fmt.Sprintf("row %d: %v", i+1, err))
+			continue
+		}
+		result.Created++
+	}
+	if truncated {
+		result.ErrorDetails = append(result.ErrorDetails, fmt.Sprintf("import truncated at %d rows; remaining rows were not attempted", bulkCreateRowCap))
+	}
+	return result, nil
+}
+
 // Update validates and applies a partial update, returning the uniform shape. It
 // reads the prior record first (no OLS) so the audit can capture a field-level
 // before/after diff for exactly the keys the caller changed.

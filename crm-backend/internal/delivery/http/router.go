@@ -507,6 +507,10 @@ func registerObjectRegistryRoutes(parent *gin.RouterGroup, objectRegistryHandler
 	parent.GET("/registry/search", searchHandler.Search)
 
 	registry.GET("/:slug/records", recordHandler.List)
+	// R8.2: registered before the /:id routes below so "export.csv" is matched as
+	// a static segment, not swallowed by :id.
+	registry.GET("/:slug/records/export.csv", cap(domain.CapDataExport), recordHandler.ExportCSV)
+	registry.POST("/:slug/import", ols(domain.ActionCreate), recordHandler.BulkImport)
 	registry.GET("/:slug/records/:id", recordHandler.Get)
 	// Composite record page: schema + record + related lists + tags + resolved
 	// relation/mirror labels in ONE response. Read-level, same as its parts.

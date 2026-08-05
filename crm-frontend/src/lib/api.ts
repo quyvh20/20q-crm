@@ -1383,7 +1383,7 @@ export async function setLayoutRoles(slug: string, id: string, roleIds: string[]
 
 // --------------------------------------------------------------------------
 
-export async function listObjectRecordsUnified(slug: string, params?: {
+export interface RecordListParams {
   limit?: number;
   q?: string;
   cursor?: string;
@@ -1396,7 +1396,9 @@ export async function listObjectRecordsUnified(slug: string, params?: {
   /** A key from the previous response's `sort.sortable`; anything else is ignored server-side. */
   sortBy?: string;
   sortOrder?: 'asc' | 'desc';
-}): Promise<RecordPage> {
+}
+
+function recordListSearchParams(params?: RecordListParams): URLSearchParams {
   const search = new URLSearchParams();
   if (params?.limit) search.set('limit', String(params.limit));
   if (params?.q) search.set('q', params.q);
@@ -1413,12 +1415,49 @@ export async function listObjectRecordsUnified(slug: string, params?: {
       if (v && !search.has(k)) search.set(k, v);
     }
   }
-  const qs = search.toString();
+  return search;
+}
+
+export async function listObjectRecordsUnified(slug: string, params?: RecordListParams): Promise<RecordPage> {
+  const qs = recordListSearchParams(params).toString();
   const res = await apiFetch(`/api/registry/objects/${slug}/records${qs ? '?' + qs : ''}`);
   const json = await parseJsonSafe(res);
   if (!res.ok) throw apiError(res, json, 'Failed to fetch records');
   const page = (json.data || {}) as Partial<RecordPage>;
   return { records: page.records || [], next_cursor: page.next_cursor, sort: page.sort };
+}
+
+// exportRecordsCsv downloads the CURRENT list view's records as a CSV blob
+// (R8.2) — same filters as the on-screen page, minus pagination (the backend
+// pages internally, capped at exportRowCap server-side).
+export async function exportRecordsCsv(slug: string, params?: RecordListParams): Promise<Blob> {
+  const { cursor: _c, limit: _l, ...rest } = params ?? {};
+  const qs = recordListSearchParams(rest).toString();
+  const res = await apiFetch(`/api/registry/objects/${slug}/records/export.csv${qs ? '?' + qs : ''}`);
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw apiError(res, json, 'Export failed');
+  }
+  return res.blob();
+}
+
+// bulkImportRecords is the generic column-mapped importer (R8.2) for any
+// object except contacts (which keep the older dedup-aware /api/contacts/import).
+// mapping is { csv_header: field_key }, built client-side from the object's schema.
+export async function bulkImportRecords(slug: string, file: File, mapping: Record<string, string>): Promise<BulkCreateResult> {
+  const form = new FormData();
+  form.append('file', file);
+  form.append('mapping', JSON.stringify(mapping));
+  const res = await apiFetch(`/api/registry/objects/${slug}/import`, { method: 'POST', body: form });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Import failed');
+  return json.data as BulkCreateResult;
+}
+
+export interface BulkCreateResult {
+  created: number;
+  errors: number;
+  error_details?: string[];
 }
 
 export async function getObjectRecordUnified(slug: string, id: string): Promise<UniformRecord> {
