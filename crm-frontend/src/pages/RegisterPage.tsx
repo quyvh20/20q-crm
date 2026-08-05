@@ -117,7 +117,9 @@ export default function RegisterPage() {
               <span id="reg-orgtype-label" className="block text-sm font-medium text-foreground mb-1.5">
                 Workspace Type
               </span>
-              <div className="grid grid-cols-2 gap-3">
+              {/* Radio buttons carrying an icon plus a label; below sm they get
+                  ~160px each and the label collides with its own icon. */}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 {ORG_TYPES.map(({ value, label, Icon }) => {
                   const selected = form.org_type === value;
                   return (
@@ -141,7 +143,9 @@ export default function RegisterPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            {/* First + last name. Sign-up is the one screen a user is most
+                likely to reach on a phone, so the pair stacks below sm. */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <Label htmlFor="reg-firstname" className="mb-1.5">
                   First Name

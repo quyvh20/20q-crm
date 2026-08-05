@@ -8,12 +8,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-  AlertCircle, ArrowLeft, CheckCircle2, Code, Eye, LayoutGrid, Monitor, Redo2, Send, Undo2,
+  ArrowLeft, Code, Eye, LayoutGrid, Monitor, Redo2, Send, Undo2,
 } from 'lucide-react';
 import { usePermissions } from '../../lib/auth';
 import AccessDeniedPanel from '../../components/common/AccessDeniedPanel';
 import { useConfirm } from '../../components/common/ConfirmDialog';
 import { Badge, Button, SpinnerBlock } from '@/components/ui';
+import { useToast } from '@/lib/useToast';
 import { EmailBuilder } from './composer/EmailBuilder';
 import { CodeView } from './composer/CodeView';
 import { PreviewModal } from './composer/PreviewModal';
@@ -53,7 +54,7 @@ const Editor: React.FC = () => {
   const canUndo = useBuilderStore((s) => s.past.length > 0);
   const canRedo = useBuilderStore((s) => s.future.length > 0);
 
-  const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
+  const toast = useToast();
   const [saveErrors, setSaveErrors] = useState<string[]>([]);
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [previewErr, setPreviewErr] = useState(false);
@@ -132,11 +133,6 @@ const Editor: React.FC = () => {
   // /marketing/content/new would look like data corruption).
   useEffect(() => () => useBuilderStore.getState().reset(), []);
 
-  const showToast = (msg: string, type: 'success' | 'error' = 'success') => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 4000);
-  };
-
   const variableGroups = useMemo(() => variableGroupsForScope(scope), [scope]);
 
   // Stable identity matters: PreviewModal refetches the as-recipient render when
@@ -206,17 +202,17 @@ const Editor: React.FC = () => {
         // over live state when the detail query lands.
         seededId.current = created.id;
         s.markSaved();
-        showToast('Content created');
+        toast.show('Content created');
         navigate(`/marketing/content/${created.id}`, { replace: true });
       } else {
         await updateMut.mutateAsync({ id: id as string, input });
         s.markSaved();
-        showToast('Saved');
+        toast.show('Saved');
       }
     } catch (e) {
       const se = e as SaveError;
       if (se.validationErrors?.length) setSaveErrors(se.validationErrors);
-      showToast(se.message || 'Save failed', 'error');
+      toast.error(se.message || 'Save failed');
     }
   };
 
@@ -224,9 +220,9 @@ const Editor: React.FC = () => {
     if (isNew) return;
     try {
       const to = await testSendContent(id as string);
-      showToast(`Test sent to ${to}`);
+      toast.show(`Test sent to ${to}`);
     } catch (e) {
-      showToast((e as Error).message || 'Test send failed', 'error');
+      toast.error((e as Error).message || 'Test send failed');
     }
   };
 
@@ -254,16 +250,6 @@ const Editor: React.FC = () => {
   return (
     <div className="-m-6 flex h-[calc(100%+3rem)] min-h-0 flex-col bg-background">
       {dialog}
-      {toast && (
-        <div
-          role={toast.type === 'error' ? 'alert' : 'status'}
-          className="fixed right-4 top-4 z-50 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm font-medium text-foreground shadow-lg"
-        >
-          {toast.type === 'error' ? <AlertCircle className="h-4 w-4 text-destructive" /> : <CheckCircle2 className="h-4 w-4 text-primary" />}
-          {toast.msg}
-        </div>
-      )}
-
       {/* Toolbar */}
       <div className="flex items-center gap-2 border-b border-border bg-card px-3 py-2">
         <button

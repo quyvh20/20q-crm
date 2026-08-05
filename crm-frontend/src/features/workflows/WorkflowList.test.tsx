@@ -4,6 +4,8 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { WorkflowList } from './WorkflowList';
+import { Toaster } from '@/components/ui';
+import { resetToasts } from '@/lib/useToast';
 import { getWorkflows, toggleWorkflow, deleteWorkflow } from './api';
 import type { Workflow, WorkflowListResponse } from './types';
 
@@ -117,6 +119,12 @@ function renderList(opts?: { route?: string }) {
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[opts?.route ?? '/workflows']}>
         <WorkflowList />
+        {/* R7.4: toasts render from a module-level store into <Toaster>, which
+            the real app mounts once at the App root. WorkflowList itself no
+            longer renders its toast, so the run-started assertion below needs
+            the viewport in the tree. Everything else here is unaffected —
+            useToast() needs no provider. */}
+        <Toaster />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -153,6 +161,9 @@ const TWO_WORKFLOWS: Workflow[] = [
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The toast store is module-level, so a toast raised by one case would
+  // otherwise still be on screen for the next one.
+  resetToasts();
   mockGetWorkflows.mockResolvedValue(listResponse(TWO_WORKFLOWS));
   // Default to a privileged caller so the Run Now control renders on every row.
   mockAuth.user = { id: 'user-1' };
@@ -489,26 +500,38 @@ describe('WorkflowList — toggle and delete mutations', () => {
     await waitFor(() => expect(toggleWorkflow).toHaveBeenCalledWith('wf-contact'));
   });
 
+  // R7.4 replaced window.confirm with the in-app <ConfirmDialog>. These no longer
+  // stub a browser primitive — they drive the real dialog, which also pins that
+  // destruction stays behind an explicit second click.
   it('deletes the workflow when the confirm dialog is accepted', async () => {
     const user = userEvent.setup();
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
     vi.mocked(deleteWorkflow).mockResolvedValue(undefined);
     renderList();
     await screen.findByText('Welcome Email');
 
     await user.click(screen.getAllByRole('button', { name: /^Delete$/ })[0]);
 
+    // The dialog names the workflow, so a mis-targeted delete is visible.
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent('Welcome Email');
+    // Nothing is destroyed by opening the dialog alone.
+    expect(deleteWorkflow).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Delete workflow' }));
+
     await waitFor(() => expect(deleteWorkflow).toHaveBeenCalledWith('wf-contact'));
   });
 
   it('does not delete when the confirm dialog is dismissed', async () => {
     const user = userEvent.setup();
-    vi.spyOn(window, 'confirm').mockReturnValue(false);
     renderList();
     await screen.findByText('Welcome Email');
 
     await user.click(screen.getAllByRole('button', { name: /^Delete$/ })[0]);
+    await screen.findByRole('dialog');
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
 
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(deleteWorkflow).not.toHaveBeenCalled();
   });
 });

@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { AlertCircle, Bookmark, Check, CheckCircle2, Copy, Loader2, Pencil, Trash2, X } from 'lucide-react';
+import { AlertCircle, Bookmark, Check, Copy, Loader2, Pencil, Trash2, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { usePermissions } from '../../lib/auth';
 import AccessDeniedPanel from '../../components/common/AccessDeniedPanel';
 import { useConfirm } from '../../components/common/ConfirmDialog';
 import { Button, EmptyState, Input, PageHeader, SpinnerBlock } from '@/components/ui';
+import { useToast } from '@/lib/useToast';
 import { PALETTE_ICONS } from './composer/EmailBuilder';
 import { PALETTE } from './composer/blocks';
 import type { SavedBlockRow } from './savedBlocksApi';
@@ -30,14 +31,9 @@ const Library: React.FC = () => {
   const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
   const { confirm, dialog } = useConfirm();
   const [error, setError] = useState<string | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
+  const toast = useToast();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
-
-  const showToast = (msg: string) => {
-    setToast(msg);
-    setTimeout(() => setToast(null), 3000);
-  };
 
   const startRename = (row: SavedBlockRow) => {
     setEditingId(row.id);
@@ -49,7 +45,7 @@ const Library: React.FC = () => {
     try {
       await rename.mutateAsync({ id: editingId, name: editName.trim() });
       setEditingId(null);
-      showToast('Renamed');
+      toast.show('Renamed');
     } catch (err) {
       setError((err as Error).message || 'Rename failed');
     }
@@ -61,7 +57,7 @@ const Library: React.FC = () => {
     setDuplicatingId(row.id);
     try {
       await create.mutateAsync({ name: `${row.name} (copy)`, block: row.block });
-      showToast(`Duplicated as "${row.name} (copy)"`);
+      toast.show(`Duplicated as "${row.name} (copy)"`);
     } catch (err) {
       setError((err as Error).message || 'Failed to duplicate');
     } finally {
@@ -79,7 +75,7 @@ const Library: React.FC = () => {
     if (!ok) return;
     try {
       await remove.mutateAsync(row.id);
-      showToast('Deleted');
+      toast.show('Deleted');
     } catch (err) {
       setError((err as Error).message || 'Delete failed');
     }
@@ -94,12 +90,6 @@ const Library: React.FC = () => {
   return (
     <div className="mx-auto w-full max-w-4xl">
       {dialog}
-      {toast && (
-        <div role="status" className="fixed right-4 top-4 z-50 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm font-medium text-foreground shadow-lg">
-          <CheckCircle2 className="h-4 w-4 text-primary" /> {toast}
-        </div>
-      )}
-
       <PageHeader
         title="Saved blocks"
         description="Reusable pieces for the email builder. Save any block from its settings (the bookmark icon); insert them from the builder’s left rail."

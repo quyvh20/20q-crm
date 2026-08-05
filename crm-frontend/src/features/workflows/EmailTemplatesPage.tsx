@@ -1,11 +1,13 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AlertCircle, CheckCircle2, Mail, Plus, Pencil, Trash2, Send, FileText } from 'lucide-react';
+import { Mail, Plus, Pencil, Trash2, Send, FileText } from 'lucide-react';
 import { useEmailTemplates, useDeleteEmailTemplate, useTestSendEmailTemplate } from './queries';
 import { WorkflowsTabs } from './WorkflowsTabs';
 import { usePermissions } from '../../lib/auth';
 import AccessDeniedPanel from '../../components/common/AccessDeniedPanel';
+import { useConfirm } from '../../components/common/ConfirmDialog';
 import { Button, EmptyState, ErrorState, PageHeader, SpinnerBlock } from '@/components/ui';
+import { useToast } from '@/lib/useToast';
 import type { EmailTemplate } from './api';
 
 /** Email templates library (A5). Token-styled (consistent with the new builder),
@@ -48,42 +50,35 @@ const EmailTemplatesContent: React.FC = () => {
   const { data, isLoading, error: loadError, refetch } = useEmailTemplates();
   const deleteMutation = useDeleteEmailTemplate();
   const testSend = useTestSendEmailTemplate();
-  const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
+  const toast = useToast();
+  const { confirm, dialog } = useConfirm();
 
   const templates = data?.templates ?? [];
 
-  const showToast = (msg: string, type: 'success' | 'error' = 'success') => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 4000);
-  };
-
-  const handleDelete = (t: EmailTemplate) => {
-    if (!confirm(`Delete "${t.name}"? This can't be undone.`)) return;
+  const handleDelete = async (t: EmailTemplate) => {
+    const ok = await confirm({
+      title: 'Delete email template?',
+      body: `"${t.name}" is removed. Any automation step that sends it will stop sending until you point it at another template. This can't be undone.`,
+      confirmLabel: 'Delete template',
+      tone: 'danger',
+    });
+    if (!ok) return;
     deleteMutation.mutate(t.id, {
-      onError: (e) => showToast((e as Error).message || 'Failed to delete template', 'error'),
+      onError: (e) => toast.error((e as Error).message || 'Failed to delete template'),
     });
   };
 
   const handleTestSend = (t: EmailTemplate) => {
     testSend.mutate(t.id, {
-      onSuccess: (r) => showToast(`Test email sent to ${r.to}`),
-      onError: (e) => showToast((e as Error).message || 'Failed to send test email', 'error'),
+      onSuccess: (r) => toast.show(`Test email sent to ${r.to}`),
+      onError: (e) => toast.error((e as Error).message || 'Failed to send test email'),
     });
   };
 
   return (
     <div className="mx-auto w-full max-w-6xl">
-      {toast && (
-        <div className="fixed right-4 top-4 z-50 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm font-medium text-foreground shadow-lg">
-          {toast.type === 'error' ? (
-            <AlertCircle aria-hidden className="h-4 w-4 shrink-0 text-destructive" />
-          ) : (
-            <CheckCircle2 aria-hidden className="h-4 w-4 shrink-0 text-primary" />
-          )}
-          {toast.msg}
-        </div>
-      )}
-
+      {/* Must be in the tree: without it confirm() never settles. */}
+      {dialog}
       <WorkflowsTabs active="templates" />
 
       {/* Header */}

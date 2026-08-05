@@ -124,8 +124,16 @@ func (h *RecordHandler) SharedWithMe(c *gin.Context) {
 
 // reservedListParams are query keys with dedicated meaning; everything else is
 // treated as a relation/field filter (e.g. company, stage, contact, owner_user_id).
+//
+// Anything NOT listed here becomes a field filter, so forgetting to reserve a
+// param does not produce an error — it produces a jsonb equality test against a
+// field that does not exist, i.e. an empty list. That is how sort_by would have
+// behaved before R7.3: `?sort_by=value` silently matched nothing instead of
+// sorting. The cost of reserving a key is that an admin-defined field with that
+// exact key stops being filterable, which is why the set stays this small.
 var reservedListParams = map[string]bool{
 	"limit": true, "q": true, "cursor": true, "tag_ids": true, "semantic": true,
+	"sort_by": true, "sort_order": true,
 }
 
 // List handles GET /api/registry/objects/:slug/records
@@ -162,6 +170,11 @@ func (h *RecordHandler) List(c *gin.Context) {
 		Filters:  filters,
 		TagIDs:   tagIDs,
 		Semantic: c.Query("semantic") == "true",
+		// Passed through raw. RecordService normalises against the object's
+		// declared sortable columns and echoes what it settled on in
+		// RecordList.Sort, so the handler holds no opinion about either.
+		SortBy:    c.Query("sort_by"),
+		SortOrder: c.Query("sort_order"),
 	})
 	if err != nil {
 		handleAppError(c, err)

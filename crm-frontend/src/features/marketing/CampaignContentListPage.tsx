@@ -1,11 +1,12 @@
 import React, { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AlertCircle, CheckCircle2, Copy, Folder, FolderInput, Loader2, Mail, Plus, Search, Trash2 } from 'lucide-react';
+import { AlertCircle, Copy, Folder, FolderInput, Loader2, Mail, Plus, Search, Trash2 } from 'lucide-react';
 import { usePermissions } from '../../lib/auth';
 import AccessDeniedPanel from '../../components/common/AccessDeniedPanel';
 import { useConfirm } from '../../components/common/ConfirmDialog';
 import Modal from '../../components/common/Modal';
 import { Badge, Button, EmptyState, Input, PageHeader, SpinnerBlock } from '@/components/ui';
+import { useToast } from '@/lib/useToast';
 import { useContentList, useCreateContent, useRemoveContent, useSetContentFolder } from './contentQueries';
 import type { CampaignContent } from './contentApi';
 
@@ -53,7 +54,7 @@ const Content: React.FC = () => {
   const createMut = useCreateContent();
   const moveMut = useSetContentFolder();
   const { confirm, dialog } = useConfirm();
-  const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
+  const toast = useToast();
   const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   // '' = All; '~' = Unfiled (folder names are trimmed, so '~' can't collide).
@@ -98,15 +99,10 @@ const Content: React.FC = () => {
       await moveMut.mutateAsync({ id: c.id, folder });
       setMoveTarget(null);
       setNewFolderName('');
-      showToast(folder ? `Moved to "${folder}"` : 'Moved to Unfiled');
+      toast.show(folder ? `Moved to "${folder}"` : 'Moved to Unfiled');
     } catch (e) {
-      showToast((e as Error).message || 'Failed to move', 'error');
+      toast.error((e as Error).message || 'Failed to move');
     }
-  };
-
-  const showToast = (msg: string, type: 'success' | 'error' = 'success') => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 3500);
   };
 
   const del = async (c: CampaignContent) => {
@@ -118,8 +114,8 @@ const Content: React.FC = () => {
     });
     if (!ok) return;
     removeMut.mutate(c.id, {
-      onSuccess: () => showToast(`Deleted ${c.name}`),
-      onError: (e) => showToast((e as Error).message || 'Failed to delete', 'error'),
+      onSuccess: () => toast.show(`Deleted ${c.name}`),
+      onError: (e) => toast.error((e as Error).message || 'Failed to delete'),
     });
   };
 
@@ -136,9 +132,9 @@ const Content: React.FC = () => {
         merge_scope: c.merge_scope,
         folder: c.folder || undefined, // the copy stays in the same folder
       });
-      showToast(`Duplicated as "${created.name}"`);
+      toast.show(`Duplicated as "${created.name}"`);
     } catch (e) {
-      showToast((e as Error).message || 'Failed to duplicate', 'error');
+      toast.error((e as Error).message || 'Failed to duplicate');
     } finally {
       setDuplicatingId(null);
     }
@@ -147,11 +143,6 @@ const Content: React.FC = () => {
   return (
     <div className="mx-auto w-full max-w-5xl">
       {dialog}
-      {toast && (
-        <div role={toast.type === 'error' ? 'alert' : 'status'} className="fixed right-4 top-4 z-50 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm font-medium text-foreground shadow-lg">
-          {toast.type === 'error' ? <AlertCircle className="h-4 w-4 text-destructive" /> : <CheckCircle2 className="h-4 w-4 text-primary" />} {toast.msg}
-        </div>
-      )}
       <PageHeader
         title="Email templates"
         description="Design email-safe marketing content with merge tags. Templates compile to bulletproof HTML and are reused by campaigns and sequences."

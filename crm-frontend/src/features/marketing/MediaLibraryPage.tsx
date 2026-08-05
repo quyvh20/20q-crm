@@ -1,10 +1,11 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { AlertCircle, Check, CheckCircle2, Copy, Folder, FolderInput, ImagePlus, Loader2, Search, Trash2 } from 'lucide-react';
+import { AlertCircle, Check, Copy, Folder, FolderInput, ImagePlus, Loader2, Search, Trash2 } from 'lucide-react';
 import { usePermissions } from '../../lib/auth';
 import AccessDeniedPanel from '../../components/common/AccessDeniedPanel';
 import { useConfirm } from '../../components/common/ConfirmDialog';
 import Modal from '../../components/common/Modal';
 import { Button, EmptyState, Input, PageHeader, SpinnerBlock } from '@/components/ui';
+import { useToast } from '@/lib/useToast';
 import { copyText } from '../../lib/clipboard';
 import { displayImageSrc, type MarketingAsset } from './assetsApi';
 import { useAssets, useDuplicateAsset, useRemoveAsset, useSetAssetFolder, useUploadAsset } from './assetsQueries';
@@ -44,7 +45,7 @@ const Library: React.FC = () => {
   const fileRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
+  const toast = useToast();
   const [search, setSearch] = useState('');
   // '' = All; '~' = Unfiled (folder names are trimmed, so '~' can't collide).
   const [activeFolder, setActiveFolder] = useState('');
@@ -68,7 +69,7 @@ const Library: React.FC = () => {
     setDuplicatingId(a.id);
     try {
       const created = await dupMut.mutateAsync(a.id);
-      showToast(`Duplicated as "${created.filename}"`);
+      toast.show(`Duplicated as "${created.filename}"`);
     } catch (err) {
       setError((err as Error).message || 'Failed to duplicate');
     } finally {
@@ -81,15 +82,10 @@ const Library: React.FC = () => {
       await moveMut.mutateAsync({ id: a.id, folder });
       setMoveTarget(null);
       setNewFolderName('');
-      showToast(folder ? `Moved to "${folder}"` : 'Moved to Unfiled');
+      toast.show(folder ? `Moved to "${folder}"` : 'Moved to Unfiled');
     } catch (err) {
       setError((err as Error).message || 'Failed to move');
     }
-  };
-
-  const showToast = (msg: string) => {
-    setToast(msg);
-    setTimeout(() => setToast(null), 3000);
   };
 
   const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -101,7 +97,7 @@ const Library: React.FC = () => {
       // Uploading while a folder is active files the image there directly.
       const folder = activeFolder !== '' && activeFolder !== '~' ? activeFolder : '';
       await upload.mutateAsync({ file, folder });
-      showToast(folder ? `Uploaded to "${folder}"` : 'Image uploaded');
+      toast.show(folder ? `Uploaded to "${folder}"` : 'Image uploaded');
     } catch (err) {
       setError((err as Error).message || 'Upload failed');
     }
@@ -126,7 +122,7 @@ const Library: React.FC = () => {
     if (!ok) return;
     try {
       await remove.mutateAsync(id);
-      showToast('Image deleted');
+      toast.show('Image deleted');
     } catch (err) {
       setError((err as Error).message || 'Delete failed');
     }
@@ -135,11 +131,6 @@ const Library: React.FC = () => {
   return (
     <div className="mx-auto w-full max-w-5xl">
       {dialog}
-      {toast && (
-        <div role="status" className="fixed right-4 top-4 z-50 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm font-medium text-foreground shadow-lg">
-          <CheckCircle2 className="h-4 w-4 text-primary" /> {toast}
-        </div>
-      )}
       <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp" className="hidden" onChange={onFile} aria-label="Upload image file" />
 
       <PageHeader

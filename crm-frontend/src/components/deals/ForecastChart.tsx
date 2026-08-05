@@ -1,9 +1,16 @@
 import { useQuery } from '@tanstack/react-query';
 import { getForecast, type ForecastRow } from '../../lib/api';
+import { formatCurrency, formatDate } from '../../lib/format';
+import { useWorkspaceFormat } from '../../lib/useWorkspaceFormat';
 import { Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Line, ComposedChart } from 'recharts';
 
-/** Build a full 12-month window starting from the current month */
-function buildFullYear(apiData: ForecastRow[]) {
+/**
+ * Build a full 12-month window starting from the current month.
+ *
+ * `locale` is threaded in rather than baked: the axis used to be hardcoded to
+ * 'en-US', so a workspace set to de-DE or ja-JP still read "Jan 26".
+ */
+function buildFullYear(apiData: ForecastRow[], locale?: string) {
   const lookup = new Map(apiData.map(r => [r.month, r]));
   const now = new Date();
   const months: { month: string; label: string; revenue: number; deals_count: number }[] = [];
@@ -11,7 +18,7 @@ function buildFullYear(apiData: ForecastRow[]) {
   for (let i = 0; i < 12; i++) {
     const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
     const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-    const label = d.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
+    const label = formatDate(d, { locale, month: 'short', year: '2-digit' });
     const row = lookup.get(key);
     months.push({
       month: key,
@@ -24,6 +31,7 @@ function buildFullYear(apiData: ForecastRow[]) {
 }
 
 export default function ForecastChart() {
+  const fmt = useWorkspaceFormat();
   const { data: forecast = [], isLoading } = useQuery<ForecastRow[]>({
     queryKey: ['forecast'],
     queryFn: getForecast,
@@ -33,7 +41,7 @@ export default function ForecastChart() {
     return <div className="h-64 rounded-xl bg-muted/50 animate-pulse" />;
   }
 
-  const formatted = buildFullYear(forecast);
+  const formatted = buildFullYear(forecast, fmt.locale);
   const maxRevenue = Math.max(...formatted.map(f => f.revenue), 1);
 
   return (
@@ -47,7 +55,11 @@ export default function ForecastChart() {
             yAxisId="left"
             tick={{ fontSize: 11 }}
             stroke="hsl(var(--muted-foreground))"
-            tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}K`}
+            // Compact notation replaces the hand-rolled `$${v/1000}K`: Intl picks
+            // the right symbol AND the right abbreviation per locale ("$12K",
+            // "12 k €", "12 Tr ₫") instead of assuming every currency divides
+            // into thousands the English way.
+            tickFormatter={(v: number) => formatCurrency(v, { ...fmt, notation: 'compact', maximumFractionDigits: 0 })}
             domain={[0, Math.ceil(maxRevenue * 1.2 / 1000) * 1000]}
           />
           <YAxis
@@ -65,7 +77,7 @@ export default function ForecastChart() {
               fontSize: 12,
             }}
             formatter={(value, name) => [
-              name === 'revenue' ? `$${Number(value).toLocaleString()}` : value,
+              name === 'revenue' ? formatCurrency(value, fmt) : value,
               name === 'revenue' ? 'Expected Revenue' : 'Deals',
             ]}
           />

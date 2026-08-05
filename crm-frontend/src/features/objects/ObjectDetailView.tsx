@@ -28,6 +28,16 @@ interface ObjectDetailViewProps {
   // (the stage pseudo-relation stays a client lookup — it has no target slug).
   prefetchedRelationLabels?: Record<string, string>;
   prefetchedMirrorValues?: Record<string, string>;
+  /**
+   * BCP-47 tag for rendering date and number fields (R7.7). Optional, and
+   * deliberately a PROP rather than a `useWorkspaceFormat()` call inside this
+   * component: `formatFieldValue` is shared with ObjectListView, so resolving
+   * the workspace here alone would make a record's list row and its detail page
+   * spell the same date two different ways. The seam is in place — whichever
+   * stream owns the record pages passes it in one line — and until then both
+   * views agree on the runtime locale.
+   */
+  locale?: string;
 }
 
 // FieldRow is the shared single-field renderer, used by every section so the
@@ -37,11 +47,13 @@ function FieldRow({
   value,
   relationLabel,
   mirrorValue,
+  locale,
 }: {
   field: ObjectFieldDescriptor;
   value: unknown;
   relationLabel?: string;
   mirrorValue?: string;
+  locale?: string;
 }) {
   return (
     <div className="mb-4">
@@ -53,7 +65,7 @@ function FieldRow({
             from the linked record (empty renders as an em dash). */}
         {field.type === 'mirror'
           ? (mirrorValue ? mirrorValue : <span className="text-muted-foreground">—</span>)
-          : formatFieldValue(field, value, relationLabel)}
+          : formatFieldValue(field, value, relationLabel, locale)}
       </div>
     </div>
   );
@@ -66,12 +78,14 @@ function SectionPanel({
   record,
   relationLabels,
   mirrorValues,
+  locale,
 }: {
   section: LayoutSection;
   schema: ObjectSchema;
   record: UniformRecord;
   relationLabels: Record<string, string>;
   mirrorValues: Record<string, string>;
+  locale?: string;
 }) {
   const fieldMap = Object.fromEntries(schema.fields.map((f) => [f.key, f]));
 
@@ -88,7 +102,12 @@ function SectionPanel({
           {section.label}
         </div>
       )}
-      <div className={section.columns === 2 ? 'grid grid-cols-2 gap-x-6' : undefined}>
+      {/* A 2-column section is 2 columns only once there is room for two. Below
+          the sm breakpoint it stacks: two columns of label + value inside a
+          phone-width record page truncate the values, which is the one thing a
+          detail view exists to show. `col-span-full` still spans whatever the
+          current column count is, so full-width slots keep working. */}
+      <div className={section.columns === 2 ? 'grid grid-cols-1 gap-x-6 sm:grid-cols-2' : undefined}>
         {visibleFields.map((slot) => {
           const fullWidth = section.columns === 2 && slot.width === 'full';
           const field = fieldMap[slot.key];
@@ -99,6 +118,7 @@ function SectionPanel({
                 value={record.fields[slot.key]}
                 relationLabel={relationLabels[slot.key]}
                 mirrorValue={mirrorValues[slot.key]}
+                locale={locale}
               />
             </div>
           );
@@ -145,6 +165,7 @@ export default function ObjectDetailView({
   prefetchedAllTags,
   prefetchedRelationLabels,
   prefetchedMirrorValues,
+  locale,
 }: ObjectDetailViewProps) {
   const [relationLabels, setRelationLabels] = useState<Record<string, string>>(prefetchedRelationLabels ?? {});
   const [mirrorValues, setMirrorValues] = useState<Record<string, string>>(prefetchedMirrorValues ?? {});
@@ -325,6 +346,7 @@ export default function ObjectDetailView({
           record={record}
           relationLabels={relationLabels}
           mirrorValues={mirrorValues}
+          locale={locale}
         />
       ))}
       {otherSection && (
@@ -335,6 +357,7 @@ export default function ObjectDetailView({
           record={record}
           relationLabels={relationLabels}
           mirrorValues={mirrorValues}
+          locale={locale}
         />
       )}
 

@@ -1,14 +1,30 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
-import { Check, LayoutGrid, List, Plus, Search, Sparkles, Upload, X } from 'lucide-react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useNavigate, useSearchParams, Link } from 'react-router-dom';
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  Check,
+  LayoutGrid,
+  List,
+  Plus,
+  Search,
+  Sparkles,
+  Tag as TagIcon,
+  Trash2,
+  Upload,
+  X,
+} from 'lucide-react';
 import {
   getObjectSchema,
   listObjectRecordsUnified,
   getTags,
   getStages,
+  bulkContactAction,
   type ObjectSchema,
   type ObjectFieldDescriptor,
   type UniformRecord,
+  type RecordSort,
   type Tag,
 } from '../../lib/api';
 import { formatFieldValue } from './fieldHelpers';
@@ -16,6 +32,7 @@ import ObjectForm from './ObjectForm';
 import ObjectKanban from './ObjectKanban';
 import ImportModal from '../../components/contacts/ImportModal';
 import Modal from '../../components/common/Modal';
+import { useConfirm } from '../../components/common/ConfirmDialog';
 import {
   Button,
   EmptyState,
@@ -73,6 +90,36 @@ const RELATION_OPTION_CAP = 200;
 // cursor that never terminates cannot turn this into an endless fetch loop.
 const RELATION_MAX_PAGES = Math.ceil(RELATION_OPTION_CAP / RELATION_PAGE_SIZE);
 
+// ── URL state (R7.2) ────────────────────────────────────────────────────────
+//
+// Every knob that shapes the list lives in the query string, so a filtered view
+// survives reload and back/forward and can be pasted to a colleague. What is in
+// and what is out, and why:
+//
+//   in   q, f.<field>, tags, ai, view, sort_by, sort_order
+//   out  cursor      — opaque, and R4 made a stale one fail SOFT to page 1. A
+//                      URL-borne cursor would therefore be silently wrong: the
+//                      link's owner sees page 3, the recipient sees page 1 with
+//                      no indication anything was dropped. Refresh returning to
+//                      page 1 is the honest behaviour, not a regression.
+//   out  selection   — a link that pre-selects rows for a bulk delete is a
+//                      footgun, and selection is meaningless without the exact
+//                      page set that produced it (which `cursor` is not in).
+//   out  create/import panel — transient modals; deep-linking them was not asked
+//                      for and would make every share reopen a blank form.
+//
+// Relation filters are PREFIXED. The backend's own list route learned this the
+// hard way: any unreserved query param there becomes a jsonb field filter, so
+// reserved names and admin-defined field keys share one namespace. An object
+// with a field keyed `view` or `q` would otherwise fight the view toggle.
+const FILTER_PREFIX = 'f.';
+const SEARCH_DEBOUNCE_MS = 300;
+
+// One shared empty set, so "cleared" is always the same identity and clearing an
+// already-empty selection never re-renders the table for free. Typed readonly and
+// only ever replaced, never mutated.
+const EMPTY_SELECTION: ReadonlySet<string> = new Set<string>();
+
 // ObjectListView renders any object — system or custom — from its registry
 // schema: one table, one schema-driven filter bar, one search box, one
 // create/edit/detail slide-over. It is the component every object page now points
@@ -99,21 +146,127 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
   // renderer can tell "the org has no deals" apart from "we could not ask".
   const [loadError, setLoadError] = useState<unknown>(null);
   const [moreError, setMoreError] = useState<unknown>(null);
-  const [search, setSearch] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [panel, setPanel] = useState<Panel>(null);
   const [showImport, setShowImport] = useState(false);
+  // The ordering the SERVER says it applied, plus the keys it will accept. Read
+  // off every page rather than assumed, so an object that cannot sort simply
+  // renders no sort affordance (see api.ts RecordSort).
+  const [sortInfo, setSortInfo] = useState<RecordSort | null>(null);
 
   // CSV import is a contact-specific affordance (the bulk importer is contact-aware).
   const supportsImport = slug === 'contact';
 
-  // Filters (parity with the legacy pages): relation field key → selected id,
-  // tag ids (any-match), and a semantic toggle.
-  const [filters, setFilters] = useState<Record<string, string>>({});
-  const [tagIds, setTagIds] = useState<string[]>([]);
-  const [semantic, setSemantic] = useState(false);
-  const [relationOptions, setRelationOptions] = useState<Record<string, RelationOption[]>>({});
-  const [tags, setTags] = useState<Tag[]>([]);
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // Patch the query string while preserving sibling params, so search, filters,
+  // tags, sort and view never clobber one another. A null/'' value drops the key.
+  const updateParams = useCallback(
+    (patch: Record<string, string | null>, opts?: { replace?: boolean }) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          for (const [k, v] of Object.entries(patch)) {
+            if (v === null || v === '') next.delete(k);
+            else next.set(k, v);
+          }
+          return next;
+        },
+        { replace: opts?.replace },
+      );
+    },
+    [setSearchParams],
+  );
+
+  const q = (searchParams.get('q') ?? '').trim();
+  const semantic = searchParams.get('ai') === '1';
+  const view: 'table' | 'board' = searchParams.get('view') === 'board' ? 'board' : 'table';
+  const sortBy = searchParams.get('sort_by') ?? '';
+  const sortOrder: 'asc' | 'desc' = searchParams.get('sort_order') === 'asc' ? 'asc' : 'desc';
+
+  // Both derived sets are memoised off a STRING, not off `searchParams`, whose
+  // identity changes when any unrelated param does. Without that, toggling the
+  // board view would hand `filters` a new identity and refetch the whole list.
+  const tagsParam = searchParams.get('tags') ?? '';
+  const tagIds = useMemo(
+    () => tagsParam.split(',').map((s) => s.trim()).filter(Boolean),
+    [tagsParam],
+  );
+  // Serialised as JSON, not as a `k=v&k=v` string: a filter value is arbitrary
+  // text once a non-relation field becomes filterable, and a `&` or `=` inside one
+  // would re-split into two filters. JSON round-trips unambiguously, and sorting
+  // the keys first keeps the string stable under param reordering.
+  const filterQuery = useMemo(() => {
+    const keys: string[] = [];
+    searchParams.forEach((value, key) => {
+      if (key.startsWith(FILTER_PREFIX) && value) keys.push(key);
+    });
+    keys.sort();
+    const out: Record<string, string> = {};
+    for (const key of keys) out[key.slice(FILTER_PREFIX.length)] = searchParams.get(key) as string;
+    return JSON.stringify(out);
+  }, [searchParams]);
+  const filters = useMemo(() => JSON.parse(filterQuery) as Record<string, string>, [filterQuery]);
+
+  // ── Selection (R7.1) ──────────────────────────────────────────────────────
+  //
+  // Bulk actions are CONTACTS ONLY: /api/contacts/bulk-action is the app's one
+  // bulk surface, and RecordService deliberately has none (R7 cut it — R8.2 owns
+  // the real bulk-write design). So this is not "the list has bulk actions", it
+  // is "the contact list does".
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(EMPTY_SELECTION);
+  const clearSelection = useCallback(() => setSelectedIds(EMPTY_SELECTION), []);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkError, setBulkError] = useState<unknown>(null);
+  const [bulkNotice, setBulkNotice] = useState('');
+  const { confirm, dialog: confirmDialog } = useConfirm();
+
+  // The search box's debounce state. Declared here, above patchQuery, rather
+  // than down with the rest of the search-box code, because patchQuery has to be
+  // able to cancel a commit that is still in flight. Full design in the "Search
+  // box" section below.
+  const searchRef = useRef<HTMLInputElement>(null);
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const committedQ = useRef(q);
+
+  // Every query-shaping control goes through here, so "changing what the list
+  // shows clears the selection" is one rule in one place rather than a habit.
+  //
+  // It is also where a pending search debounce dies — but ONLY when the patch
+  // names `q`, and both halves of that are load-bearing:
+  //
+  //   - Cancelling in `clearFilters` alone would fix exactly one button. The
+  //     bug is not "Clear filters forgot something", it is "a control rewrote
+  //     `q` while a keystroke was still in flight", and the sync effect below
+  //     cannot cover for it: its guard (`q === committedQ.current`) is TRUE when
+  //     both are '', which is precisely the reproduction — clear with `?tags=…`
+  //     set and a term typed but not yet committed, and 300ms later the debounce
+  //     APPLIES a search the user pressed "clear" to get rid of. Any future
+  //     control that resets the search (a clear-search X in the box, a saved
+  //     view, a preset chip) would have to remember the same incantation.
+  //   - Cancelling unconditionally would be too broad in the other direction:
+  //     picking a filter or a tag mid-word would silently drop the term and
+  //     leave the box showing text that was never applied. A patch that does not
+  //     mention `q` has no opinion about the search, so it leaves it alone.
+  const patchQuery = useCallback(
+    (patch: Record<string, string | null>, opts?: { replace?: boolean }) => {
+      if ('q' in patch) {
+        clearTimeout(searchTimer.current);
+        const next = patch.q ?? '';
+        committedQ.current = next;
+        // Write the box back only when it actually disagrees. `commitSearch`
+        // lands here too, and rewriting the node's value mid-typing would jump
+        // the caret to the end; compared trimmed, because trimmed is what gets
+        // committed.
+        const box = searchRef.current;
+        if (box && box.value.trim() !== next) box.value = next;
+      }
+      updateParams(patch, opts);
+      clearSelection();
+      setBulkNotice('');
+      setBulkError(null);
+    },
+    [updateParams, clearSelection],
+  );
 
   // Relation fields the schema says we can filter on (a resolvable target object).
   const relationFields = useMemo(
@@ -127,19 +280,22 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
     () => (schema?.fields ?? []).find((f) => f.key === 'stage' && f.type === 'relation'),
     [schema],
   );
-  const [view, setView] = useState<'table' | 'board'>('table');
 
-  // Reset transient state when switching objects.
+  const [relationOptions, setRelationOptions] = useState<Record<string, RelationOption[]>>({});
+  const [tags, setTags] = useState<Tag[]>([]);
+
+  // Reset the state that is NOT in the URL when switching objects. Filters, q,
+  // tags, sort and view need no reset here: they live in the query string, and
+  // navigating to another object is a new path with its own (empty) search — the
+  // URL resets them for free, which is one of the quieter wins of R7.2.
   useEffect(() => {
     setSchema(null);
-    setSearch('');
-    setDebouncedSearch('');
     setPanel(null);
-    setFilters({});
-    setTagIds([]);
-    setSemantic(false);
     setRelationOptions({});
-    setView('table');
+    setSelectedIds(EMPTY_SELECTION);
+    setSortInfo(null);
+    setBulkNotice('');
+    setBulkError(null);
   }, [slug]);
 
   useEffect(() => {
@@ -239,22 +395,74 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
     [relationOptions],
   );
 
-  // Debounce the search box.
+  // ── Search box ────────────────────────────────────────────────────────────
+  //
+  // The URL is the source of truth for `q`, but the box is UNCONTROLLED and
+  // debounced into the URL — deliberately NOT WorkflowList's shape, which mirrors
+  // the URL back into React state with `setSearchInput(...)` inside an effect.
+  // That mirror is what this avoids: it is a set-state-in-effect (a warning the
+  // ratchet has no room for), and it leaves two effects racing — a back-navigation
+  // first re-arms the debounce with the STALE typed value, and is saved only by the
+  // mirror's re-render cancelling the timer a few microseconds later. Writing the
+  // URL on every keystroke instead would remove the mirror too, but Safari throttles
+  // history.replaceState to ~100 calls per 30s and then silently ignores them, which
+  // for a URL-controlled input means the box FREEZES mid-word.
+  //
+  // So: type → DOM (free, no React), debounce → URL, and one effect that pushes the
+  // URL back into the DOM node only when `q` changed for a reason that was not our
+  // own commit (back/forward, a deep link, an object switch).
+  //
+  // `searchRef` / `searchTimer` / `committedQ` are declared above patchQuery,
+  // which owns cancelling an in-flight commit and marking what was committed.
+
+  const commitSearch = useCallback(
+    (raw: string) => {
+      // patchQuery records this as the committed term and leaves the (already
+      // correct) box alone — one owner for `committedQ`, not two.
+      // replace: a keystroke is not a history entry.
+      patchQuery({ q: raw.trim() || null }, { replace: true });
+    },
+    [patchQuery],
+  );
+
+  // The debounce fires a callback captured at KEYSTROKE time, and `commitSearch`
+  // transitively closes over react-router's render-time params: v7 memoises
+  // `setSearchParams` on `location.search`, so even its functional form hands you
+  // the snapshot of the render that produced the setter, not the live one.
+  // Committing through a stale copy writes the OLD param set back and silently
+  // undoes whatever ran in between — toggle AI Search mid-word and `ai=1`
+  // disappears 300ms later. This ref always holds the newest, so a commit that
+  // survives an unrelated patch (which is the deliberate behaviour — see
+  // patchQuery) merges with it instead of clobbering it.
+  const commitRef = useRef(commitSearch);
   useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search), 300);
-    return () => clearTimeout(t);
-  }, [search]);
+    commitRef.current = commitSearch;
+  }, [commitSearch]);
+
+  useEffect(() => {
+    if (q === committedQ.current) return;
+    // The URL moved under us. Cancel any pending commit first — otherwise a
+    // debounce armed before a Back press lands after it and re-commits the term
+    // the user just navigated away from.
+    clearTimeout(searchTimer.current);
+    committedQ.current = q;
+    if (searchRef.current) searchRef.current.value = q;
+  }, [q]);
+
+  useEffect(() => () => clearTimeout(searchTimer.current), []);
 
   const listParams = useCallback(
     (cursor?: string) => ({
       limit: LIMIT,
-      q: debouncedSearch,
+      q,
       cursor,
       filters,
       tagIds,
       semantic: semantic && supportsSemantic,
+      sortBy: sortBy || undefined,
+      sortOrder: sortBy ? sortOrder : undefined,
     }),
-    [debouncedSearch, filters, tagIds, semantic, supportsSemantic],
+    [q, filters, tagIds, semantic, supportsSemantic, sortBy, sortOrder],
   );
 
   const fetchFirstPage = useCallback(async () => {
@@ -263,6 +471,7 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
       const page = await listObjectRecordsUnified(slug, listParams());
       setRecords(page.records);
       setNextCursor(page.next_cursor);
+      setSortInfo(page.sort ?? null);
       setLoadError(null);
       setMoreError(null);
     } catch (e) {
@@ -300,6 +509,9 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
         return fresh.length === 0 ? prev : [...prev, ...fresh];
       });
       setNextCursor(page.next_cursor);
+      // Re-read rather than trust page 1's copy: across a deploy that changed the
+      // sortable set, a header must not stay wired to a key the server dropped.
+      if (page.sort) setSortInfo(page.sort);
       setMoreError(null);
     } catch (e) {
       // Keep the rows we already have, but say why the button did nothing —
@@ -318,27 +530,63 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
   };
 
   const setFilter = (key: string, value: string) => {
-    setFilters((prev) => {
-      const next = { ...prev };
-      if (value) next[key] = value;
-      else delete next[key];
-      return next;
-    });
+    patchQuery({ [FILTER_PREFIX + key]: value || null });
   };
 
   const toggleTag = (id: string) => {
-    setTagIds((prev) => (prev.includes(id) ? prev.filter((t) => t !== id) : [...prev, id]));
+    const next = tagIds.includes(id) ? tagIds.filter((t) => t !== id) : [...tagIds, id];
+    patchQuery({ tags: next.join(',') || null });
   };
 
   const clearFilters = () => {
-    setFilters({});
-    setTagIds([]);
-    setSemantic(false);
-    setSearch('');
+    // `q: null` is what tells patchQuery to kill a search that is still inside
+    // its debounce window and blank the box — see the note there. Without that,
+    // "clear" could APPLY a filter 300ms later.
+    const cleared: Record<string, string | null> = { q: null, tags: null, ai: null };
+    for (const key of Object.keys(filters)) cleared[FILTER_PREFIX + key] = null;
+    // Sort survives: it is a view preference, not a filter, and wiping it would
+    // silently re-order the list the user is looking at.
+    patchQuery(cleared);
   };
 
   const hasActiveFilters =
-    Object.keys(filters).length > 0 || tagIds.length > 0 || semantic || !!search;
+    Object.keys(filters).length > 0 || tagIds.length > 0 || semantic || !!q;
+
+  // ── Sorting (R7.3) ────────────────────────────────────────────────────────
+  const sortableKeys = useMemo(() => new Set(sortInfo?.sortable ?? []), [sortInfo]);
+
+  const toggleSort = (key: string) => {
+    if (!sortableKeys.has(key)) return;
+    // A new column starts ascending; the active column flips. The active column
+    // is read from sortInfo (what the server ran), not from the URL, so a key the
+    // server rejected can never leave the arrow stuck on a dead header.
+    const nextOrder = sortInfo?.by === key && sortInfo.order === 'asc' ? 'desc' : 'asc';
+    patchQuery({ sort_by: key, sort_order: nextOrder });
+  };
+
+  const ariaSortFor = (key: string): 'ascending' | 'descending' | 'none' | undefined => {
+    if (!sortableKeys.has(key)) return undefined;
+    if (sortInfo?.by !== key) return 'none';
+    return sortInfo.order === 'asc' ? 'ascending' : 'descending';
+  };
+
+  const sortHeader = (key: string, label: string) => {
+    if (!sortableKeys.has(key)) return label;
+    const active = sortInfo?.by === key;
+    const Icon = !active ? ArrowUpDown : sortInfo?.order === 'asc' ? ArrowUp : ArrowDown;
+    return (
+      <button
+        type="button"
+        onClick={() => toggleSort(key)}
+        className={`-mx-1 inline-flex items-center gap-1 rounded px-1 py-0.5 text-xs font-medium uppercase tracking-wider transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+          active ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
+        }`}
+      >
+        {label}
+        <Icon aria-hidden className={`h-3 w-3 ${active ? '' : 'opacity-50'}`} />
+      </button>
+    );
+  };
 
   if (!schema) {
     return <SpinnerBlock label="Loading…" />;
@@ -350,6 +598,94 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
     : canCreate
       ? `No ${schema.label_plural.toLowerCase()} yet.`
       : `No ${schema.label_plural.toLowerCase()} to show.`;
+
+  // ── Bulk actions, contacts only ───────────────────────────────────────────
+  //
+  // The two verbs are gated INDEPENDENTLY, matching the server: the bulk endpoint
+  // multiplexes them and checks Delete for `delete` and Edit for `assign_tag`
+  // inside the usecase (80c240e). "Edit but not delete" is a shipped default role,
+  // so one combined gate would either hide tagging from a tagger or offer a delete
+  // that only 403s.
+  const supportsBulk = slug === 'contact';
+  const canBulkDelete = supportsBulk && canAccess(slug, 'delete');
+  const canBulkTag = supportsBulk && canAccess(slug, 'edit');
+  const showSelection = view === 'table' && (canBulkDelete || canBulkTag);
+
+  // The EFFECTIVE selection is the raw set INTERSECTED with what is on screen.
+  // That intersection is the safety property, not a tidiness one: a bulk call can
+  // only ever name rows the user can currently see, so a selection that outlived a
+  // filter change cannot delete records that scrolled out of the result set. The
+  // handlers below deliberately read this and never `selectedIds`.
+  const selectedRecords = records.filter((r) => selectedIds.has(r.id));
+  const allLoadedSelected = records.length > 0 && selectedRecords.length === records.length;
+
+  const toggleRow = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+    setBulkNotice('');
+  };
+
+  // "Select all" means all LOADED rows — the ones the checkbox column is drawn
+  // next to. There is no "select all matching": the count behind a filter is not
+  // known to the client, and a control that silently means "and the 900 you have
+  // not seen" is how bulk deletes go wrong.
+  const toggleAllLoaded = () => {
+    setSelectedIds(allLoadedSelected ? EMPTY_SELECTION : new Set(records.map((r) => r.id)));
+    setBulkNotice('');
+  };
+
+  const runBulk = async (fn: () => Promise<string>) => {
+    setBulkBusy(true);
+    setBulkError(null);
+    try {
+      const notice = await fn();
+      setBulkNotice(notice);
+    } catch (e) {
+      setBulkError(e);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    const ids = selectedRecords.map((r) => r.id);
+    if (ids.length === 0) return;
+    const noun = ids.length === 1 ? schema.label.toLowerCase() : schema.label_plural.toLowerCase();
+    // The app's dialog primitive, never confirm(): confirm() is unstyled, blocks
+    // the whole tab, and cannot say what is about to be destroyed.
+    const ok = await confirm({
+      title: `Delete ${ids.length} ${noun}?`,
+      body: `This removes ${ids.length === 1 ? 'the selected contact' : `all ${ids.length} selected contacts`} from your lists. Their lead-capture history and marketing-consent provenance are erased permanently and are not restored if the contact is undeleted.`,
+      confirmLabel: `Delete ${ids.length} ${noun}`,
+      tone: 'danger',
+    });
+    if (!ok) return;
+    await runBulk(async () => {
+      await bulkContactAction('delete', ids);
+      clearSelection();
+      // No toast: the durable feedback is the rows leaving the table. A refetch
+      // also re-derives the count and the cursor, which a local splice would not.
+      await fetchFirstPage();
+      return '';
+    });
+  };
+
+  const handleBulkTag = async (tagId: string) => {
+    const ids = selectedRecords.map((r) => r.id);
+    if (ids.length === 0 || !tagId) return;
+    const tagName = tags.find((t) => t.id === tagId)?.name ?? 'tag';
+    await runBulk(async () => {
+      const res = await bulkContactAction('assign_tag', ids, tagId);
+      // Tags are not a column here, so nothing on screen would change — which is
+      // exactly when a durable line beats a toast that vanishes before it is read.
+      // The selection is kept so a second tag can be applied to the same rows.
+      return `Tagged ${res.affected} ${res.affected === 1 ? 'contact' : 'contacts'} as ${tagName}.`;
+    });
+  };
 
   return (
     <div className="mx-auto w-full max-w-6xl">
@@ -370,7 +706,7 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
                 {(['table', 'board'] as const).map((v) => (
                   <button
                     key={v}
-                    onClick={() => setView(v)}
+                    onClick={() => updateParams({ view: v === 'board' ? 'board' : null })}
                     className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                       view === v ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'
                     }`}
@@ -418,8 +754,15 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
         <div className="relative w-72 max-w-full">
           <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            ref={searchRef}
+            defaultValue={q}
+            onChange={(e) => {
+              const value = e.target.value;
+              clearTimeout(searchTimer.current);
+              // Through the ref, never the captured `commitSearch` — see above.
+              searchTimer.current = setTimeout(() => commitRef.current(value), SEARCH_DEBOUNCE_MS);
+            }}
+            aria-label={`Search ${schema.label_plural.toLowerCase()}`}
             placeholder={semantic && supportsSemantic ? `Describe the ${schema.label.toLowerCase()} you want…` : `Search ${schema.label_plural.toLowerCase()}...`}
             className="pl-9"
           />
@@ -428,7 +771,7 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
         {supportsSemantic && (
           <Button
             variant="outline"
-            onClick={() => setSemantic((v) => !v)}
+            onClick={() => patchQuery({ ai: semantic ? null : '1' })}
             title="Toggle AI semantic search"
             className={semantic ? 'border-primary/40 bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary' : 'text-muted-foreground'}
           >
@@ -442,6 +785,7 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
             key={f.key}
             value={filters[f.key] ?? ''}
             onChange={(e) => setFilter(f.key, e.target.value)}
+            aria-label={`Filter by ${f.label}`}
             className="w-auto min-w-[10rem] max-w-[13rem]"
           >
             <option value="">All {f.label}</option>
@@ -468,6 +812,7 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
               <button
                 key={t.id}
                 onClick={() => toggleTag(t.id)}
+                aria-pressed={active}
                 className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                   active ? '' : 'border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground'
                 }`}
@@ -479,6 +824,58 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
             );
           })}
         </div>
+      )}
+
+      {/* Bulk action bar — only while something is selected. */}
+      {showSelection && selectedRecords.length > 0 && (
+        <div className="mb-3 flex flex-wrap items-center gap-2.5 rounded-xl border border-border bg-muted/40 px-3 py-2">
+          <span className="text-sm font-medium text-foreground">
+            {selectedRecords.length} selected
+          </span>
+          {canBulkTag && tags.length > 0 && (
+            <Select
+              value=""
+              disabled={bulkBusy}
+              onChange={(e) => handleBulkTag(e.target.value)}
+              aria-label="Assign a tag to the selected contacts"
+              className="w-auto min-w-[11rem]"
+            >
+              <option value="">Assign tag…</option>
+              {tags.map((t) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </Select>
+          )}
+          {canBulkDelete && (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={bulkBusy}
+              onClick={handleBulkDelete}
+              className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+            >
+              <Trash2 aria-hidden /> Delete
+            </Button>
+          )}
+          <Button variant="ghost" size="sm" disabled={bulkBusy} onClick={clearSelection} className="text-muted-foreground">
+            Clear selection
+          </Button>
+          {bulkNotice && (
+            <span role="status" className="inline-flex items-center gap-1.5 text-sm text-muted-foreground">
+              <TagIcon aria-hidden className="h-3.5 w-3.5" />
+              {bulkNotice}
+            </span>
+          )}
+        </div>
+      )}
+
+      {bulkError != null && (
+        <ErrorState
+          compact
+          title="Bulk action failed."
+          error={bulkError}
+          className="mb-3 max-w-xl"
+        />
       )}
 
       {/* Records table. The error branch comes FIRST: a failed request must not
@@ -507,19 +904,41 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
         <Table>
           <TableHeader>
             <TableRow className="hover:bg-transparent">
+              {showSelection && (
+                <TableHead className="w-10">
+                  {/* Absent while the skeletons are up: a "select all 0" control
+                      is not a thing anyone can mean. */}
+                  {records.length > 0 && (
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 cursor-pointer rounded border-input accent-primary"
+                      checked={allLoadedSelected}
+                      ref={(el) => {
+                        if (el) el.indeterminate = selectedRecords.length > 0 && !allLoadedSelected;
+                      }}
+                      onChange={toggleAllLoaded}
+                      aria-label={`Select all ${records.length} loaded ${schema.label_plural.toLowerCase()}`}
+                    />
+                  )}
+                </TableHead>
+              )}
               <TableHead className="w-16">#</TableHead>
               <TableHead>Name</TableHead>
               {columns.map((f) => (
-                <TableHead key={f.key}>{f.label}</TableHead>
+                <TableHead key={f.key} aria-sort={ariaSortFor(f.key)}>
+                  {sortHeader(f.key, f.label)}
+                </TableHead>
               ))}
-              <TableHead>Created</TableHead>
+              <TableHead aria-sort={ariaSortFor('created_at')}>
+                {sortHeader('created_at', 'Created')}
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {loading ? (
               Array.from({ length: 5 }).map((_, i) => (
                 <TableRow key={i}>
-                  {Array.from({ length: columns.length + 3 }).map((_, j) => (
+                  {Array.from({ length: columns.length + (showSelection ? 4 : 3) }).map((_, j) => (
                     <TableCell key={j}>
                       <Skeleton className="h-4 w-full max-w-[10rem]" />
                     </TableCell>
@@ -529,6 +948,17 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
             ) : (
               records.map((rec) => (
                 <TableRow key={rec.id} data-clickable="true" onClick={() => openRecord(rec)}>
+                  {showSelection && (
+                    <TableCell onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 cursor-pointer rounded border-input accent-primary"
+                        checked={selectedIds.has(rec.id)}
+                        onChange={() => toggleRow(rec.id)}
+                        aria-label={`Select ${rec.display || 'Untitled'}`}
+                      />
+                    </TableCell>
+                  )}
                   <TableCell className="whitespace-nowrap text-xs font-medium text-muted-foreground">
                     {rec.number || '—'}
                   </TableCell>
@@ -597,6 +1027,8 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
       >
         <ObjectForm schema={schema} onSaved={handleSaved} onCancel={closePanel} />
       </Modal>
+
+      {confirmDialog}
     </div>
   );
 }

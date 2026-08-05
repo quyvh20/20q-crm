@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, Users, Search, X, Plus, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, Users, Search, X, Plus, AlertCircle } from 'lucide-react';
 import { usePermissions } from '../../lib/auth';
 import AccessDeniedPanel from '../../components/common/AccessDeniedPanel';
+import { useToast } from '@/lib/useToast';
 import {
   Badge, Button, EmptyState, Input, PageHeader, SpinnerBlock,
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableShell,
@@ -41,23 +42,6 @@ const SegmentEditorPage: React.FC = () => {
 
 // ── shared chrome ──────────────────────────────────────────────────────────────
 
-function useToast() {
-  const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
-  const show = (msg: string, type: 'success' | 'error' = 'success') => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 4000);
-  };
-  const node = toast ? (
-    <div className="fixed right-4 top-4 z-50 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm font-medium text-foreground shadow-lg">
-      {toast.type === 'error'
-        ? <AlertCircle aria-hidden className="h-4 w-4 shrink-0 text-destructive" />
-        : <CheckCircle2 aria-hidden className="h-4 w-4 shrink-0 text-primary" />}
-      {toast.msg}
-    </div>
-  ) : null;
-  return { show, node };
-}
-
 function BackLink() {
   const navigate = useNavigate();
   return (
@@ -71,7 +55,7 @@ function BackLink() {
 // ── dynamic segment editor ───────────────────────────────────────────────────
 
 function DynamicEditor({ seg }: { seg: Segment }) {
-  const { show, node } = useToast();
+  const toast = useToast();
   const update = useUpdateSegment();
   const { data: fields = [], isLoading: fieldsLoading } = useSegmentFields();
   const { data: tags = [] } = useQuery<Tag[]>({ queryKey: ['tags'], queryFn: getTags, staleTime: 5 * 60_000 });
@@ -99,19 +83,18 @@ function DynamicEditor({ seg }: { seg: Segment }) {
   });
 
   const handleSave = () => {
-    if (!name.trim()) { show('Name is required', 'error'); return; }
+    if (!name.trim()) { toast.error('Name is required'); return; }
     update.mutate(
       { id: seg.id, input: { name: name.trim(), type: 'dynamic', definition: current.ast } },
       {
-        onSuccess: () => show('Audience saved'),
-        onError: (e) => show((e as Error).message || 'Failed to save', 'error'),
+        onSuccess: () => toast.show('Audience saved'),
+        onError: (e) => toast.error((e as Error).message || 'Failed to save'),
       },
     );
   };
 
   return (
     <div className="mx-auto w-full max-w-4xl">
-      {node}
       <BackLink />
       <PageHeader
         title="Edit segment"
@@ -194,7 +177,7 @@ function SamplePreview({ rows, loading, error }: { rows: SegmentContactRow[]; lo
 // ── static list editor ─────────────────────────────────────────────────────────
 
 function StaticEditor({ seg }: { seg: Segment }) {
-  const { show, node } = useToast();
+  const toast = useToast();
   const update = useUpdateSegment();
   const add = useAddStaticMembers(seg.id);
   const remove = useRemoveStaticMember(seg.id);
@@ -211,10 +194,10 @@ function StaticEditor({ seg }: { seg: Segment }) {
   });
 
   const handleSaveName = () => {
-    if (!name.trim()) { show('Name is required', 'error'); return; }
+    if (!name.trim()) { toast.error('Name is required'); return; }
     update.mutate(
       { id: seg.id, input: { name: name.trim(), type: 'static' } },
-      { onSuccess: () => show('Saved'), onError: (e) => show((e as Error).message || 'Failed to save', 'error') },
+      { onSuccess: () => toast.show('Saved'), onError: (e) => toast.error((e as Error).message || 'Failed to save') },
     );
   };
 
@@ -226,7 +209,6 @@ function StaticEditor({ seg }: { seg: Segment }) {
 
   return (
     <div className="mx-auto w-full max-w-4xl">
-      {node}
       <BackLink />
       <PageHeader
         title="Edit static list"
@@ -244,9 +226,9 @@ function StaticEditor({ seg }: { seg: Segment }) {
         onAdd={(contactId, label) => add.mutate([contactId], {
           onSuccess: (n) => {
             setAddedIds((prev) => new Set(prev).add(contactId));
-            show(n > 0 ? `Added ${label}` : `${label} is already on the list`);
+            toast.show(n > 0 ? `Added ${label}` : `${label} is already on the list`);
           },
-          onError: (e) => show((e as Error).message || 'Failed to add', 'error'),
+          onError: (e) => toast.error((e as Error).message || 'Failed to add'),
         })}
       />
 
@@ -277,8 +259,8 @@ function StaticEditor({ seg }: { seg: Segment }) {
                         className="text-destructive hover:text-destructive"
                         disabled={remove.isPending}
                         onClick={() => remove.mutate(c.id, {
-                          onSuccess: () => show('Removed'),
-                          onError: (e) => show((e as Error).message || 'Failed to remove', 'error'),
+                          onSuccess: () => toast.show('Removed'),
+                          onError: (e) => toast.error((e as Error).message || 'Failed to remove'),
                         })}>
                         <X aria-hidden className="h-4 w-4" />
                       </Button>

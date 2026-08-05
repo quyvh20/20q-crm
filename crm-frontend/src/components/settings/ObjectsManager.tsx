@@ -351,8 +351,10 @@ function FieldBuilder({ draft, setDraft, onAdd, editing, currentSlug, relations 
           </p>
         </div>
       )}
+      {/* Two dependent selects ("Via relation" then "Show which field"); they
+          need real width to show a field label, so they stack below sm. */}
       {isMirror && (
-        <div className="mt-2 grid grid-cols-2 gap-2">
+        <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
           <div>
             <Label className="text-xs text-muted-foreground">Via relation</Label>
             <Select
@@ -476,7 +478,10 @@ function CustomObjectForm({ editSlug, onDone, onCancel }: { editSlug?: string; o
 
       {tab === 'fields' ? (
         <>
-          <div className="mb-4 grid grid-cols-3 gap-3">
+          {/* Label / Slug / Plural Label — three text inputs whose placeholders
+              ("e.g. Projects") are already wider than a third of a narrow
+              settings pane. */}
+          <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div><Label className="mb-1 block text-[13px]">Label *</Label><Input value={label} onChange={e => onLabel(e.target.value)} placeholder="e.g. Project" /></div>
             <div><Label className="mb-1 block text-[13px]">Slug</Label><Input value={slug} onChange={e => setSlug(e.target.value)} disabled={!!editSlug} /></div>
             <div><Label className="mb-1 block text-[13px]">Plural Label</Label><Input value={labelPlural} onChange={e => setLabelPlural(e.target.value)} placeholder="e.g. Projects" /></div>

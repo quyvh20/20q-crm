@@ -111,6 +111,20 @@ describe('FormEmbedSetupCard', () => {
     expect(snippet).toContain('left:-9999px');
   });
 
+  it('reports a failed submit inline, never through a native alert()', () => {
+    // The snippet runs on the customer's site, so none of this app's UI — the
+    // toast store included — exists there. That is a reason to render the
+    // failure into their page, not a reason to keep alert(): a native dialog
+    // blocks the visitor's whole tab and looks nothing like the site it
+    // interrupts. Same shape as the thank-you note that is already generated.
+    renderCard(makeSource());
+    const snippet = screen.getByText((t) => t.includes('<form id="crm-lead-form">')).textContent ?? '';
+    expect(snippet).not.toContain('alert(');
+    expect(snippet).toContain('id="crm-lead-failed"');
+    expect(snippet).toContain('role="alert"');
+    expect(snippet).toContain('that did not send');
+  });
+
   it('warns loudly when no website is allowed yet — the state of every new form', () => {
     renderCard(makeSource({ allowed_origins: [] }));
     expect(screen.getByText(/No website is allowed to submit/i)).toBeInTheDocument();

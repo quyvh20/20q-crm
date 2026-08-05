@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { AlertCircle, CheckCircle2, ShieldCheck, Plus, Trash2, Tag, Pencil, X, Check } from 'lucide-react';
+import { AlertCircle, ShieldCheck, Plus, Trash2, Tag, Pencil, X, Check } from 'lucide-react';
 import { usePermissions } from '../../lib/auth';
 import AccessDeniedPanel from '../../components/common/AccessDeniedPanel';
+import { useConfirm } from '../../components/common/ConfirmDialog';
+import { useToast } from '@/lib/useToast';
 import {
   Badge, Button, EmptyState, Input, Label, PageHeader, SpinnerBlock, Textarea,
 } from '@/components/ui';
@@ -30,7 +32,7 @@ const SenderProfileContent: React.FC = () => {
   const { data: profile, isLoading, isError } = useSenderProfile();
   const saveMut = useSaveSenderProfile();
   const resumeMut = useResumeMarketing();
-  const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
+  const toast = useToast();
 
   // draft-over-server dirty tracking (WorkspaceGeneralSection pattern).
   const [draft, setDraft] = useState({ from_name: '', reply_to: '', physical_postal_address: '' });
@@ -52,11 +54,6 @@ const SenderProfileContent: React.FC = () => {
     draft.physical_postal_address !== profile.physical_postal_address
   );
 
-  const showToast = (msg: string, type: 'success' | 'error' = 'success') => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 4000);
-  };
-
   const save = () => {
     // Trim on submit (the backend trims too) and re-sync the draft to the saved,
     // server-normalized values on success — otherwise trailing whitespace the user
@@ -73,16 +70,16 @@ const SenderProfileContent: React.FC = () => {
           reply_to: saved.reply_to,
           physical_postal_address: saved.physical_postal_address,
         });
-        showToast('Sender profile saved');
+        toast.show('Sender profile saved');
       },
-      onError: (e) => showToast((e as Error).message || 'Failed to save', 'error'),
+      onError: (e) => toast.error((e as Error).message || 'Failed to save'),
     });
   };
 
   const resume = () => {
     resumeMut.mutate(undefined, {
-      onSuccess: () => showToast('Marketing resumed'),
-      onError: (e) => showToast((e as Error).message || 'Failed to resume', 'error'),
+      onSuccess: () => toast.show('Marketing resumed'),
+      onError: (e) => toast.error((e as Error).message || 'Failed to resume'),
     });
   };
 
@@ -106,15 +103,6 @@ const SenderProfileContent: React.FC = () => {
 
   return (
     <div className="mx-auto w-full max-w-3xl">
-      {toast && (
-        <div className="fixed right-4 top-4 z-50 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm font-medium text-foreground shadow-lg">
-          {toast.type === 'error'
-            ? <AlertCircle aria-hidden className="h-4 w-4 shrink-0 text-destructive" />
-            : <CheckCircle2 aria-hidden className="h-4 w-4 shrink-0 text-primary" />}
-          {toast.msg}
-        </div>
-      )}
-
       <PageHeader
         title="Sender profile"
         description="The from-identity and physical postal address included in every marketing email. Anti-spam law (CAN-SPAM, CASL) requires a real postal address — marketing sending stays blocked until it’s set."
@@ -161,12 +149,14 @@ const SenderProfileContent: React.FC = () => {
         </div>
       </div>
 
-      <TopicsSection onToast={showToast} />
+      <TopicsSection />
     </div>
   );
 };
 
-const TopicsSection: React.FC<{ onToast: (msg: string, type?: 'success' | 'error') => void }> = ({ onToast }) => {
+const TopicsSection: React.FC = () => {
+  const toast = useToast();
+  const { confirm, dialog } = useConfirm();
   const { data: topics, isLoading, isError } = useTopics();
   const createMut = useCreateTopic();
   const deleteMut = useDeleteTopic();
@@ -178,21 +168,30 @@ const TopicsSection: React.FC<{ onToast: (msg: string, type?: 'success' | 'error
     const n = name.trim();
     if (!n) return;
     createMut.mutate({ name: n, description: description.trim(), opt_in_default: optIn }, {
-      onSuccess: () => { setName(''); setDescription(''); setOptIn(false); onToast('Topic created'); },
-      onError: (e) => onToast((e as Error).message || 'Failed to create topic', 'error'),
+      onSuccess: () => { setName(''); setDescription(''); setOptIn(false); toast.show('Topic created'); },
+      onError: (e) => toast.error((e as Error).message || 'Failed to create topic'),
     });
   };
 
-  const remove = (t: MarketingTopic) => {
-    if (!confirm(`Delete the “${t.name}” topic? Existing opt-outs for it are kept.`)) return;
+  const remove = async (t: MarketingTopic) => {
+    const ok = await confirm({
+      title: 'Delete topic?',
+      body: `“${t.name}” is removed as a subscription category. Existing opt-outs for it are kept, so nobody who unsubscribed starts receiving mail again.`,
+      confirmLabel: 'Delete topic',
+      tone: 'danger',
+    });
+    if (!ok) return;
     deleteMut.mutate(t.id, {
-      onSuccess: () => onToast('Topic deleted'),
-      onError: (e) => onToast((e as Error).message || 'Failed to delete topic', 'error'),
+      onSuccess: () => toast.show('Topic deleted'),
+      onError: (e) => toast.error((e as Error).message || 'Failed to delete topic'),
     });
   };
 
   return (
     <div className="mt-8">
+      {/* Must be in the tree: without it confirm() never settles and remove()
+          waits on a promise nothing can resolve. */}
+      {dialog}
       <PageHeader
         title="Topics"
         description="Optional subscription categories recipients can opt out of individually. A topic’s default (opt-in vs opt-out) is fixed once it’s created."
@@ -236,7 +235,7 @@ const TopicsSection: React.FC<{ onToast: (msg: string, type?: 'success' | 'error
       ) : (
         <div className="space-y-2">
           {topics.map((t) => (
-            <TopicRow key={t.id} topic={t} onDelete={() => remove(t)} onToast={onToast} />
+            <TopicRow key={t.id} topic={t} onDelete={() => remove(t)} />
           ))}
         </div>
       )}
@@ -247,8 +246,8 @@ const TopicsSection: React.FC<{ onToast: (msg: string, type?: 'success' | 'error
 const TopicRow: React.FC<{
   topic: MarketingTopic;
   onDelete: () => void;
-  onToast: (msg: string, type?: 'success' | 'error') => void;
-}> = ({ topic, onDelete, onToast }) => {
+}> = ({ topic, onDelete }) => {
+  const toast = useToast();
   const updateMut = useUpdateTopic();
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(topic.name);
@@ -258,8 +257,8 @@ const TopicRow: React.FC<{
     const n = name.trim();
     if (!n) return;
     updateMut.mutate({ id: topic.id, name: n, description: description.trim() }, {
-      onSuccess: () => { setEditing(false); onToast('Topic updated'); },
-      onError: (e) => onToast((e as Error).message || 'Failed to update topic', 'error'),
+      onSuccess: () => { setEditing(false); toast.show('Topic updated'); },
+      onError: (e) => toast.error((e as Error).message || 'Failed to update topic'),
     });
   };
 

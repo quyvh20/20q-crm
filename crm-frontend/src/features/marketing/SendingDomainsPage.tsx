@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
-import { AlertCircle, CheckCircle2, Copy, Check, Globe, Plus, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react';
+import { AlertCircle, Copy, Check, Globe, Plus, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react';
 import { usePermissions } from '../../lib/auth';
 import AccessDeniedPanel from '../../components/common/AccessDeniedPanel';
+import { useConfirm } from '../../components/common/ConfirmDialog';
+import { useToast } from '@/lib/useToast';
 import {
   Badge, Button, EmptyState, Input, PageHeader, SpinnerBlock,
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableShell,
@@ -70,59 +72,54 @@ const SendingDomainsContent: React.FC = () => {
   const refreshMut = useRefreshDomain();
   const removeMut = useRemoveDomain();
   const [newDomain, setNewDomain] = useState('');
-  const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
+  const toast = useToast();
+  const { confirm, dialog } = useConfirm();
 
   const domains = data?.data ?? [];
   const canSend = data?.meta.can_bulk_send ?? false;
   const reason = data?.meta.reason ?? '';
 
-  const showToast = (msg: string, type: 'success' | 'error' = 'success') => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 4000);
-  };
-
   const handleAdd = () => {
     const domain = newDomain.trim();
     if (!domain) return;
     addMut.mutate({ domain }, {
-      onSuccess: () => { setNewDomain(''); showToast(`${domain} added — publish the DNS records below, then re-check.`); },
-      onError: (e) => showToast((e as Error).message || 'Failed to add domain', 'error'),
+      onSuccess: () => { setNewDomain(''); toast.show(`${domain} added — publish the DNS records below, then re-check.`); },
+      onError: (e) => toast.error((e as Error).message || 'Failed to add domain'),
     });
   };
 
   const handleRefresh = (d: EmailDomain) => {
     refreshMut.mutate(d.id, {
-      onSuccess: (updated) => showToast(updated.status === 'verified' ? `${d.domain} is verified 🎉` : `Re-checked ${d.domain} — status: ${updated.status}`),
-      onError: (e) => showToast((e as Error).message || 'Failed to re-check', 'error'),
+      onSuccess: (updated) => toast.show(updated.status === 'verified' ? `${d.domain} is verified` : `Re-checked ${d.domain} — status: ${updated.status}`),
+      onError: (e) => toast.error((e as Error).message || 'Failed to re-check'),
     });
   };
 
   const handleVerify = (d: EmailDomain) => {
     verifyMut.mutate(d.id, {
-      onSuccess: () => showToast(`Verification triggered for ${d.domain}. DNS checks can take up to 72h.`),
-      onError: (e) => showToast((e as Error).message || 'Failed to trigger verification', 'error'),
+      onSuccess: () => toast.show(`Verification triggered for ${d.domain}. DNS checks can take up to 72h.`),
+      onError: (e) => toast.error((e as Error).message || 'Failed to trigger verification'),
     });
   };
 
-  const handleRemove = (d: EmailDomain) => {
-    if (!confirm(`Remove ${d.domain}? Marketing sends from this domain will stop, and it is removed from Resend.`)) return;
+  const handleRemove = async (d: EmailDomain) => {
+    const ok = await confirm({
+      title: 'Remove sending domain?',
+      body: `Marketing sends from ${d.domain} will stop, and it is removed from Resend. You would have to re-add it and republish its DNS records to send from it again.`,
+      confirmLabel: 'Remove domain',
+      tone: 'danger',
+    });
+    if (!ok) return;
     removeMut.mutate(d.id, {
-      onSuccess: () => showToast(`${d.domain} removed`),
-      onError: (e) => showToast((e as Error).message || 'Failed to remove domain', 'error'),
+      onSuccess: () => toast.show(`${d.domain} removed`),
+      onError: (e) => toast.error((e as Error).message || 'Failed to remove domain'),
     });
   };
 
   return (
     <div className="mx-auto w-full max-w-5xl">
-      {toast && (
-        <div className="fixed right-4 top-4 z-50 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm font-medium text-foreground shadow-lg">
-          {toast.type === 'error'
-            ? <AlertCircle aria-hidden className="h-4 w-4 shrink-0 text-destructive" />
-            : <CheckCircle2 aria-hidden className="h-4 w-4 shrink-0 text-primary" />}
-          {toast.msg}
-        </div>
-      )}
-
+      {/* Must be in the tree: without it confirm() never settles. */}
+      {dialog}
       <PageHeader
         title="Sending domains"
         description="Verify a domain you own (SPF, DKIM, DMARC) so marketing email sends from your brand — not a shared platform address. Reputation is domain-first."

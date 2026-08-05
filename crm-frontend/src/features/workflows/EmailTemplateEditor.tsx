@@ -1,12 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { AlertCircle, ArrowLeft, CheckCircle2, Save, Send, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, Save, Send, AlertTriangle } from 'lucide-react';
 import { useEmailTemplate, useSaveEmailTemplate, useTestSendEmailTemplate } from './queries';
 import { useDocumentTitle } from '../../lib/useDocumentTitle';
 import { getWorkflowSchema } from './api';
 import { EmailTemplateBodyEditor, type VariableGroup } from './builder/config/EmailTemplateBodyEditor';
 import { Button, SpinnerBlock } from '@/components/ui';
+import { useToast } from '@/lib/useToast';
 
 // Meta scopes always resolvable regardless of the template's object scope.
 const META_SCOPES = new Set(['trigger', 'org', 'user', 'actions']);
@@ -44,7 +45,7 @@ export const EmailTemplateEditor: React.FC = () => {
   const [bodyJson, setBodyJson] = useState<unknown>(undefined);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
+  const toast = useToast();
 
   // Merge-tag catalog for the editor, scoped to the template's object (+ meta scopes).
   const variableGroups: VariableGroup[] = useMemo(() => {
@@ -74,11 +75,6 @@ export const EmailTemplateEditor: React.FC = () => {
     }
   }, [existing]);
 
-  const showToast = (msg: string, type: 'success' | 'error' = 'success') => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 4000);
-  };
-
   const markDirty = <T,>(setter: (v: T) => void) => (v: T) => {
     setter(v);
     setDirty(true);
@@ -96,7 +92,7 @@ export const EmailTemplateEditor: React.FC = () => {
         onSuccess: (tmpl) => {
           setDirty(false);
           if (isNew) navigate(`/workflows/email-templates/${tmpl.id}`, { replace: true });
-          else showToast('Template saved');
+          else toast.show('Template saved');
         },
         onError: (e) => setError((e as Error).message || 'Failed to save template'),
       },
@@ -106,8 +102,8 @@ export const EmailTemplateEditor: React.FC = () => {
   const handleTestSend = () => {
     if (isNew || !id) return;
     testSend.mutate(id, {
-      onSuccess: (r) => showToast(`Test email sent to ${r.to}`),
-      onError: (e) => showToast((e as Error).message || 'Failed to send test', 'error'),
+      onSuccess: (r) => toast.show(`Test email sent to ${r.to}`),
+      onError: (e) => toast.error((e as Error).message || 'Failed to send test'),
     });
   };
 
@@ -143,17 +139,6 @@ export const EmailTemplateEditor: React.FC = () => {
 
   return (
     <div className="mx-auto w-full max-w-3xl">
-      {toast && (
-        <div className="fixed right-4 top-4 z-50 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm font-medium text-foreground shadow-lg">
-          {toast.type === 'error' ? (
-            <AlertCircle aria-hidden className="h-4 w-4 shrink-0 text-destructive" />
-          ) : (
-            <CheckCircle2 aria-hidden className="h-4 w-4 shrink-0 text-primary" />
-          )}
-          {toast.msg}
-        </div>
-      )}
-
       <Button
         variant="ghost"
         size="sm"

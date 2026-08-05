@@ -2,12 +2,13 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import {
-  ArrowLeft, CheckCircle2, AlertCircle, Users, Filter, ListChecks,
+  ArrowLeft, AlertCircle, Users, Filter, ListChecks,
   Pause, Play, XCircle,
 } from 'lucide-react';
 import { usePermissions } from '../../lib/auth';
 import AccessDeniedPanel from '../../components/common/AccessDeniedPanel';
 import { useConfirm } from '../../components/common/ConfirmDialog';
+import { useToast } from '@/lib/useToast';
 import {
   Badge, Button, EmptyState, Input, PageHeader, Select, SpinnerBlock,
 } from '@/components/ui';
@@ -54,22 +55,10 @@ function BackLink() {
   );
 }
 
-function useToast() {
-  const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
-  const show = (msg: string, type: 'success' | 'error' = 'success') => { setToast({ msg, type }); setTimeout(() => setToast(null), 4000); };
-  const node = toast ? (
-    <div className="fixed right-4 top-4 z-50 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm font-medium text-foreground shadow-lg">
-      {toast.type === 'error' ? <AlertCircle aria-hidden className="h-4 w-4 shrink-0 text-destructive" /> : <CheckCircle2 aria-hidden className="h-4 w-4 shrink-0 text-primary" />}
-      {toast.msg}
-    </div>
-  ) : null;
-  return { show, node };
-}
-
 // ── editor (draft / scheduled) ──────────────────────────────────────────────
 
 function CampaignEditor({ campaign }: { campaign: Campaign }) {
-  const { show, node } = useToast();
+  const toast = useToast();
   const update = useUpdateCampaign();
   const launch = useLaunchCampaign();
   const { data: segments = [] } = useSegments();
@@ -118,7 +107,7 @@ function CampaignEditor({ campaign }: { campaign: Campaign }) {
   };
 
   const handleSave = () => {
-    if (!name.trim()) { show('Name is required', 'error'); return; }
+    if (!name.trim()) { toast.error('Name is required'); return; }
     update.mutate(
       { id: campaign.id, input: {
         name: name.trim(),
@@ -130,13 +119,13 @@ function CampaignEditor({ campaign }: { campaign: Campaign }) {
         ab_subject_b: abSubjectB,
         ab_test_window_hours: abWindowHours,
       } },
-      { onSuccess: () => { setDirty(false); show('Saved'); }, onError: (e) => show((e as Error).message || 'Failed to save', 'error') },
+      { onSuccess: () => { setDirty(false); toast.show('Saved'); }, onError: (e) => toast.error((e as Error).message || 'Failed to save') },
     );
   };
 
   const handleLaunch = () => {
     launch.mutate(campaign.id, {
-      onError: (e) => show((e as Error).message || 'Failed to launch', 'error'),
+      onError: (e) => toast.error((e as Error).message || 'Failed to launch'),
       // onSuccess: the detail query invalidates → status flips to sending → the page
       // re-renders as the live monitor automatically.
     });
@@ -149,7 +138,6 @@ function CampaignEditor({ campaign }: { campaign: Campaign }) {
 
   return (
     <div className="mx-auto w-full max-w-4xl">
-      {node}
       <BackLink />
       <PageHeader
         title="Edit campaign"
@@ -308,7 +296,7 @@ function AudienceCount({ estimate, empty }: { estimate: ReturnType<typeof useQue
 // ── monitor (sending / paused / sent / canceled) ────────────────────────────
 
 function CampaignMonitor({ campaign }: { campaign: Campaign }) {
-  const { show, node } = useToast();
+  const toast = useToast();
   const { confirm, dialog } = useConfirm();
   const active = isCampaignActive(campaign.status);
   useCampaignProgressStream(campaign.id, active);
@@ -330,12 +318,11 @@ function CampaignMonitor({ campaign }: { campaign: Campaign }) {
   const onCancel = async () => {
     const ok = await confirm({ title: 'Cancel campaign', body: 'Stop this campaign? Recipients not yet sent will not receive it.', confirmLabel: 'Cancel campaign', tone: 'danger' });
     if (!ok) return;
-    cancel.mutate(campaign.id, { onError: (e) => show((e as Error).message || 'Failed to cancel', 'error') });
+    cancel.mutate(campaign.id, { onError: (e) => toast.error((e as Error).message || 'Failed to cancel') });
   };
 
   return (
     <div className="mx-auto w-full max-w-4xl">
-      {node}
       {dialog}
       <BackLink />
       <PageHeader
@@ -363,12 +350,12 @@ function CampaignMonitor({ campaign }: { campaign: Campaign }) {
 
       <div className="mt-4 flex gap-2">
         {status === 'sending' && (
-          <Button variant="outline" onClick={() => pause.mutate(campaign.id, { onError: (e) => show((e as Error).message || 'Failed to pause', 'error') })} disabled={pause.isPending}>
+          <Button variant="outline" onClick={() => pause.mutate(campaign.id, { onError: (e) => toast.error((e as Error).message || 'Failed to pause') })} disabled={pause.isPending}>
             <Pause aria-hidden /> Pause
           </Button>
         )}
         {status === 'paused' && (
-          <Button variant="outline" onClick={() => resume.mutate(campaign.id, { onError: (e) => show((e as Error).message || 'Failed to resume', 'error') })} disabled={resume.isPending}>
+          <Button variant="outline" onClick={() => resume.mutate(campaign.id, { onError: (e) => toast.error((e as Error).message || 'Failed to resume') })} disabled={resume.isPending}>
             <Play aria-hidden /> Resume
           </Button>
         )}

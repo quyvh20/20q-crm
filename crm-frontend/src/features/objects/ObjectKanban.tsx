@@ -2,15 +2,22 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   DndContext,
   DragOverlay,
+  KeyboardCode,
+  KeyboardSensor,
   PointerSensor,
   useSensor,
   useSensors,
   useDraggable,
   useDroppable,
+  type Announcements,
+  type ClientRect,
   type DragStartEvent,
   type DragEndEvent,
+  type KeyboardCoordinateGetter,
+  type ScreenReaderInstructions,
+  type UniqueIdentifier,
 } from '@dnd-kit/core';
-import { LayoutGrid } from 'lucide-react';
+import { GripVertical, LayoutGrid } from 'lucide-react';
 import {
   getStages,
   listObjectRecordsUnified,
@@ -61,6 +68,70 @@ interface BoardState {
   truncated: boolean;
 }
 
+// Keyboard dragging (R7.6). `sortableKeyboardCoordinates` — the getter the
+// EmailBuilder uses and the one every dnd-kit guide reaches for — is a NO-OP on
+// this board: it bails unless `droppableContainers.get(active.id)` resolves, i.e.
+// unless the dragged item is itself a droppable (which is true in a sortable list
+// and false here, where the cards are draggables and only the COLUMNS are
+// droppables). Registering it would have shipped a sensor that never moves
+// anything. This getter is written for the board's actual shape instead.
+//
+// The unit of movement is a column, not 25px: Left/Right jump the card to the
+// centre of the adjacent column. Centring both axes is deliberate — columns are
+// content-height, so a card dragged from a long column at y=800 would otherwise
+// keep its y and intersect NOTHING over a short column, leaving `over` null and
+// the drop silently doing nothing.
+const stageKeyboardCoordinates: KeyboardCoordinateGetter = (event, { context }) => {
+  const direction =
+    event.code === KeyboardCode.Right ? 1 : event.code === KeyboardCode.Left ? -1 : 0;
+  if (direction === 0) return;
+  event.preventDefault();
+
+  const { collisionRect, droppableRects, droppableContainers } = context;
+  if (!collisionRect) return;
+
+  const columns: { id: UniqueIdentifier; rect: ClientRect }[] = [];
+  for (const container of droppableContainers.getEnabled()) {
+    if (!container || container.disabled) continue;
+    const rect = droppableRects.get(container.id);
+    if (rect) columns.push({ id: container.id, rect });
+  }
+  // Left-to-right, as the board reads. droppableContainers is keyed by id, and
+  // its iteration order is registration order — not board order.
+  columns.sort((a, b) => a.rect.left - b.rect.left);
+  if (columns.length === 0) return;
+
+  const centre = collisionRect.left + collisionRect.width / 2;
+  let at = 0;
+  let closest = Number.POSITIVE_INFINITY;
+  columns.forEach((column, i) => {
+    const distance = Math.abs(column.rect.left + column.rect.width / 2 - centre);
+    if (distance < closest) {
+      closest = distance;
+      at = i;
+    }
+  });
+
+  const next = columns[at + direction];
+  if (!next) return; // already at an end of the board: stay put
+
+  return {
+    x: next.rect.left + (next.rect.width - collisionRect.width) / 2,
+    // Never above the column's own top, however tall the card is.
+    y: next.rect.top + Math.max(0, (next.rect.height - collisionRect.height) / 2),
+  };
+};
+
+// What a screen reader is told when a card takes focus. It replaces dnd-kit's
+// default ("press space bar to pick up") because on this board Enter/Space mean
+// two different things depending on WHERE focus is — see KanbanCard.
+const boardInstructions: ScreenReaderInstructions = {
+  draggable:
+    'Press Enter or Space on a card to open the record. To move a card to another stage, ' +
+    'move focus to its Move button and press Enter or Space to pick the card up, then use ' +
+    'the left and right arrow keys to choose a stage, Enter or Space to drop, and Escape to cancel.',
+};
+
 const EMPTY_BOARD: BoardState = {
   stages: [],
   records: [],
@@ -89,7 +160,13 @@ export default function ObjectKanban({ schema, stageKey, onCardClick }: ObjectKa
   const { canAccess } = usePermissions();
   const canEdit = canAccess(schema.slug, 'edit');
 
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    // R7.6: the board was pointer-only, so a keyboard user could see the stages
+    // and never change one. The getter is board-shaped (see above); the activator
+    // lives on each card's Move button, not on the card.
+    useSensor(KeyboardSensor, { coordinateGetter: stageKeyboardCoordinates }),
+  );
 
   // Stages and records load INDEPENDENTLY, and each reports its own failure.
   // They used to be one Promise.all whose two .catch arms both returned [], so a
@@ -153,6 +230,36 @@ export default function ObjectKanban({ schema, stageKey, onCardClick }: ObjectKa
   }, [stages, records, stageKey]);
 
   const activeRecord = records.find((r) => r.id === activeId) || null;
+
+  // A keyboard drag is invisible: no cursor, no card following a pointer. The
+  // live region IS the feedback, so it has to name the card and the stage rather
+  // than dnd-kit's default "draggable item was moved over droppable area s2".
+  const announcements: Announcements = useMemo(() => {
+    const cardName = (id: UniqueIdentifier) =>
+      records.find((r) => r.id === id)?.display || 'Untitled';
+    const stageIdOfCard = (id: UniqueIdentifier) =>
+      String(records.find((r) => r.id === id)?.fields[stageKey] ?? '');
+    const stageName = (id: UniqueIdentifier | undefined) =>
+      stages.find((s) => s.id === id)?.name ?? 'no stage';
+
+    return {
+      onDragStart: ({ active }) =>
+        `Picked up ${cardName(active.id)}, in ${stageName(stageIdOfCard(active.id))}. Use the left and right arrow keys to choose a stage.`,
+      onDragOver: ({ active, over }) =>
+        over
+          ? `${cardName(active.id)} is over ${stageName(over.id)}.`
+          : `${cardName(active.id)} is not over a stage.`,
+      // "Moved to X" only when it actually moved: dropping a card back on the
+      // column it came from is the normal outcome of an arrow key that had
+      // nowhere to go, and announcing that as a move would be a lie.
+      onDragEnd: ({ active, over }) =>
+        over && String(over.id) !== stageIdOfCard(active.id)
+          ? `${cardName(active.id)} was moved to ${stageName(over.id)}.`
+          : `${cardName(active.id)} was dropped and stayed in ${stageName(stageIdOfCard(active.id))}.`,
+      onDragCancel: ({ active }) =>
+        `Move cancelled. ${cardName(active.id)} stayed in ${stageName(stageIdOfCard(active.id))}.`,
+    };
+  }, [records, stages, stageKey]);
 
   const handleDragStart = (e: DragStartEvent) => setActiveId(String(e.active.id));
 
@@ -219,7 +326,15 @@ export default function ObjectKanban({ schema, stageKey, onCardClick }: ObjectKa
   }
 
   return (
-    <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+    <DndContext
+      sensors={sensors}
+      accessibility={{ announcements, screenReaderInstructions: boardInstructions }}
+      onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
+      // Escape cancels a keyboard drag, which fires onDragCancel and NOT
+      // onDragEnd — without this the overlay card would be left on screen.
+      onDragCancel={() => setActiveId(null)}
+    >
       {/* Through the shared primitive, not a hand-rolled div: a failed MOVE is
           exactly as announceable as a failed LOAD, and only ErrorState carries
           role="alert". A silent snap-back is invisible to a screen reader. */}
@@ -294,18 +409,97 @@ function KanbanColumn({ stage, count, children }: { stage: PipelineStage; count:
 function KanbanCard({ record, schema, stageKey, disabled, onClick }: { record: UniformRecord; schema: ObjectSchema; stageKey: string; disabled: boolean; onClick: () => void }) {
   // dnd-kit's own disable: no listeners are attached and aria-disabled is set,
   // so the card stays a plain clickable link to the record page.
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: record.id, disabled });
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, isDragging } = useDraggable({ id: record.id, disabled });
+
+  // THE ENTER COLLISION, resolved. dnd-kit already ships `role="button"` and
+  // `tabIndex={0}` on every draggable, so cards were focusable before this
+  // change — but nothing was bound to Enter, so a keyboard user could focus a
+  // card and do precisely nothing with it. Both candidate bindings want the same
+  // key: the KeyboardSensor's activator is Enter/Space, and "Enter opens the
+  // record" is the obvious meaning of Enter on a focused card.
+  //
+  // Binding both to the card would make one of them unreachable (the sensor's
+  // handler calls preventDefault and returns true, so it wins and the card can
+  // never be opened from the keyboard). So they are bound to DIFFERENT elements,
+  // which is the repo's existing answer to this exact clash — BlockPalette strips
+  // dnd-kit's onKeyDown from its tiles for the same reason, keeping keyboard drag
+  // on dedicated handles:
+  //   - the CARD keeps Enter/Space = open the record (and the pointer activator,
+  //     so mouse users still drag from anywhere on it);
+  //   - a Move button carries the keyboard activator and is registered as the
+  //     activator node, so the sensor only ever starts from there.
+  //
+  // dnd-kit types its listeners as `Record<string, Function>`, so the activator
+  // needs a cast to be usable as a React handler.
+  const { onKeyDown, ...pointerListeners } = listeners ?? {};
+  const startKeyboardDrag = onKeyDown as React.KeyboardEventHandler<HTMLButtonElement> | undefined;
+
+  // WHERE dnd-kit's `attributes` GO, and why not on the draggable node.
+  //
+  // `attributes` carries `role="button"` + `tabIndex={0}`. Spread on the node
+  // `setNodeRef` points at — the obvious place, and dnd-kit's own examples —
+  // it puts the Move <button> INSIDE an element with role="button". That is
+  // invalid ARIA: role="button" takes no interactive content, and screen
+  // readers that flatten such a container never expose the inner control. The
+  // handle is the ONLY route into a keyboard drag, so the exact users R7.6 was
+  // built for would be the ones who cannot reach it. jsdom enforces no nesting
+  // rules, which is why the behavioural keyboard tests all passed over it.
+  //
+  // So the draggable node stays a PLAIN div and the button semantics move down
+  // onto an inner wrapper around the card body; the handle is that wrapper's
+  // SIBLING, not its child. Three things this keeps that moving the handle out
+  // of the draggable node entirely would have cost:
+  //   - the measured node is unchanged. dnd-kit measures `setNodeRef` for
+  //     collision detection, and that element is still the whole card (the
+  //     handle is absolutely positioned inside it), so the drop-target maths
+  //     and the DragOverlay rect are byte-identical to before.
+  //   - the pointer listeners stay on the whole card, so a mouse drag can still
+  //     start anywhere on it — including on the grip, which is what a grip
+  //     looks like it promises.
+  //   - the card body keeps `aria-disabled`/`aria-roledescription` from
+  //     `attributes`, so the read-only board still announces itself as one.
   return (
     <div
       ref={setNodeRef}
-      {...listeners}
-      {...attributes}
-      onClick={onClick}
-      className={`rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-        isDragging ? 'opacity-40' : ''
-      } ${disabled ? 'cursor-pointer' : 'cursor-grab'}`}
+      {...pointerListeners}
+      className={`group relative ${isDragging ? 'opacity-40' : ''} ${
+        disabled ? 'cursor-pointer' : 'cursor-grab'
+      }`}
     >
-      <KanbanCardBody record={record} schema={schema} stageKey={stageKey} />
+      <div
+        {...attributes}
+        onClick={onClick}
+        onKeyDown={(e) => {
+          // The handle is a sibling, so its Enter no longer bubbles through
+          // here at all. Kept as a guard against a future child: Enter on a
+          // control inside the card would mean that control, never "open".
+          if (e.target !== e.currentTarget) return;
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onClick();
+          }
+        }}
+        className="rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <KanbanCardBody record={record} schema={schema} stageKey={stageKey} />
+      </div>
+      {!disabled && (
+        <button
+          ref={setActivatorNodeRef}
+          type="button"
+          onKeyDown={startKeyboardDrag}
+          aria-label={`Move ${record.display || 'Untitled'} to another stage`}
+          // dnd-kit's instructions element, so the how-to is announced on the
+          // control that actually starts the drag.
+          aria-describedby={attributes['aria-describedby']}
+          // Hidden until the card is hovered or the handle is focused (the
+          // BlockPalette idiom) — but `focus:` as well as `focus-visible:`, since
+          // the handle is what a keyboard user Tabs to and it must appear then.
+          className="absolute right-1 top-1 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100"
+        >
+          <GripVertical aria-hidden className="h-3.5 w-3.5" />
+        </button>
+      )}
     </div>
   );
 }

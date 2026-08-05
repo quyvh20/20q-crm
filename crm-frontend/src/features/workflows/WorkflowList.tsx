@@ -1,9 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  AlertCircle,
   BarChart3,
-  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Copy,
@@ -20,6 +18,7 @@ import type { Workflow } from './types';
 import { TRIGGER_LABELS, STATUS_BADGE_VARIANT } from './types';
 import { useAuth, usePermissions } from '../../lib/auth';
 import AccessDeniedPanel from '../../components/common/AccessDeniedPanel';
+import { useConfirm } from '../../components/common/ConfirmDialog';
 import {
   Badge,
   Button,
@@ -29,15 +28,11 @@ import {
   PageHeader,
   SpinnerBlock,
 } from '@/components/ui';
-
-/** Optional actionable link rendered inside a toast (e.g. "View run"). */
-interface ToastAction {
-  label: string;
-  onClick: () => void;
-}
+import { useToast } from '@/lib/useToast';
 
 export const WorkflowList: React.FC = () => {
-  const [toast, setToast] = useState<{ message: string; type: 'error' | 'success'; action?: ToastAction } | null>(null);
+  const toast = useToast();
+  const { confirm, dialog } = useConfirm();
   const [runNowTarget, setRunNowTarget] = useState<Workflow | null>(null);
   const navigate = useNavigate();
   const { user, hasCapability } = useAuth();
@@ -93,16 +88,6 @@ export const WorkflowList: React.FC = () => {
     [setSearchParams],
   );
 
-  const showToast = (
-    message: string,
-    type: 'error' | 'success' = 'error',
-    action?: ToastAction,
-  ) => {
-    setToast({ message, type, action });
-    // Success toasts with an action stay a bit longer so the user can click through.
-    setTimeout(() => setToast(null), action ? 6000 : 3000);
-  };
-
   // Debounce the text box, then commit the trimmed term to the URL (?q=). Reset to
   // page 1 on a query change so results aren't hidden on a page the narrowed set no
   // longer has. replace:true keeps each keystroke out of the history stack.
@@ -125,14 +110,20 @@ export const WorkflowList: React.FC = () => {
   // rollback live in the hooks); the component only surfaces errors as a toast.
   const handleToggle = (wf: Workflow) => {
     toggleMutation.mutate(wf, {
-      onError: (e) => showToast((e as Error).message || 'Failed to toggle workflow', 'error'),
+      onError: (e) => toast.error((e as Error).message || 'Failed to toggle workflow'),
     });
   };
 
-  const handleDelete = (wf: Workflow) => {
-    if (!confirm(`Delete "${wf.name}"?`)) return;
+  const handleDelete = async (wf: Workflow) => {
+    const ok = await confirm({
+      title: 'Delete workflow?',
+      body: `"${wf.name}" and its run history are removed. Anything it was automating stops happening. This can't be undone.`,
+      confirmLabel: 'Delete workflow',
+      tone: 'danger',
+    });
+    if (!ok) return;
     deleteMutation.mutate(wf.id, {
-      onError: (e) => showToast((e as Error).message || 'Failed to delete workflow', 'error'),
+      onError: (e) => toast.error((e as Error).message || 'Failed to delete workflow'),
     });
   };
 
@@ -167,6 +158,9 @@ export const WorkflowList: React.FC = () => {
 
   return (
     <div className="mx-auto w-full max-w-6xl">
+      {/* Must be in the tree: without it confirm() never settles and handleDelete
+          waits on a promise nothing can resolve. */}
+      {dialog}
       {/* Run Now modal — opens for the targeted workflow, clears target on close */}
       {runNowTarget && (
         <RunNowModal
@@ -174,39 +168,14 @@ export const WorkflowList: React.FC = () => {
           onClose={() => setRunNowTarget(null)}
           onSuccess={(runId) => {
             const wf = runNowTarget;
-            showToast(
-              `Run started for "${wf.name}"`,
-              'success',
-              {
+            toast.show(`Run started for "${wf.name}"`, {
+              action: {
                 label: 'View run',
                 onClick: () => navigate(`/workflows/${wf.id}/history`, { state: { highlightRunId: runId } }),
               },
-            );
+            });
           }}
         />
-      )}
-
-      {/* Toast notification */}
-      {toast && (
-        <div className="fixed top-4 right-4 z-50 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm font-medium text-foreground shadow-lg transition-all animate-in slide-in-from-top-2">
-          {toast.type === 'error' ? (
-            <AlertCircle aria-hidden className="h-4 w-4 shrink-0 text-destructive" />
-          ) : (
-            <CheckCircle2 aria-hidden className="h-4 w-4 shrink-0 text-primary" />
-          )}
-          <span>{toast.message}</span>
-          {toast.action && (
-            <button
-              onClick={() => {
-                toast.action!.onClick();
-                setToast(null);
-              }}
-              className="whitespace-nowrap font-semibold text-primary underline underline-offset-2 transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              {toast.action.label}
-            </button>
-          )}
-        </div>
       )}
 
       {/* Header */}

@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, CheckCircle2, ShieldOff, Trash2, Plus } from 'lucide-react';
+import { ShieldOff, Trash2, Plus } from 'lucide-react';
 import { usePermissions } from '../../lib/auth';
 import AccessDeniedPanel from '../../components/common/AccessDeniedPanel';
+import { useConfirm } from '../../components/common/ConfirmDialog';
+import { useToast } from '@/lib/useToast';
 import {
   Badge, Button, EmptyState, ErrorState, Input, PageHeader, Select, SpinnerBlock,
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableShell,
@@ -54,7 +56,8 @@ const SuppressionListContent: React.FC = () => {
   const [reasonFilter, setReasonFilter] = useState('');
   const [newEmail, setNewEmail] = useState('');
   const [newReason, setNewReason] = useState('manual');
-  const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
+  const toast = useToast();
+  const { confirm, dialog } = useConfirm();
 
   // Debounce the search so the list doesn't query on every keystroke.
   useEffect(() => {
@@ -70,11 +73,6 @@ const SuppressionListContent: React.FC = () => {
   const rows = data?.data ?? [];
   const total = data?.meta.total ?? 0;
 
-  const showToast = (msg: string, type: 'success' | 'error' = 'success') => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 4000);
-  };
-
   const handleAdd = () => {
     const email = newEmail.trim();
     if (!email) return;
@@ -83,34 +81,31 @@ const SuppressionListContent: React.FC = () => {
       {
         onSuccess: (r) => {
           setNewEmail('');
-          showToast(r.already ? `${r.suppression.email} was already suppressed` : `${r.suppression.email} suppressed`);
+          toast.show(r.already ? `${r.suppression.email} was already suppressed` : `${r.suppression.email} suppressed`);
         },
-        onError: (e) => showToast((e as Error).message || 'Failed to add suppression', 'error'),
+        onError: (e) => toast.error((e as Error).message || 'Failed to add suppression'),
       },
     );
   };
 
-  const handleRemove = (s: Suppression) => {
-    if (!confirm(`Remove the suppression for ${s.email}? They may receive marketing email again.`)) return;
+  const handleRemove = async (s: Suppression) => {
+    const ok = await confirm({
+      title: 'Remove suppression?',
+      body: `${s.email} may receive marketing email again. Only do this if you have a lawful basis — removing a complaint or unsubscribe entry re-mails someone who asked you to stop.`,
+      confirmLabel: 'Remove suppression',
+      tone: 'danger',
+    });
+    if (!ok) return;
     removeMutation.mutate(s.id, {
-      onSuccess: () => showToast(`Suppression removed for ${s.email}`),
-      onError: (e) => showToast((e as Error).message || 'Failed to remove suppression', 'error'),
+      onSuccess: () => toast.show(`Suppression removed for ${s.email}`),
+      onError: (e) => toast.error((e as Error).message || 'Failed to remove suppression'),
     });
   };
 
   return (
     <div className="mx-auto w-full max-w-5xl">
-      {toast && (
-        <div className="fixed right-4 top-4 z-50 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm font-medium text-foreground shadow-lg">
-          {toast.type === 'error' ? (
-            <AlertCircle aria-hidden className="h-4 w-4 shrink-0 text-destructive" />
-          ) : (
-            <CheckCircle2 aria-hidden className="h-4 w-4 shrink-0 text-primary" />
-          )}
-          {toast.msg}
-        </div>
-      )}
-
+      {/* Must be in the tree: without it confirm() never settles. */}
+      {dialog}
       <PageHeader
         title="Suppression list"
         description="Addresses that must never receive marketing email — unsubscribes, complaints, bounces, and manual do-not-mail entries. Consulted live before every send."

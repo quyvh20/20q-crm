@@ -182,6 +182,12 @@ func (s *recordService) List(ctx context.Context, orgID uuid.UUID, slug string, 
 	}
 
 	in.Limit = limit
+	// Normalise the sort ONCE, here, so every adapter receives a key the object is
+	// known to support (or "") and none of them has to invent a fallback. This is
+	// also what makes the echoed RecordList.Sort truthful: it reports the ordering
+	// the query actually ran under, not the one the caller asked for.
+	in.SortBy, in.SortOrder = domain.NormalizeRecordSort(slug, in.SortBy, in.SortOrder)
+
 	var out *domain.RecordList
 	if a, ok := s.systemAdapters[slug]; ok {
 		recs, next, err := a.list(ctx, orgID, in)
@@ -204,6 +210,17 @@ func (s *recordService) List(ctx context.Context, orgID uuid.UUID, slug string, 
 		}
 	}
 	s.applyNumbers(ctx, orgID, slug, out.Records)
+	// Sort metadata rides every page, including page 2+: the client re-reads it on
+	// each response rather than caching it from page 1, so a "Load more" that lands
+	// after a deploy that changed the sortable set cannot leave a header wired to a
+	// key the server no longer honours.
+	if in.SortBy != "" {
+		out.Sort = &domain.RecordSort{
+			By:       in.SortBy,
+			Order:    in.SortOrder,
+			Sortable: domain.SortableRecordFields(slug),
+		}
+	}
 	return out, nil
 }
 

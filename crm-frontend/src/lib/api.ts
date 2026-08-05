@@ -351,6 +351,37 @@ export async function updateContact(id: string, data: Partial<Contact> & { tag_i
   return json.data as Contact;
 }
 
+export interface BulkActionResult {
+  affected: number;
+  message: string;
+}
+
+// POST /api/contacts/bulk-action — the one bulk surface in the app, contacts only.
+//
+// The endpoint MULTIPLEXES two verbs and gates them SEPARATELY inside the usecase
+// (80c240e): `delete` needs the contact object's Delete bit, `assign_tag` its Edit
+// bit, and the route's own gate is only a floor. So a caller that may edit but not
+// delete gets a 403 on `delete` and a 200 on `assign_tag` from the same URL — the
+// UI must gate the two buttons independently rather than treating "bulk actions"
+// as one permission.
+//
+// It is deliberately NOT generalised to other objects: RecordService has no bulk
+// surface, and inventing one here would put a delete-many path outside the
+// per-verb gate this endpoint just grew.
+export async function bulkContactAction(
+  action: 'delete' | 'assign_tag',
+  contactIds: string[],
+  tagId?: string,
+): Promise<BulkActionResult> {
+  const res = await apiFetch('/api/contacts/bulk-action', {
+    method: 'POST',
+    body: JSON.stringify({ action, contact_ids: contactIds, tag_id: tagId ?? null }),
+  });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Bulk action failed');
+  return json.data as BulkActionResult;
+}
+
 export async function importContacts(file: File, conflictMode: 'skip' | 'overwrite' = 'skip') {
   const formData = new FormData();
   formData.append('file', file);
@@ -1218,9 +1249,25 @@ export interface UniformRecord {
   updated_at: string;
 }
 
+// RecordSort is the ordering the server ACTUALLY applied, plus the menu of
+// orderings this object accepts (R7.3). It rides the list response rather than the
+// schema because `created_at` is sortable but is not a registry field, and because
+// an unsupported sort_by falls back server-side — so only the response can say
+// which column the rows are really ordered by.
+//
+// Absent entirely for objects that cannot be sorted (company, every custom
+// object). Absence is the signal to render no sort affordance at all.
+export interface RecordSort {
+  by: string;
+  order: 'asc' | 'desc';
+  /** Client-facing keys: registry field keys, plus the reserved 'created_at'. */
+  sortable: string[];
+}
+
 export interface RecordPage {
   records: UniformRecord[];
   next_cursor?: string;
+  sort?: RecordSort;
 }
 
 export async function listRegistryObjects(): Promise<ObjectSummary[]> {
@@ -1317,6 +1364,9 @@ export async function listObjectRecordsUnified(slug: string, params?: {
   tagIds?: string[];
   /** Switch to semantic/vector search (contacts). */
   semantic?: boolean;
+  /** A key from the previous response's `sort.sortable`; anything else is ignored server-side. */
+  sortBy?: string;
+  sortOrder?: 'asc' | 'desc';
 }): Promise<RecordPage> {
   const search = new URLSearchParams();
   if (params?.limit) search.set('limit', String(params.limit));
@@ -1324,9 +1374,14 @@ export async function listObjectRecordsUnified(slug: string, params?: {
   if (params?.cursor) search.set('cursor', params.cursor);
   if (params?.semantic) search.set('semantic', 'true');
   if (params?.tagIds?.length) search.set('tag_ids', params.tagIds.join(','));
+  if (params?.sortBy) search.set('sort_by', params.sortBy);
+  if (params?.sortOrder) search.set('sort_order', params.sortOrder);
+  // Filters go LAST and are set with the reserved keys already present, but the
+  // backend also reserves these names, so a field whose key collides simply is
+  // not filterable — see reservedListParams. Never let a filter overwrite one.
   if (params?.filters) {
     for (const [k, v] of Object.entries(params.filters)) {
-      if (v) search.set(k, v);
+      if (v && !search.has(k)) search.set(k, v);
     }
   }
   const qs = search.toString();
@@ -1334,7 +1389,7 @@ export async function listObjectRecordsUnified(slug: string, params?: {
   const json = await parseJsonSafe(res);
   if (!res.ok) throw apiError(res, json, 'Failed to fetch records');
   const page = (json.data || {}) as Partial<RecordPage>;
-  return { records: page.records || [], next_cursor: page.next_cursor };
+  return { records: page.records || [], next_cursor: page.next_cursor, sort: page.sort };
 }
 
 export async function getObjectRecordUnified(slug: string, id: string): Promise<UniformRecord> {

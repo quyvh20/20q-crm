@@ -123,7 +123,10 @@ export default function ImportModal({ onClose, onSuccess }: ImportModalProps) {
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
                 On duplicate email
               </p>
-              <div className="grid grid-cols-2 gap-2">
+              {/* Two icon+label buttons ("Skip duplicates" / "Overwrite
+                  existing"). Side by side in a phone-width modal each gets
+                  ~145px and the label wraps under its own icon. */}
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 <button
                   id="conflict-mode-skip"
                   onClick={() => setConflictMode('skip')}
@@ -194,7 +197,10 @@ export default function ImportModal({ onClose, onSuccess }: ImportModalProps) {
         ) : (
           /* Result summary */
           <div className="space-y-4">
-            <div className="grid grid-cols-3 gap-3">
+            {/* Created / Skipped / Errors result tiles: three padded cards with
+                a text-2xl count and a Badge each need more than a third of a
+                phone-width modal. */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <div className="rounded-xl border border-border bg-card p-4 text-center">
                 <p className="text-2xl font-bold text-foreground">{result.created}</p>
                 <Badge variant="success" className="mt-1">Created</Badge>

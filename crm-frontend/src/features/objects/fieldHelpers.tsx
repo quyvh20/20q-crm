@@ -7,6 +7,7 @@ import {
   type ObjectFieldDescriptor,
 } from '../../lib/api';
 import { recordPath } from './recordRoutes';
+import { formatDate, formatNumber } from '../../lib/format';
 import { Input, Select } from '@/components/ui';
 
 export interface RelationOption {
@@ -21,10 +22,22 @@ const PICKER_LIMIT = 10;
 // formatFieldValue renders a record's value for read-only display (list cells,
 // detail view). Relations show their resolved label when one is supplied, else
 // the raw id — system relations are resolved lazily by the caller.
+//
+// It is the ONE renderer for a schema field, so the locale-aware trio in
+// lib/format.ts is composed here rather than duplicated: this function decides
+// what a field LOOKS like (link, checkmark, em dash), and format.ts decides how
+// a number or a date is spelled in a given locale. There is no second formatter.
+// Money is deliberately not among them — ObjectFieldDescriptor has no "this
+// number is currency" flag, so a `number` field is grouped but never given a
+// currency symbol we'd be guessing at.
+//
+// `locale` is optional and threading it is the caller's choice: omitted, the
+// helpers use the runtime's locale, which is exactly the previous behaviour.
 export function formatFieldValue(
   field: ObjectFieldDescriptor,
   value: unknown,
   relationLabel?: string,
+  locale?: string,
 ) {
   if (value === null || value === undefined || value === '') {
     return <span className="text-muted-foreground">—</span>;
@@ -42,8 +55,16 @@ export function formatFieldValue(
           {String(value).replace(/^https?:\/\//, '').slice(0, 30)}
         </a>
       );
-    case 'date':
-      return new Date(String(value)).toLocaleDateString();
+    case 'date': {
+      // formatDate returns '' for an unparseable value rather than the literal
+      // string "Invalid Date", so a corrupt cell reads as empty like any other.
+      const shown = formatDate(value, { locale });
+      return shown || <span className="text-muted-foreground">—</span>;
+    }
+    case 'number':
+      // Was String(value), i.e. "1234567". Grouping separators are the whole
+      // point of a number field being a number field.
+      return formatNumber(value, { locale });
     case 'relation': {
       const label = relationLabel || String(value);
       // A resolvable target makes the value a link to that record. The pseudo

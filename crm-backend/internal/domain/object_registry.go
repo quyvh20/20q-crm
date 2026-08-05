@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -178,13 +179,19 @@ type UniformRecord struct {
 // "stage", "owner_user_id") to a UUID string; TagIDs filters by tag; Semantic
 // switches contacts to vector search. System objects translate these into their
 // typed filter structs; custom objects honour what they can and ignore the rest.
+// SortBy/SortOrder are the CLIENT vocabulary — a registry field key, or the
+// reserved "created_at" — and are meaningful only for the objects
+// SortableRecordFields declares. RecordService normalises them before any adapter
+// sees them, so an adapter never has to decide what an unknown sort key means.
 type RecordListInput struct {
-	Limit    int
-	Q        string
-	Cursor   string
-	Filters  map[string]string
-	TagIDs   []uuid.UUID
-	Semantic bool
+	Limit     int
+	Q         string
+	Cursor    string
+	Filters   map[string]string
+	TagIDs    []uuid.UUID
+	Semantic  bool
+	SortBy    string
+	SortOrder string
 }
 
 // RecordList is one page of uniform records plus an opaque forward cursor. An
@@ -192,6 +199,124 @@ type RecordListInput struct {
 type RecordList struct {
 	Records    []UniformRecord `json:"records"`
 	NextCursor string          `json:"next_cursor,omitempty"`
+	// Sort reports the ordering that was ACTUALLY applied plus the keys this
+	// object can be ordered by. It rides the list response rather than the schema
+	// for two reasons: the schema cannot express "created_at", which is not a
+	// registry field but is the default ordering and the most useful column to
+	// sort by; and after the whitelist fallback below, "what you asked for" and
+	// "what you got" can differ, which only the list response can tell you.
+	// nil for objects that cannot be sorted at all (every custom object).
+	Sort *RecordSort `json:"sort,omitempty"`
+}
+
+// RecordSort is the applied ordering plus the menu of orderings available.
+type RecordSort struct {
+	By    string `json:"by"`    // client key, e.g. "created_at", "value"
+	Order string `json:"order"` // "asc" | "desc"
+	// Sortable is every key this object accepts for `by`, in display order.
+	Sortable []string `json:"sortable"`
+}
+
+// ============================================================
+// Sortable columns (R7.3)
+// ============================================================
+//
+// Sorting a list is NOT free-form: the repositories reach a caller-supplied sort
+// key through a keyset whitelist (repository/keyset_cursor.go) that is both the
+// SQL-injection boundary and the place a column's NULL behaviour is decided. That
+// whitelist is a compile-time set, so the set of sortable columns is a
+// compile-time set too — it cannot be admin data, which is why this table lives
+// here and not in object_fields.
+//
+// Two vocabularies meet here, and conflating them is the trap:
+//
+//   - `key` is what the API and the UI speak: a REGISTRY FIELD key, so the client
+//     can hang a sort control off the column header it already renders, plus the
+//     reserved "created_at" for the record's creation time (not a field).
+//   - `filterKey` is what ContactFilter.SortBy / DealFilter.SortBy speak, i.e. the
+//     repository whitelist's own names. They are NOT the same: sorting contacts by
+//     the "first_name" column is spelled "name" there.
+//
+// Only contact and deal appear. Company is absent because CompanyFilter exposes no
+// SortBy at all (its repository hardwires newest-first), and custom objects are
+// absent because they page by OFFSET over a jsonb blob — neither can honour a sort
+// without new machinery, and a key advertised here that the storage layer ignores
+// would be a control that silently does nothing.
+type recordSortField struct {
+	key       string
+	filterKey string
+}
+
+var recordSortFields = map[string][]recordSortField{
+	"contact": {
+		{key: "created_at", filterKey: "created_at"},
+		{key: "first_name", filterKey: "name"},
+		{key: "email", filterKey: "email"},
+	},
+	"deal": {
+		{key: "created_at", filterKey: "created_at"},
+		{key: "title", filterKey: "title"},
+		{key: "value", filterKey: "value"},
+		{key: "probability", filterKey: "probability"},
+	},
+}
+
+// DefaultRecordSortBy is the ordering every list falls back to. It matches the
+// repositories' own defaultKey, so "no sort requested" and "sort by created_at"
+// are the same query rather than two orderings that merely look alike.
+const DefaultRecordSortBy = "created_at"
+
+// SortableRecordFields returns the client-facing sort keys for an object, in
+// display order. Empty (not nil-safe-to-mutate) for anything unsortable.
+func SortableRecordFields(slug string) []string {
+	defs := recordSortFields[slug]
+	if len(defs) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(defs))
+	for _, d := range defs {
+		out = append(out, d.key)
+	}
+	return out
+}
+
+// NormalizeRecordSort resolves a requested sort against what the object actually
+// supports. An unknown key, or any key at all on an unsortable object, falls back
+// rather than erroring: a sort is a view preference, and 400-ing a list because a
+// stale bookmark names a column that has since been removed would take the whole
+// page down over a cosmetic detail.
+//
+// Returning ("", "") means "this object has no sort" — the caller then leaves
+// RecordList.Sort nil and the UI renders no sort affordance.
+func NormalizeRecordSort(slug, sortBy, sortOrder string) (string, string) {
+	defs := recordSortFields[slug]
+	if len(defs) == 0 {
+		return "", ""
+	}
+	key := DefaultRecordSortBy
+	for _, d := range defs {
+		if d.key == sortBy {
+			key = d.key
+			break
+		}
+	}
+	order := "desc"
+	if strings.EqualFold(sortOrder, "asc") {
+		order = "asc"
+	}
+	return key, order
+}
+
+// RecordSortFilterKey translates a NORMALISED client sort key into the name the
+// object's typed filter struct uses. It returns "" for an unsortable object or an
+// unknown key, which every repository reads as "use your default ordering".
+func RecordSortFilterKey(slug, key string) string {
+	for _, d := range recordSortFields[slug] {
+		if d.key == key {
+			return d.filterKey
+		}
+	}
+	return ""
 }
 
 // RelatedList is one "reverse" relationship group on a record's page: every

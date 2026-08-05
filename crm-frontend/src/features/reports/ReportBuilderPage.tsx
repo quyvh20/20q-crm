@@ -10,6 +10,7 @@ import {
   type ReportDateBucket, type ReportFieldDescriptor, type ReportVisibility,
 } from '../../lib/api';
 import { useReportPreview, isRunnableConfig } from './useReportPreview';
+import { useConfirm } from '../../components/common/ConfirmDialog';
 import { Button } from '../../components/ui/button';
 import { Skeleton } from '../../components/ui/skeleton';
 import { usePermissions } from '../../lib/auth';
@@ -123,6 +124,8 @@ export default function ReportBuilderPage() {
     },
   });
 
+  const { confirm, dialog } = useConfirm();
+
   const deleteMutation = useMutation({
     mutationFn: () => deleteReport(existing!.id),
     onSuccess: () => {
@@ -173,6 +176,8 @@ export default function ReportBuilderPage() {
 
   return (
     <div className="mx-auto max-w-7xl space-y-4">
+      {/* Must be in the tree: without it confirm() never settles. */}
+      {dialog}
       {/* Header: name, visibility, save/export/delete */}
       <div className="flex flex-wrap items-center gap-2">
         <Button variant="ghost" onClick={() => navigate('/reports')} className="text-muted-foreground">
@@ -208,7 +213,15 @@ export default function ReportBuilderPage() {
         {existing && canDelete && (
           <Button
             variant="outline"
-            onClick={() => { if (window.confirm(`Delete report "${existing.name}"?`)) deleteMutation.mutate(); }}
+            onClick={async () => {
+              const ok = await confirm({
+                title: 'Delete report?',
+                body: `"${existing.name}" is removed for everyone it is shared with. This can't be undone.`,
+                confirmLabel: 'Delete report',
+                tone: 'danger',
+              });
+              if (ok) deleteMutation.mutate();
+            }}
             className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
           >
             Delete

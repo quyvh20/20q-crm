@@ -3,7 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import * as Sentry from '@sentry/react';
 import { AuthProvider, useAuth } from './lib/auth';
-import { Button, SpinnerBlock } from '@/components/ui';
+import { Button, SpinnerBlock, Toaster } from '@/components/ui';
 import { lazyRoute, lazyRouteNamed } from './lib/lazyRoute';
 import AppLayout from './AppLayout';
 
@@ -239,6 +239,16 @@ function App() {
     <Sentry.ErrorBoundary fallback={<AppErrorFallback />}>
       <BrowserRouter>
         <AuthProvider>
+          {/* R7.4: the toast viewport lives OUTSIDE this <Suspense> on purpose.
+              Every authenticated route is `<AppLayout><LazyPage/></AppLayout>`
+              under this one boundary, so navigating to a not-yet-loaded route
+              swaps the whole subtree — AppLayout included — for RouteFallback.
+              A viewport mounted in AppLayout would therefore be torn down
+              exactly when a "Saved" toast fired by the page you are leaving
+              still needs to be read. Toast STATE is module-level (lib/useToast)
+              and outlives this anyway; this keeps the DOM that renders it alive
+              too. Inside the router so router-aware toast actions stay legal. */}
+          <Toaster />
           <Suspense fallback={<RouteFallback />}>
           <Routes>
             {/* Public routes */}

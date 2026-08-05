@@ -23,7 +23,17 @@ interface Props {
   source: LeadSource;
 }
 
-/** buildSnippet generates the paste-in HTML + JS for this form's definition. */
+/**
+ * buildSnippet generates the paste-in HTML + JS for this form's definition.
+ *
+ * Everything below the `return` is a STRING that runs on the customer's own
+ * website, not in this app — so it gets no React, no `@/components/ui`, and in
+ * particular no `useToast`. That is why the submit failure is an inline
+ * `role="alert"` paragraph (the same shape as the existing thank-you note)
+ * rather than the `alert()` this used to raise: a native dialog blocks the
+ * visitor's whole page, cannot be styled to match the site it interrupts, and
+ * is the one thing R7.4 set out to remove from every surface we generate.
+ */
 function buildSnippet(source: LeadSource, endpoint: string): string {
   const form = source.config?.form;
   const fields = form?.fields ?? [];
@@ -66,13 +76,16 @@ ${inputs}${trap}${widget}
     <button type="submit">Send</button>
   </form>
   <p id="crm-lead-done" hidden>${thanks}</p>
+  <p id="crm-lead-failed" role="alert" hidden>Sorry — that did not send. Please try again.</p>
 
   <script>
   (function () {
     var form = document.getElementById('crm-lead-form');
     var done = document.getElementById('crm-lead-done');
+    var failed = document.getElementById('crm-lead-failed');
     form.addEventListener('submit', function (e) {
       e.preventDefault();
+      failed.hidden = true;
       var data = new FormData(form);
       var fields = {};
       data.forEach(function (v, k) { fields[k] = v; });
@@ -92,7 +105,7 @@ ${inputs}${trap}${widget}
         done.hidden = false;
       }).catch(function (err) {
         console.error(err);
-        alert('Sorry — that did not send. Please try again.');
+        failed.hidden = false;
       });
     });
   })();

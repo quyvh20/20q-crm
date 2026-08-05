@@ -10,6 +10,8 @@ import ShareRecordModal from '../components/records/ShareRecordModal';
 import Modal from '../components/common/Modal';
 import { usePermissions } from '../lib/auth';
 import { useDocumentTitle } from '../lib/useDocumentTitle';
+import { useWorkspaceFormat } from '../lib/useWorkspaceFormat';
+import { formatCurrency, formatDate } from '../lib/format';
 import { useState, useEffect } from 'react';
 import {
   ArrowLeft,
@@ -65,9 +67,65 @@ function probabilityVariant(probability: number): BadgeVariant {
   return probability >= 70 ? 'success' : probability >= 30 ? 'warning' : 'destructive';
 }
 
+// ── Deal scoring: what the API actually returns ─────────────────────────────
+//
+// `submitScoreDeal` is DECLARED as Promise<{ status: string; job_id: string }>
+// in lib/api.ts, and that declaration is wrong. The handler
+// (crm-backend internal/delivery/http/ai_handler.go, ScoreDeal) has two exits:
+//
+//   cache hit  → 200 { status: "completed",  result: {...} }   ← NO job_id
+//   enqueued   → 202 { status: "processing", job_id: "uuid" }  ← NO result
+//
+// so the declared type omits `result` entirely and promises a `job_id` that the
+// fast path never sends. The old `as any` at the call site made that mismatch
+// invisible: `res.result` type-checked against a shape that has no such field.
+// The union below is the real contract. lib/api.ts is owned by another stream,
+// so the fix lands here — read the response as `unknown` and NARROW it, rather
+// than asserting through `any`, which is also the only version that survives the
+// third failure mode: `result` is raw model output (worker/deal_scorer.go passes
+// the LLM's JSON straight through after a json.Valid check), so `factors` can be
+// missing or the wrong type, and `dealScore.factors.filter(...)` would throw.
+interface DealScore {
+  score: number;
+  factors: string[];
+  recommendation: string;
+}
+
+type ScoreDealResponse =
+  | { status: 'completed'; score: DealScore }
+  | { status: 'processing'; jobId: string };
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null;
+}
+
+/** Coerce a model-authored score payload into something safe to render. */
+function toDealScore(raw: unknown): DealScore | null {
+  if (!isRecord(raw)) return null;
+  const score = Number(raw.score);
+  return {
+    score: Number.isFinite(score) ? score : 0,
+    factors: Array.isArray(raw.factors) ? raw.factors.filter((f): f is string => typeof f === 'string') : [],
+    recommendation: typeof raw.recommendation === 'string' ? raw.recommendation : '',
+  };
+}
+
+/** Narrow a ScoreDeal response onto whichever branch the server actually took. */
+function parseScoreResponse(raw: unknown): ScoreDealResponse | null {
+  if (!isRecord(raw)) return null;
+  if (raw.status === 'completed') {
+    const score = toDealScore(raw.result);
+    return score ? { status: 'completed', score } : null;
+  }
+  return typeof raw.job_id === 'string' && raw.job_id
+    ? { status: 'processing', jobId: raw.job_id }
+    : null;
+}
+
 // ── Edit Deal Modal ─────────────────────────────────────────────
 function EditDealModal({ deal, onClose }: { deal: Deal; onClose: () => void }) {
   const queryClient = useQueryClient();
+  const fmt = useWorkspaceFormat();
   const [title, setTitle] = useState(deal.title);
   const [value, setValue] = useState(String(deal.value));
   const [probability, setProbability] = useState(deal.probability);
@@ -113,7 +171,7 @@ function EditDealModal({ deal, onClose }: { deal: Deal; onClose: () => void }) {
         </div>
 
         <div className="space-y-1.5">
-          <Label htmlFor="edit-deal-value" className="text-xs text-muted-foreground">Value ($)</Label>
+          <Label htmlFor="edit-deal-value" className="text-xs text-muted-foreground">Value ({fmt.currency})</Label>
           <Input
             id="edit-deal-value"
             type="number" min={0}
@@ -162,7 +220,7 @@ function EditDealModal({ deal, onClose }: { deal: Deal; onClose: () => void }) {
         <div className="rounded-lg bg-primary/10 px-4 py-2.5 flex items-center justify-between">
           <span className="text-xs text-muted-foreground">Expected Revenue preview</span>
           <span className="text-sm font-bold text-primary">
-            ${Math.round((parseFloat(value) || 0) * probability / 100).toLocaleString()}
+            {formatCurrency(Math.round((parseFloat(value) || 0) * probability / 100), fmt)}
           </span>
         </div>
       </div>
@@ -189,6 +247,8 @@ export default function DealDetailPage() {
   // access lacks edit/delete, instead of 403ing on click. Fails open while
   // permissions load; the server enforces every action regardless.
   const { canAccess } = usePermissions();
+  // Workspace currency/locale for every money and date label on this page (R7.7).
+  const fmt = useWorkspaceFormat();
   const canEditDeal = canAccess('deal', 'edit');
   const canDeleteDeal = canAccess('deal', 'delete');
   const [showDelete, setShowDelete] = useState(false);
@@ -208,7 +268,7 @@ export default function DealDetailPage() {
   const [showMeetingSummary, setShowMeetingSummary] = useState(false);
   const [scoreJobId, setScoreJobId] = useState<string | null>(null);
   const [scoreStatus, setScoreStatus] = useState<'idle' | 'processing' | 'done' | 'error'>('idle');
-  const [dealScore, setDealScore] = useState<any>(null);
+  const [dealScore, setDealScore] = useState<DealScore | null>(null);
 
   // SSE for Deal Score Job
   useEffect(() => {
@@ -217,7 +277,10 @@ export default function DealDetailPage() {
     const token = getAccessToken();
     if (!token) return;
 
-    const API_BASE = (import.meta as any).env?.VITE_API_URL ?? ((import.meta as any).env?.DEV ? 'http://localhost:8080' : '');
+    // `import.meta.env` is fully typed here — tsconfig.app.json puts "vite/client"
+    // in `types`, which is why lib/auth.tsx reads it with no cast either. The
+    // casts this replaces bought nothing and hid the optionality of the values.
+    const API_BASE = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8080' : '');
     const abort = new AbortController();
 
     const pullEvents = async () => {
@@ -246,10 +309,15 @@ export default function DealDetailPage() {
               const str = line.slice(6);
               if (str === '') continue;
               try {
-                const data = JSON.parse(str);
+                const data: unknown = JSON.parse(str);
+                if (!isRecord(data)) continue;
                 if (data.type === 'job_complete' && data.job_id === scoreJobId) {
-                  if (data.status === 'completed') {
-                    setDealScore(data.result);
+                  // Same normalisation as the cache-hit path: the worker returns
+                  // the model's JSON verbatim, so a missing `factors` array here
+                  // would take the render down with it.
+                  const score = data.status === 'completed' ? toDealScore(data.result) : null;
+                  if (score) {
+                    setDealScore(score);
                     setScoreStatus('done');
                   } else {
                     setScoreStatus('error');
@@ -261,8 +329,10 @@ export default function DealDetailPage() {
             }
           }
         }
-      } catch (e: any) {
-        if (e.name !== 'AbortError') setScoreStatus('error');
+      } catch (e) {
+        // The cleanup below aborts this fetch on unmount; that rejection is
+        // expected and must not flip the widget to "error".
+        if ((e instanceof Error ? e.name : '') !== 'AbortError') setScoreStatus('error');
       }
     };
     pullEvents();
@@ -273,13 +343,22 @@ export default function DealDetailPage() {
     if (!deal) return;
     setScoreStatus('processing');
     try {
-      const res = await submitScoreDeal(deal.id) as any;
+      // `unknown`, not `any`: it forces parseScoreResponse to actually establish
+      // which branch the server took instead of letting the wrong declared type
+      // through. A response matching neither branch is an error, not a silent
+      // `setScoreJobId(undefined)` that leaves the spinner running forever.
+      const raw: unknown = await submitScoreDeal(deal.id);
+      const res = parseScoreResponse(raw);
+      if (!res) {
+        setScoreStatus('error');
+        return;
+      }
       if (res.status === 'completed') {
-        setDealScore(res.result);
+        setDealScore(res.score);
         setScoreStatus('done');
         return;
       }
-      setScoreJobId(res.job_id);
+      setScoreJobId(res.jobId);
     } catch {
       setScoreStatus('error');
     }
@@ -538,11 +617,11 @@ export default function DealDetailPage() {
                   <div className="flex-1">
                     <h3 className="font-semibold text-foreground mb-2 border-b border-border pb-1">AI Recommendation</h3>
                     <p className="text-sm text-foreground mb-3">{dealScore.recommendation}</p>
-                    <div className="grid grid-cols-2 gap-3 text-xs">
+                    <div className="grid grid-cols-1 gap-3 text-xs sm:grid-cols-2">
                       <div>
                         <Badge variant="success" className="mb-1">Positives</Badge>
                         <ul className="space-y-1">
-                          {dealScore.factors.filter((f: string) => f.startsWith('+')).map((f: string, i: number) => (
+                          {dealScore.factors.filter((f) => f.startsWith('+')).map((f, i) => (
                             <li key={i} className="flex gap-1.5 items-start text-muted-foreground"><Check aria-hidden className="h-3 w-3 mt-0.5 shrink-0" /> <span>{f.substring(1).trim()}</span></li>
                           ))}
                         </ul>
@@ -550,7 +629,7 @@ export default function DealDetailPage() {
                       <div>
                         <Badge variant="destructive" className="mb-1">Risks</Badge>
                         <ul className="space-y-1">
-                          {dealScore.factors.filter((f: string) => f.startsWith('-')).map((f: string, i: number) => (
+                          {dealScore.factors.filter((f) => f.startsWith('-')).map((f, i) => (
                             <li key={i} className="flex gap-1.5 items-start text-muted-foreground"><X aria-hidden className="h-3 w-3 mt-0.5 shrink-0" /> <span>{f.substring(1).trim()}</span></li>
                           ))}
                         </ul>
@@ -561,11 +640,13 @@ export default function DealDetailPage() {
               </div>
             )}
 
-            {/* Value + Probability */}
-            <div className="grid grid-cols-3 gap-4 mb-6">
+            {/* Value + Probability. Three text-xl amounts share the row only
+                once there is width for them: at phone width "$1,234,567" in each
+                of three ~110px columns overflows its tile. */}
+            <div className="grid grid-cols-1 gap-4 mb-6 sm:grid-cols-3">
               <div className="rounded-lg bg-muted/30 p-3">
                 <p className="text-xs text-muted-foreground mb-1">Value</p>
-                <p className="text-xl font-bold">${deal.value.toLocaleString()}</p>
+                <p className="text-xl font-bold">{formatCurrency(deal.value, fmt)}</p>
               </div>
               <div className="rounded-lg bg-muted/30 p-3">
                 <p className="text-xs text-muted-foreground mb-1">Probability</p>
@@ -573,13 +654,13 @@ export default function DealDetailPage() {
               </div>
               <div className="rounded-lg bg-muted/30 p-3">
                 <p className="text-xs text-muted-foreground mb-1">Expected Revenue</p>
-                <p className="text-xl font-bold">${Math.round(deal.value * deal.probability / 100).toLocaleString()}</p>
+                <p className="text-xl font-bold">{formatCurrency(Math.round(deal.value * deal.probability / 100), fmt)}</p>
               </div>
             </div>
 
             {deal.expected_close_at && (
               <p className="text-sm text-muted-foreground mb-4">
-                Expected close: {new Date(deal.expected_close_at).toLocaleDateString()}
+                Expected close: {formatDate(deal.expected_close_at, { locale: fmt.locale })}
               </p>
             )}
 
@@ -673,7 +754,9 @@ export default function DealDetailPage() {
                   value={newTaskTitle}
                   onChange={e => setNewTaskTitle(e.target.value)}
                 />
-                <div className="grid grid-cols-3 gap-2">
+                {/* Due date + two selects: below sm these are ~90px each, too
+                    narrow for a date control or an assignee name, so they stack. */}
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                   <div>
                     <Label htmlFor="new-task-due" className="mb-1 block text-[10px] text-muted-foreground">Due Date</Label>
                     <Input

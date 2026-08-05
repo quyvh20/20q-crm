@@ -68,6 +68,8 @@ func (a *contactAdapter) list(ctx context.Context, orgID uuid.UUID, in domain.Re
 		OwnerUserID:   filterUUID(in.Filters, "owner_user_id"),
 		CustomFilters: customFilters(in.Filters, "company", "owner_user_id"),
 		TagIDs:        in.TagIDs,
+		SortBy:        domain.RecordSortFilterKey("contact", in.SortBy),
+		SortOrder:     in.SortOrder,
 	})
 	if err != nil {
 		return nil, "", err
@@ -219,6 +221,12 @@ type companyAdapter struct {
 
 func (a *companyAdapter) nativeKeys() map[string]bool { return companyNativeKeys }
 
+// in.SortBy is ignored here, and that is not an oversight: CompanyFilter carries no
+// SortBy field at all, and companySortColumns is a deliberate one-entry whitelist,
+// so newest-first is the only ordering the company repository can produce. Because
+// domain.recordSortFields declares nothing for "company", RecordService normalises
+// any requested sort to "" and leaves RecordList.Sort nil — the UI therefore offers
+// no company sort control, rather than one that quietly does nothing.
 func (a *companyAdapter) list(ctx context.Context, orgID uuid.UUID, in domain.RecordListInput) ([]domain.UniformRecord, string, error) {
 	companies, next, err := a.uc.List(ctx, orgID, domain.CompanyFilter{
 		Q:             in.Q,
@@ -337,6 +345,8 @@ func (a *dealAdapter) list(ctx context.Context, orgID uuid.UUID, in domain.Recor
 		CompanyID:     filterUUID(in.Filters, "company"),
 		OwnerUserID:   filterUUID(in.Filters, "owner_user_id"),
 		CustomFilters: customFilters(in.Filters, "stage", "contact", "company", "owner_user_id"),
+		SortBy:        domain.RecordSortFilterKey("deal", in.SortBy),
+		SortOrder:     in.SortOrder,
 	})
 	if err != nil {
 		return nil, "", err

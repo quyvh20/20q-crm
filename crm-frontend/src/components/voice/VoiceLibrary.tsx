@@ -14,6 +14,7 @@ import {
   type VoiceNote,
   type ExtractedContactUpdates,
 } from '../../lib/api';
+import { useToast } from '@/lib/useToast';
 import { Badge, type BadgeProps } from '../ui/badge';
 import { Button } from '../ui/button';
 import { EmptyState } from '../ui/empty-state';
@@ -64,6 +65,7 @@ function formatDate(iso: string) {
 }
 
 export default function VoiceLibrary({ contactId, dealId }: VoiceLibraryProps) {
+  const toast = useToast();
   const [notes, setNotes] = useState<VoiceNote[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -191,7 +193,7 @@ export default function VoiceLibrary({ contactId, dealId }: VoiceLibraryProps) {
       setConfirmDeleteId(null);
       if (expandedId === id) setExpandedId(null);
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Delete failed');
+      toast.error(err instanceof Error ? err.message : 'Delete failed');
     } finally {
       setDeletingId(null);
     }
@@ -203,7 +205,7 @@ export default function VoiceLibrary({ contactId, dealId }: VoiceLibraryProps) {
       await analyzeVoiceNote(id);
       setNotes((prev) => prev.map((n) => (n.id === id ? { ...n, status: 'pending' } : n)));
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Analysis failed to start');
+      toast.error(err instanceof Error ? err.message : 'Analysis failed to start');
     } finally {
       setAnalyzingId(null);
     }

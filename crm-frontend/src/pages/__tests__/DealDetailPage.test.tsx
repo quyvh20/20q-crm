@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { Deal, PipelineStage } from '../../lib/api';
@@ -19,6 +19,16 @@ vi.mock('../../lib/api', () => ({
   getUsers: vi.fn().mockResolvedValue([]),
   submitScoreDeal: vi.fn(),
   getAccessToken: vi.fn().mockReturnValue(null),
+  // R7.7: money and dates on this page render in the WORKSPACE's currency and
+  // locale, which useWorkspaceFormat reads from here. Without it the hook's
+  // queryFn would throw and the page would silently fall back to USD — the
+  // assertions below would still pass, which is exactly why it's pinned.
+  getCurrentWorkspace: vi.fn().mockResolvedValue({
+    id: 'o1', name: 'Acme', type: 'business',
+    currency: 'EUR', locale: 'de-DE', timezone: 'UTC',
+    member_count: 1, is_owner: true, require_two_factor: false,
+    created_at: '2026-01-01T00:00:00Z',
+  }),
 }));
 
 // Self-contained side panels (activity form, AI modals, voice notes) are out of
@@ -103,5 +113,28 @@ describe('DealDetailPage OLS gates', () => {
     // ("Qualification" also appears in the header status pill).
     expect(screen.getByText('Stage')).toBeInTheDocument();
     expect(screen.getAllByText('Qualification').length).toBeGreaterThan(0);
+  });
+});
+
+describe('DealDetailPage renders money in the workspace currency (R7.7)', () => {
+  // Intl uses U+00A0 between a de-DE amount and its symbol.
+  const norm = (s: string) => s.replace(/\s/g, ' ');
+  const eur = (n: number) =>
+    norm(new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(n));
+
+  it('formats Value and Expected Revenue as EUR/de-DE, not a hardcoded "$"', async () => {
+    renderPage();
+
+    await screen.findByText('Acme renewal');
+
+    // value 1000 → "1.000,00 €"; expected revenue 1000 × 50% → "500,00 €".
+    await waitFor(() => {
+      expect(screen.getByText((c) => norm(c) === eur(1000))).toBeInTheDocument();
+    });
+    expect(screen.getByText((c) => norm(c) === eur(500))).toBeInTheDocument();
+
+    // The old hardcoded rendering was "$1,000" / "$500" — neither may survive.
+    expect(screen.queryByText('$1,000')).not.toBeInTheDocument();
+    expect(screen.queryByText('$500')).not.toBeInTheDocument();
   });
 });

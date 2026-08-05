@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createDeal, getContacts, getCompanies, type PipelineStage, type Contact, type Company } from '../../lib/api';
 import DynamicCustomFields from '../common/DynamicCustomFields';
 import Modal from '../common/Modal';
+import { useWorkspaceFormat } from '../../lib/useWorkspaceFormat';
 import { Button, Input, Label, Select, Spinner } from '@/components/ui';
 
 interface DealFormModalProps {
@@ -14,6 +15,8 @@ interface DealFormModalProps {
 
 export default function DealFormModal({ isOpen, onClose, stages, defaultStageId }: DealFormModalProps) {
   const queryClient = useQueryClient();
+  // The amount is entered in the workspace's currency, so say which one (R7.7).
+  const fmt = useWorkspaceFormat();
   const [title, setTitle] = useState('');
   const [value, setValue] = useState('');
   const [probability, setProbability] = useState(50);
@@ -98,10 +101,13 @@ export default function DealFormModal({ isOpen, onClose, stages, defaultStageId 
                 />
               </div>
 
-              {/* Value + Probability */}
-              <div className="grid grid-cols-2 gap-3">
+              {/* Value + Probability. The modal is w-[calc(100%-2rem)] capped at
+                  max-w-lg, so on a phone these two share ~295px of content box —
+                  a number input beside a range slider, both unusable. Stack them
+                  below sm. */}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div>
-                  <Label className="mb-1 text-muted-foreground">Value ($)</Label>
+                  <Label className="mb-1 text-muted-foreground">Value ({fmt.currency})</Label>
                   <Input
                     type="number"
                     value={value}
@@ -137,8 +143,9 @@ export default function DealFormModal({ isOpen, onClose, stages, defaultStageId 
                 </Select>
               </div>
 
-              {/* Contact + Company */}
-              <div className="grid grid-cols-2 gap-3">
+              {/* Contact + Company — two <Select>s holding full names; same
+                  narrow-modal reasoning as the Value row above. */}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div>
                   <Label className="mb-1 text-muted-foreground">Contact</Label>
                   <Select
