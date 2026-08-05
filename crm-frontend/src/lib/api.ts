@@ -382,6 +382,17 @@ export async function bulkContactAction(
   return json.data as BulkActionResult;
 }
 
+// R9: 1:1 email from a record (contact, or a deal's linked contact).
+export async function sendOneToOneEmail(slug: 'contact' | 'deal', recordId: string, subject: string, bodyHTML: string): Promise<Activity> {
+  const res = await apiFetch('/api/email/send', {
+    method: 'POST',
+    body: JSON.stringify({ slug, record_id: recordId, subject, body_html: bodyHTML }),
+  });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Failed to send email');
+  return json.data as Activity;
+}
+
 // R8.3: duplicate detection + merge (contacts first).
 export interface DuplicateGroup {
   key: string;

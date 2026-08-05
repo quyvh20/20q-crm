@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { Copy, Loader2 } from 'lucide-react';
-import { composeEmail } from '../../lib/api';
+import { Copy, Loader2, Send } from 'lucide-react';
+import { composeEmail, sendOneToOneEmail } from '../../lib/api';
 import Modal from '../common/Modal';
 import { Button } from '../ui/button';
 
@@ -9,14 +9,55 @@ interface EmailComposerProps {
   dealId?: string;
   contactName?: string;
   onClose: () => void;
+  // Called after a successful send, so the parent can refresh its timeline.
+  onSent?: () => void;
 }
 
-export default function EmailComposer({ contactId, dealId, contactName, onClose }: EmailComposerProps) {
+// R9: dealId takes priority — a deal-scoped composer sends through the deal's
+// linked contact (and logs the activity on both), matching how the backend's
+// slug='deal' path resolves the recipient.
+function sendTarget(contactId?: string, dealId?: string): { slug: 'contact' | 'deal'; recordId: string } | null {
+  if (dealId) return { slug: 'deal', recordId: dealId };
+  if (contactId) return { slug: 'contact', recordId: contactId };
+  return null;
+}
+
+function escapeHTML(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+export default function EmailComposer({ contactId, dealId, contactName, onClose, onSent }: EmailComposerProps) {
   const [instruction, setInstruction] = useState('');
   const [tone, setTone] = useState('professional');
+  const [subject, setSubject] = useState('');
   const [output, setOutput] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState('');
+  const [isSending, setIsSending] = useState(false);
+  const [sendError, setSendError] = useState('');
+  const [sent, setSent] = useState(false);
+
+  const target = sendTarget(contactId, dealId);
+
+  // The draft is plain text (SSE token stream); the send endpoint wants HTML,
+  // so wrap each line in its own paragraph the same way the preview pane does.
+  const toHTML = (text: string) =>
+    text.split('\n').map((line) => `<p>${escapeHTML(line) || '&nbsp;'}</p>`).join('');
+
+  const handleSend = async () => {
+    if (!target) return;
+    setIsSending(true);
+    setSendError('');
+    try {
+      await sendOneToOneEmail(target.slug, target.recordId, subject, toHTML(output));
+      setSent(true);
+      onSent?.();
+    } catch (e) {
+      setSendError(e instanceof Error ? e.message : 'Failed to send email');
+    } finally {
+      setIsSending(false);
+    }
+  };
 
   const generateEmail = async () => {
     setIsGenerating(true);
@@ -73,6 +114,18 @@ export default function EmailComposer({ contactId, dealId, contactName, onClose 
         <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* Left: Inputs */}
           <div className="space-y-4">
+            {target && (
+              <div className="space-y-1.5">
+                <label className="text-sm font-semibold">Subject</label>
+                <input
+                  type="text"
+                  value={subject}
+                  onChange={(e) => setSubject(e.target.value)}
+                  placeholder="Email subject"
+                  className="w-full rounded-lg border border-input bg-muted/30 px-4 py-2.5 text-sm placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+              </div>
+            )}
             <div className="space-y-1.5">
               <label className="text-sm font-semibold">What is the goal of this email?</label>
               <textarea
@@ -148,10 +201,34 @@ export default function EmailComposer({ contactId, dealId, contactName, onClose 
           </div>
         </div>
 
-        <div className="px-6 py-4 bg-muted/30 border-t flex justify-end">
-          <Button variant="outline" onClick={onClose}>
-            Close
-          </Button>
+        <div className="px-6 py-4 bg-muted/30 border-t flex items-center justify-between gap-3">
+          <div className="text-sm">
+            {sent && <span className="text-emerald-600 dark:text-emerald-400">Sent.</span>}
+            {sendError && <span className="text-destructive">{sendError}</span>}
+          </div>
+          <div className="flex gap-3">
+            <Button variant="outline" onClick={onClose}>
+              Close
+            </Button>
+            {target && (
+              <Button
+                onClick={handleSend}
+                disabled={isSending || sent || !output.trim() || !subject.trim()}
+              >
+                {isSending ? (
+                  <>
+                    <Loader2 aria-hidden className="animate-spin" />
+                    Sending...
+                  </>
+                ) : (
+                  <>
+                    <Send aria-hidden />
+                    Send
+                  </>
+                )}
+              </Button>
+            )}
+          </div>
         </div>
       </>
     </Modal>

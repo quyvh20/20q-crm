@@ -11,10 +11,13 @@ import {
   getWorkspaceMembers,
   getUsers,
 } from '../../lib/api';
+import { Mail } from 'lucide-react';
 import { formatFieldValue } from './fieldHelpers';
 import RecordTags from './RecordTags';
 import RelatedLists from './RelatedLists';
 import TaskPanel from './TaskPanel';
+import EmailComposer from '../../components/ai/EmailComposer';
+import { Button } from '../../components/ui/button';
 
 interface ObjectDetailViewProps {
   schema: ObjectSchema;
@@ -171,6 +174,7 @@ export default function ObjectDetailView({
   const [relationLabels, setRelationLabels] = useState<Record<string, string>>(prefetchedRelationLabels ?? {});
   const [mirrorValues, setMirrorValues] = useState<Record<string, string>>(prefetchedMirrorValues ?? {});
   const [ownerName, setOwnerName] = useState('');
+  const [showEmailComposer, setShowEmailComposer] = useState(false);
   // Managed mode: the composite endpoint already resolved these server-side,
   // so the per-target fetches below are skipped.
   const managedLabels = prefetchedRelationLabels !== undefined;
@@ -370,6 +374,23 @@ export default function ObjectDetailView({
           record link), so this only renders for contacts — deals keep their
           own inline panel on DealDetailPage, companies get neither yet. */}
       {schema.slug === 'contact' && <TaskPanel contactId={record.id} />}
+
+      {/* 1:1 email (R9): contact-only here, same reasoning as TaskPanel above —
+          deals get it via DealDetailPage's own composer instance. */}
+      {schema.slug === 'contact' && (
+        <div className="mb-6">
+          <Button variant="outline" size="sm" onClick={() => setShowEmailComposer(true)}>
+            <Mail aria-hidden /> Send Email
+          </Button>
+          {showEmailComposer && (
+            <EmailComposer
+              contactId={record.id}
+              contactName={record.display}
+              onClose={() => setShowEmailComposer(false)}
+            />
+          )}
+        </div>
+      )}
 
       {/* Schema-driven reverse related lists (e.g. a Contact's Deals), derived
           from relation fields that point back at this record. */}

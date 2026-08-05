@@ -3076,6 +3076,14 @@ func main() {
 				func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
 			)
 			go marketing.StartSequenceFeeder(context.Background(), marketing.NewSequenceFeeder(marketingRepo, segmentUC, autoEngine, autoLogger))
+
+			// R9: 1:1 email from a record. Reuses the same guard/domain-resolver/rate
+			// limiter as the bulk lane, on ChannelTransactional (see oneoff.go).
+			oneToOneUC := marketing.NewOneToOneEmailUseCase(
+				db, marketingGuard, marketingDomainSvc, autoEngine, marketingSendLimiter,
+				contactRepo, dealRepo, authRepo, autoLogger,
+			)
+			marketing.NewOneToOneEmailHandler(oneToOneUC).RegisterRoutes(router, integrationsProtected)
 		}
 
 		// ── R1: marketing go-live preflight (read-only) ──────────────────────

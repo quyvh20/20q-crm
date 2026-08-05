@@ -221,6 +221,18 @@ func (e *Engine) SendMarketingEmail(ctx context.Context, to, subject, bodyHTML, 
 	return ex.sendEmailWithHeaders(ctx, "marketing-send", idempotencyKey, to, subject, bodyHTML, fromName, fromAddress, replyTo, cc, headers, tags)
 }
 
+// SendOneToOneEmail sends one TRANSACTIONAL email (R9: 1:1 email from a
+// record) with a caller-resolved From address/name and Reply-To, but no
+// List-Unsubscribe headers or tags — unlike SendMarketingEmail, this is never
+// bulk mail, so it carries none of the marketing-channel machinery.
+func (e *Engine) SendOneToOneEmail(ctx context.Context, to, subject, bodyHTML, fromName, fromAddress, replyTo, idempotencyKey string) (any, error) {
+	ex, ok := e.executors[ActionSendEmail].(*EmailExecutor)
+	if !ok || ex == nil {
+		return nil, fmt.Errorf("email executor is not configured")
+	}
+	return ex.sendEmailWithHeaders(ctx, "one-to-one-send", idempotencyKey, to, subject, bodyHTML, fromName, fromAddress, replyTo, nil, nil, nil)
+}
+
 // HydrateMarketingContext builds the per-recipient merge EvalContext for a bulk
 // send (B4 scope: contact + org + campaign, plus optional one-hop company). A bulk
 // blast is callerless with no run/deal/user, so it reuses only the contact + company

@@ -968,6 +968,7 @@ export default function DealDetailPage() {
           contactId={deal.contact_id}
           contactName={deal.contact ? `${deal.contact.first_name} ${deal.contact.last_name}` : undefined}
           onClose={() => setShowEmailComposer(false)}
+          onSent={() => queryClient.invalidateQueries({ queryKey: ['activities', id] })}
         />
       )}
 
