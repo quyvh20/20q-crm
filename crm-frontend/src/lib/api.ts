@@ -393,6 +393,13 @@ export async function sendOneToOneEmail(slug: 'contact' | 'deal', recordId: stri
   return json.data as Activity;
 }
 
+// R9: double-opt-in confirmation — admin-triggered per contact.
+export async function requestDoubleOptInConfirmation(contactId: string): Promise<void> {
+  const res = await apiFetch(`/api/marketing/consent/contacts/${contactId}/request-confirmation`, { method: 'POST' });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Failed to send confirmation');
+}
+
 // R8.3: duplicate detection + merge (contacts first).
 export interface DuplicateGroup {
   key: string;

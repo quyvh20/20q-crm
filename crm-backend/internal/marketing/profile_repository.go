@@ -84,6 +84,33 @@ func (r *Repository) SetMarketingStatus(ctx context.Context, orgID uuid.UUID, em
 	).Error
 }
 
+// PromoteDoubleOptIn is the confirm-endpoint's write: the subscriber clicked
+// the link, so the address is promoted to 'subscribed' and double_opt_in_at
+// is stamped (provenance — HasLawfulBasis reads marketing_status, not this
+// column, so the status write alone is what makes the address mailable).
+//
+// The WHERE guard on the conflict arm mirrors GrantLawfulBasis: an unsub or
+// GDPR-cleaned address must never be resurrected by a stale confirm link
+// (the confirmation email was sent before the opt-out, and the link can sit
+// in an inbox for months).
+func (r *Repository) PromoteDoubleOptIn(ctx context.Context, orgID uuid.UUID, emailNorm string) error {
+	emailNorm = emailutil.Normalize(emailNorm)
+	if orgID == uuid.Nil || emailNorm == "" {
+		return errors.New("marketing: org id and email required")
+	}
+	return r.db.WithContext(ctx).Exec(`
+		INSERT INTO contact_marketing_state (org_id, email_normalized, marketing_status, consent_basis, double_opt_in_at, created_at, updated_at)
+		VALUES (?, ?, 'subscribed', 'double_opt_in', NOW(), NOW(), NOW())
+		ON CONFLICT (org_id, email_normalized) DO UPDATE
+		  SET marketing_status = 'subscribed',
+		      consent_basis    = 'double_opt_in',
+		      double_opt_in_at = NOW(),
+		      updated_at       = NOW()
+		  WHERE contact_marketing_state.marketing_status NOT IN ('unsubscribed', 'cleaned')`,
+		orgID, emailNorm,
+	).Error
+}
+
 // ── marketing topics ─────────────────────────────────────────────────────────
 
 // CreateTopic inserts a new topic.

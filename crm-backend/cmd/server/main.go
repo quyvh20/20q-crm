@@ -2958,6 +2958,22 @@ func main() {
 		}
 		marketing.NewPublicUnsubHandler(marketingRepo, marketingTokens, integrationsIPLimiter, marketingOrgName, autoLogger).RegisterRoutes(router)
 
+		// ── R9: double-opt-in confirmation ─────────────────────────────────
+		// Reuses marketingUnsubRing (purpose-separated, see confirmtoken.go) —
+		// no new env var. Constructed here (send-transport-independent) so the
+		// public confirm endpoint works even before autoEngine exists below;
+		// SetSender wires the email transport once it does.
+		confirmTokens := marketing.NewConfirmTokenService(marketingUnsubRing)
+		doubleOptInGuard := marketing.NewSuppressionGuard(marketingRepo)
+		doubleOptInUC := marketing.NewDoubleOptInUseCase(
+			marketingRepo, confirmTokens, doubleOptInGuard, contactRepo, cfg.FrontendURL, marketingOrgName, autoLogger,
+		)
+		marketing.NewPublicConfirmHandler(doubleOptInUC, integrationsIPLimiter, marketingOrgName).RegisterRoutes(router)
+		marketing.NewDoubleOptInRequestHandler(doubleOptInUC).RegisterRoutes(router,
+			integrationsProtected,
+			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
+		)
+
 		// ── Email marketing (M4: Resend/Svix delivery webhook → auto-suppression +
 		// event ledger + complaint-rate auto-pause) ───────────────────────
 		// PUBLIC Svix-signed webhook on the bare router (no auth — the whsec_ signature
@@ -3084,6 +3100,10 @@ func main() {
 				contactRepo, dealRepo, authRepo, autoLogger,
 			)
 			marketing.NewOneToOneEmailHandler(oneToOneUC).RegisterRoutes(router, integrationsProtected)
+
+			// R9: double-opt-in confirmation emails share the transactional
+			// transport (SendTestEmail — same one-off seam the A5 test-send uses).
+			doubleOptInUC.SetSender(autoEngine)
 		}
 
 		// ── R1: marketing go-live preflight (read-only) ──────────────────────

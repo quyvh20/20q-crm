@@ -10,14 +10,16 @@ import {
   getStages,
   getWorkspaceMembers,
   getUsers,
+  requestDoubleOptInConfirmation,
 } from '../../lib/api';
-import { Mail } from 'lucide-react';
+import { Mail, MailCheck } from 'lucide-react';
 import { formatFieldValue } from './fieldHelpers';
 import RecordTags from './RecordTags';
 import RelatedLists from './RelatedLists';
 import TaskPanel from './TaskPanel';
 import EmailComposer from '../../components/ai/EmailComposer';
 import { Button } from '../../components/ui/button';
+import { useAuth } from '../../lib/auth';
 
 interface ObjectDetailViewProps {
   schema: ObjectSchema;
@@ -175,6 +177,8 @@ export default function ObjectDetailView({
   const [mirrorValues, setMirrorValues] = useState<Record<string, string>>(prefetchedMirrorValues ?? {});
   const [ownerName, setOwnerName] = useState('');
   const [showEmailComposer, setShowEmailComposer] = useState(false);
+  const { hasCapability } = useAuth();
+  const [confirmState, setConfirmState] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
   // Managed mode: the composite endpoint already resolved these server-side,
   // so the per-target fetches below are skipped.
   const managedLabels = prefetchedRelationLabels !== undefined;
@@ -378,10 +382,32 @@ export default function ObjectDetailView({
       {/* 1:1 email (R9): contact-only here, same reasoning as TaskPanel above —
           deals get it via DealDetailPage's own composer instance. */}
       {schema.slug === 'contact' && (
-        <div className="mb-6">
+        <div className="mb-6 flex flex-wrap items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => setShowEmailComposer(true)}>
             <Mail aria-hidden /> Send Email
           </Button>
+          {/* Double-opt-in (R9): admin-triggered invite to confirm marketing
+              consent — an admin cannot declare double-opt-in on a subscriber's
+              behalf, only ask them to confirm it themselves. */}
+          {hasCapability('marketing.manage') && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={confirmState === 'sending' || confirmState === 'sent'}
+              onClick={async () => {
+                setConfirmState('sending');
+                try {
+                  await requestDoubleOptInConfirmation(record.id);
+                  setConfirmState('sent');
+                } catch {
+                  setConfirmState('error');
+                }
+              }}
+            >
+              <MailCheck aria-hidden />
+              {confirmState === 'sent' ? 'Confirmation sent' : confirmState === 'error' ? 'Failed — retry' : 'Request marketing opt-in'}
+            </Button>
+          )}
           {showEmailComposer && (
             <EmailComposer
               contactId={record.id}

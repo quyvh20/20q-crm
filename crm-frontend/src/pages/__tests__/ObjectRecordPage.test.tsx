@@ -43,6 +43,8 @@ vi.mock('../../lib/auth', () => ({
     canAccess: (slug: string, action: string) => objectAccess[`${slug}.${action}`] ?? true,
     loaded: true,
   }),
+  // R9: ObjectDetailView's "Request marketing opt-in" button reads this.
+  useAuth: () => ({ hasCapability: () => false }),
 }));
 
 import {

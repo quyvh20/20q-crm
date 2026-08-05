@@ -16,6 +16,11 @@ const renderInRouter = (ui: ReactElement) => {
   );
 };
 
+// R9: the "Request marketing opt-in" button reads useAuth().hasCapability.
+vi.mock('../../../lib/auth', () => ({
+  useAuth: () => ({ hasCapability: () => false }),
+}));
+
 // Mock the API: ObjectDetailView resolves native relation FIELDS to labels via
 // getObjectRecordUnified, and embeds RecordRelations (which reads links/tags).
 vi.mock('../../../lib/api', () => ({

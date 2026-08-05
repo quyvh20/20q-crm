@@ -33,6 +33,7 @@ const VerifyEmailPage = lazyRoute(() => import('./pages/VerifyEmailPage'));
 const AuthCallbackPage = lazyRoute(() => import('./pages/AuthCallbackPage'));
 const AcceptInvitePage = lazyRoute(() => import('./pages/AcceptInvitePage'));
 const PreferenceCenterPage = lazyRoute(() => import('./features/marketing/PreferenceCenterPage'));
+const ConfirmSubscriptionPage = lazyRoute(() => import('./features/marketing/ConfirmSubscriptionPage'));
 const TermsPage = lazyRoute(() => import('./pages/legal/TermsPage'));
 const PrivacyPage = lazyRoute(() => import('./pages/legal/PrivacyPage'));
 const ChooseWorkspacePage = lazyRoute(() => import('./pages/ChooseWorkspacePage'));
@@ -274,6 +275,7 @@ function App() {
                 their own emailed unsubscribe link must still land here, not be bounced
                 to the dashboard. It calls only the public token endpoint. */}
             <Route path="/u/:token" element={<PreferenceCenterPage />} />
+            <Route path="/marketing/confirm/:token" element={<ConfirmSubscriptionPage />} />
 
             {/* Legal pages (U7.6): the fallback destinations for the signup
                 consent line when the operator hasn't pointed VITE_TERMS_URL /
