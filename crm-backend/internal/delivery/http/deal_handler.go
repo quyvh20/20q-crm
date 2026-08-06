@@ -324,6 +324,10 @@ func dealToMap(d *domain.Deal) map[string]any {
 	if d.StageID != nil {
 		m["stage_id"] = d.StageID.String()
 	}
+	// R9.3 — keep in step with dealAutomationMap and datefield_backfill.
+	if d.PipelineID != nil {
+		m["pipeline_id"] = d.PipelineID.String()
+	}
 	if d.OwnerUserID != nil {
 		m["owner_user_id"] = d.OwnerUserID.String()
 	}

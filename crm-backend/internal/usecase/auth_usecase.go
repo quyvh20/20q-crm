@@ -51,30 +51,27 @@ const (
 )
 
 type authUseCase struct {
-	authRepo    domain.AuthRepository
-	stageRepo   domain.PipelineStageRepository
-	cfg         *config.Config
-	oauthConfig *oauth2.Config
-	mailer      domain.Mailer
-	appEnv      string
+	authRepo  domain.AuthRepository
+	stageRepo domain.PipelineStageRepository
+	// pipelineRepo gives a newly registered org its default pipeline before its
+	// stages are seeded onto it (R9.3). Wired by SetPipelineRepository rather
+	// than the constructor so the many existing NewAuthUseCase call sites — and
+	// the unit tests that stub only the stage repo — keep compiling; nil is
+	// tolerated and simply skips seeding.
+	pipelineRepo domain.PipelineRepository
+	cfg          *config.Config
+	oauthConfig  *oauth2.Config
+	mailer       domain.Mailer
+	appEnv       string
 	// redisClient backs per-email login throttling and session-cache eviction on
 	// token_version bumps (P2). Nil in dev without Redis → those paths no-op.
 	redisClient *redis.Client
 }
 
-var defaultPipelineStages = []struct {
-	Name  string
-	Color string
-	IsWon bool
-	IsLost bool
-	Pos  int
-}{
-	{"Lead In",     "#6366F1", false, false, 0},
-	{"Qualified",   "#3B82F6", false, false, 1},
-	{"Proposal",    "#F59E0B", false, false, 2},
-	{"Negotiation", "#EF4444", false, false, 3},
-	{"Closed Won",  "#10B981", true,  false, 4},
-}
+// SetPipelineRepository wires the pipeline store used when seeding a new org's
+// default board. Called once at startup.
+func (uc *authUseCase) SetPipelineRepository(r domain.PipelineRepository) { uc.pipelineRepo = r }
+
 
 func NewAuthUseCase(repo domain.AuthRepository, stageRepo domain.PipelineStageRepository, cfg *config.Config, mailer domain.Mailer, appEnv string, redisClient *redis.Client) domain.AuthUseCase {
 	var oauthCfg *oauth2.Config
@@ -109,20 +106,41 @@ func NewAuthUseCase(repo domain.AuthRepository, stageRepo domain.PipelineStageRe
 	}
 }
 
+// seedDefaultStages gives a brand-new org its default pipeline and ladder.
+//
+// The ORG-WIDE emptiness check stays first and stays org-wide, deliberately —
+// unlike pipelineStageUseCase.SeedDefaults, which is per-pipeline. This runs
+// exactly once per org at registration, when "the org has any stages at all"
+// and "this org's default pipeline has stages" mean the same thing; and doing
+// the cheap count before touching the pipeline repository is what lets a test
+// neutralise the whole path with a stub count, without also needing a pipeline
+// repo wired to a live database.
 func (uc *authUseCase) seedDefaultStages(ctx context.Context, orgID uuid.UUID) {
-	// Only seed if no stages exist
-	count, err := uc.stageRepo.CountByOrg(ctx, orgID)
+	count, err := uc.stageRepo.CountByOrg(ctx, orgID, nil)
 	if err != nil || count > 0 {
 		return
 	}
-	for _, s := range defaultPipelineStages {
+	// Nil-tolerant: constructions that never register an org (scripts, unit
+	// tests) leave this unset, and a nil repo must not panic a registration.
+	if uc.pipelineRepo == nil {
+		return
+	}
+	pipeline, err := uc.pipelineRepo.EnsureDefault(ctx, orgID)
+	if err != nil || pipeline == nil {
+		return
+	}
+	// defaultStages is the single shared ladder (pipeline_stage_usecase.go).
+	// This used to be a second, divergent copy that had drifted — it carried
+	// IsLost while the other did not.
+	for _, s := range defaultStages {
 		stage := &domain.PipelineStage{
-			OrgID:    orgID,
-			Name:     s.Name,
-			Color:    s.Color,
-			Position: s.Pos,
-			IsWon:    s.IsWon,
-			IsLost:   s.IsLost,
+			OrgID:      orgID,
+			PipelineID: &pipeline.ID,
+			Name:       s.Name,
+			Color:      s.Color,
+			Position:   s.Pos,
+			IsWon:      s.IsWon,
+			IsLost:     s.IsLost,
 		}
 		_ = uc.stageRepo.Create(ctx, stage)
 	}

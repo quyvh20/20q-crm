@@ -110,8 +110,24 @@ func (r *reportRepository) ResolveGroupLabels(ctx context.Context, orgID uuid.UU
 
 	switch kind {
 	case "stage":
+		// R9.3: qualify with the board. Two pipelines may each have a "Closed
+		// Won", and the chart plots the label verbatim — unqualified, they render
+		// as two visually identical bars that cannot be told apart. The LEFT JOIN
+		// keeps a pre-backfill stage (no pipeline) resolving to its bare name
+		// rather than dropping out and rendering "(Unknown)".
 		err = r.db.WithContext(ctx).Raw(
-			`SELECT id, name AS label FROM pipeline_stages WHERE org_id = ? AND id IN ?`,
+			`SELECT s.id,
+			        CASE WHEN p.name IS NULL THEN s.name ELSE s.name || ' (' || p.name || ')' END AS label
+			 FROM pipeline_stages s
+			 LEFT JOIN pipelines p ON p.id = s.pipeline_id AND p.deleted_at IS NULL
+			 WHERE s.org_id = ? AND s.id IN ?`,
+			orgID, ids).Scan(&rows).Error
+	case "pipeline":
+		// Without this arm the default branch below treats "pipeline" as a
+		// CUSTOM OBJECT SLUG, finds nothing, and every group silently renders
+		// "(Unknown)" — no error anywhere.
+		err = r.db.WithContext(ctx).Raw(
+			`SELECT id, name AS label FROM pipelines WHERE org_id = ? AND id IN ?`,
 			orgID, ids).Scan(&rows).Error
 	case "user":
 		err = r.db.WithContext(ctx).Raw(

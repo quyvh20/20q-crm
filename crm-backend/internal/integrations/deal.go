@@ -306,7 +306,22 @@ func dealTitleFor(source *LeadSource, cfg DealConfig, fields map[string]any, now
 // A port rather than the repository so the ingest service keeps one reason to know
 // about stages: "is the configured one still real, and if not what is".
 type StageReader interface {
-	List(ctx context.Context, orgID uuid.UUID) ([]domain.PipelineStage, error)
+	// pipelineID nil means every stage in the org — which is what the liveness
+	// check below wants, since a configured stage may sit on any board.
+	List(ctx context.Context, orgID uuid.UUID, pipelineID *uuid.UUID) ([]domain.PipelineStage, error)
+}
+
+// PipelineReader resolves the org's DEFAULT board (R9.3).
+//
+// It exists so the "configured stage is gone" fallback lands somewhere defined
+// instead of on whichever stage happens to sort first across every pipeline —
+// which, once an org has more than one board, is an arbitrary choice that files
+// inbound leads onto an unrelated team's pipeline and tells the customer it did.
+//
+// Nil-tolerant: an unset reader falls back to the old org-wide first stage,
+// which is exactly correct for a single-pipeline org.
+type PipelineReader interface {
+	GetDefault(ctx context.Context, orgID uuid.UUID) (*domain.Pipeline, error)
 }
 
 // stageOutcome is what stage resolution decided, and what to tell the customer.
@@ -334,11 +349,14 @@ type stageOutcome struct {
 //   - The stage is confirmed GONE → fall back to the first live stage and SAY SO.
 //     A deal in the wrong column that announces itself is triageable; a silent one
 //     is not.
-func resolveDealStage(ctx context.Context, stages StageReader, orgID uuid.UUID, cfg DealConfig) stageOutcome {
+func resolveDealStage(ctx context.Context, stages StageReader, pipelines PipelineReader, orgID uuid.UUID, cfg DealConfig) stageOutcome {
 	if stages == nil {
 		return stageOutcome{StageID: cfg.StageID}
 	}
-	live, err := stages.List(ctx, orgID)
+	// Liveness is checked against EVERY stage in the org: the configured stage
+	// may legitimately sit on a non-default board, and scoping this lookup would
+	// declare it dead and re-file the deal.
+	live, err := stages.List(ctx, orgID, nil)
 	if err != nil {
 		return stageOutcome{StageID: cfg.StageID} // unknown, never "it is gone"
 	}
@@ -349,18 +367,28 @@ func resolveDealStage(ctx context.Context, stages StageReader, orgID uuid.UUID, 
 			}
 		}
 	}
-	// Configured stage is gone (or was never set). Fall back to the first stage by
-	// position — List already orders by position ASC.
-	if len(live) == 0 {
+	// Configured stage is gone (or was never set). The fallback is the first
+	// stage of the org's DEFAULT pipeline, not of the org-wide list: with
+	// several boards, "first by position across all of them" is arbitrary and
+	// would drop inbound leads onto an unrelated team's pipeline.
+	fallback := live
+	if pipelines != nil {
+		if def, derr := pipelines.GetDefault(ctx, orgID); derr == nil && def != nil {
+			if scoped, serr := stages.List(ctx, orgID, &def.ID); serr == nil && len(scoped) > 0 {
+				fallback = scoped
+			}
+		}
+	}
+	if len(fallback) == 0 {
 		return stageOutcome{Note: "this deal has no stage: the pipeline has no stages"}
 	}
-	first := live[0].ID
+	first := fallback[0].ID
 	if cfg.StageID == nil {
 		return stageOutcome{StageID: &first}
 	}
 	return stageOutcome{
 		StageID: &first,
-		Note:    "the stage this source was configured with no longer exists; the deal went to " + live[0].Name,
+		Note:    "the stage this source was configured with no longer exists; the deal went to " + fallback[0].Name,
 	}
 }
 
@@ -402,7 +430,7 @@ func (s *LeadIngestService) maybeCreateDeal(ctx context.Context, source *LeadSou
 		return
 	}
 
-	stage := resolveDealStage(ctx, s.stages, source.OrgID, cfg)
+	stage := resolveDealStage(ctx, s.stages, s.pipelines, source.OrgID, cfg)
 
 	fields := map[string]any{
 		"title":   dealTitleFor(source, cfg, result.Fields, time.Now()),

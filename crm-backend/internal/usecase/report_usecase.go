@@ -414,6 +414,17 @@ func reportCatalogForDef(def *domain.ObjectDef, fields []domain.ObjectField) []d
 	}
 
 	if def.Slug == "deal" {
+		// R9.3. A VIRTUAL field rather than a registry row on purpose: the
+		// registry's EnsureSystemObjects short-circuits once the three system
+		// defs exist, so a field added to an existing spec reaches new orgs only
+		// and would be missing in production. Virtual fields are computed per
+		// request and so apply everywhere immediately.
+		//
+		// It reads deals.pipeline_id directly — which is exactly why that column
+		// is denormalised. The report SQL builder emits single-table SQL with no
+		// JOIN capability, so a pipeline reachable only through
+		// pipeline_stages.pipeline_id would be unreportable.
+		addVirtual(domain.ReportField{Key: "pipeline", Label: "Pipeline", Type: "relation", Column: "pipeline_id", LabelKind: "pipeline"})
 		addVirtual(domain.ReportField{Key: "is_won", Label: "Is Won", Type: "boolean", Column: "is_won"})
 		addVirtual(domain.ReportField{Key: "is_lost", Label: "Is Lost", Type: "boolean", Column: "is_lost"})
 		addVirtual(domain.ReportField{Key: "closed_at", Label: "Closed At", Type: "date", Column: "closed_at"})
@@ -592,7 +603,13 @@ func (uc *reportUseCase) labelGroups(ctx context.Context, orgID uuid.UUID, res *
 // relation to an UNreadable one would leak the target's display names. On
 // denial the labels fall through to "(Unknown)".
 func (uc *reportUseCase) canResolveLabels(ctx context.Context, orgID uuid.UUID, kind string) bool {
-	if kind == "stage" || kind == "user" {
+	// "pipeline" joins "stage" and "user" here for the same reason they are
+	// listed: none is a registry OBJECT, so Authorize below has no object to
+	// check and would refuse every one of them, leaving the group keys rendering
+	// as raw UUIDs. They are also org-level configuration rather than records —
+	// a pipeline's NAME leaks nothing about the deals on it, and the caller can
+	// already read the stage names on the same board.
+	if kind == "stage" || kind == "user" || kind == "pipeline" {
 		return true
 	}
 	return uc.authz.Authorize(ctx, orgID, kind, domain.ActionRead) == nil

@@ -752,22 +752,43 @@ func (e *UpdateRecordExecutor) handleDealStageChange(ctx context.Context, tx *go
 		return nil, fmt.Errorf("invalid stage ID '%s': %w", stageIDStr, err)
 	}
 
-	// Load the target stage (scoped to org) for its name + won/lost flags.
+	// Load the target stage (scoped to org) for its name + won/lost flags, plus
+	// its pipeline (R9.3 — see the cross-board check below).
 	var stage struct {
-		Name   string `gorm:"column:name"`
-		IsWon  bool   `gorm:"column:is_won"`
-		IsLost bool   `gorm:"column:is_lost"`
-		Found  bool   `gorm:"column:found"`
+		Name       string     `gorm:"column:name"`
+		IsWon      bool       `gorm:"column:is_won"`
+		IsLost     bool       `gorm:"column:is_lost"`
+		PipelineID *uuid.UUID `gorm:"column:pipeline_id"`
+		Found      bool       `gorm:"column:found"`
 	}
 	if err := tx.WithContext(ctx).
 		Table("pipeline_stages").
-		Select("name, is_won, is_lost, true AS found").
+		Select("name, is_won, is_lost, pipeline_id, true AS found").
 		Where("id = ? AND org_id = ? AND deleted_at IS NULL", stageID, orgID).
 		Scan(&stage).Error; err != nil {
 		return nil, fmt.Errorf("load target stage: %w", err)
 	}
 	if !stage.Found {
 		return nil, fmt.Errorf("stage %s not found in org %s", stageID, orgID.String())
+	}
+
+	// R9.3 cross-board guard — the exact mirror of dealUseCase.resolveStagePipeline.
+	// Without it a workflow is the one path that can still fling a deal onto
+	// another pipeline's ladder, writing won/lost flags derived from a board the
+	// deal does not belong to. A deal whose pipeline_id is still NULL adopts the
+	// stage's, rather than being refused, so unbackfilled rows stay movable.
+	var current struct {
+		PipelineID *uuid.UUID `gorm:"column:pipeline_id"`
+	}
+	if err := tx.WithContext(ctx).
+		Table("deals").
+		Select("pipeline_id").
+		Where("id = ? AND org_id = ?", dealID, orgID).
+		Scan(&current).Error; err != nil {
+		return nil, fmt.Errorf("load deal pipeline: %w", err)
+	}
+	if stage.PipelineID != nil && current.PipelineID != nil && *stage.PipelineID != *current.PipelineID {
+		return nil, fmt.Errorf("stage %s belongs to a different pipeline than this deal", stageID)
 	}
 
 	// Build the deal update — mirror dealUseCase.ChangeStage side effects.
@@ -784,6 +805,12 @@ func (e *UpdateRecordExecutor) handleDealStageChange(ctx context.Context, tx *go
 		"is_won":     false,
 		"is_lost":    false,
 		"closed_at":  nil,
+	}
+	// Keep the denormalised board in step with the stage. Only written when the
+	// stage actually has one, so a pre-backfill stage cannot blank a deal's
+	// pipeline_id and drop it off every board.
+	if stage.PipelineID != nil {
+		updateCols["pipeline_id"] = *stage.PipelineID
 	}
 	activityTitle := fmt.Sprintf("Stage changed to %s", stage.Name)
 	if stage.IsWon {

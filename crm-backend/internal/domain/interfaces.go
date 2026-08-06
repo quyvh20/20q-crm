@@ -932,6 +932,9 @@ type CreateStageInput struct {
 	Color    string `json:"color"`
 	IsWon    bool   `json:"is_won"`
 	IsLost   bool   `json:"is_lost"`
+	// PipelineID places the stage on a board (R9.3). Omitted means the org's
+	// default pipeline, so every pre-R9.3 caller keeps working unchanged.
+	PipelineID *uuid.UUID `json:"pipeline_id"`
 }
 
 type UpdateStageInput struct {
@@ -943,21 +946,31 @@ type UpdateStageInput struct {
 }
 
 type PipelineStageRepository interface {
-	List(ctx context.Context, orgID uuid.UUID) ([]PipelineStage, error)
+	// List returns an org's stages. pipelineID nil means EVERY stage in the org
+	// — an honest passthrough of the pre-R9.3 behaviour, not a "default
+	// pipeline" fallback. Callers that resolve stage NAMES for display (report
+	// labels, the workflow schema, template stage maps) genuinely want all of
+	// them; callers that render a BOARD must pass a pipeline explicitly.
+	List(ctx context.Context, orgID uuid.UUID, pipelineID *uuid.UUID) ([]PipelineStage, error)
 	GetByID(ctx context.Context, orgID, id uuid.UUID) (*PipelineStage, error)
 	Create(ctx context.Context, s *PipelineStage) error
 	Update(ctx context.Context, s *PipelineStage) error
 	Delete(ctx context.Context, orgID, id uuid.UUID) error
-	CountByOrg(ctx context.Context, orgID uuid.UUID) (int64, error)
+	// CountByOrg counts stages, scoped to one pipeline when pipelineID is set.
+	// The seeding gates MUST pass a pipeline: an org-wide count means a second
+	// pipeline can never be seeded, because the org already "has stages".
+	CountByOrg(ctx context.Context, orgID uuid.UUID, pipelineID *uuid.UUID) (int64, error)
 }
 
 type PipelineStageUseCase interface {
-	List(ctx context.Context, orgID uuid.UUID) ([]PipelineStage, error)
+	List(ctx context.Context, orgID uuid.UUID, pipelineID *uuid.UUID) ([]PipelineStage, error)
 	GetByID(ctx context.Context, orgID, id uuid.UUID) (*PipelineStage, error)
 	Create(ctx context.Context, orgID uuid.UUID, input CreateStageInput) (*PipelineStage, error)
 	Update(ctx context.Context, orgID, id uuid.UUID, input UpdateStageInput) (*PipelineStage, error)
 	Delete(ctx context.Context, orgID, id uuid.UUID) error
-	SeedDefaults(ctx context.Context, orgID uuid.UUID) ([]PipelineStage, error)
+	// SeedDefaults fills ONE pipeline with the standard ladder. pipelineID nil
+	// targets the org's default pipeline.
+	SeedDefaults(ctx context.Context, orgID uuid.UUID, pipelineID *uuid.UUID) ([]PipelineStage, error)
 }
 
 type ActivityFilter struct {

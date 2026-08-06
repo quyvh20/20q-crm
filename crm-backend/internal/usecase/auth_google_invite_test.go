@@ -24,7 +24,7 @@ import (
 // positive count so seedDefaultStages short-circuits without a DB.
 type fakeStageRepo struct{}
 
-func (fakeStageRepo) List(context.Context, uuid.UUID) ([]domain.PipelineStage, error) {
+func (fakeStageRepo) List(context.Context, uuid.UUID, *uuid.UUID) ([]domain.PipelineStage, error) {
 	return nil, nil
 }
 func (fakeStageRepo) GetByID(context.Context, uuid.UUID, uuid.UUID) (*domain.PipelineStage, error) {
@@ -33,7 +33,9 @@ func (fakeStageRepo) GetByID(context.Context, uuid.UUID, uuid.UUID) (*domain.Pip
 func (fakeStageRepo) Create(context.Context, *domain.PipelineStage) error  { return nil }
 func (fakeStageRepo) Update(context.Context, *domain.PipelineStage) error  { return nil }
 func (fakeStageRepo) Delete(context.Context, uuid.UUID, uuid.UUID) error   { return nil }
-func (fakeStageRepo) CountByOrg(context.Context, uuid.UUID) (int64, error) { return 1, nil }
+func (fakeStageRepo) CountByOrg(context.Context, uuid.UUID, *uuid.UUID) (int64, error) {
+	return 1, nil
+}
 
 // fakeGoogleRepo layers real invite + account-provisioning behavior onto the shared
 // fakeAuthRepo so resolveGoogleUser can be tested end-to-end without network I/O.

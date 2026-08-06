@@ -643,6 +643,7 @@ type dealBackfillRow struct {
 	ContactID       *uuid.UUID     `gorm:"column:contact_id"`
 	CompanyID       *uuid.UUID     `gorm:"column:company_id"`
 	StageID         *uuid.UUID     `gorm:"column:stage_id"`
+	PipelineID      *uuid.UUID     `gorm:"column:pipeline_id"`
 	OwnerUserID     *uuid.UUID     `gorm:"column:owner_user_id"`
 	ExpectedCloseAt *time.Time     `gorm:"column:expected_close_at"`
 	ClosedAt        *time.Time     `gorm:"column:closed_at"`
@@ -658,7 +659,7 @@ func (e *Engine) scanDealsForBackfill(ctx context.Context, db *gorm.DB, orgID uu
 
 	var rows []dealBackfillRow
 	if err := base(db).
-		Select("id, title, value, probability, is_won, is_lost, contact_id, company_id, stage_id, owner_user_id, expected_close_at, closed_at, custom_fields").
+		Select("id, title, value, probability, is_won, is_lost, contact_id, company_id, stage_id, pipeline_id, owner_user_id, expected_close_at, closed_at, custom_fields").
 		Order(backfillScanOrder).Limit(limit).Find(&rows).Error; err != nil {
 		return backfillScan{}, err
 	}
@@ -683,6 +684,10 @@ func (e *Engine) scanDealsForBackfill(ctx context.Context, db *gorm.DB, orgID uu
 		}
 		if r.StageID != nil {
 			m["stage_id"] = r.StageID.String()
+		}
+		// R9.3 — keep in step with dealAutomationMap and dealToMap.
+		if r.PipelineID != nil {
+			m["pipeline_id"] = r.PipelineID.String()
 		}
 		if r.OwnerUserID != nil {
 			m["owner_user_id"] = r.OwnerUserID.String()

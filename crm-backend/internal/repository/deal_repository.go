@@ -174,8 +174,12 @@ func (r *dealRepository) Update(ctx context.Context, d *domain.Deal) error {
 	}
 	return r.db.WithContext(ctx).
 		Model(d).
+		// This allow-list is authoritative: a column missing from it is silently
+		// NOT written, so the caller's update appears to succeed and does nothing.
+		// pipeline_id (R9.3) rides alongside stage_id because every stage writer
+		// sets the two together.
 		Select(
-			"title", "contact_id", "company_id", "stage_id",
+			"title", "contact_id", "company_id", "stage_id", "pipeline_id",
 			"value", "probability", "owner_user_id",
 			"expected_close_at", "is_won", "is_lost", "closed_at",
 			"custom_fields", "updated_at",

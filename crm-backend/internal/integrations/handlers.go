@@ -729,7 +729,7 @@ func (h *Handler) liveStage(c *gin.Context, orgID, stageID uuid.UUID) (*domain.P
 		h.mgmtError(c, http.StatusInternalServerError, "the pipeline is unavailable")
 		return nil, false
 	}
-	stages, err := h.stages.List(c.Request.Context(), orgID)
+	stages, err := h.stages.List(c.Request.Context(), orgID, nil)
 	if err != nil {
 		h.mgmtError(c, http.StatusInternalServerError, "could not read the pipeline")
 		return nil, false
@@ -831,7 +831,7 @@ func (h *Handler) dealStageMissing(c *gin.Context, src *LeadSource, withLiveness
 	if !cfg.Enabled || cfg.StageID == nil {
 		return false
 	}
-	stages, err := h.stages.List(c.Request.Context(), src.OrgID)
+	stages, err := h.stages.List(c.Request.Context(), src.OrgID, nil)
 	if err != nil {
 		return false
 	}

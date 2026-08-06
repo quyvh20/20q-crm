@@ -1735,15 +1735,35 @@ func (h *Handler) buildSchema(ctx context.Context, orgID uuid.UUID) *SchemaRespo
 	// 4. Pipeline stages
 	var stages []SchemaStage
 	type stageRow struct {
-		ID       uuid.UUID `gorm:"column:id"`
-		Name     string    `gorm:"column:name"`
-		Color    string    `gorm:"column:color"`
-		Position int       `gorm:"column:position"`
+		ID           uuid.UUID  `gorm:"column:id"`
+		Name         string     `gorm:"column:name"`
+		Color        string     `gorm:"column:color"`
+		Position     int        `gorm:"column:position"`
+		PipelineID   *uuid.UUID `gorm:"column:pipeline_id"`
+		PipelineName *string    `gorm:"column:pipeline_name"`
 	}
 	var stageRows []stageRow
-	if err := h.db.WithContext(ctx).Table("pipeline_stages").Where("org_id = ? AND deleted_at IS NULL", orgID).Order("position ASC").Find(&stageRows).Error; err == nil {
+	// R9.3: LEFT JOIN so a stage whose pipeline is missing (pre-backfill) still
+	// appears — an INNER JOIN would make it vanish from every workflow picker,
+	// which reads as "the stage was deleted".
+	//
+	// Ordered by pipeline first: position is only dense WITHIN a board, so
+	// ordering by position alone interleaves boards in the picker.
+	if err := h.db.WithContext(ctx).Table("pipeline_stages AS s").
+		Select("s.id, s.name, s.color, s.position, s.pipeline_id, p.name AS pipeline_name").
+		Joins("LEFT JOIN pipelines p ON p.id = s.pipeline_id AND p.deleted_at IS NULL").
+		Where("s.org_id = ? AND s.deleted_at IS NULL", orgID).
+		Order("p.position ASC NULLS FIRST, s.position ASC").
+		Find(&stageRows).Error; err == nil {
 		for _, s := range stageRows {
-			stages = append(stages, SchemaStage{ID: s.ID.String(), Name: s.Name, Color: s.Color, Order: s.Position})
+			st := SchemaStage{ID: s.ID.String(), Name: s.Name, Color: s.Color, Order: s.Position}
+			if s.PipelineID != nil {
+				st.PipelineID = s.PipelineID.String()
+			}
+			if s.PipelineName != nil {
+				st.PipelineName = *s.PipelineName
+			}
+			stages = append(stages, st)
 		}
 	}
 

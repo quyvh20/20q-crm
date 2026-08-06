@@ -104,6 +104,10 @@ type LeadIngestService struct {
 	// stages answers "is the configured deal stage still real". Nil-tolerant: a
 	// source with no deal option never consults it.
 	stages StageReader
+	// pipelines scopes the "configured stage is gone" fallback to the org's
+	// default board (R9.3). Nil-tolerant: unset falls back to the org-wide
+	// first stage, which is what a single-pipeline org wants anyway.
+	pipelines PipelineReader
 	// logger surfaces routing degradations. A lead that lands unowned, or a rotation
 	// that could not be read, is invisible otherwise — the write still succeeds.
 	logger *slog.Logger
@@ -117,6 +121,14 @@ type LeadIngestService struct {
 // NewLeadIngestService builds the pipeline.
 func NewLeadIngestService(repo *Repository, records RecordWriter, matcher ContactMatcher, schema SchemaProvider, fields FieldDefManager, members MemberChecker, stages StageReader, logger *slog.Logger) *LeadIngestService {
 	return &LeadIngestService{repo: repo, records: records, matcher: matcher, schema: schema, fields: fields, members: members, stages: stages, logger: logger}
+}
+
+// WithPipelineReader wires default-board resolution after construction — a
+// setter for the same reason as WithHealthReporter: the constructor already
+// takes eight arguments and every test would have to grow one.
+func (s *LeadIngestService) WithPipelineReader(p PipelineReader) *LeadIngestService {
+	s.pipelines = p
+	return s
 }
 
 // WithHealthReporter wires health alerting after construction — a setter rather than

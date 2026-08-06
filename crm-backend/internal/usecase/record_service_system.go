@@ -663,6 +663,13 @@ func dealAutomationMap(d *domain.Deal) map[string]any {
 	if d.StageID != nil {
 		m["stage_id"] = d.StageID.String()
 	}
+	// R9.3. All three producers of this map (here, deal_handler.dealToMap and
+	// datefield_backfill) must stay key-compatible — nothing type-checks the
+	// drift, so a key added to one and not the others makes a workflow
+	// condition fire on some triggers and silently not on others.
+	if d.PipelineID != nil {
+		m["pipeline_id"] = d.PipelineID.String()
+	}
 	if d.OwnerUserID != nil {
 		m["owner_user_id"] = d.OwnerUserID.String()
 	}

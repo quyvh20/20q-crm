@@ -188,7 +188,7 @@ type stubStages struct {
 	calls  int
 }
 
-func (s *stubStages) List(_ context.Context, _ uuid.UUID) ([]domain.PipelineStage, error) {
+func (s *stubStages) List(_ context.Context, _ uuid.UUID, _ *uuid.UUID) ([]domain.PipelineStage, error) {
 	s.calls++
 	return s.stages, s.err
 }
@@ -203,7 +203,7 @@ func TestResolveDealStage(t *testing.T) {
 	}
 
 	t.Run("configured stage still exists: used as-is, nothing said", func(t *testing.T) {
-		out := resolveDealStage(context.Background(), &stubStages{stages: pipeline}, uuid.New(), DealConfig{StageID: &live})
+		out := resolveDealStage(context.Background(), &stubStages{stages: pipeline}, nil, uuid.New(), DealConfig{StageID: &live})
 		if out.StageID == nil || *out.StageID != live {
 			t.Fatalf("stage = %v, want %v", out.StageID, live)
 		}
@@ -213,7 +213,7 @@ func TestResolveDealStage(t *testing.T) {
 	})
 
 	t.Run("configured stage was deleted: falls back to the first AND says so", func(t *testing.T) {
-		out := resolveDealStage(context.Background(), &stubStages{stages: pipeline}, uuid.New(), DealConfig{StageID: &gone})
+		out := resolveDealStage(context.Background(), &stubStages{stages: pipeline}, nil, uuid.New(), DealConfig{StageID: &gone})
 		if out.StageID == nil || *out.StageID != first {
 			t.Fatalf("stage = %v, want the first live stage %v", out.StageID, first)
 		}
@@ -226,7 +226,7 @@ func TestResolveDealStage(t *testing.T) {
 	// NOT evidence the stage is dead. Re-filing every deal on a DB blip would be a
 	// worse and much louder bug than trusting the configured value.
 	t.Run("lookup error: keeps the configured stage, fails OPEN", func(t *testing.T) {
-		out := resolveDealStage(context.Background(), &stubStages{err: errors.New("db is down")}, uuid.New(), DealConfig{StageID: &gone})
+		out := resolveDealStage(context.Background(), &stubStages{err: errors.New("db is down")}, nil, uuid.New(), DealConfig{StageID: &gone})
 		if out.StageID == nil || *out.StageID != gone {
 			t.Fatalf("an error must not be read as 'the stage is gone', got %v", out.StageID)
 		}
@@ -236,7 +236,7 @@ func TestResolveDealStage(t *testing.T) {
 	})
 
 	t.Run("no stages at all: no stage, and it is disclosed", func(t *testing.T) {
-		out := resolveDealStage(context.Background(), &stubStages{stages: nil}, uuid.New(), DealConfig{StageID: &gone})
+		out := resolveDealStage(context.Background(), &stubStages{stages: nil}, nil, uuid.New(), DealConfig{StageID: &gone})
 		if out.StageID != nil {
 			t.Fatalf("stage = %v, want nil", out.StageID)
 		}
@@ -246,7 +246,7 @@ func TestResolveDealStage(t *testing.T) {
 	})
 
 	t.Run("no stage reader wired: degrades, never panics", func(t *testing.T) {
-		out := resolveDealStage(context.Background(), nil, uuid.New(), DealConfig{StageID: &live})
+		out := resolveDealStage(context.Background(), nil, nil, uuid.New(), DealConfig{StageID: &live})
 		if out.StageID == nil || *out.StageID != live {
 			t.Fatalf("stage = %v", out.StageID)
 		}

@@ -2126,6 +2126,59 @@ func main() {
 			}
 		}
 
+		// ── Multiple pipelines (R9.3) ──────────────────────────────────────────
+		// Mirrored by migrations/000075_pipelines.*.sql. Prod runs THIS guard —
+		// golang-migrate is dead there — while a fresh install and the E2E job run
+		// the migration, so the two must agree statement for statement.
+		//
+		// Placed ABOVE the RLS sweep below on purpose: a CREATE TABLE after the
+		// sweep leaves the new table with RLS OFF until the NEXT boot, and on
+		// Supabase that window is a read/write anon handle on it.
+		//
+		// pipeline_id is NULLABLE on both existing tables, and stays that way for
+		// this whole deploy. Making it NOT NULL here would break a rolling deploy:
+		// old pods still running seedDefaultStages and pipelineStageUseCase.Create
+		// INSERT without the column, so their writes — including org registration —
+		// would start failing mid-rollout. Tightening it is a separate deploy,
+		// count-gated, exactly like the R5 teardown.
+		db.Exec(`CREATE TABLE IF NOT EXISTS pipelines (
+			id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			org_id     UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			name       VARCHAR(100) NOT NULL,
+			position   INT NOT NULL DEFAULT 0,
+			is_default BOOLEAN NOT NULL DEFAULT FALSE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			deleted_at TIMESTAMPTZ
+		)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_pipelines_org ON pipelines(org_id) WHERE deleted_at IS NULL`)
+		// A brand-new empty table, so a plain CREATE UNIQUE needs no probe-and-refuse
+		// ritual (nothing can violate it yet). It is the race-free backstop for
+		// "exactly one default per org" that an application-level check cannot give:
+		// two instances booting together would both pass the check and both insert.
+		db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_pipelines_org_default
+			ON pipelines(org_id) WHERE is_default AND deleted_at IS NULL`)
+		// Explicit even though the sweep below would catch it — the house convention,
+		// and it makes the table's RLS state readable at its definition. Never FORCE:
+		// there are zero policies by design and the app connects as table owner, so
+		// FORCE would lock the backend out of its own table.
+		db.Exec(`ALTER TABLE pipelines ENABLE ROW LEVEL SECURITY`)
+		// ADD COLUMN IF NOT EXISTS, not an edit to a CREATE TABLE block: CREATE TABLE
+		// IF NOT EXISTS never adds a column to a table that already exists, so editing
+		// migration 000002 would be a no-op everywhere the table is already there.
+		db.Exec(`ALTER TABLE pipeline_stages ADD COLUMN IF NOT EXISTS pipeline_id UUID REFERENCES pipelines(id)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_pipeline_stages_pipeline ON pipeline_stages(pipeline_id)`)
+		db.Exec(`ALTER TABLE deals ADD COLUMN IF NOT EXISTS pipeline_id UUID REFERENCES pipelines(id)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_deals_pipeline ON deals(pipeline_id)`)
+		// Assign every existing org, stage and deal to a default pipeline. Idempotent
+		// (see the function) so it is safe on every boot; logged rather than fatal,
+		// because a boot must not die on a tenant-data backfill.
+		if n, err := repository.BackfillPipelines(db); err != nil {
+			log.Error("Failed to backfill pipelines", zap.Error(err))
+		} else if n > 0 {
+			log.Info("Backfilled pipelines", zap.Int64("rows", n))
+		}
+
 		// ── RLS backfill (Supabase alert 2026-07-20: rls_disabled_in_public) ────
 		// Every table created before the boot-guard convention has its ENABLE ROW
 		// LEVEL SECURITY stranded in migrations/000008 and /000013 — files that have
@@ -2383,8 +2436,24 @@ func main() {
 		tagUseCase := usecase.NewTagUseCase(tagRepo)
 		tagHandler := delivery.NewTagHandler(tagUseCase)
 
-		stageUseCase := usecase.NewPipelineStageUseCase(stageRepo)
-		pipelineHandler := delivery.NewPipelineHandler(stageUseCase)
+		// Pipelines (R9.3). pipelineUseCase is constructed FIRST: the stage
+		// usecase depends on it to resolve "which board when nobody said", and
+		// the dependency deliberately runs one way only (pipelineUseCase reaches
+		// the stage REPOSITORY, not the stage usecase, so there is no cycle).
+		pipelineRepo := repository.NewPipelineRepository(db)
+		pipelineUseCase := usecase.NewPipelineUseCase(pipelineRepo, stageRepo)
+		stageUseCase := usecase.NewPipelineStageUseCase(stageRepo, pipelineUseCase)
+		pipelineHandler := delivery.NewPipelineHandler(stageUseCase, pipelineUseCase)
+		// Registration seeds a new org's default board before its stages.
+		if setter, ok := authUseCase.(interface {
+			SetPipelineRepository(domain.PipelineRepository)
+		}); ok {
+			setter.SetPipelineRepository(pipelineRepo)
+		} else {
+			// Loud rather than silent: without this, every org registered from
+			// now on gets stages with a NULL pipeline_id and an empty board.
+			log.Error("auth usecase does not accept a pipeline repository; new orgs will be seeded without a default pipeline")
+		}
 
 		aiJobQueue := worker.NewAIJobQueue(redisClient, gateway, db, log)
 		go aiJobQueue.Start(context.Background(), 3)
@@ -2394,7 +2463,7 @@ func main() {
 		activityHandler := delivery.NewActivityHandler(activityUseCase, aiJobQueue)
 
 		dealRepo := repository.NewDealRepository(db)
-		dealUseCase := usecase.NewDealUseCase(dealRepo, stageRepo, activityRepo)
+		dealUseCase := usecase.NewDealUseCase(dealRepo, stageRepo, activityRepo, pipelineUseCase)
 		dealHandler := delivery.NewDealHandler(dealUseCase)
 
 		// Object-Level Security + audit (P5a): one type is both the authorizer
@@ -2807,7 +2876,11 @@ func main() {
 			integrationsMembers, // owner-pool liveness
 			stageRepo,           // re-checks the configured deal stage: deleting one is a SOFT delete, so a stale id keeps satisfying the FK
 			autoLogger,          // routing degradations are invisible otherwise: the write still succeeds
-		).WithHealthReporter(integrationsHealth)
+		).WithHealthReporter(integrationsHealth).
+			// R9.3: scopes the "configured stage is gone" fallback to the org's
+			// DEFAULT board. Without it, a multi-pipeline org's inbound leads land
+			// on whichever stage sorts first across every pipeline.
+			WithPipelineReader(pipelineRepo)
 		// L7.2b: lend the legacy inbound webhook the platform's delivery ledger, owner
 		// routing and health signal. Its contact write and its trigger payload are
 		// deliberately untouched — see integrations.LegacyCapture for why moving the

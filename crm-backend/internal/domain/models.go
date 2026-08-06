@@ -212,9 +212,17 @@ type Contact struct {
 }
 
 type PipelineStage struct {
-	ID        uuid.UUID      `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
-	OrgID     uuid.UUID      `gorm:"type:uuid;not null" json:"org_id"`
-	Name      string         `gorm:"size:100;not null" json:"name"`
+	ID    uuid.UUID `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
+	OrgID uuid.UUID `gorm:"type:uuid;not null" json:"org_id"`
+	// PipelineID is the board this stage belongs to (R9.3). A POINTER, not a
+	// value: the four sites that construct a PipelineStage build fresh structs,
+	// and a non-pointer uuid.UUID would make GORM write the zero UUID
+	// (00000000-…) — which satisfies NOT NULL while failing the FK, or worse
+	// silently satisfies it if a row with that id ever existed. Nullable in the
+	// schema for the same deploy-safety reason: an old pod mid-rolling-deploy
+	// still INSERTs without the column.
+	PipelineID *uuid.UUID     `gorm:"type:uuid;index" json:"pipeline_id,omitempty"`
+	Name       string         `gorm:"size:100;not null" json:"name"`
 	Position  int            `gorm:"not null;default:0" json:"position"`
 	Color     string         `gorm:"size:20;default:'#3B82F6'" json:"color"`
 	IsWon     bool           `gorm:"not null;default:false" json:"is_won"`
@@ -231,6 +239,16 @@ type Deal struct {
 	ContactID       *uuid.UUID     `gorm:"type:uuid" json:"contact_id,omitempty"`
 	CompanyID       *uuid.UUID     `gorm:"type:uuid" json:"company_id,omitempty"`
 	StageID         *uuid.UUID     `gorm:"type:uuid" json:"stage_id,omitempty"`
+	// PipelineID is DENORMALISED from the stage rather than derived through it
+	// (R9.3), for three reasons that are each independently sufficient: the
+	// report SQL builder emits single-table SQL with no JOIN capability, so
+	// "group by pipeline" would otherwise be unexpressible; the deal list is
+	// keyset-paginated and a join would force the cursor predicate over a
+	// joined table; and StageID is legally NULL, so derivation has no answer
+	// for an unstaged deal. The cost is that every stage writer must maintain
+	// it — see dealUseCase.ChangeStage and automation.handleDealStageChange,
+	// which are contractual twins.
+	PipelineID      *uuid.UUID     `gorm:"type:uuid;index" json:"pipeline_id,omitempty"`
 	// Value stores the deal's estimated monetary value.
 	// Uses float64 backed by Postgres numeric(15,2). This is safe because:
 	//   (a) DB storage is exact (numeric, not float4/float8),

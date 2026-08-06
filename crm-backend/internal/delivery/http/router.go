@@ -376,6 +376,14 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			pipeline.PUT("/stages/:id", cap(domain.CapPipelineManage), pipelineHandler.UpdateStage)
 			pipeline.DELETE("/stages/:id", cap(domain.CapPipelineManage), pipelineHandler.DeleteStage)
 			pipeline.POST("/stages/seed-defaults", cap(domain.CapPipelineManage), pipelineHandler.SeedDefaultStages)
+			// Pipelines (R9.3). Read is ungated like /stages — every member needs
+			// the switcher to render their board; writes reuse pipeline.manage
+			// rather than inventing a capability, so no role migration is needed
+			// (owner/admin/manager already hold it).
+			pipeline.GET("/pipelines", pipelineHandler.ListPipelines)
+			pipeline.POST("/pipelines", cap(domain.CapPipelineManage), pipelineHandler.CreatePipeline)
+			pipeline.PUT("/pipelines/:id", cap(domain.CapPipelineManage), pipelineHandler.UpdatePipeline)
+			pipeline.DELETE("/pipelines/:id", cap(domain.CapPipelineManage), pipelineHandler.DeletePipeline)
 			// Forecast is org-wide analytics — same analytics.view gate the AI
 		// forecast tool enforces (U0.6), so REST and AI agree on who sees it.
 		pipeline.GET("/forecast", cap(domain.CapAnalyticsView), dealHandler.Forecast)

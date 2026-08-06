@@ -439,6 +439,12 @@ type SchemaStage struct {
 	Name  string `json:"name"`
 	Color string `json:"color"`
 	Order int    `json:"order"`
+	// PipelineID/PipelineName qualify the stage with its board (R9.3). Without
+	// them a picker showing name + colour + order cannot tell two boards'
+	// "Closed Won" apart — and `order` collides across boards too, so it is no
+	// help either. Empty on a stage that predates the backfill.
+	PipelineID   string `json:"pipeline_id,omitempty"`
+	PipelineName string `json:"pipeline_name,omitempty"`
 }
 
 // SchemaTag represents an org tag for tag pickers.

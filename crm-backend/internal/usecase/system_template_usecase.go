@@ -342,8 +342,35 @@ func (uc *systemTemplateUseCase) applyStages(
 		return nil
 	}
 
+	// R9.3: a template applies to ONE board — the org's default. Every query
+	// below is scoped to it, and that scoping is load-bearing rather than tidy:
+	// org-wide, the moment an org creates a second pipeline the untouched-seed
+	// check sees len(existing) != 5 and `replace` becomes permanently false, so
+	// industry templates silently switch from REPLACE to APPEND and duplicate
+	// the org's whole ladder. The deal count has the same problem in reverse —
+	// deals on board B would block replacing the untouched seed on board A.
+	//
+	// A nil pipeline (an org the backfill has not reached) falls through to the
+	// pre-R9.3 org-wide behaviour, which is correct for a single-board org.
+	var defaultPipelineID *uuid.UUID
+	var pipelineRow struct {
+		ID uuid.UUID `gorm:"column:id"`
+	}
+	if err := tx.WithContext(ctx).Table("pipelines").Select("id").
+		Where("org_id = ? AND is_default AND deleted_at IS NULL", orgID).
+		Limit(1).Scan(&pipelineRow).Error; err == nil && pipelineRow.ID != uuid.Nil {
+		defaultPipelineID = &pipelineRow.ID
+	}
+
+	stageQ := tx.WithContext(ctx).Where("org_id = ?", orgID)
+	dealQ := tx.WithContext(ctx).Model(&domain.Deal{}).Where("org_id = ?", orgID)
+	if defaultPipelineID != nil {
+		stageQ = stageQ.Where("pipeline_id = ?", *defaultPipelineID)
+		dealQ = dealQ.Where("pipeline_id = ?", *defaultPipelineID)
+	}
+
 	var existing []domain.PipelineStage
-	if err := tx.WithContext(ctx).Where("org_id = ?", orgID).Order("position ASC").Find(&existing).Error; err != nil {
+	if err := stageQ.Order("position ASC").Find(&existing).Error; err != nil {
 		return err
 	}
 
@@ -351,7 +378,7 @@ func (uc *systemTemplateUseCase) applyStages(
 	// scope, so an own-scoped user would see 0 for an org with thousands of deals
 	// and we would wipe the pipeline out from under them.
 	var dealCount int64
-	if err := tx.WithContext(ctx).Model(&domain.Deal{}).Where("org_id = ?", orgID).Count(&dealCount).Error; err != nil {
+	if err := dealQ.Count(&dealCount).Error; err != nil {
 		return err
 	}
 
@@ -395,7 +422,7 @@ func (uc *systemTemplateUseCase) applyStages(
 			maxPos++
 		}
 		row := &domain.PipelineStage{
-			OrgID: orgID, Name: st.Name, Position: pos,
+			OrgID: orgID, PipelineID: defaultPipelineID, Name: st.Name, Position: pos,
 			Color: color, IsWon: st.IsWon, IsLost: st.IsLost,
 		}
 		if err := tx.WithContext(ctx).Create(row).Error; err != nil {
@@ -669,11 +696,34 @@ func (uc *systemTemplateUseCase) applyWorkflows(
 
 	// Stage-name → id map for trigger resolution below. Loaded once, after Phase A
 	// has committed, so it includes the stages this apply just created.
+	//
+	// R9.3: scoped to the org's DEFAULT board — the same one applyStages wrote
+	// to — and ordered, deliberately. Org-wide and unordered, two boards with a
+	// "Closed Won" collapse into one map entry and whichever row the database
+	// happened to return last wins, arbitrarily; the installed workflow then
+	// binds to a stage on a pipeline the template never touched. Nothing catches
+	// it: the template's own validation only checks its own stage list, so CI
+	// stays green while the customer's automation fires on the wrong board.
 	stageIDs := map[string]string{}
 	var stages []domain.PipelineStage
-	if err := uc.db.WithContext(ctx).Where("org_id = ?", orgID).Find(&stages).Error; err == nil {
+	stageQ := uc.db.WithContext(ctx).Where("org_id = ?", orgID)
+	var pipelineRow struct {
+		ID uuid.UUID `gorm:"column:id"`
+	}
+	if err := uc.db.WithContext(ctx).Table("pipelines").Select("id").
+		Where("org_id = ? AND is_default AND deleted_at IS NULL", orgID).
+		Limit(1).Scan(&pipelineRow).Error; err == nil && pipelineRow.ID != uuid.Nil {
+		stageQ = stageQ.Where("pipeline_id = ?", pipelineRow.ID)
+	}
+	if err := stageQ.Order("position ASC, created_at ASC").Find(&stages).Error; err == nil {
 		for _, s := range stages {
-			stageIDs[strings.ToLower(strings.TrimSpace(s.Name))] = s.ID.String()
+			key := strings.ToLower(strings.TrimSpace(s.Name))
+			// First wins, not last: with duplicates still possible inside one
+			// board (there is no unique index on the name), the lowest-position
+			// stage is the stable, predictable choice.
+			if _, seen := stageIDs[key]; !seen {
+				stageIDs[key] = s.ID.String()
+			}
 		}
 	}
 

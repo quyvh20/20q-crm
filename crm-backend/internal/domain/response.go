@@ -130,6 +130,17 @@ var (
 	ErrContactEmailExists = NewAppError(http.StatusConflict, "a contact with this email already exists")
 	ErrDealNotFound          = NewAppError(http.StatusNotFound, "deal not found")
 	ErrStageNotFound         = NewAppError(http.StatusNotFound, "pipeline stage not found")
+	ErrPipelineNotFound      = NewAppError(http.StatusNotFound, "pipeline not found")
+	// ErrStageWrongPipeline: R9.3 refuses a cross-pipeline stage move. is_won /
+	// is_lost / closed_at are pure functions of the destination stage, and the
+	// "won stage is the last non-lost stage" invariant is per-ladder — so an
+	// implicit jump between ladders has no defined semantics. Moving a deal to
+	// another pipeline is its own operation (pipeline + stage in one call).
+	ErrStageWrongPipeline = NewAppError(http.StatusBadRequest, "that stage belongs to a different pipeline — move the deal to the other pipeline instead")
+	// ErrPipelineHasDeals: deleting a pipeline that still holds deals would
+	// strand them the way a soft-deleted stage already strands its deals.
+	ErrPipelineHasDeals   = NewAppError(http.StatusConflict, "this pipeline still has deals — move them to another pipeline first")
+	ErrPipelineIsDefault  = NewAppError(http.StatusConflict, "the default pipeline cannot be deleted — make another pipeline the default first")
 	ErrInvalidFile           = NewAppError(http.StatusBadRequest, "invalid file format, expected CSV or XLSX")
 	ErrOrgNotFound           = NewAppError(http.StatusNotFound, "organization not found")
 	ErrNotMember             = NewAppError(http.StatusForbidden, "you are not a member of this workspace")
