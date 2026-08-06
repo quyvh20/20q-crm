@@ -72,6 +72,7 @@ const PermissionsManager = lazyRoute(() => import('./components/settings/Permiss
 const FieldSecurityManager = lazyRoute(() => import('./components/settings/FieldSecurityManager'));
 const StarterTemplateSection = lazyRoute(() => import('./pages/settings/StarterTemplateSection'));
 const DuplicatesSection = lazyRoute(() => import('./pages/settings/DuplicatesSection'));
+const LeadScoringSection = lazyRoute(() => import('./pages/settings/LeadScoringSection'));
 const ObjectsManager = lazyRoute(() => import('./components/settings/ObjectsManager'));
 const PipelineStagesManager = lazyRoute(() => import('./components/settings/PipelineStagesManager'));
 const IntegrationsSection = lazyRoute(() => import('./pages/settings/IntegrationsSection'));
@@ -353,6 +354,7 @@ function App() {
               <Route path="field-access" element={<FieldSecurityManager />} />
               <Route path="starter-templates" element={<StarterTemplateSection />} />
               <Route path="duplicates" element={<DuplicatesSection />} />
+              <Route path="lead-scoring" element={<LeadScoringSection />} />
               <Route path="objects" element={<ObjectsManager />} />
               <Route path="pipeline" element={<PipelineStagesManager />} />
               <Route path="integrations" element={<IntegrationsSection />} />

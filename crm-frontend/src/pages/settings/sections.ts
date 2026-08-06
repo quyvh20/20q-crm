@@ -1,7 +1,7 @@
 import {
   Shield, Users, UsersRound, KeyRound, Boxes, Table2, EyeOff,
   Target, Mail, Brain, ScrollText, MessageSquare, UserRound, Building2, Bell, Plug,
-  Sparkles, Users2, type LucideIcon,
+  Sparkles, Users2, Gauge, type LucideIcon,
 } from 'lucide-react';
 
 // The settings section REGISTRY, split out of SettingsLayout.tsx.
@@ -57,6 +57,12 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   // prefix each other or the nav highlights two entries at once.
   { path: 'starter-templates', label: 'Starter Templates', icon: Sparkles, group: 'workspace', visible: (can) => can('org.settings') },
   { path: 'objects', label: 'Objects & Fields', icon: Boxes, group: 'workspace', visible: (can) => can('objects.manage') },
+  // R9.4. objects.manage rather than a new capability: scoring rules configure
+  // how a computed field on the contact object is derived — the same framing
+  // the Duplicates entry below uses. Placed well AFTER 'general' deliberately:
+  // defaultSectionPath returns the first visible WORKSPACE section, so anything
+  // inserted above general would relocate every admin's /settings landing page.
+  { path: 'lead-scoring', label: 'Lead Scoring', icon: Gauge, group: 'workspace', visible: (can) => can('objects.manage') },
   // R8.3: contact merge is capability-agnostic on the backend (it checks the
   // contact object's own edit+delete OLS bits, per caller), but the settings
   // shell's capability list has no per-object entry — objects.manage is the

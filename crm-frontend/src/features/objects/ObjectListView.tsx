@@ -37,6 +37,7 @@ import ObjectForm from './ObjectForm';
 import ObjectKanban from './ObjectKanban';
 import ImportModal from '../../components/contacts/ImportModal';
 import GenericImportModal from './GenericImportModal';
+import LeadScoreBadge from './LeadScoreBadge';
 import Modal from '../../components/common/Modal';
 import { useConfirm } from '../../components/common/ConfirmDialog';
 import {
@@ -1017,6 +1018,16 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
                   {sortHeader(f.key, f.label)}
                 </TableHead>
               ))}
+              {/* R9.4: a fixed contact-only column, rendered OUTSIDE the
+                  schema-field loop. Not a registry field, deliberately —
+                  contact already has exactly MAX_COLUMNS fields, so a sixth
+                  would be silently sliced off, and a registry field would also
+                  render as an editable number input for a value nobody edits. */}
+              {slug === 'contact' && (
+                <TableHead aria-sort={ariaSortFor('lead_score')}>
+                  {sortHeader('lead_score', 'Score')}
+                </TableHead>
+              )}
               <TableHead aria-sort={ariaSortFor('created_at')}>
                 {sortHeader('created_at', 'Created')}
               </TableHead>
@@ -1026,7 +1037,7 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
             {loading ? (
               Array.from({ length: 5 }).map((_, i) => (
                 <TableRow key={i}>
-                  {Array.from({ length: columns.length + (showSelection ? 4 : 3) }).map((_, j) => (
+                  {Array.from({ length: columns.length + (showSelection ? 4 : 3) + (slug === 'contact' ? 1 : 0) }).map((_, j) => (
                     <TableCell key={j}>
                       <Skeleton className="h-4 w-full max-w-[10rem]" />
                     </TableCell>
@@ -1067,6 +1078,11 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
                       {formatFieldValue(f, rec.fields[f.key], relationLabel(f, rec.fields[f.key]))}
                     </TableCell>
                   ))}
+                  {slug === 'contact' && (
+                    <TableCell className="text-[13px]">
+                      <LeadScoreBadge score={rec.fields.lead_score as number | undefined} />
+                    </TableCell>
+                  )}
                   <TableCell className="text-[13px] text-muted-foreground">
                     {new Date(rec.created_at).toLocaleDateString()}
                   </TableCell>

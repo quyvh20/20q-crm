@@ -275,6 +275,9 @@ export interface Contact {
   phone?: string;
   company_id?: string;
   owner_user_id?: string;
+  /** R9.4 computed 0-100 score. Read-only — written only by the scoring engine. */
+  lead_score?: number;
+  lead_score_at?: string;
   custom_fields: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -3616,6 +3619,83 @@ export async function previewReport(objectSlug: string, config: ReportConfig): P
   const json = await parseJsonSafe(res);
   if (!res.ok) throw apiError(res, json, 'Preview failed');
   return json.data as ReportResult;
+}
+
+// ============================================================
+// Lead scoring (R9.4)
+// ============================================================
+
+export type LeadRuleKind = 'field' | 'engagement';
+
+/** The closed set of engagement events a rule may score. */
+export const LEAD_SCORE_EVENTS = ['email.clicked', 'email.bounced', 'email.complained'] as const;
+export type LeadScoreEvent = (typeof LEAD_SCORE_EVENTS)[number];
+
+export interface LeadEngagementCondition {
+  event: LeadScoreEvent;
+  window_days: number;
+  min_count: number;
+}
+
+export interface LeadScoringRule {
+  id: string;
+  org_id: string;
+  name: string;
+  kind: LeadRuleKind;
+  points: number;
+  /** A SegmentFilter for a field rule, a LeadEngagementCondition for an engagement one. */
+  condition: Record<string, unknown>;
+  enabled: boolean;
+  position: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function listLeadScoringRules(): Promise<LeadScoringRule[]> {
+  const res = await apiFetch('/api/lead-scoring/rules');
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Failed to load scoring rules');
+  // ?? [] guards the Go nil-slice-marshals-as-null case, which would otherwise
+  // white-screen the page on .map rather than render an empty state.
+  return (json.data ?? []) as LeadScoringRule[];
+}
+
+export async function createLeadScoringRule(data: {
+  name: string;
+  kind: LeadRuleKind;
+  points: number;
+  condition: Record<string, unknown>;
+  enabled?: boolean;
+}): Promise<LeadScoringRule> {
+  const res = await apiFetch('/api/lead-scoring/rules', { method: 'POST', body: JSON.stringify(data) });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Failed to create scoring rule');
+  return json.data as LeadScoringRule;
+}
+
+export async function updateLeadScoringRule(
+  id: string,
+  data: Partial<{ name: string; points: number; condition: Record<string, unknown>; enabled: boolean; position: number }>,
+): Promise<LeadScoringRule> {
+  const res = await apiFetch(`/api/lead-scoring/rules/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Failed to update scoring rule');
+  return json.data as LeadScoringRule;
+}
+
+export async function deleteLeadScoringRule(id: string): Promise<void> {
+  const res = await apiFetch(`/api/lead-scoring/rules/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw apiError(res, json, 'Failed to delete scoring rule');
+  }
+}
+
+export async function recomputeLeadScores(): Promise<{ contacts: number; complete: boolean }> {
+  const res = await apiFetch('/api/lead-scoring/recompute', { method: 'POST' });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Failed to recompute scores');
+  return json.data as { contacts: number; complete: boolean };
 }
 
 export async function listReportFields(slug: string): Promise<ReportFieldDescriptor[]> {

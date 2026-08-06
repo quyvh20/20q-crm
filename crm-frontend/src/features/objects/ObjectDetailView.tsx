@@ -17,6 +17,7 @@ import { formatFieldValue } from './fieldHelpers';
 import RecordTags from './RecordTags';
 import RelatedLists from './RelatedLists';
 import TaskPanel from './TaskPanel';
+import LeadScoreBadge from './LeadScoreBadge';
 import EmailComposer from '../../components/ai/EmailComposer';
 import { Button } from '../../components/ui/button';
 import { useAuth } from '../../lib/auth';
@@ -372,6 +373,16 @@ export default function ObjectDetailView({
 
       {/* Tags (uniform across every object). The former free-text "link any
           record" panel was replaced by schema-driven related lists below. */}
+      {/* Lead score (R9.4): contact-only and read-only — it is computed by the
+          scoring engine, so it is shown as a badge rather than as a field row
+          that would look editable. */}
+      {schema.slug === 'contact' && record.fields.lead_score !== undefined && (
+        <div className="mb-6 flex items-center gap-2">
+          <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Lead score</span>
+          <LeadScoreBadge score={record.fields.lead_score as number | undefined} />
+        </div>
+      )}
+
       <RecordTags slug={schema.slug} recordId={record.id} prefetchedTags={prefetchedTags} prefetchedAllTags={prefetchedAllTags} />
 
       {/* Tasks (R8.1): Task only has a contact_id FK today (no generic
