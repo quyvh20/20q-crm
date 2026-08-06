@@ -2179,6 +2179,65 @@ func main() {
 			log.Info("Backfilled pipelines", zap.Int64("rows", n))
 		}
 
+		// ── Lead scoring (R9.4) ────────────────────────────────────────────────
+		// Mirrored by migrations/000076_lead_scoring.*.sql. Prod runs THIS guard —
+		// golang-migrate is dead there — so the two must agree statement for
+		// statement or CI tests a schema production never runs.
+		//
+		// ABOVE the RLS sweep below, same as R9.3: a CREATE TABLE after the sweep
+		// leaves the table with RLS off until the NEXT boot, which on Supabase is
+		// an anon read/write handle on it.
+		db.Exec(`CREATE TABLE IF NOT EXISTS lead_scoring_rules (
+			id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			org_id     UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			name       VARCHAR(120) NOT NULL,
+			kind       VARCHAR(16) NOT NULL DEFAULT 'field',
+			points     INT NOT NULL DEFAULT 0,
+			condition  JSONB NOT NULL DEFAULT '{}',
+			enabled    BOOLEAN NOT NULL DEFAULT TRUE,
+			position   INT NOT NULL DEFAULT 0,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			deleted_at TIMESTAMPTZ
+		)`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_lead_scoring_rules_org
+			ON lead_scoring_rules(org_id) WHERE deleted_at IS NULL`)
+		db.Exec(`ALTER TABLE lead_scoring_rules ENABLE ROW LEVEL SECURITY`)
+
+		// NOT NULL DEFAULT 0 is safe mid-rolling-deploy (old pods INSERT without
+		// the column and take the default), and it is also what keeps the keyset
+		// sort entry free of the nullAs/nullable trap that bit deals: a NOT NULL
+		// column needs neither, so the cursor value and the ORDER BY cannot
+		// disagree about how a missing value sorts.
+		db.Exec(`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS lead_score INT NOT NULL DEFAULT 0`)
+		db.Exec(`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS lead_score_at TIMESTAMPTZ`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_contacts_org_lead_score
+			ON contacts(org_id, lead_score, id) WHERE deleted_at IS NULL`)
+		// Per-org rescore watermark; drives the sweep's fairness ordering.
+		db.Exec(`ALTER TABLE organizations ADD COLUMN IF NOT EXISTS lead_score_run_at TIMESTAMPTZ`)
+
+		// marketing_email_events is both the ingest queue and the ledger, so this
+		// index goes on a HOT table and is created under a bounded lock_timeout:
+		// a rolling deploy's loser gives up with 55P03 and the next boot retries.
+		// SET LOCAL must share the DDL's transaction — a bare db.Exec("SET …")
+		// lands on a different pooled connection and silently does nothing.
+		// Never CONCURRENTLY: a failed CIC leaves indisvalid=f and
+		// CREATE INDEX IF NOT EXISTS then refuses to repair it.
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Exec(`SET LOCAL lock_timeout = '3s'`).Error; err != nil {
+				return err
+			}
+			return tx.Exec(`CREATE INDEX IF NOT EXISTS idx_marketing_email_events_recipient
+				ON marketing_email_events(org_id, email_normalized, event_type, occurred_at)`).Error
+		}); err != nil {
+			log.Error("lead scoring: recipient engagement index NOT created — engagement rules will sequential-scan the event ledger until the next uncontended boot", zap.Error(err))
+		}
+
+		// No backfill function, deliberately — the one place R9.4 is simpler than
+		// R9.3. lead_score DEFAULT 0 is the correct pre-rule value, and
+		// organizations.lead_score_run_at IS NULL puts every org at the FRONT of
+		// the first sweep, so the fleet converges without a one-shot migration.
+
 		// ── RLS backfill (Supabase alert 2026-07-20: rls_disabled_in_public) ────
 		// Every table created before the boot-guard convention has its ENABLE ROW
 		// LEVEL SECURITY stranded in migrations/000008 and /000013 — files that have
@@ -2496,6 +2555,24 @@ func main() {
 		// depends on recordService, and recordService's contact adapter wraps
 		// contactUseCase — folding merge in there would be a dependency cycle.
 		contactMergeHandler := delivery.NewContactMergeHandler(usecase.NewContactMergeUseCase(contactRepo, permissionUC, recordService))
+
+		// Lead scoring (R9.4). segmentRepo is hoisted here (the M5 segment usecase
+		// below reuses this same instance) because the scoring usecase validates a
+		// field rule with the SAME compile-check segments use — which is what
+		// guarantees a rule that saves is a rule that compiles in the engine.
+		segmentRepo := repository.NewSegmentRepository(db)
+		leadScoringRepo := repository.NewLeadScoringRepository(db)
+		leadScoringUC := usecase.NewLeadScoringUseCase(
+			leadScoringRepo.(interface {
+				domain.LeadScoringRepository
+				WithLeadScoreLock(ctx context.Context, fn func() error) (bool, error)
+			}),
+			// nil logger: the usecase falls back to slog.Default(), which main.go
+			// points at the engine's JSON handler further down — before any sweep
+			// can run. autoLogger itself is not constructed until later.
+			objectRegistryRepo, segmentRepo, permissionUC, nil,
+		)
+		leadScoringHandler := delivery.NewLeadScoringHandler(leadScoringUC)
 		// Human-readable record numbers (DEAL-0001): allocate on create, resolve on read.
 		recordService.SetNumberRepo(repository.NewRecordNumberRepository(db))
 		// The per-record audit trail 404s the history of a record the caller can't
@@ -2716,11 +2793,36 @@ func main() {
 			}
 		}()
 
+		// R9.4 lead-score sweep: every 15 minutes, claim the orgs whose scores are
+		// stalest and rescore them. The tick decides how often we LOOK; the
+		// usecase's staleness window decides how often an org is actually
+		// re-swept, and a fleet-wide advisory lock keeps replicas from each
+		// paying for the same scan.
+		//
+		// Runs once immediately so a fresh deploy converges the fleet rather than
+		// waiting a quarter of an hour — every org starts with a NULL watermark,
+		// which sorts first.
+		go func() {
+			run := func() {
+				if n, err := leadScoringUC.RunRescorePass(context.Background()); err != nil {
+					log.Warn("lead scoring: rescore pass failed", zap.Error(err))
+				} else if n > 0 {
+					log.Info("lead scoring: orgs rescored", zap.Int("orgs", n))
+				}
+			}
+			run()
+			ticker := time.NewTicker(15 * time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				run()
+			}
+		}()
+
 		voiceNoteRepo := repository.NewVoiceNoteRepository(db)
 		voiceNoteUC := usecase.NewVoiceNoteUseCase(voiceNoteRepo, aiJobQueue, cfg, contactRepo)
 		voiceHandler := delivery.NewVoiceHandler(voiceNoteUC)
 
-		delivery.RegisterRoutes(router, authHandler, contactHandler, contactMergeHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, layoutHandler, roleHandler, roleAccessHandler, auditHandler, reportHandler, reportShareHandler, reportCommentHandler, dashboardHandler, userGroupHandler, notificationHandler, apiTokenHandler, templateHandler, cfg, db, redisClient, authRepo, apiTokenRepo, permissionUC)
+		delivery.RegisterRoutes(router, authHandler, contactHandler, contactMergeHandler, leadScoringHandler, companyHandler, tagHandler, dealHandler, pipelineHandler, activityHandler, taskHandler, userHandler, aiHandler, settingsHandler, customObjHandler, objectRegistryHandler, recordHandler, permissionHandler, searchHandler, kbHandler, commandHandler, eventsHandler, workspaceHandler, chatSessionHandler, voiceHandler, layoutHandler, roleHandler, roleAccessHandler, auditHandler, reportHandler, reportShareHandler, reportCommentHandler, dashboardHandler, userGroupHandler, notificationHandler, apiTokenHandler, templateHandler, cfg, db, redisClient, authRepo, apiTokenRepo, permissionUC)
 
 		// --- Workflow Automation Engine ---
 		memHandler := logger.NewMemoryHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -3070,7 +3172,6 @@ func main() {
 		// RecordAuthorizer; objectRegistryRepo sources the per-org catalog (resolving the
 		// crm_-prefixed attribution keys); the count cache is org-wide-only (row-scoped
 		// callers compute live), nil-tolerant on redisClient.
-		segmentRepo := repository.NewSegmentRepository(db)
 		segmentUC := usecase.NewSegmentUseCase(segmentRepo, objectRegistryRepo, permissionUC, redisClient)
 		delivery.NewSegmentHandler(segmentUC).RegisterRoutes(router,
 			integrationsProtected,

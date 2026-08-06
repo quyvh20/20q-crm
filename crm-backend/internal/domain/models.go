@@ -205,6 +205,16 @@ type Contact struct {
 	DeletedAt    gorm.DeletedAt `gorm:"index" json:"-"`
 
 	Company *Company `gorm:"foreignKey:CompanyID" json:"company,omitempty"`
+	// LeadScore is the R9.4 computed 0-100 score. NOT NULL DEFAULT 0 in the
+	// schema, and a non-pointer int here to match: a NOT NULL sort column needs
+	// neither the nullable nor the nullAs arm of the keyset machinery, so the
+	// cursor value and the ORDER BY cannot disagree about how a missing value
+	// sorts. Written ONLY by the rescore engine's set-based UPDATE — never by a
+	// user-facing write path, which is why it is absent from CreateContactInput
+	// and from the registry field list.
+	LeadScore   int        `gorm:"not null;default:0" json:"lead_score"`
+	LeadScoreAt *time.Time `json:"lead_score_at,omitempty"`
+
 	Owner   *User    `gorm:"foreignKey:OwnerUserID" json:"owner,omitempty"`
 	Tags    []Tag    `gorm:"many2many:contact_tags" json:"tags,omitempty"`
 

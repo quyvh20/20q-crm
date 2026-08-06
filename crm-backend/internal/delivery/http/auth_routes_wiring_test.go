@@ -70,6 +70,7 @@ func wiredRouter(t *testing.T, authUC *fakeAuthUC, tokenUC *fakeAPITokenUC, repo
 		// (SetFieldMasker), so they must be real values rather than typed nils.
 		NewContactHandler(nil),
 		(*ContactMergeHandler)(nil),
+		(*LeadScoringHandler)(nil),
 		NewCompanyHandler(nil),
 		(*TagHandler)(nil),
 		NewDealHandler(nil),

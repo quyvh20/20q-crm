@@ -66,7 +66,12 @@ func (a *contactAdapter) list(ctx context.Context, orgID uuid.UUID, in domain.Re
 		Semantic:      in.Semantic,
 		CompanyID:     filterUUID(in.Filters, "company"),
 		OwnerUserID:   filterUUID(in.Filters, "owner_user_id"),
-		CustomFilters: customFilters(in.Filters, "company", "owner_user_id"),
+		// lead_score MUST be in this exclusion list. customFilters passes through
+		// every key it is not told to skip, so an unlisted one is executed as
+		// `contacts.custom_fields ->> 'lead_score' = ?` — a key no contact has,
+		// matching nothing and returning an EMPTY list with no error. That is
+		// exactly how R9.3's pipeline_id emptied every deal board.
+		CustomFilters: customFilters(in.Filters, "company", "owner_user_id", "lead_score"),
 		TagIDs:        in.TagIDs,
 		SortBy:        domain.RecordSortFilterKey("contact", in.SortBy),
 		SortOrder:     in.SortOrder,
@@ -193,6 +198,13 @@ func contactToUniform(c *domain.Contact) *domain.UniformRecord {
 	// any owner control rendered empty and silently reverted the owner on the next
 	// save (U6.3). It is projected both as the first-class field and into Fields.
 	fields["owner_user_id"] = uuidStr(c.OwnerUserID)
+	// R9.4. Projected as a field so the list/detail views can render it without
+	// a second request, but deliberately NOT in contactNativeKeys: that map is
+	// the write-side allow-list, and the score is computed, never submitted. A
+	// key absent from it is treated as a custom field on WRITE, so leaving it
+	// out keeps a client that echoes the record back from planting a stray
+	// custom_fields.lead_score that would then shadow the real column.
+	fields["lead_score"] = c.LeadScore
 
 	display := strings.TrimSpace(c.FirstName + " " + c.LastName)
 	if display == "" {

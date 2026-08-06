@@ -131,6 +131,7 @@ var (
 	ErrDealNotFound          = NewAppError(http.StatusNotFound, "deal not found")
 	ErrStageNotFound         = NewAppError(http.StatusNotFound, "pipeline stage not found")
 	ErrPipelineNotFound      = NewAppError(http.StatusNotFound, "pipeline not found")
+	ErrLeadScoringRuleNotFound = NewAppError(http.StatusNotFound, "scoring rule not found")
 	// ErrStageWrongPipeline: R9.3 refuses a cross-pipeline stage move. is_won /
 	// is_lost / closed_at are pure functions of the destination stage, and the
 	// "won stage is the last non-lost stage" invariant is per-ladder — so an

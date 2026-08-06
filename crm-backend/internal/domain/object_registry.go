@@ -252,6 +252,12 @@ var recordSortFields = map[string][]recordSortField{
 		{key: "created_at", filterKey: "created_at"},
 		{key: "first_name", filterKey: "name"},
 		{key: "email", filterKey: "email"},
+		// R9.4. Sorting needs THREE coordinated registrations — this one, the
+		// contactSortColumns whitelist, and a contactSortValue case. Miss the
+		// last and the cursor is minted from created_at while the ORDER BY
+		// compares lead_score, so the keyset walk repeats and skips rows while
+		// the header still draws a sort arrow.
+		{key: "lead_score", filterKey: "lead_score"},
 	},
 	"deal": {
 		{key: "created_at", filterKey: "created_at"},

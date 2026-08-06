@@ -34,12 +34,19 @@ var contactSortColumns = map[string]keysetColumn{
 	"created_at": {col: "contacts.created_at", kind: keysetTime},
 	"name":       {col: "contacts.first_name", kind: keysetText},
 	"email":      {col: "contacts.email", kind: keysetText, nullable: true},
+	// R9.4. NEITHER nullable NOR nullAs, and that is a property of the schema
+	// rather than an omission: lead_score is NOT NULL DEFAULT 0, so it can never
+	// present the mismatch those arms exist to paper over (a Go zero value
+	// standing in for a SQL NULL that the ORDER BY sorted somewhere else).
+	"lead_score": {col: "contacts.lead_score", kind: keysetNumber},
 }
 
 // contactSortValue reads the sort column off the last row of a page. The default
 // arm must match the defaultKey passed to newKeysetOrdering in List.
 func contactSortValue(c *domain.Contact, key string) any {
 	switch key {
+	case "lead_score":
+		return c.LeadScore
 	case "name":
 		return c.FirstName
 	case "email":

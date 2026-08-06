@@ -84,6 +84,14 @@ func (uc *orgSettingsUseCase) GetFieldDefs(ctx context.Context, orgID uuid.UUID,
 // CreateFieldDef
 // ============================================================
 
+// reservedFieldKeys are keys a custom field may not use because a code-defined
+// virtual field already owns them (R9.4). Keep this in step with every
+// addVirtual call in report_usecase.go that is NOT backed by a real registry
+// field.
+var reservedFieldKeys = map[string]bool{
+	"lead_score": true,
+}
+
 func (uc *orgSettingsUseCase) CreateFieldDef(ctx context.Context, orgID uuid.UUID, input domain.CreateFieldDefInput) (*domain.CustomFieldDef, error) {
 	if !domain.ValidFieldTypes[input.Type] {
 		return nil, domain.NewAppError(400, fmt.Sprintf("invalid field type: %s", input.Type))
@@ -93,6 +101,14 @@ func (uc *orgSettingsUseCase) CreateFieldDef(ctx context.Context, orgID uuid.UUI
 	}
 	if !keyRegex.MatchString(input.Key) {
 		return nil, domain.NewAppError(400, "key must be snake_case (lowercase letters, digits, underscores), 1-64 chars")
+	}
+	// Reserved keys shadow a code-defined VIRTUAL field of the same name.
+	// reportCatalogForDef appends virtual entries only if the key is not already
+	// taken, so an org that created its own `lead_score` custom field would have
+	// every report and segment silently read custom_fields->>'lead_score'
+	// instead of the real column — same name, different values, no error.
+	if reservedFieldKeys[input.Key] {
+		return nil, domain.NewAppError(400, fmt.Sprintf("%q is reserved by a built-in field", input.Key))
 	}
 	if input.Type == "select" && len(input.Options) == 0 {
 		return nil, domain.NewAppError(400, "select type requires at least one option")

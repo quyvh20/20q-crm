@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -135,6 +136,7 @@ func setupPagination(t *testing.T) (*gorm.DB, func()) {
 		company_id uuid,
 		owner_user_id uuid,
 		custom_fields jsonb DEFAULT '{}',
+		lead_score int NOT NULL DEFAULT 0,
 		created_at timestamptz NOT NULL DEFAULT NOW(),
 		updated_at timestamptz NOT NULL DEFAULT NOW(),
 		deleted_at timestamptz
@@ -853,6 +855,52 @@ func migrationNullable(t *testing.T, table, column string) bool {
 		}
 		return !strings.Contains(strings.ToUpper(line), "NOT NULL")
 	}
-	t.Fatalf("migration's CREATE TABLE %s declares no column %q", table, column)
+	// Not in the original CREATE TABLE — look for a later ALTER TABLE ... ADD
+	// COLUMN. Every column added after 000002 arrives that way (both the boot
+	// guards in main.go and their mirrored migrations use ADD COLUMN IF NOT
+	// EXISTS, because CREATE TABLE IF NOT EXISTS never adds a column to a table
+	// that already exists). Without this arm the first ALTER-added column that
+	// becomes sortable fails for the wrong reason, and the tempting fix is to
+	// skip it — which is how the deals NULL bug would quietly come back.
+	if nullable, found := migrationAlterNullable(t, table, column); found {
+		return nullable
+	}
+	t.Fatalf("no migration declares column %q on %s, in CREATE TABLE or ALTER TABLE", column, table)
 	return false
+}
+
+// migrationAlterNullable scans every migration for an ALTER TABLE <table> ADD
+// COLUMN <column> and reports its nullability. found=false when none declares it.
+// Later migrations win, so a column that is added and then tightened reports
+// the tightened state.
+func migrationAlterNullable(t *testing.T, table, column string) (nullable, found bool) {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join("..", "..", "migrations"))
+	require.NoError(t, err, "the migrations directory must be readable from the package dir")
+
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".up.sql") {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+
+	prefix := "alter table " + table + " add column"
+	for _, name := range names {
+		raw, err := os.ReadFile(filepath.Join("..", "..", "migrations", name))
+		require.NoError(t, err)
+		for _, line := range strings.Split(string(raw), "\n") {
+			flat := strings.Join(strings.Fields(strings.ToLower(line)), " ")
+			if !strings.HasPrefix(flat, prefix) {
+				continue
+			}
+			rest := strings.TrimSpace(strings.TrimPrefix(flat, prefix))
+			rest = strings.TrimPrefix(rest, "if not exists ")
+			if fields := strings.Fields(rest); len(fields) > 0 && fields[0] == column {
+				nullable, found = !strings.Contains(flat, "not null"), true
+			}
+		}
+	}
+	return nullable, found
 }

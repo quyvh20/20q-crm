@@ -413,6 +413,25 @@ func reportCatalogForDef(def *domain.ObjectDef, fields []domain.ObjectField) []d
 		addVirtual(domain.ReportField{Key: "owner_user_id", Label: "Owner", Type: "relation", Column: "owner_user_id", LabelKind: "user"})
 	}
 
+	if def.Slug == "contact" {
+		// R9.4. A VIRTUAL field, for the same reason pipeline is one on deal:
+		// EnsureSystemObjects short-circuits on a per-org COUNT of system defs,
+		// so a field appended to the registry spec would reach NEW orgs only and
+		// be silently missing on every production org. Virtual entries are
+		// computed per request and so apply everywhere immediately.
+		//
+		// This one line is also the entire M5 integration the plan asks for:
+		// segmentUseCase's contact catalog calls THIS function, and the segment
+		// compiler delegates field leaves to buildReportFilterLeaf — so
+		// "lead_score gte 50" becomes a valid dynamic-segment rule with no
+		// segment code touched at all.
+		//
+		// Type "number" is what unlocks sum/avg/min/max aggregation and the
+		// gt/gte/lt/lte operators; Column is read raw (a native column, not a
+		// jsonb cast), so it is sargable against idx_contacts_org_lead_score.
+		addVirtual(domain.ReportField{Key: "lead_score", Label: "Lead Score", Type: "number", Column: "lead_score"})
+	}
+
 	if def.Slug == "deal" {
 		// R9.3. A VIRTUAL field rather than a registry row on purpose: the
 		// registry's EnsureSystemObjects short-circuits once the three system

@@ -9,7 +9,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, contactMergeHandler *ContactMergeHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, objectRegistryHandler *ObjectRegistryHandler, recordHandler *RecordHandler, permissionHandler *PermissionHandler, searchHandler *SearchHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, voiceHandler *VoiceHandler, layoutHandler *ObjectLayoutHandler, roleHandler *RoleHandler, roleAccessHandler *RoleAccessHandler, auditHandler *AuditHandler, reportHandler *ReportHandler, reportShareHandler *ReportShareHandler, reportCommentHandler *ReportCommentHandler, dashboardHandler *DashboardHandler, groupHandler *UserGroupHandler, notificationHandler *NotificationHandler, apiTokenHandler *APITokenHandler, templateHandler *SystemTemplateHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository, apiTokenRepo domain.APITokenRepository, permissionUC domain.PermissionUseCase) {
+func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler *ContactHandler, contactMergeHandler *ContactMergeHandler, leadScoringHandler *LeadScoringHandler, companyHandler *CompanyHandler, tagHandler *TagHandler, dealHandler *DealHandler, pipelineHandler *PipelineHandler, activityHandler *ActivityHandler, taskHandler *TaskHandler, userHandler *UserHandler, aiHandler *AIHandler, settingsHandler *SettingsHandler, customObjectHandler *CustomObjectHandler, objectRegistryHandler *ObjectRegistryHandler, recordHandler *RecordHandler, permissionHandler *PermissionHandler, searchHandler *SearchHandler, knowledgeHandler *KnowledgeHandler, commandHandler *CommandHandler, eventsHandler *EventsHandler, workspaceHandler *WorkspaceHandler, sessionHandler *ChatSessionHandler, voiceHandler *VoiceHandler, layoutHandler *ObjectLayoutHandler, roleHandler *RoleHandler, roleAccessHandler *RoleAccessHandler, auditHandler *AuditHandler, reportHandler *ReportHandler, reportShareHandler *ReportShareHandler, reportCommentHandler *ReportCommentHandler, dashboardHandler *DashboardHandler, groupHandler *UserGroupHandler, notificationHandler *NotificationHandler, apiTokenHandler *APITokenHandler, templateHandler *SystemTemplateHandler, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, authRepo domain.AuthRepository, apiTokenRepo domain.APITokenRepository, permissionUC domain.PermissionUseCase) {
 	// Mark every request context as HTTP-originated so the permission engine can
 	// flag a callerless HTTP call reaching Authorize (a route mounted outside
 	// AuthMiddleware) instead of silently treating it as a trusted in-process
@@ -387,6 +387,20 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			// Forecast is org-wide analytics — same analytics.view gate the AI
 		// forecast tool enforces (U0.6), so REST and AI agree on who sees it.
 		pipeline.GET("/forecast", cap(domain.CapAnalyticsView), dealHandler.Forecast)
+		}
+
+		// Lead scoring (R9.4). objects.manage rather than a new capability:
+		// scoring rules configure how a computed field on the contact object is
+		// derived, which is the same framing the Duplicates page uses. Reads are
+		// ungated beyond the object's own OLS check in the usecase, so a rep can
+		// see why a score is what it is.
+		leadScoring := protected.Group("/lead-scoring")
+		{
+			leadScoring.GET("/rules", leadScoringHandler.ListRules)
+			leadScoring.POST("/rules", cap(domain.CapObjectsManage), leadScoringHandler.CreateRule)
+			leadScoring.PUT("/rules/:id", cap(domain.CapObjectsManage), leadScoringHandler.UpdateRule)
+			leadScoring.DELETE("/rules/:id", cap(domain.CapObjectsManage), leadScoringHandler.DeleteRule)
+			leadScoring.POST("/recompute", cap(domain.CapObjectsManage), leadScoringHandler.Recompute)
 		}
 
 		activities := protected.Group("/activities")
