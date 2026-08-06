@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Pencil, Plus, Sparkles, Target, Trash2 } from 'lucide-react';
+import { Pencil, Plus, Sparkles, Star, Target, Trash2 } from 'lucide-react';
 import { useConfirm } from '../common/ConfirmDialog';
 import {
   getStages,
@@ -8,7 +8,12 @@ import {
   updateStage,
   deleteStage,
   seedDefaultStages,
+  getPipelines,
+  createPipeline,
+  updatePipeline,
+  deletePipeline,
   type PipelineStage,
+  type Pipeline,
 } from '../../lib/api';
 import { Badge, Button, EmptyState, ErrorState, Input, Skeleton } from '@/components/ui';
 
@@ -111,15 +116,40 @@ export default function PipelineStagesManager() {
   const [error, setError] = useState('');
   const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
 
+  // R9.3: which board is being edited. Stages are per-pipeline now, so the
+  // whole page is scoped to one.
+  const [pipelineId, setPipelineId] = useState<string | null>(null);
+  const { data: pipelines = [] } = useQuery<Pipeline[]>({
+    queryKey: ['pipelines'],
+    queryFn: getPipelines,
+  });
+  // Land on the default board once the list arrives, and recover if the
+  // selected board is deleted underneath us.
+  useEffect(() => {
+    if (pipelines.length === 0) return;
+    if (pipelineId && pipelines.some((p) => p.id === pipelineId)) return;
+    setPipelineId((pipelines.find((p) => p.is_default) ?? pipelines[0]).id);
+  }, [pipelines, pipelineId]);
+
+  // The query key carries the pipeline. Without it every board would share one
+  // cache entry and the switcher would show pipeline A's stages under B.
+  const stagesKey = ['stages', pipelineId] as const;
+  const invalidateStages = () => {
+    qc.invalidateQueries({ queryKey: ['stages'] });
+    // The board pages key their own stage queries the same way.
+    qc.invalidateQueries({ queryKey: ['pipelines'] });
+  };
+
   const { data: stages = [], isLoading, error: loadError, refetch } = useQuery<PipelineStage[]>({
-    queryKey: ['stages'],
-    queryFn: getStages,
+    queryKey: stagesKey,
+    queryFn: () => getStages(pipelineId ?? undefined),
+    enabled: !!pipelineId,
   });
 
   const createMut = useMutation({
     mutationFn: (data: Parameters<typeof createStage>[0]) => createStage(data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['stages'] });
+      invalidateStages();
       setNewName(''); setNewColor(COLORS[0]); setNewIsWon(false); setNewIsLost(false);
       setShowAdd(false); setError('');
     },
@@ -128,21 +158,52 @@ export default function PipelineStagesManager() {
 
   const updateMut = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Partial<PipelineStage> }) => updateStage(id, data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['stages'] }),
+    onSuccess: () => invalidateStages(),
     onError: (e: Error) => setError(e.message), // failures used to vanish silently
   });
 
   const deleteMut = useMutation({
     mutationFn: (id: string) => deleteStage(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['stages'] }),
+    onSuccess: () => invalidateStages(),
     onError: (e: Error) => setError(e.message),
   });
 
   const seedMut = useMutation({
-    mutationFn: seedDefaultStages,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['stages'] }),
+    mutationFn: () => seedDefaultStages(pipelineId ?? undefined),
+    onSuccess: () => invalidateStages(),
     onError: (e: Error) => setError(e.message),
   });
+
+  const createPipelineMut = useMutation({
+    mutationFn: (name: string) => createPipeline({ name, seed_default_stages: true }),
+    onSuccess: (p) => {
+      setError('');
+      setPipelineId(p.id);
+      qc.invalidateQueries({ queryKey: ['pipelines'] });
+      qc.invalidateQueries({ queryKey: ['stages'] });
+    },
+    onError: (e: Error) => setError(e.message),
+  });
+
+  const setDefaultMut = useMutation({
+    mutationFn: (id: string) => updatePipeline(id, { is_default: true }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['pipelines'] }),
+    onError: (e: Error) => setError(e.message),
+  });
+
+  const deletePipelineMut = useMutation({
+    mutationFn: (id: string) => deletePipeline(id),
+    onSuccess: () => {
+      setPipelineId(null);
+      qc.invalidateQueries({ queryKey: ['pipelines'] });
+      qc.invalidateQueries({ queryKey: ['stages'] });
+    },
+    // The backend refuses a board that still has deals, or the default one,
+    // with a 409 whose message says which — surface it verbatim.
+    onError: (e: Error) => setError(e.message),
+  });
+
+  const activePipeline = pipelines.find((p) => p.id === pipelineId) ?? null;
 
   if (isLoading) {
     return <div className="space-y-2">{[...Array(4)].map((_, i) => <Skeleton key={i} className="h-12 rounded-xl" />)}</div>;
@@ -150,13 +211,69 @@ export default function PipelineStagesManager() {
 
   return (
     <div className="space-y-4 pt-4">
+      {/* R9.3 board switcher. Stages belong to a pipeline, so the whole panel
+          below is scoped to whichever one is selected here. */}
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-accent/20 p-3">
+        <label className="text-sm font-medium text-muted-foreground" htmlFor="pipeline-select">Pipeline</label>
+        <select
+          id="pipeline-select"
+          value={pipelineId ?? ''}
+          onChange={(e) => setPipelineId(e.target.value)}
+          className="rounded-md border border-input bg-background px-2 py-1.5 text-sm"
+        >
+          {pipelines.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}{p.is_default ? ' (default)' : ''}
+            </option>
+          ))}
+        </select>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            const name = window.prompt('Name the new pipeline');
+            if (name && name.trim()) createPipelineMut.mutate(name.trim());
+          }}
+          disabled={createPipelineMut.isPending}
+        >
+          <Plus aria-hidden /> New pipeline
+        </Button>
+        {activePipeline && !activePipeline.is_default && (
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setDefaultMut.mutate(activePipeline.id)}
+              disabled={setDefaultMut.isPending}
+            >
+              <Star aria-hidden /> Make default
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={async () => {
+                if (!(await confirmDialog({
+                  title: `Delete "${activePipeline.name}"`,
+                  body: 'The pipeline and its stages are removed. Deals must be moved off it first.',
+                  confirmLabel: 'Delete pipeline',
+                }))) return;
+                deletePipelineMut.mutate(activePipeline.id);
+              }}
+              disabled={deletePipelineMut.isPending}
+            >
+              <Trash2 aria-hidden /> Delete pipeline
+            </Button>
+          </>
+        )}
+      </div>
+
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-base font-semibold">Pipeline Stages</h3>
           <p className="text-sm text-muted-foreground mt-0.5">Define the stages deals move through in your sales pipeline.</p>
         </div>
         <div className="flex gap-2">
-          {stages.length === 0 && !loadError && (
+          {stages.length === 0 && !loadError && !!pipelineId && (
             <Button variant="outline" onClick={() => seedMut.mutate()} disabled={seedMut.isPending}>
               <Sparkles aria-hidden /> {seedMut.isPending ? 'Seeding…' : 'Seed Defaults'}
             </Button>
@@ -236,7 +353,7 @@ export default function PipelineStagesManager() {
           <div className="flex gap-2">
             <Button
               disabled={!newName.trim() || createMut.isPending}
-              onClick={() => createMut.mutate({ name: newName, color: newColor, is_won: newIsWon, is_lost: newIsLost })}
+              onClick={() => createMut.mutate({ name: newName, color: newColor, is_won: newIsWon, is_lost: newIsLost, pipeline_id: pipelineId ?? undefined })}
             >
               {createMut.isPending ? 'Creating…' : 'Create Stage'}
             </Button>

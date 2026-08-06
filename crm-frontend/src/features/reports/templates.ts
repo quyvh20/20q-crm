@@ -16,7 +16,7 @@ export const REPORT_TEMPLATES: ReportTemplate[] = [
   {
     id: 'pipeline-by-stage',
     name: 'Pipeline by Stage',
-    description: 'Open deal value in each pipeline stage.',
+    description: 'Open deal value in each stage, across every pipeline.',
     objectSlug: 'deal',
     config: {
       chart: 'bar',
@@ -28,6 +28,37 @@ export const REPORT_TEMPLATES: ReportTemplate[] = [
         ],
       },
       group_by: { field: 'stage' },
+      aggregate: { fn: 'sum', field: 'value' },
+    },
+  },
+  // R9.3 gave the deal catalog a `pipeline` field, and the multi-board org needs
+  // it — but as a SECOND template, not as a filter on the one above.
+  //
+  // A filter would have to name a pipeline by id, and these are static frontend
+  // presets: there is no org to read one from at the time this array is written,
+  // and a rule with an empty value is a broken report rather than a scoped one.
+  // Grouping needs no such value. The two then answer the two different questions
+  // an org with several boards actually has — "how is each board doing" and, once
+  // one is picked in the builder, "where inside it is the value sitting".
+  //
+  // The by-stage template above is left unscoped deliberately: the backend
+  // qualifies stage labels with their board name ("Discovery (Enterprise)"), so
+  // it reads as a legible all-boards view rather than duplicate bars.
+  {
+    id: 'open-value-by-pipeline',
+    name: 'Open Value by Pipeline',
+    description: 'Which board your open value is sitting on.',
+    objectSlug: 'deal',
+    config: {
+      chart: 'bar',
+      filters: {
+        op: 'AND',
+        rules: [
+          { field: 'is_won', operator: 'eq', value: false },
+          { field: 'is_lost', operator: 'eq', value: false },
+        ],
+      },
+      group_by: { field: 'pipeline' },
       aggregate: { fn: 'sum', field: 'value' },
     },
   },

@@ -5,7 +5,9 @@ import {
   updateObjectRecordUnified,
   listObjectRecordsUnified,
   getStages,
+  getPipelines,
   type ObjectSchema,
+  type PipelineStage,
   type UniformRecord,
 } from '../../lib/api';
 import { FieldInput, type RelationOption } from './fieldHelpers';
@@ -16,15 +18,82 @@ interface ObjectFormProps {
   schema: ObjectSchema;
   /** Existing record when editing; omit/null to create. */
   record?: UniformRecord | null;
+  /**
+   * The board a NEW record is being created on (R9.3), when the caller knows it —
+   * e.g. the pipeline whose kanban is on screen. Ignored when editing: an existing
+   * deal's own board always wins, because the backend refuses a stage from any
+   * other one.
+   */
+  pipelineId?: string;
   inline?: boolean;
   onSaved: (rec: UniformRecord) => void;
   onCancel: () => void;
 }
 
+// Which board the `stage` picker must be scoped to, gathered from the props once
+// (see loadStageOptions).
+interface StageScope {
+  editing: boolean;
+  /** The record's own board, if the payload happens to carry one. */
+  recordPipelineId: string;
+  /** The stage the record already sits on; names its board when the above is absent. */
+  recordStageId: string;
+  /** The board the caller is creating on, when it knows one. */
+  callerPipelineId: string;
+}
+
+// Field values are `unknown`; a relation id is only usable when it is a non-empty
+// string (the deal projector writes '' for an unset one).
+const fieldId = (v: unknown) => (typeof v === 'string' ? v : '');
+
+// Resolve the option list for the `stage` pseudo-relation. R9.3 split stages
+// across pipelines, so the org-wide ladder stopped being a valid menu: the
+// backend refuses a stage belonging to any board but the deal's own with a 400
+// ("that stage belongs to a different pipeline"), which makes every out-of-board
+// option one the user cannot actually save. Scope to a single board — the
+// record's own when editing, the caller's or the org default otherwise — and
+// only widen back to every stage when none of those resolves, because a picker
+// offering too much still beats an empty one.
+async function loadStageOptions(scope: StageScope): Promise<PipelineStage[]> {
+  if (scope.recordPipelineId) return getStages(scope.recordPipelineId);
+
+  if (scope.editing) {
+    // The uniform record projects `stage` but not `pipeline_id`, so for an
+    // existing deal the stage it is already on is what names its board. Filtering
+    // the org-wide list client-side rather than issuing a second scoped request
+    // also guarantees the deal's CURRENT stage stays in the options — scoping by
+    // an id we inferred wrong would drop it and silently blank the picker.
+    const all = await getStages();
+    const current = all.find((s) => s.id === scope.recordStageId);
+    if (current?.pipeline_id) return all.filter((s) => s.pipeline_id === current.pipeline_id);
+    // A stage that predates the pipeline backfill names no board. Nothing can be
+    // inferred from it, and scoping by a guess would drop the very value the
+    // field is already set to, so show everything.
+    if (scope.recordStageId) return all;
+    // An UNSTAGED record falls through to the default board instead: both the
+    // create path and the R9.3 backfill stamp a deal with no stage onto the org
+    // default, so that — not "every board" — is the ladder it can move within.
+  } else if (scope.callerPipelineId) {
+    return getStages(scope.callerPipelineId);
+  }
+
+  let defaultPipelineId = '';
+  try {
+    // getPipelines throws on a non-ok response — an org that cannot list its
+    // boards still gets the unscoped picker below, never an empty one. Same if
+    // no pipeline is flagged default, which should be impossible but is not
+    // worth blanking the field over.
+    defaultPipelineId = (await getPipelines()).find((p) => p.is_default)?.id ?? '';
+  } catch {
+    /* fall through to the unscoped list */
+  }
+  return defaultPipelineId ? getStages(defaultPipelineId) : getStages();
+}
+
 // ObjectForm is the single create/edit form for every object. It is driven
 // entirely by the schema descriptor, so a Deal and a custom "Project" are edited
 // through the exact same component — that is the P3 "one ObjectForm" deliverable.
-export default function ObjectForm({ schema, record, inline, onSaved, onCancel }: ObjectFormProps) {
+export default function ObjectForm({ schema, record, pipelineId, inline, onSaved, onCancel }: ObjectFormProps) {
   const [formData, setFormData] = useState<Record<string, unknown>>(() => {
     const base: Record<string, unknown> = { ...(record?.fields ?? {}) };
     // Owner (U6) rides in the fields map, but seed it from the record's own
@@ -41,13 +110,23 @@ export default function ObjectForm({ schema, record, inline, onSaved, onCancel }
   // keys keep their reference from the initial spread, so a per-key `!==` is an exact
   // "did the user change this" test — even for array/object values.
   const initialData = useRef(formData).current;
+  // Captured once, like initialData: a parent re-render handing us an equal-but-new
+  // `record` object must not restart the stage load, and the board a record is on
+  // cannot change from inside this form anyway.
+  const stageScope = useRef<StageScope>({
+    editing: !!record,
+    recordPipelineId: fieldId(record?.fields.pipeline_id),
+    recordStageId: fieldId(record?.fields.stage),
+    callerPipelineId: pipelineId ?? '',
+  }).current;
   const [relationOptions, setRelationOptions] = useState<Record<string, RelationOption[]>>({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   // Load pick-from options for each resolvable relation field (one fetch each).
   // A "stage" relation has no registry target (pipeline_stages isn't a registered
-  // object), so it is resolved specially from the pipeline stages.
+  // object), so it is resolved specially from the pipeline stages — scoped to one
+  // board, see loadStageOptions.
   useEffect(() => {
     let cancelled = false;
     const relationFields = schema.fields.filter((f) => f.type === 'relation' && f.target_slug);
@@ -63,7 +142,7 @@ export default function ObjectForm({ schema, record, inline, onSaved, onCancel }
       }),
       ...(hasStage
         ? [
-            getStages()
+            loadStageOptions(stageScope)
               .then((stages) => ['stage', stages.map((s) => ({ id: s.id, label: s.name }))] as const)
               .catch(() => ['stage', [] as RelationOption[]] as const),
           ]
@@ -77,7 +156,7 @@ export default function ObjectForm({ schema, record, inline, onSaved, onCancel }
     return () => {
       cancelled = true;
     };
-  }, [schema]);
+  }, [schema, stageScope]);
 
   const setField = (key: string, val: unknown) => setFormData((prev) => ({ ...prev, [key]: val }));
 

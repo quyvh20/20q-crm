@@ -381,9 +381,19 @@ export default function DealDetailPage() {
     enabled: !!id,
   });
 
+  // Stages of THIS deal's board (R9.3). The pipeline id has to be part of the
+  // key: a bare ['stages'] key is a single cache entry for the whole org, so
+  // whichever deal mounted first would serve its board's ladder to every deal
+  // opened after it — wrong stage buttons, and a Mark Won that files the deal
+  // onto someone else's board. Gated on the deal because the id it keys on
+  // isn't known until the deal resolves; firing early would cache an org-wide
+  // fetch under `undefined` and then refetch anyway. A deal with no
+  // pipeline_id (pre-backfill) keeps the old org-wide behaviour, which is the
+  // best answer available for it.
   const { data: stages = [] } = useQuery<PipelineStage[]>({
-    queryKey: ['stages'],
-    queryFn: getStages,
+    queryKey: ['stages', deal?.pipeline_id],
+    queryFn: () => getStages(deal?.pipeline_id ?? undefined),
+    enabled: !!deal,
   });
 
   const { data: tasks = [] } = useQuery<Task[]>({
@@ -495,6 +505,10 @@ export default function DealDetailPage() {
     onSuccess: () => navigate('/deals'),
   });
 
+  // `stages` is scoped to this deal's board above, so the first won/lost stage
+  // found IS this board's, by construction. Against the org-wide stage list it
+  // was not: Mark Won could file the deal into another pipeline's Closed Won,
+  // where it would vanish from the board it was actually being worked on.
   const wonStage = stages.find(s => s.is_won);
   const lostStage = stages.find(s => s.is_lost);
 
@@ -666,7 +680,10 @@ export default function DealDetailPage() {
 
             {/* Stage Selector — a stage move IS a deal edit, so it's gated on the
                 same OLS bit as Mark Won/Lost below. Read-only roles keep the
-                information (current stage as a static pill), not the buttons. */}
+                information (current stage as a static pill), not the buttons.
+                The open stages offered are this deal's board only, since the
+                query above is pipeline-scoped — moving a deal across boards is
+                not something this row can do by accident. */}
             {!deal.is_won && !deal.is_lost && (
               <div className="mb-4">
                 <label className="text-xs font-medium text-muted-foreground mb-2 block">

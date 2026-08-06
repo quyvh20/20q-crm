@@ -33,6 +33,12 @@ interface ObjectKanbanProps {
   schema: ObjectSchema;
   /** Relation field key the board groups by (e.g. "stage"). */
   stageKey: string;
+  /**
+   * Which pipeline's board to render (R9.3). Undefined means the org has no
+   * pipelines resolved yet; the board waits rather than merging every board's
+   * ladder into one set of columns.
+   */
+  pipelineId?: string;
   onCardClick: (record: UniformRecord) => void;
 }
 
@@ -147,7 +153,7 @@ const EMPTY_BOARD: BoardState = {
 // applies the stage change through the uniform write path — which routes deals
 // through ChangeStage (won/lost + automation) on the backend (P7). Today only Deals
 // expose a "stage" field, but any future object with one gets a board for free.
-export default function ObjectKanban({ schema, stageKey, onCardClick }: ObjectKanbanProps) {
+export default function ObjectKanban({ schema, stageKey, pipelineId, onCardClick }: ObjectKanbanProps) {
   const [board, setBoard] = useState<BoardState>(EMPTY_BOARD);
   const { stages, records } = board;
   // Bumped by Retry; the loader effect depends on it, so a click re-runs it.
@@ -177,7 +183,9 @@ export default function ObjectKanban({ schema, stageKey, onCardClick }: ObjectKa
     let cancelled = false;
     setBoard(EMPTY_BOARD);
 
-    getStages().then(
+    // Scoped to the selected board (R9.3). Unscoped, a multi-pipeline org gets
+    // every ladder merged into one row of columns.
+    getStages(pipelineId).then(
       (s) => { if (!cancelled) setBoard((b) => ({ ...b, stages: s, stagesLoading: false })); },
       (e) => { if (!cancelled) setBoard((b) => ({ ...b, stagesError: e, stagesLoading: false })); },
     );
@@ -189,7 +197,15 @@ export default function ObjectKanban({ schema, stageKey, onCardClick }: ObjectKa
       let fetched = 0;
       try {
         do {
-          const page = await listObjectRecordsUnified(schema.slug, { limit: BOARD_PAGE_SIZE, cursor });
+          // The pipeline filter is spent on the RECORDS too, not just the
+          // columns: the 500-record cap is shared, so an unfiltered fetch burns
+          // it on other boards' deals and a large org sees a truncated, mostly
+          // empty board.
+          const page = await listObjectRecordsUnified(schema.slug, {
+            limit: BOARD_PAGE_SIZE,
+            cursor,
+            filters: pipelineId ? { pipeline_id: pipelineId } : undefined,
+          });
           fetched += 1;
           // Re-checked after EVERY page: without this a slug switch keeps
           // paging and writes into an unmounted board.
@@ -216,14 +232,19 @@ export default function ObjectKanban({ schema, stageKey, onCardClick }: ObjectKa
     return () => {
       cancelled = true;
     };
-  }, [schema.slug, reloadKey]);
+  }, [schema.slug, reloadKey, pipelineId]);
 
   const byStage = useMemo(() => {
     const map: Record<string, UniformRecord[]> = {};
     stages.forEach((s) => { map[s.id] = []; });
     records.forEach((r) => {
-      let sid = String(r.fields[stageKey] ?? '');
-      if (!sid || !map[sid]) sid = stages[0]?.id ?? '';
+      const sid = String(r.fields[stageKey] ?? '');
+      // R9.3: NO fallback to stages[0]. It used to sweep any unrecognised stage
+      // into the first column, which was harmless when the column list was the
+      // org's only ladder — but once columns are one board's, every foreign
+      // record piles into column 1 and dragging it PATCHes it onto a stage it
+      // does not belong to. Silently, with no error. A record whose stage is
+      // not on this board simply is not on this board.
       if (sid && map[sid]) map[sid].push(r);
     });
     return map;

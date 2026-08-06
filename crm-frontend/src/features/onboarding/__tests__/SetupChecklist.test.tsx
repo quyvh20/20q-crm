@@ -9,6 +9,9 @@ vi.mock('../../../lib/api', () => ({
   listInvitations: vi.fn(),
   getRoles: vi.fn(),
   getStages: vi.fn(),
+  // R9.3: the checklist resolves the org's DEFAULT board before probing its
+  // stages, so the seeded-five comparison cannot be answered by another board.
+  getPipelines: vi.fn(),
   getContacts: vi.fn(),
   updateProfile: vi.fn(),
   createObjectDef: vi.fn(),
@@ -37,7 +40,7 @@ vi.mock('../../../lib/auth', () => ({
 }));
 
 import {
-  getContacts, getRoles, getStages, getWorkspaceMembers, listInvitations, updateProfile,
+  getContacts, getPipelines, getRoles, getStages, getWorkspaceMembers, listInvitations, updateProfile,
 } from '../../../lib/api';
 import SetupChecklist from '../SetupChecklist';
 import { openSetupChecklist, resetSetupChecklistSession } from '../checklistState';
@@ -80,6 +83,8 @@ beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
   localStorage.clear();
+  // R9.3: every stage probe now resolves the default board first.
+  vi.mocked(getPipelines).mockResolvedValue([{ id: 'p-default', org_id: 'org-1', name: 'Sales Pipeline', position: 0, is_default: true, created_at: '', updated_at: '' }]);
   act(() => resetSetupChecklistSession());
   caps = new Set(ALL_CAPS);
   objectAccess = true;

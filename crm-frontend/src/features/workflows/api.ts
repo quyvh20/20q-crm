@@ -327,6 +327,12 @@ export interface SchemaStage {
   name: string;
   color: string;
   order: number;
+  /** Owning pipeline (R9.3 multi-pipeline). Empty on a stage the backfill has
+   *  not reached — such rows still belong to the org and must stay pickable. */
+  pipeline_id?: string;
+  /** Display name of the owning pipeline. Stage name + order are BOTH ambiguous
+   *  across boards, so pickers group on this rather than on the stage alone. */
+  pipeline_name?: string;
 }
 
 export interface SchemaTag {

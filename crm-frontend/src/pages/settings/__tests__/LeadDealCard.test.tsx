@@ -35,10 +35,12 @@ vi.mock('../../../features/integrations/api', () => ({
 
 vi.mock('../../../lib/api', () => ({
   getStages: vi.fn(),
+  // R9.3: the card scopes its stage list to the org's default board.
+  getPipelines: vi.fn(),
 }));
 
 import { updateSource } from '../../../features/integrations/api';
-import { getStages } from '../../../lib/api';
+import { getPipelines, getStages } from '../../../lib/api';
 import LeadDealCard from '../LeadDealCard';
 
 const STAGES = [
@@ -81,6 +83,7 @@ function renderCard(source: LeadSource) {
 
 describe('LeadDealCard', () => {
   beforeEach(() => {
+    vi.mocked(getPipelines).mockResolvedValue([{ id: 'p-default', org_id: 'org-1', name: 'Sales Pipeline', position: 0, is_default: true, created_at: '', updated_at: '' }]);
     vi.mocked(getStages).mockResolvedValue(STAGES);
     vi.mocked(updateSource).mockResolvedValue(makeSource());
   });

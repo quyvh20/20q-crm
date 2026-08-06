@@ -136,7 +136,14 @@ export interface DealConfig {
   enabled: boolean;
   /** Which stage new deals start in. Won/lost stages are refused: deal creation
    *  does not derive is_won/is_lost, so one would sit in the won column reporting
-   *  the opposite. */
+   *  the opposite.
+   *
+   *  The picker offers stages from the org's DEFAULT pipeline only (R9.3). Not a
+   *  server constraint — resolveDealStage checks liveness org-wide, so any board's
+   *  stage is accepted — but its fallback for a deleted stage resolves against the
+   *  default board, so a stage chosen on another board works until the day it is
+   *  deleted and then silently re-files this source's leads onto a pipeline nobody
+   *  chose for it. */
   stage_id?: string;
   /** Title template over a CLOSED token vocabulary — see DEAL_NAME_TOKENS. */
   name_template?: string;

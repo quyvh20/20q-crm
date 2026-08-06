@@ -19,6 +19,7 @@ vi.mock('../../../lib/api', () => ({
   listInvitations: vi.fn(),
   getRoles: vi.fn(),
   getStages: vi.fn(),
+  getPipelines: vi.fn(),
   getContacts: vi.fn(),
   updateProfile: vi.fn(),
   createObjectDef: vi.fn(),

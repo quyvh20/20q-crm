@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { Badge, Button, Input, Select } from '@/components/ui';
-import { getStages, type PipelineStage } from '../../lib/api';
+import { getPipelines, getStages, type PipelineStage } from '../../lib/api';
 import { useUpdateSource } from '../../features/integrations/queries';
 import {
   DEAL_NAME_TOKENS,
@@ -33,6 +33,11 @@ export default function LeadDealCard({ source }: Props) {
 
   const [stages, setStages] = useState<PipelineStage[]>([]);
   const [stagesFailed, setStagesFailed] = useState(false);
+  // The default board's name, set ONLY when the org has more than one board. The
+  // copy it drives explains why this list is shorter than the admin expects, and
+  // for the single-pipeline org — still the common case — there is nothing to
+  // explain and the sentence would be noise.
+  const [scopedBoard, setScopedBoard] = useState('');
   const [enabled, setEnabled] = useState(Boolean(deal?.enabled));
   const [stageId, setStageId] = useState(deal?.stage_id ?? '');
   const [template, setTemplate] = useState(deal?.name_template ?? DEFAULT_DEAL_NAME_TEMPLATE);
@@ -44,13 +49,35 @@ export default function LeadDealCard({ source }: Props) {
     setTemplate(deal?.name_template ?? DEFAULT_DEAL_NAME_TEMPLATE);
   }, [source.id, deal?.enabled, deal?.stage_id, deal?.name_template]);
 
+  // Only the DEFAULT pipeline's stages are offered (R9.3).
+  //
+  // The server accepts a stage from any board — resolveDealStage checks liveness
+  // org-wide on purpose — so this is the UI declining to offer a choice the server
+  // would take. Its fallback for a configured stage that has since been deleted
+  // resolves against the DEFAULT board's first stage. So a source pointed at some
+  // other team's board works exactly as configured right up until that stage is
+  // deleted, and then silently starts re-filing this channel's leads onto the
+  // default pipeline. Offering only stages the fallback can also reach means the
+  // deleted-stage path lands on the same board the admin was looking at.
   useEffect(() => {
     let cancelled = false;
-    getStages()
+    getPipelines()
+      .then((ps) => {
+        const def = ps.find((p) => p.is_default);
+        if (!cancelled && def && ps.length > 1) setScopedBoard(def.name);
+        // No default found means an org whose pipeline backfill has not run: an
+        // unscoped fetch is then exactly right, because there is only one board's
+        // worth of stages to return.
+        return getStages(def?.id);
+      })
       .then((s) => {
         if (cancelled) return;
         setStages(Array.isArray(s) ? s : []);
       })
+      // A failed pipelines lookup fails the whole picker rather than falling back
+      // to the org-wide stage list. That fallback is available and deliberately
+      // not taken: it would quietly re-offer every board's stages on a transient
+      // blip, which is the misconfiguration this scoping exists to prevent.
       .catch(() => { if (!cancelled) setStagesFailed(true); });
     return () => { cancelled = true; };
   }, []);
@@ -127,8 +154,9 @@ export default function LeadDealCard({ source }: Props) {
             <div className="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 p-3 text-xs">
               <AlertTriangle className="h-4 w-4 shrink-0 text-warning" aria-hidden />
               <span className="text-foreground">
-                The stage this source was set to has been deleted. New deals are going to your
-                first stage instead — pick one below to make that deliberate.
+                The stage this source was set to has been deleted. New deals are going to the
+                first stage of your default pipeline instead — pick one below to make that
+                deliberate.
               </span>
             </div>
           )}
@@ -157,6 +185,13 @@ export default function LeadDealCard({ source }: Props) {
             <p className="text-xs text-muted-foreground">
               Won and lost stages are not offered — a deal that starts closed never gets counted
               as one.
+              {scopedBoard && (
+                <>
+                  {' '}
+                  Stages from “{scopedBoard}” only: it is your default pipeline, and it is where
+                  a lead is filed if the stage you pick here is ever deleted.
+                </>
+              )}
             </p>
           </div>
 

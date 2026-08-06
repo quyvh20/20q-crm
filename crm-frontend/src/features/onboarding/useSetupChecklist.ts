@@ -1,10 +1,12 @@
 import { useQuery } from '@tanstack/react-query';
 import {
   getContacts,
+  getPipelines,
   getRoles,
   getStages,
   getWorkspaceMembers,
   listInvitations,
+  type Pipeline,
   type PipelineStage,
 } from '../../lib/api';
 import { usePermissions } from '../../lib/auth';
@@ -41,7 +43,10 @@ export const setupKeys = {
   members: () => [...setupKeys.all, 'members'] as const,
   invitations: () => [...setupKeys.all, 'invitations'] as const,
   roles: () => [...setupKeys.all, 'roles'] as const,
-  stages: () => [...setupKeys.all, 'stages'] as const,
+  pipelines: () => [...setupKeys.all, 'pipelines'] as const,
+  // Keyed by board (R9.3): promoting a different pipeline to default must not serve
+  // the previous default's cached stages while the new ones are in flight.
+  stages: (pipelineId?: string) => [...setupKeys.all, 'stages', pipelineId ?? ''] as const,
   contacts: () => [...setupKeys.all, 'contacts'] as const,
 };
 
@@ -63,7 +68,9 @@ export const SEEDED_STAGE_NAMES = ['Lead In', 'Qualified', 'Proposal', 'Negotiat
 
 /** True once the stage list differs from the untouched seed — renamed, reordered,
  *  added to or removed from. An empty pipeline is NOT customized (nothing to sell
- *  through yet). */
+ *  through yet). Pass ONE board's stages: the count is compared against a fixed
+ *  five-name list, so an org-wide stage list would read as customized the moment a
+ *  second pipeline exists. */
 export function isPipelineCustomized(stages: Pick<PipelineStage, 'name' | 'position'>[]): boolean {
   if (stages.length === 0) return false;
   if (stages.length !== SEEDED_STAGE_NAMES.length) return true;
@@ -116,10 +123,27 @@ export function useSetupChecklist(): SetupChecklistState {
     ...PROBE_OPTIONS,
   });
 
-  const stages = useQuery({
-    queryKey: setupKeys.stages(),
-    queryFn: getStages,
+  const pipelines = useQuery<Pipeline[]>({
+    queryKey: setupKeys.pipelines(),
+    queryFn: getPipelines,
     enabled: canPipeline,
+    ...PROBE_OPTIONS,
+  });
+
+  // The step is about the board a new workspace lands on, so it probes the DEFAULT
+  // pipeline and never the org-wide stage list. Org-wide, "customized" is decided by
+  // comparing a five-name seed against every stage in the org: the day someone adds a
+  // SECOND pipeline the org-wide count stops being five and the step ticks itself as
+  // customized because another board exists — not because anyone touched this one.
+  // Exactly one pipeline carries is_default; while that list is still loading (or, on
+  // a workspace with no default at all, never resolves) the id stays undefined and the
+  // stage probe simply doesn't run, leaving the step honestly unticked.
+  const defaultPipelineId = pipelines.data?.find((p) => p.is_default)?.id;
+
+  const stages = useQuery<PipelineStage[]>({
+    queryKey: setupKeys.stages(defaultPipelineId),
+    queryFn: () => getStages(defaultPipelineId),
+    enabled: canPipeline && !!defaultPipelineId,
     ...PROBE_OPTIONS,
   });
 
@@ -172,6 +196,9 @@ export function useSetupChecklist(): SetupChecklistState {
       why: 'Rename the stages to match how your deals really move.',
       to: '/settings/pipeline',
       cta: 'Edit stages',
+      // No data yet — pipelines still in flight, or the stage probe gated off — reads
+      // as an empty list, which isPipelineCustomized calls NOT customized. The step
+      // waits for a real answer rather than guessing "done".
       done: isPipelineCustomized(stages.data ?? []),
     });
   }
@@ -187,7 +214,9 @@ export function useSetupChecklist(): SetupChecklistState {
     });
   }
 
-  const probes = [members, invitations, roles, stages, contacts];
+  // pipelines counts as a probe: it gates the stage fetch, so without it the card
+  // would render the pipeline step unticked for the whole of that first round-trip.
+  const probes = [members, invitations, roles, pipelines, stages, contacts];
   const loading = !loaded || probes.some((p) => p.isLoading && p.fetchStatus !== 'idle');
 
   const doneCount = steps.filter((s) => s.done).length;

@@ -470,6 +470,8 @@ export async function getTags() {
 export interface PipelineStage {
   id: string;
   org_id: string;
+  /** The board this stage belongs to (R9.3). Absent on a pre-backfill stage. */
+  pipeline_id?: string;
   name: string;
   position: number;
   color: string;
@@ -477,10 +479,20 @@ export interface PipelineStage {
   is_lost: boolean;
 }
 
-export async function getStages(): Promise<PipelineStage[]> {
-  const res = await apiFetch('/api/pipeline/stages');
+/**
+ * getStages returns an org's stages. Omitting pipelineId returns EVERY stage in
+ * the org — the pre-R9.3 behaviour, which is what callers that only resolve a
+ * stage NAME for display want. Anything rendering a BOARD must pass one, or a
+ * multi-pipeline org sees every board's ladder merged into one set of columns.
+ */
+export async function getStages(pipelineId?: string): Promise<PipelineStage[]> {
+  const qs = pipelineId ? `?pipeline_id=${encodeURIComponent(pipelineId)}` : '';
+  const res = await apiFetch(`/api/pipeline/stages${qs}`);
   const json = await parseJsonSafe(res);
-  return json.data as PipelineStage[];
+  // Without this guard an error body yields undefined and every `stages.length`
+  // downstream throws instead of surfacing the failure.
+  if (!res.ok) throw apiError(res, json, 'Failed to load pipeline stages');
+  return (json.data ?? []) as PipelineStage[];
 }
 
 export async function createStage(data: Partial<PipelineStage>) {
@@ -505,11 +517,63 @@ export async function deleteStage(id: string) {
   }
 }
 
-export async function seedDefaultStages(): Promise<PipelineStage[]> {
-  const res = await apiFetch('/api/pipeline/stages/seed-defaults', { method: 'POST' });
+export async function seedDefaultStages(pipelineId?: string): Promise<PipelineStage[]> {
+  const qs = pipelineId ? `?pipeline_id=${encodeURIComponent(pipelineId)}` : '';
+  const res = await apiFetch(`/api/pipeline/stages/seed-defaults${qs}`, { method: 'POST' });
   const json = await parseJsonSafe(res);
   if (!res.ok) throw apiError(res, json, 'Failed to seed default stages');
   return json.data as PipelineStage[];
+}
+
+// ============================================================
+// Pipelines (R9.3)
+// ============================================================
+
+export interface Pipeline {
+  id: string;
+  org_id: string;
+  name: string;
+  position: number;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function getPipelines(): Promise<Pipeline[]> {
+  const res = await apiFetch('/api/pipeline/pipelines');
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Failed to load pipelines');
+  return (json.data ?? []) as Pipeline[];
+}
+
+export async function createPipeline(data: {
+  name: string;
+  position?: number;
+  seed_default_stages?: boolean;
+}): Promise<Pipeline> {
+  const res = await apiFetch('/api/pipeline/pipelines', { method: 'POST', body: JSON.stringify(data) });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Failed to create pipeline');
+  return json.data as Pipeline;
+}
+
+export async function updatePipeline(
+  id: string,
+  data: Partial<{ name: string; position: number; is_default: boolean }>,
+): Promise<Pipeline> {
+  const res = await apiFetch(`/api/pipeline/pipelines/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Failed to update pipeline');
+  return json.data as Pipeline;
+}
+
+export async function deletePipeline(id: string): Promise<void> {
+  const res = await apiFetch(`/api/pipeline/pipelines/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    // 409 carries the actionable reason (still has deals / is the default).
+    throw apiError(res, json, 'Failed to delete pipeline');
+  }
 }
 
 
@@ -524,6 +588,8 @@ export interface Deal {
   contact_id?: string;
   company_id?: string;
   stage_id?: string;
+  /** The board this deal sits on (R9.3), denormalised from its stage. */
+  pipeline_id?: string;
   value: number;
   probability: number;
   owner_user_id?: string;

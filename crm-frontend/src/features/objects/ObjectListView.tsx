@@ -20,6 +20,7 @@ import {
   getObjectSchema,
   listObjectRecordsUnified,
   exportRecordsCsv,
+  getPipelines,
   getTags,
   getStages,
   bulkContactAction,
@@ -28,6 +29,7 @@ import {
   type UniformRecord,
   type RecordSort,
   type Tag,
+  type Pipeline,
 } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { formatFieldValue } from './fieldHelpers';
@@ -293,6 +295,8 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
 
   const [relationOptions, setRelationOptions] = useState<Record<string, RelationOption[]>>({});
   const [tags, setTags] = useState<Tag[]>([]);
+  // R9.3: the org's boards, loaded only for a board-able object (deals today).
+  const [pipelines, setPipelines] = useState<Pipeline[]>([]);
 
   // Reset the state that is NOT in the URL when switching objects. Filters, q,
   // tags, sort and view need no reset here: they live in the query string, and
@@ -374,12 +378,33 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
     };
   }, [relationFields]);
 
+  // R9.3: the org's boards. Only fetched for a board-able object, and the
+  // selected one lives in the query string so a board link survives a reload
+  // and can be pasted to a colleague — the same rule as every other list knob.
+  useEffect(() => {
+    if (!stageField) return;
+    let cancelled = false;
+    getPipelines()
+      .then((p) => { if (!cancelled) setPipelines(p); })
+      .catch(() => { /* the board falls back to the org default below */ });
+    return () => { cancelled = true; };
+  }, [stageField]);
+
+  const pipelineParam = searchParams.get('pipeline') ?? '';
+  const activePipelineId = useMemo(() => {
+    if (pipelines.length === 0) return undefined;
+    if (pipelineParam && pipelines.some((p) => p.id === pipelineParam)) return pipelineParam;
+    return (pipelines.find((p) => p.is_default) ?? pipelines[0]).id;
+  }, [pipelines, pipelineParam]);
+
   // A "stage" relation has no registry target (pipeline_stages isn't a registered
   // object), so its labels come from the pipeline stages. Loaded into the same
   // option map so relation cells resolve to the stage name, not its id.
   useEffect(() => {
     if (!stageField) return;
     let cancelled = false;
+    // Deliberately UNSCOPED (R9.3): a table row can show a deal from any board,
+    // so label resolution needs every stage. Only the BOARD view scopes.
     getStages()
       .then((s) => {
         if (!cancelled) {
@@ -734,6 +759,20 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
         description={`Manage your ${schema.label_plural.toLowerCase()}`}
         actions={
           <>
+            {/* R9.3 board switcher — only meaningful once a second board exists,
+                so a single-pipeline org sees no extra chrome. */}
+            {stageField && view === 'board' && pipelines.length > 1 && (
+              <select
+                aria-label="Pipeline"
+                value={activePipelineId ?? ''}
+                onChange={(e) => updateParams({ pipeline: e.target.value })}
+                className="h-9 rounded-lg border border-input bg-background px-2 text-xs font-medium shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {pipelines.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            )}
             {stageField && (
               <div className="inline-flex items-center rounded-lg border border-input bg-background p-0.5 shadow-sm">
                 {(['table', 'board'] as const).map((v) => (
@@ -793,6 +832,7 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
         <ObjectKanban
           schema={schema}
           stageKey={stageField.key}
+          pipelineId={activePipelineId}
           onCardClick={openRecord}
         />
       ) : (

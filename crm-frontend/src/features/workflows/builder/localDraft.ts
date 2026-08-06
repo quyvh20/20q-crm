@@ -20,8 +20,34 @@ function delayStep(durationSec: number): WorkflowStep {
   return { id: nid(), type: 'delay', delay: { duration_sec: durationSec } };
 }
 
+/** A schema stage, plus the board it belongs to (R9.3). Declared optional here
+ *  rather than assumed: the backend omits pipeline_id for a stage that predates
+ *  the pipeline backfill. */
+type BoardStage = WorkflowSchema['stages'][number] & { pipeline_id?: string };
+
+/**
+ * Find a stage by name, confined to ONE board.
+ *
+ * Every pipeline has its own "Closed Won", so a match over the flat stage list
+ * keys the drafted trigger to whichever board the payload happened to order
+ * first — a draft that reads correctly and then watches a pipeline the user never
+ * opens. The schema carries no is_default flag, so the first stage that names a
+ * board stands in for it: the schema handler orders stages by pipeline position,
+ * making that the org's leftmost board. Stages from before the backfill name no
+ * board at all, and there is then nothing to confine to, so the old flat match
+ * stands.
+ *
+ * No cross-board fallback when the chosen board has no match: that is the
+ * arbitrary pick this exists to remove, and an unset stage is a blank the builder
+ * already asks the user to fill.
+ */
 function findStage(schema: WorkflowSchema | null | undefined, re: RegExp): { id: string } | undefined {
-  return schema?.stages?.find((s) => re.test(s.name.toLowerCase()));
+  // ?? [] rather than ?., because the backend marshals a nil stage slice as JSON
+  // null — the guard is against null, not just a missing key.
+  const stages: BoardStage[] = schema?.stages ?? [];
+  const board = stages.find((s) => s.pipeline_id)?.pipeline_id;
+  const scoped = board ? stages.filter((s) => s.pipeline_id === board) : stages;
+  return scoped.find((s) => re.test(s.name.toLowerCase()));
 }
 
 function detectTrigger(p: string, schema?: WorkflowSchema | null): TriggerSpec {

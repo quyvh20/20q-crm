@@ -11,6 +11,8 @@ vi.mock('../../lib/api', () => ({
   deleteDeal: vi.fn(),
   getActivities: vi.fn().mockResolvedValue([]),
   getStages: vi.fn(),
+  // R9.3: the stage picker is keyed on the DEAL's pipeline, not the org's.
+  getPipelines: vi.fn(),
   changeDealStage: vi.fn(),
   updateDeal: vi.fn(),
   getTasks: vi.fn().mockResolvedValue([]),
@@ -51,7 +53,7 @@ vi.mock('../../lib/auth', () => ({
   }),
 }));
 
-import { getDeal, getStages } from '../../lib/api';
+import { getDeal, getPipelines, getStages } from '../../lib/api';
 import DealDetailPage from '../DealDetailPage';
 
 const stages: PipelineStage[] = [
@@ -84,6 +86,7 @@ beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
   objectAccess = {};
+  vi.mocked(getPipelines).mockResolvedValue([{ id: 'p-default', org_id: 'org-1', name: 'Sales Pipeline', position: 0, is_default: true, created_at: '', updated_at: '' }]);
   vi.mocked(getDeal).mockResolvedValue(deal);
   vi.mocked(getStages).mockResolvedValue(stages);
 });
@@ -93,8 +96,11 @@ describe('DealDetailPage OLS gates', () => {
     renderPage();
 
     expect(await screen.findByText('Move to stage')).toBeInTheDocument();
-    // Non-terminal stages render as move buttons.
-    expect(screen.getByRole('button', { name: 'Proposal' })).toBeInTheDocument();
+    // Non-terminal stages render as move buttons. AWAITED, not sync: since R9.3
+    // the stage list is keyed on the deal's own pipeline, so it cannot be
+    // fetched until the deal resolves. "Move to stage" therefore paints one
+    // round trip before its buttons do.
+    expect(await screen.findByRole('button', { name: 'Proposal' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Mark Won' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Mark Lost' })).toBeInTheDocument();
   });
