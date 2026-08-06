@@ -155,5 +155,8 @@ func (uc *pipelineUseCase) Delete(ctx context.Context, orgID, id uuid.UUID) erro
 	if n > 0 {
 		return domain.ErrPipelineHasDeals
 	}
+	// SoftDelete takes the board's stages with it — see the repository. Leaving
+	// them behind would keep them selectable everywhere while belonging to a
+	// board that no longer exists.
 	return uc.repo.SoftDelete(ctx, orgID, id)
 }

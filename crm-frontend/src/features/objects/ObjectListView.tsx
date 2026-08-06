@@ -1113,7 +1113,10 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
         hideHeader
         padded={false}
       >
-        <ObjectForm schema={schema} onSaved={handleSaved} onCancel={closePanel} />
+        {/* pipelineId (R9.3): a deal created while looking at board B must get
+            B's stages. Without it the picker falls back to the org default and
+            the backend then 400s the chosen stage as cross-pipeline. */}
+        <ObjectForm schema={schema} pipelineId={activePipelineId} onSaved={handleSaved} onCancel={closePanel} />
       </Modal>
 
       {confirmDialog}

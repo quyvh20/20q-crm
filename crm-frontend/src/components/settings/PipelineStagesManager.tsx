@@ -178,6 +178,12 @@ export default function PipelineStagesManager() {
     mutationFn: (name: string) => createPipeline({ name, seed_default_stages: true }),
     onSuccess: (p) => {
       setError('');
+      // Seed the cache with the new board BEFORE selecting it. Selecting first
+      // and invalidating second loses the race: the reconciliation effect
+      // re-runs against the still-stale list, does not find the new id, and
+      // resets the selection to the default board — so the stages the user
+      // adds next silently land on the wrong pipeline.
+      qc.setQueryData<Pipeline[]>(['pipelines'], (prev) => [...(prev ?? []), p]);
       setPipelineId(p.id);
       qc.invalidateQueries({ queryKey: ['pipelines'] });
       qc.invalidateQueries({ queryKey: ['stages'] });

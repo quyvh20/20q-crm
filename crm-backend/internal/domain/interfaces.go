@@ -858,6 +858,13 @@ type DealFilter struct {
 	OwnerUserID *uuid.UUID `form:"owner_user_id"`
 	ContactID   *uuid.UUID `form:"contact_id"`
 	CompanyID   *uuid.UUID `form:"company_id"`
+	// PipelineID scopes the list to one board (R9.3). It has to be a TYPED
+	// filter, not just a query param: an unrecognised key falls through to
+	// CustomFilters and is executed as `custom_fields ->> 'pipeline_id' = ?`,
+	// which matches nothing and silently returns an EMPTY list rather than
+	// erroring — the exact failure the record handler's reservedListParams
+	// comment warns about.
+	PipelineID *uuid.UUID `form:"pipeline_id"`
 	// CustomFilters matches custom (jsonb) fields exactly: custom_fields ->> key = value.
 	// It lets a deal be listed by an admin-defined relation field, which powers
 	// reverse related lists for custom lookups on deals.

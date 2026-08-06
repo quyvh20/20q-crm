@@ -68,10 +68,23 @@ func (r *pipelineRepository) Update(ctx context.Context, p *domain.Pipeline) err
 	return r.db.WithContext(ctx).Save(p).Error
 }
 
+// SoftDelete removes the board AND its stages, in one transaction.
+//
+// Taking the stages too is not tidiness. No stage query joins `pipelines`, so a
+// stage whose board is soft-deleted stays indistinguishable from a live one:
+// it keeps passing the lead-ingest liveness check, keeps appearing in the
+// workflow stage picker, and a deal created onto it is stamped with a deleted
+// pipeline_id — landing on no board at all, and (because a cross-pipeline move
+// is refused) unable to be moved back off it.
 func (r *pipelineRepository) SoftDelete(ctx context.Context, orgID, id uuid.UUID) error {
-	return r.db.WithContext(ctx).
-		Where("id = ? AND org_id = ?", id, orgID).
-		Delete(&domain.Pipeline{}).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("org_id = ? AND pipeline_id = ?", orgID, id).
+			Delete(&domain.PipelineStage{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("id = ? AND org_id = ?", id, orgID).
+			Delete(&domain.Pipeline{}).Error
+	})
 }
 
 // SetDefault promotes one pipeline and demotes every other in the org.

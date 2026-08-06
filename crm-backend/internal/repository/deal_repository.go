@@ -99,6 +99,9 @@ func (r *dealRepository) List(ctx context.Context, orgID uuid.UUID, f domain.Dea
 	if f.CompanyID != nil {
 		query = query.Where("deals.company_id = ?", *f.CompanyID)
 	}
+	if f.PipelineID != nil {
+		query = query.Where("deals.pipeline_id = ?", *f.PipelineID)
+	}
 	for k, v := range f.CustomFilters {
 		if k == "" || v == "" {
 			continue

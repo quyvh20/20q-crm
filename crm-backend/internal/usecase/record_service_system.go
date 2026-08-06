@@ -344,7 +344,11 @@ func (a *dealAdapter) list(ctx context.Context, orgID uuid.UUID, in domain.Recor
 		ContactID:     filterUUID(in.Filters, "contact"),
 		CompanyID:     filterUUID(in.Filters, "company"),
 		OwnerUserID:   filterUUID(in.Filters, "owner_user_id"),
-		CustomFilters: customFilters(in.Filters, "stage", "contact", "company", "owner_user_id"),
+		PipelineID:    filterUUID(in.Filters, "pipeline_id"),
+		// pipeline_id MUST be in this exclusion list too. customFilters passes
+		// through every key it is not told to skip, so omitting it here would
+		// ALSO append a custom_fields test for the same key and empty the result.
+		CustomFilters: customFilters(in.Filters, "stage", "contact", "company", "owner_user_id", "pipeline_id"),
 		SortBy:        domain.RecordSortFilterKey("deal", in.SortBy),
 		SortOrder:     in.SortOrder,
 	})

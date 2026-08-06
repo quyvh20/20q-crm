@@ -168,6 +168,7 @@ func setupPagination(t *testing.T) (*gorm.DB, func()) {
 		org_id uuid NOT NULL,
 		title varchar(255) NOT NULL,
 		contact_id uuid, company_id uuid, stage_id uuid,
+		pipeline_id uuid,
 		value numeric(15,2) DEFAULT 0,
 		probability int DEFAULT 0 CHECK (probability >= 0 AND probability <= 100),
 		owner_user_id uuid,

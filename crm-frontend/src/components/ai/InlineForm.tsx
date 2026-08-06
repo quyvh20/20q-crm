@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Briefcase, User } from 'lucide-react';
 import type { FormPayload } from './chatTypes';
 import {
-  createContact, createDeal, getStages, getFieldDefs, getContacts,
+  createContact, createDeal, getStages, getPipelines, getFieldDefs, getContacts,
   getObjectDef, createObjectRecord,
   type PipelineStage, type CustomFieldDef, type Contact, type CustomObjectDef,
 } from '../../lib/api';
@@ -131,7 +131,18 @@ function DealForm({ payload, onSuccess, onCancel }: Props) {
   const [done, setDone] = useState(false);
   const formEndRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    getStages().then(st => { setStages(st); if (st.length > 0) setStageId(st[0].id); }).catch(() => {});
+    // R9.3: scope to the org's DEFAULT board. Unscoped, the list now comes back
+    // ordered by pipeline_id then position, so `st[0]` is the first stage of
+    // whichever board has the lowest UUID — an effectively random pipeline for
+    // an AI-created deal, and one the backend may then reject as
+    // cross-pipeline against the deal's own board.
+    getPipelines()
+      .then((ps) => ps.find((p) => p.is_default)?.id)
+      .catch(() => undefined)
+      .then((defaultId) =>
+        getStages(defaultId).then(st => { setStages(st); if (st.length > 0) setStageId(st[0].id); }),
+      )
+      .catch(() => {});
     getFieldDefs('deal').then(setFieldDefs).catch(() => {});
     const sq = payload.prefill_contact_name || '';
     getContacts({ q: sq || undefined, limit: 20 }).then(r => setContacts(r.contacts)).catch(() => {});
