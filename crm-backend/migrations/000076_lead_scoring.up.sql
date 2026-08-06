@@ -30,6 +30,9 @@ CREATE INDEX IF NOT EXISTS idx_contacts_org_lead_score
     ON contacts(org_id, lead_score, id) WHERE deleted_at IS NULL;
 
 ALTER TABLE organizations ADD COLUMN IF NOT EXISTS lead_score_run_at TIMESTAMPTZ;
+-- Where the last rescore pass stopped, so a large org resumes instead of
+-- redoing its leading batch and never reaching its tail.
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS lead_score_cursor UUID;
 
 -- Engagement rules join the event ledger on the normalized email — the only
 -- durable bridge to a contact, since the campaign roster that carries a real

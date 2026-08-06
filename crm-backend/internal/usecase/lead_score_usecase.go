@@ -75,7 +75,23 @@ func (uc *leadScoringUseCase) catalog(ctx context.Context, orgID uuid.UUID) ([]d
 	if err != nil {
 		return nil, err
 	}
-	return reportCatalogForDef(def, fields), nil
+	// lead_score is REMOVED from the catalog scoring rules compile against.
+	//
+	// It stays in the report and segment catalogs — "contacts scoring 50+" is
+	// exactly the audience this feature exists to enable. But a scoring RULE
+	// that tests lead_score would make the engine's UPDATE read the column it
+	// is writing in the same statement. Postgres would evaluate it against the
+	// pre-UPDATE value, so the score would flip-flop between passes and never
+	// settle, with no error to explain why.
+	catalog := reportCatalogForDef(def, fields)
+	out := make([]domain.ReportField, 0, len(catalog))
+	for _, f := range catalog {
+		if f.Key == "lead_score" {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out, nil
 }
 
 // ============================================================
@@ -265,17 +281,24 @@ func (uc *leadScoringUseCase) rescoreOrg(ctx context.Context, orgID uuid.UUID) (
 	if err != nil {
 		return 0, domain.ErrInternal
 	}
-	n, err := uc.repo.RecomputeOrg(ctx, orgID, catalog, rules)
-	// Mark the org rescored even on a truncated pass: the watermark means "we
-	// looked", and leaving it unset would pin the same org at the head of the
-	// NULLS FIRST queue forever, starving every other org.
-	if markErr := uc.repo.MarkOrgRescored(ctx, orgID); markErr != nil {
-		uc.logger.Warn("lead scoring: could not stamp the rescore watermark", "org_id", orgID.String(), "error", markErr)
+	n, skipped, err := uc.repo.RecomputeOrg(ctx, orgID, catalog, rules)
+	// A rule that will not compile is SKIPPED, not fatal (see the compiler), so
+	// one broken rule degrades itself rather than freezing the whole workspace's
+	// scores. It must still be loud: nothing else would ever tell the admin.
+	for _, s := range skipped {
+		uc.logger.Error("lead scoring: rule skipped — it no longer compiles, so it contributes no points until it is fixed or deleted",
+			"org_id", orgID.String(), "reason", s)
 	}
-	if err != nil {
-		return n, err
+	// Stamp the watermark on success AND on truncation — both mean "we looked",
+	// and leaving it unset would pin this org at the head of the NULLS FIRST
+	// queue. A hard failure deliberately does NOT stamp, so a broken org is
+	// retried on the next tick instead of being parked for the staleness window.
+	if err == nil || domain.IsLeadScoreTruncated(err) {
+		if markErr := uc.repo.MarkOrgRescored(ctx, orgID); markErr != nil {
+			uc.logger.Warn("lead scoring: could not stamp the rescore watermark", "org_id", orgID.String(), "error", markErr)
+		}
 	}
-	return n, nil
+	return n, err
 }
 
 // rescoreInBackground rescores one org off the request path, after a rule

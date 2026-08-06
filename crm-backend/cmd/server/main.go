@@ -2215,6 +2215,10 @@ func main() {
 			ON contacts(org_id, lead_score, id) WHERE deleted_at IS NULL`)
 		// Per-org rescore watermark; drives the sweep's fairness ordering.
 		db.Exec(`ALTER TABLE organizations ADD COLUMN IF NOT EXISTS lead_score_run_at TIMESTAMPTZ`)
+		// Where the last pass stopped. A rescore is bounded per pass, so without a
+		// resume point an org larger than that bound would rescore the same leading
+		// batch forever and never reach its tail.
+		db.Exec(`ALTER TABLE organizations ADD COLUMN IF NOT EXISTS lead_score_cursor UUID`)
 
 		// marketing_email_events is both the ingest queue and the ledger, so this
 		// index goes on a HOT table and is created under a bounded lock_timeout:
@@ -2804,7 +2808,14 @@ func main() {
 		// which sorts first.
 		go func() {
 			run := func() {
-				if n, err := leadScoringUC.RunRescorePass(context.Background()); err != nil {
+				// Bounded: the pass takes a FLEET-WIDE advisory lock, so a hung
+				// query under a deadline-less context would block every replica's
+				// sweep until the process restarted. Ten minutes is well clear of
+				// a full pass (25 orgs, batched set-based UPDATEs) and well under
+				// the 15-minute tick, so a stuck pass is skipped, not stacked.
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+				defer cancel()
+				if n, err := leadScoringUC.RunRescorePass(ctx); err != nil {
 					log.Warn("lead scoring: rescore pass failed", zap.Error(err))
 				} else if n > 0 {
 					log.Info("lead scoring: orgs rescored", zap.Int("orgs", n))

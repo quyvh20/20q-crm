@@ -2,11 +2,21 @@ package domain
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
+
+// ErrLeadScoreTruncated marks a rescore that stopped at its per-org round cap
+// with work still to do. It lives in domain so the usecase can distinguish
+// "incomplete but progressing" from a hard failure without importing the
+// repository package.
+var ErrLeadScoreTruncated = errors.New("lead scoring: rescore hit its per-org round cap; the remaining contacts resume on the next pass")
+
+// IsLeadScoreTruncated reports the round-cap sentinel.
+func IsLeadScoreTruncated(err error) bool { return errors.Is(err, ErrLeadScoreTruncated) }
 
 // ============================================================
 // Lead scoring (R9.4)
@@ -132,10 +142,15 @@ type LeadScoringRepository interface {
 	UpdateRule(ctx context.Context, r *LeadScoringRule) error
 	DeleteRule(ctx context.Context, orgID, id uuid.UUID) error
 	CountRules(ctx context.Context, orgID uuid.UUID) (int64, error)
-	// RecomputeOrg rescores every contact in the org and returns how many rows
-	// it wrote. Batched by keyset with a bounded round count — a truncated pass
-	// says so rather than looking complete.
-	RecomputeOrg(ctx context.Context, orgID uuid.UUID, catalog []ReportField, rules []LeadScoringRule) (int64, error)
+	// RecomputeOrg rescores every contact in the org. It returns the rows it
+	// wrote, a human-readable reason per rule it had to SKIP, and an error.
+	//
+	// Skipping rather than failing is the point: a rule can stop compiling
+	// through an ordinary unrelated action — an admin deletes the custom field
+	// it tests — and aborting the whole expression would freeze every contact's
+	// score workspace-wide, permanently and with nothing on screen to say so.
+	// One broken rule must cost only its own points.
+	RecomputeOrg(ctx context.Context, orgID uuid.UUID, catalog []ReportField, rules []LeadScoringRule) (rows int64, skipped []string, err error)
 	// OrgsDueForRescore claims orgs whose scores are stale. Driven from
 	// organizations (not from a DISTINCT over a child table) so an org whose
 	// rules were all just deleted still gets one pass to zero its scores.

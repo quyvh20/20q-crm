@@ -48,6 +48,12 @@ function RuleCard({
   saving: boolean;
 }) {
   const [points, setPoints] = useState(String(rule.points));
+  // Local draft for the condition. FilterEditor fires onChange on EVERY
+  // keystroke in a value box, so saving straight through issued a PUT per
+  // character — and each response re-rendered the row from server state, so the
+  // input reset and only the first character ever survived. The draft holds the
+  // edit; an explicit Save commits it.
+  const [draft, setDraft] = useState<ReportFilterGroup | undefined>(undefined);
 
   return (
     <div className="rounded-xl border border-border bg-card p-4">
@@ -63,8 +69,19 @@ function RuleCard({
             value={points}
             onChange={(e) => setPoints(e.target.value)}
             onBlur={() => {
-              const n = Number(points);
-              if (Number.isFinite(n) && n !== rule.points) onSave(rule.id, { points: n });
+              const trimmed = points.trim();
+              // An empty box is an abandoned edit, not "zero points" — restore
+              // the stored value rather than silently zeroing the rule.
+              if (trimmed === '') {
+                setPoints(String(rule.points));
+                return;
+              }
+              const n = Number(trimmed);
+              if (!Number.isFinite(n)) {
+                setPoints(String(rule.points));
+                return;
+              }
+              if (n !== rule.points) onSave(rule.id, { points: Math.round(n) });
             }}
             className="h-8 w-20"
           />
@@ -94,14 +111,30 @@ function RuleCard({
         <div className="mt-3 border-t border-border pt-3">
           <FilterEditor
             fields={fields}
-            value={rule.condition as unknown as ReportFilterGroup}
-            onChange={(g) => {
-              // An undefined group means "no rules left". Saving that would be a
-              // condition-less rule, which the backend rejects — correctly, since
-              // an empty condition would otherwise award points to everyone.
-              if (g) onSave(rule.id, { condition: g as unknown as Record<string, unknown> });
-            }}
+            value={draft ?? (rule.condition as unknown as ReportFilterGroup)}
+            onChange={setDraft}
           />
+          {draft && (
+            <div className="mt-2 flex items-center gap-2">
+              <Button
+                size="sm"
+                disabled={saving}
+                onClick={() => {
+                  // An undefined group means "no rules left". Saving that would
+                  // be a condition-less rule, which the backend rejects —
+                  // correctly, since an empty condition compiles to "everyone".
+                  if (!draft) return;
+                  onSave(rule.id, { condition: draft as unknown as Record<string, unknown> });
+                  setDraft(undefined);
+                }}
+              >
+                Save condition
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setDraft(undefined)}>
+                Discard
+              </Button>
+            </div>
+          )}
         </div>
       )}
     </div>

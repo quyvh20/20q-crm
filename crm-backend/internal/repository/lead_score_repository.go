@@ -100,15 +100,24 @@ func (r *leadScoringRepository) CountRules(ctx context.Context, orgID uuid.UUID)
 // Detecting that would need the expression evaluated twice (once to compare,
 // once to write) or a second pass; writing unconditionally within a bounded
 // batch is cheaper and keeps lead_score_at honest as "when we last checked".
-func (r *leadScoringRepository) RecomputeOrg(ctx context.Context, orgID uuid.UUID, catalog []domain.ReportField, rules []domain.LeadScoringRule) (int64, error) {
-	expr, exprArgs, err := buildLeadScoreExpr(catalog, rules)
+func (r *leadScoringRepository) RecomputeOrg(ctx context.Context, orgID uuid.UUID, catalog []domain.ReportField, rules []domain.LeadScoringRule) (int64, []string, error) {
+	expr, exprArgs, skipped, err := buildLeadScoreExpr(catalog, rules)
 	if err != nil {
-		return 0, err
+		return 0, skipped, err
+	}
+
+	// Resume where the last pass stopped. Without this the walk restarts from
+	// uuid.Nil every pass, so an org with more contacts than
+	// leadScoreBatchSize*leadScoreMaxRounds would rescore the same leading
+	// 200k forever and every contact past that boundary would keep its
+	// DEFAULT 0 permanently — invisible, since each pass reports success.
+	cursor, err := r.resumeCursor(ctx, orgID)
+	if err != nil {
+		return 0, skipped, err
 	}
 
 	var (
 		total  int64
-		cursor = uuid.Nil
 		rounds int
 	)
 	for rounds = 0; rounds < leadScoreMaxRounds; rounds++ {
@@ -132,10 +141,12 @@ func (r *leadScoringRepository) RecomputeOrg(ctx context.Context, orgID uuid.UUI
 			)
 			RETURNING contacts.id`, args...).Scan(&touched).Error
 		if err != nil {
-			return total, err
+			return total, skipped, err
 		}
 		if len(touched) == 0 {
-			return total, nil
+			// Reached the end of the org. Clear the watermark so the next pass
+			// starts from the top and picks up contacts created since.
+			return total, skipped, r.setResumeCursor(ctx, orgID, uuid.Nil)
 		}
 		total += int64(len(touched))
 		// RETURNING has no defined order, so the next cursor is the MAX id of
@@ -153,22 +164,51 @@ func (r *leadScoringRepository) RecomputeOrg(ctx context.Context, orgID uuid.UUI
 			}
 		}
 		if len(touched) < leadScoreBatchSize {
-			return total, nil
+			return total, skipped, r.setResumeCursor(ctx, orgID, uuid.Nil)
 		}
 	}
-	// Hit the round cap with work still to do. Reported, never silent — the
-	// next pass resumes from the top and gets further only if the org shrinks,
-	// so this needs a human to see it.
-	return total, errLeadScoreTruncated
+	// Hit the round cap with work still to do. Save where we stopped so the NEXT
+	// pass continues from here rather than redoing the same leading batch, and
+	// report the truncation — the caller treats it as progress, not failure.
+	if err := r.setResumeCursor(ctx, orgID, cursor); err != nil {
+		return total, skipped, err
+	}
+	return total, skipped, domain.ErrLeadScoreTruncated
 }
 
-// errLeadScoreTruncated signals a pass that stopped at its round cap. The
-// usecase logs it with the org id and the row count; it is not a failure of the
-// rows that WERE written.
-var errLeadScoreTruncated = errors.New("lead scoring: rescore hit its per-org round cap; some contacts were not rescored in this pass")
+// resumeCursor reads where the previous pass stopped (uuid.Nil = start over).
+//
+// Cast to text and COALESCEd rather than scanned as a uuid: the column is
+// nullable, and gorm's Scan cannot put a SQL NULL into a *uuid.UUID — it fails
+// with "converting NULL to uint8 is unsupported", which is precisely the
+// everyday case (no pass has been truncated yet).
+func (r *leadScoringRepository) resumeCursor(ctx context.Context, orgID uuid.UUID) (uuid.UUID, error) {
+	var raw string
+	if err := r.db.WithContext(ctx).Raw(
+		`SELECT COALESCE(lead_score_cursor::text, '') FROM organizations WHERE id = ?`, orgID).
+		Scan(&raw).Error; err != nil {
+		return uuid.Nil, err
+	}
+	if raw == "" {
+		return uuid.Nil, nil
+	}
+	parsed, err := uuid.Parse(raw)
+	if err != nil {
+		// A corrupt watermark must not wedge the org — start over instead.
+		return uuid.Nil, nil
+	}
+	return parsed, nil
+}
 
-// IsLeadScoreTruncated reports the round-cap sentinel.
-func IsLeadScoreTruncated(err error) bool { return errors.Is(err, errLeadScoreTruncated) }
+// setResumeCursor stores the walk position; uuid.Nil clears it.
+func (r *leadScoringRepository) setResumeCursor(ctx context.Context, orgID, cursor uuid.UUID) error {
+	if cursor == uuid.Nil {
+		return r.db.WithContext(ctx).Exec(
+			`UPDATE organizations SET lead_score_cursor = NULL WHERE id = ?`, orgID).Error
+	}
+	return r.db.WithContext(ctx).Exec(
+		`UPDATE organizations SET lead_score_cursor = ? WHERE id = ?`, cursor, orgID).Error
+}
 
 // OrgsDueForRescore claims orgs whose scores are stale.
 //

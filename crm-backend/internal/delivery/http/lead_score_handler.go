@@ -111,14 +111,22 @@ func (h *LeadScoringHandler) Recompute(c *gin.Context) {
 	}
 	n, err := h.uc.RecomputeOrgNow(c.Request.Context(), orgID)
 	if err != nil {
+		// TRUNCATION is progress: rows were written and the next pass resumes
+		// from where this one stopped, so it is a 200 with complete=false.
+		// Everything else is a real failure and must NOT be dressed as partial
+		// success — this button is the one control an operator has for noticing
+		// that scoring is broken, and a reassuring "0 contacts, more to come"
+		// would hide it indefinitely.
+		if domain.IsLeadScoreTruncated(err) {
+			c.JSON(http.StatusOK, domain.Success(gin.H{"contacts": n, "complete": false}))
+			return
+		}
 		var appErr *domain.AppError
 		if errors.As(err, &appErr) {
 			c.JSON(appErr.Code, domain.Err(appErr.Message))
 			return
 		}
-		// A truncated pass still wrote rows — report what landed rather than
-		// implying nothing happened.
-		c.JSON(http.StatusOK, domain.Success(gin.H{"contacts": n, "complete": false}))
+		handleAppError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, domain.Success(gin.H{"contacts": n, "complete": true}))

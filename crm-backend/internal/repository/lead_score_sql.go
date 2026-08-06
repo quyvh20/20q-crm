@@ -45,7 +45,7 @@ func leadScoreClampedExpr(sum string) string {
 //
 // Returns ("0", nil, nil) when no rule contributes, which scores everyone 0 —
 // the correct reading of "this org has no enabled rules".
-func buildLeadScoreExpr(catalog []domain.ReportField, rules []domain.LeadScoringRule) (string, []any, error) {
+func buildLeadScoreExpr(catalog []domain.ReportField, rules []domain.LeadScoringRule) (string, []any, []string, error) {
 	fields := make(map[string]domain.ReportField, len(catalog))
 	for _, f := range catalog {
 		fields[f.Key] = f
@@ -53,6 +53,7 @@ func buildLeadScoreExpr(catalog []domain.ReportField, rules []domain.LeadScoring
 
 	terms := make([]string, 0, len(rules))
 	args := make([]any, 0, len(rules)*2)
+	var skipped []string
 
 	for i := range rules {
 		r := &rules[i]
@@ -70,10 +71,18 @@ func buildLeadScoreExpr(catalog []domain.ReportField, rules []domain.LeadScoring
 		case domain.LeadRuleKindEngagement:
 			pred, predArgs, err = buildLeadEngagementPredicate(r)
 		default:
-			return "", nil, fmt.Errorf("lead scoring: rule %s has unknown kind %q", r.ID, r.Kind)
+			err = fmt.Errorf("unknown kind %q", r.Kind)
 		}
 		if err != nil {
-			return "", nil, err
+			// SKIP, do not abort. A rule stops compiling through ordinary
+			// unrelated actions — an admin deletes the custom field it tests, or
+			// retypes it from text to number, invalidating a `contains` operator.
+			// Aborting the whole expression would return before a single UPDATE
+			// ran, freezing every contact's score in the workspace, on every
+			// pass, forever, with nothing on screen to explain it. One broken
+			// rule must cost only its own points. The caller logs these.
+			skipped = append(skipped, fmt.Sprintf("%q (%s): %v", r.Name, r.ID, err))
+			continue
 		}
 		if strings.TrimSpace(pred) == "" {
 			continue // see the doc comment: an empty predicate is not "true"
@@ -86,9 +95,9 @@ func buildLeadScoreExpr(catalog []domain.ReportField, rules []domain.LeadScoring
 	}
 
 	if len(terms) == 0 {
-		return "0", nil, nil
+		return "0", nil, skipped, nil
 	}
-	return leadScoreClampedExpr(strings.Join(terms, " + ")), args, nil
+	return leadScoreClampedExpr(strings.Join(terms, " + ")), args, skipped, nil
 }
 
 // buildLeadFieldPredicate compiles a field rule through the M5 segment compiler.
@@ -148,7 +157,11 @@ func buildLeadEngagementPredicate(r *domain.LeadScoringRule) (string, []any, err
 
 	// A contact with no email can never match an email-keyed event, and
 	// lower(btrim(NULL)) is NULL, so the guard is explicit rather than implied.
-	const sql = `(contacts.email IS NOT NULL AND (
+	// btrim(...) <> '' as well as IS NOT NULL: an empty-string email is common
+	// (imports, form submissions) and lower(btrim('')) is '', which would match
+	// any event row whose own email_normalized landed blank — scoring unrelated
+	// contacts off each other.
+	const sql = `(contacts.email IS NOT NULL AND btrim(contacts.email) <> '' AND (
 		SELECT COUNT(*) FROM marketing_email_events e
 		WHERE e.org_id = contacts.org_id
 		  AND e.email_normalized = lower(btrim(contacts.email))

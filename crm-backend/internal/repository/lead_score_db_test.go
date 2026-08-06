@@ -28,6 +28,7 @@ func setupLeadScoreSchema(t *testing.T, db *gorm.DB) {
 		id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
 		name VARCHAR(255) NOT NULL DEFAULT '',
 		lead_score_run_at TIMESTAMPTZ,
+		lead_score_cursor UUID,
 		deleted_at TIMESTAMPTZ
 	)`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE contacts (
@@ -154,7 +155,8 @@ func TestLeadScoring_RecomputeOrg_DB(t *testing.T) {
 		},
 	}
 
-	n, err := repo.RecomputeOrg(context.Background(), org, catalog, rules)
+	n, skipped, err := repo.RecomputeOrg(context.Background(), org, catalog, rules)
+	require.Empty(t, skipped, "no rule should have been skipped")
 	require.NoError(t, err)
 	assert.EqualValues(t, 3, n, "every live contact in the org is rescored")
 
@@ -189,7 +191,7 @@ func TestLeadScoring_ClampsAndNegativePoints_DB(t *testing.T) {
 			Condition: domain.JSON(`{"field":"first_name","operator":"eq","value":"Zed"}`)},
 	}
 
-	_, err := repo.RecomputeOrg(context.Background(), org, leadScoreCatalog(), rules)
+	_, _, err := repo.RecomputeOrg(context.Background(), org, leadScoreCatalog(), rules)
 	require.NoError(t, err)
 
 	assert.Equal(t, 100, contactScore(t, db, hot), "80+60=140 clamps to the 100 ceiling")
@@ -212,7 +214,7 @@ func TestLeadScoring_EmptyConditionScoresNobody_DB(t *testing.T) {
 	c := seedLeadContact(t, db, org, "Ada", "ada@example.com")
 
 	repo := NewLeadScoringRepository(db)
-	_, err := repo.RecomputeOrg(context.Background(), org, leadScoreCatalog(), []domain.LeadScoringRule{
+	_, _, err := repo.RecomputeOrg(context.Background(), org, leadScoreCatalog(), []domain.LeadScoringRule{
 		{ID: uuid.New(), OrgID: org, Name: "Half-built", Kind: domain.LeadRuleKindField, Points: 50, Enabled: true,
 			Condition: domain.JSON(`{}`)},
 	})
@@ -253,4 +255,73 @@ func TestLeadScoring_OrgsDueForRescore_DB(t *testing.T) {
 	due2, err := repo.OrgsDueForRescore(context.Background(), time.Hour, 10)
 	require.NoError(t, err)
 	assert.NotContains(t, due2, never)
+}
+
+// A rule that no longer compiles must cost only ITS OWN points, never the whole
+// workspace's scores.
+//
+// The path is mundane: an admin builds a rule on a custom field, then later
+// deletes that field. The catalog is rebuilt per pass, so the key vanishes and
+// the rule stops compiling. Aborting the expression there would return before a
+// single UPDATE ran — every contact frozen at its last score, on every pass,
+// forever, with nothing on screen to explain it.
+func TestLeadScoring_UncompilableRuleIsSkippedNotFatal_DB(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping DB-backed test in short mode")
+	}
+	db, cleanup := startPostgres(t)
+	defer cleanup()
+	setupLeadScoreSchema(t, db)
+
+	org := uuid.New()
+	require.NoError(t, db.Exec(`INSERT INTO organizations (id, name) VALUES (?, 'Acme')`, org).Error)
+	c := seedLeadContact(t, db, org, "Ada", "ada@example.com")
+
+	repo := NewLeadScoringRepository(db)
+	rules := []domain.LeadScoringRule{
+		// References a field that is not in the catalog — the shape left behind
+		// when the custom field it named is deleted.
+		{ID: uuid.New(), OrgID: org, Name: "Orphaned", Kind: domain.LeadRuleKindField, Points: 40, Enabled: true,
+			Condition: domain.JSON(`{"field":"industry","operator":"eq","value":"Retail"}`)},
+		// A perfectly good rule sitting behind it.
+		{ID: uuid.New(), OrgID: org, Name: "Healthy", Kind: domain.LeadRuleKindField, Points: 25, Enabled: true,
+			Condition: domain.JSON(`{"field":"first_name","operator":"eq","value":"Ada"}`)},
+	}
+
+	n, skipped, err := repo.RecomputeOrg(context.Background(), org, leadScoreCatalog(), rules)
+	require.NoError(t, err, "one broken rule must not fail the pass")
+	assert.EqualValues(t, 1, n, "the contact is still rescored")
+	require.Len(t, skipped, 1, "the broken rule is reported, not swallowed")
+	assert.Contains(t, skipped[0], "Orphaned", "the report names the rule so an admin can find it")
+	assert.Equal(t, 25, contactScore(t, db, c), "the healthy rule still scores; only the broken rule's points are lost")
+}
+
+// An engagement rule must not match a blank-email contact against a blank-email
+// event. lower(btrim('')) is '' on both sides, so IS NOT NULL alone would join
+// unrelated rows together.
+func TestLeadScoring_BlankEmailNeverMatchesEngagement_DB(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping DB-backed test in short mode")
+	}
+	db, cleanup := startPostgres(t)
+	defer cleanup()
+	setupLeadScoreSchema(t, db)
+
+	org := uuid.New()
+	require.NoError(t, db.Exec(`INSERT INTO organizations (id, name) VALUES (?, 'Acme')`, org).Error)
+	blank := seedLeadContact(t, db, org, "NoEmail", "")
+
+	// An event row whose recipient normalized to empty — reachable when a
+	// provider payload carries no usable address.
+	require.NoError(t, db.Exec(
+		`INSERT INTO marketing_email_events (org_id, event_type, email_normalized, occurred_at)
+		 VALUES (?, 'email.clicked', '', NOW())`, org).Error)
+
+	repo := NewLeadScoringRepository(db)
+	_, _, err := repo.RecomputeOrg(context.Background(), org, leadScoreCatalog(), []domain.LeadScoringRule{
+		{ID: uuid.New(), OrgID: org, Name: "Clicked", Kind: domain.LeadRuleKindEngagement, Points: 50, Enabled: true,
+			Condition: domain.JSON(`{"event":"email.clicked","window_days":30,"min_count":1}`)},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, contactScore(t, db, blank), "a blank email must never join a blank event recipient")
 }
