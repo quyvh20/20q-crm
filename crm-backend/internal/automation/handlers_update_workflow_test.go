@@ -148,10 +148,10 @@ func TestUpdateWorkflow_RenameOnly(t *testing.T) {
 
 	// The pinned consequence. Documented at the top of this file: kept, not fixed.
 	t.Run("a rename of a STEPS-LESS legacy workflow is rejected — deliberately", func(t *testing.T) {
-		// Seeded through raw SQL because no API path can create this shape any more;
-		// `actions` is '[]' so the row is INERT rather than teardown-blocking, which is
-		// how it survives a CLEAR gate.
-		id := flatGateWorkflow(t, db, orgID, `[]`, nil, false)
+		// Seeded through raw SQL because no API path can create this shape any more
+		// (a steps-less legacy row, from before R5 deploy 1 — the `actions` column
+		// itself is gone as of deploy 2, so this no longer seeds one).
+		id := seedStepsLessLegacyWorkflow(t, db, orgID)
 
 		w := updateWFPut(t, router, id, `{"name":"renamed"}`)
 		require.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
@@ -177,4 +177,20 @@ func TestUpdateWorkflow_RenameOnly(t *testing.T) {
 		assert.Equal(t, "renamed", stored.Name)
 		assert.Equal(t, 1, ToWorkflowResponse(stored).ActionCount)
 	})
+}
+
+// seedStepsLessLegacyWorkflow inserts one automation_workflows row with steps SQL-NULL —
+// the shape a pre-R5 workflow had before any migration touched it. Raw SQL because no Go
+// struct (and, since R5 deploy 2, no `actions` column either) can produce this any more.
+func seedStepsLessLegacyWorkflow(t *testing.T, db *gorm.DB, orgID uuid.UUID) uuid.UUID {
+	t.Helper()
+	id := uuid.New()
+	require.NoError(t, db.Exec(`
+		INSERT INTO automation_workflows
+			(id, org_id, name, description, is_active, trigger, conditions, steps,
+			 version, created_by, created_at, updated_at)
+		VALUES (?, ?, ?, '', false, '{"type":"webhook_inbound"}'::jsonb, NULL, NULL,
+			 1, ?, NOW(), NOW())`,
+		id, orgID, "legacy-"+id.String()[:8], uuid.New()).Error)
+	return id
 }

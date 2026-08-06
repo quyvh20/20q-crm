@@ -18,40 +18,14 @@ type Workflow struct {
 	IsActive    bool           `gorm:"not null;default:false;index" json:"is_active"`
 	Trigger     datatypes.JSON `gorm:"type:jsonb;not null" json:"trigger"`
 	Conditions  datatypes.JSON `gorm:"type:jsonb" json:"conditions"`
-	// THE `actions` COLUMN IS DELIBERATELY ABSENT FROM THIS STRUCT (R5 deploy 1).
+	// THE `actions` COLUMN IS ABSENT FROM THIS STRUCT AND FROM THE TABLE (R5 complete).
 	//
-	// Steps is now the ONLY representation of what a workflow does. The deprecated flat
-	// Actions field is gone from the model, from the API DTOs, from the validator and
-	// from the executor. The COLUMN, however, is still there — `actions jsonb NOT NULL`
-	// on both this table and automation_workflow_versions — and dropping it is R5
-	// deploy 2, deliberately a separate deploy so deploy 1 stays rollback-safe.
-	//
-	// WHAT KEEPS WRITES WORKING WITH THE FIELD GONE: the column's DEFAULT '[]'::jsonb,
-	// applied by deploy 0 and verified live in production. GORM no longer names
-	// `actions` in its INSERTs, so without that default every workflow write would die
-	// on
-	//
-	//	ERROR: null value in column "actions" of relation "automation_workflows"
-	//	violates not-null constraint (SQLSTATE 23502)
-	//
-	// — killing CreateWorkflow on its first statement and UpdateWorkflow on its version
-	// snapshot (which rolls the whole update back). With the default present the same
-	// INSERT succeeds and the column fills itself with '[]'.
-	//
-	// Because no struct field declares the column any more, AutoMigrate neither creates
-	// nor maintains it: gorm cannot see it, so it never re-emits the
-	// `ALTER TABLE … SET DEFAULT` it used to churn on every boot (good — that ALTER took
-	// ACCESS EXCLUSIVE on this table), and it never DROPs it either (AutoMigrate never
-	// drops columns). On an EXISTING database the column and its default simply persist.
-	// On a database that has never seen a pre-teardown build there would be no column at
-	// all, which is why Repository.ensureLegacyActionsColumn re-asserts it — read the
-	// note there; it is what keeps the teardown gate meaningful and rollback possible.
-	// That guard also RESTORES the default when the column exists without one, which is
-	// the state a deploy-0 boot that lost its lock race leaves behind and which no
-	// longer self-heals through gorm now that the tag is gone.
-	// TestFlatActionsColumnDefault and TestEnsureLegacyActionsColumn_RestoresLostDefault
-	// are the CI assertions that the column and its default are still in place after
-	// AutoMigrate.
+	// Steps is the ONLY representation of what a workflow does. Deploy 1 removed the Go
+	// field (from the model, the API DTOs, the validator, the executor); deploy 2
+	// dropped the underlying `actions` column itself on both this table and
+	// automation_workflow_versions, once the FLAT_ACTIONS_TEARDOWN_GATE read CLEAR
+	// against prod (verified directly before the drop shipped) — see
+	// Repository.dropLegacyActionsColumn.
 	Steps       datatypes.JSON `gorm:"type:jsonb" json:"steps,omitempty"`
 	Version     int            `gorm:"not null;default:1" json:"version"`
 	CreatedBy   uuid.UUID      `gorm:"type:uuid;not null" json:"created_by"`
@@ -69,12 +43,8 @@ type WorkflowVersion struct {
 	Version    int            `gorm:"not null" json:"version"`
 	Trigger    datatypes.JSON `gorm:"type:jsonb;not null" json:"trigger"`
 	Conditions datatypes.JSON `gorm:"type:jsonb" json:"conditions"`
-	// The `actions` column is absent from this struct too — see the note on Workflow.
-	// This table is where a missing column default would do the most damage: the version
-	// snapshot is the SECOND statement in UpdateWorkflow's transaction, so its 23502
-	// would roll the workflow UPDATE back with it — the write appears to have been
-	// rejected outright rather than half-applied, with nothing in the row to hint that
-	// the snapshot was the part that failed.
+	// The `actions` column is absent from this struct AND the table too — see the note
+	// on Workflow.
 	Steps      datatypes.JSON `gorm:"type:jsonb" json:"steps,omitempty"`
 	CreatedAt  time.Time      `json:"created_at"`
 }

@@ -201,47 +201,18 @@ func (r *Repository) AutoMigrate() error {
 	// functional unique index, hence raw SQL like the timers indexes above).
 	r.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_email_templates_org_name ON automation_email_templates (org_id, lower(name)) WHERE deleted_at IS NULL`)
 
-	// The `actions` column is no longer declared by ANY Go struct (R5 deploy 1), so
-	// gorm's AutoMigrate above neither created it nor maintains it. On production and
-	// on any database that has ever run a pre-teardown build, the column and its
-	// DEFAULT '[]'::jsonb are already there and this is a no-op catalog read. On a
-	// database created fresh by THIS binary there would otherwise be no column at all,
-	// and three things would silently stop working: the teardown gate below could not
-	// read it (verdict=UNKNOWN on every boot, which is the one diagnostic the R5 soak
-	// rests on), deploy 2's DROP would have nothing to drop, and a rollback to a
-	// deploy-0 binary — which DOES declare the field and DOES name the column in every
-	// INSERT — would fail every workflow write.
+	// R5 DEPLOY 2: the FLAT_ACTIONS_TEARDOWN_GATE read CLEAR (zero blocking rows on
+	// both tables, verified against prod directly before this shipped) and deploy 1's
+	// compatibility scaffolding — ensureLegacyActionsColumn, the gate machinery
+	// (CountFlatActionsGate/LogFlatActionsGate/FlatActionsGateCounts) and their tests
+	// — is deleted along with it. This is the actual column drop.
 	//
-	// It checks the column's DEFAULT as well as its existence, and that half is about
-	// PRODUCTION rather than fresh databases: deploy 0 set that default under a 3s
-	// lock_timeout, so a contended boot abandoned the ALTER — and with the struct tag
-	// gone there is no longer anything else that would ever re-apply it. Column present,
-	// NOT NULL, no default is the exact shape of a 100% write outage (SQLSTATE 23502) on
-	// every POST and PUT, so it is repaired here rather than merely skipped.
-	//
-	// Guarded check-then-ALTER, not a bare `ADD COLUMN IF NOT EXISTS`: the bare form
-	// takes ACCESS EXCLUSIVE on the table even when it is a no-op, which is exactly the
-	// per-boot lock the deploy-0 work went to some trouble to bound. Here we own the
-	// comparison (unlike gorm's MigrateColumn, which is why its churn was unavoidable),
-	// so the steady-state path issues no DDL whatsoever.
-	//
-	// DELETE THIS IN DEPLOY 2, together with the column, the gate and its tests.
-	r.ensureLegacyActionsColumn()
-
-	// Report the R5 teardown gate to the logs. Pure diagnostic: it reads the gate's
-	// counts and says whether the deprecated `actions` COLUMN can be dropped yet
-	// (deploy 2 — the Go fields went in deploy 1). It cannot fail boot —
-	// CountFlatActionsGate's error is logged and swallowed inside.
-	//
-	// slog.Default() is load-bearing and the coupling is invisible from here: this line
-	// only reaches Railway because cmd/server/main.go calls slog.SetDefault(autoLogger)
-	// a few statements before autoEngine.Start() (which is what calls AutoMigrate), so
-	// the package default IS the engine's JSON handler on stdout. Delete or move that
-	// SetDefault and the single line the whole teardown decision rests on quietly
-	// reverts to slog's built-in text handler on STDERR — still emitted, no error, just
-	// not where anyone greps. Anything that reorders main.go's logger setup must keep
-	// SetDefault ahead of the engine start.
-	r.LogFlatActionsGate(context.Background(), slog.Default())
+	// Guarded check-then-ALTER, not a bare `DROP COLUMN IF EXISTS`: the bare form still
+	// takes ACCESS EXCLUSIVE on the table even when the column is already gone (a
+	// second boot after this one), which is exactly the per-boot lock deploy 0/1 went
+	// to some trouble to bound. Steady state (every boot after the first one to run
+	// this binary) issues no DDL at all.
+	r.dropLegacyActionsColumn()
 
 	// (The action_path backfill that used to run here is gone with the flat path: it
 	// derived action_path from action_idx for logs written by the flat executor, which
@@ -909,100 +880,47 @@ func searchSubstring(s, substr string) bool {
 	return false
 }
 
-// --- The flat-actions teardown gate ---
+// --- R5 deploy 2: dropping the legacy `actions` column ---
 
-// legacyActionsColumnTables are the two tables that still carry the deprecated
-// `actions` column after R5 deploy 1 removed the Go fields. Both are dropped in
-// deploy 2.
+// legacyActionsColumnTables are the two tables that carried the deprecated
+// `actions` column between R5 deploy 1 (Go fields removed) and deploy 2 (the
+// column itself dropped, here). The teardown gate that used to guard this
+// drop (FLAT_ACTIONS_TEARDOWN_GATE) read CLEAR against prod — verified
+// directly, not just inferred from a boot log — before this shipped, so the
+// gate machinery and its "keep the column around for rollback" scaffolding
+// (ensureLegacyActionsColumn) are retired in the same change as the drop.
 var legacyActionsColumnTables = []string{"automation_workflows", "automation_workflow_versions"}
 
-// legacyActionsColumnDefault is the DEFAULT the deprecated `actions` column must carry.
-// It is not cosmetic: since deploy 1 no Go struct declares the column, so GORM never
-// names it in an INSERT, and NOT NULL + no default = SQLSTATE 23502 on every workflow
-// write. Spelled as SQL because Postgres' DDL takes no bind parameters.
-const legacyActionsColumnDefault = `'[]'::jsonb`
-
-// ensureLegacyActionsColumn re-asserts the deprecated `actions jsonb NOT NULL DEFAULT
-// '[]'::jsonb` column on the two tables that still have it. See the call site in
-// AutoMigrate for WHY this exists at all now that no struct declares the column, and
-// why it checks before it alters instead of using ADD COLUMN IF NOT EXISTS.
+// dropLegacyActionsColumn drops the `actions` column from both tables if
+// still present. Guarded check-then-DROP, not a bare `DROP COLUMN IF
+// EXISTS`: the bare form still takes ACCESS EXCLUSIVE even when it is a
+// no-op, which is exactly the per-boot lock this file goes to some trouble
+// to bound elsewhere (see migrateSchema's doc comment) — so steady state
+// (every boot after the one that actually drops it) issues no DDL at all.
 //
-// IT CHECKS THE DEFAULT, NOT MERELY THE COLUMN'S EXISTENCE. An earlier cut short-circuited
-// on `count(*) > 0`, which left the one state that actually breaks production untouched:
-// column present, NOT NULL, DEFAULT dropped. That state is reachable, not theoretical —
-// deploy 0 applied the default under migrationLockTimeout, so a contended boot ABANDONS
-// the ALTER (55P03), and deploy 1's removal of the struct tag took away the gorm churn
-// that used to re-apply it on the next boot. Nothing else in the tree would ever put it
-// back, and every POST/PUT /api/workflows would 500 with
-//
-//	ERROR: null value in column "actions" … violates not-null constraint (SQLSTATE 23502)
-//
-// forever. So a NULL column_default is repaired with an `ALTER COLUMN … SET DEFAULT`.
-//
-// A default that is present but textually different is deliberately LEFT ALONE: nothing
-// in this tree writes any other default, and comparing rendered SQL text is exactly the
-// trap that made gorm re-emit an ACCESS EXCLUSIVE ALTER on every single boot (see
-// migrateSchema). Present-and-not-null is the property writes depend on; steady state
-// must stay at zero DDL.
-//
-// The probe is scoped to `table_schema = current_schema()`. information_schema.columns
-// spans every schema on the database, so an unqualified `table_name = ?` answers "does
-// SOME schema have this column" — and a stray copy of the table anywhere on the search
-// path (an old restore namespace, a per-tenant schema) would make the probe report a
-// column that the schema we actually write to does not have.
-//
-// Never fatal: this is compatibility scaffolding for a column on its way out, and a
-// boot must not die on it. A failure is logged, and its consequence (a broken gate
-// reading, or a rollback that cannot write) shows up loudly in its own right.
-func (r *Repository) ensureLegacyActionsColumn() {
+// Never fatal: a boot must not die because a column drop lost its lock
+// race. A failure here just means the column survives one more boot,
+// logged loudly so it doesn't go unnoticed indefinitely.
+func (r *Repository) dropLegacyActionsColumn() {
 	for _, table := range legacyActionsColumnTables {
-		var probe struct {
-			Found   bool    `gorm:"column:found"`
-			Default *string `gorm:"column:column_default"`
-		}
-		err := r.db.Raw(`SELECT true AS found, column_default
-			FROM information_schema.columns
-			WHERE table_schema = current_schema()
-			  AND table_name = ?
-			  AND column_name = 'actions'`, table).Scan(&probe).Error
+		var exists bool
+		err := r.db.Raw(`SELECT EXISTS(
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = current_schema() AND table_name = ? AND column_name = 'actions'
+		)`, table).Scan(&exists).Error
 		if err != nil {
-			slog.Error("automation: could not check for the legacy `actions` column",
-				"table", table, "error", err)
+			slog.Error("automation: could not check for the legacy `actions` column", "table", table, "error", err)
 			continue
 		}
-
-		switch {
-		case !probe.Found:
-			if err := r.execLegacyActionsDDL(`ALTER TABLE ` + table +
-				` ADD COLUMN actions jsonb NOT NULL DEFAULT ` + legacyActionsColumnDefault); err != nil {
-				slog.Error("automation: could not create the legacy `actions` column — the "+
-					"FLAT_ACTIONS_TEARDOWN_GATE line will read UNKNOWN and a rollback to a "+
-					"pre-teardown build would reject every workflow write",
-					"table", table, "error", err)
-				continue
-			}
-			slog.Info("automation: created the legacy `actions` column on a fresh database "+
-				"(no Go field declares it; it exists for the R5 teardown gate and rollback)",
-				"table", table)
-
-		case probe.Default == nil:
-			if err := r.execLegacyActionsDDL(`ALTER TABLE ` + table +
-				` ALTER COLUMN actions SET DEFAULT ` + legacyActionsColumnDefault); err != nil {
-				slog.Error("automation: THE LEGACY `actions` COLUMN HAS NO DEFAULT AND IT COULD NOT BE "+
-					"RESTORED — every workflow write on this table returns 500 with SQLSTATE 23502 "+
-					"until it is. Re-deploy once the table is uncontended, or run "+
-					"`ALTER TABLE … ALTER COLUMN actions SET DEFAULT '[]'::jsonb` by hand.",
-					"table", table, "lock_timeout", migrationLockTimeout, "error", err)
-				continue
-			}
-			slog.Warn("automation: restored the missing DEFAULT on the legacy `actions` column — "+
-				"workflow writes on this table were failing with SQLSTATE 23502 until now "+
-				"(a deploy-0 ALTER that lost its lock wait is the usual cause)",
-				"table", table)
-
-		default:
-			continue // steady state on every healthy database: no DDL at all
+		if !exists {
+			continue // steady state: already dropped
 		}
+		if err := r.execLegacyActionsDDL(`ALTER TABLE ` + table + ` DROP COLUMN actions`); err != nil {
+			slog.Error("automation: could not drop the legacy `actions` column — it will be retried on the next boot",
+				"table", table, "lock_timeout", migrationLockTimeout, "error", err)
+			continue
+		}
+		slog.Info("automation: dropped the legacy `actions` column (R5 deploy 2)", "table", table)
 	}
 }
 
@@ -1022,189 +940,5 @@ func (r *Repository) execLegacyActionsDDL(ddl string) error {
 		}
 		return tx.Exec(ddl).Error
 	})
-}
-
-// FlatActionsGateLogPrefix is the stable, greppable prefix of the teardown-gate log
-// line. Grep Railway for it; every boot emits exactly one, cleared or not.
-const FlatActionsGateLogPrefix = "automation: FLAT_ACTIONS_TEARDOWN_GATE"
-
-// FlatActionsGateCounts is the flat-Actions teardown gate expressed as numbers.
-//
-// SINCE R5 DEPLOY 1 THIS GATES THE COLUMN DROP (deploy 2), not the field removal. The
-// Go fields are already gone; the column, its DEFAULT and this gate are what deploy 1
-// deliberately left standing so the deploy can be rolled back and so the soak has a
-// signal. A BLOCKED verdict now means "do not run deploy 2 yet" — and, more urgently,
-// that a row exists whose behaviour lives ONLY in a column nothing reads any more, so
-// it executes nothing at all today.
-//
-// It answers TWO questions, and keeping them apart is the point:
-//
-//	"Is it safe to drop the Actions column?"  → the *Blocking counts. Cleared().
-//	"Do any rows execute nothing at runtime?" → the *EmptySteps counts. Inert().
-//
-// They are not the same question. A row with actions = '[]' AND steps = '[]' loses
-// NOTHING when the column is dropped — yet it runs the steps interpreter over zero
-// steps and reports itself COMPLETED having done nothing. Reporting that row as a
-// teardown blocker (which the first cut of this gate did, by never reading `actions` at
-// all) would print verdict=BLOCKED on every boot forever with no automated remedy.
-// Dropping it from the report entirely would hide a real runtime defect. So both are
-// counted, and only one of them decides the verdict.
-type FlatActionsGateCounts struct {
-	// WorkflowsMissingSteps counts LIVE workflows with no steps tree at all
-	// (steps IS NULL, or jsonb 'null'). These used to fall back to the flat actions
-	// column; since deploy 1 they have nothing to execute, and processRun fails such a
-	// run outright rather than completing it as a silent no-op.
-	WorkflowsMissingSteps int64
-	// WorkflowsEmptySteps counts LIVE workflows whose steps are an EMPTY array.
-	//
-	// This is the count a naive `steps IS NOT NULL` gate misses, and it is why the gate
-	// is a set of numbers rather than one. processRun takes the steps path whenever
-	// `len(steps) > 0 && string(steps) != "null"` (engine.go), and "[]" satisfies both
-	// — so an empty-steps row runs the steps interpreter over zero steps and reports
-	// itself COMPLETED having executed nothing. It passes a `steps IS NOT NULL` gate
-	// while being exactly as broken as a row that has no steps at all.
-	WorkflowsEmptySteps int64
-	// VersionsMissingSteps counts version snapshots with no steps tree. Runs execute
-	// the PINNED VERSION, not the live workflow, so a migrated workflow with an
-	// unmigrated version snapshot is still a run that cannot execute.
-	VersionsMissingSteps int64
-	// VersionsEmptySteps counts version snapshots whose steps are an empty array.
-	VersionsEmptySteps int64
-
-	// WorkflowsBlocking counts LIVE workflows that would LOSE BEHAVIOUR if the Actions
-	// column were dropped today: `actions` holds something (not SQL NULL, not jsonb
-	// 'null', not '[]') AND steps are missing or empty, so the flat column is the only
-	// place that behaviour exists.
-	//
-	// This — not the four counts above — is the true teardown predicate. There is no
-	// automated remedy any more (the boot backfill went with the flat code path), so
-	// every one of these is a row a human has to look at before deploy 2 runs.
-	WorkflowsBlocking int64
-	// VersionsBlocking is the same predicate over version snapshots. Runs execute the
-	// PINNED VERSION, so a fully-migrated workflow with a blocking version snapshot is
-	// still a blocker.
-	VersionsBlocking int64
-}
-
-// Cleared reports whether the TEARDOWN is safe: no row anywhere would lose behaviour if
-// the Actions column were dropped. It deliberately ignores the empty-steps counts — see
-// the type comment, and Inert() for the other question.
-func (c FlatActionsGateCounts) Cleared() bool {
-	return c.WorkflowsBlocking == 0 && c.VersionsBlocking == 0
-}
-
-// Inert reports how many rows have an EMPTY steps array. processRun takes the steps path
-// whenever `len(steps) > 0 && string(steps) != "null"` (engine.go), and "[]" satisfies
-// both — so these rows run the steps interpreter over zero steps and report themselves
-// COMPLETED having executed nothing. That is a real defect, and a SEPARATE one from the
-// teardown: it is not a reason to keep the Actions column.
-func (c FlatActionsGateCounts) Inert() int64 {
-	return c.WorkflowsEmptySteps + c.VersionsEmptySteps
-}
-
-// CountFlatActionsGate measures the teardown gate.
-//
-// The workflows half is scoped to `deleted_at IS NULL` — a soft-deleted workflow never
-// runs, so it cannot block anything. The versions half is NOT, and deliberately: that
-// table has no deleted_at column at all (adding the predicate is a SQL error, not a
-// stricter query), and a version snapshot outlives its workflow's soft delete while
-// in-flight runs still pin it.
-//
-// Raw SQL with FILTER rather than a Model().Count() per number: two round trips instead
-// of six, and it keeps each table's three numbers consistent with one another by
-// construction — they come from a single scan under a single snapshot.
-func (r *Repository) CountFlatActionsGate(ctx context.Context) (FlatActionsGateCounts, error) {
-	type gateRow struct {
-		MissingSteps int64 `gorm:"column:missing_steps"`
-		EmptySteps   int64 `gorm:"column:empty_steps"`
-		Blocking     int64 `gorm:"column:blocking"`
-	}
-	// blocking is the only one of the three that reads `actions`, and that is what makes
-	// the verdict precise: "steps are missing or empty" AND "the flat column still holds
-	// the behaviour". An empty `actions` (SQL NULL, jsonb 'null' or '[]') has nothing to
-	// lose, so it is reported in the other two numbers and blocks nothing.
-	const gateSelect = `
-		SELECT
-			count(*) FILTER (WHERE steps IS NULL OR steps::text = 'null') AS missing_steps,
-			count(*) FILTER (WHERE steps::text = '[]') AS empty_steps,
-			count(*) FILTER (
-				WHERE (steps IS NULL OR steps::text = 'null' OR steps::text = '[]')
-				  AND actions IS NOT NULL AND actions::text <> 'null' AND actions::text <> '[]'
-			) AS blocking
-		FROM `
-
-	var out FlatActionsGateCounts
-	var wf gateRow
-	if err := r.db.WithContext(ctx).
-		Raw(gateSelect + `automation_workflows WHERE deleted_at IS NULL`).
-		Scan(&wf).Error; err != nil {
-		return out, fmt.Errorf("count workflows gate: %w", err)
-	}
-	var ver gateRow
-	if err := r.db.WithContext(ctx).
-		Raw(gateSelect + `automation_workflow_versions`).
-		Scan(&ver).Error; err != nil {
-		return out, fmt.Errorf("count workflow versions gate: %w", err)
-	}
-	out.WorkflowsMissingSteps = wf.MissingSteps
-	out.WorkflowsEmptySteps = wf.EmptySteps
-	out.WorkflowsBlocking = wf.Blocking
-	out.VersionsMissingSteps = ver.MissingSteps
-	out.VersionsEmptySteps = ver.EmptySteps
-	out.VersionsBlocking = ver.Blocking
-	return out, nil
-}
-
-// LogFlatActionsGate emits ONE greppable line reporting the teardown gate.
-//
-// It exists so that "have all workflows been migrated off flat actions?" is answerable
-// from Railway logs by anyone, instead of requiring a production SQL console — which
-// is the only reason the R5 teardown has been sitting behind an unmeasured gate.
-//
-// Never returns an error and never panics the boot: a gate that could break a deploy
-// would be worse than the ambiguity it removes, so a failed count is logged at Warn
-// with verdict=UNKNOWN and that is the end of it. The prefix is identical in every
-// outcome, so one grep finds them all.
-//
-// TWO independent signals, deliberately readable apart (see FlatActionsGateCounts):
-//
-//	verdict=CLEAR|BLOCKED|UNKNOWN  — may the Actions COLUMN be dropped (deploy 2)?
-//	inert_rows=N                   — how many rows execute NOTHING at runtime?
-//
-// inert_rows never changes the verdict. It is its own defect and its own fix; a row
-// that does nothing is not a reason to keep a column it does not use. It does raise the
-// level to Warn, because a workflow silently completing without acting is not something
-// to bury at Info — so "CLEAR at Warn" means "tear down when you like, and separately,
-// go look at those rows".
-func (r *Repository) LogFlatActionsGate(ctx context.Context, log *slog.Logger) {
-	if log == nil {
-		log = slog.Default()
-	}
-	c, err := r.CountFlatActionsGate(ctx)
-	if err != nil {
-		log.Warn(FlatActionsGateLogPrefix+" verdict=UNKNOWN — the gate query itself failed; the teardown is NOT cleared by this boot",
-			"verdict", "UNKNOWN", "error", err)
-		return
-	}
-	attrs := []any{
-		"workflows_blocking", c.WorkflowsBlocking,
-		"versions_blocking", c.VersionsBlocking,
-		"inert_rows", c.Inert(),
-		"workflows_missing_steps", c.WorkflowsMissingSteps,
-		"workflows_empty_steps", c.WorkflowsEmptySteps,
-		"versions_missing_steps", c.VersionsMissingSteps,
-		"versions_empty_steps", c.VersionsEmptySteps,
-	}
-	switch {
-	case !c.Cleared():
-		log.Warn(FlatActionsGateLogPrefix+" verdict=BLOCKED — some rows still hold flat actions their steps tree does not (workflows_blocking/versions_blocking). Nothing reads that column any more, so those rows already execute NOTHING; give them a steps tree by hand, and do NOT run deploy 2 (the column DROP) until this reads CLEAR",
-			append(attrs, "verdict", "BLOCKED")...)
-	case c.Inert() > 0:
-		log.Warn(FlatActionsGateLogPrefix+" verdict=CLEAR — deploy 2 (the column DROP) is SAFE: ZERO rows would lose behaviour. SEPARATELY, inert_rows rows have an EMPTY steps array and so execute NOTHING at runtime; that is its own defect and it does not block the teardown",
-			append(attrs, "verdict", "CLEAR")...)
-	default:
-		log.Info(FlatActionsGateLogPrefix+" verdict=CLEAR — every count is ZERO: no row would lose behaviour if the Actions column were dropped, and no row has an empty steps tree, so deploy 2 may drop the column",
-			append(attrs, "verdict", "CLEAR")...)
-	}
 }
 
