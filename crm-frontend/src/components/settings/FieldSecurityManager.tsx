@@ -61,7 +61,14 @@ export default function FieldSecurityManager() {
   // The object list reuses the OLS grid (which already returns the org's objects
   // for an admin) — one cache, shared with PermissionsManager.
   const { data: olsGrid, isLoading: loadingObjects, error: objectsError } = usePermissionGrid();
-  const objects = useMemo(() => olsGrid?.objects ?? [], [olsGrid]);
+  // Report-only objects (task, activity — R9.5) are filtered OUT. They belong in
+  // the OLS grid, because who may report on rep activity is a real decision, but
+  // they have no registry fields at all: the field grid loads from
+  // /registry/objects/:slug/schema, which 404s for them. Nothing to secure.
+  const objects = useMemo(
+    () => (olsGrid?.objects ?? []).filter((o) => !o.report_only),
+    [olsGrid],
+  );
 
   // The selected object IS the ?object= param; an absent or unknown slug falls back
   // to the first object.

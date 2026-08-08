@@ -44,7 +44,13 @@ func buildSegmentWhere(fields map[string]domain.ReportField, ast domain.SegmentF
 	parts := []string{ref.Table + ".org_id = ?", ref.Table + ".deleted_at IS NULL"}
 	args := []any{orgID}
 
-	if rowSQL, rowArgs := rowPredicateFor(ref, orgID, sc); rowSQL != "" {
+	// Not swallowed: rowPredicateFor fails closed, and a segment that silently
+	// lost its row predicate would send marketing email to the whole org.
+	rowSQL, rowArgs, err := rowPredicateFor(ref, orgID, sc)
+	if err != nil {
+		return "", nil, err
+	}
+	if rowSQL != "" {
 		parts = append(parts, rowSQL)
 		args = append(args, rowArgs...)
 	}
@@ -54,6 +60,7 @@ func buildSegmentWhere(fields map[string]domain.ReportField, ast domain.SegmentF
 	if err != nil {
 		return "", nil, err
 	}
+
 	if astSQL != "" {
 		parts = append(parts, astSQL)
 		args = append(args, astArgs...)

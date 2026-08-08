@@ -2,8 +2,12 @@ import type { ReportConfig } from '../../lib/api';
 
 // Prebuilt report templates: frontend-only config presets that prefill the
 // builder (no DB seeding — picking one just navigates to /reports/new with
-// this config). Restricted to registry objects (contact/company/deal) so
-// OLS/FLS always apply; tasks/activities aren't reportable yet.
+// this config).
+//
+// Every object here carries an OLS row, so picking a template the caller's role
+// is denied fails at preview like any other report. As of R9.5 that includes
+// task and activity, which are report-only objects (no record page, no nav) but
+// real OLS subjects — see domain/report_objects.go.
 export interface ReportTemplate {
   id: string;
   name: string;
@@ -124,6 +128,37 @@ export const REPORT_TEMPLATES: ReportTemplate[] = [
       aggregate: { fn: 'count' },
       sort: { by: 'value', dir: 'desc' },
       limit: 10,
+    },
+  },
+  // R9.5 — the two rep-productivity reports the whole phase exists for.
+  {
+    id: 'activities-per-rep',
+    name: 'Activities per Rep',
+    description: 'Calls, emails, meetings and notes logged by each rep.',
+    objectSlug: 'activity',
+    config: {
+      chart: 'bar',
+      // stage_change activities are written by the deal pipeline, not by a
+      // person — including them would rank reps by how often their deals moved
+      // and, since three writers leave user_id NULL, pile most of them into a
+      // single "(No value)" bar.
+      filters: { op: 'AND', rules: [{ field: 'type', operator: 'neq', value: 'stage_change' }] },
+      group_by: { field: 'user_id' },
+      aggregate: { fn: 'count' },
+    },
+  },
+  {
+    id: 'tasks-completed-per-rep',
+    name: 'Tasks Completed per Rep',
+    description: 'Who is closing out their follow-ups.',
+    objectSlug: 'task',
+    config: {
+      chart: 'bar',
+      // completed_at is a nullable timestamp, not a boolean — "completed" is
+      // "has one".
+      filters: { op: 'AND', rules: [{ field: 'completed_at', operator: 'is_not_empty' }] },
+      group_by: { field: 'assigned_to' },
+      aggregate: { fn: 'count' },
     },
   },
 ];

@@ -383,6 +383,52 @@ func (uc *permissionUseCase) staleOrEmpty(e *orgAccessEntry) *orgAccessEntry {
 // PermissionUseCase (admin grid + audit view)
 // ============================================================
 
+// permObjectRow is one object row in an admin permission surface.
+type permObjectRow struct {
+	Slug       string
+	Label      string
+	Icon       string
+	IsSystem   bool
+	ReportOnly bool
+}
+
+// permObjects is the ONE list every admin permission surface renders: the
+// registry's objects, plus the report-only ones (R9.5) that have no object_defs
+// row and so can never come back from the registry.
+//
+// It exists as a shared helper rather than two append loops because the two
+// surfaces got it wrong in opposite directions when they were separate: the grid
+// appended unconditionally (so an org that already owned a custom object slugged
+// "task" saw two rows bound to ONE permission record, where unchecking the
+// synthetic one revoked access to the real object), and the role-detail page
+// omitted them entirely (so a genuine "this role cannot report on activities"
+// grant was invisible on the page whose whole job is listing effective access).
+//
+// A registry def WINS on a slug collision: it is a real object with records and
+// a record page, and the synthetic descriptor is the fallback — the same
+// precedence catalogFor and reportUseCase.ListObjects apply.
+func (uc *permissionUseCase) permObjects(ctx context.Context, orgID uuid.UUID) ([]permObjectRow, error) {
+	objects, err := uc.registryUC.ListObjects(ctx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]permObjectRow, 0, len(objects)+len(domain.ReportOnlyObjects))
+	seen := make(map[string]bool, len(objects))
+	for _, o := range objects {
+		seen[o.Slug] = true
+		out = append(out, permObjectRow{Slug: o.Slug, Label: o.Label, Icon: o.Icon, IsSystem: o.IsSystem})
+	}
+	for _, ro := range domain.ReportOnlyObjects {
+		if seen[ro.Slug] {
+			continue
+		}
+		out = append(out, permObjectRow{
+			Slug: ro.Slug, Label: ro.Label, Icon: ro.Icon, IsSystem: true, ReportOnly: true,
+		})
+	}
+	return out, nil
+}
+
 // GetGrid returns the role × object matrix. It ensures defaults first so every
 // current object (including ones added since the last seed) appears with its
 // effective access rather than as an empty (default-deny) column.
@@ -391,7 +437,7 @@ func (uc *permissionUseCase) GetGrid(ctx context.Context, orgID uuid.UUID) (*dom
 		return nil, err
 	}
 
-	objects, err := uc.registryUC.ListObjects(ctx, orgID)
+	objects, err := uc.permObjects(ctx, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -411,10 +457,11 @@ func (uc *permissionUseCase) GetGrid(ctx context.Context, orgID uuid.UUID) (*dom
 	}
 	for _, o := range objects {
 		grid.Objects = append(grid.Objects, domain.PermObjectInfo{
-			Slug:     o.Slug,
-			Label:    o.Label,
-			Icon:     o.Icon,
-			IsSystem: o.IsSystem,
+			Slug:       o.Slug,
+			Label:      o.Label,
+			Icon:       o.Icon,
+			IsSystem:   o.IsSystem,
+			ReportOnly: o.ReportOnly,
 		})
 	}
 	for i := range roles {
@@ -590,7 +637,11 @@ func (uc *permissionUseCase) EffectiveAccess(ctx context.Context, orgID, roleID 
 	if err := uc.repo.EnsureDefaults(ctx, orgID); err != nil {
 		return nil, err
 	}
-	objects, err := uc.registryUC.ListObjects(ctx, orgID)
+	// The SAME list the OLS grid renders (see permObjects) — a page that claims
+	// to show a role's effective access on every object must not quietly leave
+	// two of them out, or a real "cannot report on activities" denial reads as
+	// full access.
+	objects, err := uc.permObjects(ctx, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -612,9 +663,15 @@ func (uc *permissionUseCase) EffectiveAccess(ctx context.Context, orgID, roleID 
 	if domain.IsOwnerRole(role) {
 		out := make([]domain.RoleObjectAccess, 0, len(objects))
 		for _, o := range objects {
+			access := domain.ObjectAccess{Read: true, Create: true, Edit: true, Delete: true}
+			if o.ReportOnly {
+				// There is no create/edit/delete path for a report-only object,
+				// so claiming the owner holds those would be theatre.
+				access = domain.ObjectAccess{Read: true}
+			}
 			out = append(out, domain.RoleObjectAccess{
-				Slug: o.Slug, Label: o.Label, Icon: o.Icon, IsSystem: o.IsSystem,
-				ObjectAccess:     domain.ObjectAccess{Read: true, Create: true, Edit: true, Delete: true},
+				Slug: o.Slug, Label: o.Label, Icon: o.Icon, IsSystem: o.IsSystem, ReportOnly: o.ReportOnly,
+				ObjectAccess:     access,
 				RestrictedFields: []domain.RoleRestrictedField{},
 			})
 		}
@@ -645,12 +702,23 @@ func (uc *permissionUseCase) EffectiveAccess(ctx context.Context, orgID, roleID 
 
 	out := make([]domain.RoleObjectAccess, 0, len(objects))
 	for _, o := range objects {
+		access := accessBySlug[o.Slug] // absent row → zero value = all-false
+		if o.ReportOnly {
+			// Read is the only action with a code path behind it; the other three
+			// bits are seeded but unread, and surfacing them would suggest an
+			// enforcement that does not exist.
+			access = domain.ObjectAccess{Read: access.Read}
+		}
 		entry := domain.RoleObjectAccess{
-			Slug: o.Slug, Label: o.Label, Icon: o.Icon, IsSystem: o.IsSystem,
-			ObjectAccess:     accessBySlug[o.Slug], // absent row → zero value = all-false
+			Slug: o.Slug, Label: o.Label, Icon: o.Icon, IsSystem: o.IsSystem, ReportOnly: o.ReportOnly,
+			ObjectAccess:     access,
 			RestrictedFields: []domain.RoleRestrictedField{},
 		}
-		if levels := levelsBySlug[o.Slug]; len(levels) > 0 {
+		// A report-only object has no registry schema, so GetSchema below would
+		// 404. It also has no field_permissions rows, so `levels` is empty and the
+		// branch never runs — the guard is here so that stays true by intent
+		// rather than by luck.
+		if levels := levelsBySlug[o.Slug]; len(levels) > 0 && !o.ReportOnly {
 			// Join keys to display labels via the registry schema (the GetFieldGrid
 			// pattern). A restriction whose key no longer exists in the schema is a
 			// stale leftover — skipped, never surfaced.

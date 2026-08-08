@@ -35,8 +35,18 @@ func setupTaskActivitySchema(t *testing.T, db *gorm.DB) {
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		deleted_at TIMESTAMPTZ
 	)`).Error)
+	// activity_type is a real ENUM in production (migrations/000002). Declaring it
+	// as a varchar here would make this schema silently more permissive than the
+	// one the code runs against, and the R9.5 report catalog compares this column
+	// against bound strings and the literal '' — both of which a varchar accepts
+	// and an enum does not.
+	require.NoError(t, db.Exec(`DO $$ BEGIN
+		IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'activity_type') THEN
+			CREATE TYPE activity_type AS ENUM ('call', 'email', 'meeting', 'note', 'stage_change');
+		END IF;
+	END $$`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE activities (
-		id UUID PRIMARY KEY, org_id UUID NOT NULL, type VARCHAR(40) NOT NULL DEFAULT 'note',
+		id UUID PRIMARY KEY, org_id UUID NOT NULL, type activity_type NOT NULL DEFAULT 'note',
 		deal_id UUID, contact_id UUID, user_id UUID, title VARCHAR(255), body TEXT,
 		duration_minutes INT, occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), sentiment TEXT,
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

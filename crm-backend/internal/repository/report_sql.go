@@ -52,25 +52,55 @@ type reportScope struct {
 	RoleID uuid.UUID
 }
 
-// rowPredicateFor returns the row filter for this report's table, or "" when the
-// object has no ownership model (companies, and custom objects on 'table' storage,
-// which carry no owner_user_id column).
-func rowPredicateFor(ref reportTableRef, orgID uuid.UUID, sc reportScope) (string, []any) {
-	recordType := recordTypeForTable(ref.Table)
-	if ref.Table == "custom_object_records" {
-		recordType = ref.Slug
+// rowPredicateFor returns the row filter for this report's table. An empty
+// string means "this table genuinely has no row-level rule" — today only
+// companies, which are org-wide and carry no owner column.
+//
+// It FAILS CLOSED. A table with no arm here is an ERROR, not an unfiltered
+// report. The previous shape returned ("", nil) for anything it did not
+// recognize, which meant the day a new table became reportable it would have
+// shipped with org_id + deleted_at as its ONLY predicate — an org-wide read for
+// every row-scoped rep, with no exception, no log line and no failing test.
+// R9.5 made tasks and activities reportable and would have walked straight into
+// it. A broken report is recoverable; a silent leak is not.
+func rowPredicateFor(ref reportTableRef, orgID uuid.UUID, sc reportScope) (string, []any, error) {
+	// Custom objects are checked FIRST, by def id rather than by name. They all
+	// share one physical table, and nothing stops an org from slugging a custom
+	// object "task" — dispatching on the slug before this would run those rows
+	// through TaskAccessPredicate and emit `tasks.assigned_to` against
+	// custom_object_records.
+	if ref.ObjectDefID != nil {
+		if ref.Slug == "" {
+			return "", nil, fmt.Errorf("report: custom object has no slug for row scoping")
+		}
+		sql, args := RecordAccessPredicate(RecordAccessArgs{
+			Table: ref.Table, RecordType: ref.Slug, OrgID: orgID,
+			Scope: sc.Scope, UserID: sc.UserID, RoleID: sc.RoleID,
+		})
+		return sql, args, nil
 	}
-	if recordType == "" {
-		return "", nil
+
+	switch ref.Table {
+	case "contacts", "deals":
+		sql, args := RecordAccessPredicate(RecordAccessArgs{
+			Table: ref.Table, RecordType: recordTypeForTable(ref.Table), OrgID: orgID,
+			Scope: sc.Scope, UserID: sc.UserID, RoleID: sc.RoleID,
+		})
+		return sql, args, nil
+	case "companies":
+		// Genuinely ownerless: a company is org-wide, has no owner_user_id, and
+		// is never a record_shares target. Org scoping is the whole rule.
+		return "", nil, nil
+	case "tasks":
+		// R9.5. The SAME predicate GET /api/tasks applies — see
+		// TaskAccessPredicate's comment for why it is shared rather than copied.
+		sql, args := TaskAccessPredicate(orgID, sc.Scope, sc.UserID, sc.RoleID)
+		return sql, args, nil
+	case "activities":
+		sql, args := ActivityAccessPredicate(orgID, sc.Scope, sc.UserID, sc.RoleID)
+		return sql, args, nil
 	}
-	return RecordAccessPredicate(RecordAccessArgs{
-		Table:      ref.Table,
-		RecordType: recordType,
-		OrgID:      orgID,
-		Scope:      sc.Scope,
-		UserID:     sc.UserID,
-		RoleID:     sc.RoleID,
-	})
+	return "", nil, fmt.Errorf("report: no row-access rule defined for table %q", ref.Table)
 }
 
 const (
@@ -130,9 +160,12 @@ func buildReportWhere(ref reportTableRef, fields map[string]domain.ReportField, 
 
 	// The row predicate is the SAME one the list pages use (access_predicate.go):
 	// a row-scoped caller sees what they own, what their team owns, and what is
-	// shared to them. Objects with no ownership model (companies; custom objects on
-	// 'table' storage) get org scoping only.
-	if rowSQL, rowArgs := rowPredicateFor(ref, orgID, sc); rowSQL != "" {
+	// shared to them. The error is not swallowed — see rowPredicateFor.
+	rowSQL, rowArgs, err := rowPredicateFor(ref, orgID, sc)
+	if err != nil {
+		return "", nil, err
+	}
+	if rowSQL != "" {
 		parts = append(parts, rowSQL)
 		args = append(args, rowArgs...)
 	}
@@ -261,6 +294,11 @@ func reportFieldExpr(ref reportTableRef, f domain.ReportField) (string, error) {
 	if f.Column != "" {
 		if !reportIdentRe.MatchString(f.Column) {
 			return "", fmt.Errorf("report: invalid column mapping %q for field %q", f.Column, f.Key)
+		}
+		// The identifier whitelist above runs BEFORE the cast is wrapped around
+		// it, so the cast can never be a splice point.
+		if f.CastText {
+			return "(" + ref.Table + "." + f.Column + ")::text", nil
 		}
 		return ref.Table + "." + f.Column, nil
 	}

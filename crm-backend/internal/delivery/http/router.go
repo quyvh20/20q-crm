@@ -249,6 +249,9 @@ func RegisterRoutes(router *gin.Engine, authHandler *AuthHandler, contactHandler
 			reports.GET("", reportHandler.List)
 			reports.POST("", reportHandler.Create)
 			reports.POST("/preview", reportHandler.Preview)
+			// The builder's object picker: registry objects + the report-only
+			// ones (task, activity — R9.5), each OLS-gated.
+			reports.GET("/objects", reportHandler.ListObjects)
 			// The builder's field catalog: registry fields + report-only virtual
 			// fields (created_at, owner, deal lifecycle), FLS-filtered.
 			reports.GET("/objects/:slug/fields", reportHandler.ListFields)

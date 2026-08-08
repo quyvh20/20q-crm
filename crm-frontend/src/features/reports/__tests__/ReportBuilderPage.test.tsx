@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { Report, ReportFieldDescriptor, ReportResult } from '../../../lib/api';
 
 vi.mock('../../../lib/api', () => ({
-  listRegistryObjects: vi.fn(),
+  listReportObjects: vi.fn(),
   listReportFields: vi.fn(),
   previewReport: vi.fn(),
   createReport: vi.fn(),
@@ -22,7 +22,7 @@ vi.mock('../../../lib/auth', () => ({
 }));
 
 import {
-  listRegistryObjects, listReportFields, previewReport, createReport, getReport,
+  listReportObjects, listReportFields, previewReport, createReport, getReport,
 } from '../../../lib/api';
 import ReportBuilderPage from '../ReportBuilderPage';
 
@@ -65,9 +65,13 @@ function renderBuilder(initialEntry: string) {
 beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
-  vi.mocked(listRegistryObjects).mockResolvedValue([
-    { slug: 'deal', label: 'Deal', label_plural: 'Deals', icon: '💰', color: '#10B981', is_system: true, field_count: 5, searchable: false },
-    { slug: 'contact', label: 'Contact', label_plural: 'Contacts', icon: '👤', color: '#3B82F6', is_system: true, field_count: 5, searchable: true },
+  // R9.5: the builder reads the REPORT object list, not the registry list —
+  // task and activity are reportable and have no object_defs row.
+  vi.mocked(listReportObjects).mockResolvedValue([
+    { slug: 'deal', label: 'Deal', label_plural: 'Deals', icon: '💰', color: '#10B981' },
+    { slug: 'contact', label: 'Contact', label_plural: 'Contacts', icon: '👤', color: '#3B82F6' },
+    { slug: 'task', label: 'Task', label_plural: 'Tasks', icon: '✅', color: '#0EA5E9', report_only: true },
+    { slug: 'activity', label: 'Activity', label_plural: 'Activities', icon: '📋', color: '#F59E0B', report_only: true },
   ]);
   vi.mocked(listReportFields).mockResolvedValue(dealFields);
   vi.mocked(previewReport).mockResolvedValue(groupsResult);
@@ -143,5 +147,71 @@ describe('ReportBuilderPage', () => {
     expect(screen.queryByText('Delete')).toBeNull();
     // But the report still runs for them.
     await waitFor(() => expect(screen.getByText('250,000')).toBeTruthy(), { timeout: 3000 });
+  });
+
+  // R9.5. The whole point of the phase: tasks and activities are selectable in
+  // the builder even though they have no object_defs row, no record page and no
+  // nav entry. If the picker ever goes back to the registry list they vanish.
+  it('offers the report-only objects and loads their field catalog on select', async () => {
+    renderBuilder('/reports/new');
+
+    const picker = await screen.findByLabelText('Report object') as HTMLSelectElement;
+    await waitFor(() => expect(picker.options.length).toBe(4));
+    const slugs = Array.from(picker.options).map((o) => o.value);
+    expect(slugs).toContain('task');
+    expect(slugs).toContain('activity');
+
+    vi.mocked(listReportFields).mockResolvedValue([
+      { key: 'user_id', label: 'Logged By', type: 'relation' },
+      { key: 'type', label: 'Type', type: 'select', options: ['call', 'stage_change'] },
+    ]);
+    fireEvent.change(picker, { target: { value: 'activity' } });
+    await waitFor(() => expect(listReportFields).toHaveBeenCalledWith('activity'));
+  });
+
+  // R9.5 made this list OLS-filtered, which means it can legitimately NOT
+  // contain the default object. A <select> whose value matches no <option>
+  // renders the FIRST option as selected, so without reconciliation a Support
+  // rep denied `deal` would see "Contacts" selected while every query on the
+  // page still asked for `deal` — the picker lying about what it is showing.
+  it('a new report moves off an object the caller cannot read', async () => {
+    vi.mocked(listReportObjects).mockResolvedValue([
+      { slug: 'contact', label: 'Contact', label_plural: 'Contacts', icon: 'C', color: '#3B82F6' },
+    ]);
+    renderBuilder('/reports/new');
+
+    const picker = await screen.findByLabelText('Report object') as HTMLSelectElement;
+    // State follows the picker: both say contact, and the field catalog is
+    // fetched for contact, never for the denied deal.
+    await waitFor(() => expect(picker.value).toBe('contact'));
+    // The settled state is what matters: the picker and the field query agree.
+    // (One 'deal' fetch fires on the first render, before the object list has
+    // resolved; it 403s and is discarded.)
+    await waitFor(() => {
+      const calls = vi.mocked(listReportFields).mock.calls;
+      expect(calls[calls.length - 1][0]).toBe('contact');
+    });
+    expect(screen.queryByText(/no access/)).toBeNull();
+  });
+
+  // An EXISTING report must NOT be silently retargeted: rewriting object_slug
+  // and letting Save persist it would rebuild someone's saved report against a
+  // different table. Show the truth instead.
+  it('an existing report over a denied object shows the denial instead of switching', async () => {
+    vi.mocked(listReportObjects).mockResolvedValue([
+      { slug: 'contact', label: 'Contact', label_plural: 'Contacts', icon: 'C', color: '#3B82F6' },
+    ]);
+    vi.mocked(getReport).mockResolvedValue({
+      id: 'r-42', org_id: 'o1', name: 'Team pipeline', description: '',
+      object_slug: 'deal', config: { chart: 'bar', group_by: { field: 'stage' }, aggregate: { fn: 'count' } },
+      visibility: 'org', created_by: 'me', access_level: 'manage',
+      created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+    } as Report);
+
+    renderBuilder('/reports/r-42');
+
+    const picker = await screen.findByLabelText('Report object') as HTMLSelectElement;
+    await waitFor(() => expect(picker.value).toBe('deal'));
+    expect(await screen.findByText(/read/)).toBeInTheDocument();
   });
 });

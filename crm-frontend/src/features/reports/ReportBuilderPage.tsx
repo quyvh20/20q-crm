@@ -5,9 +5,9 @@ import {
   ArrowLeft, BarChart3, Globe, Hash, LineChart, Lock, PieChart, Table, type LucideIcon,
 } from 'lucide-react';
 import {
-  createReport, deleteReport, exportReportCsv, getReport, listRegistryObjects, listReportFields, updateReport,
-  type ObjectSummary, type Report, type ReportChart as ReportChartKind, type ReportConfig,
-  type ReportDateBucket, type ReportFieldDescriptor, type ReportVisibility,
+  createReport, deleteReport, exportReportCsv, getReport, listReportObjects, listReportFields, updateReport,
+  type Report, type ReportChart as ReportChartKind, type ReportConfig,
+  type ReportDateBucket, type ReportFieldDescriptor, type ReportObjectInfo, type ReportVisibility,
 } from '../../lib/api';
 import { useReportPreview, isRunnableConfig } from './useReportPreview';
 import { useConfirm } from '../../components/common/ConfirmDialog';
@@ -83,10 +83,37 @@ export default function ReportBuilderPage() {
     }
   }, [existing, loaded]);
 
-  const { data: objects = [] } = useQuery<ObjectSummary[]>({
-    queryKey: ['registry-objects'],
-    queryFn: listRegistryObjects,
+  // NOT the registry list: reportable ≠ registered. task and activity are
+  // reportable and have no object_defs row (R9.5), and this endpoint is
+  // OLS-filtered, so an object the caller's role can't read never appears.
+  const { data: objects = [] } = useQuery<ReportObjectInfo[]>({
+    queryKey: ['report-objects'],
+    queryFn: listReportObjects,
   });
+
+  // This list is OLS-filtered, so it can legitimately NOT contain objectSlug —
+  // a role denied read on `deal` (the initial default) gets a list without it,
+  // and a saved report can outlive the grant that created it.
+  //
+  // That matters because a <select> whose value matches no <option> renders the
+  // FIRST option as selected. Left alone the picker would say "Contacts" while
+  // every query on the page still asked for `deal`, and the only clue would be
+  // a preview error naming an object the user cannot see selected anywhere.
+  const objectMissing = objects.length > 0 && !objects.some((o) => o.slug === objectSlug);
+
+  // For a NEW report, land on something the caller can actually query. The
+  // config is reset because the template's field keys belong to the object we
+  // are leaving. For an EXISTING report we deliberately do NOT do this: silently
+  // rewriting object_slug and then letting Save persist it would rebuild
+  // someone's saved report against a different table. That case renders the
+  // saved object as a disabled option instead, so the picker tells the truth and
+  // the preview error explains it.
+  useEffect(() => {
+    if (!id && objectMissing) {
+      setObjectSlug(objects[0].slug);
+      setConfig((c) => ({ chart: c.chart, aggregate: { fn: 'count' } }));
+    }
+  }, [id, objectMissing, objects]);
 
   const { data: fields = [] } = useQuery<ReportFieldDescriptor[]>({
     queryKey: ['report-fields', objectSlug],
@@ -246,8 +273,16 @@ export default function ReportBuilderPage() {
               className="w-full rounded-md border bg-background px-2 py-2 text-sm"
               disabled={!canManage}
             >
+              {objectMissing && (
+                <option value={objectSlug} disabled>{objectSlug} (no access)</option>
+              )}
               {objects.map((o) => <option key={o.slug} value={o.slug}>{o.icon} {o.label_plural}</option>)}
             </select>
+            {objectMissing && (
+              <p className="mt-1 text-xs text-destructive">
+                Your role can’t read <strong>{objectSlug}</strong>. Ask an admin for access, or pick another object.
+              </p>
+            )}
           </Section>
 
           <Section label="Chart type">

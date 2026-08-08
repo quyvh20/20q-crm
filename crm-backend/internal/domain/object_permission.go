@@ -136,6 +136,12 @@ type PermObjectInfo struct {
 	Label    string `json:"label"`
 	Icon     string `json:"icon"`
 	IsSystem bool   `json:"is_system"`
+	// ReportOnly marks an object that exists only as a report catalog entry
+	// (R9.5 — task, activity). Its OLS row is real and gates who may build and
+	// run reports over it, so it belongs in this grid; it has no field-level
+	// security, because it has no registry fields, so the FLS manager filters
+	// it out. A permission nobody can administer is worse than no permission.
+	ReportOnly bool `json:"report_only,omitempty"`
 }
 
 type PermRoleInfo struct {
@@ -171,6 +177,9 @@ type RoleObjectAccess struct {
 	Label    string `json:"label"`
 	Icon     string `json:"icon"`
 	IsSystem bool   `json:"is_system"`
+	// ReportOnly mirrors PermObjectInfo.ReportOnly — see its comment. Read is
+	// the only meaningful action on such an object.
+	ReportOnly bool `json:"report_only,omitempty"`
 	ObjectAccess
 	RestrictedFields []RoleRestrictedField `json:"restricted_fields"`
 }

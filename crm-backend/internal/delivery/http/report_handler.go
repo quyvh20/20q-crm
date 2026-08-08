@@ -173,6 +173,22 @@ func (h *ReportHandler) Preview(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": res, "error": nil})
 }
 
+// ListObjects returns the objects this caller may report over — the registry
+// objects plus the report-only ones (R9.5), each OLS-gated. The builder uses
+// this instead of /api/objects, which knows nothing about task and activity.
+func (h *ReportHandler) ListObjects(c *gin.Context) {
+	orgID, _, ok := h.callerIDs(c)
+	if !ok {
+		return
+	}
+	objects, err := h.uc.ListObjects(c.Request.Context(), orgID)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": objects, "error": nil})
+}
+
 // ListFields returns the object's queryable field catalog (registry + virtual
 // fields, minus the caller's FLS-hidden ones) — the builder UI's field list.
 func (h *ReportHandler) ListFields(c *gin.Context) {

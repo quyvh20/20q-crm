@@ -51,39 +51,20 @@ func NewTaskRepository(db *gorm.DB) domain.TaskRepository {
 // This mirrors voiceNoteScope; !ok is a trusted in-process call (worker, seeder,
 // unit test) and is unrestricted by design. The 'all' guard tests for 'all', not
 // "not own", so a new scope value can never silently widen to the whole org.
+//
+// The rule itself lives in TaskAccessPredicate (access_predicate.go) because the
+// report runner applies the same one — see R9.5.
 func taskScope(db *gorm.DB, ctx context.Context, orgID uuid.UUID) *gorm.DB {
 	scope, userID, roleID, ok := extractCallerScope(ctx)
-	if !ok || scope == domain.DataScopeAll {
+	if !ok {
 		return db.Where("tasks.org_id = ?", orgID)
 	}
-
-	cSQL, cArgs := RecordAccessPredicate(RecordAccessArgs{
-		Table: "c", RecordType: "contact", OrgID: orgID, Scope: scope, UserID: userID, RoleID: roleID,
-	})
-	dSQL, dArgs := RecordAccessPredicate(RecordAccessArgs{
-		Table: "d", RecordType: "deal", OrgID: orgID, Scope: scope, UserID: userID, RoleID: roleID,
-	})
-
-	args := []any{orgID, userID, userID}
-	args = append(args, cArgs...)
-	args = append(args, dArgs...)
-
-	return db.Where(`tasks.org_id = ? AND (
-		tasks.assigned_to = ?
-		OR tasks.created_by = ?
-		OR (tasks.contact_id IS NOT NULL AND EXISTS (
-			SELECT 1 FROM contacts c
-			WHERE c.id = tasks.contact_id
-			  AND c.deleted_at IS NULL
-			  AND `+cSQL+`
-		))
-		OR (tasks.deal_id IS NOT NULL AND EXISTS (
-			SELECT 1 FROM deals d
-			WHERE d.id = tasks.deal_id
-			  AND d.deleted_at IS NULL
-			  AND `+dSQL+`
-		))
-	)`, args...)
+	predSQL, predArgs := TaskAccessPredicate(orgID, scope, userID, roleID)
+	if predSQL == "" {
+		return db.Where("tasks.org_id = ?", orgID) // 'all' scope — no restriction
+	}
+	args := append([]any{orgID}, predArgs...)
+	return db.Where("tasks.org_id = ? AND "+predSQL, args...)
 }
 
 func (r *taskRepository) List(ctx context.Context, orgID uuid.UUID, f domain.TaskFilter) (domain.TaskListResult, error) {

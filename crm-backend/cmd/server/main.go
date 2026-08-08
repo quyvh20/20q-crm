@@ -2242,6 +2242,60 @@ func main() {
 		// organizations.lead_score_run_at IS NULL puts every org at the FRONT of
 		// the first sweep, so the fleet converges without a one-shot migration.
 
+		// ── Reportable tasks & activities (R9.5) ───────────────────────────────
+		// Mirrored by migrations/000077_report_activity_indexes.*.sql. Prod runs
+		// THIS guard; the migration covers a fresh install and the E2E job, so the
+		// two must agree statement for statement.
+		//
+		// No new tables and no new columns — R9.5 is a read-side feature. The only
+		// schema it needs is two indexes on activities, which reports are about to
+		// start filtering and grouping in ways nothing did before:
+		//
+		//   user_id             — the first arm of ActivityAccessPredicate and the
+		//                         GROUP BY of "activities per rep". Tasks already
+		//                         have the equivalent (idx_tasks_assigned_to,
+		//                         idx_tasks_created_by, and the two link indexes
+		//                         from 000069), which is why only activities need
+		//                         anything here.
+		//   (org_id, occurred_at) — every activity report is org-scoped and
+		//                         date-bounded; idx_activities_org_id alone makes
+		//                         that a full org scan plus a sort.
+		//
+		// activities is a HOT, append-heavy table, so each index runs under a
+		// bounded lock_timeout: a rolling deploy's loser gives up with 55P03 and
+		// the next boot retries. SET LOCAL must share the DDL's transaction — a
+		// bare db.Exec("SET …") lands on a different pooled connection and does
+		// nothing. Never CONCURRENTLY: a failed CIC leaves indisvalid=f and
+		// CREATE INDEX IF NOT EXISTS then refuses to repair it.
+		//
+		// ONE INDEX PER TRANSACTION, matching the R9.4 block above. CREATE INDEX
+		// holds ShareLock on the table for its whole build and the lock is held
+		// until COMMIT, so batching both into one transaction would block every
+		// INSERT into activities — the automation log_activity executor, the deal
+		// stage-change writer, the 1:1 email logger — for the sum of both builds
+		// rather than each in turn. Splitting also means a timeout on the first
+		// index no longer discards the second.
+		//
+		// A missing index here degrades performance, never correctness, so each
+		// logs and continues rather than blocking the boot.
+		for _, idx := range []struct{ name, ddl string }{
+			{"idx_activities_user_id",
+				`CREATE INDEX IF NOT EXISTS idx_activities_user_id ON activities(user_id)`},
+			{"idx_activities_org_occurred",
+				`CREATE INDEX IF NOT EXISTS idx_activities_org_occurred ON activities(org_id, occurred_at)`},
+		} {
+			ddl := idx.ddl
+			if err := db.Transaction(func(tx *gorm.DB) error {
+				if err := tx.Exec(`SET LOCAL lock_timeout = '3s'`).Error; err != nil {
+					return err
+				}
+				return tx.Exec(ddl).Error
+			}); err != nil {
+				log.Error("R9.5: activity report index NOT created — activity reports will sequential-scan until the next uncontended boot",
+					zap.String("index", idx.name), zap.Error(err))
+			}
+		}
+
 		// ── RLS backfill (Supabase alert 2026-07-20: rls_disabled_in_public) ────
 		// Every table created before the boot-guard convention has its ENABLE ROW
 		// LEVEL SECURITY stranded in migrations/000008 and /000013 — files that have

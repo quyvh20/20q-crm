@@ -321,6 +321,53 @@ func (uc *reportUseCase) labelTableRows(ctx context.Context, orgID uuid.UUID, re
 	}
 }
 
+// ListObjects powers the builder's object picker (R9.5).
+//
+// It exists as a report-specific endpoint rather than reusing the registry list
+// because the two answers genuinely differ: task and activity are reportable and
+// are not registry objects. Every entry is gated on OLS read — the same check
+// execute() will apply — so the picker never offers an object whose preview
+// would immediately 403.
+func (uc *reportUseCase) ListObjects(ctx context.Context, orgID uuid.UUID) ([]domain.ReportObjectInfo, error) {
+	if err := uc.registry.EnsureSystemObjects(ctx, orgID); err != nil {
+		return nil, err
+	}
+	defs, err := uc.registry.ListDefs(ctx, orgID)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]domain.ReportObjectInfo, 0, len(defs)+len(domain.ReportOnlyObjects))
+	registered := make(map[string]bool, len(defs))
+	for _, d := range defs {
+		registered[d.Slug] = true
+		if uc.authz.Authorize(ctx, orgID, d.Slug, domain.ActionRead) != nil {
+			continue
+		}
+		out = append(out, domain.ReportObjectInfo{
+			Slug: d.Slug, Label: d.Label, LabelPlural: d.LabelPlural,
+			Icon: d.Icon, Color: d.Color,
+		})
+	}
+	for _, ro := range domain.ReportOnlyObjects {
+		// A pre-R9.5 org may already own a custom object on this slug. The
+		// registry def wins (catalogFor resolves it the same way), and emitting
+		// both would put two identical <option value="task"> entries in the
+		// picker with different meanings.
+		if registered[ro.Slug] {
+			continue
+		}
+		if uc.authz.Authorize(ctx, orgID, ro.Slug, domain.ActionRead) != nil {
+			continue
+		}
+		out = append(out, domain.ReportObjectInfo{
+			Slug: ro.Slug, Label: ro.Label, LabelPlural: ro.LabelPlural,
+			Icon: ro.Icon, Color: ro.Color, ReportOnly: true,
+		})
+	}
+	return out, nil
+}
+
 func (uc *reportUseCase) ListFields(ctx context.Context, orgID uuid.UUID, slug string) ([]domain.ReportFieldDescriptor, error) {
 	if err := uc.authz.Authorize(ctx, orgID, slug, domain.ActionRead); err != nil {
 		return nil, err
@@ -353,6 +400,22 @@ func (uc *reportUseCase) catalogFor(ctx context.Context, orgID uuid.UUID, slug s
 		return nil, nil, err
 	}
 	if def == nil {
+		// R9.5. Report-only objects (task, activity) resolve here: they have no
+		// object_defs row by design, so GetDefBySlug returns nil for them. This
+		// one branch covers every entry point — Create, Update, Run, Preview and
+		// ListFields all funnel through catalogFor.
+		//
+		// It is a FALLBACK rather than an early return on purpose. CreateDef now
+		// reserves these slugs, but an org that made a custom object called
+		// "task" BEFORE this shipped still has one, and short-circuiting would
+		// silently redirect its reports to the synthetic descriptor — a report
+		// that runs, returns rows, and is about the wrong table.
+		//
+		// The OLS check has already run in every caller, against this same slug,
+		// which is why permSystemObjectSlugs must list these.
+		if ro := domain.ReportOnlyObjectBySlug(slug); ro != nil {
+			return ro.Def(), ro.Catalog(), nil
+		}
 		return nil, nil, errReportObjectNotFound
 	}
 	fields, err := uc.registry.ListFields(ctx, def.ID)

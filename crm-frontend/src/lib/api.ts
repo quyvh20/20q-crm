@@ -1735,6 +1735,10 @@ export interface PermObjectInfo {
   label: string;
   icon: string;
   is_system: boolean;
+  // R9.5: the object exists only as a report catalog entry (task, activity).
+  // Its OLS row is real — it gates who may build and run reports over it — but
+  // it has no registry fields, so the Field Security tab filters it out.
+  report_only?: boolean;
 }
 
 export interface PermRoleInfo {
@@ -3696,6 +3700,30 @@ export async function recomputeLeadScores(): Promise<{ contacts: number; complet
   const json = await parseJsonSafe(res);
   if (!res.ok) throw apiError(res, json, 'Failed to recompute scores');
   return json.data as { contacts: number; complete: boolean };
+}
+
+// One entry in the report builder's object picker. Deliberately NOT
+// ObjectSummary: the picker's list is not the registry's list. `task` and
+// `activity` are reportable and have no object_defs row (R9.5), and
+// field_count / searchable are registry facts they have no honest answer for.
+export interface ReportObjectInfo {
+  slug: string;
+  label: string;
+  label_plural: string;
+  icon: string;
+  color: string;
+  // Report-only: no record page, no nav entry, no CRUD. Reports only.
+  report_only?: boolean;
+}
+
+// The builder's object list, OLS-filtered server-side — an object the caller's
+// role can't read never appears, so the picker can't offer something whose
+// preview would immediately 403.
+export async function listReportObjects(): Promise<ReportObjectInfo[]> {
+  const res = await apiFetch('/api/reports/objects');
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Failed to load report objects');
+  return (json.data || []) as ReportObjectInfo[];
 }
 
 export async function listReportFields(slug: string): Promise<ReportFieldDescriptor[]> {

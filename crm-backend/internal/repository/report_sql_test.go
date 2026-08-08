@@ -1,12 +1,18 @@
 package repository
 
 import (
+	"context"
+	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
 	"crm-backend/internal/domain"
 
 	"github.com/google/uuid"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 // The builder is pure, so these tests run without a database (unlike the
@@ -22,9 +28,24 @@ func dealRef() reportTableRef {
 	return reportTableRef{Table: "deals", JSONColumn: "custom_fields"}
 }
 
+// customRef mirrors reportRefForDef exactly, Slug included. It used to omit the
+// slug, which silently disabled the row predicate in every test that used it —
+// see TestBuildReportSQL_RowPredicateAppliesToCustomObjects.
 func customRef() reportTableRef {
 	id := testDefID
-	return reportTableRef{Table: "custom_object_records", JSONColumn: "data", ObjectDefID: &id}
+	return reportTableRef{Table: "custom_object_records", JSONColumn: "data", ObjectDefID: &id, Slug: "property"}
+}
+
+func companyRef() reportTableRef {
+	return reportTableRef{Table: "companies", JSONColumn: "custom_fields", Slug: "company"}
+}
+
+func taskRef() reportTableRef {
+	return reportTableRef{Table: "tasks", Slug: "task"}
+}
+
+func activityRef() reportTableRef {
+	return reportTableRef{Table: "activities", Slug: "activity"}
 }
 
 func dealCatalog() []domain.ReportField {
@@ -159,20 +180,371 @@ func TestBuildReportSQL_JSONBCustomObject(t *testing.T) {
 	}
 }
 
-// Own scope must NOT leak onto tables it doesn't apply to today (companies,
-// custom objects) — reports must match what the list pages show.
-func TestBuildReportSQL_OwnScopeOnlyForContactsAndDeals(t *testing.T) {
+// Companies are the one genuinely ownerless object: org-wide, no owner column,
+// never a record_shares target. A row predicate there would be wrong, and it
+// must not appear just because the table is unfamiliar.
+func TestBuildReportSQL_CompaniesHaveNoRowPredicate(t *testing.T) {
+	cfg := domain.ReportConfig{
+		Chart:     domain.ReportChartBar,
+		GroupBy:   &domain.ReportGroupBy{Field: "industry"},
+		Aggregate: &domain.ReportAggregate{Fn: "count"},
+	}
+	catalog := []domain.ReportField{{Key: "industry", Label: "Industry", Type: "text", Column: "industry"}}
+	q, _, err := buildReportSQL(companyRef(), catalog, cfg, testOrgID, reportScope{Scope: domain.DataScopeOwn, UserID: testUserID})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(q, "owner_user_id") || strings.Contains(q, "record_shares") {
+		t.Errorf("own-scope predicate leaked onto companies: %s", q)
+	}
+}
+
+// Custom objects DO get the row predicate. They have carried owner_user_id since
+// U6.3 (migration 000039) and reportRefForDef always populates Slug, so a report
+// over a custom object is row-scoped exactly like its list page.
+//
+// This assertion replaces one that claimed the opposite. That test passed only
+// because its fixture omitted Slug, which made the old rowPredicateFor fall into
+// its `recordType == ""` arm and drop the predicate — the fail-open default this
+// file's control test now forbids.
+func TestBuildReportSQL_RowPredicateAppliesToCustomObjects(t *testing.T) {
 	cfg := domain.ReportConfig{
 		Chart:     domain.ReportChartBar,
 		GroupBy:   &domain.ReportGroupBy{Field: "status"},
 		Aggregate: &domain.ReportAggregate{Fn: "count"},
 	}
-	q, _, err := buildReportSQL(customRef(), customCatalog(), cfg, testOrgID, reportScope{Scope: domain.DataScopeOwn, UserID: testUserID})
+	q, args, err := buildReportSQL(customRef(), customCatalog(), cfg, testOrgID, reportScope{Scope: domain.DataScopeOwn, UserID: testUserID})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if strings.Contains(q, "owner_user_id") || strings.Contains(q, "record_shares") {
-		t.Errorf("own-scope predicate leaked onto custom_object_records: %s", q)
+	if !strings.Contains(q, "custom_object_records.owner_user_id = ?") {
+		t.Errorf("own-scope report over a custom object must filter by owner:\n%s", q)
+	}
+	if !strings.Contains(q, "record_shares") {
+		t.Errorf("own-scope report over a custom object must honour shares:\n%s", q)
+	}
+	// The share discriminator is the object SLUG, not the table — every custom
+	// object lives in one table, so the wrong value here would cross-match.
+	var sawSlug bool
+	for _, a := range args {
+		if s, ok := a.(string); ok && s == "property" {
+			sawSlug = true
+		}
+	}
+	if !sawSlug {
+		t.Errorf("record_shares.record_type must bind the object slug; args = %v", args)
+	}
+}
+
+// ============================================================
+// R9.5 — the fail-closed row predicate
+// ============================================================
+
+// rowPredicateFor used to return ("", nil) for any table it did not recognize,
+// which meant a newly reportable table shipped with org_id + deleted_at as its
+// ONLY filter: every row-scoped rep reading the whole org, silently. This test
+// fails the moment that default comes back.
+func TestRowPredicateFor_UnknownTableIsAnError(t *testing.T) {
+	ref := reportTableRef{Table: "refresh_tokens", Slug: "refresh_token"}
+	sql, args, err := rowPredicateFor(ref, testOrgID, reportScope{Scope: domain.DataScopeOwn, UserID: testUserID})
+	if err == nil {
+		t.Fatalf("an unrecognized table must be an error, not an unfiltered report (got sql=%q args=%v)", sql, args)
+	}
+	if !strings.Contains(err.Error(), "refresh_tokens") {
+		t.Errorf("the error should name the table: %v", err)
+	}
+	// "report:"-prefixed errors are what the usecase turns into a 400 rather
+	// than a 500, so the operator sees a broken report instead of a stack trace.
+	if !strings.HasPrefix(err.Error(), "report:") {
+		t.Errorf("error must carry the report: prefix, got %q", err.Error())
+	}
+}
+
+// A custom object with no slug cannot be row-scoped (record_shares has nothing
+// to match on), so it must fail rather than run unfiltered.
+func TestRowPredicateFor_CustomObjectWithoutSlugIsAnError(t *testing.T) {
+	id := testDefID
+	ref := reportTableRef{Table: "custom_object_records", JSONColumn: "data", ObjectDefID: &id}
+	if _, _, err := rowPredicateFor(ref, testOrgID, reportScope{Scope: domain.DataScopeOwn, UserID: testUserID}); err == nil {
+		t.Fatal("a slugless custom object must be an error")
+	}
+}
+
+// An org is free to name a CUSTOM object "task". Its rows live in
+// custom_object_records, so it must be dispatched by object_def_id — dispatching
+// on the slug would emit `tasks.assigned_to` against the wrong table.
+func TestRowPredicateFor_CustomObjectSlugCannotHijackReportOnlyObject(t *testing.T) {
+	id := testDefID
+	ref := reportTableRef{Table: "custom_object_records", JSONColumn: "data", ObjectDefID: &id, Slug: "task"}
+	sql, _, err := rowPredicateFor(ref, testOrgID, reportScope{Scope: domain.DataScopeOwn, UserID: testUserID})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(sql, "tasks.") {
+		t.Errorf("a custom object slugged 'task' must not be scoped as the tasks table:\n%s", sql)
+	}
+	if !strings.Contains(sql, "custom_object_records.owner_user_id") {
+		t.Errorf("expected the custom-object predicate:\n%s", sql)
+	}
+}
+
+// Every declared report-only object must have a row-access arm. Adding a
+// descriptor without one is the exact mistake the fail-closed default exists to
+// catch, and this catches it at build time instead of at runtime.
+func TestRowPredicateFor_EveryReportOnlyObjectHasAnArm(t *testing.T) {
+	for _, ro := range domain.ReportOnlyObjects {
+		ref := reportTableRef{Table: ro.Table, Slug: ro.Slug}
+		sql, _, err := rowPredicateFor(ref, testOrgID, reportScope{Scope: domain.DataScopeOwn, UserID: testUserID})
+		if err != nil {
+			t.Fatalf("%s: no row-access arm in rowPredicateFor: %v", ro.Slug, err)
+		}
+		if sql == "" {
+			t.Fatalf("%s: row-scoped caller got an EMPTY predicate — that is an org-wide read", ro.Slug)
+		}
+		// The rule must be the shared one, not an ad-hoc rewrite: both consumers
+		// reach contacts/deals through the same EXISTS subqueries.
+		if !strings.Contains(sql, "record_shares") {
+			t.Errorf("%s: predicate ignores shares:\n%s", ro.Slug, sql)
+		}
+	}
+}
+
+// pgPlaceholderRe matches gorm's rendered bind markers ($1, $2, …).
+var pgPlaceholderRe = regexp.MustCompile(`\$\d+`)
+
+// dryRunDB builds SQL without a database. gorm's DryRun renders the full
+// statement — text AND bind values — into Statement, which is what lets the
+// parity test below compare against what the LIST PAGE actually runs rather
+// than against the helper the report builder happens to call.
+//
+// sql.Open is lazy and DisableAutomaticPing stops gorm from dialling, so the
+// unroutable DSN is never contacted; this runs in -short mode with no Docker.
+func dryRunDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(
+		postgres.New(postgres.Config{DSN: "postgres://u:p@127.0.0.1:1/none?sslmode=disable"}),
+		&gorm.Config{DryRun: true, DisableAutomaticPing: true, Logger: logger.Default.LogMode(logger.Silent)},
+	)
+	if err != nil {
+		t.Fatalf("dry-run gorm: %v", err)
+	}
+	return db
+}
+
+// The report and the list page must apply the SAME rule — that is the entire
+// reason TaskAccessPredicate/ActivityAccessPredicate exist as shared functions
+// instead of a second copy.
+//
+// This compares the report builder's output against the statement taskScope and
+// activityScope actually produce, bind values included. An earlier version of
+// this test compared rowPredicateFor against the predicate helper DIRECTLY,
+// which was tautological: swapping UserID and RoleID inside rowPredicateFor's
+// arm produces byte-identical SQL and the same arg COUNT, so it passed while a
+// rep saw rows scoped to their role id.
+func TestReportPredicateMatchesListPagePredicate(t *testing.T) {
+	roleID := uuid.MustParse("44444444-4444-4444-4444-444444444444")
+	ctx := WithCallerScope(context.Background(), domain.DataScopeOwn, testUserID, roleID)
+
+	for _, tc := range []struct {
+		name    string
+		ref     reportTableRef
+		catalog []domain.ReportField
+		listSQL func(*gorm.DB) *gorm.Statement
+	}{
+		{
+			name: "task", ref: taskRef(),
+			catalog: domain.ReportOnlyObjectBySlug("task").Catalog(),
+			listSQL: func(db *gorm.DB) *gorm.Statement {
+				var out []domain.Task
+				return taskScope(db, ctx, testOrgID).Find(&out).Statement
+			},
+		},
+		{
+			name: "activity", ref: activityRef(),
+			catalog: domain.ReportOnlyObjectBySlug("activity").Catalog(),
+			listSQL: func(db *gorm.DB) *gorm.Statement {
+				var out []domain.Activity
+				return activityScope(db, ctx, testOrgID).Find(&out).Statement
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stmt := tc.listSQL(dryRunDB(t))
+			listQuery, listArgs := stmt.SQL.String(), stmt.Vars
+
+			// A table-mode report with no filters, so its args are exactly
+			// [orgID] + the row predicate's — the same shape taskScope produces.
+			_, reportArgs, err := buildReportSQL(tc.ref, tc.catalog, domain.ReportConfig{
+				Chart: domain.ReportChartTable, Columns: []string{"created_at"},
+			}, testOrgID, reportScope{Scope: domain.DataScopeOwn, UserID: testUserID, RoleID: roleID})
+			if err != nil {
+				t.Fatalf("report SQL: %v", err)
+			}
+
+			if len(reportArgs) != len(listArgs) {
+				t.Fatalf("report binds %d args, the list page binds %d:\nreport=%v\nlist  =%v",
+					len(reportArgs), len(listArgs), reportArgs, listArgs)
+			}
+			// The VALUES are the point. Identical SQL with user and role
+			// transposed is the failure this catches.
+			for i := range reportArgs {
+				if fmt.Sprint(reportArgs[i]) != fmt.Sprint(listArgs[i]) {
+					t.Errorf("bind arg %d differs — report=%v list=%v\nreport=%v\nlist  =%v",
+						i, reportArgs[i], listArgs[i], reportArgs, listArgs)
+				}
+			}
+
+			// And the predicate TEXT must be the one the list page runs.
+			predSQL, _, err := rowPredicateFor(tc.ref, testOrgID,
+				reportScope{Scope: domain.DataScopeOwn, UserID: testUserID, RoleID: roleID})
+			if err != nil {
+				t.Fatalf("rowPredicateFor: %v", err)
+			}
+			// gorm renders the numbered form ($1, $2, …); the builder emits `?`.
+			// Normalise before comparing, otherwise this can only ever fail.
+			if !strings.Contains(pgPlaceholderRe.ReplaceAllString(listQuery, "?"), predSQL) {
+				t.Errorf("the list page does not run the report's predicate.\npredicate: %s\nlist page: %s", predSQL, listQuery)
+			}
+		})
+	}
+}
+
+// An 'all'-scoped caller reads the whole org, so no predicate at all — the same
+// short-circuit the list pages take.
+func TestReportOnlyPredicates_AllScopeIsUnrestricted(t *testing.T) {
+	for _, ro := range domain.ReportOnlyObjects {
+		ref := reportTableRef{Table: ro.Table, Slug: ro.Slug}
+		sql, _, err := rowPredicateFor(ref, testOrgID, reportScope{Scope: domain.DataScopeAll, UserID: testUserID})
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", ro.Slug, err)
+		}
+		if sql != "" {
+			t.Errorf("%s: an all-scoped caller must carry no row predicate:\n%s", ro.Slug, sql)
+		}
+	}
+}
+
+// Neither table has owner_user_id. RecordAccessArgs defaults OwnerColumn to it,
+// so a descriptor wired through the generic predicate by mistake would emit
+// `tasks.owner_user_id` and 500 at runtime — after passing every unit test that
+// only inspects SQL text for the word "predicate".
+func TestReportOnlyPredicates_NeverReferenceOwnerUserIDOnTheirOwnTable(t *testing.T) {
+	for _, ro := range domain.ReportOnlyObjects {
+		ref := reportTableRef{Table: ro.Table, Slug: ro.Slug}
+		sql, _, err := rowPredicateFor(ref, testOrgID, reportScope{Scope: domain.DataScopeOwn, UserID: testUserID})
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", ro.Slug, err)
+		}
+		if strings.Contains(sql, ro.Table+".owner_user_id") {
+			t.Errorf("%s has no owner_user_id column:\n%s", ro.Table, sql)
+		}
+	}
+}
+
+// Every report-only field must map to a NATIVE column. reportRefForDef hardcodes
+// JSONColumn: "custom_fields" for every table-storage def, and neither tasks nor
+// activities has that column — a JSONKey field would emit
+// `tasks.custom_fields->>'x'` and fail at runtime.
+func TestReportOnlyDescriptors_AllFieldsHaveNativeColumn(t *testing.T) {
+	for _, ro := range domain.ReportOnlyObjects {
+		if len(ro.Fields) == 0 {
+			t.Errorf("%s declares no fields", ro.Slug)
+		}
+		for _, f := range ro.Fields {
+			if f.Column == "" {
+				t.Errorf("%s.%s has no Column — report-only objects have no JSONB blob", ro.Slug, f.Key)
+			}
+			if f.JSONKey != "" {
+				t.Errorf("%s.%s sets JSONKey", ro.Slug, f.Key)
+			}
+			if !reportIdentRe.MatchString(f.Column) {
+				t.Errorf("%s.%s column %q fails the identifier whitelist", ro.Slug, f.Key, f.Column)
+			}
+			// LabelKind "user" resolves without an OLS check (canResolveLabels);
+			// anything else routes through Authorize against a slug, and an
+			// invented kind renders "(Unknown)" with no error anywhere.
+			if f.LabelKind != "" && f.LabelKind != "user" {
+				t.Errorf("%s.%s uses LabelKind %q — only 'user' is wired up for report-only objects", ro.Slug, f.Key, f.LabelKind)
+			}
+		}
+		if !reportIdentRe.MatchString(ro.Table) {
+			t.Errorf("%s table %q fails the identifier whitelist", ro.Slug, ro.Table)
+		}
+	}
+}
+
+// The two templates shipped with R9.5 must actually compile. Both group by a
+// user relation and filter on a column, so this is the end-to-end check that the
+// descriptors, the operators and the row predicate agree.
+func TestBuildReportSQL_ReportOnlyTemplatesCompile(t *testing.T) {
+	activity := domain.ReportOnlyObjectBySlug("activity")
+	if activity == nil {
+		t.Fatal("activity descriptor missing")
+	}
+	cfg := domain.ReportConfig{
+		Chart:     domain.ReportChartBar,
+		GroupBy:   &domain.ReportGroupBy{Field: "user_id"},
+		Aggregate: &domain.ReportAggregate{Fn: "count"},
+		Filters: &domain.ReportFilterGroup{
+			Op:    "AND",
+			Rules: []domain.ReportFilterRule{{Field: "type", Operator: "neq", Value: "stage_change"}},
+		},
+	}
+	q, _, err := buildReportSQL(activityRef(), activity.Catalog(), cfg, testOrgID,
+		reportScope{Scope: domain.DataScopeOwn, UserID: testUserID})
+	if err != nil {
+		t.Fatalf("activities-per-rep failed to compile: %v", err)
+	}
+	if !strings.Contains(q, "activities.user_id") || !strings.Contains(q, "activities.type") {
+		t.Errorf("unexpected SQL:\n%s", q)
+	}
+
+	// activities.type is a Postgres ENUM. Every operator must go through the
+	// ::text cast — the emptiness ones in particular, because they compare
+	// against the literal '' and Postgres rejects that as an enum label rather
+	// than returning false. This is a runtime 500 reachable from the builder's
+	// "Type — is empty" option, so it must be pinned per operator.
+	for _, op := range []string{"eq", "neq", "in", "is_empty", "is_not_empty"} {
+		rule := domain.ReportFilterRule{Field: "type", Operator: op, Value: "call"}
+		if op == "in" {
+			rule.Value = []any{"call", "email"}
+		}
+		probe := domain.ReportConfig{
+			Chart:     domain.ReportChartBar,
+			GroupBy:   &domain.ReportGroupBy{Field: "user_id"},
+			Aggregate: &domain.ReportAggregate{Fn: "count"},
+			Filters:   &domain.ReportFilterGroup{Op: "AND", Rules: []domain.ReportFilterRule{rule}},
+		}
+		got, _, err := buildReportSQL(activityRef(), activity.Catalog(), probe, testOrgID,
+			reportScope{Scope: domain.DataScopeAll, UserID: testUserID})
+		if err != nil {
+			t.Fatalf("operator %q failed to compile: %v", op, err)
+		}
+		if strings.Contains(got, "activities.type") && !strings.Contains(got, "(activities.type)::text") {
+			t.Errorf("operator %q reads the enum column uncast — Postgres will reject it:\n%s", op, got)
+		}
+	}
+
+	task := domain.ReportOnlyObjectBySlug("task")
+	if task == nil {
+		t.Fatal("task descriptor missing")
+	}
+	taskCfg := domain.ReportConfig{
+		Chart:     domain.ReportChartBar,
+		GroupBy:   &domain.ReportGroupBy{Field: "assigned_to"},
+		Aggregate: &domain.ReportAggregate{Fn: "count"},
+		Filters: &domain.ReportFilterGroup{
+			Op:    "AND",
+			Rules: []domain.ReportFilterRule{{Field: "completed_at", Operator: "is_not_empty"}},
+		},
+	}
+	q, _, err = buildReportSQL(taskRef(), task.Catalog(), taskCfg, testOrgID,
+		reportScope{Scope: domain.DataScopeOwn, UserID: testUserID})
+	if err != nil {
+		t.Fatalf("tasks-completed-per-rep failed to compile: %v", err)
+	}
+	if !strings.Contains(q, "tasks.assigned_to") || !strings.Contains(q, "tasks.completed_at") {
+		t.Errorf("unexpected SQL:\n%s", q)
 	}
 }
 

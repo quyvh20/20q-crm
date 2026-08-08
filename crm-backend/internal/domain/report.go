@@ -199,6 +199,17 @@ type ReportField struct {
 	// custom_object_records).
 	Column  string
 	JSONKey string
+	// CastText reads a native Column as ::text. Set it for a column whose SQL
+	// type is not a string but whose VALUES are strings — in practice, a
+	// Postgres ENUM.
+	//
+	// Without it, `select`-typed enum columns break on the emptiness operators:
+	// isReportTextual sees type "select" and emits `activities.type = ''`, and
+	// Postgres answers `invalid input value for enum activity_type: ""` rather
+	// than false. The cast also removes any dependence on the driver correctly
+	// describing an enum bind parameter's OID. Ignored for JSONKey fields, which
+	// are already text.
+	CastText bool
 	// LabelKind drives group-label resolution for UUID-valued groups: "stage"
 	// (pipeline_stages.name), "user" (users), or a target object slug for
 	// relations. Empty for self-labeling fields (text/select/bool/date).
@@ -263,6 +274,21 @@ type ReportInput struct {
 	Config      ReportConfig `json:"config"`
 }
 
+// ReportObjectInfo is one entry in the builder's object picker. Deliberately
+// leaner than ObjectSummary: the picker renders an icon and a plural label, and
+// field_count / searchable are registry facts a report-only object has no
+// honest answer for.
+type ReportObjectInfo struct {
+	Slug        string `json:"slug"`
+	Label       string `json:"label"`
+	LabelPlural string `json:"label_plural"`
+	Icon        string `json:"icon"`
+	Color       string `json:"color"`
+	// ReportOnly distinguishes task/activity from real registry objects, so the
+	// UI can say so rather than implying a record page exists.
+	ReportOnly bool `json:"report_only,omitempty"`
+}
+
 // ReportUseCase is the report surface: definition CRUD (visibility-gated) and
 // execution (OLS/FLS/scope-gated per viewer).
 type ReportUseCase interface {
@@ -275,6 +301,11 @@ type ReportUseCase interface {
 	Run(ctx context.Context, orgID, userID uuid.UUID, id uuid.UUID) (*ReportResult, error)
 	// Preview executes an unsaved config — the builder's live preview.
 	Preview(ctx context.Context, orgID uuid.UUID, slug string, cfg ReportConfig) (*ReportResult, error)
+	// ListObjects returns what this caller may build reports over: the registry
+	// objects plus the report-only ones (R9.5), each gated on OLS read. It is
+	// NOT the registry list — a report over `task` is possible and a record page
+	// for one is not.
+	ListObjects(ctx context.Context, orgID uuid.UUID) ([]ReportObjectInfo, error)
 	// ListFields returns the object's queryable catalog (registry + virtual
 	// fields, minus the caller's FLS-hidden ones) for the builder UI.
 	ListFields(ctx context.Context, orgID uuid.UUID, slug string) ([]ReportFieldDescriptor, error)

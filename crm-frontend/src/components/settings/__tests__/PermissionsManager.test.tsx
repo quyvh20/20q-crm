@@ -180,4 +180,36 @@ describe('PermissionsManager — role × object grid', () => {
     expect((screen.getByLabelText('Sales Rep Delete Deal') as HTMLInputElement).checked).toBe(true);
     expect(getPermissionGrid).toHaveBeenCalledTimes(2); // initial load + post-save re-read
   });
+
+  // R9.5. Report-only objects get a Read cell (it gates report building) but must
+  // NOT feed the zero-access banner. The banner says "members with this role
+  // won't see it anywhere", and for task/activity that is flatly untrue: those
+  // surfaces have their own gates and never call Authorize on these slugs, so
+  // every viewer still opens the Tasks page and reads activity timelines. The
+  // warning would send admins hunting for a problem that does not exist.
+  it('a denied report-only object does not raise the "won\u2019t see it anywhere" banner', async () => {
+    server = {
+      roles: GRID.roles,
+      objects: [
+        { slug: 'deal', label: 'Deal', icon: 'D', is_system: true },
+        { slug: 'activity', label: 'Activity', icon: 'A', is_system: true, report_only: true },
+      ],
+      matrix: [
+        { role_id: 'r-sales', object_slug: 'deal', read: true, create: true, edit: true, delete: false },
+        // No row for activity => default-deny, which for a normal object is
+        // exactly what the banner exists to flag.
+      ],
+    };
+    vi.mocked(getPermissionGrid).mockResolvedValue(server);
+    renderPage('/settings/object-access?role=r-sales');
+
+    await screen.findByLabelText('Sales Rep Read Deal');
+    expect(screen.queryByText(/has no access to/)).toBeNull();
+
+    // The row is still there and still administrable — just not warned about.
+    expect(screen.getByLabelText('Sales Rep Read Activity')).toBeInTheDocument();
+    // ...and its meaningless actions render as em-dashes, not live checkboxes.
+    expect(screen.queryByLabelText('Sales Rep Delete Activity')).toBeNull();
+    expect(screen.getByText('(reports only)')).toBeInTheDocument();
+  });
 });

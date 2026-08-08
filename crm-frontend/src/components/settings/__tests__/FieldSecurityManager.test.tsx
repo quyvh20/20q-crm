@@ -315,4 +315,44 @@ describe('FieldSecurityManager — field × role level grid', () => {
     );
     expect(getFieldPermissionGrid).toHaveBeenCalledWith('deal');
   });
+
+  // R9.5: task and activity carry a real OLS row (who may report on them) but no
+  // registry fields — getFieldPermissionGrid 404s for them. Offering a pill here
+  // would be a dead tab, and ?object=task would make it the DEFAULT dead tab.
+  it('omits report-only objects — they have no fields to secure', async () => {
+    vi.mocked(getPermissionGrid).mockResolvedValue({
+      objects: [
+        { slug: 'deal', label: 'Deal', icon: '💰', is_system: true },
+        { slug: 'task', label: 'Task', icon: '✅', is_system: true, report_only: true },
+        { slug: 'activity', label: 'Activity', icon: '📋', is_system: true, report_only: true },
+      ],
+      roles: [],
+      matrix: [],
+    });
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: /Deal/ })).toHaveAttribute('aria-selected', 'true'),
+    );
+    expect(screen.queryByRole('tab', { name: /Task/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: /Activity/ })).not.toBeInTheDocument();
+    expect(getFieldPermissionGrid).not.toHaveBeenCalledWith('task');
+  });
+
+  it('a report-only ?object= falls back to a real object instead of a dead tab', async () => {
+    vi.mocked(getPermissionGrid).mockResolvedValue({
+      objects: [
+        { slug: 'deal', label: 'Deal', icon: '💰', is_system: true },
+        { slug: 'task', label: 'Task', icon: '✅', is_system: true, report_only: true },
+      ],
+      roles: [],
+      matrix: [],
+    });
+    renderPage('/settings/field-access?object=task');
+
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: /Deal/ })).toHaveAttribute('aria-selected', 'true'),
+    );
+    expect(getFieldPermissionGrid).toHaveBeenCalledWith('deal');
+  });
 });

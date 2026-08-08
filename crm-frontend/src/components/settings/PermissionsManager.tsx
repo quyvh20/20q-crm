@@ -112,6 +112,15 @@ export default function PermissionsManager() {
       .map((role) => ({
         role,
         objects: grid.objects
+          // R9.5: report-only objects are excluded. The banner's claim is
+          // "members with this role won't see it anywhere", and for task and
+          // activity that is simply false — denying read there stops report
+          // building and nothing else. Every viewer still opens the Tasks page
+          // and reads the activity timeline on every record they can reach,
+          // because those surfaces have their own gates and never call
+          // Authorize on these slugs. Warning about it would send admins
+          // hunting for an access problem that does not exist.
+          .filter((o) => !o.report_only)
           .filter((o) => !cellMap.get(`${role.id}:${o.slug}`)?.read)
           .filter((o) => !dismissed.has(`${role.id}:${o.slug}`))
           .map((o) => ({ slug: o.slug, label: o.label })),
@@ -295,19 +304,30 @@ export default function PermissionsManager() {
                   <TableCell>
                     <span aria-hidden className="mr-1.5 inline-flex h-6 w-6 items-center justify-center rounded bg-muted text-sm align-middle">{o.icon}</span>{o.label}
                     {!o.is_system && <span className="ml-1.5 text-xs text-muted-foreground">(custom)</span>}
+                    {o.report_only && <span className="ml-1.5 text-xs text-muted-foreground">(reports only)</span>}
                   </TableCell>
                   {ACTIONS.map((a) => {
                     const checkboxKey = `${o.slug}:${a.key}`;
+                    // R9.5: a report-only object has no create/edit/delete path
+                    // anywhere in the product — its Read cell governs exactly one
+                    // thing, whether the role may build and run reports over it.
+                    // Leaving the other three live would offer an admin a control
+                    // that silently does nothing.
+                    const meaningless = Boolean(o.report_only) && a.key !== 'read';
                     return (
                       <TableCell key={a.key} className="text-center">
-                        <input
-                          type="checkbox"
-                          checked={cell[a.key]}
-                          disabled={selectedRole?.is_owner || savingKey === checkboxKey}
-                          aria-label={`${prettyRole(selectedRole?.name)} ${a.label} ${o.label}`}
-                          onChange={() => toggle(o.slug, a.key)}
-                          className="h-4 w-4 cursor-pointer disabled:cursor-not-allowed"
-                        />
+                        {meaningless ? (
+                          <span className="text-xs text-muted-foreground" aria-label={`${a.label} does not apply to ${o.label}`}>—</span>
+                        ) : (
+                          <input
+                            type="checkbox"
+                            checked={cell[a.key]}
+                            disabled={selectedRole?.is_owner || savingKey === checkboxKey}
+                            aria-label={`${prettyRole(selectedRole?.name)} ${a.label} ${o.label}`}
+                            onChange={() => toggle(o.slug, a.key)}
+                            className="h-4 w-4 cursor-pointer disabled:cursor-not-allowed"
+                          />
+                        )}
                       </TableCell>
                     );
                   })}

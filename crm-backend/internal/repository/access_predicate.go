@@ -120,9 +120,102 @@ func RecordAccessPredicate(a RecordAccessArgs) (string, []any) {
 	return b.String(), args
 }
 
+// TaskAccessPredicate is the row-visibility rule for TASKS, as a standalone SQL
+// fragment: the parenthesised condition only, with no org filter (every caller
+// already applies one) and no table alias (it is written against the physical
+// `tasks` table, which is the only place tasks live).
+//
+// It exists as a function, rather than inline in taskScope, because R9.5 gave
+// tasks a SECOND consumer — the report runner. A report that applied a different
+// rule than /api/tasks would either show a rep their teammates' tasks or
+// under-count their own, and nobody would notice until it mattered. Exactly the
+// drift this file's header describes; see RecordAccessPredicate above.
+//
+// Returns ("", nil) for an 'all'-scoped caller — no restriction. Any other scope
+// value, including an unrecognized one, produces the narrow predicate: fail closed.
+func TaskAccessPredicate(orgID uuid.UUID, scope string, userID, roleID uuid.UUID) (string, []any) {
+	if scope == domain.DataScopeAll {
+		return "", nil
+	}
+
+	cSQL, cArgs := RecordAccessPredicate(RecordAccessArgs{
+		Table: "c", RecordType: "contact", OrgID: orgID, Scope: scope, UserID: userID, RoleID: roleID,
+	})
+	dSQL, dArgs := RecordAccessPredicate(RecordAccessArgs{
+		Table: "d", RecordType: "deal", OrgID: orgID, Scope: scope, UserID: userID, RoleID: roleID,
+	})
+
+	args := []any{userID, userID}
+	args = append(args, cArgs...)
+	args = append(args, dArgs...)
+
+	return `(
+		tasks.assigned_to = ?
+		OR tasks.created_by = ?
+		OR (tasks.contact_id IS NOT NULL AND EXISTS (
+			SELECT 1 FROM contacts c
+			WHERE c.id = tasks.contact_id
+			  AND c.deleted_at IS NULL
+			  AND ` + cSQL + `
+		))
+		OR (tasks.deal_id IS NOT NULL AND EXISTS (
+			SELECT 1 FROM deals d
+			WHERE d.id = tasks.deal_id
+			  AND d.deleted_at IS NULL
+			  AND ` + dSQL + `
+		))
+	)`, args
+}
+
+// ActivityAccessPredicate is the same thing for ACTIVITIES. Same two consumers
+// (activityScope and the report runner), same reason for existing.
+//
+// Note the asymmetry with tasks: activities have no created_by, only user_id —
+// the person who logged it. Three writers leave it NULL (the deal-stage-change
+// activity written by the UI path and its automation twin, plus any historical
+// stage_change row), so those rows are reachable by a row-scoped caller only via
+// their linked deal. That is pre-existing behaviour and is preserved verbatim
+// here; do not "improve" the rule while sharing it.
+func ActivityAccessPredicate(orgID uuid.UUID, scope string, userID, roleID uuid.UUID) (string, []any) {
+	if scope == domain.DataScopeAll {
+		return "", nil
+	}
+
+	cSQL, cArgs := RecordAccessPredicate(RecordAccessArgs{
+		Table: "c", RecordType: "contact", OrgID: orgID, Scope: scope, UserID: userID, RoleID: roleID,
+	})
+	dSQL, dArgs := RecordAccessPredicate(RecordAccessArgs{
+		Table: "d", RecordType: "deal", OrgID: orgID, Scope: scope, UserID: userID, RoleID: roleID,
+	})
+
+	args := []any{userID}
+	args = append(args, cArgs...)
+	args = append(args, dArgs...)
+
+	return `(
+		activities.user_id = ?
+		OR (activities.contact_id IS NOT NULL AND EXISTS (
+			SELECT 1 FROM contacts c
+			WHERE c.id = activities.contact_id
+			  AND c.deleted_at IS NULL
+			  AND ` + cSQL + `
+		))
+		OR (activities.deal_id IS NOT NULL AND EXISTS (
+			SELECT 1 FROM deals d
+			WHERE d.id = activities.deal_id
+			  AND d.deleted_at IS NULL
+			  AND ` + dSQL + `
+		))
+	)`, args
+}
+
 // recordTypeForTable maps a built-in table to the slug stored in
 // record_shares.record_type. Custom objects are NOT here — they all live in one
 // table and must pass their slug explicitly.
+//
+// tasks/activities are deliberately absent: they are not shareable records (no
+// record_shares rows ever name them), so there is no discriminator to return.
+// Their visibility rule is the two predicates above, not RecordAccessPredicate.
 func recordTypeForTable(table string) string {
 	switch table {
 	case "contacts":

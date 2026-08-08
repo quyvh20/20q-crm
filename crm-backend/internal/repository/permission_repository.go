@@ -26,7 +26,14 @@ func NewPermissionRepository(db *gorm.DB) domain.PermissionRepository {
 
 // permSystemObjectSlugs are the always-present system objects. (Custom slugs are
 // read from object_defs at seed time, post-P7 convergence.)
-var permSystemObjectSlugs = []string{"contact", "company", "deal"}
+//
+// The report-only slugs (task, activity — R9.5) are appended rather than
+// hardcoded so the two lists cannot drift: they have no object_defs row, so the
+// object_defs sweep below will never find them, and an object with zero
+// permission rows is readable by NOBODY except the owner role. Seeding is
+// per-slug and runs on every OLS cache miss (permission_usecase.loadEntry), so
+// existing orgs pick these up within one TTL without a backfill.
+var permSystemObjectSlugs = append([]string{"contact", "company", "deal"}, domain.ReportOnlyObjectSlugs()...)
 
 // defaultRoleAccess is the non-breaking default matrix seeded for the system
 // roles. It mirrors the legacy RequireRole gates exactly (router.go): read for

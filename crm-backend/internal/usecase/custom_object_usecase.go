@@ -54,6 +54,15 @@ func (uc *customObjectUseCase) CreateDef(ctx context.Context, orgID uuid.UUID, i
 		return nil, &domain.AppError{Code: http.StatusBadRequest, Message: "slug must be lowercase alphanumeric with underscores, 1-50 chars, starting with a letter"}
 	}
 
+	// R9.5: the report-only slugs (task, activity) have no object_defs row, so the
+	// duplicate probe below cannot see them. Without this guard an admin could
+	// create a custom object named "task", and the two would then share one OLS
+	// row and one report catalog key — with the report builder resolving the
+	// synthetic descriptor and the custom object silently losing its reports.
+	if domain.ReportOnlyObjectBySlug(slug) != nil {
+		return nil, &domain.AppError{Code: http.StatusConflict, Message: "'" + slug + "' is a reserved object name"}
+	}
+
 	// Check duplicate slug
 	existing, err := uc.repo.GetDefBySlug(ctx, orgID, slug)
 	if err != nil {

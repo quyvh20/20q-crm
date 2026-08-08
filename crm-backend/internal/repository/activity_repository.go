@@ -32,38 +32,20 @@ func NewActivityRepository(db *gorm.DB) domain.ActivityRepository {
 // Mirrors voiceNoteScope; !ok is a trusted in-process call and is unrestricted.
 // The guard tests for 'all', not "not own", so a new scope value can't silently
 // widen to the whole org.
+//
+// The rule itself lives in ActivityAccessPredicate (access_predicate.go) because
+// the report runner applies the same one — see R9.5.
 func activityScope(db *gorm.DB, ctx context.Context, orgID uuid.UUID) *gorm.DB {
 	scope, userID, roleID, ok := extractCallerScope(ctx)
-	if !ok || scope == domain.DataScopeAll {
+	if !ok {
 		return db.Where("activities.org_id = ?", orgID)
 	}
-
-	cSQL, cArgs := RecordAccessPredicate(RecordAccessArgs{
-		Table: "c", RecordType: "contact", OrgID: orgID, Scope: scope, UserID: userID, RoleID: roleID,
-	})
-	dSQL, dArgs := RecordAccessPredicate(RecordAccessArgs{
-		Table: "d", RecordType: "deal", OrgID: orgID, Scope: scope, UserID: userID, RoleID: roleID,
-	})
-
-	args := []any{orgID, userID}
-	args = append(args, cArgs...)
-	args = append(args, dArgs...)
-
-	return db.Where(`activities.org_id = ? AND (
-		activities.user_id = ?
-		OR (activities.contact_id IS NOT NULL AND EXISTS (
-			SELECT 1 FROM contacts c
-			WHERE c.id = activities.contact_id
-			  AND c.deleted_at IS NULL
-			  AND `+cSQL+`
-		))
-		OR (activities.deal_id IS NOT NULL AND EXISTS (
-			SELECT 1 FROM deals d
-			WHERE d.id = activities.deal_id
-			  AND d.deleted_at IS NULL
-			  AND `+dSQL+`
-		))
-	)`, args...)
+	predSQL, predArgs := ActivityAccessPredicate(orgID, scope, userID, roleID)
+	if predSQL == "" {
+		return db.Where("activities.org_id = ?", orgID) // 'all' scope — no restriction
+	}
+	args := append([]any{orgID}, predArgs...)
+	return db.Where("activities.org_id = ? AND "+predSQL, args...)
 }
 
 func (r *activityRepository) List(ctx context.Context, orgID uuid.UUID, f domain.ActivityFilter) ([]domain.Activity, error) {

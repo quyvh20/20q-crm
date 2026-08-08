@@ -445,8 +445,27 @@ func TestGetGrid_AssemblesObjectsRolesMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetGrid: %v", err)
 	}
-	if len(grid.Objects) != 2 || len(grid.Roles) != 2 || len(grid.Matrix) != 1 {
-		t.Fatalf("grid shape wrong: %d objects, %d roles, %d cells", len(grid.Objects), len(grid.Roles), len(grid.Matrix))
+	// Registry objects plus the report-only ones (R9.5), which have no
+	// object_defs row and so cannot come from the registry list.
+	wantObjects := 2 + len(domain.ReportOnlyObjects)
+	if len(grid.Objects) != wantObjects || len(grid.Roles) != 2 || len(grid.Matrix) != 1 {
+		t.Fatalf("grid shape wrong: %d objects (want %d), %d roles, %d cells",
+			len(grid.Objects), wantObjects, len(grid.Roles), len(grid.Matrix))
+	}
+	// They must be flagged, so the admin UI can send them to the OLS grid and
+	// keep them out of the FLS manager (which has no fields to show).
+	byslug := map[string]domain.PermObjectInfo{}
+	for _, o := range grid.Objects {
+		byslug[o.Slug] = o
+	}
+	for _, ro := range domain.ReportOnlyObjects {
+		o, ok := byslug[ro.Slug]
+		if !ok {
+			t.Fatalf("report-only object %q missing from the OLS grid — its permissions would be unadministrable", ro.Slug)
+		}
+		if !o.ReportOnly {
+			t.Errorf("%q must be flagged report_only", ro.Slug)
+		}
 	}
 	// The owner role is flagged so the UI can lock its row.
 	var sawOwnerFlag bool
@@ -682,16 +701,72 @@ func TestEffectiveAccess_OwnerSynthesizesFullAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EffectiveAccess: %v", err)
 	}
-	if len(out) != 2 {
-		t.Fatalf("expected one entry per registry object, got %d", len(out))
+	// Registry objects plus the report-only ones (R9.5) — EffectiveAccess renders
+	// the SAME object list as the OLS grid, or a real "this role cannot report on
+	// activities" denial would be invisible on the page whose job is showing a
+	// role's effective access.
+	if len(out) != 2+len(domain.ReportOnlyObjects) {
+		t.Fatalf("expected one entry per registry object plus the report-only objects, got %d", len(out))
 	}
 	for _, o := range out {
+		if o.ReportOnly {
+			// There is no create/edit/delete code path behind a report-only
+			// object, so even the owner must not be shown holding those.
+			if !o.Read || o.Create || o.Edit || o.Delete {
+				t.Errorf("%s: report-only access must be read-only, got %+v", o.Slug, o.ObjectAccess)
+			}
+			continue
+		}
 		if !o.Read || !o.Create || !o.Edit || !o.Delete {
 			t.Errorf("%s: owner must show full access, got %+v", o.Slug, o.ObjectAccess)
 		}
 		if o.RestrictedFields == nil || len(o.RestrictedFields) != 0 {
 			t.Errorf("%s: owner must show no field restrictions, got %+v", o.Slug, o.RestrictedFields)
 		}
+	}
+}
+
+// A pre-R9.5 org may already own a custom object slugged "task". The registry
+// def must win in BOTH admin surfaces — a phantom second row would be bound to
+// the same object_permissions record, so unchecking it would silently revoke
+// access to the org's real object.
+func TestPermObjects_RegistryDefWinsOverReportOnlySlug(t *testing.T) {
+	roleID := uuid.New()
+	repo := &fakePermRepo{roles: []domain.Role{{ID: roleID, Name: domain.RoleViewer, IsSystem: true}}}
+	reg := &fakeRegistryUC{objects: []domain.ObjectSummary{
+		{Slug: "deal", Label: "Deal", IsSystem: true},
+		{Slug: "task", Label: "Job Ticket", IsSystem: false},
+	}}
+	uc := NewPermissionUseCase(repo, reg)
+	org := uuid.New()
+
+	grid, err := uc.GetGrid(context.Background(), org)
+	if err != nil {
+		t.Fatalf("GetGrid: %v", err)
+	}
+	seen := map[string]int{}
+	for _, o := range grid.Objects {
+		seen[o.Slug]++
+		if o.Slug == "task" && (o.ReportOnly || o.Label != "Job Ticket") {
+			t.Errorf("the org's own custom object must win, got %+v", o)
+		}
+	}
+	if seen["task"] != 1 {
+		t.Errorf("slug 'task' appears %d times in the OLS grid, want 1", seen["task"])
+	}
+
+	eff, err := uc.EffectiveAccess(context.Background(), org, roleID)
+	if err != nil {
+		t.Fatalf("EffectiveAccess: %v", err)
+	}
+	n := 0
+	for _, o := range eff {
+		if o.Slug == "task" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("slug 'task' appears %d times in effective access, want 1", n)
 	}
 }
 
@@ -713,12 +788,23 @@ func TestEffectiveAccess_AbsentRowShowsDefaultDeny(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EffectiveAccess: %v", err)
 	}
-	if len(out) != 1 {
+	if len(out) != 1+len(domain.ReportOnlyObjects) {
 		t.Fatalf("expected the object listed despite no row, got %d entries", len(out))
 	}
-	if out[0].Read || out[0].Create || out[0].Edit || out[0].Delete {
-		t.Fatalf("absent OLS row must render all-false, got %+v", out[0].ObjectAccess)
+	deal := effBySlug(out)["deal"]
+	if deal.Read || deal.Create || deal.Edit || deal.Delete {
+		t.Fatalf("absent OLS row must render all-false, got %+v", deal.ObjectAccess)
 	}
+}
+
+// effBySlug indexes an EffectiveAccess result for assertions that no longer
+// depend on positional ordering.
+func effBySlug(out []domain.RoleObjectAccess) map[string]domain.RoleObjectAccess {
+	m := make(map[string]domain.RoleObjectAccess, len(out))
+	for _, o := range out {
+		m[o.Slug] = o
+	}
+	return m
 }
 
 // An FLS restriction whose key no longer exists in the object schema is a stale
@@ -748,10 +834,10 @@ func TestEffectiveAccess_SkipsStaleFieldKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EffectiveAccess: %v", err)
 	}
-	if len(out) != 1 {
-		t.Fatalf("expected one object, got %d", len(out))
+	if len(out) != 1+len(domain.ReportOnlyObjects) {
+		t.Fatalf("expected one object plus the report-only objects, got %d", len(out))
 	}
-	rf := out[0].RestrictedFields
+	rf := effBySlug(out)["deal"].RestrictedFields
 	if len(rf) != 1 || rf[0].Key != "value" || rf[0].Label != "Amount" || rf[0].Level != "hidden" {
 		t.Fatalf("expected only the live 'value' restriction with its label, got %+v", rf)
 	}
