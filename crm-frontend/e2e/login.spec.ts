@@ -35,7 +35,17 @@ test.describe('authentication', () => {
 
     // LoginPage renders the failure in a role="alert" container, so this asserts
     // the error is ANNOUNCED, not merely painted.
-    await expect(page.getByRole('alert')).toBeVisible();
+    //
+    // Addressed by test id and THEN checked for the role, rather than selected
+    // by role. A bare getByRole('alert') is a strict-mode violation on this
+    // page: R7's Toaster mounts a permanently-present, deliberately EMPTY
+    // role="alert" live region app-wide (ui/toast.tsx), because a live region
+    // has to exist in the DOM before content lands in it or screen readers do
+    // not announce the insertion. So the page legitimately has two alerts, and
+    // "the first alert on the page" was never what this test meant.
+    const signInError = page.getByTestId('login-error');
+    await expect(signInError).toBeVisible();
+    await expect(signInError).toHaveRole('alert');
 
     // The negative half matters as much as the message: a failed sign-in must
     // not leave a usable session behind.

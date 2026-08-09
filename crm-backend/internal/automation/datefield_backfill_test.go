@@ -97,6 +97,10 @@ func dfbSeedDeals(t *testing.T, db *gorm.DB) {
 		value NUMERIC DEFAULT 0,
 		probability INT DEFAULT 0,
 		stage_id UUID,
+		-- Added by migration 000075 (R9.3). The backfill scans domain.Deal, so
+		-- gorm names every column on the model: without this the scan dies with
+		-- column "pipeline_id" does not exist.
+		pipeline_id UUID,
 		contact_id UUID,
 		company_id UUID,
 		owner_user_id UUID,

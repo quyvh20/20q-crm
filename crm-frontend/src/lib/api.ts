@@ -966,7 +966,9 @@ export interface AIJobStatus {
   job_id: string;
   task_type: string;
   status: string;
-  result?: any;
+  // Opaque by design — the shape depends on task_type, so callers must narrow
+  // it themselves rather than being handed an `any` that silently type-checks.
+  result?: unknown;
   error?: string;
   created_at: string;
 }

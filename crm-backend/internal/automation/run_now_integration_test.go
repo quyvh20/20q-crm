@@ -151,6 +151,8 @@ func runNowITEnsureDealsTable(t *testing.T, db *gorm.DB) {
 		contact_id UUID,
 		company_id UUID,
 		stage_id UUID,
+		-- migration 000075 (R9.3): gorm names every column on domain.Deal.
+		pipeline_id UUID,
 		value NUMERIC DEFAULT 0,
 		probability INT DEFAULT 0,
 		owner_user_id UUID,

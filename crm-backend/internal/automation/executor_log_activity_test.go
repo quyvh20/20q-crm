@@ -195,6 +195,8 @@ func laeSeedActivitySchema(t *testing.T, db *gorm.DB) (orgID, contactID, dealID 
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS deals (
 		id UUID PRIMARY KEY,
 		org_id UUID NOT NULL,
+		-- migration 000075 (R9.3): gorm names every column on domain.Deal.
+		pipeline_id UUID,
 		title TEXT DEFAULT ''
 	)`).Error)
 

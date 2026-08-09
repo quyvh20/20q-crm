@@ -38,6 +38,8 @@ func seedDealStageTables(t *testing.T, db *gorm.DB) {
 		value NUMERIC DEFAULT 0,
 		probability INT DEFAULT 0,
 		stage_id UUID,
+		-- migration 000075 (R9.3): gorm names every column on domain.Deal.
+		pipeline_id UUID,
 		contact_id UUID,
 		company_id UUID,
 		owner_user_id UUID,

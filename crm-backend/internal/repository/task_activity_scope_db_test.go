@@ -32,6 +32,11 @@ func setupTaskActivitySchema(t *testing.T, db *gorm.DB) {
 		id UUID PRIMARY KEY, org_id UUID NOT NULL, title VARCHAR(255) NOT NULL DEFAULT '',
 		deal_id UUID, contact_id UUID, assigned_to UUID, created_by UUID,
 		due_at TIMESTAMPTZ, completed_at TIMESTAMPTZ, priority VARCHAR(20) NOT NULL DEFAULT 'medium',
+		-- Added by migration 000074 (R8.1). Its absence here is why
+		-- TestTaskCreate_StampsCreatedByFromCaller_DB has been failing since:
+		-- gorm INSERTs every column on domain.Task, so Create died with
+		-- column "last_reminded_at" of relation "tasks" does not exist.
+		last_reminded_at TIMESTAMPTZ,
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		deleted_at TIMESTAMPTZ
 	)`).Error)

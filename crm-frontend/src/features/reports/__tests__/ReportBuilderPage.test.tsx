@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { Report, ReportFieldDescriptor, ReportResult } from '../../../lib/api';
@@ -174,24 +174,20 @@ describe('ReportBuilderPage', () => {
   // renders the FIRST option as selected, so without reconciliation a Support
   // rep denied `deal` would see "Contacts" selected while every query on the
   // page still asked for `deal` — the picker lying about what it is showing.
-  it('a new report moves off an object the caller cannot read', async () => {
+  it('shows the denied object as selected-but-unavailable instead of mislabelling it', async () => {
     vi.mocked(listReportObjects).mockResolvedValue([
       { slug: 'contact', label: 'Contact', label_plural: 'Contacts', icon: 'C', color: '#3B82F6' },
     ]);
     renderBuilder('/reports/new');
 
     const picker = await screen.findByLabelText('Report object') as HTMLSelectElement;
-    // State follows the picker: both say contact, and the field catalog is
-    // fetched for contact, never for the denied deal.
-    await waitFor(() => expect(picker.value).toBe('contact'));
-    // The settled state is what matters: the picker and the field query agree.
-    // (One 'deal' fetch fires on the first render, before the object list has
-    // resolved; it 403s and is discarded.)
-    await waitFor(() => {
-      const calls = vi.mocked(listReportFields).mock.calls;
-      expect(calls[calls.length - 1][0]).toBe('contact');
-    });
-    expect(screen.queryByText(/no access/)).toBeNull();
+    // The picker must agree with what the page is querying. 'deal' is the
+    // initial default and is not in the OLS-filtered list, so it is rendered as
+    // a disabled option — NOT silently replaced by the first readable object,
+    // which is what a <select> does on its own when its value matches nothing.
+    await waitFor(() => expect(screen.getByText(/no access/)).toBeInTheDocument());
+    expect(picker.value).toBe('deal');
+    expect(within(picker).getByText(/Contacts/)).toBeInTheDocument();
   });
 
   // An EXISTING report must NOT be silently retargeted: rewriting object_slug

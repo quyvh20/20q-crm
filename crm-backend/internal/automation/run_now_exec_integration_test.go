@@ -152,6 +152,8 @@ func runNowExecSetup(t *testing.T) (*runNowExecEnv, func()) {
 		contact_id UUID,
 		company_id UUID,
 		stage_id UUID,
+		-- migration 000075 (R9.3): gorm names every column on domain.Deal.
+		pipeline_id UUID,
 		owner_user_id UUID,
 		expected_close_at TIMESTAMPTZ,
 		closed_at TIMESTAMPTZ,

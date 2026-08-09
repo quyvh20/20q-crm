@@ -99,21 +99,14 @@ export default function ReportBuilderPage() {
   // FIRST option as selected. Left alone the picker would say "Contacts" while
   // every query on the page still asked for `deal`, and the only clue would be
   // a preview error naming an object the user cannot see selected anywhere.
+  //
+  // The fix is to render the missing slug as a disabled option (below) rather
+  // than to auto-correct the state. Auto-correcting would mean writing state
+  // from an effect — two renders and a lint warning — and on a SAVED report it
+  // would silently retarget object_slug, so a Save would rebuild someone's
+  // report against a different table. Showing the truth costs the user one
+  // click and lies to nobody.
   const objectMissing = objects.length > 0 && !objects.some((o) => o.slug === objectSlug);
-
-  // For a NEW report, land on something the caller can actually query. The
-  // config is reset because the template's field keys belong to the object we
-  // are leaving. For an EXISTING report we deliberately do NOT do this: silently
-  // rewriting object_slug and then letting Save persist it would rebuild
-  // someone's saved report against a different table. That case renders the
-  // saved object as a disabled option instead, so the picker tells the truth and
-  // the preview error explains it.
-  useEffect(() => {
-    if (!id && objectMissing) {
-      setObjectSlug(objects[0].slug);
-      setConfig((c) => ({ chart: c.chart, aggregate: { fn: 'count' } }));
-    }
-  }, [id, objectMissing, objects]);
 
   const { data: fields = [] } = useQuery<ReportFieldDescriptor[]>({
     queryKey: ['report-fields', objectSlug],

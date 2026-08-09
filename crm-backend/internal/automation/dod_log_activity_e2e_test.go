@@ -55,7 +55,7 @@ func TestDoD_LogActivity_WebhookToTimeline(t *testing.T) {
 		END IF;
 	END $$;`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS organizations (id UUID PRIMARY KEY, name TEXT DEFAULT '')`).Error)
-	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS deals (id UUID PRIMARY KEY, org_id UUID NOT NULL, title TEXT DEFAULT '')`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS deals (id UUID PRIMARY KEY, org_id UUID NOT NULL, pipeline_id UUID, title TEXT DEFAULT '')`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS activities (
 		id UUID PRIMARY KEY,
 		org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,

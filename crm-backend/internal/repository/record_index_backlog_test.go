@@ -63,6 +63,11 @@ func setupBacklog(t *testing.T) (*gorm.DB, domain.RecordIndexBacklog, uuid.UUID,
 		company_id uuid,
 		owner_user_id uuid,
 		custom_fields jsonb DEFAULT '{}',
+		-- Added by migration 000076 (R9.4). UnvectoredContacts selects
+		-- domain.Contact, so gorm names every column on the model: without these
+		-- the query dies with: column contacts.lead_score does not exist.
+		lead_score int NOT NULL DEFAULT 0,
+		lead_score_at timestamptz,
 		created_at timestamptz NOT NULL DEFAULT NOW(),
 		updated_at timestamptz NOT NULL DEFAULT NOW(),
 		deleted_at timestamptz,

@@ -177,7 +177,6 @@ function usePagedTasks(filter: TaskFilter, resetKey: string) {
     if (firstPageQuery.data) {
       setPages({ key: resetKey, tasks: firstPageQuery.data.tasks, cursor: firstPageQuery.data.next_cursor });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resetKey, firstPageQuery.data]);
 
   const tasks = pages.key === resetKey ? pages.tasks : [];

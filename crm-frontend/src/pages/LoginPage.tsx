@@ -124,7 +124,10 @@ export default function LoginPage() {
           {/* Error. role="alert" so a failed sign-in is announced instead of
               silently repainting the form. */}
           {error && (
-            <div role="alert" className="mb-4 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            // data-testid so the E2E suite can name THIS alert. A bare
+            // getByRole('alert') matches the Toaster's always-present (and
+            // deliberately empty) live region too — see login.spec.ts.
+            <div data-testid="login-error" role="alert" className="mb-4 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               {error}
               {/* Stranded-passwordless hint (P2): an invited user, or one who
                   usually signs in with Google, may never have set a password.
