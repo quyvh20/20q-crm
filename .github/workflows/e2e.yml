@@ -1,21 +1,26 @@
 # E2E — Playwright smoke suite
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# THIS WORKFLOW IS DELIBERATELY OUT OF THE MERGE-BLOCKING PATH
+# THIS WORKFLOW GATES THE FRONTEND DEPLOY (as of 2026-08-10)
 # ─────────────────────────────────────────────────────────────────────────────
-# It is NOT in any `needs:` list in deploy.yml, and nothing waits on it. A
-# browser suite that drives four real services has a flake budget that a
-# freshly-written one has not yet earned; wiring it into the deploy gate on day
-# one buys a broken main branch, not confidence. Give it a few weeks of nightly
-# runs first. When it has proved boring, add it to `deploy-frontend`'s `needs:`
-# — and note that deploy.yml's header explains why that list is the ONLY gate
-# this repo has (no branch protection, no rulesets).
+# It was deliberately advisory-only for its first weeks, on the reasoning that a
+# browser suite driving four real services has a flake budget a fresh suite has
+# not earned. It has now earned it, so deploy.yml CALLS this file as a reusable
+# workflow and lists it in `deploy-frontend`'s `needs:`.
 #
-# BE HONEST ABOUT WHAT ACTUALLY RUNS THIS: this is a push-to-main shop. The most
-# recent pull-request-triggered run was 2026-06-03. The `pull_request` trigger
-# below is therefore near-dead weight in practice and is opt-in anyway (it needs
-# the `e2e` label). THE NIGHTLY SCHEDULE IS WHAT WILL ACTUALLY EXERCISE THIS
-# SUITE. If the nightly is ever disabled, this file stops being tested at all.
+# The trigger to fix it, though, was not that it proved boring — it was that it
+# broke on 2026-08-05 and ran red for five consecutive nights with nobody
+# noticing, because advisory means nobody looks. That is the failure mode this
+# change closes.
+#
+# ONE DEFINITION, THREE ENTRY POINTS. deploy.yml does not copy the job; it calls
+# this file via `uses:`. Adding a step here changes the nightly AND the gate.
+#
+# WHAT THIS GATE DOES NOT COVER: only the CLOUDFLARE PAGES frontend deploy waits
+# on it. deploy.yml's `deploy-backend` is `if: ${{ false }}` — Railway ships the
+# backend from its own GitHub integration on every push to main, red suite or
+# not. Gating that too is a Railway-side setting, not something this file can
+# reach.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # SCOPE — what is covered, and one thing that is deliberately not
@@ -47,8 +52,13 @@
 name: E2E — Playwright smoke suite
 
 on:
+  # Called by deploy.yml so the frontend deploy waits on this suite. No `inputs`
+  # and no `secrets` — the suite generates its own credentials per run (see NO
+  # NEW SECRETS below), and keeping the contract empty is what makes it safe to
+  # call from a workflow that does hold deploy secrets.
+  workflow_call:
   schedule:
-    # 03:00 UTC nightly. This is the trigger that matters — see the header.
+    # 03:00 UTC nightly — still useful as a canary on a day with no pushes.
     - cron: '0 3 * * *'
   workflow_dispatch:
   # Opt-in per pull request: add the `e2e` label to run it. Guarded on the job
@@ -58,8 +68,15 @@ on:
 
 # A second run of the same PR/branch supersedes the first — these jobs are
 # expensive and the older answer is never the interesting one.
+#
+# KEYED ON THE CALLING WORKFLOW, not just the ref. In a reusable workflow
+# `github.workflow` is the CALLER's name, so a deploy-gating run and the nightly
+# land in different groups and cannot cancel each other. Sharing one group would
+# mean a 03:00 nightly starting mid-deploy cancels the gating run, and a
+# cancelled `needs:` job skips `deploy-frontend` — a silent non-deploy, which is
+# a worse outcome than a duplicate run.
 concurrency:
-  group: e2e-${{ github.ref }}
+  group: e2e-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:

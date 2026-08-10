@@ -329,6 +329,29 @@ jobs:
             exit 1
           fi
 
+  # The Playwright smoke suite, CALLED rather than copied — the job lives in
+  # e2e.yml, which also runs it nightly and on an `e2e`-labelled PR. One
+  # definition, so a step added there applies to the deploy gate too.
+  #
+  # It is a gate as of 2026-08-10. It was advisory before that and broke for
+  # five consecutive nights unnoticed, which is precisely what advisory buys.
+  #
+  # `permissions` is declared explicitly because a called workflow cannot hold
+  # more than the caller grants it, and this suite needs nothing but checkout.
+  # No `secrets:` line, deliberately: e2e.yml reads no repository secret and
+  # takes none, so calling it from this workflow — which DOES hold the Cloudflare
+  # and Railway tokens — cannot widen their exposure.
+  #
+  # On a pull_request run of THIS workflow the called job self-skips (its own
+  # `if:` requires the `e2e` label), so PRs stay cheap. That is safe only
+  # because `deploy-frontend` is already push-and-main-only; a skipped `needs:`
+  # job skips its dependents, so if that `if:` is ever relaxed, check this.
+  e2e:
+    name: E2E
+    uses: ./.github/workflows/e2e.yml
+    permissions:
+      contents: read
+
   build:
     name: Build Binary
     runs-on: ubuntu-latest
@@ -446,6 +469,10 @@ jobs:
       - lint-go
       - no-prod-credentials-in-scripts
       - build
+      # Added 2026-08-10. See the `e2e` job above for why it is a call rather
+      # than a copy, and e2e.yml's header for what this gate does NOT cover
+      # (the Railway backend deploy does not wait on anything in this file).
+      - e2e
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     defaults:
       run:
