@@ -111,7 +111,15 @@ func TestGetWorkflowSchema_FullCoverage(t *testing.T) {
 	// 1. Pipeline stages (with color)
 	stage1ID := uuid.New()
 	stage2ID := uuid.New()
-	db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_stages (
+	// R9.3: the stage query LEFT JOINs pipelines. Without this table the join
+	// errors, and the loader swallows the error (err == nil) and returns an
+	// EMPTY stage list — so the failure shows up as a bare length assertion.
+	db.Exec(`CREATE TABLE IF NOT EXISTS pipelines (
+		id UUID PRIMARY KEY, org_id UUID NOT NULL, name TEXT NOT NULL DEFAULT '',
+		position INT NOT NULL DEFAULT 0, is_default BOOLEAN NOT NULL DEFAULT FALSE,
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ
+	)`)
+		db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_stages (
 		id UUID PRIMARY KEY,
 		org_id UUID NOT NULL,
 		name TEXT NOT NULL,
@@ -452,7 +460,15 @@ func TestGetWorkflowSchema_CrossOrgIsolation(t *testing.T) {
 	orgB := uuid.New()
 
 	// Seed tables
-	db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_stages (id UUID PRIMARY KEY, org_id UUID NOT NULL, pipeline_id UUID, name TEXT, position INT DEFAULT 0, color TEXT DEFAULT '#000', is_won BOOLEAN DEFAULT FALSE, is_lost BOOLEAN DEFAULT FALSE, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
+	// R9.3: the stage query LEFT JOINs pipelines. Without this table the join
+	// errors, and the loader swallows the error (err == nil) and returns an
+	// EMPTY stage list — so the failure shows up as a bare length assertion.
+	db.Exec(`CREATE TABLE IF NOT EXISTS pipelines (
+		id UUID PRIMARY KEY, org_id UUID NOT NULL, name TEXT NOT NULL DEFAULT '',
+		position INT NOT NULL DEFAULT 0, is_default BOOLEAN NOT NULL DEFAULT FALSE,
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ
+	)`)
+		db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_stages (id UUID PRIMARY KEY, org_id UUID NOT NULL, pipeline_id UUID, name TEXT, position INT DEFAULT 0, color TEXT DEFAULT '#000', is_won BOOLEAN DEFAULT FALSE, is_lost BOOLEAN DEFAULT FALSE, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS tags (id UUID PRIMARY KEY, org_id UUID NOT NULL, name TEXT, color TEXT DEFAULT '#000', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY, org_id UUID, email TEXT, first_name TEXT DEFAULT '', last_name TEXT DEFAULT '', full_name TEXT DEFAULT '', role TEXT DEFAULT 'viewer', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS org_users (user_id UUID NOT NULL, org_id UUID NOT NULL, role_id UUID NOT NULL, status TEXT DEFAULT 'active', joined_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ, PRIMARY KEY (user_id, org_id))`)
@@ -528,7 +544,15 @@ func TestGetWorkflowSchema_NoNPlus1_QueryCount(t *testing.T) {
 	orgID := uuid.New()
 
 	// --- Seed tables with MANY rows to expose any N+1 ---
-	db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_stages (
+	// R9.3: the stage query LEFT JOINs pipelines. Without this table the join
+	// errors, and the loader swallows the error (err == nil) and returns an
+	// EMPTY stage list — so the failure shows up as a bare length assertion.
+	db.Exec(`CREATE TABLE IF NOT EXISTS pipelines (
+		id UUID PRIMARY KEY, org_id UUID NOT NULL, name TEXT NOT NULL DEFAULT '',
+		position INT NOT NULL DEFAULT 0, is_default BOOLEAN NOT NULL DEFAULT FALSE,
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ
+	)`)
+		db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_stages (
 		id UUID PRIMARY KEY, org_id UUID NOT NULL, pipeline_id UUID, name TEXT, position INT DEFAULT 0,
 		color TEXT DEFAULT '#000', is_won BOOLEAN DEFAULT FALSE, is_lost BOOLEAN DEFAULT FALSE,
 		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
@@ -656,7 +680,15 @@ func TestGetWorkflowSchema_CacheHitAndInvalidate(t *testing.T) {
 	orgID := uuid.New()
 
 	// Seed minimal data
-	db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_stages (
+	// R9.3: the stage query LEFT JOINs pipelines. Without this table the join
+	// errors, and the loader swallows the error (err == nil) and returns an
+	// EMPTY stage list — so the failure shows up as a bare length assertion.
+	db.Exec(`CREATE TABLE IF NOT EXISTS pipelines (
+		id UUID PRIMARY KEY, org_id UUID NOT NULL, name TEXT NOT NULL DEFAULT '',
+		position INT NOT NULL DEFAULT 0, is_default BOOLEAN NOT NULL DEFAULT FALSE,
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ
+	)`)
+		db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_stages (
 		id UUID PRIMARY KEY, org_id UUID NOT NULL, pipeline_id UUID, name TEXT, position INT DEFAULT 0,
 		color TEXT DEFAULT '#000', is_won BOOLEAN DEFAULT FALSE, is_lost BOOLEAN DEFAULT FALSE,
 		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
@@ -792,7 +824,15 @@ func TestSchemaEndpoint_ReturnsAllCategories(t *testing.T) {
 	orgID := uuid.New()
 
 	// --- Seed all tables so every category is populated ---
-	db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_stages (
+	// R9.3: the stage query LEFT JOINs pipelines. Without this table the join
+	// errors, and the loader swallows the error (err == nil) and returns an
+	// EMPTY stage list — so the failure shows up as a bare length assertion.
+	db.Exec(`CREATE TABLE IF NOT EXISTS pipelines (
+		id UUID PRIMARY KEY, org_id UUID NOT NULL, name TEXT NOT NULL DEFAULT '',
+		position INT NOT NULL DEFAULT 0, is_default BOOLEAN NOT NULL DEFAULT FALSE,
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ
+	)`)
+		db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_stages (
 		id UUID PRIMARY KEY, org_id UUID NOT NULL, pipeline_id UUID, name TEXT, position INT DEFAULT 0,
 		color TEXT DEFAULT '#000', is_won BOOLEAN DEFAULT FALSE, is_lost BOOLEAN DEFAULT FALSE,
 		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
@@ -952,7 +992,15 @@ func TestSchemaEndpoint_ScopedByOrg(t *testing.T) {
 	orgB := uuid.New()
 
 	// --- Create all tables ---
-	db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_stages (
+	// R9.3: the stage query LEFT JOINs pipelines. Without this table the join
+	// errors, and the loader swallows the error (err == nil) and returns an
+	// EMPTY stage list — so the failure shows up as a bare length assertion.
+	db.Exec(`CREATE TABLE IF NOT EXISTS pipelines (
+		id UUID PRIMARY KEY, org_id UUID NOT NULL, name TEXT NOT NULL DEFAULT '',
+		position INT NOT NULL DEFAULT 0, is_default BOOLEAN NOT NULL DEFAULT FALSE,
+		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ
+	)`)
+		db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_stages (
 		id UUID PRIMARY KEY, org_id UUID NOT NULL, pipeline_id UUID, name TEXT, position INT DEFAULT 0,
 		color TEXT DEFAULT '#000', is_won BOOLEAN DEFAULT FALSE, is_lost BOOLEAN DEFAULT FALSE,
 		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
