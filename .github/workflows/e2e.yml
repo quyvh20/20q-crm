@@ -203,8 +203,8 @@ jobs:
           echo $! > "$RUNNER_TEMP/backend.pid"
 
       # Bounded retry on the real readiness endpoint — never a blind `sleep`.
-      # /health binds before the database connection is established, so this
-      # genuinely waits for the server rather than for a port to open.
+      # This proves the PROCESS is up. It does NOT prove the API is usable —
+      # see the next step, which is the one the seed actually depends on.
       - name: Wait for backend
         run: |
           for i in $(seq 1 60); do
@@ -217,6 +217,41 @@ jobs:
           echo "::error::backend did not become healthy within 60s"
           echo "----- backend.log -----"
           cat "$RUNNER_TEMP/backend.log" || true
+          exit 1
+
+      # /health is NOT a readiness signal for the API. main.go:205-223 registers
+      # /health and calls ListenAndServe BEFORE connecting to the database, on
+      # purpose, so Railway's healthcheck passes during a cold start. Every
+      # /api/* route is registered afterwards, past the DB connect, the
+      # migrations and the whole boot-guard block.
+      #
+      # So "healthy" and "serving the API" are minutes apart on a cold database,
+      # and the seed used to race straight into that gap: it got gin's catch-all
+      # `404 page not found` from POST /api/auth/register and failed the run with
+      # "Seeded account cannot log in (HTTP 404)", with backend.log showing boot
+      # guards still executing. Latent for as long as this file has existed;
+      # R9.5 widened the window by adding two CREATE INDEX statements on a hot
+      # table to the boot sequence.
+      #
+      # The probe posts an empty body to the login route: 404 means the router
+      # has not been swapped in yet, ANY other status (400 for the malformed
+      # body, 401, 429) means the routes are live. Deliberately not /health and
+      # deliberately not a sleep.
+      - name: Wait for API routes
+        run: |
+          for i in $(seq 1 120); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+              -X POST http://localhost:8080/api/auth/login \
+              -H 'Content-Type: application/json' -d '{}' || echo 000)
+            case "$code" in
+              000|404) ;;
+              *) echo "API routes registered after ${i}s (login probe returned $code)"; exit 0 ;;
+            esac
+            sleep 1
+          done
+          echo "::error::API routes were never registered within 120s — the server is up but still booting."
+          echo "----- backend.log (tail) -----"
+          tail -n 120 "$RUNNER_TEMP/backend.log" || true
           exit 1
 
       # ── Seed ───────────────────────────────────────────────────────────────
