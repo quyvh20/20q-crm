@@ -22,6 +22,8 @@ func seedDealStageTables(t *testing.T, db *gorm.DB) {
 		id UUID PRIMARY KEY,
 		org_id UUID NOT NULL,
 		name TEXT NOT NULL,
+		-- migration 000075 (R9.3): gorm names every column on the model.
+		pipeline_id UUID,
 		position INT DEFAULT 0,
 		color TEXT DEFAULT '#3B82F6',
 		is_won BOOLEAN DEFAULT FALSE,

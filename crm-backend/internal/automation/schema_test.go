@@ -115,6 +115,8 @@ func TestGetWorkflowSchema_FullCoverage(t *testing.T) {
 		id UUID PRIMARY KEY,
 		org_id UUID NOT NULL,
 		name TEXT NOT NULL,
+		-- migration 000075 (R9.3): gorm names every column on the model.
+		pipeline_id UUID,
 		position INT DEFAULT 0,
 		color TEXT DEFAULT '#3B82F6',
 		is_won BOOLEAN DEFAULT FALSE,
@@ -450,7 +452,7 @@ func TestGetWorkflowSchema_CrossOrgIsolation(t *testing.T) {
 	orgB := uuid.New()
 
 	// Seed tables
-	db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_stages (id UUID PRIMARY KEY, org_id UUID NOT NULL, name TEXT, position INT DEFAULT 0, color TEXT DEFAULT '#000', is_won BOOLEAN DEFAULT FALSE, is_lost BOOLEAN DEFAULT FALSE, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_stages (id UUID PRIMARY KEY, org_id UUID NOT NULL, pipeline_id UUID, name TEXT, position INT DEFAULT 0, color TEXT DEFAULT '#000', is_won BOOLEAN DEFAULT FALSE, is_lost BOOLEAN DEFAULT FALSE, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS tags (id UUID PRIMARY KEY, org_id UUID NOT NULL, name TEXT, color TEXT DEFAULT '#000', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY, org_id UUID, email TEXT, first_name TEXT DEFAULT '', last_name TEXT DEFAULT '', full_name TEXT DEFAULT '', role TEXT DEFAULT 'viewer', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS org_users (user_id UUID NOT NULL, org_id UUID NOT NULL, role_id UUID NOT NULL, status TEXT DEFAULT 'active', joined_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ, PRIMARY KEY (user_id, org_id))`)
@@ -527,7 +529,7 @@ func TestGetWorkflowSchema_NoNPlus1_QueryCount(t *testing.T) {
 
 	// --- Seed tables with MANY rows to expose any N+1 ---
 	db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_stages (
-		id UUID PRIMARY KEY, org_id UUID NOT NULL, name TEXT, position INT DEFAULT 0,
+		id UUID PRIMARY KEY, org_id UUID NOT NULL, pipeline_id UUID, name TEXT, position INT DEFAULT 0,
 		color TEXT DEFAULT '#000', is_won BOOLEAN DEFAULT FALSE, is_lost BOOLEAN DEFAULT FALSE,
 		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS tags (
@@ -655,7 +657,7 @@ func TestGetWorkflowSchema_CacheHitAndInvalidate(t *testing.T) {
 
 	// Seed minimal data
 	db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_stages (
-		id UUID PRIMARY KEY, org_id UUID NOT NULL, name TEXT, position INT DEFAULT 0,
+		id UUID PRIMARY KEY, org_id UUID NOT NULL, pipeline_id UUID, name TEXT, position INT DEFAULT 0,
 		color TEXT DEFAULT '#000', is_won BOOLEAN DEFAULT FALSE, is_lost BOOLEAN DEFAULT FALSE,
 		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS tags (
@@ -791,7 +793,7 @@ func TestSchemaEndpoint_ReturnsAllCategories(t *testing.T) {
 
 	// --- Seed all tables so every category is populated ---
 	db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_stages (
-		id UUID PRIMARY KEY, org_id UUID NOT NULL, name TEXT, position INT DEFAULT 0,
+		id UUID PRIMARY KEY, org_id UUID NOT NULL, pipeline_id UUID, name TEXT, position INT DEFAULT 0,
 		color TEXT DEFAULT '#000', is_won BOOLEAN DEFAULT FALSE, is_lost BOOLEAN DEFAULT FALSE,
 		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS tags (
@@ -951,7 +953,7 @@ func TestSchemaEndpoint_ScopedByOrg(t *testing.T) {
 
 	// --- Create all tables ---
 	db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_stages (
-		id UUID PRIMARY KEY, org_id UUID NOT NULL, name TEXT, position INT DEFAULT 0,
+		id UUID PRIMARY KEY, org_id UUID NOT NULL, pipeline_id UUID, name TEXT, position INT DEFAULT 0,
 		color TEXT DEFAULT '#000', is_won BOOLEAN DEFAULT FALSE, is_lost BOOLEAN DEFAULT FALSE,
 		created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), deleted_at TIMESTAMPTZ)`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS tags (
