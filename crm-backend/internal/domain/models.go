@@ -527,14 +527,32 @@ type AITokenUsage struct {
 	ID                uuid.UUID `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
 	OrgID             uuid.UUID `gorm:"type:uuid;not null;index" json:"org_id"`
 	UserID            uuid.UUID `gorm:"type:uuid;not null" json:"user_id"`
-	Model             string    `gorm:"size:100;not null" json:"model"`
-	Provider          string    `gorm:"size:50;not null" json:"provider"`
-	Feature           string    `gorm:"size:100;not null" json:"feature"`
-	InputTokens       int       `gorm:"not null;default:0" json:"input_tokens"`
-	OutputTokens      int       `gorm:"not null;default:0" json:"output_tokens"`
-	CachedInputTokens int       `gorm:"not null;default:0" json:"cached_input_tokens"`
-	LatencyMs         int64     `gorm:"not null;default:0" json:"latency_ms"`
-	StopReason        string    `gorm:"size:50" json:"stop_reason"`
+	// The four string sizes below MATCH migrations/000007 (255/255/255/100) and
+	// must keep matching it. They were narrower, which made gorm try to shrink
+	// the columns on every boot:
+	//
+	//   ALTER TABLE "ai_token_usages" ALTER COLUMN "model" TYPE varchar(100)
+	//   ERROR: cannot alter type of a column used by a view or rule
+	//   DETAIL: rule _RETURN on view v_ai_top_expensive_requests_yesterday
+	//           depends on column "model"
+	//
+	// migrations/000009 builds two dashboard views over model/provider/feature,
+	// and Postgres will not retype a column a view selects. Narrowing them would
+	// mean dropping and rebuilding both views to buy nothing — no value here is
+	// anywhere near even 100 characters. So the tags describe the table rather
+	// than trying to redefine it.
+	//
+	// This surfaced only after the domain.User.Email fix: gorm's AutoMigrate
+	// used to abort at `users` long before it reached this model. Same shape of
+	// bug, one model further down the list.
+	Model             string `gorm:"size:255;not null" json:"model"`
+	Provider          string `gorm:"size:255;not null" json:"provider"`
+	Feature           string `gorm:"size:255;not null" json:"feature"`
+	InputTokens       int    `gorm:"not null;default:0" json:"input_tokens"`
+	OutputTokens      int    `gorm:"not null;default:0" json:"output_tokens"`
+	CachedInputTokens int    `gorm:"not null;default:0" json:"cached_input_tokens"`
+	LatencyMs         int64  `gorm:"not null;default:0" json:"latency_ms"`
+	StopReason        string `gorm:"size:100" json:"stop_reason"`
 	CacheHit          bool      `gorm:"default:false" json:"cache_hit"`
 	CostUSD           float64   `gorm:"type:numeric(10,6);default:0" json:"cost_usd"`
 	CreatedAt         time.Time `json:"created_at"`
