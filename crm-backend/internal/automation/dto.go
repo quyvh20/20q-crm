@@ -168,7 +168,7 @@ type TestRunResponse struct {
 // TestRunStep is the dry-run outcome for a single step (no side effects).
 type TestRunStep struct {
 	StepID string `json:"step_id"`
-	Type   string `json:"type"` // "action" | "condition" | "delay"
+	Type   string `json:"type"` // "action" | "condition" | "delay" | "split"
 	// Status is "run" (on the taken path) or "skip" (untaken branch, or the whole
 	// workflow gated off by failing top-level conditions).
 	Status string `json:"status"`
@@ -350,7 +350,7 @@ func countStepsList(steps []StepSpec) int {
 	for _, s := range steps {
 		if s.Type == "action" || s.Type == "delay" {
 			count++
-		} else if s.Type == "condition" {
+		} else if s.Type == "condition" || s.Type == "split" {
 			count += countStepsList(s.YesSteps)
 			count += countStepsList(s.NoSteps)
 		}

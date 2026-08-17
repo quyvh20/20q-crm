@@ -93,7 +93,7 @@ func validateStepsRecursive(steps []StepSpec, path string, depth int, idSet map[
 		result.Valid = false
 		result.Errors = append(result.Errors, ValidationError{
 			Field:   path,
-			Message: fmt.Sprintf("condition nesting is too deep (depth %d, max %d). Tip: flatten using AND/OR groups instead of nested conditions", depth, MaxStepTreeDepth),
+			Message: fmt.Sprintf("step nesting is too deep (depth %d, max %d). Tip: flatten nested branches — for If/Else, AND/OR rule groups replace nesting", depth, MaxStepTreeDepth),
 		})
 		return
 	}
@@ -175,6 +175,23 @@ func validateStepsRecursive(steps []StepSpec, path string, depth int, idSet map[
 			} else {
 				validateDelayParams(step.Delay, stepPath+".delay", result)
 			}
+
+		case "split":
+			if step.Split == nil {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   stepPath + ".split",
+					Message: "split property is required for step type 'split'",
+				})
+			} else if step.Split.PercentA < 1 || step.Split.PercentA > 99 {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   stepPath + ".split.percent_a",
+					Message: fmt.Sprintf("percent_a must be between 1 and 99 (got %d)", step.Split.PercentA),
+				})
+			}
+			validateStepsRecursive(step.YesSteps, stepPath+".yes_steps", depth+1, idSet, result)
+			validateStepsRecursive(step.NoSteps, stepPath+".no_steps", depth+1, idSet, result)
 
 		default:
 			result.Valid = false

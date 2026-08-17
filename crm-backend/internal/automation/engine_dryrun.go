@@ -2,6 +2,7 @@ package automation
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
@@ -99,6 +100,29 @@ func dryWalkSteps(steps []StepSpec, evalCtx EvalContext, reached bool, skipReaso
 				s.Reason = skipReason
 			}
 			*out = append(*out, s)
+
+		case "split":
+			// A dry run has no run id, so the real hash decision can't be
+			// previewed — follow the A branch and say so in the reason.
+			s := TestRunStep{StepID: step.ID, Type: "split"}
+			percent := 50
+			if step.Split != nil {
+				percent = step.Split.PercentA
+			}
+			if reached {
+				s.Status = "run"
+				s.Branch = "yes"
+				s.Reason = fmt.Sprintf("%d%% of runs take A, %d%% take B — preview follows A", percent, 100-percent)
+				*out = append(*out, s)
+				dryWalkSteps(step.YesSteps, evalCtx, true, "branch not taken", out)
+				dryWalkSteps(step.NoSteps, evalCtx, false, "branch not taken", out)
+			} else {
+				s.Status = "skip"
+				s.Reason = skipReason
+				*out = append(*out, s)
+				dryWalkSteps(step.YesSteps, evalCtx, false, skipReason, out)
+				dryWalkSteps(step.NoSteps, evalCtx, false, skipReason, out)
+			}
 
 		case "condition":
 			s := TestRunStep{StepID: step.ID, Type: "condition"}

@@ -252,13 +252,26 @@ func (d *DelayParams) IsWaitUntil() bool {
 	return d != nil && d.UntilField != ""
 }
 
+// SplitParams configures a percentage split step: PercentA percent of runs take
+// the A branch (YesSteps), the rest take B (NoSteps). The branch choice is a
+// deterministic hash of (run id, step id) — see splitTakesA for why it must be.
+type SplitParams struct {
+	PercentA int `json:"percent_a"` // 1..99
+}
+
 // StepSpec represents a step in a recursive workflow steps tree.
+//
+// Fork kinds (condition, split) reuse YesSteps/NoSteps as their two branches —
+// for a split, YesSteps is the A branch and NoSteps is B. Reusing the arrays
+// keeps every generic tree walk (flatten, id normalization, step paths with
+// their yes|no tokens) working unchanged for both kinds.
 type StepSpec struct {
-	Type      string          `json:"type"` // "action" | "condition" | "delay"
+	Type      string          `json:"type"` // "action" | "condition" | "delay" | "split"
 	ID        string          `json:"id"`
 	Action    *ActionSpec     `json:"action,omitempty"`
 	Condition *ConditionGroup `json:"condition,omitempty"`
 	Delay     *DelayParams    `json:"delay,omitempty"`
+	Split     *SplitParams    `json:"split,omitempty"`
 	YesSteps  []StepSpec      `json:"yes_steps,omitempty"`
 	NoSteps   []StepSpec      `json:"no_steps,omitempty"`
 }

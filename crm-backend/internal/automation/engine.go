@@ -971,6 +971,36 @@ func (e *Engine) executeStepsWithState(execCtx context.Context, steps []StepSpec
 					return completed, err
 				}
 			}
+
+		case "split":
+			// Same pinning rule as condition: a branch that already made
+			// progress (including a parked delay) must never flip on resume.
+			// Otherwise the branch is a deterministic hash of (run, step) —
+			// stable across every re-walk; see splitTakesA.
+			var runA bool
+			if hasAnyStepStarted(step.YesSteps, state.started, stepPath, "yes") {
+				runA = true
+			} else if hasAnyStepStarted(step.NoSteps, state.started, stepPath, "no") {
+				runA = false
+			} else {
+				percent := 50
+				if step.Split != nil {
+					percent = step.Split.PercentA
+				}
+				runA = splitTakesA(run.ID, step.ID, percent)
+			}
+
+			if runA {
+				completed, err := e.executeStepsWithState(execCtx, step.YesSteps, run, state, evalCtx, stepPath, "yes")
+				if err != nil || !completed {
+					return completed, err
+				}
+			} else {
+				completed, err := e.executeStepsWithState(execCtx, step.NoSteps, run, state, evalCtx, stepPath, "no")
+				if err != nil || !completed {
+					return completed, err
+				}
+			}
 		}
 	}
 	return true, nil

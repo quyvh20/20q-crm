@@ -68,7 +68,7 @@ func stepPathIndex(steps []StepSpec, parentPath string, branch string) map[strin
 			if s.ID != "" {
 				idx[path] = s.ID
 			}
-			if s.Type == "condition" {
+			if s.Type == "condition" || s.Type == "split" {
 				walk(s.YesSteps, path, "yes")
 				walk(s.NoSteps, path, "no")
 			}
@@ -90,7 +90,7 @@ func hasAnyStepStarted(steps []StepSpec, started map[string]bool, parentPath str
 			if started[s.ID] || started[path] {
 				return true
 			}
-		case "condition":
+		case "condition", "split":
 			if hasAnyStepStarted(s.YesSteps, started, path, "yes") || hasAnyStepStarted(s.NoSteps, started, path, "no") {
 				return true
 			}
