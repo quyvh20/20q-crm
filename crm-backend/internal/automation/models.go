@@ -357,6 +357,15 @@ const (
 	// TriggerDateField fires N days before/after a record's date field (A4), via
 	// automation_timers materialized event-driven at the record write chokepoint.
 	TriggerDateField = "date_field"
+	// TriggerEmailOpened fires when a CAMPAIGN email is opened (arc G, plan
+	// engagement_and_split_plan.md). Emitted by the marketing Resend webhook
+	// processor — campaign opens only (sequence/1:1 sends are excluded, which
+	// structurally prevents open→send→open trigger loops), with the analytics
+	// layer's 10s machine-open (Apple MPP) filter applied. NOTE: "_opened" is
+	// deliberately NOT a dynamic-wildcard suffix, so this const is what makes
+	// the type valid; do not rename it to a *_updated form (that would drag it
+	// into the watch_field/changed_fields filter branch).
+	TriggerEmailOpened = "email_opened"
 )
 
 // Valid action types
@@ -468,6 +477,7 @@ var ValidTriggerTypes = map[string]bool{
 	TriggerWebhookInbound:   true,
 	TriggerSchedule:         true,
 	TriggerDateField:        true,
+	TriggerEmailOpened:      true,
 }
 
 // IsValidTriggerType checks if a trigger type is valid.

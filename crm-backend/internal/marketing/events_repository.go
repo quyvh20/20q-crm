@@ -181,3 +181,37 @@ func (r *Repository) DeliverabilityRates(ctx context.Context, orgID uuid.UUID, w
 	}
 	return out, nil
 }
+
+// CampaignExists reports whether id is a LIVE campaign of the org — the
+// email_opened trigger's v1 gate: M8 sequence sends echo a WORKFLOW uuid in
+// the campaign_id tag and must not fire engagement triggers (loop protection).
+// Soft-deleted campaigns don't count (every other reader of this table filters
+// them; a deleted campaign ghost-firing workflows the UI can't show would be
+// undiagnosable).
+func (r *Repository) CampaignExists(ctx context.Context, orgID, campaignID uuid.UUID) (bool, error) {
+	var n int64
+	err := r.db.WithContext(ctx).
+		Table("marketing_campaigns").
+		Where("org_id = ? AND id = ? AND deleted_at IS NULL", orgID, campaignID).
+		Count(&n).Error
+	return n > 0, err
+}
+
+// HadDeliveredWithin reports whether the recipient's campaign email was
+// delivered within `window` of `at` — on EITHER side: the analytics Apple-MPP
+// heuristic near-mirrored for emit time. The forward half absorbs sub-second
+// timestamp inversion between Resend's delivery and pixel subsystems (analytics
+// classifies an open at-or-before its delivery as machine; a strictly backward
+// window would call it human). Bounded on both sides so a much-later
+// re-delivery can't retroactively mark a real open as machine. Served by the
+// idx_marketing_email_events_recipient (org_id, email_normalized, event_type,
+// occurred_at) index.
+func (r *Repository) HadDeliveredWithin(ctx context.Context, orgID uuid.UUID, emailNorm string, campaignID uuid.UUID, at time.Time, window time.Duration) (bool, error) {
+	var n int64
+	err := r.db.WithContext(ctx).
+		Table("marketing_email_events").
+		Where("org_id = ? AND email_normalized = ? AND event_type = ? AND campaign_id = ? AND occurred_at > ? AND occurred_at <= ?",
+			orgID, emailNorm, ResendTypeDelivered, campaignID, at.Add(-window), at.Add(window)).
+		Count(&n).Error
+	return n > 0, err
+}

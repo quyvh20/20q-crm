@@ -3284,6 +3284,15 @@ func main() {
 		// endpoint verifies+dedupes+ACKs+drops them, and the machinery is dormant until M7.
 		marketing.NewResendWebhookHandler(marketingRepo, integrationsIPLimiter, cfg.ResendWebhookSecret, cfg.AppEnv, autoLogger).RegisterRoutes(router)
 		marketingResendProcessor := marketing.NewResendProcessor(marketingRepo, autoLogger)
+		// email_opened engagement bridge (arc G): campaign opens start automations.
+		// Wired only when the engine exists; a nil bridge disables emission
+		// (fail-closed, like every other port here).
+		if autoEngine != nil {
+			marketingResendProcessor.SetOpenTrigger(&marketing.OpenTriggerBridge{
+				TriggerEvent: autoEngine.TriggerEvent,
+				LoadContact:  autoEngine.LoadContactForTrigger,
+			})
+		}
 		go marketing.StartResendWebhookProcessor(context.Background(), marketingResendProcessor)
 		go marketing.StartResendReaper(context.Background(), marketingRepo, autoLogger)
 

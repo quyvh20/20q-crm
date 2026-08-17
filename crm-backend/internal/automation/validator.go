@@ -274,6 +274,29 @@ func validateTrigger(data []byte, result *ValidationResult) {
 
 	// Validate trigger-specific params
 	switch trigger.Type {
+	case TriggerEmailOpened:
+		// Params are optional; campaign_id, when present, must be a UUID or ""/"*".
+		if trigger.Params != nil {
+			if raw, ok := trigger.Params["campaign_id"]; ok {
+				s, isStr := raw.(string)
+				if !isStr {
+					result.Valid = false
+					result.Errors = append(result.Errors, ValidationError{
+						Field:   "trigger.params.campaign_id",
+						Message: "campaign_id must be a string (campaign UUID, empty, or '*')",
+					})
+				} else if s != "" && s != "*" {
+					if _, err := uuid.Parse(s); err != nil {
+						result.Valid = false
+						result.Errors = append(result.Errors, ValidationError{
+							Field:   "trigger.params.campaign_id",
+							Message: "campaign_id must be a campaign UUID, empty, or '*'",
+						})
+					}
+				}
+			}
+		}
+
 	case TriggerDealStageChanged:
 		if trigger.Params == nil {
 			result.Valid = false

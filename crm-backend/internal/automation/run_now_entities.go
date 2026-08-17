@@ -26,6 +26,13 @@ import (
 // (nil, nil) when the contact does not exist in the org so the caller can
 // produce a 404.
 func (h *Handler) loadContactForRun(ctx context.Context, orgID, contactID uuid.UUID) (map[string]any, error) {
+	return loadContactMapDB(ctx, h.db, orgID, contactID)
+}
+
+// loadContactMapDB is the package-level core of loadContactForRun, shared with
+// the engagement bridge (Engine.LoadContactForTrigger) so both produce the
+// exact contact event-map shape natural CRM emits use.
+func loadContactMapDB(ctx context.Context, db *gorm.DB, orgID, contactID uuid.UUID) (map[string]any, error) {
 	type contactRow struct {
 		ID           uuid.UUID      `gorm:"column:id"`
 		FirstName    string         `gorm:"column:first_name"`
@@ -38,7 +45,7 @@ func (h *Handler) loadContactForRun(ctx context.Context, orgID, contactID uuid.U
 	}
 
 	var row contactRow
-	err := h.db.WithContext(ctx).
+	err := db.WithContext(ctx).
 		Table("contacts").
 		Where("org_id = ? AND id = ? AND deleted_at IS NULL", orgID, contactID).
 		First(&row).Error
@@ -69,7 +76,7 @@ func (h *Handler) loadContactForRun(ctx context.Context, orgID, contactID uuid.U
 
 	// Tags as an array of tag-id strings (matching contactToMap's m["tags"]).
 	// Read through the unified tag view (P7) rather than contact_tags alone.
-	if ids := h.contactTagIDs(ctx, orgID, contactID); len(ids) > 0 {
+	if ids := contactTagIDsDB(ctx, db, orgID, contactID); len(ids) > 0 {
 		m["tags"] = ids
 	}
 
@@ -88,7 +95,7 @@ func (h *Handler) loadContactForRun(ctx context.Context, orgID, contactID uuid.U
 // the sole source, so once contact tags converge onto object_links the engine keeps
 // working unchanged (plan D4 / R2). Contacts still *store* tags in contact_tags by
 // design; this only unifies the read. Order: contact_tags first, then edges, deduped.
-func (h *Handler) contactTagIDs(ctx context.Context, orgID, contactID uuid.UUID) []string {
+func contactTagIDsDB(ctx context.Context, db *gorm.DB, orgID, contactID uuid.UUID) []string {
 	seen := map[string]bool{}
 	out := []string{}
 	add := func(ids []uuid.UUID) {
@@ -102,7 +109,7 @@ func (h *Handler) contactTagIDs(ctx context.Context, orgID, contactID uuid.UUID)
 	}
 
 	var legacy []uuid.UUID
-	if err := h.db.WithContext(ctx).
+	if err := db.WithContext(ctx).
 		Table("contact_tags").
 		Joins("JOIN tags ON tags.id = contact_tags.tag_id AND tags.deleted_at IS NULL").
 		Where("contact_tags.contact_id = ?", contactID).
@@ -111,7 +118,7 @@ func (h *Handler) contactTagIDs(ctx context.Context, orgID, contactID uuid.UUID)
 	}
 
 	var edges []uuid.UUID
-	if err := h.db.WithContext(ctx).
+	if err := db.WithContext(ctx).
 		Table("object_links").
 		Where("org_id = ? AND from_slug = 'contact' AND from_id = ? AND relation_key = 'tags' AND to_slug = 'tag' AND deleted_at IS NULL", orgID, contactID).
 		Pluck("to_id", &edges).Error; err == nil {

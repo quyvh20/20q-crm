@@ -522,15 +522,42 @@ func (e *Engine) triggerEventInternal(ctx context.Context, orgID uuid.UUID, even
 			}
 		}
 
+		// --- Campaign filtering (email_opened) ---
+		// An email_opened trigger may pin a specific campaign; empty/"*" = any.
+		if eventType == TriggerEmailOpened {
+			var triggerSpec TriggerSpec
+			if err := json.Unmarshal(wf.Trigger, &triggerSpec); err == nil && triggerSpec.Params != nil {
+				reqCampaign, _ := triggerSpec.Params["campaign_id"].(string)
+				actualCampaign, _ := payload["campaign_id"].(string)
+				if reqCampaign != "" && reqCampaign != "*" && !campaignPinMatches(reqCampaign, actualCampaign) {
+					e.logger.Debug("automation: campaign_id mismatch, skipping",
+						"workflow_id", wf.ID.String(),
+						"req_campaign", reqCampaign,
+						"actual_campaign", actualCampaign,
+					)
+					continue
+				}
+			}
+		}
+
 		// Build idempotency key
 		entityID := ""
 		if id, ok := payload["entity_id"]; ok {
 			entityID = fmt.Sprintf("%v", id)
 		}
-		eventTime := time.Now().Truncate(time.Minute).Unix()
-		idempKey := fmt.Sprintf("%x", sha256.Sum256(
-			[]byte(fmt.Sprintf("%s:%s:%s:%d", wf.ID.String(), eventType, entityID, eventTime)),
-		))
+		var idempKey string
+		if emailID, _ := payload["email_id"].(string); eventType == TriggerEmailOpened && emailID != "" {
+			// Once per (workflow, contact, MESSAGE): repeated opens of the same
+			// email — every pixel load is a fresh webhook event — are absorbed
+			// forever (within the 90-day run-prune horizon), while opens of a
+			// different campaign email still enroll.
+			idempKey = emailOpenedIdempKey(wf.ID, eventType, entityID, emailID)
+		} else {
+			eventTime := time.Now().Truncate(time.Minute).Unix()
+			idempKey = fmt.Sprintf("%x", sha256.Sum256(
+				[]byte(fmt.Sprintf("%s:%s:%s:%d", wf.ID.String(), eventType, entityID, eventTime)),
+			))
+		}
 
 		triggerCtx, err := json.Marshal(payload)
 		if err != nil {

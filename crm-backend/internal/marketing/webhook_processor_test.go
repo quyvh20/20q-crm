@@ -21,6 +21,23 @@ type fakeConsumerStore struct {
 	rates        DeliverabilityRates
 	ratesErr     error
 	addErr       error
+	// Engagement-trigger support (arc G)
+	campaignExists   bool
+	campaignErr      error
+	deliveredWithin  bool
+	deliveredErr     error
+	campaignQueries  int
+	deliveredQueries int
+}
+
+func (s *fakeConsumerStore) CampaignExists(_ context.Context, _, _ uuid.UUID) (bool, error) {
+	s.campaignQueries++
+	return s.campaignExists, s.campaignErr
+}
+
+func (s *fakeConsumerStore) HadDeliveredWithin(_ context.Context, _ uuid.UUID, _ string, _ uuid.UUID, _ time.Time, _ time.Duration) (bool, error) {
+	s.deliveredQueries++
+	return s.deliveredWithin, s.deliveredErr
 }
 
 func (f *fakeConsumerStore) ClaimPendingEvents(context.Context, int) ([]MarketingEmailEvent, error) {
