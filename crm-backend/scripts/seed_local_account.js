@@ -113,6 +113,48 @@ async function main() {
   }
   console.log('  deals:', dealRes);
 
+  // ── A custom object with JSONB-typed fields ────────────────────────────────
+  // Seeded so the filtering journey has a CUSTOM object to exercise. That is
+  // the storage kind worth testing: a custom object's values live in a JSONB
+  // blob, so number/date comparisons only work through the filter compiler's
+  // guarded casts — a system object's typed columns would prove far less.
+  //
+  // Created here rather than in the spec because API writes need the in-memory
+  // Bearer token the SPA holds; seeding it before the browser ever boots also
+  // puts the object in the sidebar, so the spec reaches it with a click instead
+  // of a page load (see the auth-request budget note in e2e/fixtures.ts).
+  //
+  // Best-effort, like the scaffolding below: a re-run against a database that
+  // already has the object gets a duplicate-slug error, which must not fail the
+  // whole seed.
+  console.log('7. Custom object (assets)...');
+  const assetObj = await post('/api/objects', {
+    slug: 'asset',
+    label: 'Asset',
+    label_plural: 'Assets',
+    icon: '🏢',
+    fields: [
+      { key: 'name', label: 'Name', type: 'text', required: true },
+      { key: 'sqft', label: 'Sq Ft', type: 'number', required: false },
+      { key: 'region', label: 'Region', type: 'select', options: ['North', 'South'], required: false },
+    ],
+  }, token);
+  if (assetObj.status === 201 || assetObj.status === 200) {
+    // Sizes are deliberately spread across the 1000–2000 band the filter spec
+    // asks for, so exactly ONE record matches and the assertion is exact.
+    const assets = [
+      { name: 'Alpha Tower', sqft: 500, region: 'North' },
+      { name: 'Beta Plaza', sqft: 1500, region: 'South' },
+      { name: 'Gamma Hall', sqft: 5000, region: 'North' },
+    ];
+    for (const fields of assets) {
+      await post('/api/registry/objects/asset/records', { fields }, token);
+    }
+    console.log('  assets: seeded', assets.length);
+  } else {
+    console.log('  assets: skipped (status ' + assetObj.status + ')');
+  }
+
   // ── P6 (dynamic-role UX) test scaffolding ──────────────────────────────────
   // A custom role, a second user holding it, a pending invitation, and a second
   // org with a cross-membership so the role dropdowns, delete-with-reassign,
