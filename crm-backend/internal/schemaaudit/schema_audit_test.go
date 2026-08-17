@@ -65,6 +65,22 @@ func TestSchemaAudit_BootAutoMigrateEmitsNoDDL(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 
+	// Prove the instrument before trusting its silence. This audit's whole
+	// output is "no DDL was emitted", which is also exactly what a broken
+	// recorder reports — a mis-wired session logger, a gorm version that stops
+	// routing DDL through Trace, or a filter that matches nothing would all
+	// yield a confident, permanent, meaningless pass. So migrate a model whose
+	// table cannot exist and require that it be SEEN.
+	canary, canaryErr := ddlFor(db, &schemaAuditCanary{})
+	if canaryErr != nil {
+		t.Fatalf("canary migrate failed, so the audit below proves nothing: %v", canaryErr)
+	}
+	if len(canary) == 0 {
+		t.Fatal("canary emitted no DDL: creating a table that does not exist MUST produce a " +
+			"CREATE TABLE, so the recorder is not observing gorm's statements — every 'clean' " +
+			"result from this audit is meaningless until this passes")
+	}
+
 	var findings []string
 	for _, m := range auditedModels() {
 		stmts, migrateErr := ddlFor(db, m.model)
@@ -81,7 +97,8 @@ func TestSchemaAudit_BootAutoMigrateEmitsNoDDL(t *testing.T) {
 	}
 
 	if len(findings) == 0 {
-		t.Logf("schema audit clean: %d models, no DDL", len(auditedModels()))
+		t.Logf("schema audit clean: %d models, no DDL (recorder proven live by canary: %s)",
+			len(auditedModels()), canary[0])
 		return
 	}
 	sort.Strings(findings)
@@ -101,6 +118,18 @@ type auditModel struct {
 	name  string
 	model any
 }
+
+// schemaAuditCanary is the control: a table no migration creates and no boot
+// guard knows about, so AutoMigrate must always want to CREATE it. Its
+// transaction is rolled back with everything else, so it never actually exists
+// — which is what keeps it a reliable control on every run rather than only the
+// first.
+type schemaAuditCanary struct {
+	ID   uint   `gorm:"primaryKey"`
+	Name string `gorm:"size:16"`
+}
+
+func (schemaAuditCanary) TableName() string { return "schema_audit_canary_never_committed" }
 
 // auditedModels is every model something AutoMigrates at boot: the platform set
 // from cmd/server/main.go plus internal/automation's own. Models NOT listed here
