@@ -1,5 +1,6 @@
 // Searchable command menu that opens from a "+" insert slot. Picking an item
-// builds a default step and inserts it at the slot. Replaces the old palette —
+// builds a default step and inserts it at the slot. Complements the palette
+// sidebar (both render from the shared catalog, so the two lists can't drift) —
 // it appears where you click, so nothing eats canvas width.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -8,30 +9,15 @@ import { useBuilderStore, generateActionId } from '../store';
 import { getDefaultParams } from './stepDefaults';
 import type { WorkflowStep, ActionSpec } from '../types';
 import type { InsertContext } from './graph';
+import { ACTION_ITEMS, RULE_ITEMS, findStepById, type PaletteStepItem } from './catalog';
 import { actionMeta, conditionMeta, delayMeta } from './nodeMeta';
+import { showToast } from '../../../lib/useToast';
 
-interface Item {
-  type: string;
-  label: string;
-  group: 'Actions' | 'Flow control';
-  meta: { icon: React.ComponentType<{ className?: string }>; accent: string; chip: string };
+function metaFor(type: string) {
+  if (type === 'condition') return conditionMeta;
+  if (type === 'delay') return delayMeta;
+  return actionMeta(type);
 }
-
-const ITEMS: Item[] = [
-  { type: 'send_email', label: 'Send Email', group: 'Actions', meta: actionMeta('send_email') },
-  { type: 'create_task', label: 'Create Task', group: 'Actions', meta: actionMeta('create_task') },
-  { type: 'assign_user', label: 'Assign User', group: 'Actions', meta: actionMeta('assign_user') },
-  { type: 'update_record', label: 'Update Record', group: 'Actions', meta: actionMeta('update_record') },
-  { type: 'create_record', label: 'Create Record', group: 'Actions', meta: actionMeta('create_record') },
-  { type: 'log_activity', label: 'Log Activity', group: 'Actions', meta: actionMeta('log_activity') },
-  { type: 'notify_user', label: 'Notify User', group: 'Actions', meta: actionMeta('notify_user') },
-  { type: 'find_records', label: 'Find Records', group: 'Actions', meta: actionMeta('find_records') },
-  { type: 'enroll_records', label: 'Enroll Records', group: 'Actions', meta: actionMeta('enroll_records') },
-  { type: 'ai_generate', label: 'Generate with AI', group: 'Actions', meta: actionMeta('ai_generate') },
-  { type: 'send_webhook', label: 'Send Webhook', group: 'Actions', meta: actionMeta('send_webhook') },
-  { type: 'condition', label: 'If / Else', group: 'Flow control', meta: conditionMeta },
-  { type: 'delay', label: 'Delay / Wait', group: 'Flow control', meta: delayMeta },
-];
 
 export function buildStep(type: string): WorkflowStep {
   const id = generateActionId();
@@ -69,23 +55,34 @@ export function InsertMenu({ slot, anchor, onClose }: Props) {
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  const filtered = useMemo(() => {
+  const groups = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return ITEMS.filter((it) => !q || it.label.toLowerCase().includes(q) || it.type.includes(q));
+    const match = (it: PaletteStepItem) => !q || it.label.toLowerCase().includes(q) || it.type.includes(q);
+    return [
+      { name: 'Actions', items: ACTION_ITEMS.filter(match) },
+      { name: 'Rules', items: RULE_ITEMS.filter(match) },
+    ];
   }, [query]);
+
+  const empty = groups.every((g) => g.items.length === 0);
 
   const pick = (type: string) => {
     const step = buildStep(type);
     addStep(step, slot.parentId, slot.branch, slot.index);
-    selectNode(step.id);
+    // addStep can refuse (depth guard) — selecting the never-inserted id would
+    // blank the config panel, so confirm the step landed and surface a refusal.
+    const state = useBuilderStore.getState();
+    if (findStepById(state.steps, step.id)) {
+      selectNode(step.id);
+    } else {
+      showToast(state.errors.depth?.[0] ?? 'Could not add the step here.', { tone: 'error' });
+    }
     onClose();
   };
 
   // Clamp the menu inside the viewport.
   const left = Math.min(anchor.x, window.innerWidth - 280);
   const top = Math.min(anchor.y, window.innerHeight - 360);
-
-  const groups: Item['group'][] = ['Actions', 'Flow control'];
 
   return (
     <>
@@ -107,17 +104,17 @@ export function InsertMenu({ slot, anchor, onClose }: Props) {
           />
         </div>
         <div className="max-h-72 overflow-y-auto py-1">
-          {filtered.length === 0 && (
+          {empty && (
             <div className="px-3 py-4 text-center text-xs text-muted-foreground">No matches</div>
           )}
           {groups.map((g) => {
-            const items = filtered.filter((it) => it.group === g);
-            if (!items.length) return null;
+            if (!g.items.length) return null;
             return (
-              <div key={g}>
-                <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{g}</div>
-                {items.map((it) => {
-                  const Icon = it.meta.icon;
+              <div key={g.name}>
+                <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{g.name}</div>
+                {g.items.map((it) => {
+                  const Icon = it.icon;
+                  const meta = metaFor(it.type);
                   return (
                     <button
                       key={it.type}
@@ -125,8 +122,8 @@ export function InsertMenu({ slot, anchor, onClose }: Props) {
                       onClick={() => pick(it.type)}
                       className="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent"
                     >
-                      <span className={`flex h-7 w-7 items-center justify-center rounded-md ${it.meta.chip}`}>
-                        <Icon className={`h-4 w-4 ${it.meta.accent}`} />
+                      <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${meta.solid}`}>
+                        <Icon className="h-3.5 w-3.5" />
                       </span>
                       {it.label}
                     </button>

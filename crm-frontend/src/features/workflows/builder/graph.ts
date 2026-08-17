@@ -4,7 +4,7 @@
 // builder, so it's tested hard.
 
 import Dagre from '@dagrejs/dagre';
-import type { Node, Edge } from '@xyflow/react';
+import { MarkerType, type Node, type Edge } from '@xyflow/react';
 import type { TriggerSpec, WorkflowStep } from '../types';
 
 /**
@@ -17,12 +17,16 @@ export function reorderTargetIndex(droppedY: number, siblingYs: number[]): numbe
 }
 
 export const NODE_WIDTH = 280;
+// Dagre layout sizes. Cards are auto-height in the DOM; these estimates drive
+// spacing + the center→top-left conversion, so they must track the rendered
+// chrome: trigger/action = header strip (~41px) + one/two-line body; delay and
+// condition render as compact pills; end is the "+ Add step" / Exit pill.
 export const NODE_HEIGHTS: Record<BuilderNodeKind, number> = {
-  trigger: 84,
-  action: 76,
-  delay: 64,
-  condition: 64,
-  end: 36,
+  trigger: 92,
+  action: 80,
+  delay: 40,
+  condition: 40,
+  end: 32,
 };
 
 // 'end' is a ghost terminal node rendered as a "+ Add step" pill at every open
@@ -104,6 +108,12 @@ export function stepsToGraph(trigger: TriggerSpec | null, steps: WorkflowStep[])
       type,
       label,
       data: { insert },
+      markerEnd: {
+        type: MarkerType.ArrowClosed,
+        width: 16,
+        height: 16,
+        color: 'hsl(var(--muted-foreground) / 0.55)',
+      },
     });
   };
 
@@ -189,7 +199,7 @@ export function stepsToGraph(trigger: TriggerSpec | null, steps: WorkflowStep[])
 // positions are top-left; dagre returns centers).
 function layout(nodes: BuilderNode[], edges: BuilderEdge[]): BuilderNode[] {
   const g = new Dagre.graphlib.Graph().setDefaultEdgeLabel(() => ({}));
-  g.setGraph({ rankdir: 'TB', nodesep: 48, ranksep: 56 });
+  g.setGraph({ rankdir: 'TB', nodesep: 56, ranksep: 64 });
 
   for (const n of nodes) {
     g.setNode(n.id, { width: NODE_WIDTH, height: NODE_HEIGHTS[n.data.kind] });

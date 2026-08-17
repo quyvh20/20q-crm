@@ -13,3 +13,4 @@ export { EmptyState } from "./empty-state";
 export { ErrorState } from "./error-state";
 export { Toaster } from "./toast";
 export { Popover, PopoverAnchor } from "./popover";
+export { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from "./dropdown-menu";

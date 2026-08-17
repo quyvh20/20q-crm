@@ -1,8 +1,9 @@
 // The builder's right panel (A7.3): a two-tab shell over the existing per-node
 // config panel and the AI Copilot. Tabs stay pinned while the content scrolls.
 // Both panels stay mounted (inactive one hidden) so a half-typed Copilot prompt
-// and the Configure scroll position survive a tab switch.
-import { useState } from 'react';
+// and the Configure scroll position survive a tab switch. The active tab is
+// owned by NextBuilder so other surfaces (the palette's "Draft with AI" card,
+// the ?ai= Command Center handoff) can open Copilot directly.
 import { SlidersHorizontal, Sparkles } from 'lucide-react';
 import { ConfigPanel } from './ConfigPanel';
 import { CopilotPanel } from './CopilotPanel';
@@ -10,9 +11,18 @@ import type { DryRunState } from '../BuilderContext';
 
 type Tab = 'configure' | 'copilot';
 
-export function BuilderSidePanel({ dryRun, aiPrompt }: { dryRun?: DryRunState | null; aiPrompt?: string | null }) {
-  // Open on Copilot when the Command Center handed us a prompt (A7.4).
-  const [tab, setTab] = useState<Tab>(aiPrompt ? 'copilot' : 'configure');
+export function BuilderSidePanel({
+  dryRun,
+  aiPrompt,
+  tab,
+  onTabChange,
+}: {
+  dryRun?: DryRunState | null;
+  aiPrompt?: string | null;
+  tab: Tab;
+  onTabChange: (tab: Tab) => void;
+}) {
+  const setTab = onTabChange;
 
   const tabBtn = (id: Tab, label: string, Icon: typeof SlidersHorizontal) => (
     <button

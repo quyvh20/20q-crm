@@ -114,7 +114,7 @@ describe('ConfigPanel routing', () => {
   it('routes a send_email step to the action form', () => {
     seedWithStep(emailStep());
     render(<ConfigPanel />);
-    expect(screen.getByText('Send Email')).toBeInTheDocument();
+    expect(screen.getByText('Send an email')).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Click {x} to insert contact email')).toBeInTheDocument();
   });
 

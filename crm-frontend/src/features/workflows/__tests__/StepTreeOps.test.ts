@@ -4304,3 +4304,95 @@ describe('DoD_NestedCondition_SaveReloadRoundTrip', () => {
     expect(errors.depth).toBeUndefined();
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════
+// addStep depth guard — insert & absorb must count the absorbed tail
+// (a condition insert moves trailing siblings into its Yes branch, which
+// deepens them by 1; the guard must refuse when that exceeds the max,
+// including at the ROOT slot the old guard skipped entirely)
+// ═════════════════════════════════════════════════════════════════════
+describe('addStep depth guard — absorb-aware', () => {
+  // C1(yes: C2(yes: C3(yes: C4(yes: C5)))) — subtree depth 5, backend-valid.
+  function mkDeepChain(): WorkflowStep {
+    const c5 = mkCondition('C5');
+    const c4 = mkCondition('C4', [c5]);
+    const c3 = mkCondition('C3', [c4]);
+    const c2 = mkCondition('C2', [c3]);
+    return mkCondition('C1', [c2]);
+  }
+
+  it('refuses a root condition insert whose absorbed tail would exceed max depth', () => {
+    useBuilderStore.getState().addStep(mkAction('a'), null, null);
+    useBuilderStore.getState().addStep(mkDeepChain(), null, null);
+
+    useBuilderStore.getState().addStep(mkCondition('newC'), null, null, 0);
+
+    const s = useBuilderStore.getState();
+    expect(s.steps.map((x) => x.id)).toEqual(['a', 'C1']); // unchanged
+    expect(s.errors.depth).toBeDefined();
+  });
+
+  it('refuses a branch condition insert whose absorbed tail would exceed max depth', () => {
+    useBuilderStore.getState().addStep(mkDeepChain(), null, null);
+
+    // Absorbing C2 (subtree depth 4) at list depth 1 inside newC → depth 6.
+    useBuilderStore.getState().addStep(mkCondition('newC'), 'C1', 'yes', 0);
+
+    const s = useBuilderStore.getState();
+    expect(s.steps[0].yes_steps!.map((x) => x.id)).toEqual(['C2']); // unchanged
+    expect(s.errors.depth).toBeDefined();
+  });
+
+  it('still allows a condition insert whose absorbed tail fits', () => {
+    useBuilderStore.getState().addStep(mkAction('a'), null, null);
+
+    useBuilderStore.getState().addStep(mkCondition('newC'), null, null, 0);
+
+    const s = useBuilderStore.getState();
+    expect(s.steps.map((x) => x.id)).toEqual(['newC']);
+    expect(s.steps[0].yes_steps!.map((x) => x.id)).toEqual(['a']); // absorbed
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════
+// duplicateStep — copy-in-place with fresh ids; conditions excluded
+// ═════════════════════════════════════════════════════════════════════
+describe('duplicateStep', () => {
+  it('inserts the copy right after the original with a fresh id and selects it', () => {
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    useBuilderStore.getState().addStep(mkAction('a2'), null, null);
+
+    useBuilderStore.getState().duplicateStep('a1');
+
+    const s = useBuilderStore.getState();
+    expect(s.steps).toHaveLength(3);
+    expect(s.steps[0].id).toBe('a1');
+    expect(s.steps[2].id).toBe('a2');
+    const copy = s.steps[1];
+    expect(copy.id).not.toBe('a1');
+    expect(copy.type).toBe('action');
+    expect(copy.action?.type).toBe('create_task');
+    expect(s.selectedNodeId).toBe(copy.id);
+    expect(s.isDirty).toBe(true);
+  });
+
+  it('duplicates inside a condition branch', () => {
+    const cond = mkCondition('c1', [mkAction('y1')]);
+    useBuilderStore.getState().addStep(cond, null, null);
+
+    useBuilderStore.getState().duplicateStep('y1');
+
+    const yes = useBuilderStore.getState().steps[0].yes_steps!;
+    expect(yes).toHaveLength(2);
+    expect(yes[0].id).toBe('y1');
+    expect(yes[1].id).not.toBe('y1');
+  });
+
+  it('refuses to duplicate a condition (no-merge invariant)', () => {
+    useBuilderStore.getState().addStep(mkCondition('c1'), null, null);
+
+    useBuilderStore.getState().duplicateStep('c1');
+
+    expect(useBuilderStore.getState().steps).toHaveLength(1);
+  });
+});

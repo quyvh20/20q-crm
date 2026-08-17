@@ -106,6 +106,10 @@ export function WorkflowCanvas({ trigger, steps, selectedId, onSelect, onReorder
       onNodeDragStop={onNodeDragStop}
       nodesConnectable={false}
       elementsSelectable
+      // React Flow's built-in Backspace delete would only remove the node from
+      // LOCAL canvas state (the store tree is the source of truth) — disable it;
+      // NextBuilder implements Delete/Backspace against the store instead.
+      deleteKeyCode={null}
       fitView
       fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
       proOptions={{ hideAttribution: true }}

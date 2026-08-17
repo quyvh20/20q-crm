@@ -8,18 +8,22 @@
 // update never clobbers in-progress edits); save goes through the mutation, which
 // primes the detail cache and invalidates the list so the index reflects changes.
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useParams, useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { ReactFlowProvider } from '@xyflow/react';
-import { ArrowLeft, Loader2, FlaskConical, X, Sparkles, Undo2 } from 'lucide-react';
+import { ArrowLeft, Loader2, FlaskConical, X, Sparkles, Undo2, PanelLeftOpen, AlertTriangle } from 'lucide-react';
 import { useBuilderStore, getStepAtPath, parseStepPath } from '../store';
 import { useDocumentTitle } from '../../../lib/useDocumentTitle';
+import { showToast } from '../../../lib/useToast';
 import { useWorkflow, useSaveWorkflow, useTestRun } from '../queries';
 import { entityKindForTrigger } from '../RunNowModal';
-import { BuilderContext, type DryRunState } from './BuilderContext';
+import { BuilderContext, type DryRunState, type PaletteDrag } from './BuilderContext';
 import type { InsertContext } from './graph';
 import { WorkflowCanvas } from './WorkflowCanvas';
-import { InsertMenu } from './InsertMenu';
+import { InsertMenu, buildStep } from './InsertMenu';
+import { Palette } from './Palette';
+import { firstOpenSlot, findTriggerItem, findStepById } from './catalog';
+import { mapIssuesToCanvas } from './issueMap';
 import { BuilderSidePanel } from './config/BuilderSidePanel';
 import { DryRunDialog } from './DryRunDialog';
 import type { EntityCandidate } from '../EntityPicker';
@@ -192,6 +196,116 @@ export function NextBuilder() {
     setInsertState({ slot, anchor: anchor ?? { x: window.innerWidth / 2, y: window.innerHeight / 2 } });
   }, []);
 
+  // ----- Palette sidebar (Brevo-style) -----
+  const [paletteOpen, setPaletteOpen] = useState(true);
+  const [dragging, setDragging] = useState<PaletteDrag | null>(null);
+
+  // Insert a palette step at a specific slot (drop) or the tail of the main path
+  // (click). addStep can refuse (depth guard) — surface the refusal instead of
+  // silently doing nothing, and only select the step if it actually landed.
+  const insertStep = useCallback((type: string, slot?: InsertContext) => {
+    const s = useBuilderStore.getState();
+    const target = slot ?? firstOpenSlot(s.steps);
+    const step = buildStep(type);
+    s.addStep(step, target.parentId, target.branch, target.index);
+    const after = useBuilderStore.getState();
+    if (findStepById(after.steps, step.id)) {
+      s.selectNode(step.id);
+    } else {
+      showToast(after.errors.depth?.[0] ?? 'Could not add the step here.', { tone: 'error' });
+    }
+  }, []);
+
+  const applyTrigger = useCallback((itemId: string) => {
+    const s = useBuilderStore.getState();
+    const item = findTriggerItem(itemId, s.schema);
+    if (!item) return;
+    const built = item.build();
+    // Same-type pick = "show me this trigger", not "reset my config": a stray
+    // click on the row for the already-active trigger must not wipe its params.
+    if (s.trigger?.type !== built.type) s.setTrigger(built);
+    s.selectNode('trigger');
+  }, []);
+
+  const onDropStep = useCallback(
+    (slot: InsertContext) => {
+      if (dragging?.kind === 'step') insertStep(dragging.type, slot);
+      setDragging(null);
+    },
+    [dragging, insertStep],
+  );
+
+  const onDropTrigger = useCallback(() => {
+    if (dragging?.kind === 'trigger') applyTrigger(dragging.type);
+    setDragging(null);
+  }, [dragging, applyTrigger]);
+
+  const onDelete = useCallback((stepId: string) => {
+    useBuilderStore.getState().removeStep(stepId); // clears a stale selection itself
+  }, []);
+
+  const onDuplicate = useCallback((stepId: string) => {
+    useBuilderStore.getState().duplicateStep(stepId); // selects the copy itself
+  }, []);
+
+  // ----- Canvas validation issues (post-save-attempt, live-updating) -----
+  // validate() runs on Save; once it has failed (errors non-empty) we re-run it
+  // on every structural/config edit so node badges and the banner clear the
+  // moment an issue is fixed — no second failed Save needed to find out.
+  const hasErrors = Object.keys(store.errors).length > 0;
+  useEffect(() => {
+    if (!hasErrors) return;
+    useBuilderStore.getState().validate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store.steps, store.trigger, store.name, store.actions, store.conditions]);
+  const canvasIssues = useMemo(
+    () => mapIssuesToCanvas(store.errors, store.steps, store.actions),
+    [store.errors, store.steps, store.actions],
+  );
+
+  // ----- Keyboard: Delete/Backspace removes the selected step -----
+  // React Flow's own delete is disabled (deleteKeyCode={null}) because it only
+  // edits local canvas state; this goes through the store. Guarded away from
+  // inputs, dialogs, menus, and the trigger/end pseudo-selections.
+  useEffect(() => {
+    if (isMobile) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+      if (insertState || testOpen) return;
+      const t = e.target instanceof HTMLElement ? e.target : null;
+      if (t && t.closest('input, textarea, select, [contenteditable="true"], [role="dialog"], [role="menu"]')) return;
+      const s = useBuilderStore.getState();
+      const sel = s.selectedNodeId;
+      if (!sel || sel === 'trigger' || sel === 'end') return;
+      e.preventDefault();
+      s.removeStep(sel);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isMobile, insertState, testOpen]);
+
+  // ----- Right panel tab (lifted so the palette's AI card can open Copilot) -----
+  const [panelTab, setPanelTab] = useState<'configure' | 'copilot'>(() =>
+    aiHandoffPrompt ? 'copilot' : 'configure',
+  );
+
+  // A drag whose source unmounts (e.g. the viewport crosses the mobile breakpoint,
+  // removing the palette) never fires dragend on the row — clear the flag from
+  // window-level listeners and on the mobile flip so drop targets can't stay lit.
+  useEffect(() => {
+    if (isMobile) setDragging(null);
+  }, [isMobile]);
+  useEffect(() => {
+    if (!dragging) return;
+    const clear = () => setDragging(null);
+    window.addEventListener('dragend', clear);
+    window.addEventListener('drop', clear);
+    return () => {
+      window.removeEventListener('dragend', clear);
+      window.removeEventListener('drop', clear);
+    };
+  }, [dragging]);
+
   const handleSave = () => {
     if (!store.validate()) return;
     setDryRun(null);
@@ -321,6 +435,24 @@ export function NextBuilder() {
         </div>
       )}
 
+      {/* Validation issues from the last save attempt — badges mark the exact
+          nodes on the canvas; this bar carries the count and any global issues
+          (name, empty flow). Live: it clears as the user fixes things. */}
+      {hasErrors && canvasIssues.count > 0 && !isMobile && (
+        <div role="alert" className="flex items-center gap-2 border-b border-border bg-amber-500/10 px-4 py-1.5 text-xs">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+          <span className="font-medium text-foreground">
+            {canvasIssues.count} issue{canvasIssues.count === 1 ? '' : 's'} to fix before saving
+          </span>
+          {canvasIssues.count > canvasIssues.global.length && (
+            <span className="text-muted-foreground">· marked on the canvas</span>
+          )}
+          {canvasIssues.global.length > 0 && (
+            <span className="truncate text-muted-foreground">· {canvasIssues.global.join(' · ')}</span>
+          )}
+        </div>
+      )}
+
       {/* Auto-split notice: this workflow had steps after an If/Else (a merge); they
           were copied into both branches so the branches no longer rejoin. Shown until
           saved or dismissed. Desktop only (mobile is read-only). */}
@@ -381,12 +513,51 @@ export function NextBuilder() {
         </div>
       )}
 
-      {/* Canvas + right panel. On mobile the canvas is read-only (no insert "+",
-          node-tap is a no-op since the config panel is hidden) — a pannable preview. */}
+      {/* Palette + canvas + right panel. On mobile the canvas is read-only (no
+          palette, no insert "+", node-tap is a no-op since the config panel is
+          hidden) — a pannable preview. */}
       <div className="flex flex-1 overflow-hidden">
+        {!isMobile &&
+          (paletteOpen ? (
+            <aside className="w-72 shrink-0 overflow-hidden border-r border-border bg-card">
+              <Palette
+                onPickTrigger={applyTrigger}
+                onPickStep={insertStep}
+                onDragChange={setDragging}
+                onCollapse={() => setPaletteOpen(false)}
+                onAskAI={() => setPanelTab('copilot')}
+              />
+            </aside>
+          ) : (
+            <div className="flex shrink-0 flex-col border-r border-border bg-card px-1.5 py-2">
+              <button
+                type="button"
+                onClick={() => setPaletteOpen(true)}
+                title="Show steps panel"
+                aria-label="Show steps panel"
+                className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <PanelLeftOpen className="h-4 w-4" />
+              </button>
+            </div>
+          ))}
         <div className="relative flex-1">
           <ReactFlowProvider>
-            <BuilderContext.Provider value={{ onSelect: isMobile ? noopSelect : onSelect, onInsert, selectedId: store.selectedNodeId, readOnly: isMobile, dryRun }}>
+            <BuilderContext.Provider
+              value={{
+                onSelect: isMobile ? noopSelect : onSelect,
+                onInsert,
+                selectedId: store.selectedNodeId,
+                readOnly: isMobile,
+                dryRun,
+                onDelete: isMobile ? undefined : onDelete,
+                onDuplicate: isMobile ? undefined : onDuplicate,
+                issues: hasErrors ? canvasIssues : null,
+                dragging,
+                onDropStep,
+                onDropTrigger,
+              }}
+            >
               <WorkflowCanvas
                 trigger={store.trigger}
                 steps={store.steps}
@@ -400,7 +571,7 @@ export function NextBuilder() {
         </div>
         {!isMobile && (
           <aside className="w-[380px] shrink-0 overflow-hidden border-l border-border bg-card">
-            <BuilderSidePanel dryRun={dryRun} aiPrompt={aiHandoffPrompt || null} />
+            <BuilderSidePanel dryRun={dryRun} aiPrompt={aiHandoffPrompt || null} tab={panelTab} onTabChange={setPanelTab} />
           </aside>
         )}
       </div>

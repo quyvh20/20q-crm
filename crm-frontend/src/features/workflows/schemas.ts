@@ -23,7 +23,7 @@ const conditionRuleSchema: z.ZodType<any> = z.lazy(() =>
     // Nested group
     z.object({
       op: z.enum(groupOps),
-      rules: z.array(conditionRuleSchema).min(1),
+      rules: z.array(conditionRuleSchema).min(1, 'Add at least one condition rule'),
     }),
   ])
 );
@@ -76,7 +76,7 @@ export const stepSpecSchema: z.ZodType<any> = z.lazy(() =>
     action: actionSpecSchema.optional(),
     condition: z.object({
       op: z.enum(groupOps),
-      rules: z.array(conditionRuleSchema).min(1),
+      rules: z.array(conditionRuleSchema).min(1, 'Add at least one condition rule'),
     }).optional(),
     delay: delayParamsSchema.optional(),
     yes_steps: z.array(stepSpecSchema).optional(),

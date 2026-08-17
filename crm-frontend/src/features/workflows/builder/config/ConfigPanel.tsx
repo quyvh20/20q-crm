@@ -192,7 +192,7 @@ export function ConfigPanel({ dryRun }: { dryRun?: DryRunState | null }) {
 
   if (step.type === 'condition') {
     return (
-      <Shell header={{ eyebrow: 'Flow control', title: 'If / Else', meta: conditionMeta }} onDelete={handleDelete} preview={preview}>
+      <Shell header={{ eyebrow: 'Rule', title: 'If / Else', meta: conditionMeta }} onDelete={handleDelete} preview={preview}>
         <ConditionConfig />
       </Shell>
     );
@@ -201,10 +201,10 @@ export function ConfigPanel({ dryRun }: { dryRun?: DryRunState | null }) {
   const isDelay = step.type === 'delay';
   const actionType = step.action?.type ?? '';
   const meta = isDelay ? delayMeta : actionMeta(actionType);
-  const title = isDelay ? 'Delay' : (ACTION_TITLES[actionType as keyof typeof ACTION_TITLES] ?? 'Action');
+  const title = isDelay ? 'Time delay' : (ACTION_TITLES[actionType as keyof typeof ACTION_TITLES] ?? 'Action');
 
   return (
-    <Shell header={{ eyebrow: isDelay ? 'Flow control' : 'Action', title, meta }} onDelete={handleDelete} preview={preview}>
+    <Shell header={{ eyebrow: isDelay ? 'Rule' : 'Action', title, meta }} onDelete={handleDelete} preview={preview}>
       <ActionConfig />
     </Shell>
   );

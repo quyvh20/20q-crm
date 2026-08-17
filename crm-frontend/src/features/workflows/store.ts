@@ -74,6 +74,7 @@ interface BuilderState {
   addStep: (step: WorkflowStep, parentId: string | null, branch: 'yes' | 'no' | null, index?: number) => void;
   updateStep: (id: string, patch: Partial<WorkflowStep>) => void;
   removeStep: (id: string) => void;
+  duplicateStep: (id: string) => void;
   reorderSteps: (parentId: string | null, branch: 'yes' | 'no' | null, fromIdx: number, toIdx: number) => void;
   selectNode: (id: string | null) => void;
   dismissAutoSplitNotice: () => void;
@@ -708,20 +709,33 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
 
   addStep: (step, parentId, branch, index) =>
     set((s) => {
-      // Depth guard: check if adding this step would exceed max depth
-      if (parentId && branch) {
-        const parentDepth = getStepDepth(s.steps || [], parentId);
-        const subtreeDepth = getSubtreeDepth(step);
-        // parentDepth = how deep the parent is. Adding into a branch adds 1.
-        // If the step itself is a condition tree, add its subtree depth.
-        if (parentDepth + 1 + subtreeDepth > MAX_STEP_TREE_DEPTH) {
-          return {
-            errors: {
-              ...s.errors,
-              depth: [`Cannot add step: nesting would exceed maximum depth of ${MAX_STEP_TREE_DEPTH} levels`],
-            },
-          };
+      // Depth guard: refuse an insert that would exceed max nesting depth.
+      // baseDepth = list depth of the insertion slot (root list = 0); the step's
+      // own condition subtree stacks on top of it.
+      const list = s.steps || [];
+      const baseDepth = parentId && branch ? getStepDepth(list, parentId) + 1 : 0;
+      const subtreeDepth = getSubtreeDepth(step);
+      let tooDeep = baseDepth + subtreeDepth > MAX_STEP_TREE_DEPTH;
+      // A condition insert absorbs every sibling AFTER the slot into its Yes
+      // branch (insert & absorb), deepening the absorbed tail by 1 — count that
+      // too, including root inserts, which the base check alone never refuses.
+      if (!tooDeep && step.type === 'condition') {
+        const siblings = siblingListAt(list, parentId, branch) ?? [];
+        const start = index !== undefined ? index : siblings.length;
+        for (const absorbed of siblings.slice(start)) {
+          if (baseDepth + 1 + getSubtreeDepth(absorbed) > MAX_STEP_TREE_DEPTH) {
+            tooDeep = true;
+            break;
+          }
         }
+      }
+      if (tooDeep) {
+        return {
+          errors: {
+            ...s.errors,
+            depth: [`Cannot add step: nesting would exceed maximum depth of ${MAX_STEP_TREE_DEPTH} levels`],
+          },
+        };
       }
       // A condition absorbs any steps that would land after it into its Yes branch
       // (insert & absorb) so branches never merge; other steps insert normally.
@@ -776,6 +790,21 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
         selectedNodeId: selStillExists ? selId : null,
         isDirty: true,
       };
+    }),
+
+  // Duplicate an action/delay step in place (inserted right after the original,
+  // fresh ids, intra-clone {{actions.<id>}} refs remapped). Conditions are
+  // deliberately NOT duplicable: they must stay terminal in their sibling list
+  // (no-merge invariant), so a copy after the original would be invalid.
+  duplicateStep: (id) =>
+    set((s) => {
+      const loc = findStepLocation(s.steps || [], id);
+      const orig = findStepInTree(s.steps || [], id);
+      if (!loc || !orig || orig.type === 'condition') return {};
+      const copy = cloneStepsFreshIds([orig])[0];
+      const steps = addStepToTree(s.steps || [], loc.parentId, loc.branch, copy, loc.index + 1);
+      const actions = flattenSteps(steps);
+      return { steps, actions, selectedNodeId: copy.id, isDirty: true };
     }),
 
   reorderSteps: (parentId, branch, fromIdx, toIdx) =>
