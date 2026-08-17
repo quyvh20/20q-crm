@@ -9,6 +9,7 @@ import type { FiresOn } from '../../useSchema';
 import { StageDropdown } from './inputs';
 import { ScheduleConfig } from './ScheduleConfig';
 import { DateFieldConfig } from './DateFieldConfig';
+import { useCampaigns } from '../../../marketing/campaignsQueries';
 import { DEFAULT_CRON, browserTimeZone } from '../../cron';
 import { DEFAULT_AT_TIME } from '../../dateField';
 import Modal from '../../../../components/common/Modal';
@@ -52,6 +53,7 @@ function buildEntityList(schema: WorkflowSchema | null): EntityOption[] {
     );
   }
 
+  entities.push({ key: 'email_opened', label: 'Email opened', icon: '📧' });
   entities.push({ key: 'schedule', label: 'Schedule', icon: '⏰' });
   entities.push({ key: 'date_field', label: 'Date reached', icon: '📅' });
   entities.push({ key: 'webhook', label: 'Webhook', icon: '🔗' });
@@ -71,6 +73,7 @@ function parseTrigger(trigger: TriggerSpec): { object: string; firesOn: FiresOn 
   if (t === 'webhook_inbound') return { object: 'webhook', firesOn: 'any' };
   if (t === 'schedule') return { object: 'schedule', firesOn: 'any' };
   if (t === 'date_field') return { object: 'date_field', firesOn: 'any' };
+  if (t === 'email_opened') return { object: 'email_opened', firesOn: 'any' };
 
   // Dynamic pattern: {slug}_{event}
   for (const suffix of ['_created', '_updated', '_deleted', '_any'] as const) {
@@ -88,6 +91,12 @@ function parseTrigger(trigger: TriggerSpec): { object: string; firesOn: FiresOn 
 function buildTriggerSpec(object: string, firesOn: FiresOn, params?: Record<string, unknown>): TriggerSpec {
   if (object === 'webhook') {
     return { type: 'webhook_inbound', params: { source: 'custom' } };
+  }
+  if (object === 'email_opened') {
+    // A fresh object selection starts with no campaign filter. (params only
+    // flow through handleFiresOnChange, which email_opened never renders —
+    // switching objects away discards the filter, same as schedule/date_field.)
+    return { type: 'email_opened', params: { campaign_id: (params?.campaign_id as string) || '' } };
   }
   if (object === 'schedule') {
     // Seed a sensible default (every Monday 9am, viewer's tz); preserve params when
@@ -120,6 +129,68 @@ function buildTriggerSpec(object: string, firesOn: FiresOn, params?: Record<stri
 // --- Select styling ---
 const selectClass =
   'bg-background border border-border rounded-lg px-3 py-1.5 text-sm text-foreground font-medium focus:outline-none focus:border-ring focus:ring-1 focus:ring-ring cursor-pointer appearance-none transition-colors hover:border-muted-foreground/40';
+
+// ============================================================
+// Email-opened trigger form (arc G)
+// Optional campaign filter; the trigger itself only fires for HUMAN opens of
+// CAMPAIGN emails (Apple-MPP prefetch and drip-sequence sends are excluded by
+// the backend emitter — see marketing/webhook_processor.go).
+// ============================================================
+
+const EmailOpenedConfig: React.FC = () => {
+  const { trigger, setTrigger, errors } = useBuilderStore();
+  const campaigns = useCampaigns();
+  const campaignID = (trigger?.params?.campaign_id as string) || '';
+  const err = errors['trigger.params.campaign_id']?.[0];
+
+  const setCampaign = (val: string) => {
+    if (!trigger) return;
+    setTrigger({ ...trigger, params: { ...(trigger.params || {}), campaign_id: val } });
+  };
+
+  // A saved filter whose campaign isn't in the loaded list (list still loading,
+  // list request failed — it's marketing.manage-gated while workflow editing
+  // isn't — or the campaign was deleted) must stay VISIBLE: a blank select
+  // reads as "Any campaign" and one save away from silently widening the
+  // trigger. Mirror the object dropdown's orphaned-option pattern.
+  const known = (campaigns.data ?? []).some((c) => c.id === campaignID);
+  const showOrphan = !!campaignID && campaignID !== '*' && !known;
+
+  return (
+    <div className="space-y-1.5">
+      <label className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Campaign</label>
+      <div className="relative">
+        <select
+          value={campaignID}
+          onChange={(e) => setCampaign(e.target.value)}
+          className={`${selectClass} w-full ${err ? '!border-destructive' : ''}`}
+          style={{ paddingRight: '2rem' }}
+        >
+          <option value="">Any campaign</option>
+          {showOrphan && (
+            <option value={campaignID} disabled>
+              ⚠ {campaigns.isLoading ? 'Loading…' : `${campaignID.slice(0, 8)}… (not in your campaign list)`}
+            </option>
+          )}
+          {(campaigns.data ?? []).map((c) => (
+            <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
+        </select>
+        <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+      </div>
+      {err && <p className="text-[11px] text-destructive mt-0.5">⚠ {err}</p>}
+      {campaigns.isError && (
+        <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-0.5">
+          ⚠ Couldn't load your campaigns (this may need marketing access) — an existing filter still applies.
+        </p>
+      )}
+      <p className="text-[10px] text-muted-foreground/70">
+        Fires when a recipient opens a marketing campaign email. Automated opens (Apple Mail
+        privacy proxy) are filtered out, and drip-sequence sends never fire this trigger.
+      </p>
+    </div>
+  );
+};
 
 // ============================================================
 // Main Component
@@ -171,9 +242,11 @@ export const TriggerConfig: React.FC = () => {
     setTrigger({ ...trigger, params });
   }, [trigger, setTrigger]);
 
-  // For webhook, schedule, date_field, and deal_stage_changed, firesOn is not relevant
+  // For webhook, schedule, date_field, email_opened, and deal_stage_changed,
+  // firesOn is not relevant
   const showFiresOn =
-    object && object !== 'webhook' && object !== 'schedule' && object !== 'date_field' && !isDealStageChanged;
+    object && object !== 'webhook' && object !== 'schedule' && object !== 'date_field' &&
+    object !== 'email_opened' && !isDealStageChanged;
 
   // Fires-on label for preview
   const firesOnLabel = FIRES_ON_OPTIONS.find((o) => o.value === firesOn)?.label?.toLowerCase() || firesOn;
@@ -284,6 +357,9 @@ export const TriggerConfig: React.FC = () => {
         {/* Date-field trigger form */}
         {object === 'date_field' && <DateFieldConfig />}
 
+        {/* Email-opened trigger form (arc G) */}
+        {object === 'email_opened' && <EmailOpenedConfig />}
+
         {/* Fires on selector */}
         {showFiresOn && (
           <div className="space-y-1.5">
@@ -330,7 +406,9 @@ export const TriggerConfig: React.FC = () => {
                 })()
               : object === 'webhook'
                 ? `When a Webhook receives data`
-                : `When a ${entityLabel} is ${firesOnLabel}`}
+                : object === 'email_opened'
+                  ? `When a campaign email is opened`
+                  : `When a ${entityLabel} is ${firesOnLabel}`}
           </p>
         </div>
       )}

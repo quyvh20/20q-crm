@@ -172,6 +172,7 @@ export const TRIGGER_LABELS: Record<string, string> = {
   webhook_inbound: 'Webhook Inbound',
   schedule: 'Schedule',
   date_field: 'Date Reached',
+  email_opened: 'Email Opened',
 };
 
 export const ACTION_LABELS: Record<ActionType, string> = {

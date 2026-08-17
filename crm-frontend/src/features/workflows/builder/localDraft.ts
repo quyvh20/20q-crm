@@ -60,6 +60,9 @@ function detectTrigger(p: string, schema?: WorkflowSchema | null): TriggerSpec {
     return { type: 'contact_created', params: {} };
   }
   if (/contact.*updated|updated.*contact|profile.*updated/.test(p)) return { type: 'contact_updated', params: {} };
+  if (/\bopen(s|ed|ing)?\b[^.]*\bemail\b|\bemail\b[^.]*\bopen(s|ed|ing)?\b/.test(p)) {
+    return { type: 'email_opened', params: {} };
+  }
   if (/(every day|daily|each morning|weekly|on a schedule|\bschedule\b|\bcron\b)/.test(p)) {
     return { type: 'schedule', params: { cron: '0 9 * * *', timezone: '' } };
   }
@@ -67,7 +70,7 @@ function detectTrigger(p: string, schema?: WorkflowSchema | null): TriggerSpec {
   return { type: 'contact_created', params: {} };
 }
 
-function detectSteps(p: string): WorkflowStep[] {
+function detectSteps(p: string, triggerType?: string): WorkflowStep[] {
   const found: { pos: number; step: WorkflowStep }[] = [];
   const push = (re: RegExp, make: () => WorkflowStep) => {
     const m = p.match(re);
@@ -90,7 +93,13 @@ function detectSteps(p: string): WorkflowStep[] {
       body: '',
     }),
   );
-  push(/\bemail\b/, () => actionStep('send_email', { to: '{{contact.email}}', subject: '', body_html: '' }));
+  // For an email_opened trigger, "email" in the prompt is usually the trigger
+  // clause ("when someone opens an email…"), not a send instruction — require a
+  // sending verb so the draft doesn't grow a spurious send_email step.
+  const emailStepRe = triggerType === 'email_opened'
+    ? /\b(send|write|shoot|reply with)\b[^.]*\bemail\b/
+    : /\bemail\b/;
+  push(emailStepRe, () => actionStep('send_email', { to: '{{contact.email}}', subject: '', body_html: '' }));
   push(/\btask\b|\bfollow[- ]?up\b|\bto-?do\b/, () =>
     actionStep('create_task', { title: 'Follow up', priority: 'medium', due_in_days: 3 }),
   );
@@ -125,7 +134,7 @@ function draftName(trigger: TriggerSpec, prompt: string): string {
 export function localDraftFromPrompt(prompt: string, schema?: WorkflowSchema | null): WorkflowDraftInput {
   const p = prompt.toLowerCase();
   const trigger = detectTrigger(p, schema);
-  const steps = detectSteps(p);
+  const steps = detectSteps(p, trigger.type);
   if (steps.length === 0) {
     // Nothing recognized — give them a task to start from rather than an empty flow.
     steps.push(actionStep('create_task', { title: 'Follow up', priority: 'medium', due_in_days: 3 }));

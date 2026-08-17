@@ -28,6 +28,7 @@ import {
   Building2,
   CalendarClock,
   CalendarDays,
+  MailOpen,
   Zap,
   type LucideIcon,
 } from 'lucide-react';
@@ -142,6 +143,7 @@ export function triggerMeta(type: string | undefined): NodeMeta {
       if (type === 'webhook_inbound') return asMeta(Webhook, TRIGGER_ACCENT);
       if (type === 'schedule') return asMeta(CalendarClock, TRIGGER_ACCENT);
       if (type === 'date_field') return asMeta(CalendarDays, TRIGGER_ACCENT);
+      if (type === 'email_opened') return asMeta(MailOpen, TRIGGER_ACCENT);
       return asMeta(Zap, TRIGGER_ACCENT);
   }
 }
@@ -179,6 +181,7 @@ export function triggerLabel(trigger: TriggerSpec | undefined): string {
     deal_stage_changed: 'Deal Stage Changed',
     no_activity_days: 'No Activity',
     webhook_inbound: 'Webhook Inbound',
+    email_opened: 'Email Opened',
   };
   if (fixed[type]) return fixed[type];
   const slug = objectSlugOf(type);
@@ -202,6 +205,7 @@ export function triggerTitle(trigger: TriggerSpec | undefined): string {
     deal_stage_changed: 'Deal stage updated',
     no_activity_days: 'No activity',
     webhook_inbound: 'Webhook inbound',
+    email_opened: 'Email opened',
   };
   if (fixed[type]) return fixed[type];
   const slug = objectSlugOf(type);
@@ -238,6 +242,12 @@ export function triggerDescription(trigger: TriggerSpec | undefined): string {
     return days > 0 ? `After ${days} day${days === 1 ? '' : 's'} with no activity.` : 'After a period of inactivity.';
   }
   if (type === 'webhook_inbound') return 'Via an inbound webhook call.';
+  if (type === 'email_opened') {
+    const campaign = (params.campaign_id as string) || '';
+    return campaign && campaign !== '*'
+      ? 'When a specific campaign email is opened.'
+      : 'When any campaign email is opened.';
+  }
   const slug = objectSlugOf(type);
   if (slug) {
     const watch = (params.watch_field as string) || '';

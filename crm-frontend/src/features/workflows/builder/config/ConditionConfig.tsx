@@ -24,6 +24,7 @@ function deriveFiresOn(triggerType: string): FiresOn {
   if (triggerType === 'deal_stage_changed') return 'updated';
   if (triggerType === 'no_activity_days') return 'any';
   if (triggerType === 'webhook_inbound') return 'any';
+  if (triggerType === 'email_opened') return 'any';
   return 'created';
 }
 
@@ -31,6 +32,7 @@ function deriveFiresOn(triggerType: string): FiresOn {
 function deriveObjectSlug(triggerType: string): string {
   if (triggerType === 'deal_stage_changed') return 'deal';
   if (triggerType === 'no_activity_days') return 'contact';
+  if (triggerType === 'email_opened') return 'contact';
   if (triggerType === 'webhook_inbound') return 'webhook';
   for (const suffix of ['_created', '_updated', '_deleted', '_any']) {
     if (triggerType.endsWith(suffix)) {

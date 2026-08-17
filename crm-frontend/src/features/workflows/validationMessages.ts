@@ -32,6 +32,7 @@ const TERMS: Record<string, string> = {
   date_field: 'Date Field',
   webhook_inbound: 'Inbound Webhook',
   schedule: 'Schedule',
+  email_opened: 'Email Opened',
   // actions
   send_email: 'Send Email',
   create_task: 'Create Task',
