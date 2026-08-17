@@ -37,14 +37,30 @@ export interface DelayParams {
   timezone?: string;
 }
 
+/** Percentage split (A/B fork): percent_a of runs take the A branch. */
+export interface SplitParams {
+  percent_a: number; // 1..99
+}
+
 export interface WorkflowStep {
   id: string;
-  type: 'action' | 'condition' | 'delay';
+  type: 'action' | 'condition' | 'delay' | 'split';
   action?: ActionSpec;
   condition?: ConditionGroup;
   delay?: DelayParams;
+  split?: SplitParams;
   yes_steps?: WorkflowStep[];
   no_steps?: WorkflowStep[];
+}
+
+/**
+ * Fork kinds (condition, split) share the yes_steps/no_steps branch arrays and
+ * the no-merge invariant (a fork is always terminal in its sibling list). Every
+ * tree walk that used to gate on type === 'condition' gates on this instead —
+ * for a split, yes_steps is the A branch and no_steps is B.
+ */
+export function isForkStep(step: WorkflowStep): boolean {
+  return step.type === 'condition' || step.type === 'split';
 }
 
 /** Canonical create/update payload (A1: steps-only; server derives flat actions). */
@@ -125,7 +141,7 @@ export interface RunDetailResponse {
 /** Per-step dry-run outcome (A3.5), keyed by step id so the builder can overlay it. */
 export interface TestRunStep {
   step_id: string;
-  type: 'action' | 'condition' | 'delay';
+  type: 'action' | 'condition' | 'delay' | 'split';
   status: 'run' | 'skip';
   reason?: string;
   action_type?: string;

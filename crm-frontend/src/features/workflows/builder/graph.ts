@@ -5,6 +5,7 @@
 
 import Dagre from '@dagrejs/dagre';
 import { MarkerType, type Node, type Edge } from '@xyflow/react';
+import { isForkStep } from '../types';
 import type { TriggerSpec, WorkflowStep } from '../types';
 
 /**
@@ -26,13 +27,14 @@ export const NODE_HEIGHTS: Record<BuilderNodeKind, number> = {
   action: 80,
   delay: 40,
   condition: 40,
+  split: 40,
   end: 32,
 };
 
 // 'end' is a ghost terminal node rendered as a "+ Add step" pill at every open
 // path tail, so adding a step (including the first step of an empty workflow) is
 // the same edge-"+" gesture everywhere.
-export type BuilderNodeKind = 'trigger' | 'action' | 'condition' | 'delay' | 'end';
+export type BuilderNodeKind = 'trigger' | 'action' | 'condition' | 'delay' | 'split' | 'end';
 
 export interface BuilderNodeData {
   kind: BuilderNodeKind;
@@ -69,8 +71,17 @@ export type BuilderEdge = Edge<BuilderEdgeData>;
 // A pending connection point whose downstream edge hasn't been drawn yet.
 interface Pending {
   source: string;
-  label?: string; // "Yes" / "No" on the first edge out of a condition branch
+  label?: string; // branch label on the first edge out of a fork ("Yes"/"No", "A · 60%"/"B · 40%")
   insert: InsertContext;
+}
+
+// Branch chip labels for a fork's two edges.
+function forkBranchLabels(step: WorkflowStep): [string, string] {
+  if (step.type === 'split') {
+    const p = step.split?.percent_a ?? 50;
+    return [`A · ${p}%`, `B · ${100 - p}%`];
+  }
+  return ['Yes', 'No'];
 }
 
 /**
@@ -141,26 +152,28 @@ export function stepsToGraph(trigger: TriggerSpec | null, steps: WorkflowStep[])
         addEdge(p.source, step.id, { parentId, branch, index: i }, p.label);
       }
 
-      if (step.type === 'condition') {
+      if (isForkStep(step)) {
+        const [labelYes, labelNo] = forkBranchLabels(step);
         const yesOut = processList(
           step.yes_steps ?? [],
-          [{ source: step.id, label: 'Yes', insert: { parentId: step.id, branch: 'yes', index: 0 } }],
+          [{ source: step.id, label: labelYes, insert: { parentId: step.id, branch: 'yes', index: 0 } }],
           step.id,
           'yes',
         );
         const noOut = processList(
           step.no_steps ?? [],
-          [{ source: step.id, label: 'No', insert: { parentId: step.id, branch: 'no', index: 0 } }],
+          [{ source: step.id, label: labelNo, insert: { parentId: step.id, branch: 'no', index: 0 } }],
           step.id,
           'no',
         );
-        // A condition forks into Yes/No and the branches never rejoin: the builder
-        // forbids steps after a condition (store insert-absorb + normalize-on-load),
-        // so each branch tail flows on independently and becomes its own trailing
-        // "+ Add step" pill. Keep the Yes/No label on the tail so an EMPTY branch's
-        // pill is badged — that's what makes a fresh If/Else show both branches.
-        // (A defensively-rendered legacy merge, which should not survive
-        // normalization, just yields labeled branch edges — harmless.)
+        // A fork (condition Yes/No, split A/B) branches and never rejoins: the
+        // builder forbids steps after a fork (store insert-absorb +
+        // normalize-on-load), so each branch tail flows on independently and
+        // becomes its own trailing "+ Add step" pill. Keep the branch label on
+        // the tail so an EMPTY branch's pill is badged — that's what makes a
+        // fresh fork show both branches. (A defensively-rendered legacy merge,
+        // which should not survive normalization, just yields labeled branch
+        // edges — harmless.)
         pending = [...yesOut, ...noOut];
       } else {
         pending = [{ source: step.id, insert: { parentId, branch, index: i + 1 } }];
@@ -227,12 +240,13 @@ function layout(nodes: BuilderNode[], edges: BuilderEdge[]): BuilderNode[] {
   });
 }
 
-// A condition's branches must read Yes-left / No-right. Dagre's crossing-minimizer
-// picks a side arbitrarily, so after layout we mirror any fork whose Yes subtree
-// landed on the right. Conditions are processed outer→inner: a parent mirror also
-// flips its nested forks, which are then corrected when each nested condition is
+// A fork's branches must read Yes/A-left, No/B-right. Dagre's crossing-minimizer
+// picks a side arbitrarily, so after layout we mirror any fork whose Yes/A subtree
+// landed on the right. Forks are processed outer→inner: a parent mirror also
+// flips its nested forks, which are then corrected when each nested fork is
 // processed (a mirror around a subtree's own center preserves its footprint, so the
-// parent arrangement is untouched).
+// parent arrangement is untouched). Branch identity comes from the edge's insert
+// slot data (parentId + branch), never from the display label text.
 function enforceYesLeft(
   nodes: BuilderNode[],
   edges: BuilderEdge[],
@@ -262,15 +276,15 @@ function enforceYesLeft(
     return xs.length ? xs.reduce((s, v) => s + v, 0) / xs.length : null;
   };
 
-  // Outer→inner: conditions higher up (smaller y) first.
+  // Outer→inner: forks higher up (smaller y) first.
   const conds = nodes
-    .filter((n) => n.data.kind === 'condition')
+    .filter((n) => n.data.kind === 'condition' || n.data.kind === 'split')
     .sort((a, b) => (pos.get(a.id)?.y ?? 0) - (pos.get(b.id)?.y ?? 0));
 
   for (const c of conds) {
     const out = edges.filter((e) => e.source === c.id);
-    const yesRoot = out.find((e) => e.label === 'Yes')?.target;
-    const noRoot = out.find((e) => e.label === 'No')?.target;
+    const yesRoot = out.find((e) => e.data?.insert.parentId === c.id && e.data.insert.branch === 'yes')?.target;
+    const noRoot = out.find((e) => e.data?.insert.parentId === c.id && e.data.insert.branch === 'no')?.target;
     if (!yesRoot || !noRoot) continue;
 
     const branchIds = new Set([...reachable(yesRoot), ...reachable(noRoot)]);

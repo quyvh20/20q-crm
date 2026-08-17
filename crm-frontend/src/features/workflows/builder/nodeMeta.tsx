@@ -22,6 +22,7 @@ import {
   Waypoints,
   Sparkles,
   Split,
+  Percent,
   User,
   CircleDollarSign,
   Building2,
@@ -121,6 +122,8 @@ export function actionMeta(type: string): NodeMeta {
 }
 
 export const conditionMeta: NodeMeta = asMeta(Split, RULE_ACCENT);
+
+export const splitMeta: NodeMeta = asMeta(Percent, RULE_ACCENT);
 
 export const delayMeta: NodeMeta = ACTION_META.delay;
 
@@ -264,6 +267,10 @@ export function stepSubtitle(step: WorkflowStep): string {
   if (step.type === 'condition') {
     const n = step.condition?.rules?.length ?? 0;
     return n === 0 ? 'No conditions set' : `${n} condition${n === 1 ? '' : 's'}`;
+  }
+  if (step.type === 'split') {
+    const p = step.split?.percent_a ?? 50;
+    return `${p}% / ${100 - p}%`;
   }
   const a = step.action;
   if (!a) return '';

@@ -57,17 +57,27 @@ export const delayParamsSchema = z
     { message: 'Delay duration must be positive', path: ['duration_sec'] },
   );
 
-const stepTypes = ['action', 'condition', 'delay'] as const;
+const stepTypes = ['action', 'condition', 'delay', 'split'] as const;
+
+// Percentage split (A/B fork): percent_a of runs take the A branch (yes_steps).
+export const splitParamsSchema = z.object({
+  percent_a: z
+    .number()
+    .int()
+    .min(1, 'Split percentage must be between 1 and 99')
+    .max(99, 'Split percentage must be between 1 and 99'),
+});
 
 /**
  * Recursive StepSpec schema mirroring backend StepSpec exactly:
- *   type: "action" | "condition" | "delay"
+ *   type: "action" | "condition" | "delay" | "split"
  *   id: string
  *   action?: ActionSpec      (when type = "action")
  *   condition?: ConditionGroup (when type = "condition")
  *   delay?: DelayParams      (when type = "delay")
- *   yes_steps?: StepSpec[]   (when type = "condition")
- *   no_steps?: StepSpec[]    (when type = "condition")
+ *   split?: SplitParams      (when type = "split")
+ *   yes_steps?: StepSpec[]   (fork branches: condition Yes/No, split A/B)
+ *   no_steps?: StepSpec[]
  */
 export const stepSpecSchema: z.ZodType<any> = z.lazy(() =>
   z.object({
@@ -79,6 +89,7 @@ export const stepSpecSchema: z.ZodType<any> = z.lazy(() =>
       rules: z.array(conditionRuleSchema).min(1, 'Add at least one condition rule'),
     }).optional(),
     delay: delayParamsSchema.optional(),
+    split: splitParamsSchema.optional(),
     yes_steps: z.array(stepSpecSchema).optional(),
     no_steps: z.array(stepSpecSchema).optional(),
   })

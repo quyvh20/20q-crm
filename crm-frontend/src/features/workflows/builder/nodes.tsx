@@ -29,6 +29,7 @@ import type { TestRunStep } from '../types';
 import {
   actionMeta,
   conditionMeta,
+  splitMeta,
   delayMeta,
   triggerMeta,
   triggerTitle,
@@ -304,6 +305,31 @@ export function ConditionNode({ data, selected }: NodeProps<BuilderNode>) {
   );
 }
 
+export function SplitNode({ data, selected }: NodeProps<BuilderNode>) {
+  const step = data.step;
+  const dry = useDry(step?.id);
+  const issueMsgs = useIssues(step?.id);
+  const p = step?.split?.percent_a ?? 50;
+  // Dry-run branch: backend previews the A branch ("yes") — display as A/B.
+  const takenBranch = dry?.status === 'run' && dry.branch ? (dry.branch === 'yes' ? 'A' : 'B') : null;
+  return (
+    <RulePill selected={selected} dry={dry}>
+      {issueMsgs.length > 0 && <IssueBadge msgs={issueMsgs} />}
+      <Disc icon={splitMeta.icon} solid={splitMeta.solid} size="sm" />
+      <span className={`truncate text-xs font-semibold ${RULE_ACCENT.accent}`}>Split</span>
+      <span className="max-w-[130px] truncate text-[11px] text-muted-foreground">
+        {p}% / {100 - p}%
+      </span>
+      {takenBranch && (
+        <span className="rounded bg-emerald-500/15 px-1 text-[10px] font-semibold uppercase text-emerald-600 dark:text-emerald-400">
+          → {takenBranch}
+        </span>
+      )}
+      <NodeKebab stepId={step?.id} />
+    </RulePill>
+  );
+}
+
 export function EndNode({ data }: NodeProps<BuilderNode>) {
   const { onInsert, readOnly, dragging, onDropStep } = useBuilderActions();
   if (readOnly) {
@@ -368,5 +394,6 @@ export const nodeTypes = {
   action: ActionNode,
   delay: DelayNode,
   condition: ConditionNode,
+  split: SplitNode,
   end: EndNode,
 };

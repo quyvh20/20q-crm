@@ -39,7 +39,7 @@ interface Props {
 
 // Only real steps are draggable — the trigger is fixed at the top and 'end' nodes
 // are add-step affordances.
-const DRAGGABLE_KINDS = new Set(['action', 'delay', 'condition']);
+const DRAGGABLE_KINDS = new Set(['action', 'delay', 'condition', 'split']);
 
 export function WorkflowCanvas({ trigger, steps, selectedId, onSelect, onReorder, canDrag = true }: Props) {
   const [nodes, setNodes, onNodesChange] = useNodesState<BuilderNode>([]);

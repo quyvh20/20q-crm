@@ -23,9 +23,11 @@ import {
   Sparkles,
   Workflow,
   Split,
+  Percent,
   Clock,
   type LucideIcon,
 } from 'lucide-react';
+import { isForkStep } from '../types';
 import type { TriggerSpec, WorkflowStep } from '../types';
 import type { WorkflowSchema } from '../api';
 import type { InsertContext } from './graph';
@@ -76,6 +78,7 @@ export const ACTION_ITEMS: PaletteStepItem[] = [
 export const RULE_ITEMS: PaletteStepItem[] = [
   { type: 'delay', category: 'Rules', label: 'Time delay', icon: Clock },
   { type: 'condition', category: 'Rules', label: 'If / Else split', icon: Split },
+  { type: 'split', category: 'Rules', label: 'Percentage split', icon: Percent },
 ];
 
 /** Section icons for the palette category headers. */
@@ -156,17 +159,11 @@ export function findTriggerItem(id: string, schema: WorkflowSchema | null): Pale
   return buildTriggerItems(schema).find((it) => it.id === id);
 }
 
-/**
- * The slot a palette CLICK inserts into: the tail of the main path. Conditions
- * are terminal in their sibling list (no-merge invariant), so when the list ends
- * in an If/Else we descend into its Yes branch — appending at the root would
- * create a forbidden step-after-condition.
- */
 /** Depth-first lookup of a step anywhere in the tree (used to confirm an insert landed). */
 export function findStepById(steps: WorkflowStep[], id: string): WorkflowStep | undefined {
   for (const s of steps) {
     if (s.id === id) return s;
-    if (s.type === 'condition') {
+    if (isForkStep(s)) {
       const hit = findStepById(s.yes_steps ?? [], id) ?? findStepById(s.no_steps ?? [], id);
       if (hit) return hit;
     }
@@ -174,13 +171,19 @@ export function findStepById(steps: WorkflowStep[], id: string): WorkflowStep | 
   return undefined;
 }
 
+/**
+ * The slot a palette CLICK inserts into: the tail of the main path. Forks
+ * (condition/split) are terminal in their sibling list (no-merge invariant), so
+ * when the list ends in one we descend into its Yes/A branch — appending at the
+ * root would create a forbidden step-after-fork.
+ */
 export function firstOpenSlot(steps: WorkflowStep[]): InsertContext {
   let list = steps;
   let parentId: string | null = null;
   let branch: 'yes' | 'no' | null = null;
   for (;;) {
     const last = list.length ? list[list.length - 1] : undefined;
-    if (!last || last.type !== 'condition') {
+    if (!last || !isForkStep(last)) {
       return { parentId, branch, index: list.length };
     }
     parentId = last.id;

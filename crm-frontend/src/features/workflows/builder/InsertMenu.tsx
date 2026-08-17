@@ -10,11 +10,12 @@ import { getDefaultParams } from './stepDefaults';
 import type { WorkflowStep, ActionSpec } from '../types';
 import type { InsertContext } from './graph';
 import { ACTION_ITEMS, RULE_ITEMS, findStepById, type PaletteStepItem } from './catalog';
-import { actionMeta, conditionMeta, delayMeta } from './nodeMeta';
+import { actionMeta, conditionMeta, splitMeta, delayMeta } from './nodeMeta';
 import { showToast } from '../../../lib/useToast';
 
 function metaFor(type: string) {
   if (type === 'condition') return conditionMeta;
+  if (type === 'split') return splitMeta;
   if (type === 'delay') return delayMeta;
   return actionMeta(type);
 }
@@ -23,6 +24,9 @@ export function buildStep(type: string): WorkflowStep {
   const id = generateActionId();
   if (type === 'condition') {
     return { id, type: 'condition', condition: { op: 'AND', rules: [] }, yes_steps: [], no_steps: [] };
+  }
+  if (type === 'split') {
+    return { id, type: 'split', split: { percent_a: 50 }, yes_steps: [], no_steps: [] };
   }
   if (type === 'delay') {
     return { id, type: 'delay', delay: { duration_sec: 60 } };

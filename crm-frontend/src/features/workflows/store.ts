@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { isForkStep } from './types';
 import type { TriggerSpec, ConditionGroup, ActionSpec, WorkflowStep, Workflow, SaveWorkflowPayload } from './types';
 import { workflowSchema, validateActionIds, validateConditionDepth } from './schemas';
 import { createWorkflow, updateWorkflow, getWorkflow, getWorkflowSchema, getObjectFields, type WorkflowSchema, type FieldItem } from './api';
@@ -193,7 +194,7 @@ export function findStepLocation(
     return { parentId, branch, index, siblingIds: steps.map((s) => s.id) };
   }
   for (const step of steps) {
-    if (step.type === 'condition') {
+    if (isForkStep(step)) {
       const inYes = findStepLocation(step.yes_steps ?? [], id, step.id, 'yes');
       if (inYes) return inYes;
       const inNo = findStepLocation(step.no_steps ?? [], id, step.id, 'no');
@@ -264,7 +265,7 @@ function getStepDepth(steps: WorkflowStep[], parentId: string | null): number {
   function findDepth(list: WorkflowStep[], depth: number): number {
     for (const step of list) {
       if (step.id === parentId) return depth;
-      if (step.type === 'condition') {
+      if (isForkStep(step)) {
         if (step.yes_steps) {
           const d = findDepth(step.yes_steps, depth + 1);
           if (d >= 0) return d;
@@ -281,9 +282,9 @@ function getStepDepth(steps: WorkflowStep[], parentId: string | null): number {
   return Math.max(0, findDepth(steps, 0));
 }
 
-/** Calculate the max depth of a step subtree (condition nesting). */
+/** Calculate the max depth of a step subtree (fork nesting: condition or split). */
 function getSubtreeDepth(step: WorkflowStep): number {
-  if (step.type !== 'condition') return 0;
+  if (!isForkStep(step)) return 0;
   let maxChild = 0;
   for (const child of step.yes_steps || []) {
     maxChild = Math.max(maxChild, getSubtreeDepth(child));
@@ -424,9 +425,9 @@ function reorderStepsInTree(
 // its Yes/No branches fork and never merge back. These helpers enforce it across
 // the insert, reorder, load, and AI-draft paths.
 
-/** True if `list` has no condition, or its (first) condition is the last element. */
+/** True if `list` has no fork (condition/split), or its (first) fork is the last element. */
 function conditionIsTerminal(list: WorkflowStep[]): boolean {
-  const idx = list.findIndex((s) => s.type === 'condition');
+  const idx = list.findIndex(isForkStep);
   return idx === -1 || idx === list.length - 1;
 }
 
@@ -470,6 +471,7 @@ function cloneStepsFreshIds(steps: WorkflowStep[]): WorkflowStep[] {
     const cloned: WorkflowStep = { ...step, id: newId };
     if (step.action) cloned.action = { ...step.action, id: newId, params: { ...step.action.params } };
     if (step.delay) cloned.delay = { ...step.delay };
+    if (step.split) cloned.split = { ...step.split };
     if (step.yes_steps) cloned.yes_steps = step.yes_steps.map(cloneOne);
     if (step.no_steps) cloned.no_steps = step.no_steps.map(cloneOne);
     return cloned;
@@ -497,7 +499,7 @@ function cloneStepsFreshIds(steps: WorkflowStep[]): WorkflowStep[] {
  * rewritten list and whether anything changed.
  */
 export function normalizeMergesInList(list: WorkflowStep[]): { steps: WorkflowStep[]; changed: boolean } {
-  const idx = list.findIndex((s) => s.type === 'condition');
+  const idx = list.findIndex(isForkStep);
   if (idx === -1) return { steps: list, changed: false };
 
   const cond = list[idx];
@@ -719,7 +721,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       // A condition insert absorbs every sibling AFTER the slot into its Yes
       // branch (insert & absorb), deepening the absorbed tail by 1 — count that
       // too, including root inserts, which the base check alone never refuses.
-      if (!tooDeep && step.type === 'condition') {
+      if (!tooDeep && isForkStep(step)) {
         const siblings = siblingListAt(list, parentId, branch) ?? [];
         const start = index !== undefined ? index : siblings.length;
         for (const absorbed of siblings.slice(start)) {
@@ -737,9 +739,10 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
           },
         };
       }
-      // A condition absorbs any steps that would land after it into its Yes branch
-      // (insert & absorb) so branches never merge; other steps insert normally.
-      const steps = step.type === 'condition'
+      // A fork (condition/split) absorbs any steps that would land after it into
+      // its Yes/A branch (insert & absorb) so branches never merge; other steps
+      // insert normally.
+      const steps = isForkStep(step)
         ? insertConditionAbsorbing(s.steps || [], parentId, branch, step, index)
         : addStepToTree(s.steps || [], parentId, branch, step, index);
       const actions = flattenSteps(steps);
@@ -793,14 +796,14 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
     }),
 
   // Duplicate an action/delay step in place (inserted right after the original,
-  // fresh ids, intra-clone {{actions.<id>}} refs remapped). Conditions are
-  // deliberately NOT duplicable: they must stay terminal in their sibling list
-  // (no-merge invariant), so a copy after the original would be invalid.
+  // fresh ids, intra-clone {{actions.<id>}} refs remapped). Forks (condition or
+  // split) are deliberately NOT duplicable: they must stay terminal in their
+  // sibling list (no-merge invariant), so a copy after the original would be invalid.
   duplicateStep: (id) =>
     set((s) => {
       const loc = findStepLocation(s.steps || [], id);
       const orig = findStepInTree(s.steps || [], id);
-      if (!loc || !orig || orig.type === 'condition') return {};
+      if (!loc || !orig || isForkStep(orig)) return {};
       const copy = cloneStepsFreshIds([orig])[0];
       const steps = addStepToTree(s.steps || [], loc.parentId, loc.branch, copy, loc.index + 1);
       const actions = flattenSteps(steps);
@@ -974,7 +977,8 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       }
     }
 
-    // Validate condition steps inside the step tree — flag empty conditions
+    // Validate fork steps inside the step tree — flag empty conditions and
+    // out-of-range split percentages (keyed step.<id> so the canvas can badge them).
     function validateStepConditions(steps: WorkflowStep[], pathPrefix: string) {
       for (let i = 0; i < steps.length; i++) {
         const s = steps[i];
@@ -985,6 +989,14 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
             const key = `step.${s.id}`;
             errors[key] = ['Configure at least one condition rule with a field'];
           }
+        }
+        if (s.type === 'split') {
+          const p = s.split?.percent_a;
+          if (typeof p !== 'number' || !Number.isInteger(p) || p < 1 || p > 99) {
+            errors[`step.${s.id}`] = ['Split percentage must be a whole number between 1 and 99'];
+          }
+        }
+        if (isForkStep(s)) {
           // Recurse into branches
           if (s.yes_steps) validateStepConditions(s.yes_steps, `${pathPrefix}${i}.yes_steps.`);
           if (s.no_steps) validateStepConditions(s.no_steps, `${pathPrefix}${i}.no_steps.`);
@@ -995,19 +1007,20 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       validateStepConditions(state.steps, 'steps.');
     }
 
-    // No-merge invariant backstop: a condition must be the LAST step in its sibling
-    // list (its Yes/No branches never rejoin). The insert/reorder/normalize guards
-    // keep this true; this catches anything that slips through so a merge can't be saved.
+    // No-merge invariant backstop: a fork (condition/split) must be the LAST step
+    // in its sibling list (its branches never rejoin). The insert/reorder/normalize
+    // guards keep this true; this catches anything that slips through so a merge
+    // can't be saved.
     function assertTerminalConditions(list: WorkflowStep[]) {
-      const idx = list.findIndex((s) => s.type === 'condition');
+      const idx = list.findIndex(isForkStep);
       if (idx !== -1 && idx !== list.length - 1) {
         const bad = list[idx];
         errors[`step.${bad.id}`] = [
-          "An If/Else must be the last step in its path — its branches can't merge back. Move the steps after it into a branch.",
+          "An If/Else or split must be the last step in its path — its branches can't merge back. Move the steps after it into a branch.",
         ];
       }
       for (const s of list) {
-        if (s.type === 'condition') {
+        if (isForkStep(s)) {
           assertTerminalConditions(s.yes_steps ?? []);
           assertTerminalConditions(s.no_steps ?? []);
         }

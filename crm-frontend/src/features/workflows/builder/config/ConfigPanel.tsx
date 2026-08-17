@@ -11,14 +11,15 @@
 // authored as If/Else condition steps). Any legacy global `conditions` on a
 // loaded workflow round-trips untouched on save — it's just not editable here.
 
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Trash2, MousePointerClick, FlaskConical, type LucideIcon } from 'lucide-react';
 import { useBuilderStore } from '../../store';
 import type { DryRunState } from '../BuilderContext';
-import type { TestRunStep } from '../../types';
+import type { TestRunStep, WorkflowStep } from '../../types';
 import {
   actionMeta,
   conditionMeta,
+  splitMeta,
   delayMeta,
   triggerMeta,
   triggerLabel,
@@ -67,6 +68,88 @@ function Shell({ header, onDelete, preview, children }: { header: HeaderSpec; on
   );
 }
 
+// Percentage-split form: one number — Branch A's share; B gets the rest. The
+// assignment itself is a deterministic per-run hash (backend splitTakesA), so
+// there is nothing else to configure.
+function SplitConfig({ step }: { step: WorkflowStep }) {
+  const updateStep = useBuilderStore((s) => s.updateStep);
+  const p = step.split?.percent_a ?? 50;
+
+  // A loaded/AI-drafted split may arrive without params; commit the default the
+  // panel displays so the store matches what the user sees (else Save blocks on
+  // an invisible mismatch).
+  useEffect(() => {
+    if (!step.split) updateStep(step.id, { split: { percent_a: 50 } });
+  }, [step.id, step.split, updateStep]);
+
+  const commit = (n: number) => updateStep(step.id, { split: { percent_a: n } });
+
+  // Local draft for the NUMBER input so clearing it to retype doesn't snap to a
+  // clamped junk value mid-edit (the FixedDelayFields idea) — only parseable
+  // in-range values commit; blur restores the committed value. The slider is
+  // always in range and commits directly. External changes (slider, undo) sync
+  // into the draft via the render-adjust pattern rather than an effect.
+  const [draft, setDraft] = useState(String(p));
+  const [prevP, setPrevP] = useState(p);
+  if (prevP !== p) {
+    setPrevP(p);
+    setDraft(String(p));
+  }
+  const onDraftChange = (raw: string) => {
+    setDraft(raw);
+    const n = Number(raw);
+    if (raw.trim() !== '' && Number.isInteger(n) && n >= 1 && n <= 99) commit(n);
+  };
+
+  return (
+    <div className="space-y-4">
+      <p className="text-xs leading-relaxed text-muted-foreground">
+        Each run is randomly assigned to branch A or B at these odds. The assignment is
+        stable for the life of a run — retries and resumes never switch branches.
+      </p>
+      <div>
+        <label htmlFor="split-percent-a" className="mb-1 block text-xs font-medium text-foreground">
+          Branch A share
+        </label>
+        <div className="flex items-center gap-3">
+          <input
+            type="range"
+            min={1}
+            max={99}
+            value={p}
+            onChange={(e) => commit(Number(e.target.value))}
+            className="flex-1 accent-violet-500"
+            aria-label="Branch A share"
+          />
+          <div className="flex items-center gap-1">
+            <input
+              id="split-percent-a"
+              type="number"
+              min={1}
+              max={99}
+              value={draft}
+              onChange={(e) => onDraftChange(e.target.value)}
+              onBlur={() => setDraft(String(p))}
+              className="w-16 rounded-lg border border-border bg-background px-2 py-1 text-sm text-foreground focus:border-ring focus:outline-none"
+            />
+            <span className="text-sm text-muted-foreground">%</span>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div className="mb-1 flex justify-between text-xs text-muted-foreground">
+          <span>A · {p}%</span>
+          <span>B · {100 - p}%</span>
+        </div>
+        <div className="flex h-2 overflow-hidden rounded-full bg-muted">
+          <div className="bg-violet-500" style={{ width: `${p}%` }} />
+          <div className="bg-violet-500/30" style={{ width: `${100 - p}%` }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function EmptyState({ icon: Icon, title, hint }: { icon: LucideIcon; title: string; hint: string }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
@@ -92,9 +175,9 @@ function StepDryPreview({ dry }: { dry: TestRunStep }) {
       <div className="flex items-center gap-2">
         <FlaskConical className="h-3.5 w-3.5 text-primary" />
         <span className="font-medium text-foreground">Dry run: {runs ? 'would run' : 'skipped'}</span>
-        {dry.type === 'condition' && dry.branch && (
+        {(dry.type === 'condition' || dry.type === 'split') && dry.branch && (
           <span className="rounded bg-emerald-500/15 px-1 text-[10px] font-semibold uppercase text-emerald-600 dark:text-emerald-400">
-            → {dry.branch}
+            → {dry.type === 'split' ? (dry.branch === 'yes' ? 'A' : 'B') : dry.branch}
           </span>
         )}
       </div>
@@ -194,6 +277,14 @@ export function ConfigPanel({ dryRun }: { dryRun?: DryRunState | null }) {
     return (
       <Shell header={{ eyebrow: 'Rule', title: 'If / Else', meta: conditionMeta }} onDelete={handleDelete} preview={preview}>
         <ConditionConfig />
+      </Shell>
+    );
+  }
+
+  if (step.type === 'split') {
+    return (
+      <Shell header={{ eyebrow: 'Rule', title: 'Percentage split', meta: splitMeta }} onDelete={handleDelete} preview={preview}>
+        <SplitConfig step={step} />
       </Shell>
     );
   }
