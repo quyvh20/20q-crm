@@ -51,11 +51,14 @@ test('filters a custom object by its JSONB fields and saves the filter as a view
   // `exact` matters — getByRole matches the accessible name by SUBSTRING, so a
   // bare 'Filter' would also select "Clear filters" and trip strict mode.
   await page.getByRole('button', { name: 'Filter', exact: true }).click();
-  await popover().getByLabel('Search fields').fill('sq');
+  await popover().getByLabel('Search fields', { exact: true }).fill('sq');
   await popover().getByRole('button', { name: /Sq Ft/ }).click();
-  await popover().getByLabel('Operator').selectOption('between');
-  await popover().getByLabel('From').fill('1000');
-  await popover().getByLabel('To').fill('2000');
+  await popover().getByLabel('Operator', { exact: true }).selectOption('between');
+  // `exact` on BOTH bounds, and it is not paranoia: getByLabel matches the
+  // accessible name case-insensitively BY SUBSTRING, and "Opera-to-r" contains
+  // "to" — so a bare 'To' selects the operator dropdown as well as this input.
+  await popover().getByLabel('From', { exact: true }).fill('1000');
+  await popover().getByLabel('To', { exact: true }).fill('2000');
   await popover().getByRole('button', { name: 'Apply' }).click();
 
   await expect(row(BETA)).toBeVisible();
@@ -70,11 +73,18 @@ test('filters a custom object by its JSONB fields and saves the filter as a view
   const viewName = `Mid-size ${Date.now().toString(36)}`;
   await page.getByRole('button', { name: 'Views', exact: true }).click();
   await popover().getByRole('button', { name: 'Save current view…' }).click();
-  await popover().getByLabel('View name').fill(viewName);
+  await popover().getByLabel('View name', { exact: true }).fill(viewName);
   await popover().getByRole('button', { name: 'Save', exact: true }).click();
+
+  // Saving leaves the menu OPEN and applies the new view in place, so the name
+  // is on the trigger AND on the menu row — asserting before closing would
+  // match two elements and trip strict mode. Escape first, then assert on the
+  // one that remains.
+  await page.keyboard.press('Escape');
 
   // The trigger takes the applied view's name: the durable consequence of a
   // successful POST /views, asserted instead of a toast (see fixtures.ts).
+  // Auto-waiting covers the request still being in flight when Escape lands.
   await expect(page.getByRole('button', { name: viewName })).toBeVisible();
 
   // ── Clear, then re-apply the saved view ───────────────────────────────────
