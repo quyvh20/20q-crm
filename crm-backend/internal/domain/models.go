@@ -552,7 +552,18 @@ type AITokenUsage struct {
 	OutputTokens      int    `gorm:"not null;default:0" json:"output_tokens"`
 	CachedInputTokens int    `gorm:"not null;default:0" json:"cached_input_tokens"`
 	LatencyMs         int64  `gorm:"not null;default:0" json:"latency_ms"`
-	StopReason        string `gorm:"size:100" json:"stop_reason"`
+	// `not null;default:''` because the column is `VARCHAR(100) NOT NULL
+	// DEFAULT ''`, and gorm's MigrateColumn emits a TYPE change when ANY
+	// property disagrees — not just the type. With neither set, two separate
+	// checks fired (nullable false-vs-true, and "default value -> null"), so
+	// this column kept requesting the same blocked ALTER after the sizes above
+	// were already correct.
+	//
+	// `default:''` is safe to state rather than a fresh source of churn: the
+	// driver parses the stored `''::character varying` down to an empty string,
+	// and gorm's string comparison falls back to
+	// strings.Trim(field.DefaultValue, "'\"") — so `''` and `` compare equal.
+	StopReason string `gorm:"size:100;not null;default:''" json:"stop_reason"`
 	CacheHit          bool      `gorm:"default:false" json:"cache_hit"`
 	CostUSD           float64   `gorm:"type:numeric(10,6);default:0" json:"cost_usd"`
 	CreatedAt         time.Time `json:"created_at"`
