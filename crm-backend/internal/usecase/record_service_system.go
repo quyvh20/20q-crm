@@ -72,9 +72,14 @@ func (a *contactAdapter) list(ctx context.Context, orgID uuid.UUID, in domain.Re
 		// matching nothing and returning an EMPTY list with no error. That is
 		// exactly how R9.3's pipeline_id emptied every deal board.
 		CustomFilters: customFilters(in.Filters, "company", "owner_user_id", "lead_score"),
-		TagIDs:        in.TagIDs,
-		SortBy:        domain.RecordSortFilterKey("contact", in.SortBy),
-		SortOrder:     in.SortOrder,
+		// Compiled carries the validated multi-operator filter (AST + converted
+		// legacy params). When the filter engine is wired, compileListFilter has
+		// already removed everything non-typed from in.Filters, so CustomFilters
+		// above is empty and the exclusion-list dance is legacy-only.
+		Compiled:  in.Compiled,
+		TagIDs:    in.TagIDs,
+		SortBy:    domain.RecordSortFilterKey("contact", in.SortBy),
+		SortOrder: in.SortOrder,
 	})
 	if err != nil {
 		return nil, "", err
@@ -245,6 +250,8 @@ func (a *companyAdapter) list(ctx context.Context, orgID uuid.UUID, in domain.Re
 		Limit:         in.Limit,
 		Cursor:        in.Cursor,
 		CustomFilters: customFilters(in.Filters),
+		Compiled:      in.Compiled,
+		TagIDs:        in.TagIDs,
 	})
 	if err != nil {
 		return nil, "", err
@@ -361,6 +368,8 @@ func (a *dealAdapter) list(ctx context.Context, orgID uuid.UUID, in domain.Recor
 		// through every key it is not told to skip, so omitting it here would
 		// ALSO append a custom_fields test for the same key and empty the result.
 		CustomFilters: customFilters(in.Filters, "stage", "contact", "company", "owner_user_id", "pipeline_id"),
+		Compiled:      in.Compiled,
+		TagIDs:        in.TagIDs,
 		SortBy:        domain.RecordSortFilterKey("deal", in.SortBy),
 		SortOrder:     in.SortOrder,
 	})

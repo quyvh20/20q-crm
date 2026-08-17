@@ -340,12 +340,29 @@ func (h *Handler) ListWorkflows(c *gin.Context) {
 		return
 	}
 
-	activeOnly := c.Query("active") == "true"
+	// Tri-state active filter: absent/empty means "no filter"; "true"/"false"
+	// narrow to that state. This used to parse as `== "true"`, which silently
+	// turned ?active=false into "no filter" — the FE's Inactive pill showed ALL
+	// workflows. Anything else is a client error, not a silent no-op.
+	var active *bool
+	switch v := c.Query("active"); v {
+	case "":
+		// no filter
+	case "true":
+		t := true
+		active = &t
+	case "false":
+		f := false
+		active = &f
+	default:
+		h.errorResponse(c, http.StatusBadRequest, "VALIDATION_FAILED", "invalid 'active' filter: must be true or false", nil)
+		return
+	}
 	q := c.Query("q")
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	size, _ := strconv.Atoi(c.DefaultQuery("size", "20"))
 
-	workflows, total, err := h.repo.ListWorkflows(c.Request.Context(), orgID, activeOnly, q, page, size)
+	workflows, total, err := h.repo.ListWorkflows(c.Request.Context(), orgID, active, q, page, size)
 	if err != nil {
 		h.errorResponse(c, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to list workflows", nil)
 		return

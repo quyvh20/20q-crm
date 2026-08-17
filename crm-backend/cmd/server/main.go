@@ -2296,6 +2296,39 @@ func main() {
 			}
 		}
 
+		// ── Saved list views ───────────────────────────────────────────────────
+		// Mirrored by migrations/000078_list_views.*.sql. Prod runs THIS guard —
+		// golang-migrate is dead there — so the two must agree statement for
+		// statement or CI tests a schema production never runs.
+		//
+		// ABOVE the RLS sweep below, same as R9.3/R9.4: a CREATE TABLE after the
+		// sweep leaves the table with RLS off until the NEXT boot, which on
+		// Supabase is an anon read/write handle on it.
+		//
+		// A view stores a record-list configuration (filter AST / q / tags /
+		// sort) verbatim; it is replayed through RecordService.List as whoever
+		// opens it, so the row grants nothing — FLS/compile validation happens at
+		// save time in the usecase, not in this schema.
+		db.Exec(`CREATE TABLE IF NOT EXISTS list_views (
+			id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+			org_id        UUID NOT NULL,
+			owner_user_id UUID NOT NULL,
+			object_slug   VARCHAR(100) NOT NULL,
+			name          VARCHAR(120) NOT NULL,
+			definition    JSONB NOT NULL DEFAULT '{}',
+			shared        BOOLEAN NOT NULL DEFAULT false,
+			created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			deleted_at    TIMESTAMPTZ
+		)`)
+		// The one query shape List runs: (org, slug) + the soft-delete predicate.
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_list_views_org_slug ON list_views(org_id, object_slug) WHERE deleted_at IS NULL`)
+		// Explicit even though the sweep below would catch it — the house
+		// convention, and it makes the table's RLS state readable at its
+		// definition. Never FORCE: zero policies by design and the app connects
+		// as table owner, so FORCE would lock the backend out of its own table.
+		db.Exec(`ALTER TABLE list_views ENABLE ROW LEVEL SECURITY`)
+
 		// ── RLS backfill (Supabase alert 2026-07-20: rls_disabled_in_public) ────
 		// Every table created before the boot-guard convention has its ENABLE ROW
 		// LEVEL SECURITY stranded in migrations/000008 and /000013 — files that have
@@ -2633,6 +2666,10 @@ func main() {
 		leadScoringHandler := delivery.NewLeadScoringHandler(leadScoringUC)
 		// Human-readable record numbers (DEAL-0001): allocate on create, resolve on read.
 		recordService.SetNumberRepo(repository.NewRecordNumberRepository(db))
+		// The record-list filter engine builds its field catalogs (registry +
+		// virtual fields, the same set reports compile against) from the registry.
+		// Unwired, list filtering falls back to the legacy equality-only params.
+		recordService.SetFilterRegistry(objectRegistryRepo)
 		// The per-record audit trail 404s the history of a record the caller can't
 		// see by resolving it through the scope-aware RecordService first (U0.1-ext).
 		// Wired here (not as a constructor arg) because recordService takes permissionUC
@@ -3228,6 +3265,20 @@ func main() {
 		marketingResendProcessor := marketing.NewResendProcessor(marketingRepo, autoLogger)
 		go marketing.StartResendWebhookProcessor(context.Background(), marketingResendProcessor)
 		go marketing.StartResendReaper(context.Background(), marketingRepo, autoLogger)
+
+		// ── Saved list views over the uniform record list ─────────────────────
+		// A view names a record-list configuration (filter AST / q / tags / sort);
+		// it is replayed through GET /records as whoever opens it, so execution
+		// re-derives OLS/FLS/row scope per viewer and the view grants nothing.
+		// The save side is the security surface (shared views are org-visible):
+		// the usecase FLS-gates every filter field and dry-run-compiles against
+		// the SAME registry catalog the record-list engine uses — permissionUC is
+		// the authorizer, objectRegistryRepo the catalog source, both the exact
+		// instances recordService filters with, so save-valid ⟺ replay-valid.
+		// Registered with integrationsProtected (the protected-group-equivalent
+		// stack the /api/registry routes run behind), not the plain-auth stack.
+		listViewUC := usecase.NewListViewUseCase(repository.NewListViewRepository(db), objectRegistryRepo, permissionUC)
+		delivery.NewListViewHandler(listViewUC).RegisterRoutes(router, integrationsProtected)
 
 		// ── Email marketing (M5: audiences — static lists + dynamic segments) ──
 		// A dynamic segment's boolean AST is compiled to fully-parameterized SQL against

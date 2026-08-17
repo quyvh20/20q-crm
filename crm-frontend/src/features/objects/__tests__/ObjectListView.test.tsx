@@ -21,6 +21,14 @@ vi.mock('../../../lib/api', () => ({
   // The create form renders an OwnerPicker for objects that have an owner (U6.3),
   // which loads the member list.
   getWorkspaceMembers: vi.fn().mockResolvedValue([]),
+  // The filter bar's Owner picker source; loaded only when the catalog has a
+  // user-kind field (these schemas don't, but the import must resolve).
+  getUsers: vi.fn().mockResolvedValue([]),
+  // Saved views (ViewsMenu) — loaded on open or when a deep link names one.
+  listListViews: vi.fn().mockResolvedValue([]),
+  createListView: vi.fn(),
+  updateListView: vi.fn(),
+  deleteListView: vi.fn(),
 }));
 
 // U3.7: the list gates "+ Add"/Import on the caller's OLS create bit. Tests
@@ -34,7 +42,8 @@ vi.mock('../../../lib/auth', () => ({
     loaded: true,
   }),
   // R8.2: the Export button gates on data.export via useAuth().hasCapability.
-  useAuth: () => ({ hasCapability: () => true }),
+  // `user` backs ViewsMenu's owner-only affordances; null is a fine stand-in.
+  useAuth: () => ({ hasCapability: () => true, user: null }),
 }));
 
 import {
@@ -369,20 +378,27 @@ function serveContacts(roster: () => UniformRecord[], sort: RecordSort | undefin
 // ============================================================
 
 describe('ObjectListView keeps its list state in the URL', () => {
-  it('restores search, filters, tags, semantic and sort from a deep link', async () => {
+  it('restores search, filters, tags and sort from a deep link, migrating legacy f.* params', async () => {
     serveContacts(() => [contact('c1', 'Ann')]);
 
-    renderView('contact', ['/contacts?q=ann&f.company=co-7&tags=t1,t2&ai=1&sort_by=email&sort_order=asc']);
+    // A pre-overhaul bookmark: the equality dropdown wrote f.company. It must
+    // keep working — as a condition in the new model, sent as the filter AST.
+    renderView('contact', ['/contacts?q=ann&f.company=co-7&tags=t1,t2&sort_by=email&sort_order=asc']);
 
     await screen.findByRole('heading', { name: 'Contacts' });
     await waitFor(() => expect(lastListParams('contact')).toMatchObject({
       q: 'ann',
-      filters: { company: 'co-7' },
+      filter: { op: 'AND', rules: [{ field: 'company', operator: 'eq', value: 'co-7' }] },
       tagIds: ['t1', 't2'],
-      semantic: true,
       sortBy: 'email',
       sortOrder: 'asc',
     }));
+    // The legacy param is rewritten into the condition model, in place.
+    await waitFor(() => {
+      const search = screen.getByTestId('search').textContent ?? '';
+      expect(search).not.toContain('f.company');
+      expect(search).toContain('flt=');
+    });
     // …and the search box shows the term it is filtering by, not an empty field
     // that contradicts the results.
     expect(screen.getByLabelText('Search contacts')).toHaveValue('ann');
@@ -459,7 +475,8 @@ describe('ObjectListView keeps its list state in the URL', () => {
   it('clears every filter but keeps the sort, which is not a filter', async () => {
     serveContacts(() => [contact('c1', 'Ann')]);
 
-    renderView('contact', ['/contacts?q=ann&tags=t1&ai=1&sort_by=email&sort_order=asc']);
+    const flt = encodeURIComponent(JSON.stringify({ c: [{ f: 'email', o: 'contains', v: 'x' }] }));
+    renderView('contact', [`/contacts?q=ann&tags=t1&flt=${flt}&sort_by=email&sort_order=asc`]);
 
     fireEvent.click(await screen.findByRole('button', { name: /Clear filters/ }));
 
@@ -467,7 +484,7 @@ describe('ObjectListView keeps its list state in the URL', () => {
       const search = screen.getByTestId('search').textContent ?? '';
       expect(search).not.toContain('q=');
       expect(search).not.toContain('tags=');
-      expect(search).not.toContain('ai=');
+      expect(search).not.toContain('flt=');
       // Wiping the ordering too would silently re-order the list the user is
       // looking at, which is not what "clear filters" says.
       expect(search).toContain('sort_by=email');
@@ -508,16 +525,17 @@ describe('ObjectListView keeps its list state in the URL', () => {
     // The other half of the rule. Cancelling on EVERY patch would be a second
     // bug in the opposite direction: choosing a filter mid-word would silently
     // discard the term while the box went on displaying it.
+    vi.mocked(getTags).mockResolvedValue([{ id: 't1', name: 'VIP', color: '#111111' }] as never);
     serveContacts(() => [contact('c1', 'Ann')]);
 
     renderView('contact');
 
     const box = await screen.findByLabelText('Search contacts');
     fireEvent.change(box, { target: { value: 'abc' } });
-    fireEvent.click(await screen.findByRole('button', { name: /AI Search/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /VIP/ }));
 
     await waitFor(() => expect(screen.getByTestId('search').textContent).toContain('q=abc'));
-    expect(screen.getByTestId('search').textContent).toContain('ai=1');
+    expect(screen.getByTestId('search').textContent).toContain('tags=t1');
     expect(box).toHaveValue('abc');
   });
 });

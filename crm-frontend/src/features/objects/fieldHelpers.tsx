@@ -210,7 +210,7 @@ export function FieldInput({ field, value, onChange, relationOptions, id }: Fiel
 // the preloaded page are reachable) and resolves the selected record's label even
 // if it wasn't preloaded. Without a targetSlug it falls back to filtering the
 // preloaded options client-side.
-function RelationPicker({
+export function RelationPicker({
   id,
   value,
   onChange,

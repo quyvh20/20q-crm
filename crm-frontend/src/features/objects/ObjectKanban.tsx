@@ -22,6 +22,7 @@ import {
   getStages,
   listObjectRecordsUnified,
   updateObjectRecordUnified,
+  type FilterGroupAST,
   type ObjectSchema,
   type PipelineStage,
   type UniformRecord,
@@ -39,6 +40,15 @@ interface ObjectKanbanProps {
    * ladder into one set of columns.
    */
   pipelineId?: string;
+  /**
+   * The list's active search/tags/filter, applied to the board fetch too. The
+   * board used to silently DROP these — the URL said q=acme, the table honoured
+   * it, and flipping to Board showed everything (while the truncation notice
+   * cheerfully suggested "refine with filters"). Same query, both views.
+   */
+  q?: string;
+  tagIds?: string[];
+  filter?: FilterGroupAST;
   onCardClick: (record: UniformRecord) => void;
 }
 
@@ -153,7 +163,7 @@ const EMPTY_BOARD: BoardState = {
 // applies the stage change through the uniform write path — which routes deals
 // through ChangeStage (won/lost + automation) on the backend (P7). Today only Deals
 // expose a "stage" field, but any future object with one gets a board for free.
-export default function ObjectKanban({ schema, stageKey, pipelineId, onCardClick }: ObjectKanbanProps) {
+export default function ObjectKanban({ schema, stageKey, pipelineId, q, tagIds, filter, onCardClick }: ObjectKanbanProps) {
   const [board, setBoard] = useState<BoardState>(EMPTY_BOARD);
   const { stages, records } = board;
   // Bumped by Retry; the loader effect depends on it, so a click re-runs it.
@@ -205,6 +215,11 @@ export default function ObjectKanban({ schema, stageKey, pipelineId, onCardClick
             limit: BOARD_PAGE_SIZE,
             cursor,
             filters: pipelineId ? { pipeline_id: pipelineId } : undefined,
+            // The list's own knobs ride along so Table and Board show the same
+            // set — the board dropping them was a shipped audit finding.
+            q,
+            tagIds,
+            filter,
           });
           fetched += 1;
           // Re-checked after EVERY page: without this a slug switch keeps
@@ -232,7 +247,9 @@ export default function ObjectKanban({ schema, stageKey, pipelineId, onCardClick
     return () => {
       cancelled = true;
     };
-  }, [schema.slug, reloadKey, pipelineId]);
+    // q/tagIds/filter identities are memoised by the parent off their URL
+    // strings, so these deps refetch on real changes only.
+  }, [schema.slug, reloadKey, pipelineId, q, tagIds, filter]);
 
   const byStage = useMemo(() => {
     const map: Record<string, UniformRecord[]> = {};

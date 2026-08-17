@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { CheckSquare } from 'lucide-react';
@@ -53,7 +53,10 @@ export default function TasksPage() {
   const tab = (searchParams.get('tab') as TabKey) || 'mine';
   const [pendingIds, setPendingIds] = useState<Record<string, boolean>>({});
 
-  const filter = buildFilter(tab, user?.id);
+  // Memoized so the overdue tab's `due_before` cutoff is computed once per tab
+  // activation. Rebuilding it every render put a fresh timestamp in the react-query
+  // key, so any unrelated re-render (e.g. a checkbox toggle) forced a refetch.
+  const filter = useMemo(() => buildFilter(tab, user?.id), [tab, user?.id]);
   const { data, isLoading, error, fetchNextPage, hasNextPage, isFetchingNextPage } = usePagedTasks(filter, tab);
 
   const toggleMutation = useMutation({

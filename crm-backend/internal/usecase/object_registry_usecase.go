@@ -166,6 +166,21 @@ func (uc *objectRegistryUseCase) buildSchema(ctx context.Context, def *domain.Ob
 	if descriptor.DisplayField == "" {
 		descriptor.DisplayField = fallbackDisplayField(descriptor.Fields)
 	}
+
+	// The list-filter catalog: the SAME registry+virtual-fields catalog the
+	// filter engine validates against (reportCatalogForDef), projected to its
+	// UI-facing shape, plus the operator matrix straight from the compiler.
+	// FLS-hidden entries are stripped per caller by the HTTP handler.
+	for _, rf := range reportCatalogForDef(def, fields) {
+		descriptor.FilterableFields = append(descriptor.FilterableFields, domain.FilterFieldDescriptor{
+			Key:       rf.Key,
+			Label:     rf.Label,
+			Type:      rf.Type,
+			Options:   rf.Options,
+			LabelKind: rf.LabelKind,
+		})
+	}
+	descriptor.FilterOperators = domain.FilterOperatorsOrdered
 	return descriptor, nil
 }
 

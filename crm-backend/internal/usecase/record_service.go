@@ -50,6 +50,9 @@ type recordService struct {
 	// numberRepo allocates and resolves human-readable record numbers. nil (unit
 	// tests, or before startup wiring) simply means records carry no Number.
 	numberRepo domain.RecordNumberRepository
+	// filterRegistry backs the record-list filter engine's field catalogs
+	// (record_filter.go). nil (unit tests) keeps the legacy filter behaviour.
+	filterRegistry domain.ObjectRegistryRepository
 }
 
 // NewRecordService wires the unified service over the existing per-object
@@ -188,6 +191,14 @@ func (s *recordService) List(ctx context.Context, orgID uuid.UUID, slug string, 
 	// the query actually ran under, not the one the caller asked for.
 	in.SortBy, in.SortOrder = domain.NormalizeRecordSort(slug, in.SortBy, in.SortOrder)
 
+	// Resolve the structured filter AST and every non-typed legacy filter param
+	// into ONE compiled fragment (record_filter.go). Unknown fields and bad
+	// operators are 400s here — never a silently empty page — and FLS-hidden
+	// fields are rejected before any query runs.
+	if err := s.compileListFilter(ctx, orgID, slug, &in); err != nil {
+		return nil, err
+	}
+
 	var out *domain.RecordList
 	if a, ok := s.systemAdapters[slug]; ok {
 		recs, next, err := a.list(ctx, orgID, in)
@@ -197,7 +208,7 @@ func (s *recordService) List(ctx context.Context, orgID uuid.UUID, slug string, 
 		out = &domain.RecordList{Records: recs, NextCursor: next}
 	} else {
 		var err error
-		out, err = s.listCustom(ctx, orgID, slug, limit, in.Q, in.Cursor, in.Filters)
+		out, err = s.listCustom(ctx, orgID, slug, in)
 		if err != nil {
 			return nil, err
 		}
@@ -620,13 +631,15 @@ func guardFieldWrites(mask domain.FieldMask, fields map[string]interface{}) erro
 // Custom-object path
 // ============================================================
 
-func (s *recordService) listCustom(ctx context.Context, orgID uuid.UUID, slug string, limit int, q, cursor string, filters map[string]string) (*domain.RecordList, error) {
-	offset := decodeOffsetCursor(cursor)
+func (s *recordService) listCustom(ctx context.Context, orgID uuid.UUID, slug string, in domain.RecordListInput) (*domain.RecordList, error) {
+	offset := decodeOffsetCursor(in.Cursor)
 	recs, total, err := s.customObjUC.ListRecords(ctx, orgID, slug, domain.RecordFilter{
-		Limit:   limit,
-		Offset:  offset,
-		Q:       q,
-		Filters: filters,
+		Limit:    in.Limit,
+		Offset:   offset,
+		Q:        in.Q,
+		Filters:  in.Filters,
+		TagIDs:   in.TagIDs,
+		Compiled: in.Compiled,
 	})
 	if err != nil {
 		return nil, err

@@ -304,7 +304,8 @@ type WorkflowWithLastRun struct {
 	LastRunAt     *string `gorm:"column:last_run_at"`
 }
 
-func (r *Repository) ListWorkflows(ctx context.Context, orgID uuid.UUID, activeOnly bool, q string, page, size int) ([]WorkflowWithLastRun, int64, error) {
+// active is tri-state: nil means no filter, otherwise narrow to that is_active state.
+func (r *Repository) ListWorkflows(ctx context.Context, orgID uuid.UUID, active *bool, q string, page, size int) ([]WorkflowWithLastRun, int64, error) {
 	// Normalize the search term once; an empty term means "no text filter".
 	//
 	// NOTE (scale): the `%term%` ILIKE below is a leading-wildcard match, so Postgres
@@ -321,8 +322,8 @@ func (r *Repository) ListWorkflows(ctx context.Context, orgID uuid.UUID, activeO
 
 	// Count first (simple query)
 	countQuery := r.db.WithContext(ctx).Model(&Workflow{}).Where("org_id = ?", orgID)
-	if activeOnly {
-		countQuery = countQuery.Where("is_active = ?", true)
+	if active != nil {
+		countQuery = countQuery.Where("is_active = ?", *active)
 	}
 	if like != "" {
 		countQuery = countQuery.Where("(name ILIKE ? OR description ILIKE ?)", like, like)
@@ -340,16 +341,16 @@ func (r *Repository) ListWorkflows(ctx context.Context, orgID uuid.UUID, activeO
 	}
 	offset := (page - 1) * size
 
-	// Main query with LEFT JOIN LATERAL for latest run
-	activeFilter := ""
-	if activeOnly {
-		activeFilter = "AND w.is_active = true"
-	}
-
-	// Build args in lockstep with the placeholders below; the optional text
-	// filter is interpolated as raw SQL but its values stay parameterized.
-	searchFilter := ""
+	// Main query with LEFT JOIN LATERAL for latest run.
+	// Build args in lockstep with the placeholders below; the optional active and
+	// text filters are interpolated as raw SQL but their values stay parameterized.
 	args := []interface{}{orgID}
+	activeFilter := ""
+	if active != nil {
+		activeFilter = "AND w.is_active = ?"
+		args = append(args, *active)
+	}
+	searchFilter := ""
 	if like != "" {
 		searchFilter = "AND (w.name ILIKE ? OR w.description ILIKE ?)"
 		args = append(args, like, like)

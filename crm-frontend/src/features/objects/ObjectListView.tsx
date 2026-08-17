@@ -10,7 +10,6 @@ import {
   List,
   Plus,
   Search,
-  Sparkles,
   Tag as TagIcon,
   Trash2,
   Upload,
@@ -23,14 +22,30 @@ import {
   getPipelines,
   getTags,
   getStages,
+  getUsers,
   bulkContactAction,
   type ObjectSchema,
   type ObjectFieldDescriptor,
+  type FilterFieldDescriptor,
+  type FilterGroupAST,
+  type ListView,
+  type ListViewDefinition,
   type UniformRecord,
   type RecordSort,
   type Tag,
   type Pipeline,
+  type UserListItem,
 } from '../../lib/api';
+import FilterBar from './filters/FilterBar';
+import ViewsMenu from './filters/ViewsMenu';
+import type { ValueSources } from './filters/FilterValueInput';
+import {
+  astToUiState,
+  filterStateToAst,
+  parseFilterParam,
+  serializeFilterParam,
+  type UiFilterState,
+} from './filters/filterModel';
 import { useAuth } from '../../lib/auth';
 import { formatFieldValue } from './fieldHelpers';
 import ObjectForm from './ObjectForm';
@@ -191,7 +206,6 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
   );
 
   const q = (searchParams.get('q') ?? '').trim();
-  const semantic = searchParams.get('ai') === '1';
   const view: 'table' | 'board' = searchParams.get('view') === 'board' ? 'board' : 'table';
   const sortBy = searchParams.get('sort_by') ?? '';
   const sortOrder: 'asc' | 'desc' = searchParams.get('sort_order') === 'asc' ? 'asc' : 'desc';
@@ -204,21 +218,71 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
     () => tagsParam.split(',').map((s) => s.trim()).filter(Boolean),
     [tagsParam],
   );
-  // Serialised as JSON, not as a `k=v&k=v` string: a filter value is arbitrary
-  // text once a non-relation field becomes filterable, and a `&` or `=` inside one
-  // would re-split into two filters. JSON round-trips unambiguously, and sorting
-  // the keys first keeps the string stable under param reordering.
-  const filterQuery = useMemo(() => {
-    const keys: string[] = [];
+
+  // ── Structured filters (filtering overhaul F6) ────────────────────────────
+  //
+  // One `flt` param carries the whole condition set as JSON (see filterModel's
+  // codec note for why JSON and not k=v pairs). `fltadv` carries an OPAQUE
+  // filter AST — a saved view authored with nesting the flat bar can't render —
+  // applied verbatim and cleared as one unit. `vw` names the active saved view.
+  const fltParam = searchParams.get('flt');
+  const filterState = useMemo(() => parseFilterParam(fltParam), [fltParam]);
+  const advParam = searchParams.get('fltadv') ?? '';
+  const advAst = useMemo(() => {
+    if (!advParam) return undefined;
+    try {
+      return JSON.parse(advParam) as FilterGroupAST;
+    } catch {
+      return undefined;
+    }
+  }, [advParam]);
+  const activeViewId = searchParams.get('vw');
+
+  // The filter AST actually sent to the server: the opaque view AST wins, else
+  // the flat conditions compile. Memoised as a STRING so listParams' identity
+  // is stable across unrelated param changes.
+  const filterAstJson = useMemo(() => {
+    const ast = advAst ?? filterStateToAst(filterState);
+    return ast ? JSON.stringify(ast) : '';
+  }, [advAst, filterState]);
+  const filterAst = useMemo(
+    () => (filterAstJson ? (JSON.parse(filterAstJson) as FilterGroupAST) : undefined),
+    [filterAstJson],
+  );
+
+  // Legacy `f.<field>` params (pre-overhaul equality dropdowns) migrate into
+  // the condition model once, then disappear from the URL — old bookmarks keep
+  // working and immediately become editable pills.
+  //
+  // hasLegacyFilterParams also GATES the first fetch below: without it, the
+  // pre-migration render fires an UNFILTERED request that races the filtered
+  // one the rewrite triggers — and whichever resolves last paints the table.
+  const hasLegacyFilterParams = useMemo(() => {
+    let found = false;
     searchParams.forEach((value, key) => {
-      if (key.startsWith(FILTER_PREFIX) && value) keys.push(key);
+      if (key.startsWith(FILTER_PREFIX) && value) found = true;
     });
-    keys.sort();
-    const out: Record<string, string> = {};
-    for (const key of keys) out[key.slice(FILTER_PREFIX.length)] = searchParams.get(key) as string;
-    return JSON.stringify(out);
+    return found;
   }, [searchParams]);
-  const filters = useMemo(() => JSON.parse(filterQuery) as Record<string, string>, [filterQuery]);
+  useEffect(() => {
+    const legacy: Record<string, string> = {};
+    searchParams.forEach((value, key) => {
+      if (key.startsWith(FILTER_PREFIX) && value) legacy[key.slice(FILTER_PREFIX.length)] = value;
+    });
+    if (Object.keys(legacy).length === 0) return;
+    const patch: Record<string, string | null> = {};
+    for (const key of Object.keys(legacy)) patch[FILTER_PREFIX + key] = null;
+    const merged: UiFilterState = {
+      match: filterState.match,
+      conditions: [
+        ...filterState.conditions,
+        ...Object.entries(legacy).map(([field, value]) => ({ field, operator: 'eq', value })),
+      ],
+    };
+    patch.flt = serializeFilterParam(merged);
+    updateParams(patch, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs per URL change; searchParams covers it
+  }, [searchParams, updateParams]);
 
   // ── Selection (R7.1) ──────────────────────────────────────────────────────
   //
@@ -281,13 +345,12 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
     [updateParams, clearSelection],
   );
 
-  // Relation fields the schema says we can filter on (a resolvable target object).
+  // Relation fields with a resolvable target — their options are preloaded to
+  // resolve relation CELL labels (the filter pickers search the server instead).
   const relationFields = useMemo(
     () => (schema?.fields ?? []).filter((f) => f.type === 'relation' && f.target_slug),
     [schema],
   );
-  // Semantic search is wired for contacts (native vector index).
-  const supportsSemantic = slug === 'contact';
   // A relation field named "stage" makes the object board-able (deals today).
   const stageField = useMemo(
     () => (schema?.fields ?? []).find((f) => f.key === 'stage' && f.type === 'relation'),
@@ -431,6 +494,80 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
     [relationOptions],
   );
 
+  // ── Filter value sources ──────────────────────────────────────────────────
+
+  // Users back the Owner filter (and any user-kind virtual field). Loaded once
+  // when the catalog needs them — company has no owner, so its list never pays.
+  const [users, setUsers] = useState<UserListItem[]>([]);
+  const needsUsers = useMemo(
+    () => (schema?.filterable_fields ?? []).some((f) => f.label_kind === 'user'),
+    [schema],
+  );
+  useEffect(() => {
+    if (!needsUsers) return;
+    let cancelled = false;
+    getUsers()
+      .then((u) => {
+        if (!cancelled) setUsers(u);
+      })
+      .catch(() => {
+        /* the owner filter just degrades to no options */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [needsUsers]);
+
+  const userOptions = useMemo(
+    () =>
+      users.map((u) => ({
+        id: u.id,
+        label: [u.first_name, u.last_name].filter(Boolean).join(' ') || u.email,
+      })),
+    [users],
+  );
+  const pipelineOptions = useMemo(() => pipelines.map((p) => ({ id: p.id, label: p.name })), [pipelines]);
+
+  // Where a filter field's choices come from, keyed by the catalog's label_kind:
+  // real object slugs get the server-searching picker; user/stage/pipeline are
+  // not registry objects and use their preloaded lists.
+  const filterSources = useMemo<ValueSources>(
+    () => ({
+      optionsFor: (field: FilterFieldDescriptor) => {
+        switch (field.label_kind) {
+          case 'user':
+            return userOptions;
+          case 'pipeline':
+            return pipelineOptions;
+          case 'stage':
+            return relationOptions['stage'] ?? [];
+          default:
+            return relationOptions[field.key] ?? [];
+        }
+      },
+      targetSlugFor: (field: FilterFieldDescriptor) => {
+        if (!field.label_kind || ['user', 'stage', 'pipeline'].includes(field.label_kind)) return undefined;
+        return field.label_kind;
+      },
+    }),
+    [userOptions, pipelineOptions, relationOptions],
+  );
+
+  // Renders a condition value for its pill: relation ids resolve to labels,
+  // booleans read as words, everything else passes through.
+  const resolveFilterValue = useCallback(
+    (field: FilterFieldDescriptor | undefined, v: unknown): string => {
+      if (v == null || v === '') return '—';
+      if (field?.type === 'relation') {
+        const opt = filterSources.optionsFor(field).find((o) => o.id === String(v));
+        return opt?.label ?? String(v);
+      }
+      if (field?.type === 'boolean') return String(v) === 'true' ? 'True' : 'False';
+      return String(v);
+    },
+    [filterSources],
+  );
+
   // ── Search box ────────────────────────────────────────────────────────────
   //
   // The URL is the source of truth for `q`, but the box is UNCONTROLLED and
@@ -492,13 +629,12 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
       limit: LIMIT,
       q,
       cursor,
-      filters,
+      filter: filterAst,
       tagIds,
-      semantic: semantic && supportsSemantic,
       sortBy: sortBy || undefined,
       sortOrder: sortBy ? sortOrder : undefined,
     }),
-    [q, filters, tagIds, semantic, supportsSemantic, sortBy, sortOrder],
+    [q, filterAst, tagIds, sortBy, sortOrder],
   );
 
   // handleExport downloads the CURRENT filtered view as CSV (R8.2) — same
@@ -543,8 +679,12 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
   }, [slug, listParams]);
 
   useEffect(() => {
+    // Hold fire while legacy f.* params await migration: the rewrite lands as
+    // a replace within a tick, and fetching before it would race an unfiltered
+    // page against the real one.
+    if (hasLegacyFilterParams) return;
     fetchFirstPage();
-  }, [fetchFirstPage]);
+  }, [fetchFirstPage, hasLegacyFilterParams]);
 
   const loadMore = async () => {
     if (!nextCursor) return;
@@ -588,9 +728,14 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
     fetchFirstPage();
   };
 
-  const setFilter = (key: string, value: string) => {
-    patchQuery({ [FILTER_PREFIX + key]: value || null });
-  };
+  const setFilterState = useCallback(
+    (next: UiFilterState) => {
+      // Editing conditions leaves any opaque view AST behind — the pills are
+      // now the truth — and drops the flat param when the last pill goes.
+      patchQuery({ flt: serializeFilterParam(next), fltadv: null });
+    },
+    [patchQuery],
+  );
 
   const toggleTag = (id: string) => {
     const next = tagIds.includes(id) ? tagIds.filter((t) => t !== id) : [...tagIds, id];
@@ -601,15 +746,50 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
     // `q: null` is what tells patchQuery to kill a search that is still inside
     // its debounce window and blank the box — see the note there. Without that,
     // "clear" could APPLY a filter 300ms later.
-    const cleared: Record<string, string | null> = { q: null, tags: null, ai: null };
-    for (const key of Object.keys(filters)) cleared[FILTER_PREFIX + key] = null;
     // Sort survives: it is a view preference, not a filter, and wiping it would
-    // silently re-order the list the user is looking at.
-    patchQuery(cleared);
+    // silently re-order the list the user is looking at. `vw` goes: with its
+    // definition cleared, the view is no longer what the list shows.
+    patchQuery({ q: null, tags: null, flt: null, fltadv: null, vw: null });
   };
 
   const hasActiveFilters =
-    Object.keys(filters).length > 0 || tagIds.length > 0 || semantic || !!q;
+    filterState.conditions.length > 0 || !!advAst || tagIds.length > 0 || !!q;
+
+  // ── Saved views ───────────────────────────────────────────────────────────
+
+  // The current list state as a saveable definition (what ViewsMenu persists
+  // and compares against the active view for its "modified" dot).
+  const currentDefinition = useMemo<ListViewDefinition>(
+    () => ({
+      ...(filterAst ? { filter: filterAst } : {}),
+      ...(q ? { q } : {}),
+      ...(tagIds.length ? { tags: tagIds } : {}),
+      ...(sortBy ? { sort_by: sortBy, sort_order: sortOrder } : {}),
+    }),
+    [filterAst, q, tagIds, sortBy, sortOrder],
+  );
+
+  const applyView = useCallback(
+    (v: ListView) => {
+      const def = v.definition ?? {};
+      const flat = astToUiState(def.filter ?? null);
+      patchQuery({
+        vw: v.id,
+        q: def.q || null,
+        tags: def.tags?.length ? def.tags.join(',') : null,
+        // A nested AST the flat bar can't render applies opaquely via fltadv.
+        flt: flat ? serializeFilterParam(flat) : null,
+        fltadv: flat ? null : def.filter ? JSON.stringify(def.filter) : null,
+        sort_by: def.sort_by || null,
+        sort_order: def.sort_by ? def.sort_order ?? null : null,
+      });
+    },
+    [patchQuery],
+  );
+
+  const resetView = useCallback(() => {
+    patchQuery({ vw: null, q: null, tags: null, flt: null, fltadv: null });
+  }, [patchQuery]);
 
   // ── Sorting (R7.3) ────────────────────────────────────────────────────────
   const sortableKeys = useMemo(() => new Set(sortInfo?.sortable ?? []), [sortInfo]);
@@ -829,16 +1009,8 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
         />
       )}
 
-      {view === 'board' && stageField ? (
-        <ObjectKanban
-          schema={schema}
-          stageKey={stageField.key}
-          pipelineId={activePipelineId}
-          onCardClick={openRecord}
-        />
-      ) : (
-      <>
-      {/* Search + filters */}
+      {/* Search + filters — shared by BOTH views now that the board honours
+          them (it used to silently drop q/tags/filters and fetch everything). */}
       <div className="mb-4 flex flex-wrap items-center gap-2.5">
         <div className="relative w-72 max-w-full">
           <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -852,37 +1024,31 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
               searchTimer.current = setTimeout(() => commitRef.current(value), SEARCH_DEBOUNCE_MS);
             }}
             aria-label={`Search ${schema.label_plural.toLowerCase()}`}
-            placeholder={semantic && supportsSemantic ? `Describe the ${schema.label.toLowerCase()} you want…` : `Search ${schema.label_plural.toLowerCase()}...`}
+            placeholder={`Search ${schema.label_plural.toLowerCase()}...`}
             className="pl-9"
           />
         </div>
 
-        {supportsSemantic && (
-          <Button
-            variant="outline"
-            onClick={() => patchQuery({ ai: semantic ? null : '1' })}
-            title="Toggle AI semantic search"
-            className={semantic ? 'border-primary/40 bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary' : 'text-muted-foreground'}
-          >
-            <Sparkles aria-hidden /> AI Search{semantic ? ' ON' : ''}
-          </Button>
-        )}
+        {/* Saved views: apply/save/update/delete named bundles of list state. */}
+        <ViewsMenu
+          slug={slug}
+          currentDefinition={currentDefinition}
+          activeViewId={activeViewId}
+          onApply={applyView}
+          onReset={resetView}
+        />
 
-        {/* One dropdown per filterable relation field (company, contact, …). */}
-        {relationFields.map((f: ObjectFieldDescriptor) => (
-          <Select
-            key={f.key}
-            value={filters[f.key] ?? ''}
-            onChange={(e) => setFilter(f.key, e.target.value)}
-            aria-label={`Filter by ${f.label}`}
-            className="w-auto min-w-[10rem] max-w-[13rem]"
-          >
-            <option value="">All {f.label}</option>
-            {(relationOptions[f.key] ?? []).map((o) => (
-              <option key={o.id} value={o.id}>{o.label}</option>
-            ))}
-          </Select>
-        ))}
+        {/* The condition builder: every catalog field is filterable with
+            per-type operators — not just relations with a dropdown. */}
+        <FilterBar
+          schema={schema}
+          state={filterState}
+          onChange={setFilterState}
+          sources={filterSources}
+          resolveValue={resolveFilterValue}
+          advancedActive={!!advAst}
+          onClearAdvanced={() => patchQuery({ fltadv: null, vw: null })}
+        />
 
         {hasActiveFilters && (
           <Button variant="ghost" onClick={clearFilters} className="text-muted-foreground">
@@ -915,6 +1081,18 @@ export default function ObjectListView({ slug, onNotFound, onSchemaLoaded }: Obj
         </div>
       )}
 
+      {view === 'board' && stageField ? (
+        <ObjectKanban
+          schema={schema}
+          stageKey={stageField.key}
+          pipelineId={activePipelineId}
+          q={q || undefined}
+          tagIds={tagIds.length ? tagIds : undefined}
+          filter={filterAst}
+          onCardClick={openRecord}
+        />
+      ) : (
+      <>
       {/* Bulk action bar — only while something is selected. */}
       {showSelection && selectedRecords.length > 0 && (
         <div className="mb-3 flex flex-wrap items-center gap-2.5 rounded-xl border border-border bg-muted/40 px-3 py-2">

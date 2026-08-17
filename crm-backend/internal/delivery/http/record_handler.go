@@ -136,14 +136,16 @@ func (h *RecordHandler) SharedWithMe(c *gin.Context) {
 // exact key stops being filterable, which is why the set stays this small.
 var reservedListParams = map[string]bool{
 	"limit": true, "q": true, "cursor": true, "tag_ids": true, "semantic": true,
-	"sort_by": true, "sort_order": true,
+	"sort_by": true, "sort_order": true, "filter": true,
 }
 
-// List handles GET /api/registry/objects/:slug/records
-func (h *RecordHandler) List(c *gin.Context) {
-	orgID := c.MustGet("org_id").(uuid.UUID)
-	slug := c.Param("slug")
-
+// parseRecordListQuery builds the uniform list input from the request's query
+// string — shared by List and ExportCSV so the CSV always exports exactly what
+// the list shows. The reserved `filter` param carries a JSON filter AST (the
+// same {op, rules:[{field,operator,value}…]} grammar reports and automation
+// conditions use); a malformed one is a 400 here, and an AST naming unknown
+// fields/operators is a 400 in RecordService — never a silently empty page.
+func parseRecordListQuery(c *gin.Context) (domain.RecordListInput, error) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "25"))
 
 	// Any non-reserved single-value query param is a field filter, so the same
@@ -166,11 +168,21 @@ func (h *RecordHandler) List(c *gin.Context) {
 		}
 	}
 
-	page, err := h.svc.List(c.Request.Context(), orgID, slug, domain.RecordListInput{
+	var filterAST *domain.ReportFilterGroup
+	if raw := strings.TrimSpace(c.Query("filter")); raw != "" {
+		var g domain.ReportFilterGroup
+		if err := json.Unmarshal([]byte(raw), &g); err != nil {
+			return domain.RecordListInput{}, domain.NewAppError(http.StatusBadRequest, "filter is not valid JSON")
+		}
+		filterAST = &g
+	}
+
+	return domain.RecordListInput{
 		Limit:    limit,
 		Q:        c.Query("q"),
 		Cursor:   c.Query("cursor"),
 		Filters:  filters,
+		Filter:   filterAST,
 		TagIDs:   tagIDs,
 		Semantic: c.Query("semantic") == "true",
 		// Passed through raw. RecordService normalises against the object's
@@ -178,7 +190,21 @@ func (h *RecordHandler) List(c *gin.Context) {
 		// RecordList.Sort, so the handler holds no opinion about either.
 		SortBy:    c.Query("sort_by"),
 		SortOrder: c.Query("sort_order"),
-	})
+	}, nil
+}
+
+// List handles GET /api/registry/objects/:slug/records
+func (h *RecordHandler) List(c *gin.Context) {
+	orgID := c.MustGet("org_id").(uuid.UUID)
+	slug := c.Param("slug")
+
+	in, err := parseRecordListQuery(c)
+	if err != nil {
+		handleAppError(c, err)
+		return
+	}
+
+	page, err := h.svc.List(c.Request.Context(), orgID, slug, in)
 	if err != nil {
 		handleAppError(c, err)
 		return
@@ -373,21 +399,15 @@ func (h *RecordHandler) ExportCSV(c *gin.Context) {
 	orgID := c.MustGet("org_id").(uuid.UUID)
 	slug := c.Param("slug")
 
-	filters := map[string]string{}
-	for key, vals := range c.Request.URL.Query() {
-		if reservedListParams[key] || len(vals) == 0 || vals[0] == "" {
-			continue
-		}
-		filters[key] = vals[0]
+	// Shared with List, so the CSV exports exactly what the list shows — filter
+	// AST included. Parsed before any header is written so a malformed filter is
+	// still a proper JSON 400.
+	in, err := parseRecordListQuery(c)
+	if err != nil {
+		handleAppError(c, err)
+		return
 	}
-	var tagIDs []uuid.UUID
-	for _, raw := range c.QueryArray("tag_ids") {
-		for _, part := range strings.Split(raw, ",") {
-			if id, err := uuid.Parse(strings.TrimSpace(part)); err == nil {
-				tagIDs = append(tagIDs, id)
-			}
-		}
-	}
+	in.Limit = exportPageLimit
 
 	schema, err := h.registry.GetSchema(c.Request.Context(), orgID, slug)
 	if err != nil {
@@ -405,19 +425,9 @@ func (h *RecordHandler) ExportCSV(c *gin.Context) {
 	}
 	_ = w.Write(header)
 
-	cursor := c.Query("cursor")
 	written := 0
 	for {
-		page, err := h.svc.List(c.Request.Context(), orgID, slug, domain.RecordListInput{
-			Limit:     exportPageLimit,
-			Q:         c.Query("q"),
-			Cursor:    cursor,
-			Filters:   filters,
-			TagIDs:    tagIDs,
-			Semantic:  c.Query("semantic") == "true",
-			SortBy:    c.Query("sort_by"),
-			SortOrder: c.Query("sort_order"),
-		})
+		page, err := h.svc.List(c.Request.Context(), orgID, slug, in)
 		if err != nil {
 			// Headers are already flushed to the client at this point, so a mid-stream
 			// error can't become a JSON error response — best-effort log-and-stop.
@@ -441,7 +451,7 @@ func (h *RecordHandler) ExportCSV(c *gin.Context) {
 		if page.NextCursor == "" || written >= exportRowCap {
 			break
 		}
-		cursor = page.NextCursor
+		in.Cursor = page.NextCursor
 	}
 	w.Flush()
 }

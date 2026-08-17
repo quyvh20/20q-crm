@@ -120,6 +120,30 @@ type ObjectDescriptor struct {
 	// ObjectLayoutUseCase.ResolveLayout, so it is omitted from the schema endpoint
 	// when the feature is not yet wired (zero value = omitempty = absent from JSON).
 	Layout []LayoutSection `json:"layout,omitempty"`
+	// FilterableFields is the list-filter catalog: storage-backed registry fields
+	// (mirror fields excluded) PLUS the virtual fields lists can filter on
+	// (created_at, updated_at, owner_user_id, lead_score, pipeline, is_won…) —
+	// assembled by the same catalog builder RecordService validates filters
+	// against, so the picker and the validator cannot drift. The HTTP handler
+	// strips FLS-hidden entries per caller, exactly like Layout.
+	FilterableFields []FilterFieldDescriptor `json:"filterable_fields,omitempty"`
+	// FilterOperators is the per-field-type operator whitelist in menu order —
+	// served so the frontend renders operator menus from the compiler's own
+	// matrix instead of hand-mirroring it (the drift the report FilterEditor and
+	// the workflow builder already fell into).
+	FilterOperators map[string][]string `json:"filter_operators,omitempty"`
+}
+
+// FilterFieldDescriptor is one entry of an object's list-filter catalog.
+// LabelKind tells the UI how to pick a relation value: a target object slug
+// (open that object's record picker), "user", "stage" or "pipeline". Empty for
+// self-valued fields (text/number/date/select/boolean/url).
+type FilterFieldDescriptor struct {
+	Key       string   `json:"key"`
+	Label     string   `json:"label"`
+	Type      string   `json:"type"`
+	Options   []string `json:"options,omitempty"`
+	LabelKind string   `json:"label_kind,omitempty"`
 }
 
 // FieldDescriptor is one field in an ObjectDescriptor. storage_kind / maps_to_column
@@ -184,10 +208,19 @@ type UniformRecord struct {
 // SortableRecordFields declares. RecordService normalises them before any adapter
 // sees them, so an adapter never has to decide what an unknown sort key means.
 type RecordListInput struct {
-	Limit     int
-	Q         string
-	Cursor    string
-	Filters   map[string]string
+	Limit   int
+	Q       string
+	Cursor  string
+	Filters map[string]string
+	// Filter is the structured multi-operator filter AST — the same JSON grammar
+	// reports and automation conditions speak — parsed by the handler from the
+	// reserved `filter` query param. RecordService validates it against the
+	// object's field catalog and the caller's field mask, then compiles it (plus
+	// any non-typed legacy Filters entries) into Compiled.
+	Filter *ReportFilterGroup
+	// Compiled is set by RecordService.List and consumed by the storage
+	// adapters; callers never populate it.
+	Compiled  *CompiledFilter
 	TagIDs    []uuid.UUID
 	Semantic  bool
 	SortBy    string
@@ -419,6 +452,12 @@ type RecordService interface {
 	// at startup. Until set, records carry no Number (numbering is simply absent),
 	// so unit tests that don't exercise numbering need no extra wiring.
 	SetNumberRepo(repo RecordNumberRepository)
+
+	// SetFilterRegistry wires the registry the record-list filter engine builds
+	// its field catalogs from, called once at startup. Until set, list filtering
+	// keeps the legacy equality-only behaviour and structured filter ASTs are
+	// rejected — so unit tests that don't exercise filtering need no wiring.
+	SetFilterRegistry(reg ObjectRegistryRepository)
 
 	// --- Universal relationships + tags (P4) ---
 

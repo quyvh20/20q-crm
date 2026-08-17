@@ -69,16 +69,34 @@ func (h *ObjectRegistryHandler) GetSchema(c *gin.Context) {
 // usecase, a caller-less context, or a resolve error all simply leave the layout
 // absent, and the frontend falls back to flat field order.
 func foldLayout(ctx context.Context, layoutUC domain.ObjectLayoutUseCase, authz domain.RecordAuthorizer, orgID uuid.UUID, slug string, descriptor *domain.ObjectDescriptor) {
-	if layoutUC == nil || descriptor == nil {
-		return
-	}
-	caller, ok := domain.CallerFromContext(ctx)
-	if !ok {
+	if descriptor == nil {
 		return
 	}
 	var hiddenKeys map[string]bool
 	if authz != nil {
 		hiddenKeys = authz.FieldMask(ctx, orgID, slug).Hidden
+	}
+
+	// FLS on the filter catalog, same rule as Layout: a hidden field must not
+	// appear in the picker — the filter engine also rejects it server-side, but
+	// listing it here would leak the field's existence to a role it is hidden
+	// from.
+	if len(hiddenKeys) > 0 && len(descriptor.FilterableFields) > 0 {
+		kept := descriptor.FilterableFields[:0]
+		for _, f := range descriptor.FilterableFields {
+			if !hiddenKeys[f.Key] {
+				kept = append(kept, f)
+			}
+		}
+		descriptor.FilterableFields = kept
+	}
+
+	if layoutUC == nil {
+		return
+	}
+	caller, ok := domain.CallerFromContext(ctx)
+	if !ok {
+		return
 	}
 	if sections, err := layoutUC.ResolveLayout(ctx, orgID, slug, caller, hiddenKeys); err == nil {
 		descriptor.Layout = sections

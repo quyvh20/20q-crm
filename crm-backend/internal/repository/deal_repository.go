@@ -108,6 +108,23 @@ func (r *dealRepository) List(ctx context.Context, orgID uuid.UUID, f domain.Dea
 		}
 		query = query.Where("deals.custom_fields ->> ? = ?", k, v)
 	}
+	// The compiled multi-operator filter fragment (domain/filter_sql.go): one
+	// parenthesised predicate, already validated upstream, ANDed like any other
+	// clause so scope + cursor + search compose unchanged.
+	if f.Compiled != nil {
+		query = query.Where(f.Compiled.SQL, f.Compiled.Args...)
+	}
+	if len(f.TagIDs) > 0 {
+		// Deal tags live in object_links (relation_key 'tags'), not contact_tags.
+		// deleted_at is written out because GORM's soft-delete clause does not
+		// reach inside a raw subquery.
+		query = query.Where(`EXISTS (
+			SELECT 1 FROM object_links ol
+			WHERE ol.org_id = ? AND ol.from_slug = 'deal' AND ol.from_id = deals.id
+			  AND ol.relation_key = 'tags' AND ol.to_slug = 'tag' AND ol.to_id IN ?
+			  AND ol.deleted_at IS NULL
+		)`, orgID, f.TagIDs)
+	}
 
 	// ── Sort + keyset cursor ─────────────────────────────────────────────────
 	// One ordering object emits BOTH the predicate and the ORDER BY. They used to

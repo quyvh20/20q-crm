@@ -52,6 +52,21 @@ func (r *companyRepository) List(ctx context.Context, orgID uuid.UUID, f domain.
 		}
 		query = query.Where("companies.custom_fields ->> ? = ?", k, v)
 	}
+	// The compiled multi-operator filter fragment (domain/filter_sql.go),
+	// validated upstream and ANDed like any other clause.
+	if f.Compiled != nil {
+		query = query.Where(f.Compiled.SQL, f.Compiled.Args...)
+	}
+	if len(f.TagIDs) > 0 {
+		// Company tags live in object_links (relation_key 'tags'). deleted_at is
+		// written out: GORM's soft-delete clause does not reach a raw subquery.
+		query = query.Where(`EXISTS (
+			SELECT 1 FROM object_links ol
+			WHERE ol.org_id = ? AND ol.from_slug = 'company' AND ol.from_id = companies.id
+			  AND ol.relation_key = 'tags' AND ol.to_slug = 'tag' AND ol.to_id IN ?
+			  AND ol.deleted_at IS NULL
+		)`, orgID, f.TagIDs)
+	}
 
 	// Keyset cursor + ORDER BY, emitted together so they cannot disagree. The
 	// cursor used to be base64(id) while the sort was created_at DESC: ids are

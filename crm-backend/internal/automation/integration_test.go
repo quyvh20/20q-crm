@@ -527,6 +527,102 @@ func TestIntegration_CreateWorkflow_HappyAndValidation(t *testing.T) {
 }
 
 // ============================================================
+// Integration Test 2b: List Workflows — tri-state active filter
+// ============================================================
+
+// The Inactive-pill regression: ?active=false used to parse as `== "true"` →
+// false → "no filter", so the FE's Inactive filter listed EVERY workflow. The
+// filter is tri-state now (absent / true / false); this proves each state
+// against a real DB, and that garbage values fail loudly instead of silently
+// widening the list.
+func TestIntegration_ListWorkflows_ActiveFilter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	orgID := uuid.New()
+	userID := uuid.New()
+
+	engine := makeEngine(db, map[string]ActionExecutor{})
+	defer engine.cancel()
+
+	handler := &Handler{
+		engine:      engine,
+		repo:        engine.repo,
+		db:          db,
+		logger:      slog.Default(),
+		rateLimiter: newTokenBucket(),
+		capChecker:  capAllow{},
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set("org_id", orgID)
+		c.Set("user_id", userID)
+		c.Set("role", "admin")
+		c.Next()
+	})
+	router.GET("/api/workflows", handler.ListWorkflows)
+
+	activeWF := createTestWorkflow(t, db, orgID, 1)
+	inactiveWF := createTestWorkflow(t, db, orgID, 1)
+	require.NoError(t, db.Model(&Workflow{}).
+		Where("id = ?", inactiveWF.ID).
+		Update("is_active", false).Error)
+
+	list := func(t *testing.T, query string) ([]string, float64) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/api/workflows"+query, nil)
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code, "list body: %s", w.Body.String())
+		var resp map[string]any
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		data, ok := resp["data"].(map[string]any)
+		require.True(t, ok, "list response must have 'data' object, got: %s", w.Body.String())
+		rows, _ := data["workflows"].([]any)
+		ids := make([]string, 0, len(rows))
+		for _, r := range rows {
+			ids = append(ids, r.(map[string]any)["id"].(string))
+		}
+		total, _ := data["total"].(float64)
+		return ids, total
+	}
+
+	// active=false → ONLY the inactive workflow (the regression).
+	ids, total := list(t, "?active=false")
+	assert.Equal(t, []string{inactiveWF.ID.String()}, ids,
+		"?active=false must return only inactive workflows")
+	assert.Equal(t, float64(1), total)
+
+	// active=true → only the active workflow.
+	ids, total = list(t, "?active=true")
+	assert.Equal(t, []string{activeWF.ID.String()}, ids,
+		"?active=true must return only active workflows")
+	assert.Equal(t, float64(1), total)
+
+	// No param → both.
+	ids, total = list(t, "")
+	assert.Len(t, ids, 2, "no active param must apply no filter")
+	assert.Equal(t, float64(2), total)
+
+	// Garbage must 400 rather than silently listing everything.
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/workflows?active=banana", nil)
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
+	var errResp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &errResp))
+	errBody, ok := errResp["error"].(map[string]any)
+	require.True(t, ok, "response must have 'error' object, got: %s", w.Body.String())
+	assert.Equal(t, "VALIDATION_FAILED", errBody["code"])
+}
+
+// ============================================================
 // Integration Test 3: Retry Sweeper
 // ============================================================
 

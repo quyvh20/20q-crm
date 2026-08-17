@@ -213,6 +213,12 @@ func (r *contactRepository) List(ctx context.Context, orgID uuid.UUID, f domain.
 		}
 		query = query.Where("contacts.custom_fields ->> ? = ?", k, v)
 	}
+	// The compiled multi-operator filter fragment (domain/filter_sql.go): one
+	// parenthesised predicate, already validated upstream, ANDed like any other
+	// clause so scope + FTS + cursor compose unchanged.
+	if f.Compiled != nil {
+		query = query.Where(f.Compiled.SQL, f.Compiled.Args...)
+	}
 	if len(f.TagIDs) > 0 {
 		query = query.Where("contacts.id IN (SELECT contact_id FROM contact_tags WHERE tag_id IN ?)", f.TagIDs)
 	}

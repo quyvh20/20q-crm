@@ -665,10 +665,14 @@ type ContactFilter struct {
 	// CustomFilters matches custom (jsonb) fields exactly (custom_fields ->> key = value),
 	// powering reverse related lists for custom lookups on contacts.
 	CustomFilters map[string]string `form:"-"`
-	Cursor        string            `form:"cursor"`
-	Limit         int               `form:"limit"`
-	SortBy        string            `form:"sort_by"`    // "name", "created_at" (default)
-	SortOrder     string            `form:"sort_order"` // "asc" or "desc" (default)
+	// Compiled is one validated multi-operator filter fragment from the shared
+	// filter engine (domain/filter_sql.go), ANDed onto the query as-is. Set by
+	// RecordService; internal callers leave it nil.
+	Compiled  *CompiledFilter `form:"-"`
+	Cursor    string          `form:"cursor"`
+	Limit     int             `form:"limit"`
+	SortBy    string          `form:"sort_by"`    // "name", "created_at" (default)
+	SortOrder string          `form:"sort_order"` // "asc" or "desc" (default)
 }
 
 type ImportResult struct {
@@ -792,6 +796,12 @@ type CompanyFilter struct {
 	// CustomFilters matches custom (jsonb) fields exactly (custom_fields ->> key = value),
 	// powering reverse related lists for custom lookups on companies.
 	CustomFilters map[string]string `form:"-"`
+	// TagIDs any-matches the company's tags. Companies tag through object_links
+	// (relation_key "tags"), unlike contacts' legacy contact_tags store.
+	TagIDs []uuid.UUID `form:"tag_ids"`
+	// Compiled is one validated multi-operator filter fragment from the shared
+	// filter engine, ANDed onto the query as-is. Set by RecordService.
+	Compiled *CompiledFilter `form:"-"`
 }
 
 type CreateCompanyInput struct {
@@ -869,10 +879,17 @@ type DealFilter struct {
 	// It lets a deal be listed by an admin-defined relation field, which powers
 	// reverse related lists for custom lookups on deals.
 	CustomFilters map[string]string `form:"-"`
-	Cursor        string            `form:"cursor"`
-	Limit         int               `form:"limit"`
-	SortBy        string            `form:"sort_by"`    // "value", "probability", "created_at" (default)
-	SortOrder     string            `form:"sort_order"` // "asc" or "desc" (default)
+	// TagIDs any-matches the deal's tags (object_links, relation_key "tags").
+	// Deals were the poster child of the tag-filter lie: the UI rendered tag
+	// chips for every object while only ContactFilter carried this field.
+	TagIDs []uuid.UUID `form:"tag_ids"`
+	// Compiled is one validated multi-operator filter fragment from the shared
+	// filter engine, ANDed onto the query as-is. Set by RecordService.
+	Compiled  *CompiledFilter `form:"-"`
+	Cursor    string          `form:"cursor"`
+	Limit     int             `form:"limit"`
+	SortBy    string          `form:"sort_by"`    // "value", "probability", "created_at" (default)
+	SortOrder string          `form:"sort_order"` // "asc" or "desc" (default)
 }
 
 type CreateDealInput struct {
@@ -1169,6 +1186,11 @@ type RecordFilter struct {
 	// is X" — the jsonb counterpart to the system adapters' typed filters, and
 	// what powers reverse related lists for custom-object children.
 	Filters map[string]string `json:"filters,omitempty"`
+	// TagIDs any-matches the record's tags (object_links, relation_key "tags").
+	TagIDs []uuid.UUID `json:"tag_ids,omitempty"`
+	// Compiled is one validated multi-operator filter fragment from the shared
+	// filter engine, ANDed onto the query as-is. Set by RecordService.
+	Compiled *CompiledFilter `json:"-"`
 }
 
 type CustomObjectRepository interface {

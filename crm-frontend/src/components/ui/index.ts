@@ -12,3 +12,4 @@ export { PageHeader } from "./page-header";
 export { EmptyState } from "./empty-state";
 export { ErrorState } from "./error-state";
 export { Toaster } from "./toast";
+export { Popover, PopoverAnchor } from "./popover";

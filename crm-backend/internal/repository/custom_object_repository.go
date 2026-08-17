@@ -361,6 +361,25 @@ func (r *customObjectRepository) ListRecords(ctx context.Context, orgID uuid.UUI
 			}
 			q = q.Where("custom_object_records.data ->> ? = ?", key, val)
 		}
+		// The compiled multi-operator filter fragment (domain/filter_sql.go). Its
+		// typed jsonb casts (reportTypedExpr discipline) are what make number and
+		// date operators correct against the data blob — plain ->> equality above
+		// compares text. Same seq-scan profile as the ->> filters (see the GIN
+		// note): correctness first, expression indexes if a hot key emerges.
+		if f.Compiled != nil {
+			q = q.Where(f.Compiled.SQL, f.Compiled.Args...)
+		}
+		if len(f.TagIDs) > 0 {
+			// Tags for custom objects live in object_links (relation_key 'tags').
+			// deleted_at written out: GORM's soft-delete clause does not reach a
+			// raw subquery.
+			q = q.Where(`EXISTS (
+				SELECT 1 FROM object_links ol
+				WHERE ol.org_id = ? AND ol.from_slug = ? AND ol.from_id = custom_object_records.id
+				  AND ol.relation_key = 'tags' AND ol.to_slug = 'tag' AND ol.to_id IN ?
+				  AND ol.deleted_at IS NULL
+			)`, orgID, slug, f.TagIDs)
+		}
 		return q
 	}
 

@@ -1342,6 +1342,36 @@ export interface ObjectLayout {
 
 // -----------------------------------------------------------------------
 
+// One entry of an object's list-filter catalog: registry fields (mirror fields
+// excluded) plus virtual fields (created_at, owner_user_id, lead_score,
+// pipeline…). Served FLS-stripped, and assembled by the SAME catalog builder
+// the server validates filters against — so the picker can never offer a field
+// the engine would reject.
+export interface FilterFieldDescriptor {
+  key: string;
+  label: string;
+  type: ObjectFieldType;
+  options?: string[];
+  // How to pick a relation value: a target object slug (record picker), or the
+  // special sources 'user' | 'stage' | 'pipeline'. Empty for self-valued fields.
+  label_kind?: string;
+}
+
+// The filter AST the reserved `filter` list param carries — the same
+// {op, rules} grammar reports and automation conditions use. A rule is either
+// a leaf {field, operator, value} or a nested group {op, rules}.
+export interface FilterRuleAST {
+  field?: string;
+  operator?: string;
+  value?: unknown;
+  op?: 'AND' | 'OR';
+  rules?: FilterRuleAST[];
+}
+export interface FilterGroupAST {
+  op: 'AND' | 'OR';
+  rules: FilterRuleAST[];
+}
+
 export interface ObjectSchema {
   slug: string;
   label: string;
@@ -1361,6 +1391,11 @@ export interface ObjectSchema {
   fields: ObjectFieldDescriptor[];
   // P8: resolved effective layout, already FLS-filtered. Absent/empty → flat field order.
   layout?: LayoutSection[];
+  // The list-filter catalog + the per-type operator matrix, served by the
+  // backend so operator menus are never hand-mirrored (the drift the report
+  // and workflow builders fell into). Absent on servers predating the engine.
+  filterable_fields?: FilterFieldDescriptor[];
+  filter_operators?: Record<string, string[]>;
 }
 
 export interface ObjectSummary {
@@ -1501,6 +1536,12 @@ export interface RecordListParams {
   cursor?: string;
   /** Relation/field filters, e.g. { company: id } or { stage: id }. */
   filters?: Record<string, string>;
+  /**
+   * Structured multi-operator filter: the {op, rules} AST, sent as the reserved
+   * `filter` param. Unknown fields/operators are a 400 server-side — never a
+   * silently empty list.
+   */
+  filter?: FilterGroupAST;
   /** Filter by tag ids (any-match), uniform across every object. */
   tagIds?: string[];
   /** Switch to semantic/vector search (contacts). */
@@ -1517,6 +1558,7 @@ function recordListSearchParams(params?: RecordListParams): URLSearchParams {
   if (params?.cursor) search.set('cursor', params.cursor);
   if (params?.semantic) search.set('semantic', 'true');
   if (params?.tagIds?.length) search.set('tag_ids', params.tagIds.join(','));
+  if (params?.filter?.rules?.length) search.set('filter', JSON.stringify(params.filter));
   if (params?.sortBy) search.set('sort_by', params.sortBy);
   if (params?.sortOrder) search.set('sort_order', params.sortOrder);
   // Filters go LAST and are set with the reserved keys already present, but the
@@ -1537,6 +1579,72 @@ export async function listObjectRecordsUnified(slug: string, params?: RecordList
   if (!res.ok) throw apiError(res, json, 'Failed to fetch records');
   const page = (json.data || {}) as Partial<RecordPage>;
   return { records: page.records || [], next_cursor: page.next_cursor, sort: page.sort };
+}
+
+// Saved list views ---------------------------------------------------------
+//
+// A named, per-object bundle of list state (filter AST + q + tags + sort).
+// Personal by default; `shared` makes a view visible org-wide (read-only for
+// non-owners — mutations are owner-only server-side).
+
+export interface ListViewDefinition {
+  filter?: FilterGroupAST;
+  q?: string;
+  tags?: string[];
+  sort_by?: string;
+  sort_order?: 'asc' | 'desc';
+}
+
+export interface ListView {
+  id: string;
+  object_slug: string;
+  name: string;
+  shared: boolean;
+  owner_user_id: string;
+  definition: ListViewDefinition;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function listListViews(slug: string): Promise<ListView[]> {
+  const res = await apiFetch(`/api/registry/objects/${slug}/views`);
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Failed to fetch saved views');
+  return (json.data || []) as ListView[];
+}
+
+export async function createListView(
+  slug: string,
+  payload: { name: string; shared: boolean; definition: ListViewDefinition }
+): Promise<ListView> {
+  const res = await apiFetch(`/api/registry/objects/${slug}/views`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Failed to save view');
+  return json.data as ListView;
+}
+
+export async function updateListView(
+  id: string,
+  payload: { name?: string; shared?: boolean; definition?: ListViewDefinition }
+): Promise<ListView> {
+  const res = await apiFetch(`/api/registry/views/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'Failed to update view');
+  return json.data as ListView;
+}
+
+export async function deleteListView(id: string): Promise<void> {
+  const res = await apiFetch(`/api/registry/views/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw apiError(res, json, 'Failed to delete view');
+  }
 }
 
 // exportRecordsCsv downloads the CURRENT list view's records as a CSV blob

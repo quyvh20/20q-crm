@@ -1,9 +1,7 @@
 package repository
 
 import (
-	"encoding/json"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -103,9 +101,14 @@ func rowPredicateFor(ref reportTableRef, orgID uuid.UUID, sc reportScope) (strin
 	return "", nil, fmt.Errorf("report: no row-access rule defined for table %q", ref.Table)
 }
 
+// The generic filter compiler (operator whitelist, leaf/group compilation,
+// value coercion) moved to domain/filter_sql.go so record lists, reports and
+// segments share one filter language. The names below are kept as thin
+// delegates so this file's callers — and lead_score_sql.go, segment_sql.go,
+// report_runner_repository.go and the tests — are unchanged.
 const (
-	maxReportFilterDepth = 5
-	maxReportFilterRules = 50
+	maxReportFilterDepth = domain.MaxFilterDepth
+	maxReportFilterRules = domain.MaxFilterRules
 )
 
 var reportBuckets = map[string]bool{
@@ -117,7 +120,13 @@ var reportBuckets = map[string]bool{
 // aliases) as belt-and-braces even though none of them originate from the
 // request. Covers every column name and registry field key while excluding
 // quotes and whitespace.
-var reportIdentRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,63}$`)
+var reportIdentRe = domain.FilterIdentRe
+
+// filterRef projects the report table ref onto the domain compiler's shape
+// (ObjectDefID/Slug are row-scope concerns the pure compiler never sees).
+func (ref reportTableRef) filterRef() domain.FilterTableRef {
+	return domain.FilterTableRef{Table: ref.Table, JSONColumn: ref.JSONColumn}
+}
 
 // buildReportSQL translates one validated config into a parameterized query.
 // sc mirrors the caller's row scope as the runner extracts it from ctx.
@@ -289,58 +298,16 @@ func buildReportRowsSQL(ref reportTableRef, fields map[string]domain.ReportField
 
 // reportFieldExpr is the field's raw address: a native column, or the JSONB
 // text extraction. Used where text form is wanted (table columns, ILIKE,
-// emptiness checks, DISTINCT counts).
+// emptiness checks, DISTINCT counts). Delegates to the shared compiler.
 func reportFieldExpr(ref reportTableRef, f domain.ReportField) (string, error) {
-	if f.Column != "" {
-		if !reportIdentRe.MatchString(f.Column) {
-			return "", fmt.Errorf("report: invalid column mapping %q for field %q", f.Column, f.Key)
-		}
-		// The identifier whitelist above runs BEFORE the cast is wrapped around
-		// it, so the cast can never be a splice point.
-		if f.CastText {
-			return "(" + ref.Table + "." + f.Column + ")::text", nil
-		}
-		return ref.Table + "." + f.Column, nil
-	}
-	if f.JSONKey == "" {
-		return "", fmt.Errorf("report: field %q has no storage mapping", f.Key)
-	}
-	if !reportIdentRe.MatchString(f.JSONKey) {
-		return "", fmt.Errorf("report: invalid JSON key %q for field %q", f.JSONKey, f.Key)
-	}
-	if ref.JSONColumn == "" {
-		return "", fmt.Errorf("report: table %q has no JSONB storage for field %q", ref.Table, f.Key)
-	}
-	return ref.Table + "." + ref.JSONColumn + "->>'" + f.JSONKey + "'", nil
+	return domain.FilterFieldExpr(ref.filterRef(), f)
 }
 
 // reportTypedExpr is the field in its comparable type. Native columns are
 // already typed; JSONB extractions get guarded casts so one row of dirty data
 // (a non-numeric "sqft") NULLs out instead of killing the whole query.
 func reportTypedExpr(ref reportTableRef, f domain.ReportField) (string, error) {
-	raw, err := reportFieldExpr(ref, f)
-	if err != nil {
-		return "", err
-	}
-	if f.Column != "" {
-		return raw, nil
-	}
-	switch f.Type {
-	case "number":
-		// The numeric-validity regex uses {0,1} rather than `?` quantifiers ON PURPOSE:
-		// this SQL is executed through gorm's db.Raw, which treats EVERY `?` — including
-		// ones inside a quoted string literal — as a positional bind placeholder. A `?`
-		// here would steal a bind arg and misalign the rest of the query (a jsonb number
-		// filter then fails with "syntax error at end of input"). {0,1} is the exact
-		// equivalent with no `?`.
-		return `(CASE WHEN ` + raw + ` ~ '^-{0,1}[0-9]+(\.[0-9]+){0,1}$' THEN (` + raw + `)::numeric END)`, nil
-	case "date":
-		return "(NULLIF(" + raw + ", ''))::timestamptz", nil
-	case "boolean":
-		return "(CASE WHEN " + raw + " IN ('true','false') THEN (" + raw + ")::boolean END)", nil
-	default:
-		return raw, nil
-	}
+	return domain.FilterTypedExpr(ref.filterRef(), f)
 }
 
 func reportGroupExpr(ref reportTableRef, f domain.ReportField, bucket string) (string, error) {
@@ -396,264 +363,36 @@ func reportAggregateExpr(ref reportTableRef, fields map[string]domain.ReportFiel
 // Filters
 // ============================================================
 
+// buildReportFilterGroup / buildReportFilterLeaf delegate to the shared
+// compiler in domain/filter_sql.go — one grammar, one operator whitelist, one
+// injection discipline for reports, segments and record lists alike.
 func buildReportFilterGroup(ref reportTableRef, fields map[string]domain.ReportField, g domain.ReportFilterGroup, depth int, leafCount *int) (string, []any, error) {
-	if depth > maxReportFilterDepth {
-		return "", nil, fmt.Errorf("report: filters nested deeper than %d levels", maxReportFilterDepth)
-	}
-	// A leaf disguised as a group (the automation shape allows it).
-	if g.Field != "" {
-		return buildReportFilterLeaf(ref, fields, g.Field, g.Operator, g.Value, leafCount)
-	}
-	if len(g.Rules) == 0 {
-		return "", nil, nil
-	}
-	joiner := " AND "
-	if strings.EqualFold(g.Op, "OR") {
-		joiner = " OR "
-	}
-	var parts []string
-	var args []any
-	for _, rule := range g.Rules {
-		var sqlPart string
-		var ruleArgs []any
-		var err error
-		if rule.IsGroup() {
-			sqlPart, ruleArgs, err = buildReportFilterGroup(ref, fields, domain.ReportFilterGroup{Op: rule.Op, Rules: rule.Rules}, depth+1, leafCount)
-		} else {
-			sqlPart, ruleArgs, err = buildReportFilterLeaf(ref, fields, rule.Field, rule.Operator, rule.Value, leafCount)
-		}
-		if err != nil {
-			return "", nil, err
-		}
-		if sqlPart == "" {
-			continue
-		}
-		parts = append(parts, sqlPart)
-		args = append(args, ruleArgs...)
-	}
-	if len(parts) == 0 {
-		return "", nil, nil
-	}
-	return "(" + strings.Join(parts, joiner) + ")", args, nil
+	return domain.BuildFilterGroup(ref.filterRef(), fields, g, depth, leafCount)
 }
 
-// reportOperatorsByType gates which operators each field type accepts, mirroring
-// the frontend condition builder so a hand-crafted request can't smuggle e.g. an
-// ILIKE against a uuid column.
-var reportOperatorsByType = map[string]map[string]bool{
-	"text":     {"eq": true, "neq": true, "contains": true, "not_contains": true, "starts_with": true, "ends_with": true, "in": true, "not_in": true, "is_empty": true, "is_not_empty": true},
-	"url":      {"eq": true, "neq": true, "contains": true, "not_contains": true, "starts_with": true, "ends_with": true, "in": true, "not_in": true, "is_empty": true, "is_not_empty": true},
-	"select":   {"eq": true, "neq": true, "in": true, "not_in": true, "is_empty": true, "is_not_empty": true},
-	"number":   {"eq": true, "neq": true, "gt": true, "gte": true, "lt": true, "lte": true, "in": true, "not_in": true, "is_empty": true, "is_not_empty": true},
-	"date":     {"eq": true, "neq": true, "gt": true, "gte": true, "lt": true, "lte": true, "is_empty": true, "is_not_empty": true},
-	"boolean":  {"eq": true, "neq": true, "is_empty": true, "is_not_empty": true},
-	"relation": {"eq": true, "neq": true, "in": true, "not_in": true, "is_empty": true, "is_not_empty": true},
-}
+// reportOperatorsByType gates which operators each field type accepts. The
+// matrix now lives in domain (FilterOperatorsOrdered) so the schema endpoint
+// serves the same list the compiler enforces.
+var reportOperatorsByType = domain.FilterOperators()
 
 func buildReportFilterLeaf(ref reportTableRef, fields map[string]domain.ReportField, fieldKey, operator string, value any, leafCount *int) (string, []any, error) {
-	*leafCount++
-	if *leafCount > maxReportFilterRules {
-		return "", nil, fmt.Errorf("report: more than %d filter rules", maxReportFilterRules)
-	}
-	f, ok := fields[fieldKey]
-	if !ok {
-		return "", nil, fmt.Errorf("report: unknown filter field %q", fieldKey)
-	}
-	allowed := reportOperatorsByType[f.Type]
-	if allowed == nil || !allowed[operator] {
-		return "", nil, fmt.Errorf("report: operator %q not valid for %s field %q", operator, f.Type, fieldKey)
-	}
-
-	raw, err := reportFieldExpr(ref, f)
-	if err != nil {
-		return "", nil, err
-	}
-	typed, err := reportTypedExpr(ref, f)
-	if err != nil {
-		return "", nil, err
-	}
-
-	switch operator {
-	case "is_empty":
-		if isReportTextual(f) {
-			return "(" + raw + " IS NULL OR " + raw + " = '')", nil, nil
-		}
-		return raw + " IS NULL", nil, nil
-	case "is_not_empty":
-		if isReportTextual(f) {
-			return "(" + raw + " IS NOT NULL AND " + raw + " <> '')", nil, nil
-		}
-		return raw + " IS NOT NULL", nil, nil
-	case "eq":
-		arg, err := reportValueArg(f, value)
-		if err != nil {
-			return "", nil, err
-		}
-		return typed + " = ?", []any{arg}, nil
-	case "neq":
-		arg, err := reportValueArg(f, value)
-		if err != nil {
-			return "", nil, err
-		}
-		return typed + " IS DISTINCT FROM ?", []any{arg}, nil
-	case "gt", "gte", "lt", "lte":
-		arg, err := reportValueArg(f, value)
-		if err != nil {
-			return "", nil, err
-		}
-		op := map[string]string{"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[operator]
-		return typed + " " + op + " ?", []any{arg}, nil
-	case "contains", "not_contains", "starts_with", "ends_with":
-		s, err := reportStringArg(value)
-		if err != nil {
-			return "", nil, err
-		}
-		pattern := escapeReportLike(s)
-		switch operator {
-		case "contains", "not_contains":
-			pattern = "%" + pattern + "%"
-		case "starts_with":
-			pattern = pattern + "%"
-		case "ends_with":
-			pattern = "%" + pattern
-		}
-		neg := ""
-		if operator == "not_contains" {
-			neg = "NOT "
-		}
-		return raw + " " + neg + "ILIKE ?", []any{pattern}, nil
-	case "in", "not_in":
-		items, err := reportListArg(f, value)
-		if err != nil {
-			return "", nil, err
-		}
-		if len(items) == 0 {
-			// Empty in-list matches nothing; empty not-in excludes nothing.
-			if operator == "in" {
-				return "FALSE", nil, nil
-			}
-			return "TRUE", nil, nil
-		}
-		placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(items)), ", ")
-		neg := ""
-		if operator == "not_in" {
-			neg = "NOT "
-		}
-		// NOT IN over a NULL-able expr: keep rows where the expr is NULL too,
-		// matching the intuitive "everything except these" reading.
-		if operator == "not_in" {
-			return "(" + typed + " IS NULL OR " + typed + " " + neg + "IN (" + placeholders + "))", items, nil
-		}
-		return typed + " IN (" + placeholders + ")", items, nil
-	default:
-		return "", nil, fmt.Errorf("report: unknown operator %q", operator)
-	}
+	return domain.BuildFilterLeaf(ref.filterRef(), fields, fieldKey, operator, value, leafCount)
 }
 
-func isReportTextual(f domain.ReportField) bool {
-	if f.Column == "" {
-		// Every JSONB extraction is text.
-		return true
-	}
-	switch f.Type {
-	case "text", "url", "select":
-		return true
-	}
-	return false
-}
+func isReportTextual(f domain.ReportField) bool { return domain.IsTextualFilterField(f) }
 
 // ============================================================
 // Value coercion (JSON → bind args)
 // ============================================================
 
-func reportValueArg(f domain.ReportField, v any) (any, error) {
-	if v == nil {
-		return nil, fmt.Errorf("report: filter on %q needs a value", f.Key)
-	}
-	switch f.Type {
-	case "number":
-		n, err := reportFloatArg(v)
-		if err != nil {
-			return nil, fmt.Errorf("report: field %q expects a number: %w", f.Key, err)
-		}
-		return n, nil
-	case "boolean":
-		switch x := v.(type) {
-		case bool:
-			return x, nil
-		case string:
-			if b, err := strconv.ParseBool(strings.TrimSpace(x)); err == nil {
-				return b, nil
-			}
-		}
-		return nil, fmt.Errorf("report: field %q expects true/false", f.Key)
-	default:
-		s, err := reportStringArg(v)
-		if err != nil {
-			return nil, fmt.Errorf("report: field %q expects a string value: %w", f.Key, err)
-		}
-		return s, nil
-	}
-}
+func reportValueArg(f domain.ReportField, v any) (any, error) { return domain.FilterValueArg(f, v) }
 
-func reportListArg(f domain.ReportField, v any) ([]any, error) {
-	list, ok := v.([]any)
-	if !ok {
-		// A single value is treated as a one-element list for convenience.
-		single, err := reportValueArg(f, v)
-		if err != nil {
-			return nil, fmt.Errorf("report: in/not_in on %q expects a list", f.Key)
-		}
-		return []any{single}, nil
-	}
-	out := make([]any, 0, len(list))
-	for _, item := range list {
-		arg, err := reportValueArg(f, item)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, arg)
-	}
-	return out, nil
-}
+func reportListArg(f domain.ReportField, v any) ([]any, error) { return domain.FilterListArg(f, v) }
 
-func reportFloatArg(v any) (float64, error) {
-	switch x := v.(type) {
-	case float64:
-		return x, nil
-	case float32:
-		return float64(x), nil
-	case int:
-		return float64(x), nil
-	case int64:
-		return float64(x), nil
-	case json.Number:
-		return x.Float64()
-	case string:
-		return strconv.ParseFloat(strings.TrimSpace(x), 64)
-	}
-	return 0, fmt.Errorf("not a number: %T", v)
-}
+func reportFloatArg(v any) (float64, error) { return domain.FilterFloatArg(v) }
 
-func reportStringArg(v any) (string, error) {
-	switch x := v.(type) {
-	case string:
-		return x, nil
-	case float64:
-		return strconv.FormatFloat(x, 'f', -1, 64), nil
-	case bool:
-		return strconv.FormatBool(x), nil
-	case json.Number:
-		return x.String(), nil
-	}
-	return "", fmt.Errorf("not a string: %T", v)
-}
+func reportStringArg(v any) (string, error) { return domain.FilterStringArg(v) }
 
 // escapeReportLike escapes LIKE wildcards in a user value so "50%" matches a
 // literal percent sign instead of everything starting with 50.
-func escapeReportLike(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `%`, `\%`)
-	s = strings.ReplaceAll(s, `_`, `\_`)
-	return s
-}
+func escapeReportLike(s string) string { return domain.EscapeFilterLike(s) }
