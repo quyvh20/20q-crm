@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -295,7 +296,27 @@ func main() {
 				zap.Int64("visible_only_via_linked_record", linkOnlyTasks))
 		}
 
-		db.AutoMigrate(&domain.Role{}, &domain.RolePermission{}, &domain.OrgUser{}, &domain.KnowledgeBaseEntry{}, &domain.AITokenUsage{}, &domain.RecordShare{}, &domain.OrgInvitation{}, &domain.ChatSession{}, &domain.ChatMessage{}, &domain.VoiceNote{})
+		// One model at a time, each bounded and each reported — NOT the single
+		// `db.AutoMigrate(a, b, c, …)` this replaced, whose error was discarded.
+		//
+		// That shape had two failure modes, both of them silent. gorm returns on
+		// the FIRST error, so one model that could not be reconciled meant every
+		// model behind it was skipped — and with the return value dropped, the
+		// only trace was a Postgres line in a log nobody reads. It ran that way
+		// for real: `users` (dragged in as OrgUser's belongs-to) failed on a
+		// constraint-name mismatch on every single boot, so most of this list was
+		// never actually migrated. See the comment on domain.User.Email.
+		//
+		// The lock_timeout is the same reasoning internal/automation's
+		// migrateSchema documents at length: gorm's DDL is catalog-only and fast,
+		// but ACCESS EXCLUSIVE queues behind any open transaction on the table and
+		// every later reader queues behind that. SET LOCAL inside the same
+		// transaction as the DDL is what makes the bound provably apply — a bare
+		// Exec would likely land on a different pooled connection.
+		autoMigrateBounded(db, log,
+			&domain.Role{}, &domain.RolePermission{}, &domain.OrgUser{}, &domain.KnowledgeBaseEntry{},
+			&domain.AITokenUsage{}, &domain.RecordShare{}, &domain.OrgInvitation{},
+			&domain.ChatSession{}, &domain.ChatMessage{}, &domain.VoiceNote{})
 
 		// Explicit column guards for voice_notes — AutoMigrate won't add columns to pre-existing tables that diverge
 		db.Exec(`CREATE TABLE IF NOT EXISTS voice_notes (
@@ -3592,6 +3613,38 @@ func main() {
 	}
 
 	log.Info("Server exiting")
+}
+
+// autoMigrateBounded runs gorm's AutoMigrate one model at a time, each inside its
+// own transaction that first bounds lock_timeout, and REPORTS every failure
+// instead of returning on the first one.
+//
+// Per-model rather than one call because gorm's AutoMigrate stops at the first
+// error: a single model it cannot reconcile takes every model behind it with it,
+// and nothing says so. Per-model also means each table's ACCESS EXCLUSIVE lock is
+// taken and released on its own rather than every table's being held until the
+// last one commits.
+//
+// A failure is logged, not fatal. These are additive schema reconciliations on a
+// database whose tables already exist from migrations; refusing to boot because
+// one column could not be added would turn a cosmetic drift into an outage. The
+// log line is the signal — and it is a signal that now exists at all.
+func autoMigrateBounded(db *gorm.DB, log *zap.Logger, models ...any) {
+	for _, model := range models {
+		err := db.Transaction(func(tx *gorm.DB) error {
+			// SET LOCAL, not SET: scoped to this transaction and therefore to the
+			// one connection the DDL below runs on. A bare db.Exec would be handed
+			// whichever pooled connection is free and would silently not apply.
+			if err := tx.Exec(`SET LOCAL lock_timeout = '3s'`).Error; err != nil {
+				return err
+			}
+			return tx.AutoMigrate(model)
+		})
+		if err != nil {
+			log.Error("boot AutoMigrate failed for a model — its table may be behind the struct",
+				zap.String("model", fmt.Sprintf("%T", model)), zap.Error(err))
+		}
+	}
 }
 
 // sanitizeRequestID validates a client-supplied correlation id. It returns "" for

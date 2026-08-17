@@ -75,9 +75,30 @@ type Organization struct {
 }
 
 type User struct {
-	ID           uuid.UUID      `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
-	OrgID        uuid.UUID      `gorm:"type:uuid" json:"org_id,omitempty"`
-	Email        string         `gorm:"size:255;uniqueIndex;not null" json:"email"`
+	ID    uuid.UUID `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
+	OrgID uuid.UUID `gorm:"type:uuid" json:"org_id,omitempty"`
+	// `unique`, NOT `uniqueIndex`, and the difference is load-bearing rather
+	// than stylistic. The table is created by migrations/000002 with
+	// `CONSTRAINT users_email_unique UNIQUE (email)` — a unique CONSTRAINT.
+	// `uniqueIndex` sets field.Unique=false, so gorm's MigrateColumn compared
+	// "the database says this column is unique" against "my field says it is
+	// not" and tried to reconcile by dropping the constraint under its OWN
+	// naming convention:
+	//
+	//   ALTER TABLE "users" DROP CONSTRAINT "uni_users_email"
+	//
+	// That name has never existed here, so every boot logged a Postgres 42704
+	// — and, far worse, gorm's AutoMigrate returns on the first error, so the
+	// models queued behind `users` (users is pulled in as OrgUser's belongs-to)
+	// were silently never migrated at all. A column added to any of them would
+	// have reached new databases and skipped existing ones, which is precisely
+	// the "ALTER-added column fails silently on prod only" trap this codebase
+	// has been bitten by before.
+	//
+	// Uniqueness itself is unchanged either way — this only tells gorm which
+	// shape the database already uses, so it stops trying to convert one into
+	// the other.
+	Email        string         `gorm:"size:255;unique;not null" json:"email"`
 	PasswordHash *string        `gorm:"size:255" json:"-"`
 	FirstName    string         `gorm:"size:100;not null" json:"first_name"`
 	LastName     string         `gorm:"size:100;not null;default:''" json:"last_name"`
