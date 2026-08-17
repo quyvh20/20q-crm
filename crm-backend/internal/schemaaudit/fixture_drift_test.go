@@ -253,7 +253,7 @@ func parseCreateTables(src string) []fixtureTable {
 		restUpper := upper[pos:]
 		if strings.HasPrefix(restUpper, "IF NOT EXISTS ") {
 			skip := len("IF NOT EXISTS ")
-			rest, restUpper = rest[skip:], restUpper[skip:]
+			rest = rest[skip:]
 			pos += skip
 		}
 
