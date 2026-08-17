@@ -342,6 +342,27 @@ jobs:
         working-directory: crm-frontend
         run: npx playwright test
 
+      # ── Schema audit ───────────────────────────────────────────────────────
+      # The only place in CI where a database has the schema production really
+      # has: migrations AND the main.go boot guards AND a completed boot
+      # AutoMigrate. That is exactly what the audit needs, because it asks
+      # whether ANOTHER AutoMigrate would still emit DDL — and on a settled
+      # schema the answer must be none. Anything it reports is DDL that ran at
+      # boot and will run again at the next one, taking an ACCESS EXCLUSIVE lock
+      # each time with nothing in any log to say so.
+      #
+      # Deliberately AFTER the suite: it reads and rolls back, so it cannot
+      # disturb the tests, and putting it last keeps a schema failure from
+      # masking a product failure.
+      #
+      # `if: always()` so a red suite still reports the schema state — the two
+      # failures are unrelated, and losing the audit to an unrelated flake is
+      # how a gate quietly stops being one.
+      - name: Audit boot AutoMigrate for unsettled DDL
+        if: always()
+        working-directory: crm-backend
+        run: go test ./internal/schemaaudit/ -run TestSchemaAudit -count=1 -v
+
       # ── Diagnostics ────────────────────────────────────────────────────────
       # `if: always()` on both: the run that FAILED is the one whose report and
       # server log are worth reading.
