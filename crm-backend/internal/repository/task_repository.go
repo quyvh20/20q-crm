@@ -186,24 +186,56 @@ func (r *taskRepository) SoftDelete(ctx context.Context, orgID, id uuid.UUID) er
 	return nil
 }
 
-// DueForReminder is callerless (the reminder scanner runs org-agnostic, no
-// caller in ctx) and so is unrestricted by taskScope by design — it must see
-// every org's due tasks to remind every org. now is injected by the caller
-// (not time.Now() here) so the scanner's tick and this query use one clock.
-func (r *taskRepository) DueForReminder(ctx context.Context, now time.Time, lookahead time.Duration, limit int) ([]domain.Task, error) {
-	today := now.Truncate(24 * time.Hour)
-	var tasks []domain.Task
-	err := r.db.WithContext(ctx).
-		Where("completed_at IS NULL").
-		Where("due_at IS NOT NULL AND due_at <= ?", now.Add(lookahead)).
-		Where("last_reminded_at IS NULL OR last_reminded_at < ?", today).
-		Order("due_at ASC").
-		Limit(limit).
-		Find(&tasks).Error
-	return tasks, err
-}
+// reminderDedupeWindow caps how often one task may be reminded about.
+//
+// It is a ROLLING 24h, not a calendar day. A calendar day only exists in
+// someone's timezone, and the previous implementation truncated to UTC
+// midnight — which for a user far from UTC either split one local day across
+// two windows (two reminders in a day) or merged two local days into one (a
+// skipped day). A rolling 24h needs no timezone and guarantees at most one
+// reminder per task per local day in EVERY timezone. The cost is drift: a
+// task that stays due for days is reminded up to one tick later each day.
+const reminderDedupeWindow = 24 * time.Hour
 
-func (r *taskRepository) MarkReminded(ctx context.Context, id uuid.UUID, at time.Time) error {
-	return r.db.WithContext(ctx).Model(&domain.Task{}).Where("id = ?", id).
-		Update("last_reminded_at", at).Error
+// ClaimDueForReminder atomically claims the next batch of tasks to remind:
+// one statement stamps last_reminded_at and RETURNs the claimed rows, so two
+// replicas ticking at the same moment can never both send the same reminder —
+// the SKIP LOCKED sub-select hands each row to exactly one claimant. Ported
+// from the marketing webhook worker's ClaimPendingEvents, which solves the
+// identical problem.
+//
+// Claim-then-notify is deliberate: a crash between the claim and the
+// notification drops that reminder until the next window. For a nag, a rare
+// miss beats duplicate spam, and the task stays due so the next window
+// reminds again. It also means a permanently failing recipient can no longer
+// wedge the scanner into retrying the same task every tick forever.
+//
+// Callerless (the scanner runs org-agnostic, with no caller in ctx) and so
+// unrestricted by taskScope by design — it must see every org's due tasks.
+// Raw SQL, so the soft-delete predicate GORM would add is written out by hand.
+// now is injected by the caller (not time.Now() here) so the scanner's tick
+// and this query share one clock.
+func (r *taskRepository) ClaimDueForReminder(ctx context.Context, now time.Time, lookahead time.Duration, limit int) ([]domain.Task, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var tasks []domain.Task
+	err := r.db.WithContext(ctx).Raw(`
+		UPDATE tasks
+		SET last_reminded_at = ?
+		WHERE id IN (
+			SELECT id FROM tasks
+			WHERE deleted_at IS NULL
+			  AND completed_at IS NULL
+			  AND due_at IS NOT NULL
+			  AND due_at <= ?
+			  AND (last_reminded_at IS NULL OR last_reminded_at <= ?)
+			ORDER BY due_at ASC
+			LIMIT ?
+			FOR UPDATE SKIP LOCKED
+		)
+		RETURNING *`,
+		now, now.Add(lookahead), now.Add(-reminderDedupeWindow), limit,
+	).Scan(&tasks).Error
+	return tasks, err
 }

@@ -1071,18 +1071,19 @@ type TaskRepository interface {
 	Create(ctx context.Context, t *Task) error
 	Update(ctx context.Context, t *Task) error
 	SoftDelete(ctx context.Context, orgID, id uuid.UUID) error
-	// DueForReminder returns incomplete tasks whose due_at has passed (or is
-	// within the lookahead window) and haven't been reminded today. Callerless
-	// (used only by the reminder scanner), unrestricted by row scope.
-	DueForReminder(ctx context.Context, now time.Time, lookahead time.Duration, limit int) ([]Task, error)
-	MarkReminded(ctx context.Context, id uuid.UUID, at time.Time) error
+	// ClaimDueForReminder atomically claims incomplete tasks whose due_at has
+	// passed (or falls within the lookahead) and that are outside the reminder
+	// dedupe window, stamping last_reminded_at as it returns them so no two
+	// scanner instances can claim the same task. Callerless (used only by the
+	// reminder scanner), unrestricted by row scope.
+	ClaimDueForReminder(ctx context.Context, now time.Time, lookahead time.Duration, limit int) ([]Task, error)
 }
 
 type TaskUseCase interface {
-	// RunDueReminders scans across every org for incomplete tasks due within
-	// lookahead and not yet reminded today, and returns how many reminders it
-	// sent. Driven by a main.go ticker (R8.1) — not org-scoped, since it has
-	// to see every org's due tasks in one pass.
+	// RunDueReminders claims and notifies incomplete tasks due within
+	// lookahead that are outside the reminder dedupe window, returning how many
+	// notifications actually reached a surface. Driven by a main.go ticker — not
+	// org-scoped, since it must see every org in one pass.
 	RunDueReminders(ctx context.Context, lookahead time.Duration) (int, error)
 	List(ctx context.Context, orgID uuid.UUID, f TaskFilter) (TaskListResult, error)
 	Create(ctx context.Context, orgID uuid.UUID, input CreateTaskInput) (*Task, error)

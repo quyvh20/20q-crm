@@ -2846,7 +2846,7 @@ func main() {
 
 		// R8.1: the task usecase needs notificationUC for its due-reminder scanner,
 		// so it's constructed here rather than alongside taskRepo above.
-		taskUseCase := usecase.NewTaskUseCase(taskRepo, notificationUC)
+		taskUseCase := usecase.NewTaskUseCase(taskRepo, notificationUC, nil)
 		taskHandler := delivery.NewTaskHandler(taskUseCase)
 
 		// Personal API tokens (U6.5). The repo is passed to RegisterRoutes as well:
@@ -2892,8 +2892,9 @@ func main() {
 		}()
 		// R8.1 due-task reminder scanner: every 15 minutes, notify the assignee
 		// (or creator, if unassigned) of any incomplete task due within the next
-		// 15 minutes or already overdue. last_reminded_at (repo-side) caps this
-		// at one reminder per task per calendar day regardless of tick frequency.
+		// 15 minutes or already overdue. The claim stamps last_reminded_at as it
+		// hands out rows, so replicas never double-send and each task is reminded
+		// at most once per rolling 24h regardless of tick frequency.
 		go func() {
 			run := func() {
 				if n, err := taskUseCase.RunDueReminders(context.Background(), 15*time.Minute); err != nil {

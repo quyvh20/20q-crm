@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"crm-backend/internal/domain"
@@ -11,12 +12,20 @@ import (
 )
 
 type taskUseCase struct {
-	taskRepo    domain.TaskRepository
-	notifyUC    domain.NotificationUseCase
+	taskRepo domain.TaskRepository
+	notifyUC domain.NotificationUseCase
+	logger   *slog.Logger
 }
 
-func NewTaskUseCase(taskRepo domain.TaskRepository, notifyUC domain.NotificationUseCase) domain.TaskUseCase {
-	return &taskUseCase{taskRepo: taskRepo, notifyUC: notifyUC}
+// NewTaskUseCase builds the task usecase. A nil logger falls back to
+// slog.Default(), which main.go points at the JSON handler — same convention
+// as the lead-scoring usecase, whose wiring also runs before the shared
+// logger exists.
+func NewTaskUseCase(taskRepo domain.TaskRepository, notifyUC domain.NotificationUseCase, logger *slog.Logger) domain.TaskUseCase {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &taskUseCase{taskRepo: taskRepo, notifyUC: notifyUC, logger: logger}
 }
 
 // dueReminderScanLimit caps one scan pass (no-silent-caps doctrine: a scan
@@ -26,46 +35,66 @@ const dueReminderScanLimit = 500
 
 func (uc *taskUseCase) RunDueReminders(ctx context.Context, lookahead time.Duration) (int, error) {
 	now := time.Now()
-	tasks, err := uc.taskRepo.DueForReminder(ctx, now, lookahead, dueReminderScanLimit)
+	// The claim stamps last_reminded_at as it returns the rows, so every task
+	// below is already spoken for: no other instance will notify it, and a
+	// failure here costs one window rather than looping forever.
+	tasks, err := uc.taskRepo.ClaimDueForReminder(ctx, now, lookahead, dueReminderScanLimit)
 	if err != nil {
 		return 0, err
+	}
+	if len(tasks) == dueReminderScanLimit {
+		uc.logger.Warn("tasks: due-reminder scan hit its limit; the remainder waits for the next tick",
+			"limit", dueReminderScanLimit)
 	}
 	sent := 0
 	for _, t := range tasks {
 		// The reminder goes to whoever can act on the task: the assignee, else
 		// the creator (an unassigned task the creator left for themselves).
-		// Neither present means nobody to notify — mark it reminded anyway so
-		// the scanner doesn't re-read it forever.
+		// Neither present means nobody to notify — the claim already stamped
+		// it, so it simply won't be re-read.
 		recipient := t.AssignedTo
 		if recipient == nil {
 			recipient = t.CreatedBy
 		}
-		if recipient != nil {
-			link := ""
-			if t.DealID != nil {
-				link = "/deals/" + t.DealID.String()
-			} else if t.ContactID != nil {
-				link = "/objects/contact/" + t.ContactID.String()
-			}
-			body := t.Title
-			if t.DueAt != nil && t.DueAt.Before(now) {
-				body = t.Title + " (overdue)"
-			}
-			if _, err := uc.notifyUC.Create(ctx, domain.NotificationCreateInput{
-				OrgID:      t.OrgID,
-				UserID:     *recipient,
-				Type:       "task_reminder",
-				Title:      "Task due",
-				Body:       body,
-				Link:       link,
-				EntityType: "task",
-				EntityID:   &t.ID,
-			}); err != nil {
-				continue
-			}
+		if recipient == nil {
+			continue
+		}
+
+		link := ""
+		if t.DealID != nil {
+			link = "/deals/" + t.DealID.String()
+		} else if t.ContactID != nil {
+			link = "/objects/contact/" + t.ContactID.String()
+		}
+		body := t.Title
+		if t.DueAt != nil && t.DueAt.Before(now) {
+			body = t.Title + " (overdue)"
+		}
+
+		n, err := uc.notifyUC.Create(ctx, domain.NotificationCreateInput{
+			OrgID:      t.OrgID,
+			UserID:     *recipient,
+			Type:       "task_reminder",
+			Title:      "Task due",
+			Body:       body,
+			Link:       link,
+			EntityType: "task",
+			EntityID:   &t.ID,
+		})
+		if err != nil {
+			// Log rather than retry: the task is already claimed, and a
+			// recipient that always fails (a deleted user, say) would
+			// otherwise be re-attempted on every tick for the life of the row.
+			uc.logger.Warn("tasks: due reminder could not be delivered",
+				"error", err, "task_id", t.ID.String(), "user_id", recipient.String())
+			continue
+		}
+		// Create returns (nil, nil) when the recipient's preferences route the
+		// notification to no surface at all (mute-all, or every channel off).
+		// Counting those as sent would make the scanner's log lie.
+		if n != nil {
 			sent++
 		}
-		_ = uc.taskRepo.MarkReminded(ctx, t.ID, now)
 	}
 	return sent, nil
 }
