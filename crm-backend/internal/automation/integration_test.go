@@ -997,9 +997,13 @@ func TestIntegration_FullPipeline_VIPContact(t *testing.T) {
 		assigned_to UUID,
 		created_by UUID,
 		due_at TIMESTAMPTZ,
+		completed_at TIMESTAMPTZ,
 		priority TEXT DEFAULT 'medium',
+		status TEXT NOT NULL DEFAULT 'open',
+		last_reminded_at TIMESTAMPTZ,
 		created_at TIMESTAMPTZ DEFAULT NOW(),
-		updated_at TIMESTAMPTZ DEFAULT NOW()
+		updated_at TIMESTAMPTZ DEFAULT NOW(),
+		deleted_at TIMESTAMPTZ
 	)`)
 
 	// --- Build the workflow ---
@@ -1087,8 +1091,8 @@ func TestIntegration_FullPipeline_VIPContact(t *testing.T) {
 
 	// --- Set up executors ---
 	emailExec := &recordingEmailExecutor{}
-	taskExec := NewTaskExecutor(db, nil) // real executor, writes to tasks table
-	delayExec := NewDelayExecutor() // real executor, actually waits
+	taskExec := NewTaskExecutor(db, nil, nil) // real executor, writes to tasks table
+	delayExec := NewDelayExecutor()           // real executor, actually waits
 
 	engine := makeEngine(db, map[string]ActionExecutor{
 		ActionSendEmail:  emailExec,

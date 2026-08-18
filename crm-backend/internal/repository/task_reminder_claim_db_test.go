@@ -28,6 +28,7 @@ func setupReminderTasksTable(t *testing.T, db *gorm.DB) {
 		due_at TIMESTAMPTZ, completed_at TIMESTAMPTZ,
 		priority VARCHAR(20) NOT NULL DEFAULT 'medium',
 		last_reminded_at TIMESTAMPTZ,
+		status VARCHAR(20) NOT NULL DEFAULT 'open',
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		deleted_at TIMESTAMPTZ

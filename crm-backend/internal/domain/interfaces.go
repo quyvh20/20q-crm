@@ -1027,6 +1027,10 @@ type TaskFilter struct {
 	ContactID  *uuid.UUID `form:"contact_id"`
 	AssignedTo *uuid.UUID `form:"assigned_to"`
 	Completed  *bool      `form:"completed"`
+	// Status filters on the exact value. Independent of Completed — a caller may
+	// filter status=in_progress without also touching the completed filter, and
+	// the two are never contradictory since the usecase keeps them in sync.
+	Status *string `form:"status"`
 	// Q is a case-insensitive substring match against the task title.
 	Q *string `form:"q"`
 	// DueBefore/DueAfter bound tasks.due_at (inclusive). A nil DueAt never
@@ -1055,6 +1059,10 @@ type CreateTaskInput struct {
 	AssignedTo *uuid.UUID `json:"assigned_to"`
 	DueAt      *string    `json:"due_at"`
 	Priority   string     `json:"priority"`
+	// Status defaults to TaskStatusOpen when empty. A caller may create a task
+	// directly into TaskStatusInProgress or TaskStatusCompleted (rare, but the AI
+	// copilot / an import can produce that shape).
+	Status string `json:"status"`
 }
 
 type UpdateTaskInput struct {
@@ -1062,7 +1070,13 @@ type UpdateTaskInput struct {
 	AssignedTo *uuid.UUID `json:"assigned_to"`
 	DueAt      *string    `json:"due_at"`
 	Priority   *string    `json:"priority"`
-	Completed  *bool      `json:"completed"`
+	// Completed is the pre-status boolean shortcut the checkbox UI still sends:
+	// true behaves exactly like Status=TaskStatusCompleted, false like
+	// Status=TaskStatusOpen. If BOTH are set in one request, Status wins — the
+	// richer control describes intent more precisely than the boolean it grew
+	// out of. See taskUseCase.Update.
+	Completed *bool   `json:"completed"`
+	Status    *string `json:"status"`
 }
 
 type TaskRepository interface {
@@ -1089,6 +1103,12 @@ type TaskUseCase interface {
 	Create(ctx context.Context, orgID uuid.UUID, input CreateTaskInput) (*Task, error)
 	Update(ctx context.Context, orgID uuid.UUID, id uuid.UUID, input UpdateTaskInput) (*Task, error)
 	Delete(ctx context.Context, orgID uuid.UUID, id uuid.UUID) error
+	// SetEventEmitter wires task_created/task_updated/task_deleted automation
+	// triggers (called once from main.go, after the automation engine exists —
+	// same wiring shape as ContactHandler.SetEventEmitter). Task is deliberately
+	// not a RecordService registry object (see report_objects.go), so it needs
+	// this rather than routing through RecordService.SetEventEmitter.
+	SetEventEmitter(fn RecordEventEmitter)
 }
 
 type UserRepository interface {

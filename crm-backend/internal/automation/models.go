@@ -400,8 +400,16 @@ const (
 	TriggerContactCreated   = "contact_created"
 	TriggerContactUpdated   = "contact_updated"
 	TriggerDealStageChanged = "deal_stage_changed"
-	TriggerNoActivityDays   = "no_activity_days"
-	TriggerWebhookInbound   = "webhook_inbound"
+	// TriggerTaskStatusChanged fires when a task's Status actually moves (open /
+	// in_progress / completed), mirroring deal_stage_changed's role: a small,
+	// closed enum gets a real picker UI (to_status/from_status) rather than
+	// depending on watch_field/watch_value, which has NO frontend UI anywhere in
+	// the product today and so is unreachable through the builder. The generic
+	// task_updated trigger (below, via the {slug}_updated suffix pattern) still
+	// fires independently for non-status field changes.
+	TriggerTaskStatusChanged = "task_status_changed"
+	TriggerNoActivityDays    = "no_activity_days"
+	TriggerWebhookInbound    = "webhook_inbound"
 	// TriggerSchedule fires a workflow on a cron schedule (A4) via automation_timers.
 	TriggerSchedule = "schedule"
 	// TriggerDateField fires N days before/after a record's date field (A4), via
@@ -519,15 +527,16 @@ func backoff(attempt int) time.Duration {
 
 // Valid trigger types set
 var ValidTriggerTypes = map[string]bool{
-	TriggerContactCreated:   true,
-	TriggerContactUpdated:   true,
-	TriggerDealStageChanged: true,
-	TriggerNoActivityDays:   true,
-	TriggerWebhookInbound:   true,
-	TriggerSchedule:         true,
-	TriggerDateField:        true,
-	TriggerEmailOpened:      true,
-	TriggerEmailClicked:     true,
+	TriggerContactCreated:    true,
+	TriggerContactUpdated:    true,
+	TriggerDealStageChanged:  true,
+	TriggerTaskStatusChanged: true,
+	TriggerNoActivityDays:    true,
+	TriggerWebhookInbound:    true,
+	TriggerSchedule:          true,
+	TriggerDateField:         true,
+	TriggerEmailOpened:       true,
+	TriggerEmailClicked:      true,
 }
 
 // IsValidTriggerType checks if a trigger type is valid.

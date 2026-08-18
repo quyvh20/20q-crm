@@ -86,6 +86,9 @@ func (r *taskRepository) List(ctx context.Context, orgID uuid.UUID, f domain.Tas
 			query = query.Where("tasks.completed_at IS NULL")
 		}
 	}
+	if f.Status != nil {
+		query = query.Where("tasks.status = ?", *f.Status)
+	}
 	if f.Q != nil && strings.TrimSpace(*f.Q) != "" {
 		query = query.Where("tasks.title ILIKE ?", "%"+strings.TrimSpace(*f.Q)+"%")
 	}

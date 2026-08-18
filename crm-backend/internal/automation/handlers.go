@@ -1620,6 +1620,14 @@ var builtinObjectMeta = []struct {
 	{"contact", "Contact", "👤"},
 	{"deal", "Deal", "💰"},
 	{"company", "Company", "🏢"},
+	// Task is deliberately NOT a RecordService registry object (see
+	// report_objects.go) — it still belongs here, in the WORKFLOW schema, so
+	// task_created/updated/deleted conditions and the date_field trigger's
+	// object picker can see task.* fields. This one entry is what makes
+	// "task overdue" free via date_field on task.due_at rather than needing a
+	// bespoke scan trigger: materializeDateFieldTimers (datefield_timers.go)
+	// already hooks generically off any {slug}_created/_updated/_deleted event.
+	{"task", "Task", "✅"},
 }
 
 // builtinObjectFieldDefs is the single source of truth for the native fields of
@@ -1661,6 +1669,17 @@ func builtinObjectFieldDefs(slug string) []SchemaField {
 			{Path: "company.industry", Label: "Industry", Type: "string"},
 			{Path: "company.website", Label: "Website", Type: "string"},
 			{Path: "company.id", Label: "Company ID", Type: "string"},
+		}
+	case "task":
+		return []SchemaField{
+			{Path: "task.title", Label: "Title", Type: "string"},
+			{Path: "task.status", Label: "Status", Type: "select", Options: []string{"open", "in_progress", "completed"}},
+			{Path: "task.priority", Label: "Priority", Type: "select", Options: []string{"low", "medium", "high"}},
+			{Path: "task.due_at", Label: "Due Date", Type: "date"},
+			{Path: "task.assigned_to", Label: "Assignee", Type: "string", PickerType: "user"},
+			{Path: "task.contact_id", Label: "Contact", Type: "string"},
+			{Path: "task.deal_id", Label: "Deal", Type: "string"},
+			{Path: "task.id", Label: "Task ID", Type: "string"},
 		}
 	case "trigger":
 		return []SchemaField{

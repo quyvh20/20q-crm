@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"crm-backend/internal/domain"
 	"crm-backend/pkg/safedial"
 
 	"github.com/google/uuid"
@@ -361,6 +362,45 @@ func validateTrigger(data []byte, result *ValidationResult) {
 					result.Errors = append(result.Errors, ValidationError{
 						Field:   "trigger.params.from_stage",
 						Message: "'from_stage' must not be empty (use '*' for any stage, or omit entirely)",
+					})
+				}
+			}
+		}
+
+	case TriggerTaskStatusChanged:
+		// Unlike deal_stage_changed's to_stage/from_stage (free-form pipeline
+		// stage ids the validator has no DB access to check), Task.Status is a
+		// closed, compile-time-known enum — so to_status/from_status are checked
+		// for MEMBERSHIP, not just non-emptiness. A typo'd status here would
+		// otherwise save clean and never match at run time.
+		if trigger.Params == nil {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   "trigger.params",
+				Message: "task_status_changed requires params with 'to_status'",
+			})
+		} else {
+			toStatus, ok := trigger.Params["to_status"].(string)
+			if !ok || toStatus == "" {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   "trigger.params.to_status",
+					Message: "task_status_changed requires a 'to_status' parameter",
+				})
+			} else if !domain.TaskStatusValues[toStatus] {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   "trigger.params.to_status",
+					Message: fmt.Sprintf("'to_status' must be one of open, in_progress, completed — got %q", toStatus),
+				})
+			}
+			// from_status is optional: "*"/absent means any prior status.
+			if fromStatus, ok := trigger.Params["from_status"]; ok {
+				if fromStr, isStr := fromStatus.(string); isStr && fromStr != "" && fromStr != "*" && !domain.TaskStatusValues[fromStr] {
+					result.Valid = false
+					result.Errors = append(result.Errors, ValidationError{
+						Field:   "trigger.params.from_status",
+						Message: fmt.Sprintf("'from_status' must be open, in_progress, completed, or '*' for any — got %q", fromStr),
 					})
 				}
 			}

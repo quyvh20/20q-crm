@@ -325,26 +325,49 @@ type Activity struct {
 }
 
 type Task struct {
-	ID          uuid.UUID      `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
-	OrgID       uuid.UUID      `gorm:"type:uuid;not null" json:"org_id"`
-	Title       string         `gorm:"size:255;not null" json:"title"`
-	DealID      *uuid.UUID     `gorm:"type:uuid" json:"deal_id,omitempty"`
-	ContactID   *uuid.UUID     `gorm:"type:uuid" json:"contact_id,omitempty"`
-	AssignedTo  *uuid.UUID     `gorm:"type:uuid" json:"assigned_to,omitempty"`
+	ID         uuid.UUID  `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
+	OrgID      uuid.UUID  `gorm:"type:uuid;not null" json:"org_id"`
+	Title      string     `gorm:"size:255;not null" json:"title"`
+	DealID     *uuid.UUID `gorm:"type:uuid" json:"deal_id,omitempty"`
+	ContactID  *uuid.UUID `gorm:"type:uuid" json:"contact_id,omitempty"`
+	AssignedTo *uuid.UUID `gorm:"type:uuid" json:"assigned_to,omitempty"`
 	// CreatedBy is the user who created the task (U0.1-ext). A task with no linked
 	// contact/deal is otherwise unreachable to a row-scoped caller unless it is
 	// assigned to them; stamping the creator keeps a rep's own unassigned/unlinked
 	// tasks visible to them. Stamped from the request caller in the repository.
-	CreatedBy   *uuid.UUID     `gorm:"type:uuid" json:"created_by,omitempty"`
-	DueAt       *time.Time     `json:"due_at,omitempty"`
-	CompletedAt *time.Time     `json:"completed_at,omitempty"`
-	Priority    string         `gorm:"size:20;not null;default:'medium'" json:"priority"`
+	CreatedBy   *uuid.UUID `gorm:"type:uuid" json:"created_by,omitempty"`
+	DueAt       *time.Time `json:"due_at,omitempty"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	Priority    string     `gorm:"size:20;not null;default:'medium'" json:"priority"`
+	// Status is the source of truth for a task's lifecycle state; CompletedAt is
+	// kept in sync with it (see TaskStatusValues / the usecase's syncCompletedAt)
+	// rather than replaced, so the existing checkbox UI, the due-reminder scanner's
+	// `completed_at IS NULL` gate, and the report catalog all keep working
+	// unmodified. Reopening a task (status leaves 'completed') clears CompletedAt.
+	Status string `gorm:"size:20;not null;default:'open'" json:"status"`
 	// LastRemindedAt dedupes the due-task reminder scanner (R8.1): a task is
 	// reminded at most once per calendar day. Not exposed over the API.
-	LastRemindedAt *time.Time `gorm:"column:last_reminded_at" json:"-"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
-	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
+	LastRemindedAt *time.Time     `gorm:"column:last_reminded_at" json:"-"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
+	DeletedAt      gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+// TaskStatusOpen/InProgress/Completed are the only valid Task.Status values.
+// Three states, matching the one genuinely new state a nullable CompletedAt
+// couldn't express (in_progress) — not a generic workflow-stage enum, which
+// this product already has for deals via a real stages table.
+const (
+	TaskStatusOpen       = "open"
+	TaskStatusInProgress = "in_progress"
+	TaskStatusCompleted  = "completed"
+)
+
+// TaskStatusValues is the save-time and API validation set for Task.Status.
+var TaskStatusValues = map[string]bool{
+	TaskStatusOpen:       true,
+	TaskStatusInProgress: true,
+	TaskStatusCompleted:  true,
 }
 
 type Tag struct {

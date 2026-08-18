@@ -47,6 +47,9 @@ func (h *TaskHandler) List(c *gin.Context) {
 		v := completedStr == "true"
 		filter.Completed = &v
 	}
+	if status := c.Query("status"); status != "" {
+		filter.Status = &status
+	}
 	if q := c.Query("q"); q != "" {
 		filter.Q = &q
 	}

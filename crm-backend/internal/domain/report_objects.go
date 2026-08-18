@@ -51,6 +51,8 @@ var ReportOnlyObjects = []ReportOnlyObject{
 		Icon: "✅", Color: "#0EA5E9", Table: "tasks",
 		Fields: []ReportField{
 			{Key: "title", Label: "Title", Type: "text", Column: "title"},
+			{Key: "status", Label: "Status", Type: "select", Column: "status",
+				Options: []string{"open", "in_progress", "completed"}},
 			{Key: "priority", Label: "Priority", Type: "select", Column: "priority",
 				Options: []string{"low", "medium", "high"}},
 			{Key: "due_at", Label: "Due At", Type: "date", Column: "due_at"},

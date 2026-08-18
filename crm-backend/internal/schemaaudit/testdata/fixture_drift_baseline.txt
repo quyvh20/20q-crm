@@ -12,12 +12,10 @@ internal/automation/executor_update_record_exec_test.go	custom_object_records	1	
 internal/automation/executor_update_record_exec_test.go	object_defs	1	color,created_at,display_field_id,icon,is_system,label,label_plural,number_prefix,record_table,searchable,storage,updated_at
 internal/automation/integration_test.go	contacts	1	company_id,embedding,lead_score,lead_score_at
 internal/automation/integration_test.go	record_shares	1	created_by
-internal/automation/integration_test.go	tasks	1	completed_at,deleted_at,last_reminded_at
 internal/automation/integration_test.go	user_groups	1	created_at,created_by,description,updated_at
 internal/automation/p8_ownscope_db_test.go	record_shares	1	created_by
 internal/automation/p8_ownscope_db_test.go	user_groups	1	created_at,created_by,description,updated_at
 internal/automation/p8_task_activity_test.go	activities	1	deleted_at,duration_minutes,sentiment
-internal/automation/p8_task_activity_test.go	tasks	1	completed_at,deleted_at,last_reminded_at
 internal/automation/run_now_exec_integration_test.go	deals	1	custom_fields
 internal/automation/schema_test.go	custom_object_defs	2	searchable
 internal/automation/schema_test.go	object_defs	1	color,display_field_id,number_prefix,record_table,searchable,storage

@@ -16,13 +16,19 @@ import (
 type TaskExecutor struct {
 	db    *gorm.DB
 	authz domain.RecordAuthorizer
+	// emit fires task_created so a SECOND workflow can chain off a task this one
+	// created ("workflow A creates a task" → "workflow B notifies on task
+	// created"), the same way a create_record action's writes still fire their
+	// own CRUD triggers. Nil-checked; nil in unit tests that don't wire it.
+	emit domain.RecordEventEmitter
 }
 
 // NewTaskExecutor creates a new task executor. authz enforces the workflow
 // author's read access on the linked contact/deal and audits the creation
-// (P8); nil disables enforcement (unit tests).
-func NewTaskExecutor(db *gorm.DB, authz domain.RecordAuthorizer) *TaskExecutor {
-	return &TaskExecutor{db: db, authz: authz}
+// (P8); nil disables enforcement (unit tests). emit is the engine's own
+// TriggerEvent — see the field comment on why this fires task_created too.
+func NewTaskExecutor(db *gorm.DB, authz domain.RecordAuthorizer, emit domain.RecordEventEmitter) *TaskExecutor {
+	return &TaskExecutor{db: db, authz: authz, emit: emit}
 }
 
 // Execute creates a task based on the action params.
@@ -129,6 +135,33 @@ func (e *TaskExecutor) Execute(ctx context.Context, run *WorkflowRun, action Act
 		"task_id", taskID.String(),
 		"workflow_run_id", run.ID.String(),
 	)
+
+	// Fire task_created in the same {entity_id, task, trigger} shape
+	// taskAutomationMap/fireTaskEvent produce (usecase/task_usecase.go) — a
+	// small duplication of that map's shape rather than importing usecase from
+	// here, which this package cannot do without a cycle (usecase already
+	// reaches into automation to call TriggerEvent).
+	if e.emit != nil {
+		m := map[string]any{"id": taskID.String(), "title": title, "priority": priority, "status": "open"}
+		if contactID != nil {
+			m["contact_id"] = contactID.String()
+		}
+		if dealID != nil {
+			m["deal_id"] = dealID.String()
+		}
+		if assigneeID != nil {
+			m["assigned_to"] = assigneeID.String()
+		}
+		if dueAt != nil {
+			m["due_at"] = dueAt.Format(time.RFC3339)
+		}
+		payload := map[string]any{
+			"entity_id": taskID.String(),
+			"task":      m,
+			"trigger":   map[string]any{"type": "task_created", "source": "automation"},
+		}
+		go e.emit(context.Background(), run.OrgID, "task_created", payload)
+	}
 
 	return map[string]any{
 		"task_id":  taskID.String(),

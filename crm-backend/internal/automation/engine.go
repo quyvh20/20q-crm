@@ -287,7 +287,7 @@ func (e *Engine) Start() {
 
 	// Register default executors if not already registered
 	if _, ok := e.executors[ActionCreateTask]; !ok {
-		e.executors[ActionCreateTask] = NewTaskExecutor(e.db, e.authz)
+		e.executors[ActionCreateTask] = NewTaskExecutor(e.db, e.authz, e.TriggerEvent)
 	}
 	if _, ok := e.executors[ActionAssignUser]; !ok {
 		e.executors[ActionAssignUser] = NewAssignUserExecutor(e.db, e.authz)
@@ -526,6 +526,36 @@ func (e *Engine) triggerEventInternal(ctx context.Context, orgID uuid.UUID, even
 						"workflow_id", wf.ID.String(),
 						"req_to_stage", reqToStage,
 						"actual_new_stage", newStage,
+					)
+					continue
+				}
+			}
+		}
+
+		// --- Task Status Filtering ---
+		if eventType == TriggerTaskStatusChanged {
+			var triggerSpec TriggerSpec
+			if err := json.Unmarshal(wf.Trigger, &triggerSpec); err == nil && triggerSpec.Params != nil {
+				reqFromStatus, _ := triggerSpec.Params["from_status"].(string)
+				reqToStatus, _ := triggerSpec.Params["to_status"].(string)
+
+				oldStatus, _ := payload["old_status"].(string)
+				newStatus, _ := payload["new_status"].(string)
+
+				if reqFromStatus != "" && reqFromStatus != "*" && reqFromStatus != oldStatus {
+					e.logger.Debug("automation: from_status mismatch, skipping",
+						"workflow_id", wf.ID.String(),
+						"req_from_status", reqFromStatus,
+						"actual_old_status", oldStatus,
+					)
+					continue
+				}
+
+				if reqToStatus != "" && reqToStatus != "*" && reqToStatus != newStatus {
+					e.logger.Debug("automation: to_status mismatch, skipping",
+						"workflow_id", wf.ID.String(),
+						"req_to_status", reqToStatus,
+						"actual_new_status", newStatus,
 					)
 					continue
 				}
@@ -1141,6 +1171,35 @@ func (e *Engine) buildEvalContext(run *WorkflowRun) EvalContext {
 		}
 	}
 
+	// Hydrate contact.*/deal.* for a task-triggered run. A task event carries only
+	// task.contact_id/task.deal_id (taskAutomationMap), with no nested object — so
+	// {{contact.email}} or a condition on deal.stage_id would otherwise resolve
+	// empty for every task-triggered workflow, the same gap the deal→contact
+	// hydration above closes for deal events. Best-effort: a missing id, a
+	// deleted/absent record, or a load error just leaves contact.*/deal.* empty.
+	// Placed BEFORE the company hydration below so a task's contact/deal, once
+	// hydrated here, feeds that block's own company_id lookup for free.
+	if task, ok := ctx.Extra["task"].(map[string]any); ok {
+		if ctx.Contact == nil {
+			if cid, _ := task["contact_id"].(string); cid != "" {
+				if contactID, err := uuid.Parse(cid); err == nil {
+					if c := loadContactForTrigger(e.ctx, e.db, run.OrgID, contactID); c != nil {
+						ctx.Contact = c
+					}
+				}
+			}
+		}
+		if ctx.Deal == nil {
+			if did, _ := task["deal_id"].(string); did != "" {
+				if dealID, err := uuid.Parse(did); err == nil {
+					if d := loadDealForTrigger(e.ctx, e.db, run.OrgID, dealID); d != nil {
+						ctx.Deal = d
+					}
+				}
+			}
+		}
+	}
+
 	// One-hop relation hydration for the system company relation (A2): a deal or
 	// contact event carries only company_id, so {{company.*}} would resolve empty.
 	// Best-effort load the related company into Extra["company"] when the trigger
@@ -1254,6 +1313,56 @@ func loadContactForTrigger(ctx context.Context, db *gorm.DB, orgID, contactID uu
 		if err := json.Unmarshal([]byte(*row.CustomFields), &cf); err == nil {
 			m["custom_fields"] = cf
 		}
+	}
+	return m
+}
+
+// loadDealForTrigger mirrors loadContactForTrigger, for the task→deal hydration
+// above — the only place a deal needs loading INTO context rather than being
+// the trigger's own primary object.
+func loadDealForTrigger(ctx context.Context, db *gorm.DB, orgID, dealID uuid.UUID) map[string]any {
+	var row struct {
+		ID              uuid.UUID  `gorm:"column:id"`
+		Title           string     `gorm:"column:title"`
+		Value           float64    `gorm:"column:value"`
+		Probability     int        `gorm:"column:probability"`
+		IsWon           bool       `gorm:"column:is_won"`
+		IsLost          bool       `gorm:"column:is_lost"`
+		StageID         *uuid.UUID `gorm:"column:stage_id"`
+		OwnerUserID     *uuid.UUID `gorm:"column:owner_user_id"`
+		ContactID       *uuid.UUID `gorm:"column:contact_id"`
+		CompanyID       *uuid.UUID `gorm:"column:company_id"`
+		ExpectedCloseAt *time.Time `gorm:"column:expected_close_at"`
+	}
+	if err := db.WithContext(ctx).
+		Table("deals").
+		Select("id, title, value, probability, is_won, is_lost, stage_id, owner_user_id, contact_id, company_id, expected_close_at").
+		Where("id = ? AND org_id = ? AND deleted_at IS NULL", dealID, orgID).
+		Scan(&row).Error; err != nil || row.ID == uuid.Nil {
+		return nil
+	}
+	m := map[string]any{
+		"id":          row.ID.String(),
+		"title":       row.Title,
+		"value":       row.Value,
+		"probability": row.Probability,
+		"is_won":      row.IsWon,
+		"is_lost":     row.IsLost,
+	}
+	if row.StageID != nil {
+		m["stage_id"] = row.StageID.String()
+	}
+	if row.OwnerUserID != nil {
+		m["owner_user_id"] = row.OwnerUserID.String()
+	}
+	if row.ContactID != nil {
+		m["contact_id"] = row.ContactID.String()
+	}
+	if row.CompanyID != nil {
+		m["company_id"] = row.CompanyID.String()
+	}
+	if row.ExpectedCloseAt != nil {
+		m["expected_close_at"] = row.ExpectedCloseAt.Format(time.RFC3339)
 	}
 	return m
 }

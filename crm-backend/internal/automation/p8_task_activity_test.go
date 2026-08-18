@@ -73,9 +73,13 @@ func TestCreateTask_OwnScope_DB(t *testing.T) {
 		assigned_to UUID,
 		created_by UUID,
 		due_at TIMESTAMPTZ,
+		completed_at TIMESTAMPTZ,
 		priority TEXT DEFAULT 'medium',
+		status TEXT NOT NULL DEFAULT 'open',
+		last_reminded_at TIMESTAMPTZ,
 		created_at TIMESTAMPTZ DEFAULT NOW(),
-		updated_at TIMESTAMPTZ DEFAULT NOW()
+		updated_at TIMESTAMPTZ DEFAULT NOW(),
+		deleted_at TIMESTAMPTZ
 	)`).Error)
 
 	orgID := uuid.New()
@@ -86,7 +90,7 @@ func TestCreateTask_OwnScope_DB(t *testing.T) {
 		`INSERT INTO contacts (id, org_id, owner_user_id) VALUES (?, ?, ?)`, cid, orgID, owner).Error)
 
 	az := &fakeAuthz{} // OLS allows; own-scope is the gate under test
-	exec := NewTaskExecutor(db, az)
+	exec := NewTaskExecutor(db, az, nil)
 	run := &WorkflowRun{ID: uuid.New(), WorkflowID: uuid.New(), OrgID: orgID}
 	action := ActionSpec{ID: "t1", Type: ActionCreateTask, Params: map[string]any{"title": "follow up"}}
 	evalCtx := EvalContext{Contact: map[string]any{"id": cid.String()}}

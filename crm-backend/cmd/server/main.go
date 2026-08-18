@@ -272,6 +272,20 @@ func main() {
 		// day (compared against this column, not a separate ledger table).
 		db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS last_reminded_at TIMESTAMPTZ`)
 		db.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_due_reminder ON tasks(due_at) WHERE completed_at IS NULL`)
+		// Task status: golang-migrate is dead on prod (see the RLS backfill note
+		// below), so boot-guard the column like every other tasks column added
+		// since the numbered-migration convention died.
+		db.Exec(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'open'`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_org_status ON tasks(org_id, status)`)
+		// BACKFILL: completed_at is the ONLY completion signal every pre-existing
+		// row carries. Without this, a task finished before this deploy reads
+		// status='open' (the column default) despite completed_at being set —
+		// contradicting itself in the UI, in reports, and to any workflow
+		// conditioning on task.status. Idempotent and safe to leave running every
+		// boot: after the first run, no row has both completed_at set AND
+		// status='open' (Update keeps the two in sync going forward), so later
+		// boots match zero rows.
+		db.Exec(`UPDATE tasks SET status = 'completed' WHERE completed_at IS NOT NULL AND status = 'open'`)
 		// BACKFILL, and it is load-bearing rather than cosmetic. Adding the column
 		// leaves every pre-existing row at created_by = NULL, which narrows the read
 		// the moment this deploys: a task with no assignee and no reachable
@@ -3597,6 +3611,11 @@ func main() {
 
 		// Wire deal stage change → automation trigger
 		dealHandler.SetEventEmitter(autoEngine.TriggerEvent)
+
+		// Wire task create/update/delete → automation trigger. Task is not a
+		// RecordService object (see report_objects.go), so this goes directly to
+		// taskUseCase rather than through recordService.SetEventEmitter above.
+		taskUseCase.SetEventEmitter(autoEngine.TriggerEvent)
 
 		log.Info("All routes registered (including automation)")
 	} else {

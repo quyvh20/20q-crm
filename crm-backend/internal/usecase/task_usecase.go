@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"crm-backend/internal/domain"
@@ -15,6 +16,11 @@ type taskUseCase struct {
 	taskRepo domain.TaskRepository
 	notifyUC domain.NotificationUseCase
 	logger   *slog.Logger
+	// emit fires task_created/task_updated/task_deleted. Wired post-construction
+	// from main.go (the automation engine doesn't exist yet when this usecase is
+	// built) — nil until then, and nil-checked at every call site so a boot
+	// ordering slip degrades to "no task triggers fire" rather than a panic.
+	emit domain.RecordEventEmitter
 }
 
 // NewTaskUseCase builds the task usecase. A nil logger falls back to
@@ -26,6 +32,10 @@ func NewTaskUseCase(taskRepo domain.TaskRepository, notifyUC domain.Notification
 		logger = slog.Default()
 	}
 	return &taskUseCase{taskRepo: taskRepo, notifyUC: notifyUC, logger: logger}
+}
+
+func (uc *taskUseCase) SetEventEmitter(fn domain.RecordEventEmitter) {
+	uc.emit = fn
 }
 
 // dueReminderScanLimit caps one scan pass (no-silent-caps doctrine: a scan
@@ -117,6 +127,17 @@ func (uc *taskUseCase) Create(ctx context.Context, orgID uuid.UUID, input domain
 		task.Priority = "medium"
 	}
 
+	task.Status = input.Status
+	if task.Status == "" {
+		task.Status = domain.TaskStatusOpen
+	} else if !domain.TaskStatusValues[task.Status] {
+		return nil, domain.NewAppError(http.StatusBadRequest, fmt.Sprintf("invalid status %q", task.Status))
+	}
+	if task.Status == domain.TaskStatusCompleted {
+		now := time.Now()
+		task.CompletedAt = &now
+	}
+
 	if input.DueAt != nil && *input.DueAt != "" {
 		t, err := time.Parse(time.RFC3339, *input.DueAt)
 		if err != nil {
@@ -128,6 +149,7 @@ func (uc *taskUseCase) Create(ctx context.Context, orgID uuid.UUID, input domain
 	if err := uc.taskRepo.Create(ctx, &task); err != nil {
 		return nil, err
 	}
+	uc.fireTaskEvent(ctx, orgID, "task_created", &task, nil)
 	return &task, nil
 }
 
@@ -142,6 +164,8 @@ func (uc *taskUseCase) Update(ctx context.Context, orgID uuid.UUID, id uuid.UUID
 		// not a silent success.
 		return nil, domain.ErrTaskNotFound
 	}
+	before := taskAutomationMap(task)
+	oldStatus := task.Status
 
 	if input.Title != nil {
 		task.Title = *input.Title
@@ -163,21 +187,176 @@ func (uc *taskUseCase) Update(ctx context.Context, orgID uuid.UUID, id uuid.UUID
 			task.DueAt = &t
 		}
 	}
-	if input.Completed != nil {
+
+	// Status is the richer control and wins over Completed when a caller sends
+	// both — see the doc comment on UpdateTaskInput. Either path keeps
+	// CompletedAt in sync (domain.Task.Status's doc comment on why), so
+	// task_updated's changed_fields always includes "status" when it moves,
+	// regardless of which shape the caller used to move it.
+	switch {
+	case input.Status != nil:
+		if !domain.TaskStatusValues[*input.Status] {
+			return nil, domain.NewAppError(http.StatusBadRequest, fmt.Sprintf("invalid status %q", *input.Status))
+		}
+		uc.setTaskStatus(task, *input.Status)
+	case input.Completed != nil:
 		if *input.Completed {
-			now := time.Now()
-			task.CompletedAt = &now
+			uc.setTaskStatus(task, domain.TaskStatusCompleted)
 		} else {
-			task.CompletedAt = nil
+			// Unchecking has never meant "resume progress" — before Status
+			// existed it was the ONLY way to reopen a task, and it always reset
+			// to not-started. Keep that exact behavior.
+			uc.setTaskStatus(task, domain.TaskStatusOpen)
 		}
 	}
 
 	if err := uc.taskRepo.Update(ctx, task); err != nil {
 		return nil, err
 	}
+	uc.fireTaskEvent(ctx, orgID, "task_updated", task, before)
+	// task_status_changed fires ADDITIONALLY, not instead of, task_updated — see
+	// TriggerTaskStatusChanged's doc comment. Both are legitimate to fire from one
+	// call because, unlike deals (whose stage move and field edits are separate
+	// UI flows), Task.Update always takes every possible change in one input.
+	if task.Status != oldStatus {
+		uc.fireTaskStatusChanged(ctx, orgID, task, oldStatus)
+	}
 	return task, nil
 }
 
+// fireTaskStatusChanged emits TriggerTaskStatusChanged with old_status/new_status
+// at the payload's top level — the exact shape fireStageChanged uses for
+// old_stage_id/new_stage_id (record_service_system.go), which the trigger's
+// to_status/from_status params are validated and matched against.
+func (uc *taskUseCase) fireTaskStatusChanged(ctx context.Context, orgID uuid.UUID, task *domain.Task, oldStatus string) {
+	if uc.emit == nil {
+		return
+	}
+	payload := map[string]any{
+		"entity_id":  task.ID.String(),
+		"task":       taskAutomationMap(task),
+		"old_status": oldStatus,
+		"new_status": task.Status,
+		"trigger":    map[string]any{"type": "task_status_changed", "source": domain.WriteSourceFromContext(ctx)},
+	}
+	go uc.emit(context.Background(), orgID, "task_status_changed", payload)
+}
+
+// setTaskStatus is the ONE place Task.Status changes, so CompletedAt can never
+// drift from it: entering TaskStatusCompleted stamps it (once — a second
+// "complete" call must not slide an already-completed task's timestamp
+// forward), leaving it clears it.
+func (uc *taskUseCase) setTaskStatus(task *domain.Task, status string) {
+	task.Status = status
+	if status == domain.TaskStatusCompleted {
+		if task.CompletedAt == nil {
+			now := time.Now()
+			task.CompletedAt = &now
+		}
+		return
+	}
+	task.CompletedAt = nil
+}
+
 func (uc *taskUseCase) Delete(ctx context.Context, orgID uuid.UUID, id uuid.UUID) error {
-	return uc.taskRepo.SoftDelete(ctx, orgID, id)
+	// Snapshot before delete so a task_deleted workflow can condition on the
+	// task's fields — mirrors contact_deleted/deal_deleted. A load failure (the
+	// row is already gone, or a race) still deletes and fires a minimal payload
+	// rather than skipping the trigger.
+	snap, _ := uc.taskRepo.GetByID(ctx, orgID, id)
+	if err := uc.taskRepo.SoftDelete(ctx, orgID, id); err != nil {
+		return err
+	}
+	m := map[string]any{"id": id.String()}
+	if snap != nil {
+		m = taskAutomationMap(snap)
+	}
+	if uc.emit != nil {
+		go uc.emit(context.Background(), orgID, "task_deleted", map[string]any{
+			"entity_id": id.String(),
+			"task":      m,
+			"trigger":   map[string]any{"type": "task_deleted", "source": domain.WriteSourceFromContext(ctx)},
+		})
+	}
+	return nil
+}
+
+// fireTaskEvent fires task_created/task_updated in fireLifecycleEvent's exact
+// payload shape ({entity_id, task: record, trigger}) — Task isn't a
+// RecordService object (see report_objects.go), so this is hand-wired rather
+// than routed through it. Fire-and-forget on context.Background() so a
+// cancelled request can't kill the async run, same reasoning as
+// fireLifecycleEvent. before is nil for a create; when non-nil its diff against
+// the fresh map becomes changed_fields, which is what lets a workflow's
+// watch_field='status' actually filter task_updated triggers — see
+// computeTaskChangedFields.
+func (uc *taskUseCase) fireTaskEvent(ctx context.Context, orgID uuid.UUID, eventType string, task *domain.Task, before map[string]any) {
+	if uc.emit == nil {
+		return
+	}
+	after := taskAutomationMap(task)
+	payload := map[string]any{
+		"entity_id": task.ID.String(),
+		"task":      after,
+		"trigger":   map[string]any{"type": eventType, "source": domain.WriteSourceFromContext(ctx)},
+	}
+	if before != nil {
+		if changed := computeTaskChangedFields(before, after); len(changed) > 0 {
+			payload["changed_fields"] = changed
+		}
+	}
+	go uc.emit(context.Background(), orgID, eventType, payload)
+}
+
+// taskAutomationMap is the event-payload shape for a task — mirrors
+// contactAutomationMap/dealAutomationMap (usecase/record_service_system.go).
+// Dates serialize as RFC3339 so {{task.due_at}} and a date_field trigger on
+// task.due_at both parse it the same way conditions/dealAutomationMap's dates
+// already do.
+func taskAutomationMap(t *domain.Task) map[string]any {
+	m := map[string]any{
+		"id":       t.ID.String(),
+		"title":    t.Title,
+		"priority": t.Priority,
+		"status":   t.Status,
+	}
+	if t.DealID != nil {
+		m["deal_id"] = t.DealID.String()
+	}
+	if t.ContactID != nil {
+		m["contact_id"] = t.ContactID.String()
+	}
+	if t.AssignedTo != nil {
+		m["assigned_to"] = t.AssignedTo.String()
+	}
+	if t.DueAt != nil {
+		m["due_at"] = t.DueAt.Format(time.RFC3339)
+	}
+	if t.CompletedAt != nil {
+		m["completed_at"] = t.CompletedAt.Format(time.RFC3339)
+	}
+	return m
+}
+
+// computeTaskChangedFields compares old and new task maps and returns the
+// changed field paths as "task.<key>", the exact shape
+// payloadContainsChangedField (internal/automation/engine.go) reads for
+// watch_field — mirrors contact_handler.go's computeChangedFields.
+func computeTaskChangedFields(oldMap, newMap map[string]any) []string {
+	if oldMap == nil || newMap == nil {
+		return nil
+	}
+	var changed []string
+	for key, newVal := range newMap {
+		oldVal, exists := oldMap[key]
+		if !exists || fmt.Sprintf("%v", oldVal) != fmt.Sprintf("%v", newVal) {
+			changed = append(changed, "task."+key)
+		}
+	}
+	for key := range oldMap {
+		if _, exists := newMap[key]; !exists {
+			changed = append(changed, "task."+key)
+		}
+	}
+	return changed
 }

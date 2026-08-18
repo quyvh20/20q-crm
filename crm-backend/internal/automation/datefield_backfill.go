@@ -444,6 +444,8 @@ func (e *Engine) scanRecordsForBackfill(ctx context.Context, db *gorm.DB, orgID 
 		return e.scanDealsForBackfill(ctx, db, orgID, limit)
 	case "company":
 		return e.scanCompaniesForBackfill(ctx, db, orgID, limit)
+	case "task":
+		return e.scanTasksForBackfill(ctx, db, orgID, limit)
 	case "":
 		return backfillScan{}, fmt.Errorf("empty object slug")
 	default:
@@ -740,6 +742,64 @@ func (e *Engine) scanCompaniesForBackfill(ctx context.Context, db *gorm.DB, orgI
 			m["website"] = *r.Website
 		}
 		domain.SetAutomationCustomFields(m, r.CustomFields)
+		out.records = append(out.records, backfillRecord{id: r.ID.String(), record: m})
+	}
+	return out, nil
+}
+
+type taskBackfillRow struct {
+	ID          uuid.UUID  `gorm:"column:id"`
+	Title       string     `gorm:"column:title"`
+	Priority    string     `gorm:"column:priority"`
+	Status      string     `gorm:"column:status"`
+	ContactID   *uuid.UUID `gorm:"column:contact_id"`
+	DealID      *uuid.UUID `gorm:"column:deal_id"`
+	AssignedTo  *uuid.UUID `gorm:"column:assigned_to"`
+	DueAt       *time.Time `gorm:"column:due_at"`
+	CompletedAt *time.Time `gorm:"column:completed_at"`
+}
+
+// scanTasksForBackfill mirrors taskAutomationMap (usecase/task_usecase.go) —
+// same R9.3-style constraint: a key added to one and not the other resolves to
+// nil on whichever path didn't get it, silently. Simpler than the deal/contact/
+// company scanners: Task has no custom_fields.
+func (e *Engine) scanTasksForBackfill(ctx context.Context, db *gorm.DB, orgID uuid.UUID, limit int) (backfillScan, error) {
+	base := func(h *gorm.DB) *gorm.DB {
+		return h.WithContext(ctx).Table("tasks").Where("org_id = ? AND deleted_at IS NULL", orgID)
+	}
+
+	var rows []taskBackfillRow
+	if err := base(db).
+		Select("id, title, priority, status, contact_id, deal_id, assigned_to, due_at, completed_at").
+		Order(backfillScanOrder).Limit(limit).Find(&rows).Error; err != nil {
+		return backfillScan{}, err
+	}
+	out := backfillScan{scanned: len(rows)}
+	out.truncated = e.backfillTruncation(base(e.db), len(rows), limit)
+
+	out.records = make([]backfillRecord, 0, len(rows))
+	for _, r := range rows {
+		m := map[string]any{
+			"id":       r.ID.String(),
+			"title":    r.Title,
+			"priority": r.Priority,
+			"status":   r.Status,
+		}
+		if r.ContactID != nil {
+			m["contact_id"] = r.ContactID.String()
+		}
+		if r.DealID != nil {
+			m["deal_id"] = r.DealID.String()
+		}
+		if r.AssignedTo != nil {
+			m["assigned_to"] = r.AssignedTo.String()
+		}
+		if r.DueAt != nil {
+			m["due_at"] = r.DueAt.Format(time.RFC3339)
+		}
+		if r.CompletedAt != nil {
+			m["completed_at"] = r.CompletedAt.Format(time.RFC3339)
+		}
 		out.records = append(out.records, backfillRecord{id: r.ID.String(), record: m})
 	}
 	return out, nil
