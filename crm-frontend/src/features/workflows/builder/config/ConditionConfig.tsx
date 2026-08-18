@@ -23,6 +23,7 @@ function deriveFiresOn(triggerType: string): FiresOn {
   if (triggerType.endsWith('_any')) return 'any';
   // Special built-in types
   if (triggerType === 'deal_stage_changed') return 'updated';
+  if (triggerType === 'task_status_changed') return 'updated';
   if (triggerType === 'no_activity_days') return 'any';
   if (triggerType === 'webhook_inbound') return 'any';
   if (triggerType === 'email_opened' || triggerType === 'email_clicked') return 'any';
@@ -32,6 +33,7 @@ function deriveFiresOn(triggerType: string): FiresOn {
 /** Derive object slug from current trigger type string */
 function deriveObjectSlug(triggerType: string): string {
   if (triggerType === 'deal_stage_changed') return 'deal';
+  if (triggerType === 'task_status_changed') return 'task';
   if (triggerType === 'no_activity_days') return 'contact';
   if (triggerType === 'email_opened' || triggerType === 'email_clicked') return 'contact';
   if (triggerType === 'webhook_inbound') return 'webhook';

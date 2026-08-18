@@ -649,6 +649,7 @@ export function generateActionId(): string {
 /** Extract object slug from a trigger type string (e.g. 'contact_created' → 'contact') */
 function extractObjectSlug(type: string): string {
   if (type === 'deal_stage_changed') return 'deal';
+  if (type === 'task_status_changed') return 'task';
   if (type === 'no_activity_days') return 'contact';
   if (type === 'email_opened' || type === 'email_clicked') return 'contact'; // the interacting contact is hydrated
   if (type === 'webhook_inbound') return 'webhook';
@@ -915,7 +916,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       // Fires-on is always set when object is set (default = created),
       // but validate the trigger type is well-formed
       const t = state.trigger.type;
-      const hasValidEvent = t === 'webhook_inbound' || t === 'deal_stage_changed' || t === 'no_activity_days'
+      const hasValidEvent = t === 'webhook_inbound' || t === 'deal_stage_changed' || t === 'task_status_changed' || t === 'no_activity_days'
         || t.endsWith('_created') || t.endsWith('_updated') || t.endsWith('_deleted') || t.endsWith('_any');
       if (slug && !hasValidEvent) {
         errors['trigger.firesOn'] = ['Select a fires-on event'];
@@ -930,6 +931,18 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
           errors['trigger.params.to_stage'] = ['Select a target stage'];
           if (!errors.trigger) errors.trigger = [];
           errors.trigger.push('Target stage is required for deal stage change trigger');
+        }
+      }
+
+      // task_status_changed requires to_status param — same shape as to_stage
+      // above. Without this, the catalog's palette entry (params: {to_status: ''})
+      // would pass frontend validation if dropped straight onto the canvas.
+      if (t === 'task_status_changed') {
+        const toStatus = state.trigger.params?.to_status;
+        if (!toStatus || toStatus === '') {
+          errors['trigger.params.to_status'] = ['Select a target status'];
+          if (!errors.trigger) errors.trigger = [];
+          errors.trigger.push('Target status is required for task status change trigger');
         }
       }
     }

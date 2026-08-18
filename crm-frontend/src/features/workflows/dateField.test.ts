@@ -7,6 +7,7 @@ import {
   describeWaitUntil,
   defaultDateFieldParams,
   resolvableObjectsForTrigger,
+  triggerPrimaryObject,
   objectKeyOfPath,
 } from './dateField';
 
@@ -137,6 +138,29 @@ describe('resolvableObjectsForTrigger', () => {
   });
   it('defaults to contact when no trigger is chosen yet', () => {
     expect([...resolvableObjectsForTrigger(null)]).toEqual(['contact']);
+  });
+  it('task_status_changed resolves task + contact + deal + company', () => {
+    // Mirrors the backend's task hydration block (engine.go), which runs
+    // BEFORE the company block so a task's contact/deal feed that lookup too.
+    const s = resolvableObjectsForTrigger({ type: 'task_status_changed' });
+    expect([...s].sort()).toEqual(['company', 'contact', 'deal', 'task']);
+  });
+  it('plain task_created/updated/deleted resolve the same chain via the generic suffix path', () => {
+    for (const type of ['task_created', 'task_updated', 'task_deleted']) {
+      const s = resolvableObjectsForTrigger({ type });
+      expect(s.has('task'), type).toBe(true);
+      expect(s.has('contact'), type).toBe(true);
+      expect(s.has('deal'), type).toBe(true);
+    }
+  });
+});
+
+describe('triggerPrimaryObject — task', () => {
+  it('task_status_changed resolves to task', () => {
+    expect(triggerPrimaryObject({ type: 'task_status_changed' })).toBe('task');
+  });
+  it('plain task_updated resolves to task via the generic suffix path', () => {
+    expect(triggerPrimaryObject({ type: 'task_updated' })).toBe('task');
   });
 });
 

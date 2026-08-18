@@ -2,7 +2,8 @@ import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { CheckSquare } from 'lucide-react';
-import { getTasksPage, updateTask, type Task, type TaskFilter } from '../lib/api';
+import { getTasksPage, updateTask, TASK_STATUSES, TASK_STATUS_LABELS, type Task, type TaskFilter, type TaskStatus } from '../lib/api';
+import { Select } from '../components/ui/select';
 import { useAuth } from '../lib/auth';
 import { PageHeader } from '../components/ui/page-header';
 import { EmptyState } from '../components/ui/empty-state';
@@ -72,6 +73,19 @@ export default function TasksPage() {
     },
   });
 
+  const statusMutation = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: TaskStatus }) => updateTask(id, { status }),
+    onMutate: async ({ id }) => {
+      setPendingIds((p) => ({ ...p, [id]: true }));
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tasks-page'] });
+    },
+    onSettled: (_data, _err, vars) => {
+      setPendingIds((p) => ({ ...p, [vars.id]: false }));
+    },
+  });
+
   const tasks = data ?? [];
 
   return (
@@ -115,6 +129,7 @@ export default function TasksPage() {
               task={t}
               pending={!!pendingIds[t.id]}
               onToggle={() => toggleMutation.mutate({ id: t.id, completed: !t.completed_at })}
+              onStatusChange={(status) => statusMutation.mutate({ id: t.id, status })}
             />
           ))}
         </div>
@@ -131,7 +146,17 @@ export default function TasksPage() {
   );
 }
 
-function TaskRow({ task, pending, onToggle }: { task: Task; pending: boolean; onToggle: () => void }) {
+function TaskRow({
+  task,
+  pending,
+  onToggle,
+  onStatusChange,
+}: {
+  task: Task;
+  pending: boolean;
+  onToggle: () => void;
+  onStatusChange: (status: TaskStatus) => void;
+}) {
   const overdue = task.due_at && !task.completed_at && new Date(task.due_at) < new Date();
   return (
     <div className="flex items-center gap-3 border-b border-border px-4 py-3 last:border-0">
@@ -154,6 +179,17 @@ function TaskRow({ task, pending, onToggle }: { task: Task; pending: boolean; on
         </span>
       )}
       <span className="text-xs capitalize text-muted-foreground">{task.priority}</span>
+      <Select
+        value={task.status}
+        disabled={pending}
+        onChange={(e) => onStatusChange(e.target.value as TaskStatus)}
+        aria-label={`Status for "${task.title}"`}
+        className="h-7 w-auto py-0 text-xs"
+      >
+        {TASK_STATUSES.map((s) => (
+          <option key={s} value={s}>{TASK_STATUS_LABELS[s]}</option>
+        ))}
+      </Select>
     </div>
   );
 }

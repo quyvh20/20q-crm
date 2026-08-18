@@ -739,6 +739,18 @@ export async function createActivity(data: {
 // Tasks
 // ============================================================
 
+/** The only values Task.status can hold — mirrors domain.TaskStatusValues
+ *  (crm-backend/internal/domain/models.go). completed_at stays in sync with
+ *  this on the backend (entering 'completed' stamps it, leaving it clears it),
+ *  so it is always safe to read either one. */
+export const TASK_STATUSES = ['open', 'in_progress', 'completed'] as const;
+export type TaskStatus = (typeof TASK_STATUSES)[number];
+export const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
+  open: 'Open',
+  in_progress: 'In Progress',
+  completed: 'Completed',
+};
+
 export interface Task {
   id: string;
   org_id: string;
@@ -749,6 +761,7 @@ export interface Task {
   due_at?: string;
   completed_at?: string;
   priority: string;
+  status: TaskStatus;
   created_at: string;
   updated_at: string;
 }
@@ -758,6 +771,7 @@ export interface TaskFilter {
   contact_id?: string;
   assigned_to?: string;
   completed?: boolean;
+  status?: TaskStatus;
   q?: string;
   due_before?: string;
   due_after?: string;
@@ -776,6 +790,7 @@ function taskFilterParams(filter: TaskFilter): URLSearchParams {
   if (filter.contact_id) params.set('contact_id', filter.contact_id);
   if (filter.assigned_to) params.set('assigned_to', filter.assigned_to);
   if (filter.completed !== undefined) params.set('completed', String(filter.completed));
+  if (filter.status) params.set('status', filter.status);
   if (filter.q) params.set('q', filter.q);
   if (filter.due_before) params.set('due_before', filter.due_before);
   if (filter.due_after) params.set('due_after', filter.due_after);
@@ -807,6 +822,7 @@ export async function createTask(data: {
   assigned_to?: string;
   due_at?: string;
   priority?: string;
+  status?: TaskStatus;
 }): Promise<Task> {
   const res = await apiFetch('/api/tasks', { method: 'POST', body: JSON.stringify(data) });
   const json = await parseJsonSafe(res);
@@ -820,6 +836,7 @@ export async function updateTask(id: string, data: Partial<{
   due_at: string;
   priority: string;
   completed: boolean;
+  status: TaskStatus;
 }>): Promise<Task> {
   const res = await apiFetch(`/api/tasks/${id}`, { method: 'PUT', body: JSON.stringify(data) });
   const json = await parseJsonSafe(res);

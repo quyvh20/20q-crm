@@ -1,6 +1,6 @@
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getDeal, deleteDeal, getActivities, getStages, changeDealStage, updateDeal, getTasks, createTask, updateTask, getUsers, submitScoreDeal, getAccessToken, type Deal, type Activity, type PipelineStage, type Task, type UserListItem } from '../lib/api';
+import { getDeal, deleteDeal, getActivities, getStages, changeDealStage, updateDeal, getTasks, createTask, updateTask, getUsers, submitScoreDeal, getAccessToken, TASK_STATUSES, TASK_STATUS_LABELS, type Deal, type Activity, type PipelineStage, type Task, type TaskStatus, type UserListItem } from '../lib/api';
 import ActivityForm from '../components/deals/ActivityForm';
 import EmailComposer from '../components/ai/EmailComposer';
 import MeetingSummary from '../components/ai/MeetingSummary';
@@ -427,6 +427,7 @@ export default function DealDetailPage() {
         assigned_to: newTaskAssignee || undefined,
         due_at: newTaskDue ? new Date(newTaskDue).toISOString() : undefined,
         priority: newTaskPriority,
+        status: 'open',
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
@@ -467,10 +468,17 @@ export default function DealDetailPage() {
       
       // Optimistically update to new value
       if (previousTasks) {
+        // status mirrors the backend's sync rule (setTaskStatus,
+        // task_usecase.go) so the status Select doesn't briefly disagree with
+        // the checkbox while the invalidated refetch is in flight.
         queryClient.setQueryData<Task[]>(['tasks', id], prev => 
           prev?.map(task => 
             task.id === taskId 
-              ? { ...task, completed_at: completed ? new Date().toISOString() : undefined }
+              ? {
+                  ...task,
+                  completed_at: completed ? new Date().toISOString() : undefined,
+                  status: completed ? 'completed' : 'open',
+                }
               : task
           )
         );
@@ -487,6 +495,37 @@ export default function DealDetailPage() {
     onSettled: (_data, _err, { taskId }) => {
       setPendingTasks(prev => ({ ...prev, [taskId]: false }));
       // Refresh to ensure server sync
+      queryClient.invalidateQueries({ queryKey: ['tasks', id] });
+    },
+  });
+
+  const taskStatusMutation = useMutation({
+    mutationFn: ({ taskId, status }: { taskId: string; status: TaskStatus }) => updateTask(taskId, { status }),
+    onMutate: async ({ taskId, status }) => {
+      setPendingTasks(prev => ({ ...prev, [taskId]: true }));
+      await queryClient.cancelQueries({ queryKey: ['tasks', id] });
+      const previousTasks = queryClient.getQueryData<Task[]>(['tasks', id]);
+      if (previousTasks) {
+        // completed_at mirrors what the backend derives from a status move, so
+        // the optimistic row doesn't flash stale strikethrough state before the
+        // invalidated refetch lands.
+        queryClient.setQueryData<Task[]>(['tasks', id], prev =>
+          prev?.map(task =>
+            task.id === taskId
+              ? { ...task, status, completed_at: status === 'completed' ? new Date().toISOString() : undefined }
+              : task
+          )
+        );
+      }
+      return { previousTasks };
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previousTasks) {
+        queryClient.setQueryData(['tasks', id], context.previousTasks);
+      }
+    },
+    onSettled: (_data, _err, { taskId }) => {
+      setPendingTasks(prev => ({ ...prev, [taskId]: false }));
       queryClient.invalidateQueries({ queryKey: ['tasks', id] });
     },
   });
@@ -850,6 +889,17 @@ export default function DealDetailPage() {
                           <Badge variant={PRIORITY_VARIANT[task.priority] ?? 'warning'} className="rounded px-1.5 py-0.5 text-[10px] capitalize">
                             {task.priority}
                           </Badge>
+                          <Select
+                            value={task.status}
+                            disabled={pendingTasks[task.id]}
+                            onChange={(e) => taskStatusMutation.mutate({ taskId: task.id, status: e.target.value as TaskStatus })}
+                            aria-label={`Status for "${task.title}"`}
+                            className="h-6 w-auto py-0 text-[10px]"
+                          >
+                            {TASK_STATUSES.map((s) => (
+                              <option key={s} value={s}>{TASK_STATUS_LABELS[s]}</option>
+                            ))}
+                          </Select>
                           {task.due_at && (
                             <span className={`inline-flex items-center gap-1 text-[10px] ${isOverdue ? 'text-destructive font-bold' : 'text-muted-foreground'}`}>
                               {isOverdue ? <AlertTriangle aria-hidden className="h-3 w-3" /> : <Calendar aria-hidden className="h-3 w-3" />}

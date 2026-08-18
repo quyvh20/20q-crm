@@ -146,6 +146,7 @@ export function triggerMeta(type: string | undefined): NodeMeta {
       if (type === 'date_field') return asMeta(CalendarDays, TRIGGER_ACCENT);
       if (type === 'email_opened') return asMeta(MailOpen, TRIGGER_ACCENT);
       if (type === 'email_clicked') return asMeta(MousePointerClick, TRIGGER_ACCENT);
+      if (type === 'task_status_changed') return asMeta(CheckSquare, TRIGGER_ACCENT);
       return asMeta(Zap, TRIGGER_ACCENT);
   }
 }
@@ -181,6 +182,7 @@ export function triggerLabel(trigger: TriggerSpec | undefined): string {
   }
   const fixed: Record<string, string> = {
     deal_stage_changed: 'Deal Stage Changed',
+    task_status_changed: 'Task Status Changed',
     no_activity_days: 'No Activity',
     webhook_inbound: 'Webhook Inbound',
     email_opened: 'Email Opened',
@@ -206,6 +208,7 @@ export function triggerTitle(trigger: TriggerSpec | undefined): string {
   if (type === 'date_field') return 'Date reached';
   const fixed: Record<string, string> = {
     deal_stage_changed: 'Deal stage updated',
+    task_status_changed: 'Task status changed',
     no_activity_days: 'No activity',
     webhook_inbound: 'Webhook inbound',
     email_opened: 'Email opened',
@@ -240,6 +243,14 @@ export function triggerDescription(trigger: TriggerSpec | undefined): string {
       return `Stage ${from && from !== '*' ? from : 'any'} → ${to && to !== '*' ? to : 'any'}`;
     }
     return 'When a deal moves to a new stage.';
+  }
+  if (type === 'task_status_changed') {
+    const from = (params.from_status as string) || '';
+    const to = (params.to_status as string) || '';
+    if ((from && from !== '*') || (to && to !== '*')) {
+      return `Status ${from && from !== '*' ? from : 'any'} → ${to && to !== '*' ? to : 'any'}`;
+    }
+    return "When a task's status changes.";
   }
   if (type === 'no_activity_days') {
     const days = Number(params.days ?? 0);

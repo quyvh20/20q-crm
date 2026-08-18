@@ -50,6 +50,8 @@ const TERMS: Record<string, string> = {
   // params
   to_stage: 'To Stage',
   from_stage: 'From Stage',
+  to_status: 'To Status',
+  from_status: 'From Status',
   duration_sec: 'Duration',
   until_field: 'wait-until field',
   wait_event: 'Event to wait for',
@@ -85,6 +87,10 @@ const FIELD_HELP: Record<string, string> = {
     'Deal Stage Changed needs a To Stage — pick the stage a deal must move into for this to fire.',
   'trigger.params.from_stage':
     'From Stage can’t be blank — pick a stage, or set it to Any to match a move from anywhere.',
+  'trigger.params.to_status':
+    'Task Status Changed needs a To Status — pick the status a task must move into for this to fire.',
+  'trigger.params.from_status':
+    'From Status can’t be blank — pick a status, or set it to Any to match a move from anywhere.',
   'trigger.params.days': 'No Activity needs a number of days of silence before it fires.',
   'trigger.params.entity': 'No Activity needs to watch either Contacts or Deals.',
   'trigger.params.cron': 'Enter a valid schedule for this trigger.',

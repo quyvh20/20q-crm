@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import type { TriggerSpec } from '../../types';
 import { useBuilderStore } from '../../store';
 import { getWebhookToken, revealWebhookSecret, regenerateWebhookSecret } from '../../api';
+import { TASK_STATUSES, TASK_STATUS_LABELS } from '../../../../lib/api';
 import type { WorkflowSchema, WebhookTokenInfo } from '../../api';
 import type { FiresOn } from '../../useSchema';
 import { StageDropdown } from './inputs';
@@ -55,6 +56,7 @@ function buildEntityList(schema: WorkflowSchema | null): EntityOption[] {
 
   entities.push({ key: 'email_opened', label: 'Email opened', icon: '📧' });
   entities.push({ key: 'email_clicked', label: 'Link clicked', icon: '🖱️' });
+  entities.push({ key: 'task_status_changed', label: 'Task status changed', icon: '✅' });
   entities.push({ key: 'schedule', label: 'Schedule', icon: '⏰' });
   entities.push({ key: 'date_field', label: 'Date reached', icon: '📅' });
   entities.push({ key: 'webhook', label: 'Webhook', icon: '🔗' });
@@ -76,6 +78,7 @@ function parseTrigger(trigger: TriggerSpec): { object: string; firesOn: FiresOn 
   if (t === 'date_field') return { object: 'date_field', firesOn: 'any' };
   if (t === 'email_opened') return { object: 'email_opened', firesOn: 'any' };
   if (t === 'email_clicked') return { object: 'email_clicked', firesOn: 'any' };
+  if (t === 'task_status_changed') return { object: 'task_status_changed', firesOn: 'any' };
 
   // Dynamic pattern: {slug}_{event}
   for (const suffix of ['_created', '_updated', '_deleted', '_any'] as const) {
@@ -122,6 +125,12 @@ function buildTriggerSpec(object: string, firesOn: FiresOn, params?: Record<stri
         at_time: (params?.at_time as string) || DEFAULT_AT_TIME,
         timezone: (params?.timezone as string) || browserTimeZone(),
       },
+    };
+  }
+  if (object === 'task_status_changed') {
+    return {
+      type: 'task_status_changed',
+      params: { to_status: (params?.to_status as string) || '', from_status: (params?.from_status as string) || '' },
     };
   }
   // deal + updated → deal_stage_changed (the only deal-update trigger the backend supports)
@@ -198,6 +207,70 @@ const EmailEngagementConfig: React.FC<{ clicked?: boolean }> = ({ clicked }) => 
   );
 };
 
+// TaskStatusConfig: From / To status pickers for task_status_changed. Simpler
+// than deal_stage_changed's StageDropdown — Task.status is a closed 3-value
+// enum baked into the product, not an org-defined pipeline, so a plain <select>
+// needs no schema fetch.
+const TaskStatusConfig: React.FC = () => {
+  const { trigger, setTrigger, errors } = useBuilderStore();
+  const toStatus = (trigger?.params?.to_status as string) || '';
+  const fromStatus = (trigger?.params?.from_status as string) || '';
+  const toStatusError = errors['trigger.params.to_status']?.[0];
+
+  const setParam = (key: 'to_status' | 'from_status', val: string) => {
+    if (!trigger) return;
+    setTrigger({ ...trigger, params: { ...(trigger.params || {}), [key]: val } });
+  };
+
+  const label = (v: string) => (v === '*' || v === '' ? 'Any status' : TASK_STATUS_LABELS[v as keyof typeof TASK_STATUS_LABELS] || v);
+
+  return (
+    <div className="p-3 rounded-xl border border-border/60 bg-muted/40 space-y-3 mt-3">
+      <p className="text-xs text-muted-foreground font-medium">Status Transition Filter</p>
+
+      <div className="space-y-1.5">
+        <label className="text-xs text-muted-foreground font-medium uppercase tracking-wider">From Status</label>
+        <select
+          value={fromStatus}
+          onChange={(e) => setParam('from_status', e.target.value)}
+          className={`${selectClass} w-full`}
+          style={{ paddingRight: '2rem' }}
+        >
+          <option value="">Any status</option>
+          {TASK_STATUSES.map((s) => (
+            <option key={s} value={s}>{TASK_STATUS_LABELS[s]}</option>
+          ))}
+        </select>
+        <p className="text-[10px] text-muted-foreground/70">Only trigger when the task moves <em>from</em> this status. "Any" matches all.</p>
+      </div>
+
+      <div className="space-y-1.5">
+        <label className="text-xs text-muted-foreground font-medium uppercase tracking-wider">To Status</label>
+        <select
+          value={toStatus}
+          onChange={(e) => setParam('to_status', e.target.value)}
+          className={`${selectClass} w-full ${toStatusError ? '!border-destructive' : ''}`}
+          style={{ paddingRight: '2rem' }}
+        >
+          <option value="" disabled>Select target status…</option>
+          {TASK_STATUSES.map((s) => (
+            <option key={s} value={s}>{TASK_STATUS_LABELS[s]}</option>
+          ))}
+        </select>
+        {toStatusError && <p className="text-[11px] text-destructive mt-0.5">⚠ {toStatusError}</p>}
+        <p className="text-[10px] text-muted-foreground/70">Required — the status the task must move <em>to</em> for this trigger to fire.</p>
+      </div>
+
+      <div className="px-3 py-2 rounded-lg bg-primary/5 border border-primary/20">
+        <p className="text-xs text-primary/70">
+          <span className="text-primary font-medium">Preview: </span>
+          {`When a Task moves from ${label(fromStatus)} → ${toStatus ? label(toStatus) : '…'}`}
+        </p>
+      </div>
+    </div>
+  );
+};
+
 // ============================================================
 // Main Component
 // ============================================================
@@ -252,7 +325,7 @@ export const TriggerConfig: React.FC = () => {
   // firesOn is not relevant
   const showFiresOn =
     object && object !== 'webhook' && object !== 'schedule' && object !== 'date_field' &&
-    object !== 'email_opened' && object !== 'email_clicked' && !isDealStageChanged;
+    object !== 'email_opened' && object !== 'email_clicked' && object !== 'task_status_changed' && !isDealStageChanged;
 
   // Fires-on label for preview
   const firesOnLabel = FIRES_ON_OPTIONS.find((o) => o.value === firesOn)?.label?.toLowerCase() || firesOn;
@@ -357,6 +430,9 @@ export const TriggerConfig: React.FC = () => {
           </div>
         )}
 
+        {/* Task Status Changed: From / To status pickers */}
+        {object === 'task_status_changed' && <TaskStatusConfig />}
+
         {/* Schedule (cron) trigger form */}
         {object === 'schedule' && <ScheduleConfig />}
 
@@ -395,8 +471,8 @@ export const TriggerConfig: React.FC = () => {
       {/* Webhook setup instructions (P17) — only for the inbound webhook trigger */}
       {object === 'webhook' && <WebhookSetup />}
 
-      {/* Preview sentence — schedule/date_field render their own preview inline */}
-      {object && object !== 'schedule' && object !== 'date_field' && (
+      {/* Preview sentence — schedule/date_field/task_status_changed render their own preview inline */}
+      {object && object !== 'schedule' && object !== 'date_field' && object !== 'task_status_changed' && (
         <div className="px-3 py-2 rounded-lg bg-primary/5 border border-primary/20">
           <p className="text-xs text-primary/70">
             <span className="text-primary font-medium">Preview: </span>

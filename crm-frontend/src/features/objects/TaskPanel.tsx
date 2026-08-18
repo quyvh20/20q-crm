@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, X } from 'lucide-react';
-import { getTasks, createTask, updateTask, type Task } from '../../lib/api';
+import { getTasks, createTask, updateTask, TASK_STATUSES, TASK_STATUS_LABELS, type Task, type TaskStatus } from '../../lib/api';
+import { Select } from '../../components/ui/select';
 
 // TaskPanel is the generic "tasks on this record" widget (R8.1). It only
 // understands contact_id today — Task has no generic FK, so it can't attach
@@ -38,6 +39,15 @@ export default function TaskPanel({ contactId }: { contactId: string }) {
 
   const toggleMutation = useMutation({
     mutationFn: ({ id, completed }: { id: string; completed: boolean }) => updateTask(id, { completed }),
+    onMutate: ({ id }) => setPending((p) => ({ ...p, [id]: true })),
+    onSettled: (_d, _e, vars) => {
+      setPending((p) => ({ ...p, [vars.id]: false }));
+      queryClient.invalidateQueries({ queryKey });
+    },
+  });
+
+  const statusMutation = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: TaskStatus }) => updateTask(id, { status }),
     onMutate: ({ id }) => setPending((p) => ({ ...p, [id]: true })),
     onSettled: (_d, _e, vars) => {
       setPending((p) => ({ ...p, [vars.id]: false }));
@@ -91,21 +101,34 @@ export default function TaskPanel({ contactId }: { contactId: string }) {
       ) : (
         <div className="space-y-1">
           {tasks.map((t) => (
-            <label key={t.id} className="flex items-center gap-2 rounded-md px-1 py-1 text-sm hover:bg-accent">
-              <input
-                type="checkbox"
-                checked={!!t.completed_at}
-                disabled={!!pending[t.id]}
-                onChange={() => toggleMutation.mutate({ id: t.id, completed: !t.completed_at })}
-                className="h-4 w-4 rounded border-border"
-              />
-              <span className={t.completed_at ? 'text-muted-foreground line-through' : ''}>{t.title}</span>
+            <div key={t.id} className="flex items-center gap-2 rounded-md px-1 py-1 text-sm hover:bg-accent">
+              <label className="flex items-center gap-2 min-w-0 flex-1">
+                <input
+                  type="checkbox"
+                  checked={!!t.completed_at}
+                  disabled={!!pending[t.id]}
+                  onChange={() => toggleMutation.mutate({ id: t.id, completed: !t.completed_at })}
+                  className="h-4 w-4 shrink-0 rounded border-border"
+                />
+                <span className={`truncate ${t.completed_at ? 'text-muted-foreground line-through' : ''}`}>{t.title}</span>
+              </label>
               {t.due_at && (
-                <span className="ml-auto text-xs text-muted-foreground">
+                <span className="shrink-0 text-xs text-muted-foreground">
                   {new Date(t.due_at).toLocaleDateString()}
                 </span>
               )}
-            </label>
+              <Select
+                value={t.status}
+                disabled={!!pending[t.id]}
+                onChange={(e) => statusMutation.mutate({ id: t.id, status: e.target.value as TaskStatus })}
+                aria-label={`Status for "${t.title}"`}
+                className="h-6 w-auto shrink-0 py-0 text-[11px]"
+              >
+                {TASK_STATUSES.map((s) => (
+                  <option key={s} value={s}>{TASK_STATUS_LABELS[s]}</option>
+                ))}
+              </Select>
+            </div>
           ))}
         </div>
       )}

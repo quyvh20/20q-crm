@@ -187,6 +187,7 @@ export const TRIGGER_LABELS: Record<string, string> = {
   contact_created: 'Contact Created',
   contact_updated: 'Contact Updated',
   deal_stage_changed: 'Deal Stage Changed',
+  task_status_changed: 'Task Status Changed',
   no_activity_days: 'No Activity (Days)',
   webhook_inbound: 'Webhook Inbound',
   schedule: 'Schedule',

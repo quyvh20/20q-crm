@@ -108,6 +108,17 @@ const CORE_TRIGGER_ITEMS: PaletteTriggerItem[] = [
   { id: 'company_updated', label: 'Company updated', category: 'Companies', icon: Building2, build: () => ({ type: 'company_updated', params: {} }) },
   { id: 'deal_created', label: 'Deal created', category: 'Deals', icon: CircleDollarSign, build: () => ({ type: 'deal_created', params: {} }) },
   { id: 'deal_stage_changed', label: 'Deal stage updated', category: 'Deals', icon: CircleDollarSign, build: () => ({ type: 'deal_stage_changed', params: {} }) },
+  { id: 'task_created', label: 'Task created', category: 'Tasks', icon: CheckSquare, build: () => ({ type: 'task_created', params: {} }) },
+  {
+    id: 'task_status_changed',
+    label: 'Task status changed',
+    category: 'Tasks',
+    icon: CheckSquare,
+    // to_status has no sensible default (there is no "most common" status the
+    // way deal_stage_changed can default to nothing and let a real pipeline
+    // stage picker fill in) — TaskStatusConfig requires the user to pick one.
+    build: () => ({ type: 'task_status_changed', params: { to_status: '' } }),
+  },
   {
     id: 'email_opened',
     label: 'Email opened',

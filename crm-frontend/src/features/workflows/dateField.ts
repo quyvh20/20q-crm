@@ -139,6 +139,11 @@ export function resolvableObjectsForTrigger(trigger?: TriggerLike | null): Set<s
     primary = (typeof object === 'string' && object) || null;
   } else if (type === 'deal_stage_changed') {
     primary = 'deal';
+  } else if (type === 'task_status_changed') {
+    // The plain task_created/_updated/_deleted triggers already fall into the
+    // generic suffix branch below; only the bespoke type needs its own case,
+    // mirroring deal_stage_changed just above.
+    primary = 'task';
   } else {
     for (const suffix of ['_created', '_updated', '_deleted', '_any']) {
       if (type.endsWith(suffix)) {
@@ -150,11 +155,17 @@ export function resolvableObjectsForTrigger(trigger?: TriggerLike | null): Set<s
 
   if (!primary) return set;
   set.add(primary);
-  // One-hop relation hydration mirrors the backend (deal → contact → company).
+  // One-hop relation hydration mirrors the backend (deal → contact → company;
+  // task → contact/deal → company — see engine.go's task hydration block, which
+  // runs before its company block so a task's contact/deal feed that lookup too).
   if (primary === 'deal') {
     set.add('contact');
     set.add('company');
   } else if (primary === 'contact') {
+    set.add('company');
+  } else if (primary === 'task') {
+    set.add('contact');
+    set.add('deal');
     set.add('company');
   }
   return set;
@@ -181,6 +192,7 @@ export function triggerPrimaryObject(trigger?: TriggerLike | null): string | nul
     return (typeof object === 'string' && object) || null;
   }
   if (type === 'deal_stage_changed') return 'deal';
+  if (type === 'task_status_changed') return 'task';
   for (const suffix of ['_created', '_updated', '_deleted', '_any']) {
     if (type.endsWith(suffix)) return type.slice(0, -suffix.length);
   }
