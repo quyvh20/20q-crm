@@ -15,6 +15,7 @@ import {
   CalendarClock,
   CalendarDays,
   MailOpen,
+  MousePointerClick,
   Users,
   Boxes,
   Mail,
@@ -113,6 +114,13 @@ const CORE_TRIGGER_ITEMS: PaletteTriggerItem[] = [
     category: 'Email',
     icon: MailOpen,
     build: () => ({ type: 'email_opened', params: {} }),
+  },
+  {
+    id: 'email_clicked',
+    label: 'Link clicked',
+    category: 'Email',
+    icon: MousePointerClick,
+    build: () => ({ type: 'email_clicked', params: {} }),
   },
   {
     id: 'schedule',

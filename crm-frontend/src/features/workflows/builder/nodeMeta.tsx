@@ -29,6 +29,7 @@ import {
   CalendarClock,
   CalendarDays,
   MailOpen,
+  MousePointerClick,
   Zap,
   type LucideIcon,
 } from 'lucide-react';
@@ -144,6 +145,7 @@ export function triggerMeta(type: string | undefined): NodeMeta {
       if (type === 'schedule') return asMeta(CalendarClock, TRIGGER_ACCENT);
       if (type === 'date_field') return asMeta(CalendarDays, TRIGGER_ACCENT);
       if (type === 'email_opened') return asMeta(MailOpen, TRIGGER_ACCENT);
+      if (type === 'email_clicked') return asMeta(MousePointerClick, TRIGGER_ACCENT);
       return asMeta(Zap, TRIGGER_ACCENT);
   }
 }
@@ -182,6 +184,7 @@ export function triggerLabel(trigger: TriggerSpec | undefined): string {
     no_activity_days: 'No Activity',
     webhook_inbound: 'Webhook Inbound',
     email_opened: 'Email Opened',
+    email_clicked: 'Link Clicked',
   };
   if (fixed[type]) return fixed[type];
   const slug = objectSlugOf(type);
@@ -206,6 +209,7 @@ export function triggerTitle(trigger: TriggerSpec | undefined): string {
     no_activity_days: 'No activity',
     webhook_inbound: 'Webhook inbound',
     email_opened: 'Email opened',
+    email_clicked: 'Link clicked',
   };
   if (fixed[type]) return fixed[type];
   const slug = objectSlugOf(type);
@@ -242,11 +246,11 @@ export function triggerDescription(trigger: TriggerSpec | undefined): string {
     return days > 0 ? `After ${days} day${days === 1 ? '' : 's'} with no activity.` : 'After a period of inactivity.';
   }
   if (type === 'webhook_inbound') return 'Via an inbound webhook call.';
-  if (type === 'email_opened') {
+  if (type === 'email_opened' || type === 'email_clicked') {
     const campaign = (params.campaign_id as string) || '';
-    return campaign && campaign !== '*'
-      ? 'When a specific campaign email is opened.'
-      : 'When any campaign email is opened.';
+    const what = type === 'email_clicked' ? 'a link in' : '';
+    const scope = campaign && campaign !== '*' ? 'a specific campaign email' : 'any campaign email';
+    return `When ${what} ${scope} is ${type === 'email_clicked' ? 'clicked' : 'opened'}.`.replace('  ', ' ');
   }
   const slug = objectSlugOf(type);
   if (slug) {

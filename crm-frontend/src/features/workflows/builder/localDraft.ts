@@ -60,6 +60,11 @@ function detectTrigger(p: string, schema?: WorkflowSchema | null): TriggerSpec {
     return { type: 'contact_created', params: {} };
   }
   if (/contact.*updated|updated.*contact|profile.*updated/.test(p)) return { type: 'contact_updated', params: {} };
+  // Clicks first: "clicked the link in the email" also matches the open rule's
+  // \bemail\b, so the more specific intent has to win.
+  if (/\bclick(s|ed|ing)?\b[^.]{0,30}\b(link|cta|button)\b|\b(link|cta|button)\b[^.]{0,30}\bclick(s|ed|ing)?\b/.test(p)) {
+    return { type: 'email_clicked', params: {} };
+  }
   if (/\bopen(s|ed|ing)?\b[^.]*\bemail\b|\bemail\b[^.]*\bopen(s|ed|ing)?\b/.test(p)) {
     return { type: 'email_opened', params: {} };
   }
@@ -93,10 +98,11 @@ function detectSteps(p: string, triggerType?: string): WorkflowStep[] {
       body: '',
     }),
   );
-  // For an email_opened trigger, "email" in the prompt is usually the trigger
-  // clause ("when someone opens an email…"), not a send instruction — require a
-  // sending verb so the draft doesn't grow a spurious send_email step.
-  const emailStepRe = triggerType === 'email_opened'
+  // For an engagement trigger, "email" in the prompt is usually the trigger
+  // clause ("when someone opens/clicks a link in an email…"), not a send
+  // instruction — require a sending verb so the draft doesn't grow a spurious
+  // send_email step.
+  const emailStepRe = triggerType === 'email_opened' || triggerType === 'email_clicked'
     ? /\b(send|write|shoot|reply with)\b[^.]*\bemail\b/
     : /\bemail\b/;
   push(emailStepRe, () => actionStep('send_email', { to: '{{contact.email}}', subject: '', body_html: '' }));

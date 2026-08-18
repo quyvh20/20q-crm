@@ -90,3 +90,43 @@ describe('email_opened — catalog + labels', () => {
       .toMatch(/specific campaign/);
   });
 });
+
+// ── email_clicked: same family, so every mirror surface must move together ──
+
+describe('email_clicked', () => {
+  const CLICK = { type: 'email_clicked', params: {} };
+
+  it('hydrates a contact exactly like email_opened', () => {
+    const set = resolvableObjectsForTrigger(CLICK);
+    expect(set.has('contact')).toBe(true);
+    expect(set.has('company')).toBe(true);
+    expect(triggerPrimaryObject(CLICK)).toBe('contact');
+    expect(triggerOwnerObject(CLICK)).toBe('contact');
+    expect(entityKindForTrigger('email_clicked')).toBe('contact');
+  });
+
+  it('is offered in the palette under Email', () => {
+    const item = findTriggerItem('email_clicked', null);
+    expect(item).toBeDefined();
+    expect(item!.category).toBe('Email');
+    expect(item!.build()).toEqual({ type: 'email_clicked', params: {} });
+  });
+
+  it('validates its campaign filter like email_opened', () => {
+    useBuilderStore.setState({ name: 'wf', trigger: { type: 'email_clicked', params: { campaign_id: 'nope' } } });
+    useBuilderStore.getState().addStep(mkAction('a1'), null, null);
+    expect(useBuilderStore.getState().validate()).toBe(false);
+    expect(useBuilderStore.getState().errors['trigger.params.campaign_id']).toBeDefined();
+
+    useBuilderStore.getState().reset();
+    useBuilderStore.setState({ name: 'wf', trigger: { type: 'email_clicked', params: {} } });
+    useBuilderStore.getState().addStep(mkAction('a2'), null, null);
+    expect(useBuilderStore.getState().validate()).toBe(true);
+  });
+
+  it('renders human labels', () => {
+    expect(TRIGGER_LABELS.email_clicked).toBe('Link Clicked');
+    expect(triggerTitle(CLICK)).toBe('Link clicked');
+    expect(triggerDescription(CLICK)).toMatch(/link in any campaign email is clicked/);
+  });
+});

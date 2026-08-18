@@ -54,6 +54,7 @@ function buildEntityList(schema: WorkflowSchema | null): EntityOption[] {
   }
 
   entities.push({ key: 'email_opened', label: 'Email opened', icon: '📧' });
+  entities.push({ key: 'email_clicked', label: 'Link clicked', icon: '🖱️' });
   entities.push({ key: 'schedule', label: 'Schedule', icon: '⏰' });
   entities.push({ key: 'date_field', label: 'Date reached', icon: '📅' });
   entities.push({ key: 'webhook', label: 'Webhook', icon: '🔗' });
@@ -74,6 +75,7 @@ function parseTrigger(trigger: TriggerSpec): { object: string; firesOn: FiresOn 
   if (t === 'schedule') return { object: 'schedule', firesOn: 'any' };
   if (t === 'date_field') return { object: 'date_field', firesOn: 'any' };
   if (t === 'email_opened') return { object: 'email_opened', firesOn: 'any' };
+  if (t === 'email_clicked') return { object: 'email_clicked', firesOn: 'any' };
 
   // Dynamic pattern: {slug}_{event}
   for (const suffix of ['_created', '_updated', '_deleted', '_any'] as const) {
@@ -91,6 +93,9 @@ function parseTrigger(trigger: TriggerSpec): { object: string; firesOn: FiresOn 
 function buildTriggerSpec(object: string, firesOn: FiresOn, params?: Record<string, unknown>): TriggerSpec {
   if (object === 'webhook') {
     return { type: 'webhook_inbound', params: { source: 'custom' } };
+  }
+  if (object === 'email_clicked') {
+    return { type: 'email_clicked', params: { campaign_id: (params?.campaign_id as string) || '' } };
   }
   if (object === 'email_opened') {
     // A fresh object selection starts with no campaign filter. (params only
@@ -137,7 +142,7 @@ const selectClass =
 // the backend emitter — see marketing/webhook_processor.go).
 // ============================================================
 
-const EmailOpenedConfig: React.FC = () => {
+const EmailEngagementConfig: React.FC<{ clicked?: boolean }> = ({ clicked }) => {
   const { trigger, setTrigger, errors } = useBuilderStore();
   const campaigns = useCampaigns();
   const campaignID = (trigger?.params?.campaign_id as string) || '';
@@ -185,8 +190,9 @@ const EmailOpenedConfig: React.FC = () => {
         </p>
       )}
       <p className="text-[10px] text-muted-foreground/70">
-        Fires when a recipient opens a marketing campaign email. Automated opens (Apple Mail
-        privacy proxy) are filtered out, and drip-sequence sends never fire this trigger.
+        {clicked
+          ? 'Fires when a recipient clicks a link in a marketing campaign email. Clicks on the unsubscribe link never fire it, automated clicks from corporate link scanners are filtered out, and drip-sequence sends are excluded.'
+          : 'Fires when a recipient opens a marketing campaign email. Automated opens (Apple Mail privacy proxy) are filtered out, and drip-sequence sends never fire this trigger.'}
       </p>
     </div>
   );
@@ -246,7 +252,7 @@ export const TriggerConfig: React.FC = () => {
   // firesOn is not relevant
   const showFiresOn =
     object && object !== 'webhook' && object !== 'schedule' && object !== 'date_field' &&
-    object !== 'email_opened' && !isDealStageChanged;
+    object !== 'email_opened' && object !== 'email_clicked' && !isDealStageChanged;
 
   // Fires-on label for preview
   const firesOnLabel = FIRES_ON_OPTIONS.find((o) => o.value === firesOn)?.label?.toLowerCase() || firesOn;
@@ -358,7 +364,7 @@ export const TriggerConfig: React.FC = () => {
         {object === 'date_field' && <DateFieldConfig />}
 
         {/* Email-opened trigger form (arc G) */}
-        {object === 'email_opened' && <EmailOpenedConfig />}
+        {(object === 'email_opened' || object === 'email_clicked') && <EmailEngagementConfig clicked={object === 'email_clicked'} />}
 
         {/* Fires on selector */}
         {showFiresOn && (
@@ -408,6 +414,8 @@ export const TriggerConfig: React.FC = () => {
                 ? `When a Webhook receives data`
                 : object === 'email_opened'
                   ? `When a campaign email is opened`
+                  : object === 'email_clicked'
+                    ? `When a link in a campaign email is clicked`
                   : `When a ${entityLabel} is ${firesOnLabel}`}
           </p>
         </div>

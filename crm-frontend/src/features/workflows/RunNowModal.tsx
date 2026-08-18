@@ -38,6 +38,7 @@ export function entityKindForTrigger(triggerType: string | undefined): 'contact'
     case 'contact_updated':
     case 'webhook_inbound':
     case 'email_opened': // the emit hydrates the opener's contact
+    case 'email_clicked':
       return 'contact';
     case 'deal_stage_changed':
       return 'deal';

@@ -33,6 +33,7 @@ const TERMS: Record<string, string> = {
   webhook_inbound: 'Inbound Webhook',
   schedule: 'Schedule',
   email_opened: 'Email Opened',
+  email_clicked: 'Link Clicked',
   // actions
   send_email: 'Send Email',
   create_task: 'Create Task',

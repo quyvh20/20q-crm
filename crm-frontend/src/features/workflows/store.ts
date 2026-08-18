@@ -626,7 +626,7 @@ export function generateActionId(): string {
 function extractObjectSlug(type: string): string {
   if (type === 'deal_stage_changed') return 'deal';
   if (type === 'no_activity_days') return 'contact';
-  if (type === 'email_opened') return 'contact'; // the opener's contact is hydrated
+  if (type === 'email_opened' || type === 'email_clicked') return 'contact'; // the interacting contact is hydrated
   if (type === 'webhook_inbound') return 'webhook';
   for (const suffix of ['_created', '_updated', '_deleted', '_any']) {
     if (type.endsWith(suffix)) return type.slice(0, -suffix.length);
@@ -868,7 +868,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
         if (!errors.trigger) errors.trigger = [];
         errors.trigger.push('Date field is required');
       }
-    } else if (state.trigger.type === 'email_opened') {
+    } else if (state.trigger.type === 'email_opened' || state.trigger.type === 'email_clicked') {
       // Campaign filter is optional; a set value must be a UUID (or ''/'*' = any).
       const campaignID = (state.trigger.params?.campaign_id as string) || '';
       const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

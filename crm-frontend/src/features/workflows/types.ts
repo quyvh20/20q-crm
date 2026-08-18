@@ -173,6 +173,7 @@ export const TRIGGER_LABELS: Record<string, string> = {
   schedule: 'Schedule',
   date_field: 'Date Reached',
   email_opened: 'Email Opened',
+  email_clicked: 'Link Clicked',
 };
 
 export const ACTION_LABELS: Record<ActionType, string> = {

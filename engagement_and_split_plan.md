@@ -154,14 +154,43 @@ workflow side without it.
 
 ### Explicit non-goals (v2 backlog)
 
-`email_clicked` (the click URL isn't even parsed into a struct today —
-`events_models.go:75-94`); sequence-open triggering (+`_enroll_depth` threading);
-**wait-until-EVENT** (different machinery: resumable waits keyed on engagement, not a
-trigger); tagging transactional automation sends (conflicts with the Guardrail-9
-byte-identical-payload rule, `executor_email.go:58-69`); backfill (impossible anyway —
-unattributable events were dropped, not stored).
+**Update 2026-08-18: `email_clicked` SHIPPED** — see the click section below; the
+remaining non-goals stand.
 
----
+Sequence-open/click triggering (+`_enroll_depth` threading); **wait-until-EVENT**
+(different machinery: resumable waits keyed on engagement, not a trigger);
+tagging transactional automation sends (conflicts with the Guardrail-9
+byte-identical-payload rule, `executor_email.go:58-69`); backfill (impossible
+anyway — unattributable events were dropped, not stored).
+
+### `email_clicked` as shipped (2026-08-18)
+
+Built after the open trigger, reusing its campaign gate, contact resolution and
+per-message run key. Three decisions differ from what this plan originally
+assumed:
+
+- **The grace period was KEPT, not dropped.** The plan argued the 75s wait only
+  served the open-side machine filter. That holds only if clicks get no machine
+  filter — but corporate link scanners (Safe Links, Proofpoint) fetch every URL
+  moments after delivery, the click-side twin of Apple MPP. Filtering them needs
+  the delivered row, which needs the wait.
+- **No URL filter in v1**, so the unverified payload shape blocks nothing. The
+  clicked URL still rides in the payload as `{{trigger.link}}`. Dedupe therefore
+  stays per-message, which is the right grain without a per-link filter.
+- **Unsubscribe exclusion matches by PATH, not origin** (`/u/…`,
+  `/api/marketing/u/…`): the link is baked in at send time and mail sits in
+  inboxes for weeks, so comparing against the current `FRONTEND_URL` would
+  un-recognise every link still in flight after an origin change. When the URL
+  cannot be extracted at all, the whole raw payload is scanned for the same
+  markers.
+
+Two defects the review caught and the implementation fixed: typing the click
+fields would have made webhook ingest strict, silently dropping EVERY click
+event (ledger, analytics and the A/B decider included) on any unexpected shape —
+they are `json.RawMessage` with tolerance in `clickedLink()`; and the grace
+repend consumed a retry attempt, so a waiting event could be reaped as
+permanently failed — deferral now gives the attempt back and stops the drain
+loop re-claiming parked rows.
 
 ## Arc S — `split` percentage step
 

@@ -129,8 +129,8 @@ export function resolvableObjectsForTrigger(trigger?: TriggerLike | null): Set<s
     return set; // fires on a clock — no record in the eval context
   } else if (type === 'webhook_inbound') {
     primary = 'contact'; // inbound webhook upserts a contact
-  } else if (type === 'email_opened') {
-    primary = 'contact'; // the opener — the emit hydrates their contact record
+  } else if (type === 'email_opened' || type === 'email_clicked') {
+    primary = 'contact'; // the opener/clicker — the emit hydrates their contact record
   } else if (type === 'no_activity_days') {
     const entity = trigger?.params?.entity;
     primary = (typeof entity === 'string' && entity) || 'contact';
@@ -171,7 +171,7 @@ export function triggerPrimaryObject(trigger?: TriggerLike | null): string | nul
   if (!type) return 'contact'; // safe default before a trigger is chosen
   if (type === 'schedule') return null;
   if (type === 'webhook_inbound') return 'contact';
-  if (type === 'email_opened') return 'contact';
+  if (type === 'email_opened' || type === 'email_clicked') return 'contact';
   if (type === 'no_activity_days') {
     const entity = trigger?.params?.entity;
     return (typeof entity === 'string' && entity) || 'contact';
