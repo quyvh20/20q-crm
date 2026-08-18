@@ -458,10 +458,17 @@ function deepMapStrings(value: unknown, fn: (s: string) => string): unknown {
 }
 
 /**
- * Deep-clone steps with fresh unique ids, rewriting any {{actions.<oldId>...}}
- * template references (in action params + condition rules) to the new ids so
- * intra-subtree references stay valid. Used to copy a merge's post-condition steps
- * into BOTH branches without producing duplicate ids (which the backend rejects).
+ * Deep-clone steps with fresh unique ids, rewriting any actions.<oldId> references
+ * (in action params + condition rules) to the new ids so intra-subtree references
+ * stay valid. Used to copy a merge's post-condition steps into BOTH branches
+ * without producing duplicate ids (which the backend rejects).
+ *
+ * TWO reference forms exist and both must be rewritten. `{{actions.X.y}}` is the
+ * template form, used inside action params. A condition rule's `field` is a BARE
+ * path — `actions.X.happened`, which is how an If/Else branches on a
+ * wait-for-event step (A9). Rewriting only the template form left the copied
+ * condition pointing at a step id that no longer exists, so it resolved to nil,
+ * failed closed, and every run took the No branch with nothing logged.
  */
 function cloneStepsFreshIds(steps: WorkflowStep[]): WorkflowStep[] {
   const idMap = new Map<string, string>();
@@ -477,11 +484,19 @@ function cloneStepsFreshIds(steps: WorkflowStep[]): WorkflowStep[] {
     return cloned;
   };
   const cloned = steps.map(cloneOne);
-  const remapRefs = (str: string): string =>
-    str.replace(/\{\{(\s*)actions\.([A-Za-z0-9_]+)/g, (m, ws: string, oldId: string) => {
+  const remapRefs = (str: string): string => {
+    const templated = str.replace(/\{\{(\s*)actions\.([A-Za-z0-9_]+)/g, (m, ws: string, oldId: string) => {
       const n = idMap.get(oldId);
       return n ? `{{${ws}actions.${n}` : m;
     });
+    // Anchored, so only a string that IS a bare reference is touched — never a
+    // value that merely contains the word. Ids are generated, so a literal that
+    // starts with `actions.<a cloned step id>` is not a realistic collision.
+    return templated.replace(/^actions\.([A-Za-z0-9_]+)/, (m, oldId: string) => {
+      const n = idMap.get(oldId);
+      return n ? `actions.${n}` : m;
+    });
+  };
   const remapStep = (step: WorkflowStep) => {
     if (step.action?.params) step.action.params = deepMapStrings(step.action.params, remapRefs) as Record<string, unknown>;
     if (step.condition) step.condition = deepMapStrings(step.condition, remapRefs) as ConditionGroup;

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { useBuilderStore } from '../store';
+import { useBuilderStore, normalizeMergesInList } from '../store';
 import { delayParamsSchema } from '../schemas';
 import { delayLabel, describeWaitEvent } from '../builder/nodeMeta';
 import { waitStepsBefore, waitOutcomeEntity } from '../builder/waitOutcomes';
@@ -250,5 +250,48 @@ describe('waitOutcomeEntity', () => {
   it('is null when there is nothing to offer', () => {
     expect(waitOutcomeEntity([condition('c1')], 'c1')).toBeNull();
     expect(waitOutcomeEntity([waitStep('w1', 'email_opened')], null)).toBeNull();
+  });
+});
+
+// ═══ the outcome reference must survive a merge auto-split ══════════════════
+
+describe('normalizeMergesInList — wait-outcome references', () => {
+  it('rewrites a BARE actions.<id> condition field when the step is cloned', () => {
+    // A condition rule's `field` is a bare path, not a {{template}} — the only
+    // reference form the clone's remapper used to handle. Left unrewritten, the
+    // copied condition points at a step id that no longer exists, resolves to
+    // nil, fails closed, and every run silently takes the No branch.
+    const post: WorkflowStep[] = [
+      waitStep('w1', 'email_opened'),
+      { id: 'c2', type: 'condition', condition: { op: 'AND', rules: [{ field: 'actions.w1.happened', operator: 'is_true', value: '' }] }, yes_steps: [], no_steps: [] },
+    ];
+    const { steps, changed } = normalizeMergesInList([condition('c1'), ...post]);
+    expect(changed).toBe(true);
+
+    for (const branch of [steps[0].yes_steps!, steps[0].no_steps!]) {
+      const clonedWaitId = branch[0].id;
+      const rule = branch[1].condition!.rules[0];
+      expect(clonedWaitId).not.toBe('w1');
+      expect(rule.field).toBe(`actions.${clonedWaitId}.happened`);
+    }
+  });
+
+  it('still rewrites the {{template}} form', () => {
+    const post: WorkflowStep[] = [
+      waitStep('w1', 'email_opened'),
+      { id: 'a1', type: 'action', action: { id: 'a1', type: 'create_task', params: { title: 'Opened: {{actions.w1.happened}}' } } },
+    ];
+    const { steps } = normalizeMergesInList([condition('c1'), ...post]);
+    const branch = steps[0].yes_steps!;
+    expect(branch[1].action!.params.title).toBe(`Opened: {{actions.${branch[0].id}.happened}}`);
+  });
+
+  it('leaves an unrelated string alone', () => {
+    const post: WorkflowStep[] = [
+      waitStep('w1', 'email_opened'),
+      { id: 'a1', type: 'action', action: { id: 'a1', type: 'create_task', params: { title: 'actions.someone_else.happened' } } },
+    ];
+    const { steps } = normalizeMergesInList([condition('c1'), ...post]);
+    expect(steps[0].yes_steps![1].action!.params.title).toBe('actions.someone_else.happened');
   });
 });

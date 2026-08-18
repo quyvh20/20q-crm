@@ -1322,11 +1322,29 @@ const DEFAULT_WAIT_TIMEOUT_SEC = 3 * 86400; // 3 days — long enough for a week
 // DelayParams: a mode toggle switches between a fixed duration (A4), a
 // wait-until deadline resolved from a record date field (A4.4), and a
 // wait-for-event park that ends early when the contact engages (A9).
-const DelayParams: React.FC<ParamProps> = ({ action, setParam }) => {
-  const { schema, updateAction, trigger } = useBuilderStore();
+const DelayParams: React.FC<ParamProps> = ({ action, setParam, }) => {
+  const { schema, updateAction, trigger, findStep, steps } = useBuilderStore();
   const setParams = (obj: Record<string, unknown>) => updateAction(action.id, { params: obj });
 
+  // Mode switching reads the STEP, not `action.params`. flattenSteps emits only
+  // the ACTIVE mode's keys, so the moment a step leaves event mode its
+  // wait_event / timeout_sec / campaign_id are absent from the flattened action —
+  // and rebuilding the mode from there would silently reset the user's event,
+  // their campaign pin and their timeout to defaults on a there-and-back toggle.
+  // step.delay keeps them; `steps` is in the read so this re-evaluates on edit.
+  void steps;
+  const stored = findStep(action.id)?.delay;
+
   const mode = delayModeOf(action.params);
+
+  // wait_event IS the mode discriminator, so leaving event mode has to clear it
+  // from the step — but the user's choice of event should not evaporate because
+  // they glanced at another mode. Remembered here, adjusted during render so it
+  // tracks the step when the step itself changes.
+  const [lastEvent, setLastEvent] = useState<WaitEventType>((stored?.wait_event as WaitEventType) || 'email_opened');
+  if (stored?.wait_event && stored.wait_event !== lastEvent) {
+    setLastEvent(stored.wait_event as WaitEventType);
+  }
   // Only offer date fields the run's eval context can actually resolve for this trigger.
   const resolvable = useMemo(() => resolvableObjectsForTrigger(trigger), [trigger]);
   const groups = useMemo(() => dateFieldsByObject(schema, resolvable), [schema, resolvable]);
@@ -1343,17 +1361,24 @@ const DelayParams: React.FC<ParamProps> = ({ action, setParam }) => {
     // and quietly run a different kind of wait than the panel is showing.
     if (next === 'event') {
       setParams({
-        wait_event: (action.params.wait_event as string) || 'email_opened',
-        timeout_sec: Number(action.params.timeout_sec) || DEFAULT_WAIT_TIMEOUT_SEC,
-        campaign_id: (action.params.campaign_id as string) || '',
+        wait_event: stored?.wait_event || lastEvent,
+        timeout_sec: Number(stored?.timeout_sec) || DEFAULT_WAIT_TIMEOUT_SEC,
+        campaign_id: stored?.campaign_id || '',
         until_field: '',
         duration_sec: 0,
       });
     } else if (next === 'until') {
-      const first = groups[0]?.fields[0]?.path || '';
-      setParams({ wait_event: '', until_field: first, offset_days: 0, at_time: DEFAULT_AT_TIME, timezone: browserTimeZone(), duration_sec: 0 });
+      const first = stored?.until_field || groups[0]?.fields[0]?.path || '';
+      setParams({
+        wait_event: '',
+        until_field: first,
+        offset_days: stored?.offset_days ?? 0,
+        at_time: stored?.at_time || DEFAULT_AT_TIME,
+        timezone: stored?.timezone || browserTimeZone(),
+        duration_sec: 0,
+      });
     } else {
-      setParams({ wait_event: '', until_field: '', duration_sec: Number(action.params.duration_sec) || 60 });
+      setParams({ wait_event: '', until_field: '', duration_sec: Number(stored?.duration_sec) || 60 });
     }
   };
 
