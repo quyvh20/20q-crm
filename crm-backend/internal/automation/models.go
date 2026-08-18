@@ -526,8 +526,8 @@ var ValidOperators = map[string]bool{
 	// (useSchema.ts BOOLEAN_BASE) and auto-selects the first when the field type
 	// changes, so every boolean condition a user can build arrives as one of
 	// them. They were missing here, which made the payload a 400 and left
-	// boolean fields unconditionable through the UI — including the
-	// wait-for-event outcome the Wait step tells you to branch on.
+	// every boolean field impossible to filter on through the UI — including
+	// the wait-for-event outcome the Wait step tells you to branch on.
 	"is_true": true, "is_false": true,
 }
 
