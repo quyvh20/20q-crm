@@ -274,7 +274,7 @@ func validateTrigger(data []byte, result *ValidationResult) {
 
 	// Validate trigger-specific params
 	switch trigger.Type {
-	case TriggerEmailOpened:
+	case TriggerEmailOpened, TriggerEmailClicked:
 		// Params are optional; campaign_id, when present, must be a UUID or ""/"*".
 		if trigger.Params != nil {
 			if raw, ok := trigger.Params["campaign_id"]; ok {

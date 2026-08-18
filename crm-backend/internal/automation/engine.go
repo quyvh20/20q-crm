@@ -522,9 +522,9 @@ func (e *Engine) triggerEventInternal(ctx context.Context, orgID uuid.UUID, even
 			}
 		}
 
-		// --- Campaign filtering (email_opened) ---
-		// An email_opened trigger may pin a specific campaign; empty/"*" = any.
-		if eventType == TriggerEmailOpened {
+		// --- Campaign filtering (email_opened / email_clicked) ---
+		// An engagement trigger may pin a specific campaign; empty/"*" = any.
+		if isEngagementTrigger(eventType) {
 			var triggerSpec TriggerSpec
 			if err := json.Unmarshal(wf.Trigger, &triggerSpec); err == nil && triggerSpec.Params != nil {
 				reqCampaign, _ := triggerSpec.Params["campaign_id"].(string)
@@ -546,11 +546,13 @@ func (e *Engine) triggerEventInternal(ctx context.Context, orgID uuid.UUID, even
 			entityID = fmt.Sprintf("%v", id)
 		}
 		var idempKey string
-		if emailID, _ := payload["email_id"].(string); eventType == TriggerEmailOpened && emailID != "" {
-			// Once per (workflow, contact, MESSAGE): repeated opens of the same
-			// email — every pixel load is a fresh webhook event — are absorbed
-			// forever (within the 90-day run-prune horizon), while opens of a
-			// different campaign email still enroll.
+		if emailID, _ := payload["email_id"].(string); isEngagementTrigger(eventType) && emailID != "" {
+			// Once per (workflow, contact, MESSAGE): repeated interactions with
+			// the same email — every pixel load and every re-click is a fresh
+			// webhook event — are absorbed forever (within the 90-day run-prune
+			// horizon), while a different campaign email still enrolls. v1 has
+			// no per-link filter, so one key per message is the right grain for
+			// clicks too: "they engaged with this email", not "with this URL".
 			idempKey = emailOpenedIdempKey(wf.ID, eventType, entityID, emailID)
 		} else {
 			eventTime := time.Now().Truncate(time.Minute).Unix()

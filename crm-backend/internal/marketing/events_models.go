@@ -88,9 +88,80 @@ type resendEventData struct {
 	// tolerated by the tag() reader.
 	Tags   json.RawMessage `json:"tags,omitempty"`
 	Bounce *resendBounce   `json:"bounce,omitempty"`
+	// Click carries the clicked URL on email.clicked. RawMessage, NOT a typed
+	// struct, for the same reason as To and Tags above: the shape is unverified
+	// against a live payload, and this struct is what parseResendEnvelope
+	// decodes — a type mismatch here aborts the WHOLE unmarshal, and the
+	// handler treats an unparseable body as "ack + drop", so one unexpected
+	// click shape would silently bin every click event (ledger, analytics and
+	// the A/B decider included), permanently, with only a Warn line. Tolerance
+	// belongs in clickedLink(), where a surprise costs the link and nothing else.
+	Click json.RawMessage `json:"click,omitempty"`
+	Link  json.RawMessage `json:"link,omitempty"`
 	// Some Resend bounce payloads carry the classification at the top of data rather
 	// than under a nested bounce object; accept both.
 	BounceType string `json:"bounce_type,omitempty"`
+}
+
+// clickedLink returns the clicked URL from whichever shape the payload used,
+// and "" when none is recognisable. Every branch is independently guarded: an
+// unexpected shape must never propagate an error, because the caller decides
+// safety (isOptOutClick) from the whole raw body when this returns "".
+func (d resendEventData) clickedLink() string {
+	// data.click as an object: {"link": "..."} or {"url": "..."}.
+	if len(d.Click) > 0 {
+		var obj struct {
+			Link string `json:"link"`
+			URL  string `json:"url"`
+		}
+		if err := json.Unmarshal(d.Click, &obj); err == nil {
+			if obj.Link != "" {
+				return obj.Link
+			}
+			if obj.URL != "" {
+				return obj.URL
+			}
+		}
+		// data.click as a bare string, or an array whose first entry holds it.
+		var str string
+		if err := json.Unmarshal(d.Click, &str); err == nil && str != "" {
+			return str
+		}
+		var arr []struct {
+			Link string `json:"link"`
+			URL  string `json:"url"`
+		}
+		if err := json.Unmarshal(d.Click, &arr); err == nil {
+			for _, c := range arr {
+				if c.Link != "" {
+					return c.Link
+				}
+				if c.URL != "" {
+					return c.URL
+				}
+			}
+		}
+	}
+	// Flat data.link, as a string or an object carrying it.
+	if len(d.Link) > 0 {
+		var str string
+		if err := json.Unmarshal(d.Link, &str); err == nil && str != "" {
+			return str
+		}
+		var obj struct {
+			URL  string `json:"url"`
+			Href string `json:"href"`
+		}
+		if err := json.Unmarshal(d.Link, &obj); err == nil {
+			if obj.URL != "" {
+				return obj.URL
+			}
+			if obj.Href != "" {
+				return obj.Href
+			}
+		}
+	}
+	return ""
 }
 
 // tag returns the value of an echoed send-time tag, or "".

@@ -10,6 +10,8 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm/clause"
+
+	"gorm.io/gorm"
 )
 
 // InsertEvent inserts a webhook event, deduped on (org_id, svix_id) via ON CONFLICT
@@ -180,6 +182,21 @@ func (r *Repository) DeliverabilityRates(ctx context.Context, orgID uuid.UUID, w
 		out.BounceRate = float64(out.HardBounces) / float64(out.Sent)
 	}
 	return out, nil
+}
+
+// DeferEvent puts a claimed event back to pending and GIVES BACK the attempt the
+// claim consumed, so an event that is merely waiting on a time window can never
+// exhaust its retry budget and be reaped as permanently failed.
+func (r *Repository) DeferEvent(ctx context.Context, orgID, eventID uuid.UUID, note string) error {
+	return r.db.WithContext(ctx).
+		Model(&MarketingEmailEvent{}).
+		Where("id = ? AND org_id = ?", eventID, orgID).
+		Updates(map[string]any{
+			"status":     EventStatusPending,
+			"claimed_at": nil,
+			"error":      note,
+			"attempts":   gorm.Expr("GREATEST(attempts - 1, 0)"),
+		}).Error
 }
 
 // CampaignExists reports whether id is a LIVE campaign of the org — the

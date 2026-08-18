@@ -3290,9 +3290,10 @@ func main() {
 		// Wired only when the engine exists; a nil bridge disables emission
 		// (fail-closed, like every other port here).
 		if autoEngine != nil {
-			marketingResendProcessor.SetOpenTrigger(&marketing.OpenTriggerBridge{
+			marketingResendProcessor.SetEngagementTrigger(&marketing.EngagementBridge{
 				TriggerEvent: autoEngine.TriggerEvent,
 				LoadContact:  autoEngine.LoadContactForTrigger,
+				FrontendURL:  cfg.FrontendURL,
 			})
 		}
 		go marketing.StartResendWebhookProcessor(context.Background(), marketingResendProcessor)

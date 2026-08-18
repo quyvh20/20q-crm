@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,6 +47,9 @@ type resendConsumerStore interface {
 	SetMarketingStatus(ctx context.Context, orgID uuid.UUID, emailNorm, status string) error
 	SetMarketingPaused(ctx context.Context, orgID uuid.UUID, paused bool) error
 	DeliverabilityRates(ctx context.Context, orgID uuid.UUID, window time.Duration) (DeliverabilityRates, error)
+	// DeferEvent returns a claimed event to pending WITHOUT consuming a retry
+	// attempt — for waiting on the clock rather than recovering from an error.
+	DeferEvent(ctx context.Context, orgID, eventID uuid.UUID, note string) error
 	// Engagement-trigger support (arc G): the campaign gate + machine-open check.
 	CampaignExists(ctx context.Context, orgID, campaignID uuid.UUID) (bool, error)
 	HadDeliveredWithin(ctx context.Context, orgID uuid.UUID, emailNorm string, campaignID uuid.UUID, at time.Time, window time.Duration) (bool, error)
@@ -57,41 +62,45 @@ type resendConsumerStore interface {
 // start automations.
 const machineOpenWindow = 10 * time.Second
 
-// openTriggerGrace defers the machine-open check until the delivered event has
+// engagementGrace defers the machine-open check until the delivered event has
 // had time to arrive: it lands on a DIFFERENT webhook with no cross-event
 // ordering guarantee, and evaluating too early reads "no delivered row yet" as
 // "human open" (fail-open). 75s covers Svix's immediate + short retries; a
 // delivered delayed further (e.g. a long backoff after an endpoint outage) is
 // accepted residual risk — the alternative is minutes of latency on every
 // open-triggered workflow.
-const openTriggerGrace = 75 * time.Second
+const engagementGrace = 75 * time.Second
 
-// OpenTriggerBridge hands the processor the automation-engine entry points it
+// EngagementBridge hands the processor the automation-engine entry points it
 // needs to start "email opened" workflows (wired in main.go; marketing →
 // automation is the allowed import direction, but func fields keep this
 // consumer testable without an engine). nil bridge = no emission (the house
 // fail-closed wiring convention).
-type OpenTriggerBridge struct {
+type EngagementBridge struct {
 	// TriggerEvent is automation Engine.TriggerEvent (fire-and-forget).
 	TriggerEvent func(ctx context.Context, orgID uuid.UUID, eventType string, payload map[string]any)
 	// LoadContact is automation Engine.LoadContactForTrigger: resolve by the
 	// send's contact_id tag first, else by normalized email; nil map = no match.
 	LoadContact func(ctx context.Context, orgID, contactID uuid.UUID, email string) (map[string]any, uuid.UUID, error)
+	// FrontendURL is the SPA origin used to recognise this product's own
+	// unsubscribe / preference-centre link in a click payload. Empty still
+	// matches the one-click /api/marketing/u/ form.
+	FrontendURL string
 }
 
-// SetOpenTrigger wires the engagement bridge (nil disables emission).
-func (p *ResendProcessor) SetOpenTrigger(b *OpenTriggerBridge) {
-	p.openTrigger = b
+// SetEngagementTrigger wires the engagement bridge (nil disables emission).
+func (p *ResendProcessor) SetEngagementTrigger(b *EngagementBridge) {
+	p.engagement = b
 }
 
 // ResendProcessor drains the marketing_email_events queue and applies suppression +
 // the deliverability breaker off the request path. Callerless: it reads org scope off
 // each claimed row (persisted at enqueue), never from an actor.
 type ResendProcessor struct {
-	store       resendConsumerStore
-	logger      *slog.Logger
-	dedupe      *alertDedupe
-	openTrigger *OpenTriggerBridge // nil = engagement triggers disabled
+	store      resendConsumerStore
+	logger     *slog.Logger
+	dedupe     *alertDedupe
+	engagement *EngagementBridge // nil = engagement triggers disabled
 }
 
 // NewResendProcessor builds the processor.
@@ -132,8 +141,17 @@ func (p *ResendProcessor) drain(ctx context.Context) {
 			p.logger.Error("marketing: claim pending resend events failed", "error", err)
 			return
 		}
+		deferred := 0
 		for i := range events {
-			p.process(ctx, events[i])
+			if p.process(ctx, events[i]) {
+				deferred++
+			}
+		}
+		// A deferred event is pending again immediately, so continuing to drain
+		// would re-claim the very rows we just parked and spin this tick against
+		// the clock. Stop once the batch was entirely waiting.
+		if deferred == len(events) {
+			return
 		}
 		if len(events) < resendClaimBatch {
 			return
@@ -143,25 +161,30 @@ func (p *ResendProcessor) drain(ctx context.Context) {
 
 // process applies one event and marks it terminal, or repends it on a transient
 // error while retry budget remains.
-func (p *ResendProcessor) process(ctx context.Context, evt MarketingEmailEvent) {
-	// Campaign opens sit out a grace period before the machine-open check runs
-	// (see openTriggerGrace). Repending keeps the event pending; the attempts
-	// counter only gates the ERROR path below, which ledger-only events never
-	// take, so repeated grace repends can't fail the event.
-	if p.shouldDeferOpen(evt) {
-		_ = p.store.RependEvent(ctx, evt.OrgID, evt.ID, "email_opened grace: waiting for the delivered event")
-		return
+// process returns true when the event was DEFERRED rather than handled, so the
+// drain loop can stop re-claiming a batch that is only waiting on the clock.
+func (p *ResendProcessor) process(ctx context.Context, evt MarketingEmailEvent) (deferred bool) {
+	// Campaign opens/clicks sit out a grace period before the machine check runs
+	// (see engagementGrace). Deferring is NOT a retry: DeferEvent gives back the
+	// attempt the claim consumed, because a claim-increments/repend-never-resets
+	// pair would otherwise push a waiting event past resendMaxAttempts and let
+	// the stranded-event reaper mark it permanently failed for doing nothing
+	// wrong.
+	if p.shouldDeferEngagement(evt) {
+		_ = p.store.DeferEvent(ctx, evt.OrgID, evt.ID, "engagement grace: waiting for the delivered event")
+		return true
 	}
 	if err := p.apply(ctx, evt); err != nil {
 		if evt.Attempts >= resendMaxAttempts {
 			_ = p.store.FinishEvent(ctx, evt.OrgID, evt.ID, EventStatusFailed, err.Error())
 			p.logger.Error("marketing: resend event permanently failed", "error", err, "svix_id", evt.SvixID, "type", evt.EventType)
-			return
+			return false
 		}
 		_ = p.store.RependEvent(ctx, evt.OrgID, evt.ID, err.Error())
-		return
+		return false
 	}
 	_ = p.store.FinishEvent(ctx, evt.OrgID, evt.ID, EventStatusDone, "")
+	return false
 }
 
 // apply performs the side effects for one event. Delivered/sent/opened/clicked etc.
@@ -203,97 +226,189 @@ func (p *ResendProcessor) apply(ctx context.Context, evt MarketingEmailEvent) er
 		// Opens additionally feed the email_opened automation trigger —
 		// best-effort: a failed emit must never repend a ledger-only event
 		// (redelivery is already absorbed by the engine's per-message run key).
-		if evt.EventType == ResendTypeOpened {
-			p.maybeEmitOpenTrigger(ctx, evt)
+		switch evt.EventType {
+		case ResendTypeOpened:
+			p.emitEngagementTrigger(ctx, evt, automation.TriggerEmailOpened)
+		case ResendTypeClicked:
+			p.emitEngagementTrigger(ctx, evt, automation.TriggerEmailClicked)
 		}
 	}
 	return nil
 }
 
-// shouldDeferOpen reports whether a campaign open is still inside the
-// delivered-event grace window (only opens that could EMIT are deferred —
-// uncampaigned opens finish immediately).
-func (p *ResendProcessor) shouldDeferOpen(evt MarketingEmailEvent) bool {
-	if p.openTrigger == nil || evt.EventType != ResendTypeOpened || evt.CampaignID == nil {
+// shouldDeferEngagement reports whether an engagement event is still inside the
+// delivered-event grace window (only events that could EMIT are deferred —
+// uncampaigned ones finish immediately).
+func (p *ResendProcessor) shouldDeferEngagement(evt MarketingEmailEvent) bool {
+	if p.engagement == nil || evt.CampaignID == nil {
 		return false
 	}
-	openAt := evt.CreatedAt
-	if evt.OccurredAt != nil {
-		openAt = *evt.OccurredAt
+	if evt.EventType != ResendTypeOpened && evt.EventType != ResendTypeClicked {
+		return false
 	}
-	return time.Since(openAt) < openTriggerGrace
+	return time.Since(engagementAt(evt)) < engagementGrace
 }
 
-// maybeEmitOpenTrigger starts email_opened workflows for a human campaign open.
+// engagementAt is when the interaction happened per Resend, falling back to
+// ingest time when the payload carried no usable timestamp.
+func engagementAt(evt MarketingEmailEvent) time.Time {
+	if evt.OccurredAt != nil {
+		return *evt.OccurredAt
+	}
+	return evt.CreatedAt
+}
+
+// emitEngagementTrigger starts email_opened / email_clicked workflows for a
+// HUMAN interaction with a real campaign email.
 //
-// v1 scope (engagement_and_split_plan.md arc G, locked): CAMPAIGN opens only —
-// the event's campaign_id must resolve to a marketing_campaigns row. M8
+// v1 scope (engagement_and_split_plan.md arc G, locked): CAMPAIGN mail only —
+// the event's campaign_id must resolve to a live marketing_campaigns row. M8
 // sequence sends echo the WORKFLOW uuid in that tag and 1:1 sends carry none;
-// skipping both structurally prevents the open → send → open trigger loop that
-// no other engine guard covers. Machine opens (Apple MPP / proxy prefetch,
-// ≤10s after delivery) are filtered with the analytics heuristic.
-func (p *ResendProcessor) maybeEmitOpenTrigger(ctx context.Context, evt MarketingEmailEvent) {
-	if p.openTrigger == nil || p.openTrigger.TriggerEvent == nil || p.openTrigger.LoadContact == nil {
+// skipping both structurally prevents the interaction → send → interaction
+// trigger loop that no other engine guard covers.
+//
+// Automated interactions are filtered by the same delivered-within-window
+// heuristic for both event types. For opens that is Apple MPP and friends
+// prefetching the pixel; for clicks it is corporate link scanners (Outlook
+// Safe Links, Proofpoint, Barracuda) fetching every URL in the message
+// moments after delivery. Both fire within seconds of delivery, which is what
+// the window keys on, and both would otherwise enrol someone who never
+// touched the email.
+func (p *ResendProcessor) emitEngagementTrigger(ctx context.Context, evt MarketingEmailEvent, triggerType string) {
+	if p.engagement == nil || p.engagement.TriggerEvent == nil || p.engagement.LoadContact == nil {
 		return
 	}
 	if evt.EmailNormalized == "" || evt.CampaignID == nil {
 		return
 	}
 
+	// A click on the unsubscribe / preference-centre link must NEVER start a
+	// workflow. Every marketing email carries that link and click tracking
+	// rewrites it like any other, so without this an "on click" automation
+	// would enrol someone at the exact moment they asked to hear less from us.
+	// Checked before anything else so no lookup can change the outcome.
+	link := ""
+	if triggerType == automation.TriggerEmailClicked {
+		link = clickedLink(evt)
+		if p.isOptOutClick(link, evt) {
+			return
+		}
+	}
+
 	isCampaign, err := p.store.CampaignExists(ctx, evt.OrgID, *evt.CampaignID)
 	if err != nil {
-		p.logger.Warn("marketing: open-trigger campaign lookup failed", "error", err, "org_id", evt.OrgID.String())
+		p.logger.Warn("marketing: engagement-trigger campaign lookup failed", "error", err, "org_id", evt.OrgID.String(), "type", evt.EventType)
 		return
 	}
 	if !isCampaign {
 		return // sequence (workflow-uuid tag) or unknown attribution — out of v1 scope
 	}
 
-	openAt := evt.CreatedAt
-	if evt.OccurredAt != nil {
-		openAt = *evt.OccurredAt
-	}
-	machine, err := p.store.HadDeliveredWithin(ctx, evt.OrgID, evt.EmailNormalized, *evt.CampaignID, openAt, machineOpenWindow)
+	machine, err := p.store.HadDeliveredWithin(ctx, evt.OrgID, evt.EmailNormalized, *evt.CampaignID, engagementAt(evt), machineOpenWindow)
 	if err != nil {
-		p.logger.Warn("marketing: open-trigger delivery lookup failed", "error", err, "org_id", evt.OrgID.String())
+		p.logger.Warn("marketing: engagement-trigger delivery lookup failed", "error", err, "org_id", evt.OrgID.String(), "type", evt.EventType)
 		return
 	}
 	if machine {
-		return // MPP/proxy prefetch, not a human open
+		return // mailbox prefetch or link scanner, not a person
 	}
 
-	taggedContactID, emailID := openEventIdentity(evt)
-	fields, contactID, err := p.openTrigger.LoadContact(ctx, evt.OrgID, taggedContactID, evt.EmailNormalized)
+	taggedContactID, emailID := engagementIdentity(evt)
+	fields, contactID, err := p.engagement.LoadContact(ctx, evt.OrgID, taggedContactID, evt.EmailNormalized)
 	if err != nil {
-		p.logger.Warn("marketing: open-trigger contact resolution failed", "error", err, "org_id", evt.OrgID.String())
+		p.logger.Warn("marketing: engagement-trigger contact resolution failed", "error", err, "org_id", evt.OrgID.String(), "type", evt.EventType)
 		return
 	}
 	if fields == nil {
-		p.logger.Warn("marketing: open with no matching contact — skipping trigger",
-			"org_id", evt.OrgID.String(), "svix_id", evt.SvixID)
+		p.logger.Warn("marketing: engagement event with no matching contact — skipping trigger",
+			"org_id", evt.OrgID.String(), "svix_id", evt.SvixID, "type", evt.EventType)
 		return
 	}
 
+	trigger := map[string]any{
+		"type":        triggerType,
+		"source":      "resend_webhook",
+		"campaign_id": evt.CampaignID.String(),
+		"email_id":    emailID,
+	}
 	payload := map[string]any{
 		"contact":     fields,
 		"entity_id":   contactID.String(),
 		"email_id":    emailID, // keys the engine's per-message run dedupe
 		"campaign_id": evt.CampaignID.String(),
-		"trigger": map[string]any{
-			"type":        automation.TriggerEmailOpened,
-			"source":      "resend_webhook",
-			"campaign_id": evt.CampaignID.String(),
-			"email_id":    emailID,
-		},
+		"trigger":     trigger,
+	}
+	// The clicked URL rides in the payload so a workflow can interpolate it
+	// ({{trigger.link}}) even though v1 offers no link FILTER — filtering needs
+	// the payload shape confirmed against a real click first.
+	if link != "" {
+		payload["link"] = link
+		trigger["link"] = link
 	}
 	// context.Background(): TriggerEvent's goroutine inherits the caller's ctx,
 	// and this must outlive any drain-loop cancellation (the house idiom).
-	p.openTrigger.TriggerEvent(context.Background(), evt.OrgID, automation.TriggerEmailOpened, payload)
+	p.engagement.TriggerEvent(context.Background(), evt.OrgID, triggerType, payload)
 }
 
-// openEventIdentity re-reads the raw webhook payload for the send's contact_id
+// clickedLink pulls the clicked URL out of the raw webhook payload. Resend's
+// click shape is not pinned by any fixture in this repo and has not been
+// verified against a real payload, so every plausible key is tried rather than
+// trusting one — a miss here only costs the {{trigger.link}} value, while
+// isOptOutClick has its own shape-independent fallback.
+func clickedLink(evt MarketingEmailEvent) string {
+	var env resendEnvelope
+	if err := json.Unmarshal(evt.RawPayload, &env); err != nil {
+		return ""
+	}
+	return env.Data.clickedLink()
+}
+
+// isOptOutClick reports whether a clicked URL is this product's unsubscribe or
+// preference-centre link (render.go's PreferenceCenterURL / OneClickUnsubURL).
+//
+// Matching is by PATH, not by origin. The link was baked into the email at SEND
+// time from whatever FRONTEND_URL held then, and mail sits in inboxes for weeks
+// — an origin change (preview domain to custom domain, apex to www, a rebrand)
+// would silently un-recognise every unsubscribe link still in flight if we
+// compared against the current value. The configured origin is still consulted
+// as a positive signal, but never as a requirement.
+//
+// When the URL could not be extracted at all, the whole raw payload is scanned
+// for the same markers: the click shape is unverified, and an exclusion that
+// fails open would enrol people at the worst possible moment. Erring toward
+// suppressing a genuine click is the correct direction here.
+func (p *ResendProcessor) isOptOutClick(link string, evt MarketingEmailEvent) bool {
+	if link == "" {
+		return optOutMarkerIn(string(evt.RawPayload))
+	}
+	if u, err := url.Parse(link); err == nil && u.Path != "" {
+		// "/u/<token>" (preference centre) or "/api/marketing/u/<token>"
+		// (one-click), whatever host they now resolve through.
+		if strings.HasPrefix(u.Path, "/u/") || strings.Contains(u.Path, "/api/marketing/u/") {
+			return true
+		}
+	}
+	// Unparseable, or a tracking wrapper carrying the real URL inside a query
+	// parameter — fall back to substring markers over the whole value.
+	if optOutMarkerIn(link) {
+		return true
+	}
+	if p.engagement != nil {
+		if base := strings.TrimRight(p.engagement.FrontendURL, "/"); base != "" && strings.Contains(link, base+"/u/") {
+			return true
+		}
+	}
+	return false
+}
+
+// optOutMarkerIn spots either unsubscribe URL form inside an arbitrary string.
+func optOutMarkerIn(s string) bool {
+	return strings.Contains(s, "/api/marketing/u/") || strings.Contains(s, "/u/")
+}
+
+// engagementIdentity re-reads the raw webhook payload for the send's contact_id
 // attribution tag and the Resend message id (neither is a ledger column).
-func openEventIdentity(evt MarketingEmailEvent) (contactID uuid.UUID, emailID string) {
+func engagementIdentity(evt MarketingEmailEvent) (contactID uuid.UUID, emailID string) {
 	var env resendEnvelope
 	if err := json.Unmarshal(evt.RawPayload, &env); err != nil {
 		return uuid.Nil, ""

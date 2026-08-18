@@ -30,8 +30,8 @@ type bridgeRecorder struct {
 	}
 }
 
-func (b *bridgeRecorder) bridge() *OpenTriggerBridge {
-	return &OpenTriggerBridge{
+func (b *bridgeRecorder) bridge() *EngagementBridge {
+	return &EngagementBridge{
 		TriggerEvent: func(_ context.Context, orgID uuid.UUID, eventType string, payload map[string]any) {
 			b.orgs = append(b.orgs, orgID)
 			b.types = append(b.types, eventType)
@@ -58,7 +58,7 @@ func openEvent(orgID uuid.UUID, campaignID *uuid.UUID) MarketingEmailEvent {
 	})
 	// Past the delivered-event grace window — these tests exercise the emit
 	// path itself; the grace deferral has its own tests below.
-	occurred := time.Now().Add(-2 * openTriggerGrace)
+	occurred := time.Now().Add(-2 * engagementGrace)
 	return MarketingEmailEvent{
 		ID:              uuid.New(),
 		OrgID:           orgID,
@@ -78,14 +78,15 @@ func TestOpenTrigger_FreshOpenDefersForDeliveredEvent(t *testing.T) {
 	rec := &bridgeRecorder{contact: map[string]any{"id": "c1"}, contactID: uuid.New()}
 
 	p := newProc(store)
-	p.SetOpenTrigger(rec.bridge())
+	p.SetEngagementTrigger(rec.bridge())
 	evt := openEvent(org, &campaign)
 	now := time.Now()
 	evt.OccurredAt = &now // inside the grace window
 
 	p.process(context.Background(), evt)
 
-	assert.Equal(t, 1, store.repended, "a fresh campaign open must repend, not process")
+	assert.Equal(t, 1, store.deferred, "a fresh campaign open is DEFERRED, not processed")
+	assert.Zero(t, store.repended, "deferring must not consume a retry attempt")
 	assert.Empty(t, store.finished)
 	assert.Empty(t, rec.events)
 	assert.Zero(t, store.deliveredQueries, "the machine-open check must not run early")
@@ -98,14 +99,14 @@ func TestOpenTrigger_GraceDoesNotDeferOtherEvents(t *testing.T) {
 	rec := &bridgeRecorder{contact: map[string]any{"id": "c1"}, contactID: uuid.New()}
 
 	p := newProc(store)
-	p.SetOpenTrigger(rec.bridge())
+	p.SetEngagementTrigger(rec.bridge())
 
 	// An uncampaigned fresh open finishes immediately (it can never emit).
 	evt := openEvent(org, nil)
 	now := time.Now()
 	evt.OccurredAt = &now
 	p.process(context.Background(), evt)
-	assert.Zero(t, store.repended)
+	assert.Zero(t, store.deferred, "an uncampaigned open can never emit, so it must not wait")
 	assert.Equal(t, []string{EventStatusDone}, store.finished)
 
 	// A matured campaign open processes straight through and emits.
@@ -121,7 +122,7 @@ func TestOpenTrigger_EmitsForHumanCampaignOpen(t *testing.T) {
 	rec := &bridgeRecorder{contact: map[string]any{"id": "c1", "email": "opener@example.com"}, contactID: uuid.New()}
 
 	p := newProc(store)
-	p.SetOpenTrigger(rec.bridge())
+	p.SetEngagementTrigger(rec.bridge())
 	require.NoError(t, p.apply(context.Background(), openEvent(org, &campaign)))
 
 	require.Len(t, rec.events, 1)
@@ -147,7 +148,7 @@ func TestOpenTrigger_SkipsNonCampaignAttribution(t *testing.T) {
 	rec := &bridgeRecorder{contact: map[string]any{"id": "c1"}, contactID: uuid.New()}
 
 	p := newProc(store)
-	p.SetOpenTrigger(rec.bridge())
+	p.SetEngagementTrigger(rec.bridge())
 	require.NoError(t, p.apply(context.Background(), openEvent(org, &workflowUUID)))
 
 	assert.Empty(t, rec.events, "sequence/unknown attribution must not fire (loop protection)")
@@ -159,7 +160,7 @@ func TestOpenTrigger_SkipsUncampaignedOpen(t *testing.T) {
 	rec := &bridgeRecorder{contact: map[string]any{"id": "c1"}, contactID: uuid.New()}
 
 	p := newProc(store)
-	p.SetOpenTrigger(rec.bridge())
+	p.SetEngagementTrigger(rec.bridge())
 	require.NoError(t, p.apply(context.Background(), openEvent(uuid.New(), nil)))
 
 	assert.Empty(t, rec.events)
@@ -173,7 +174,7 @@ func TestOpenTrigger_SkipsMachineOpen(t *testing.T) {
 	rec := &bridgeRecorder{contact: map[string]any{"id": "c1"}, contactID: uuid.New()}
 
 	p := newProc(store)
-	p.SetOpenTrigger(rec.bridge())
+	p.SetEngagementTrigger(rec.bridge())
 	require.NoError(t, p.apply(context.Background(), openEvent(org, &campaign)))
 
 	assert.Empty(t, rec.events, "Apple-MPP prefetch opens must not fire")
@@ -187,7 +188,7 @@ func TestOpenTrigger_SkipsWhenNoContactMatches(t *testing.T) {
 	rec := &bridgeRecorder{contact: nil} // no match
 
 	p := newProc(store)
-	p.SetOpenTrigger(rec.bridge())
+	p.SetEngagementTrigger(rec.bridge())
 	require.NoError(t, p.apply(context.Background(), openEvent(org, &campaign)))
 
 	assert.Empty(t, rec.events)
@@ -198,7 +199,7 @@ func TestOpenTrigger_BridgeAbsentIsInert(t *testing.T) {
 	campaign := uuid.New()
 	store := &fakeConsumerStore{campaignExists: true}
 
-	p := newProc(store) // no SetOpenTrigger
+	p := newProc(store) // no SetEngagementTrigger
 	require.NoError(t, p.apply(context.Background(), openEvent(org, &campaign)))
 	assert.Zero(t, store.campaignQueries)
 }
@@ -210,21 +211,21 @@ func TestOpenTrigger_StoreErrorsNeverFailTheEvent(t *testing.T) {
 	rec := &bridgeRecorder{contact: map[string]any{"id": "c1"}, contactID: uuid.New()}
 
 	p := newProc(store)
-	p.SetOpenTrigger(rec.bridge())
+	p.SetEngagementTrigger(rec.bridge())
 	// apply must return nil — a ledger-only event may never repend on bridge failures.
 	require.NoError(t, p.apply(context.Background(), openEvent(org, &campaign)))
 	assert.Empty(t, rec.events)
 }
 
-func TestOpenEventIdentity_ParsesTagAndMessageID(t *testing.T) {
+func TestEngagementIdentity_ParsesTagAndMessageID(t *testing.T) {
 	campaign := uuid.New()
 	evt := openEvent(uuid.New(), &campaign)
-	contactID, emailID := openEventIdentity(evt)
+	contactID, emailID := engagementIdentity(evt)
 	assert.NotEqual(t, uuid.Nil, contactID)
 	assert.Equal(t, "re_msg_123", emailID)
 
 	evt.RawPayload = []byte("{not json")
-	contactID, emailID = openEventIdentity(evt)
+	contactID, emailID = engagementIdentity(evt)
 	assert.Equal(t, uuid.Nil, contactID)
 	assert.Equal(t, "", emailID)
 }

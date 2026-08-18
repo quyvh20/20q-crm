@@ -74,3 +74,40 @@ func TestEmailOpened_CampaignPinMatchesNonCanonicalForms(t *testing.T) {
 	assert.False(t, campaignPinMatches(uuid.NewString(), canonical))
 	assert.False(t, campaignPinMatches("not-a-uuid", canonical))
 }
+
+// --- email_clicked (same family, one extra exclusion on the emitter side) ---
+
+func TestEmailClicked_IsValidTriggerType(t *testing.T) {
+	assert.True(t, IsValidTriggerType(TriggerEmailClicked))
+	// Like "_opened", "_clicked" is not a dynamic wildcard suffix.
+	assert.False(t, IsValidTriggerType("newsletter_clicked"))
+}
+
+func TestEmailClicked_ValidatorMatchesTheOpenedRules(t *testing.T) {
+	ok := validateTriggerJSON(t, map[string]any{"type": "email_clicked", "params": map[string]any{"campaign_id": uuid.NewString()}})
+	assert.True(t, ok.Valid, "a campaign-pinned click trigger is valid: %v", ok.Errors)
+
+	bad := validateTriggerJSON(t, map[string]any{"type": "email_clicked", "params": map[string]any{"campaign_id": "nope"}})
+	assert.False(t, bad.Valid, "a malformed campaign filter must be rejected for clicks too")
+}
+
+func TestEmailClicked_EntityKindIsContact(t *testing.T) {
+	assert.Equal(t, "contact", entityKindForTrigger(TriggerEmailClicked))
+}
+
+func TestIsEngagementTrigger_CoversBothAndNothingElse(t *testing.T) {
+	assert.True(t, isEngagementTrigger(TriggerEmailOpened))
+	assert.True(t, isEngagementTrigger(TriggerEmailClicked))
+	assert.False(t, isEngagementTrigger(TriggerContactCreated))
+	assert.False(t, isEngagementTrigger(TriggerDealStageChanged))
+}
+
+func TestEmailClicked_SharesThePerMessageRunKey(t *testing.T) {
+	wf := uuid.New()
+	// A click and an open of the SAME message are different triggers, so their
+	// keys differ; two clicks on the same message collapse to one run.
+	clickKey := emailOpenedIdempKey(wf, TriggerEmailClicked, "contact-1", "re_msg_1")
+	assert.Equal(t, clickKey, emailOpenedIdempKey(wf, TriggerEmailClicked, "contact-1", "re_msg_1"))
+	assert.NotEqual(t, clickKey, emailOpenedIdempKey(wf, TriggerEmailOpened, "contact-1", "re_msg_1"))
+	assert.NotEqual(t, clickKey, emailOpenedIdempKey(wf, TriggerEmailClicked, "contact-1", "re_msg_2"))
+}

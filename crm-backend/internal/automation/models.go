@@ -366,6 +366,12 @@ const (
 	// the type valid; do not rename it to a *_updated form (that would drag it
 	// into the watch_field/changed_fields filter branch).
 	TriggerEmailOpened = "email_opened"
+	// TriggerEmailClicked fires when a link in a CAMPAIGN email is clicked.
+	// Same gating as TriggerEmailOpened (campaign-only, machine-filtered), plus
+	// one exclusion of its own: a click on the unsubscribe / preference-centre
+	// link never fires it. Like "_opened", "_clicked" is not a dynamic-wildcard
+	// suffix, so this const is what makes the type valid.
+	TriggerEmailClicked = "email_clicked"
 )
 
 // Valid action types
@@ -478,6 +484,7 @@ var ValidTriggerTypes = map[string]bool{
 	TriggerSchedule:         true,
 	TriggerDateField:        true,
 	TriggerEmailOpened:      true,
+	TriggerEmailClicked:     true,
 }
 
 // IsValidTriggerType checks if a trigger type is valid.

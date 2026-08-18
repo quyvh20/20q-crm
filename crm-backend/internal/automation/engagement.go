@@ -19,6 +19,12 @@ import (
 // (never the reverse), so handing these methods to the processor from main.go
 // is the established dependency direction.
 
+// isEngagementTrigger reports whether an event type is one of the marketing
+// engagement triggers, which share a campaign filter and a per-message run key.
+func isEngagementTrigger(eventType string) bool {
+	return eventType == TriggerEmailOpened || eventType == TriggerEmailClicked
+}
+
 // emailOpenedIdempKey keys an email_opened run once per (workflow, contact,
 // message) — repeated pixel loads of one email are absorbed; a different
 // message still enrolls. Extracted pure so the dedupe contract is pinned by

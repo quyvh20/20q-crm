@@ -28,6 +28,12 @@ type fakeConsumerStore struct {
 	deliveredErr     error
 	campaignQueries  int
 	deliveredQueries int
+	deferred         int
+}
+
+func (s *fakeConsumerStore) DeferEvent(_ context.Context, _, _ uuid.UUID, _ string) error {
+	s.deferred++
+	return nil
 }
 
 func (s *fakeConsumerStore) CampaignExists(_ context.Context, _, _ uuid.UUID) (bool, error) {

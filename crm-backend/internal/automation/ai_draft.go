@@ -105,7 +105,7 @@ func (h *Handler) DraftWorkflow(c *gin.Context) {
 // copilotBuildTag fingerprints the running binary in the health payload. Bump it
 // alongside copilot-critical backend changes: prod once served a stale build while
 // every deploy signal was green, and nothing could say WHICH code was live.
-const copilotBuildTag = "2026-08-18.1-split-and-email-opened-vocab"
+const copilotBuildTag = "2026-08-18.2-email-clicked"
 
 // BuildTag exposes copilotBuildTag for the public /health endpoint, so a deploy
 // can be VERIFIED rather than guessed. The repo's release discipline requires
@@ -368,7 +368,7 @@ func buildDraftSystemPrompt(schema *SchemaResponse) string {
 	b.WriteString("  - split:     { \"type\": \"split\", \"split\": { \"percent_a\": <1-99> }, \"yes_steps\": [branch A], \"no_steps\": [branch B] } — a random A/B split; percent_a of runs take branch A, the rest take B.\n")
 	b.WriteString("You may omit step ids; they are assigned for you. A condition or split MUST be the LAST step in its list — its branches never rejoin, so put any follow-up steps INSIDE the branches, not after the fork.\n\n")
 
-	b.WriteString("TRIGGER TYPES: contact_created, contact_updated, deal_stage_changed (params.to_stage = a stage id), company_updated, <custom_slug>_created/_updated, schedule (params.cron + params.timezone), date_field (params.object, params.field, params.offset_days, params.at_time), email_opened (a marketing campaign email was opened; optional params.campaign_id pins one campaign).\n")
+	b.WriteString("TRIGGER TYPES: contact_created, contact_updated, deal_stage_changed (params.to_stage = a stage id), company_updated, <custom_slug>_created/_updated, schedule (params.cron + params.timezone), date_field (params.object, params.field, params.offset_days, params.at_time), email_opened (a marketing campaign email was opened), email_clicked (a link in one was clicked) — both take an optional params.campaign_id pinning one campaign.\n")
 	b.WriteString("ACTION TYPES: send_email {to, subject, body_html}, create_task {title, priority, due_in_days, assignee_field}, assign_user {entity, strategy: 'specific'|'round_robin'|'least_loaded', user_id (when specific), pool:[user_id] (REQUIRED when round_robin)}, update_record {updates:[{field,op,value}]}, create_record {object, fields:[{field,value}]}, notify_user {recipient:'owner_field'|'specific', title, body}, find_records {object, filters}, enroll_records {workflow_id, object}, ai_generate {prompt, max_tokens}, send_webhook {url, method}, log_activity {activity_type, title}.\n")
 	b.WriteString("CONDITION OPERATORS: eq, neq, gt, gte, lt, lte, contains, not_contains, in, not_in, is_empty, is_not_empty, starts_with, ends_with.\n")
 	b.WriteString("Field paths look like \"contact.email\", \"deal.value\", \"deal.stage_id\". Use interpolation like {{contact.first_name}} in text params.\n\n")

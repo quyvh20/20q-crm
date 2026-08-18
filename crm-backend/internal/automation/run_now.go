@@ -41,9 +41,10 @@ var (
 // using the same contact picker — no special payload-synthesis path is needed.
 func entityKindForTrigger(triggerType string) string {
 	switch triggerType {
-	case TriggerContactCreated, TriggerContactUpdated, TriggerWebhookInbound, TriggerEmailOpened:
-		// email_opened hydrates a contact (the opener), so a Run Now / Test Run
-		// against a sample contact reproduces the real emit shape.
+	case TriggerContactCreated, TriggerContactUpdated, TriggerWebhookInbound, TriggerEmailOpened, TriggerEmailClicked:
+		// The engagement triggers hydrate a contact (whoever opened or clicked),
+		// so a Run Now / Test Run against a sample contact reproduces the real
+		// emit shape.
 		return "contact"
 	case TriggerDealStageChanged:
 		return "deal"
