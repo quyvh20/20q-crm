@@ -92,6 +92,12 @@ func dryWalkSteps(steps []StepSpec, evalCtx EvalContext, reached bool, skipReaso
 			s := TestRunStep{StepID: step.ID, Type: "delay"}
 			if step.Delay != nil {
 				s.DelaySec = step.Delay.DurationSec
+				if step.Delay.IsWaitEvent() {
+					// The preview can't know whether the event will arrive, so it
+					// shows the guaranteed part: the timeout it waits at most.
+					s.WaitEvent = step.Delay.WaitEvent
+					s.DelaySec = step.Delay.TimeoutSec
+				}
 			}
 			if reached {
 				s.Status = "run"

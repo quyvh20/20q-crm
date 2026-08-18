@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -47,6 +48,82 @@ func campaignPinMatches(req, actual string) bool {
 	ru, err1 := uuid.Parse(req)
 	au, err2 := uuid.Parse(actual)
 	return err1 == nil && err2 == nil && ru == au
+}
+
+// resumeEventWaits wakes every run parked on a wait-for-event step that this
+// engagement event satisfies. Best-effort by design: a failure here leaves the
+// run parked on its timeout deadline, which completes the step with
+// happened=false — the same outcome as an event that never arrived.
+//
+// The claim is a single status-guarded UPDATE ... RETURNING (ClaimEventWaits),
+// so concurrent webhook drains and multiple app instances can never resume the
+// same run twice.
+func (e *Engine) resumeEventWaits(ctx context.Context, orgID uuid.UUID, eventType string, payload map[string]any) {
+	if e.repo == nil {
+		return
+	}
+	contactID, ok := payloadContactID(payload)
+	if !ok {
+		return
+	}
+	var campaignID *uuid.UUID
+	if raw, _ := payload["campaign_id"].(string); raw != "" {
+		if id, err := uuid.Parse(raw); err == nil {
+			campaignID = &id
+		}
+	}
+
+	waits, err := e.repo.ClaimEventWaits(ctx, orgID, eventType, contactID, campaignID)
+	if err != nil {
+		e.logger.Warn("automation: claim event waits failed", "error", err, "org_id", orgID.String(), "event", eventType)
+		return
+	}
+	now := time.Now()
+	for _, w := range waits {
+		detail := map[string]any{"event_satisfied": true, "event_at": now, "event_type": eventType}
+		if link, _ := payload["link"].(string); link != "" {
+			detail["link"] = link
+		}
+		woken, err := e.repo.SatisfyWaitingRun(ctx, w.RunID, w.StepPath, now, detail)
+		if err != nil {
+			e.logger.Warn("automation: satisfy waiting run failed", "error", err, "run_id", w.RunID.String())
+			continue
+		}
+		if !woken {
+			// The run left `waiting` first (timeout swept it, or it failed) —
+			// its own path owns the outcome now.
+			continue
+		}
+		e.logger.Info("automation: resuming run on engagement event",
+			"run_id", w.RunID.String(), "event", eventType, "step_path", w.StepPath)
+		// Hand it to a worker immediately; the 30s clock sweep is the fallback
+		// (SatisfyWaitingRun set next_retry_at = NOW()).
+		select {
+		case e.jobs <- WorkflowRunJob{RunID: w.RunID}:
+		default:
+			e.logger.Warn("automation: jobs channel full — the sweeper will pick the resumed run up",
+				"run_id", w.RunID.String())
+		}
+	}
+}
+
+// payloadContactID reads the contact the event is about. entity_id is the
+// contact for engagement events specifically (the marketing emitter resolves a
+// contact before emitting); the contact map is the fallback.
+func payloadContactID(payload map[string]any) (uuid.UUID, bool) {
+	if raw, _ := payload["entity_id"].(string); raw != "" {
+		if id, err := uuid.Parse(raw); err == nil {
+			return id, true
+		}
+	}
+	if c, _ := payload["contact"].(map[string]any); c != nil {
+		if raw, _ := c["id"].(string); raw != "" {
+			if id, err := uuid.Parse(raw); err == nil {
+				return id, true
+			}
+		}
+	}
+	return uuid.Nil, false
 }
 
 // LoadContactForTrigger resolves the contact a marketing engagement event

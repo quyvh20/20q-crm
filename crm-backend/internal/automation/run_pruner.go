@@ -14,7 +14,8 @@ const (
 )
 
 // PruneCompletedRuns hard-deletes terminal (completed/failed/skipped) workflow runs that
-// finished more than olderThan ago, AND their action logs. Both automation_workflow_runs
+// finished more than olderThan ago, AND their action logs. It also reclaims spent
+// event-wait rows (see the automation_event_waits delete below). Both automation_workflow_runs
 // and automation_workflow_action_logs grew UNBOUNDED before M8 (only automation_timers
 // had retention); at thousands of drip recipients × steps this is the heaviest write
 // volume in the schema. automation_workflow_action_logs.run_id has NO ON DELETE CASCADE,
@@ -48,6 +49,20 @@ func (r *Repository) PruneCompletedRuns(ctx context.Context, olderThan time.Dura
 			return res.Error
 		}
 		deleted = res.RowsAffected
+
+		// automation_event_waits (A9) has no FK cascade either, and its own
+		// cleanup (ClearEventWaitsForRun) only fires when a run actually finishes
+		// its wait step. A run that fails or is cancelled while parked leaves its
+		// row behind for good, as does a wait claimed for a run that had already
+		// left `waiting`. Both are dead the moment they expire: ClaimEventWaits
+		// ignores anything past expires_at, and the run's own timeout path owns
+		// the outcome from then on. The grace window is deliberately much shorter
+		// than the run retention above — these rows carry no history anyone reads.
+		if err := tx.Exec(`DELETE FROM automation_event_waits
+			WHERE expires_at < NOW() - INTERVAL '7 days'
+			   OR satisfied_at < NOW() - INTERVAL '7 days'`).Error; err != nil {
+			return err
+		}
 		return nil
 	})
 	return deleted, err

@@ -105,7 +105,7 @@ func (h *Handler) DraftWorkflow(c *gin.Context) {
 // copilotBuildTag fingerprints the running binary in the health payload. Bump it
 // alongside copilot-critical backend changes: prod once served a stale build while
 // every deploy signal was green, and nothing could say WHICH code was live.
-const copilotBuildTag = "2026-08-18.2-email-clicked"
+const copilotBuildTag = "2026-08-18.3-wait-for-event"
 
 // BuildTag exposes copilotBuildTag for the public /health endpoint, so a deploy
 // can be VERIFIED rather than guessed. The repo's release discipline requires
@@ -336,7 +336,7 @@ func draftTools() []ai.Tool {
 					},
 					"steps": map[string]any{
 						"type":        "array",
-						"description": "ordered steps: each { type: action|condition|delay, ... }. action → { type, params }. condition → { condition:{op,rules}, yes_steps:[], no_steps:[] }. delay → { delay:{ duration_sec } }.",
+						"description": "ordered steps: each { type: action|condition|delay|split, ... }. action → { type, params }. condition → { condition:{op,rules}, yes_steps:[], no_steps:[] }. delay → { delay:{ duration_sec } } for a fixed pause, or { delay:{ wait_event, timeout_sec } } to wait for an email open or click.",
 						"items":       map[string]any{"type": "object"},
 					},
 				},
@@ -364,7 +364,8 @@ func buildDraftSystemPrompt(schema *SchemaResponse) string {
 	b.WriteString("- steps: an ordered array. Each step is one of:\n")
 	b.WriteString("  - action:    { \"type\": \"action\", \"action\": { \"type\": <action type>, \"params\": {...} } }\n")
 	b.WriteString("  - condition: { \"type\": \"condition\", \"condition\": { \"op\": \"AND\"|\"OR\", \"rules\": [ { \"field\": <path>, \"operator\": <op>, \"value\": <v> } ] }, \"yes_steps\": [...], \"no_steps\": [...] }\n")
-	b.WriteString("  - delay:     { \"type\": \"delay\", \"delay\": { \"duration_sec\": <seconds> } }\n")
+	b.WriteString("  - delay:     { \"type\": \"delay\", \"delay\": { \"duration_sec\": <seconds> } } — a fixed pause.\n")
+	b.WriteString("  - wait for an event: { \"type\": \"delay\", \"delay\": { \"wait_event\": \"email_opened\"|\"email_clicked\", \"timeout_sec\": <seconds, REQUIRED, max 2592000>, \"campaign_id\": <optional campaign id to pin> } } — pauses until this contact opens or clicks a marketing email, or until the timeout, whichever comes first. It ALWAYS continues; to treat the two outcomes differently, follow it with a condition on \"actions.<that step id>.happened\" (true = they engaged). Only use it when the trigger's record has a contact.\n")
 	b.WriteString("  - split:     { \"type\": \"split\", \"split\": { \"percent_a\": <1-99> }, \"yes_steps\": [branch A], \"no_steps\": [branch B] } — a random A/B split; percent_a of runs take branch A, the rest take B.\n")
 	b.WriteString("You may omit step ids; they are assigned for you. A condition or split MUST be the LAST step in its list — its branches never rejoin, so put any follow-up steps INSIDE the branches, not after the fork.\n\n")
 

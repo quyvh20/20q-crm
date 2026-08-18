@@ -109,6 +109,39 @@ type RunIdempotencyClaim struct {
 
 func (RunIdempotencyClaim) TableName() string { return "automation_run_idempotency_claims" }
 
+// EventWait is one parked wait-for-event step: "run R, at step path P, is
+// waiting for contact C to trigger EventType (optionally only for CampaignID)".
+//
+// It exists because the resume lookup cannot be driven off the run row. A run's
+// trigger_context->>'entity_id' is the DEAL id for deal-triggered runs and the
+// record id for custom-object runs — the deal→contact hydration is in-memory
+// only and never persisted — so the SUBJECT of the wait is stamped here at park
+// time instead. It also gives the per-webhook-event lookup a real index, which a
+// jsonb predicate on automation_workflow_runs would not have.
+//
+// The row is authoritative for "is this wait still open": ClaimEventWaits flips
+// SatisfiedAt in one status-guarded UPDATE ... RETURNING, so concurrent webhook
+// drains and app instances cannot both resume the same run.
+//
+// ExpiresAt mirrors the run's wake_at (the timeout deadline). The run is ALWAYS
+// parked with that deadline, so a wait whose event never arrives is still woken
+// by the ordinary clock sweep — nothing here can leak a permanently parked run.
+type EventWait struct {
+	ID          uuid.UUID  `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	OrgID       uuid.UUID  `gorm:"type:uuid;not null;index" json:"org_id"`
+	RunID       uuid.UUID  `gorm:"type:uuid;not null;uniqueIndex:idx_wf_event_waits_run_step" json:"run_id"`
+	WorkflowID  uuid.UUID  `gorm:"type:uuid;not null" json:"workflow_id"`
+	StepPath    string     `gorm:"size:255;not null;uniqueIndex:idx_wf_event_waits_run_step" json:"step_path"`
+	EventType   string     `gorm:"size:50;not null" json:"event_type"`
+	ContactID   uuid.UUID  `gorm:"type:uuid;not null" json:"contact_id"`
+	CampaignID  *uuid.UUID `gorm:"type:uuid" json:"campaign_id,omitempty"`
+	ExpiresAt   time.Time  `gorm:"not null" json:"expires_at"`
+	SatisfiedAt *time.Time `json:"satisfied_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
+func (EventWait) TableName() string { return "automation_event_waits" }
+
 // WorkflowActionLog records the result of each action step within a run.
 type WorkflowActionLog struct {
 	ID         uuid.UUID      `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
@@ -244,12 +277,29 @@ type DelayParams struct {
 	OffsetDays  int    `json:"offset_days,omitempty"` // negative = before, positive = after
 	AtTime      string `json:"at_time,omitempty"`     // "HH:MM"; empty → 09:00
 	Timezone    string `json:"timezone,omitempty"`    // IANA zone; empty → UTC
+	// Wait-until-EVENT (A9): park until the run's contact interacts with a
+	// campaign email, or until TimeoutSec elapses — whichever comes first. The
+	// step always completes; its output carries `happened`, so a following
+	// If/Else can branch on {{actions.<step id>.happened}}.
+	WaitEvent  string `json:"wait_event,omitempty"`  // "" | email_opened | email_clicked
+	TimeoutSec int    `json:"timeout_sec,omitempty"` // required with WaitEvent
+	CampaignID string `json:"campaign_id,omitempty"` // optional: only this campaign counts
+}
+
+// Delay MODES are discriminated by presence, in this precedence order — every
+// reader must use these helpers rather than testing fields directly, or a
+// wait-for-event carrying a stale until_field silently degrades into a
+// wait-until-date.
+//
+// IsWaitEvent reports whether the delay parks until an engagement event.
+func (d *DelayParams) IsWaitEvent() bool {
+	return d != nil && d.WaitEvent != ""
 }
 
 // IsWaitUntil reports whether the delay resolves its deadline from a date field
-// rather than a fixed duration.
+// rather than a fixed duration. An event wait is never a date wait.
 func (d *DelayParams) IsWaitUntil() bool {
-	return d != nil && d.UntilField != ""
+	return d != nil && !d.IsWaitEvent() && d.UntilField != ""
 }
 
 // SplitParams configures a percentage split step: PercentA percent of runs take

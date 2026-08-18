@@ -454,6 +454,16 @@ func (e *Engine) triggerEventInternal(ctx context.Context, orgID uuid.UUID, even
 		return nil
 	}
 
+	// Resume any run parked on a wait-for-event step (A9) before the enrollment
+	// fan-out. Placed here, downstream of the loop guards above, so it inherits
+	// the same suppression rules — and, for engagement events, the marketing
+	// side's campaign-only, opt-out and machine-interaction gates, which are the
+	// only things preventing a workflow's own email from resuming its own wait.
+	// Resuming is independent of whether any workflow TRIGGERS on this event.
+	if isEngagementTrigger(eventType) {
+		e.resumeEventWaits(ctx, orgID, eventType, payload)
+	}
+
 	workflows, err := e.repo.GetActiveWorkflowsByTrigger(ctx, orgID, eventType)
 	if err != nil {
 		return fmt.Errorf("query workflows: %w", err)

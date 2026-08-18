@@ -179,8 +179,10 @@ type TestRunStep struct {
 	// Condition-only: the evaluated result and which branch ("yes"/"no") is taken.
 	ConditionResult *bool  `json:"condition_result,omitempty"`
 	Branch          string `json:"branch,omitempty"`
-	// Delay-only: the wait duration.
-	DelaySec int `json:"delay_sec,omitempty"`
+	// Delay-only: the wait duration — for a wait-for-event step this is its
+	// timeout, and WaitEvent names the event that would end the wait early.
+	DelaySec  int    `json:"delay_sec,omitempty"`
+	WaitEvent string `json:"wait_event,omitempty"`
 }
 
 // RunNowResponse is the success body (HTTP 201) for POST /api/workflows/:id/run.

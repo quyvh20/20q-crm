@@ -196,6 +196,10 @@ func (r *Repository) AutoMigrate() error {
 	// reconcile) + a partial index over the scanner's hot path (due pending timers).
 	r.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_wf_timers_wf_dedupe ON automation_timers (workflow_id, dedupe_key)`)
 	r.db.Exec(`CREATE INDEX IF NOT EXISTS idx_wf_timers_due ON automation_timers (fire_at) WHERE status = 'pending'`)
+	// A9 wait-for-event: the webhook-path lookup ("open waits of this org, for
+	// this event, for this contact"). Partial on unsatisfied rows so a satisfied
+	// backlog never widens the hot index.
+	r.db.Exec(`CREATE INDEX IF NOT EXISTS idx_wf_event_waits_lookup ON automation_event_waits (org_id, event_type, contact_id) WHERE satisfied_at IS NULL`)
 	// A5 email templates: case-insensitive name unique per org over LIVE rows only,
 	// so a name freed by a soft-delete can be reused (GORM can't express a partial/
 	// functional unique index, hence raw SQL like the timers indexes above).
@@ -943,3 +947,81 @@ func (r *Repository) execLegacyActionsDDL(ddl string) error {
 	})
 }
 
+// ── A9 wait-for-event ────────────────────────────────────────────────────────
+
+// RegisterEventWait records that a run is parked waiting for an engagement
+// event. Idempotent per (run, step path): a re-park after an early wake updates
+// the existing row rather than accumulating duplicates.
+func (r *Repository) RegisterEventWait(ctx context.Context, w *EventWait) error {
+	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "run_id"}, {Name: "step_path"}},
+		DoUpdates: clause.AssignmentColumns([]string{"event_type", "contact_id", "campaign_id", "expires_at"}),
+	}).Create(w).Error
+}
+
+// ClaimEventWaits atomically satisfies every open wait matching an incoming
+// engagement event and returns them. One status-guarded UPDATE ... RETURNING,
+// mirroring WakeDueWaitingRuns: concurrent webhook drains and multiple app
+// instances cannot both claim the same wait, so a run can never be resumed
+// twice by the same event.
+//
+// A wait with no campaign matches any campaign; a wait pinned to a campaign
+// matches only that one. Expired waits are left alone — the clock sweep owns
+// those, and resuming one here would race the timeout path.
+func (r *Repository) ClaimEventWaits(ctx context.Context, orgID uuid.UUID, eventType string, contactID uuid.UUID, campaignID *uuid.UUID) ([]EventWait, error) {
+	var claimed []EventWait
+	err := r.db.WithContext(ctx).Raw(`
+		UPDATE automation_event_waits
+		SET satisfied_at = NOW()
+		WHERE id IN (
+			SELECT id FROM automation_event_waits
+			WHERE org_id = ?
+			  AND event_type = ?
+			  AND contact_id = ?
+			  AND satisfied_at IS NULL
+			  AND expires_at > NOW()
+			  AND (campaign_id IS NULL OR campaign_id = ?)
+			FOR UPDATE SKIP LOCKED
+		)
+		RETURNING *`, orgID, eventType, contactID, campaignID).Scan(&claimed).Error
+	return claimed, err
+}
+
+// SatisfyWaitingRun flips a run parked on an event wait back to pending so the
+// ordinary dispatch path picks it up, and stamps the parked action log so the
+// resumed walk knows the event ARRIVED rather than the timeout expiring.
+// Status-guarded: a run already woken by its timeout is left untouched.
+func (r *Repository) SatisfyWaitingRun(ctx context.Context, runID uuid.UUID, stepPath string, at time.Time, detail map[string]any) (bool, error) {
+	var woken bool
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		res := tx.Exec(`
+			UPDATE automation_workflow_runs
+			SET status = 'pending', next_retry_at = NOW(), wake_at = NULL, updated_at = NOW()
+			WHERE id = ? AND status = 'waiting'`, runID)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return nil // already woken (timeout, retry, or another claimant)
+		}
+		woken = true
+		// jsonb_set on the parked log's output: the resumed walk reads
+		// event_satisfied from here, so it must land in the same transaction.
+		payload, err := json.Marshal(detail)
+		if err != nil {
+			return err
+		}
+		return tx.Exec(`
+			UPDATE automation_workflow_action_logs
+			SET output = COALESCE(output, '{}'::jsonb) || ?::jsonb
+			WHERE run_id = ? AND action_path = ? AND status = ?`,
+			string(payload), runID, stepPath, LogStatusWaiting).Error
+	})
+	return woken, err
+}
+
+// ClearEventWaitsForRun drops a run's wait rows once it leaves the parked state,
+// so a completed or failed run can never be resumed by a late event.
+func (r *Repository) ClearEventWaitsForRun(ctx context.Context, runID uuid.UUID) error {
+	return r.db.WithContext(ctx).Where("run_id = ?", runID).Delete(&EventWait{}).Error
+}

@@ -208,6 +208,41 @@ func validateStepsRecursive(steps []StepSpec, path string, depth int, idSet map[
 // the fixed-delay 30-day cap (a field-based wait can be months out); a fixed delay
 // needs a positive duration_sec ≤ 30 days.
 func validateDelayParams(d *DelayParams, path string, result *ValidationResult) {
+	// Wait-for-event (A9): only the engagement events can be waited on, and a
+	// timeout is REQUIRED — it is the deadline the run parks on, and without it
+	// nothing would ever wake a run whose event never arrives.
+	if d.IsWaitEvent() {
+		if !isEngagementTrigger(d.WaitEvent) {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   path + ".wait_event",
+				Message: fmt.Sprintf("cannot wait for '%s' — only %s and %s can be waited on", d.WaitEvent, TriggerEmailOpened, TriggerEmailClicked),
+			})
+		}
+		if d.TimeoutSec <= 0 {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   path + ".timeout_sec",
+				Message: "a wait-for-event step needs a timeout, so the run continues even if the event never happens",
+			})
+		} else if d.TimeoutSec > 2592000 { // 30 days
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   path + ".timeout_sec",
+				Message: fmt.Sprintf("timeout_sec %d exceeds maximum of 2592000 (30 days)", d.TimeoutSec),
+			})
+		}
+		if c := strings.TrimSpace(d.CampaignID); c != "" && c != "*" {
+			if _, err := uuid.Parse(c); err != nil {
+				result.Valid = false
+				result.Errors = append(result.Errors, ValidationError{
+					Field:   path + ".campaign_id",
+					Message: "campaign_id must be a campaign UUID, empty, or '*'",
+				})
+			}
+		}
+		return
+	}
 	if d.IsWaitUntil() {
 		if at := d.AtTime; at != "" {
 			if _, _, ok := parseHHMM(at); !ok {
