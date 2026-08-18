@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // EvaluateConditions evaluates a ConditionGroup against an EvalContext.
@@ -110,6 +111,10 @@ func evaluateLeaf(field, operator string, value any, ctx EvalContext) bool {
 		return evalStartsWith(resolved, value)
 	case "ends_with":
 		return evalEndsWith(resolved, value)
+	case "between":
+		return evalBetween(resolved, value)
+	case "last_n_days":
+		return evalLastNDays(resolved, value, time.Now())
 	default:
 		slog.Warn("conditions: unknown operator", "operator", operator)
 		return false

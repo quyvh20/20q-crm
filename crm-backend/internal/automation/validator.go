@@ -574,6 +574,7 @@ func validateConditionRules(rules []ConditionRule, path string, result *Validati
 					Message: fmt.Sprintf("unknown operator: '%s'", rule.Operator),
 				})
 			}
+			validateOperandShape(rule, rulePath, result)
 		}
 	}
 }
@@ -1122,9 +1123,9 @@ var dealFieldTypes = map[string]string{
 
 // opsValidForType defines which operations are valid per field type.
 var opsValidForType = map[string]map[string]bool{
-	"string": {"set": true, "add": true, "clear": true},
-	"number": {"set": true, "add": true, "increment": true, "decrement": true, "clear": true},
-	"array":  {"set": true, "add": true, "remove": true, "clear": true},
+	"string":  {"set": true, "add": true, "clear": true},
+	"number":  {"set": true, "add": true, "increment": true, "decrement": true, "clear": true},
+	"array":   {"set": true, "add": true, "remove": true, "clear": true},
 	"boolean": {"set": true, "clear": true},
 	"date":    {"set": true, "clear": true},
 	"select":  {"set": true, "clear": true},
@@ -1286,7 +1287,7 @@ func validateUpdateFieldSchema(fieldPath, op string, value any, uPath string, re
 				Message: fmt.Sprintf("value for boolean field '%s' must be a boolean, got %T", fieldPath, value),
 			})
 		}
-	// string, date, select: any string value is acceptable
+		// string, date, select: any string value is acceptable
 	}
 }
 
@@ -1306,3 +1307,45 @@ func isNumericValue(v any) bool {
 	}
 }
 
+// validateOperandShape rejects a rule whose VALUE does not fit its operator, at
+// save time rather than at run time.
+//
+// Until `between` existed, validateConditionRules ignored rule.Value entirely and
+// every operator degraded gracefully on a bad operand. A two-operand operator
+// cannot: given one bound, or three, or a bare string, evalBetween has no
+// defensible answer and returns false — which reads to the user as "my condition
+// is broken" long after the save that caused it. The builder seeds a dual value as
+// [”,”], so an untouched range would otherwise save clean and silently never match.
+func validateOperandShape(rule ConditionRule, rulePath string, result *ValidationResult) {
+	op, known := conditionOperator(rule.Operator)
+	if !known {
+		return // already reported as an unknown operator
+	}
+	fail := func(msg string) {
+		result.Valid = false
+		result.Errors = append(result.Errors, ValidationError{Field: rulePath + ".value", Message: msg})
+	}
+
+	if op.DualValue {
+		items, ok := toSlice(rule.Value)
+		if !ok || len(items) != 2 {
+			fail(fmt.Sprintf("'%s' expects exactly two values", rule.Operator))
+			return
+		}
+		for _, item := range items {
+			if item == nil || strings.TrimSpace(toString(item)) == "" {
+				fail(fmt.Sprintf("'%s' needs both values filled in", rule.Operator))
+				return
+			}
+		}
+		return
+	}
+
+	if rule.Operator == "last_n_days" {
+		// Same NaN-safe bound as domain/filter_sql.go and evalLastNDays.
+		n, ok := toFloat64(rule.Value)
+		if !ok || !(n >= 1 && n <= maxRelativeDays) {
+			fail(fmt.Sprintf("'last_n_days' expects a number of days between 1 and %d", maxRelativeDays))
+		}
+	}
+}

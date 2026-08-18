@@ -514,22 +514,8 @@ func backoff(attempt int) time.Duration {
 }
 
 // Valid condition operators
-var ValidOperators = map[string]bool{
-	"eq": true, "neq": true,
-	"gt": true, "gte": true,
-	"lt": true, "lte": true,
-	"contains": true, "not_contains": true,
-	"in": true, "not_in": true,
-	"is_empty": true, "is_not_empty": true,
-	"starts_with": true, "ends_with": true,
-	// The builder offers exactly these two for a boolean field
-	// (useSchema.ts BOOLEAN_BASE) and auto-selects the first when the field type
-	// changes, so every boolean condition a user can build arrives as one of
-	// them. They were missing here, which made the payload a 400 and left
-	// every boolean field impossible to filter on through the UI — including
-	// the wait-for-event outcome the Wait step tells you to branch on.
-	"is_true": true, "is_false": true,
-}
+// ValidOperators is derived from ConditionOperators — see condition_operators.go,
+// which is the single declaration of the vocabulary and explains why.
 
 // Valid trigger types set
 var ValidTriggerTypes = map[string]bool{
