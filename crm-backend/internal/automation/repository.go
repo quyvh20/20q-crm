@@ -201,6 +201,21 @@ func (r *Repository) AutoMigrate() error {
 	// this event, for this contact"). Partial on unsatisfied rows so a satisfied
 	// backlog never widens the hot index.
 	r.db.Exec(`CREATE INDEX IF NOT EXISTS idx_wf_event_waits_lookup ON automation_event_waits (org_id, event_type, contact_id) WHERE satisfied_at IS NULL`)
+
+	// RLS for the tables THIS package creates. main.go runs a pg_class sweep that
+	// is meant to cover them, but it runs at boot BEFORE autoEngine.Start() calls
+	// AutoMigrate — so on the boot that first creates a table, the sweep has
+	// already passed it by and the table sits with RLS off until the next restart.
+	// Supabase grants ALL on new public tables to anon/authenticated and publishes
+	// them over PostgREST, so that window is a real read/write handle on
+	// automation data. Sweeping here, immediately after the tables exist, closes
+	// it for every automation model rather than just the newest one.
+	//
+	// Zero policies is the point, exactly as in main.go: the app connects as the
+	// table owner and an owner bypasses RLS unless FORCE ROW LEVEL SECURITY is set,
+	// which this codebase never uses and must never start using — with no policies
+	// FORCE would lock the app out of its own tables.
+	r.enableRLSOnAutomationTables()
 	// A5 email templates: case-insensitive name unique per org over LIVE rows only,
 	// so a name freed by a soft-delete can be reused (GORM can't express a partial/
 	// functional unique index, hence raw SQL like the timers indexes above).
@@ -1025,4 +1040,40 @@ func (r *Repository) SatisfyWaitingRun(ctx context.Context, runID uuid.UUID, ste
 // so a completed or failed run can never be resumed by a late event.
 func (r *Repository) ClearEventWaitsForRun(ctx context.Context, runID uuid.UUID) error {
 	return r.db.WithContext(ctx).Where("run_id = ?", runID).Delete(&EventWait{}).Error
+}
+
+// enableRLSOnAutomationTables turns Row Level Security on for every table in
+// automationModels(), skipping those that already have it. See the call site in
+// AutoMigrate for why this cannot be left to main.go's sweep alone.
+//
+// Best-effort and logged, never fatal: a boot must not fail because a defence in
+// depth could not be applied, and the app (as table owner) reads and writes these
+// tables identically either way.
+func (r *Repository) enableRLSOnAutomationTables() {
+	for _, m := range automationModels() {
+		tn, ok := m.(interface{ TableName() string })
+		if !ok {
+			continue
+		}
+		name := tn.TableName()
+		// Guarded so a steady-state boot issues no DDL at all: a bare ALTER takes
+		// ACCESS EXCLUSIVE even when the flag is already set, and these tables are
+		// on the engine's hot path.
+		var enabled bool
+		if err := r.db.Raw(
+			`SELECT c.relrowsecurity FROM pg_class c
+			 JOIN pg_namespace n ON n.oid = c.relnamespace
+			 WHERE n.nspname = 'public' AND c.relname = ?`, name).Scan(&enabled).Error; err != nil {
+			slog.Warn("automation: rls check failed", "table", name, "error", err)
+			continue
+		}
+		if enabled {
+			continue
+		}
+		if err := r.db.Exec(fmt.Sprintf(`ALTER TABLE public.%q ENABLE ROW LEVEL SECURITY`, name)).Error; err != nil {
+			slog.Warn("automation: enabling rls failed", "table", name, "error", err)
+			continue
+		}
+		slog.Info("automation: row level security enabled", "table", name)
+	}
 }

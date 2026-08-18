@@ -96,6 +96,12 @@ func evaluateLeaf(field, operator string, value any, ctx EvalContext) bool {
 		return evalIn(resolved, value)
 	case "not_in":
 		return !evalIn(resolved, value)
+	case "is_true":
+		return evalBool(resolved)
+	case "is_false":
+		// Fail-closed on an absent value, like every other operator here: a wait
+		// step that has not run yet is not evidence that its event did not happen.
+		return resolved != nil && !evalBool(resolved)
 	case "is_empty":
 		return evalIsEmpty(resolved)
 	case "is_not_empty":
@@ -191,6 +197,27 @@ func evalIn(resolved, value any) bool {
 }
 
 // evalIsEmpty checks if a value is empty/nil/zero.
+// evalBool reads a truthy value the way the sources actually deliver one: a real
+// bool from an action output or a jsonb boolean, and the string form that a
+// record field round-tripped through a text column produces.
+func evalBool(resolved any) bool {
+	switch v := resolved.(type) {
+	case bool:
+		return v
+	case string:
+		b, err := strconv.ParseBool(strings.TrimSpace(v))
+		return err == nil && b
+	case float64:
+		return v != 0
+	case int:
+		return v != 0
+	case int64:
+		return v != 0
+	default:
+		return false
+	}
+}
+
 func evalIsEmpty(resolved any) bool {
 	if resolved == nil {
 		return true

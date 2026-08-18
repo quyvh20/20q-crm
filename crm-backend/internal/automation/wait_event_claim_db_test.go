@@ -200,3 +200,24 @@ func TestPruneCompletedRuns_ReclaimsSpentEventWaits_DB(t *testing.T) {
 	assert.True(t, alive(recentlyExpired.ID),
 		"just past its deadline is inside the grace window: the run's timeout path may not have swept it yet")
 }
+
+func TestAutoMigrate_EnablesRLSOnAutomationTables_DB(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping DB-backed test in short mode")
+	}
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// setupTestDB already ran AutoMigrate. main.go's pg_class sweep runs BEFORE
+	// autoEngine.Start(), so on the boot that first creates one of these tables
+	// the sweep has already passed it by — this package has to secure its own.
+	for _, m := range automationModels() {
+		name := m.(interface{ TableName() string }).TableName()
+		var enabled bool
+		require.NoError(t, db.Raw(
+			`SELECT c.relrowsecurity FROM pg_class c
+			 JOIN pg_namespace n ON n.oid = c.relnamespace
+			 WHERE n.nspname = 'public' AND c.relname = ?`, name).Scan(&enabled).Error)
+		assert.True(t, enabled, "%s ships with RLS off — Supabase publishes new public tables over PostgREST to the anon key", name)
+	}
+}
