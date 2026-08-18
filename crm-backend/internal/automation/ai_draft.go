@@ -105,7 +105,7 @@ func (h *Handler) DraftWorkflow(c *gin.Context) {
 // copilotBuildTag fingerprints the running binary in the health payload. Bump it
 // alongside copilot-critical backend changes: prod once served a stale build while
 // every deploy signal was green, and nothing could say WHICH code was live.
-const copilotBuildTag = "2026-08-18.3-wait-for-event"
+const copilotBuildTag = "2026-08-18.4-wait-for-event"
 
 // BuildTag exposes copilotBuildTag for the public /health endpoint, so a deploy
 // can be VERIFIED rather than guessed. The repo's release discipline requires

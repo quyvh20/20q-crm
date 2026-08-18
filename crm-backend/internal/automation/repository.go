@@ -54,6 +54,7 @@ func automationModels() []any {
 		&WorkflowRun{},
 		&RunIdempotencyClaim{},
 		&WorkflowActionLog{},
+		&EventWait{},
 		&WorkflowOrgToken{},
 		&AutomationTimer{},
 		&EmailTemplate{},
