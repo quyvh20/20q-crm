@@ -105,7 +105,15 @@ func (h *Handler) DraftWorkflow(c *gin.Context) {
 // copilotBuildTag fingerprints the running binary in the health payload. Bump it
 // alongside copilot-critical backend changes: prod once served a stale build while
 // every deploy signal was green, and nothing could say WHICH code was live.
-const copilotBuildTag = "2026-07-11.2-assign-strategy-vocab"
+const copilotBuildTag = "2026-08-18.1-split-and-email-opened-vocab"
+
+// BuildTag exposes copilotBuildTag for the public /health endpoint, so a deploy
+// can be VERIFIED rather than guessed. The repo's release discipline requires
+// "backend live, then frontend" (deploy.yml documents the hazard at length:
+// Railway auto-deploys on push while the frontend ships from CI), but nothing
+// could previously say which binary prod was running. The repo is public, so
+// the tag leaks nothing.
+func BuildTag() string { return copilotBuildTag }
 
 // draftHealthResult is the health probe's verdict on the copilot's AI path.
 type draftHealthResult struct {
@@ -357,7 +365,8 @@ func buildDraftSystemPrompt(schema *SchemaResponse) string {
 	b.WriteString("  - action:    { \"type\": \"action\", \"action\": { \"type\": <action type>, \"params\": {...} } }\n")
 	b.WriteString("  - condition: { \"type\": \"condition\", \"condition\": { \"op\": \"AND\"|\"OR\", \"rules\": [ { \"field\": <path>, \"operator\": <op>, \"value\": <v> } ] }, \"yes_steps\": [...], \"no_steps\": [...] }\n")
 	b.WriteString("  - delay:     { \"type\": \"delay\", \"delay\": { \"duration_sec\": <seconds> } }\n")
-	b.WriteString("You may omit step ids; they are assigned for you.\n\n")
+	b.WriteString("  - split:     { \"type\": \"split\", \"split\": { \"percent_a\": <1-99> }, \"yes_steps\": [branch A], \"no_steps\": [branch B] } — a random A/B split; percent_a of runs take branch A, the rest take B.\n")
+	b.WriteString("You may omit step ids; they are assigned for you. A condition or split MUST be the LAST step in its list — its branches never rejoin, so put any follow-up steps INSIDE the branches, not after the fork.\n\n")
 
 	b.WriteString("TRIGGER TYPES: contact_created, contact_updated, deal_stage_changed (params.to_stage = a stage id), company_updated, <custom_slug>_created/_updated, schedule (params.cron + params.timezone), date_field (params.object, params.field, params.offset_days, params.at_time), email_opened (a marketing campaign email was opened; optional params.campaign_id pins one campaign).\n")
 	b.WriteString("ACTION TYPES: send_email {to, subject, body_html}, create_task {title, priority, due_in_days, assignee_field}, assign_user {entity, strategy: 'specific'|'round_robin'|'least_loaded', user_id (when specific), pool:[user_id] (REQUIRED when round_robin)}, update_record {updates:[{field,op,value}]}, create_record {object, fields:[{field,value}]}, notify_user {recipient:'owner_field'|'specific', title, body}, find_records {object, filters}, enroll_records {workflow_id, object}, ai_generate {prompt, max_tokens}, send_webhook {url, method}, log_activity {activity_type, title}.\n")

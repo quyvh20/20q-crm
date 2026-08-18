@@ -207,6 +207,7 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{
 			"status":  "ok",
 			"version": "0.3.0",
+			"build":   automation.BuildTag(),
 		})
 	})
 
