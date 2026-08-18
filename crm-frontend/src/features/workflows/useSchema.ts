@@ -88,7 +88,7 @@ export interface OperatorDef {
   label: string;
   /** If true, the operator needs no value input */
   noValue?: boolean;
-  /** If true, the operator needs TWO value inputs (e.g., between, changed_from_to) */
+  /** If true, the operator needs TWO value inputs (e.g., between) */
   dualValue?: boolean;
 }
 
@@ -119,7 +119,7 @@ const DATE_BASE: OperatorDef[] = [
   { value: 'gt', label: 'after' },
   { value: 'lt', label: 'before' },
   { value: 'between', label: 'between', dualValue: true },
-  { value: 'in_last_days', label: 'in last N days' },
+  { value: 'last_n_days', label: 'in last N days' },
   { value: 'is_empty', label: 'is empty', noValue: true },
   { value: 'is_not_empty', label: 'is not empty', noValue: true },
 ];
@@ -143,18 +143,24 @@ const ARRAY_BASE: OperatorDef[] = [
   { value: 'is_not_empty', label: 'is not empty', noValue: true },
 ];
 
-// --- Change-detection operators (only for Updated / Any) ---
-
-const CHANGE_OPS: OperatorDef[] = [
-  { value: 'is_changed', label: 'is changed', noValue: true },
-  { value: 'is_set', label: 'is set', noValue: true },
-  { value: 'is_cleared', label: 'is cleared', noValue: true },
-  { value: 'changed_from_to', label: 'changed from…to', dualValue: true },
-];
-
-const CHANGE_OPS_NO_DUAL: OperatorDef[] = [
-  { value: 'is_changed', label: 'is changed', noValue: true },
-];
+// Change-detection operators (is_changed / is_set / is_cleared /
+// changed_from_to) USED to be appended here for Updated/Any triggers. They were
+// removed on 2026-08-18 because nothing could ever have evaluated them: the
+// engine's EvalContext carries no before-state. Exactly one of six *_updated
+// emitters snapshots the old record (the legacy contact REST handler), the
+// uniform RecordService path that serves deals, companies and every custom
+// object emits none, and buildEvalContext discards `changed_fields` anyway
+// because it is an array and only map values reach the context. They were also
+// offered on email_opened / webhook_inbound / schedule triggers, where nothing
+// changed at all.
+//
+// So the choice was a loud 400 at save (what shipped) or a silent permanent No
+// branch (what implementing them contact-only would have produced). Neither is
+// a feature. Change detection is not missing from the product — it lives at the
+// TRIGGER, as watch_field / watch_value ("when the owner field changes", "when
+// it changes to X"). If it is wanted at the condition too, the before/after diff
+// has to be plumbed through fireLifecycleEvent into EvalContext first; that is
+// its own piece of work, not an operator list edit.
 
 // --- Deleted mode: minimal operators ---
 
@@ -181,7 +187,10 @@ const DELETED_MINIMAL: OperatorDef[] = [
  * Return operators that make sense for a given field type AND fires-on event.
  *
  * @param type  - field data type: 'string' | 'number' | 'boolean' | 'array' | 'select' | 'date'
- * @param firesOn - trigger event context: 'created' | 'updated' | 'deleted' | 'any'
+ * @param firesOn - trigger event context: 'created' | 'updated' | 'deleted' | 'any'.
+ *   Only 'deleted' changes the answer now; it trims the list to what a deleted
+ *   record can still be asked about. Updated/Any used to add change-detection
+ *   operators — see the note above CHANGE_OPS' removal.
  */
 export function getOperatorsForType(type: string, firesOn: FiresOn = 'created'): OperatorDef[] {
   if (firesOn === 'deleted') {
@@ -196,24 +205,22 @@ export function getOperatorsForType(type: string, firesOn: FiresOn = 'created'):
     }
   }
 
-  const includeChange = firesOn === 'updated' || firesOn === 'any';
-
   switch (type) {
     case 'string':
-      return includeChange ? [...TEXT_BASE, ...CHANGE_OPS] : TEXT_BASE;
+      return TEXT_BASE;
     case 'number':
-      return includeChange ? [...NUMBER_BASE, ...CHANGE_OPS] : NUMBER_BASE;
+      return NUMBER_BASE;
     case 'date':
-      return includeChange ? [...DATE_BASE, ...CHANGE_OPS] : DATE_BASE;
+      return DATE_BASE;
     case 'boolean':
-      return includeChange ? [...BOOLEAN_BASE, ...CHANGE_OPS_NO_DUAL] : BOOLEAN_BASE;
+      return BOOLEAN_BASE;
     case 'select':
-      return includeChange ? [...SELECT_BASE, ...CHANGE_OPS] : SELECT_BASE;
+      return SELECT_BASE;
     case 'array':
-      return includeChange ? [...ARRAY_BASE, ...CHANGE_OPS] : ARRAY_BASE;
+      return ARRAY_BASE;
     default:
       console.warn(`[getOperatorsForType] Unknown field type "${type}" — falling back to string operators`);
-      return includeChange ? [...TEXT_BASE, ...CHANGE_OPS] : TEXT_BASE;
+      return TEXT_BASE;
   }
 }
 
@@ -221,10 +228,7 @@ export function getOperatorsForType(type: string, firesOn: FiresOn = 'created'):
  * Check if an operator requires no value input.
  */
 export function isNoValueOperator(op: string): boolean {
-  const NO_VALUE = new Set([
-    'is_empty', 'is_not_empty', 'is_true', 'is_false',
-    'is_changed', 'is_set', 'is_cleared',
-  ]);
+  const NO_VALUE = new Set(['is_empty', 'is_not_empty', 'is_true', 'is_false']);
   return NO_VALUE.has(op);
 }
 
@@ -232,5 +236,16 @@ export function isNoValueOperator(op: string): boolean {
  * Check if an operator requires two value inputs.
  */
 export function isDualValueOperator(op: string): boolean {
-  return op === 'between' || op === 'changed_from_to';
+  return op === 'between';
+}
+
+/**
+ * Operators whose operand is a COUNT OF DAYS, not a value of the field's own
+ * type. They need their own input, and must be excluded from the ordinary
+ * single-value one — on a date field the two used to render side by side and
+ * fight over the same `value`, so whichever the user touched last won and the
+ * date picker showed an empty box for a stored `7`.
+ */
+export function isRelativeDaysOperator(op: string): boolean {
+  return op === 'last_n_days';
 }

@@ -38,10 +38,12 @@ describe('getOperatorsForType — Created mode (default)', () => {
     expect(values).toEqual(['in', 'not_in', 'is_empty', 'is_not_empty']);
   });
 
-  it('date → gt (after), lt (before), between, in_last_days, is_empty, is_not_empty', () => {
+  it('date → gt (after), lt (before), between, last_n_days, is_empty, is_not_empty', () => {
     const ops = getOperatorsForType('date');
     const values = ops.map((o) => o.value);
-    expect(values).toEqual(['gt', 'lt', 'between', 'in_last_days', 'is_empty', 'is_not_empty']);
+    // last_n_days, not in_last_days: one name for one operator, matching the
+    // lists/reports/segments compiler that already implements it.
+    expect(values).toEqual(['gt', 'lt', 'between', 'last_n_days', 'is_empty', 'is_not_empty']);
     expect(ops.find((o) => o.value === 'gt')?.label).toBe('after');
   });
 
@@ -76,32 +78,36 @@ describe('getOperatorsForType — Created mode (default)', () => {
   });
 });
 
-describe('getOperatorsForType — Updated mode (change-detection)', () => {
-  it('string (updated) includes change-detection operators', () => {
-    const ops = getOperatorsForType('string', 'updated');
-    const values = ops.map((o) => o.value);
-    expect(values).toContain('is_changed');
-    expect(values).toContain('is_set');
-    expect(values).toContain('is_cleared');
-    expect(values).toContain('changed_from_to');
-    // Also includes base ops
+// Change-detection operators were REMOVED on 2026-08-18. The engine's
+// EvalContext carries no before-state — only one of six *_updated emitters
+// snapshots the old record, and buildEvalContext discards the changed-field
+// list anyway because it is an array — so these could never have evaluated to
+// anything but false. They were also offered on email_opened / webhook_inbound /
+// schedule triggers, where nothing changed at all. Change detection lives at the
+// TRIGGER instead, as watch_field / watch_value.
+//
+// These assert ABSENCE on purpose: re-adding them to the menus without first
+// plumbing a before/after diff into EvalContext would turn a loud 400 at save
+// into a silent permanent No branch.
+describe('getOperatorsForType — change-detection operators are not offered', () => {
+  const REMOVED = ['is_changed', 'is_set', 'is_cleared', 'changed_from_to'];
+
+  it.each(['string', 'number', 'date', 'boolean', 'select', 'array', 'foobar'])(
+    '%s offers none of them, on any fires-on',
+    (type) => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      for (const firesOn of ['created', 'updated', 'deleted', 'any'] as const) {
+        const values = getOperatorsForType(type, firesOn).map((o) => o.value);
+        for (const op of REMOVED) expect(values).not.toContain(op);
+      }
+      warnSpy.mockRestore();
+    },
+  );
+
+  it('still offers the base operators it always did on an updated trigger', () => {
+    const values = getOperatorsForType('string', 'updated').map((o) => o.value);
     expect(values).toContain('eq');
     expect(values).toContain('contains');
-  });
-
-  it('boolean (updated) includes is_changed but NOT changed_from_to', () => {
-    const ops = getOperatorsForType('boolean', 'updated');
-    const values = ops.map((o) => o.value);
-    expect(values).toContain('is_changed');
-    expect(values).not.toContain('changed_from_to');
-  });
-
-  it('number (any) includes change-detection operators', () => {
-    const ops = getOperatorsForType('number', 'any');
-    const values = ops.map((o) => o.value);
-    expect(values).toContain('is_changed');
-    expect(values).toContain('is_set');
-    expect(values).toContain('changed_from_to');
   });
 });
 
@@ -131,9 +137,12 @@ describe('isNoValueOperator', () => {
     expect(isNoValueOperator('is_not_empty')).toBe(true);
     expect(isNoValueOperator('is_true')).toBe(true);
     expect(isNoValueOperator('is_false')).toBe(true);
-    expect(isNoValueOperator('is_changed')).toBe(true);
-    expect(isNoValueOperator('is_set')).toBe(true);
-    expect(isNoValueOperator('is_cleared')).toBe(true);
+  });
+
+  it('no longer marks the removed change-detection operators', () => {
+    expect(isNoValueOperator('is_changed')).toBe(false);
+    expect(isNoValueOperator('is_set')).toBe(false);
+    expect(isNoValueOperator('is_cleared')).toBe(false);
   });
 
   it('marks eq, contains, etc. as requiring value', () => {
@@ -144,9 +153,9 @@ describe('isNoValueOperator', () => {
 });
 
 describe('isDualValueOperator', () => {
-  it('between and changed_from_to are dual-value', () => {
+  it('between is dual-value; changed_from_to no longer exists', () => {
     expect(isDualValueOperator('between')).toBe(true);
-    expect(isDualValueOperator('changed_from_to')).toBe(true);
+    expect(isDualValueOperator('changed_from_to')).toBe(false);
   });
 
   it('eq, contains, etc. are not dual-value', () => {
@@ -187,11 +196,13 @@ describe('TestOperatorReset_OnFieldTypeChange', () => {
     expect(simulateOperatorReset('gt', 'string')).toBe('eq');
   });
 
-  it('change-detection op preserved during type change in updated mode', () => {
-    // is_changed is valid for all types in updated mode
-    expect(simulateOperatorReset('is_changed', 'number', 'updated')).toBe('is_changed');
-    expect(simulateOperatorReset('is_changed', 'string', 'updated')).toBe('is_changed');
-    expect(simulateOperatorReset('is_changed', 'boolean', 'updated')).toBe('is_changed');
+  it('a removed change-detection op resets to the type default rather than sticking', () => {
+    // A workflow saved before the removal cannot exist (these never passed
+    // validation), but a stale draft in local state can still carry one — it
+    // must fall back, not persist an operator no menu offers.
+    expect(simulateOperatorReset('is_changed', 'number', 'updated')).toBe('eq');
+    expect(simulateOperatorReset('is_changed', 'string', 'updated')).toBe('eq');
+    expect(simulateOperatorReset('is_changed', 'boolean', 'updated')).toBe('is_true');
   });
 });
 

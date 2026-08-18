@@ -2,7 +2,7 @@ import React, { useMemo, useCallback, useState, useEffect, useRef } from 'react'
 import { X } from 'lucide-react';
 import { type ConditionGroup, type ConditionRule } from '../../types';
 import { useBuilderStore } from '../../store';
-import { getOperatorsForType, isNoValueOperator, isDualValueOperator, findFieldInSchema } from '../../useSchema';
+import { getOperatorsForType, isNoValueOperator, isDualValueOperator, isRelativeDaysOperator, findFieldInSchema } from '../../useSchema';
 import type { FiresOn } from '../../useSchema';
 import { FieldPicker, type FieldMeta } from './FieldPicker';
 import { SmartValueInput } from './SmartValueInput';
@@ -263,7 +263,7 @@ export const ConditionConfig: React.FC = () => {
       // Value rendering
       if (noVal) {
         // No value needed — sentence is complete as-is
-      } else if (op === 'in_last_days') {
+      } else if (isRelativeDaysOperator(op)) {
         // Special: "in last N days"
         const val = rule.value;
         if (val !== null && val !== undefined && val !== '') {
@@ -388,6 +388,7 @@ export const ConditionConfig: React.FC = () => {
           const currentOp = rule.operator || 'eq';
           const noValue = isNoValueOperator(currentOp);
           const dualValue = isDualValueOperator(currentOp);
+          const relativeDays = isRelativeDaysOperator(currentOp);
           const resolvedField = rule.field ? findFieldInSchema(schema, rule.field) : null;
           const ruleValueError = errors[`conditions.rules.${idx}.value`]?.[0];
           const isOrphaned = orphanedFieldIndices.has(idx);
@@ -482,7 +483,7 @@ export const ConditionConfig: React.FC = () => {
                     </select>
 
                     {/* Single value input */}
-                    {!noValue && !dualValue && resolvedField && (
+                    {!noValue && !dualValue && !relativeDays && resolvedField && (
                       <div className="flex-1 min-w-[120px]">
                         <SmartValueInput
                           field={resolvedField}
@@ -524,8 +525,8 @@ export const ConditionConfig: React.FC = () => {
                       </div>
                     )}
 
-                    {/* "in last N days" — special number input */}
-                    {currentOp === 'in_last_days' && (
+                    {/* "in last N days" — a day COUNT, not a date */}
+                    {relativeDays && (
                       <div className="flex items-center gap-1.5">
                         <input
                           type="number"

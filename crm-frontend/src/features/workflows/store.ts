@@ -3,7 +3,7 @@ import { isForkStep, WAIT_EVENT_TYPES } from './types';
 import type { TriggerSpec, ConditionGroup, ActionSpec, WorkflowStep, Workflow, SaveWorkflowPayload, WaitEventType } from './types';
 import { workflowSchema, validateActionIds, validateConditionDepth } from './schemas';
 import { createWorkflow, updateWorkflow, getWorkflow, getWorkflowSchema, getObjectFields, type WorkflowSchema, type FieldItem } from './api';
-import { isNoValueOperator } from './useSchema';
+import { isNoValueOperator, isDualValueOperator } from './useSchema';
 import { isValidCron } from './cron';
 import { resolvableObjectsForTrigger, objectKeyOfPath, triggerOwnerObject } from './dateField';
 
@@ -989,9 +989,23 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
           errors.conditions.push(`Rule ${i + 1}: field no longer accessible`);
         }
 
-        // Missing value check
+        // Missing value check. A dual-value operator seeds its value as ['',''],
+        // which is none of null/undefined/'' — so an untouched range would
+        // otherwise pass here and save as a condition that can never match.
+        //
+        // The exactly-two rule is scoped to dual-value operators ON PURPOSE.
+        // `in` / `not_in` and any tag field store arrays of ARBITRARY length
+        // (MultiValueChipInput, MultiSelectDropdown, TagMultiSelect), so applying
+        // it to every array would reject a one-chip "is one of" as though its
+        // value were missing — and make the error come and go as the user adds
+        // chips.
         if (rule.field && rule.operator && !isNoValueOperator(rule.operator)) {
-          const isEmpty = rule.value === null || rule.value === undefined || rule.value === '';
+          const blank = (v: unknown) => v === null || v === undefined || String(v).trim() === '';
+          const isEmpty = isDualValueOperator(rule.operator)
+            ? !Array.isArray(rule.value) || rule.value.length !== 2 || rule.value.some(blank)
+            : Array.isArray(rule.value)
+              ? rule.value.length === 0
+              : blank(rule.value);
           if (isEmpty) {
             errors[`conditions.rules.${i}.value`] = ['Value is required for this operator'];
             if (!errors.conditions) errors.conditions = [];
