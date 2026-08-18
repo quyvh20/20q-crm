@@ -39,11 +39,13 @@ export const actionSpecSchema = z.object({
   params: z.record(z.string(), z.unknown()),
 });
 
-// A delay is either a fixed duration (duration_sec > 0) or a wait-until (A4.4:
-// until_field set → resolve the deadline from a record date field; duration_sec is
-// ignored and may be 0). Mirrors the backend DelayParams.IsWaitUntil discriminator
-// (validateDelayParams) so the canonical steps path accepts both shapes — otherwise
-// a wait-until delay (duration_sec 0) would fail .positive() and block every save.
+// A delay is one of three modes, in the same precedence order the backend applies
+// (DelayParams.IsWaitEvent → IsWaitUntil → fixed): wait for an engagement event
+// (A9: wait_event + timeout_sec), wait until a record date field (A4.4:
+// until_field; duration_sec ignored and may be 0), or a fixed duration
+// (duration_sec > 0). The refine mirrors validateDelayParams — without it a
+// wait-until or wait-for-event delay (duration_sec 0) would fail .positive() and
+// block every save.
 export const delayParamsSchema = z
   .object({
     duration_sec: z.number().int().nonnegative().optional(),
@@ -51,11 +53,23 @@ export const delayParamsSchema = z
     offset_days: z.number().int().optional(),
     at_time: z.string().optional(),
     timezone: z.string().optional(),
+    wait_event: z.string().optional(),
+    timeout_sec: z.number().int().nonnegative().optional(),
+    campaign_id: z.string().optional(),
   })
   .refine(
-    (d) => (!!d.until_field && d.until_field.length > 0) || (typeof d.duration_sec === 'number' && d.duration_sec > 0),
+    (d) =>
+      (!!d.wait_event && d.wait_event.length > 0) ||
+      (!!d.until_field && d.until_field.length > 0) ||
+      (typeof d.duration_sec === 'number' && d.duration_sec > 0),
     { message: 'Delay duration must be positive', path: ['duration_sec'] },
-  );
+  )
+  // A wait-for-event step with no deadline would park with nothing to wake it on
+  // the day the event never arrives, so the timeout is mandatory, not a default.
+  .refine((d) => !d.wait_event || (typeof d.timeout_sec === 'number' && d.timeout_sec > 0), {
+    message: 'Wait-for-event needs a timeout',
+    path: ['timeout_sec'],
+  });
 
 const stepTypes = ['action', 'condition', 'delay', 'split'] as const;
 

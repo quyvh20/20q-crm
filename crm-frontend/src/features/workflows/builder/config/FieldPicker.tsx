@@ -48,6 +48,11 @@ interface FieldPickerProps {
   onChange: (path: string, fieldMeta: FieldMeta) => void;
   /** Optional filter — only show these entity keys (e.g. ['contact', 'deal']) */
   entities?: string[];
+  /** Synthetic categories that don't come from the object schema — today the
+   *  wait-for-event outcomes an If/Else can branch on. Deliberately exempt from
+   *  `entities`, which scopes the picker to the trigger's object: these fields
+   *  live on the RUN, not on a record, so that filter doesn't apply to them. */
+  extraEntities?: SchemaEntity[];
   /** Disable the picker */
   disabled?: boolean;
   /** Placeholder text */
@@ -58,6 +63,7 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
   value,
   onChange,
   entities: entityFilter,
+  extraEntities,
   disabled = false,
   placeholder = 'Select field…',
 }) => {
@@ -102,13 +108,12 @@ export const FieldPicker: React.FC<FieldPickerProps> = ({
 
   // All entities (built-in + custom objects), optionally filtered by entity keys
   const allEntities = useMemo(() => {
-    if (!schema) return [];
+    const extra = extraEntities ?? [];
+    if (!schema) return extra;
     const all = [...schema.entities, ...(schema.custom_objects || [])];
-    if (entityFilter && entityFilter.length > 0) {
-      return all.filter((e) => entityFilter.includes(e.key));
-    }
-    return all;
-  }, [schema, entityFilter]);
+    const scoped = entityFilter && entityFilter.length > 0 ? all.filter((e) => entityFilter.includes(e.key)) : all;
+    return [...scoped, ...extra];
+  }, [schema, entityFilter, extraEntities]);
 
   // Find the currently selected field info for display
   const selectedField = useMemo(() => {

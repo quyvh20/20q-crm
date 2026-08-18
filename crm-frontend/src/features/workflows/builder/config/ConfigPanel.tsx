@@ -182,7 +182,13 @@ function StepDryPreview({ dry }: { dry: TestRunStep }) {
         )}
       </div>
       {!runs && dry.reason && <p className="mt-1 text-muted-foreground">{dry.reason}</p>}
-      {runs && dry.type === 'delay' && <p className="mt-1 text-muted-foreground">Pauses here, then continues.</p>}
+      {runs && dry.type === 'delay' && (
+        <p className="mt-1 text-muted-foreground">
+          {dry.wait_event
+            ? `Waits here for ${dry.wait_event === 'email_clicked' ? 'a link click' : 'an email open'}, then continues — or continues anyway once the timeout runs out.`
+            : 'Pauses here, then continues.'}
+        </p>
+      )}
       {runs && dry.type === 'action' && Object.keys(params).length > 0 && (
         <div className="mt-2 space-y-1">
           <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Resolved values</div>
@@ -292,7 +298,7 @@ export function ConfigPanel({ dryRun }: { dryRun?: DryRunState | null }) {
   const isDelay = step.type === 'delay';
   const actionType = step.action?.type ?? '';
   const meta = isDelay ? delayMeta : actionMeta(actionType);
-  const title = isDelay ? 'Time delay' : (ACTION_TITLES[actionType as keyof typeof ACTION_TITLES] ?? 'Action');
+  const title = isDelay ? 'Wait' : (ACTION_TITLES[actionType as keyof typeof ACTION_TITLES] ?? 'Action');
 
   return (
     <Shell header={{ eyebrow: isDelay ? 'Rule' : 'Action', title, meta }} onDelete={handleDelete} preview={preview}>

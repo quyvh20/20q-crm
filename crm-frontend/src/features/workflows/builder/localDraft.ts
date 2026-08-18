@@ -118,7 +118,16 @@ function detectSteps(p: string, triggerType?: string): WorkflowStep[] {
   const seen = new Set<string>();
   const steps: WorkflowStep[] = [];
   for (const f of found) {
-    const key = f.step.type === 'action' ? f.step.action!.type : `delay:${f.step.delay?.duration_sec}`;
+    // Two Wait steps are "the same kind" only within a mode — keying every delay
+    // on duration_sec alone would collapse a 3-day wait and a wait-for-click
+    // (duration_sec 0 on both) into one step.
+    const d = f.step.delay;
+    const key =
+      f.step.type === 'action'
+        ? f.step.action!.type
+        : d?.wait_event
+          ? `delay:event:${d.wait_event}`
+          : `delay:${d?.duration_sec}`;
     if (seen.has(key)) continue;
     seen.add(key);
     steps.push(f.step);

@@ -109,7 +109,7 @@ export const ACTION_TITLES: Record<ActionSpec['type'], string> = {
   create_task: 'Create a task',
   assign_user: 'Assign a user',
   send_webhook: 'Call a webhook',
-  delay: 'Time delay',
+  delay: 'Wait',
   update_record: 'Update a record',
   log_activity: 'Log an activity',
   notify_user: 'Notify a user',
@@ -264,9 +264,21 @@ export function triggerDescription(trigger: TriggerSpec | undefined): string {
   return type;
 }
 
-// delayLabel renders a delay step's cadence: a wait-until description (A4.4) or a
-// fixed duration. The timezone is omitted here to keep the node label short.
+// describeWaitEvent renders a wait-for-event step (A9) as one line: what ends the
+// wait early, and the timeout that ends it either way.
+export function describeWaitEvent(delay: DelayParams): string {
+  const what = delay.wait_event === 'email_clicked' ? 'a link click' : 'an email open';
+  if (!delay.timeout_sec) return `Wait for ${what}`;
+  return `Wait for ${what}, up to ${compactDuration(delay.timeout_sec)}`;
+}
+
+// delayLabel renders a delay step's cadence: a wait-for-event summary (A9), a
+// wait-until description (A4.4), or a fixed duration. The timezone is omitted
+// here to keep the node label short.
 export function delayLabel(delay: DelayParams | undefined): string {
+  if (delay?.wait_event) {
+    return describeWaitEvent(delay);
+  }
   if (delay?.until_field) {
     return describeWaitUntil({ field: delay.until_field, offset_days: delay.offset_days ?? 0, at_time: delay.at_time });
   }
@@ -317,6 +329,12 @@ export function stepSubtitle(step: WorkflowStep): string {
 
 export function humanizeDuration(sec: number): string {
   if (sec <= 0) return 'No wait';
+  return `Wait ${compactDuration(sec)}`;
+}
+
+/** The bare "3d 4h" part of a duration, with no leading verb — for labels that
+ *  supply their own ("Wait for a link click, up to 3d"). */
+export function compactDuration(sec: number): string {
   const d = Math.floor(sec / 86400);
   const h = Math.floor((sec % 86400) / 3600);
   const m = Math.floor((sec % 3600) / 60);
@@ -325,5 +343,5 @@ export function humanizeDuration(sec: number): string {
   if (h) parts.push(`${h}h`);
   if (m) parts.push(`${m}m`);
   if (!parts.length) parts.push(`${sec}s`);
-  return `Wait ${parts.join(' ')}`;
+  return parts.join(' ');
 }

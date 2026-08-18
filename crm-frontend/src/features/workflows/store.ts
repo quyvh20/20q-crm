@@ -1,6 +1,6 @@
 import { create } from 'zustand';
-import { isForkStep } from './types';
-import type { TriggerSpec, ConditionGroup, ActionSpec, WorkflowStep, Workflow, SaveWorkflowPayload } from './types';
+import { isForkStep, WAIT_EVENT_TYPES } from './types';
+import type { TriggerSpec, ConditionGroup, ActionSpec, WorkflowStep, Workflow, SaveWorkflowPayload, WaitEventType } from './types';
 import { workflowSchema, validateActionIds, validateConditionDepth } from './schemas';
 import { createWorkflow, updateWorkflow, getWorkflow, getWorkflowSchema, getObjectFields, type WorkflowSchema, type FieldItem } from './api';
 import { isNoValueOperator } from './useSchema';
@@ -562,7 +562,16 @@ function flattenSteps(steps: WorkflowStep[]): ActionSpec[] {
     } else if (step.type === 'delay') {
       const d = step.delay;
       const params: Record<string, unknown> = { duration_sec: d?.duration_sec ?? 0 };
-      if (d?.until_field) {
+      // Mode precedence mirrors the backend (IsWaitEvent → IsWaitUntil → fixed),
+      // and each mode emits ONLY its own keys: a stale until_field left behind by
+      // a mode switch must not travel alongside a wait_event, or the two layers
+      // would disagree about which kind of wait this is.
+      if (d?.wait_event) {
+        // Wait-for-event mode (A9): event + mandatory timeout + optional campaign pin.
+        params.wait_event = d.wait_event;
+        params.timeout_sec = d.timeout_sec ?? 0;
+        params.campaign_id = d.campaign_id ?? '';
+      } else if (d?.until_field) {
         // Wait-until mode carries the field + offset/time/timezone (A4.4).
         params.until_field = d.until_field;
         params.offset_days = d.offset_days ?? 0;
@@ -762,6 +771,11 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
           if (dp?.offset_days !== undefined) nextDelay.offset_days = Number(dp.offset_days);
           if (dp?.at_time !== undefined) nextDelay.at_time = dp.at_time as string;
           if (dp?.timezone !== undefined) nextDelay.timezone = dp.timezone as string;
+          // Wait-for-event fields (A9). Empty wait_event drops the step out of
+          // event mode; timeout/campaign are kept so toggling back restores them.
+          if (dp?.wait_event !== undefined) nextDelay.wait_event = (dp.wait_event as WaitEventType) || undefined;
+          if (dp?.timeout_sec !== undefined) nextDelay.timeout_sec = Number(dp.timeout_sec);
+          if (dp?.campaign_id !== undefined) nextDelay.campaign_id = (dp.campaign_id as string) || undefined;
           return { ...step, delay: nextDelay };
         }
         if (step.type === 'action' && step.action && patch.action) {
@@ -1078,8 +1092,29 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       }
 
       if (action.type === 'delay') {
+        const waitEvent = typeof action.params.wait_event === 'string' ? action.params.wait_event : '';
         const untilField = typeof action.params.until_field === 'string' ? action.params.until_field : '';
-        if (untilField) {
+        if (waitEvent) {
+          // Wait-for-event mode (A9). The engine stamps the run's CONTACT as the
+          // subject of the wait, so a trigger whose eval context never carries one
+          // (schedule, company) can't ever satisfy it — the step would degrade to a
+          // silent timeout. Catch that here rather than shipping a dead wait.
+          if (!WAIT_EVENT_TYPES.includes(waitEvent as WaitEventType)) {
+            errors[`${key}.params.wait_event`] = ['Wait for an email open or a link click'];
+          } else if (!resolvableObjectsForTrigger(state.trigger).has('contact')) {
+            errors[`${key}.params.wait_event`] = [
+              "This trigger's record has no contact to watch — the wait would just run out its timeout",
+            ];
+          }
+          // The timeout is the ONLY thing that guarantees the run continues when
+          // the event never arrives, so it is required, not defaulted.
+          const timeout = Number(action.params.timeout_sec) || 0;
+          if (timeout <= 0) {
+            errors[`${key}.params.timeout_sec`] = ['Set how long to wait before giving up'];
+          } else if (timeout > 2592000) {
+            errors[`${key}.params.timeout_sec`] = ['Timeout exceeds maximum of 30 days (2,592,000 seconds)'];
+          }
+        } else if (untilField) {
           // Wait-until mode (A4.4): a field is required; offset/time/timezone default.
           // No 30-day cap — a field-based wait can be months out.
           // Guard against a field the run's eval context can't resolve (a deal field

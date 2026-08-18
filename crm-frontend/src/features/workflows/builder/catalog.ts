@@ -78,7 +78,7 @@ export const ACTION_ITEMS: PaletteStepItem[] = [
 ];
 
 export const RULE_ITEMS: PaletteStepItem[] = [
-  { type: 'delay', category: 'Rules', label: 'Time delay', icon: Clock },
+  { type: 'delay', category: 'Rules', label: 'Wait', icon: Clock },
   { type: 'condition', category: 'Rules', label: 'If / Else split', icon: Split },
   { type: 'split', category: 'Rules', label: 'Percentage split', icon: Percent },
 ];

@@ -6,6 +6,7 @@ import { getOperatorsForType, isNoValueOperator, isDualValueOperator, findFieldI
 import type { FiresOn } from '../../useSchema';
 import { FieldPicker, type FieldMeta } from './FieldPicker';
 import { SmartValueInput } from './SmartValueInput';
+import { waitOutcomeEntity } from '../waitOutcomes';
 
 const MAX_CONDITIONS = 10;
 
@@ -56,13 +57,26 @@ export const ConditionConfig: React.FC = () => {
     return deriveObjectSlug(trigger.type);
   }, [trigger]);
 
-  // Get only fields scoped to the selected Source object
+  // Wait-for-event outcomes (A9) that are guaranteed to have run before this
+  // step — the fields an If/Else can branch on to split engaged contacts off.
+  const waitOutcomes = useMemo(
+    () => waitOutcomeEntity(steps || [], selectedNodeId),
+    [steps, selectedNodeId],
+  );
+  const waitOutcomeEntities = useMemo(() => (waitOutcomes ? [waitOutcomes] : undefined), [waitOutcomes]);
+
+  // Fields scoped to the selected Source object, plus those wait outcomes. They
+  // have to live in the SAME list: `scopedFields` is what resolves a rule's type
+  // (so the right operators are offered), its preview label, and the
+  // orphaned-field check — a synthetic field missing from it would be flagged as
+  // "no longer accessible" the moment it was picked.
   const scopedFields = useMemo(() => {
-    if (!schema || !objectSlug) return [];
+    const outcomes = waitOutcomes?.fields ?? [];
+    if (!schema || !objectSlug) return outcomes;
     const allEntities = [...schema.entities, ...(schema.custom_objects || [])];
     const entity = allEntities.find((e) => e.key === objectSlug);
-    return entity?.fields || [];
-  }, [schema, objectSlug]);
+    return [...(entity?.fields || []), ...outcomes];
+  }, [schema, objectSlug, waitOutcomes]);
 
   // Entity label for preview
   const objectLabel = useMemo(() => {
@@ -425,6 +439,7 @@ export const ConditionConfig: React.FC = () => {
                       disabled={!!schemaError}
                       placeholder="Select field…"
                       entities={[objectSlug]}
+                      extraEntities={waitOutcomeEntities}
                     />
                   </div>
                   {/* focus-visible: the hover-only reveal left this button

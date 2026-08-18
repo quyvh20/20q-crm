@@ -35,7 +35,24 @@ export interface DelayParams {
   offset_days?: number;
   at_time?: string;
   timezone?: string;
+  /** Wait-for-event mode (A9): park until the run's contact opens or clicks a
+   *  campaign email, or until timeout_sec elapses — whichever lands first. The
+   *  step ALWAYS completes; it publishes {{actions.<step id>.happened}} so a
+   *  following If/Else can branch on which of the two ended the wait.
+   *  Takes precedence over until_field, which takes precedence over duration_sec. */
+  wait_event?: WaitEventType;
+  /** Hard deadline for the wait, in seconds. Required — it is the only thing
+   *  that guarantees the run continues if the event never arrives. */
+  timeout_sec?: number;
+  /** Optional: only this campaign's opens/clicks satisfy the wait. Blank = any. */
+  campaign_id?: string;
 }
+
+/** The engagement events a Wait step can wait for — the same two the marketing
+ *  webhook emits as triggers, so the wait inherits their filtering (campaign
+ *  sends only, opt-out clicks and machine opens excluded). */
+export type WaitEventType = 'email_opened' | 'email_clicked';
+export const WAIT_EVENT_TYPES: readonly WaitEventType[] = ['email_opened', 'email_clicked'];
 
 /** Percentage split (A/B fork): percent_a of runs take the A branch. */
 export interface SplitParams {
@@ -148,7 +165,9 @@ export interface TestRunStep {
   resolved_params?: Record<string, unknown>;
   condition_result?: boolean;
   branch?: 'yes' | 'no';
+  /** For a wait-for-event step this is the timeout, not a fixed pause. */
   delay_sec?: number;
+  wait_event?: string;
 }
 
 export interface TestRunResponse {

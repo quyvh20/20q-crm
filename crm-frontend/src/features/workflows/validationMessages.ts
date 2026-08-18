@@ -52,6 +52,9 @@ const TERMS: Record<string, string> = {
   from_stage: 'From Stage',
   duration_sec: 'Duration',
   until_field: 'wait-until field',
+  wait_event: 'Event to wait for',
+  timeout_sec: 'Timeout',
+  campaign_id: 'Campaign',
   activity_type: 'Activity Type',
   workflow_id: 'Workflow',
   user_id: 'User',
@@ -102,11 +105,15 @@ const FIELD_HELP: Record<string, string> = {
   // NB: `steps[].action.type` / `.params.*` are folded onto `actions[].*` by
   // normalizeField, so they're keyed once, below.
   'steps[].condition': 'This If/Else step is missing its condition.',
-  'steps[].delay': 'This Wait step needs a duration, or a date field to wait until.',
+  'steps[].delay': 'This Wait step needs a duration, a date field to wait until, or an event to wait for.',
   // A Wait step's own params (validateDelayParams is only ever called with
   // `steps[N].delay`, so these never appear under actions[]).
   'steps[].delay.duration_sec': 'This Wait step needs a duration between 1 second and 30 days.',
   'steps[].delay.at_time': 'Wait-until time must be in HH:MM, 24-hour format.',
+  'steps[].delay.wait_event': 'This Wait step can only wait for an email open or a link click.',
+  'steps[].delay.timeout_sec':
+    'This Wait step needs a timeout (up to 30 days) — it’s what keeps the automation moving if the event never happens.',
+  'steps[].delay.campaign_id': 'Pick a campaign to wait on, or leave it on Any campaign.',
   'steps[].delay.timezone': 'Pick a valid timezone for this Wait step.',
   actions: 'Add at least one step to this automation.',
   'actions[].type': 'Choose an action for this step.',
@@ -119,6 +126,10 @@ const FIELD_HELP: Record<string, string> = {
   'actions[].params.updates': 'Update Contact needs at least one field to change.',
   'actions[].params.operation': 'Update Contact needs to know how to change the field.',
   'actions[].params.duration_sec': 'This Wait step needs a duration (up to 30 days).',
+  'actions[].params.wait_event':
+    'This Wait step needs a contact to watch — pick a trigger whose record has one, or wait for a duration instead.',
+  'actions[].params.timeout_sec':
+    'This Wait step needs a timeout (up to 30 days) — it’s what keeps the automation moving if the event never happens.',
   'actions[].params.object': 'Pick the object for this step.',
   'actions[].params.fields': 'Create Record needs at least one field to fill in.',
   'actions[].params.workflow_id': 'Enroll Records needs a workflow to enrol into.',

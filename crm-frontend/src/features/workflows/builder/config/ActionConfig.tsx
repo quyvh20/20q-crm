@@ -1,10 +1,11 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { User, Target, Phone, Users, FileText, Mail, Plus, X, Bell } from 'lucide-react';
-import type { ActionSpec } from '../../types';
+import type { ActionSpec, WaitEventType } from '../../types';
 import { useBuilderStore } from '../../store';
 import { TemplateInput } from './inputs';
 import { useEmailTemplates, useWorkflowsList } from '../../queries';
 import { useContentList } from '../../../marketing/contentQueries';
+import { useCampaigns } from '../../../marketing/campaignsQueries';
 import { FieldPicker, type FieldMeta } from './FieldPicker';
 import { SmartValueInput } from './SmartValueInput';
 import type { SchemaField, WorkflowSchema, SchemaEntity } from '../../api';
@@ -1305,58 +1306,292 @@ function dateFieldsByObject(schema: WorkflowSchema | null, resolvable?: Set<stri
   return groups;
 }
 
-// DelayParams (A4.4): a mode toggle switches between a fixed duration and a
-// wait-until deadline resolved from a record date field.
+// The three shapes a Wait step can take. Precedence matches the backend
+// (DelayParams.IsWaitEvent → IsWaitUntil → fixed) and store.flattenSteps, so the
+// panel always shows the mode that would actually run.
+type DelayMode = 'fixed' | 'until' | 'event';
+
+function delayModeOf(params: Record<string, unknown>): DelayMode {
+  if (params.wait_event) return 'event';
+  if (params.until_field) return 'until';
+  return 'fixed';
+}
+
+const DEFAULT_WAIT_TIMEOUT_SEC = 3 * 86400; // 3 days — long enough for a weekend
+
+// DelayParams: a mode toggle switches between a fixed duration (A4), a
+// wait-until deadline resolved from a record date field (A4.4), and a
+// wait-for-event park that ends early when the contact engages (A9).
 const DelayParams: React.FC<ParamProps> = ({ action, setParam }) => {
   const { schema, updateAction, trigger } = useBuilderStore();
   const setParams = (obj: Record<string, unknown>) => updateAction(action.id, { params: obj });
 
-  const isUntil = Boolean(action.params.until_field);
+  const mode = delayModeOf(action.params);
   // Only offer date fields the run's eval context can actually resolve for this trigger.
   const resolvable = useMemo(() => resolvableObjectsForTrigger(trigger), [trigger]);
   const groups = useMemo(() => dateFieldsByObject(schema, resolvable), [schema, resolvable]);
   const hasDateFields = groups.length > 0;
+  // The engine waits on the run's CONTACT (registerEventWait reads it from the
+  // hydrated eval context, not from trigger_context). Without one the step can
+  // only ever run out its timeout, so don't offer the mode at all.
+  const hasContact = resolvable.has('contact');
 
-  const setMode = (until: boolean) => {
-    if (until === isUntil) return;
-    if (until) {
+  const setMode = (next: DelayMode) => {
+    if (next === mode) return;
+    // Every switch REPLACES the mode discriminators instead of merging: a
+    // leftover until_field or wait_event would win the precedence race on save
+    // and quietly run a different kind of wait than the panel is showing.
+    if (next === 'event') {
+      setParams({
+        wait_event: (action.params.wait_event as string) || 'email_opened',
+        timeout_sec: Number(action.params.timeout_sec) || DEFAULT_WAIT_TIMEOUT_SEC,
+        campaign_id: (action.params.campaign_id as string) || '',
+        until_field: '',
+        duration_sec: 0,
+      });
+    } else if (next === 'until') {
       const first = groups[0]?.fields[0]?.path || '';
-      setParams({ until_field: first, offset_days: 0, at_time: DEFAULT_AT_TIME, timezone: browserTimeZone(), duration_sec: 0 });
+      setParams({ wait_event: '', until_field: first, offset_days: 0, at_time: DEFAULT_AT_TIME, timezone: browserTimeZone(), duration_sec: 0 });
     } else {
-      setParams({ until_field: '', duration_sec: Number(action.params.duration_sec) || 60 });
+      setParams({ wait_event: '', until_field: '', duration_sec: Number(action.params.duration_sec) || 60 });
     }
   };
 
   const modeBtn = (active: boolean) =>
-    `flex-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-150 ${
+    `flex-1 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all duration-150 ${
       active ? 'bg-primary text-primary-foreground shadow-md shadow-primary/25' : 'bg-background text-muted-foreground hover:bg-accent hover:text-accent-foreground'
     }`;
+
+  const untilDisabled = !hasDateFields && mode !== 'until';
+  const eventDisabled = !hasContact && mode !== 'event';
 
   return (
     <div className="space-y-3">
       <div>
         <label className="block text-sm text-muted-foreground mb-1">Wait type</label>
         <div className="flex gap-1">
-          <button type="button" onClick={() => setMode(false)} className={modeBtn(!isUntil)}>For a duration</button>
+          <button type="button" onClick={() => setMode('fixed')} className={modeBtn(mode === 'fixed')}>For a duration</button>
           <button
             type="button"
-            onClick={() => setMode(true)}
-            disabled={!hasDateFields && !isUntil}
-            className={`${modeBtn(isUntil)} ${!hasDateFields && !isUntil ? 'opacity-50 cursor-not-allowed' : ''}`}
+            onClick={() => setMode('until')}
+            disabled={untilDisabled}
+            className={`${modeBtn(mode === 'until')} ${untilDisabled ? 'opacity-50 cursor-not-allowed' : ''}`}
           >
             Until a date
           </button>
+          <button
+            type="button"
+            onClick={() => setMode('event')}
+            disabled={eventDisabled}
+            className={`${modeBtn(mode === 'event')} ${eventDisabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+          >
+            For an event
+          </button>
         </div>
-        {!hasDateFields && !isUntil && (
+        {untilDisabled && (
           <p className="text-[11px] text-muted-foreground/70 mt-1">No date fields available to wait until.</p>
+        )}
+        {eventDisabled && (
+          <p className="text-[11px] text-muted-foreground/70 mt-1">
+            This trigger's record has no contact, so there's nobody whose email activity we could wait for.
+          </p>
         )}
       </div>
 
-      {isUntil ? (
+      {mode === 'event' ? (
+        <WaitEventFields action={action} setParam={setParam} />
+      ) : mode === 'until' ? (
         <WaitUntilFields action={action} setParam={setParam} groups={groups} />
       ) : (
         <FixedDelayFields action={action} setParam={setParam} />
       )}
+    </div>
+  );
+};
+
+const WAIT_EVENT_OPTIONS: { value: WaitEventType; label: string; hint: string }[] = [
+  {
+    value: 'email_opened',
+    label: 'Opens a marketing email',
+    hint: 'Automated opens (Apple Mail privacy proxy) don’t end the wait.',
+  },
+  {
+    value: 'email_clicked',
+    label: 'Clicks a link in one',
+    hint: 'Unsubscribe clicks and corporate link scanners don’t end the wait.',
+  },
+];
+
+// A compact value+unit duration control. Kept separate from FixedDelayFields so
+// the timeout can reuse the same integer-only decomposition without inheriting
+// that panel's summary/over-max chrome.
+const DurationInput: React.FC<{ seconds: number; onChange: (sec: number) => void; ariaLabel: string; invalid?: boolean }> = ({
+  seconds,
+  onChange,
+  ariaLabel,
+  invalid,
+}) => {
+  const decomposed = useMemo(() => decomposeSeconds(seconds), [seconds]);
+  const [text, setText] = useState(String(decomposed.value));
+
+  // Resync the visible text when the stored value changes from outside (load, or
+  // a unit switch that rescales it). Adjusting during render rather than in an
+  // effect: React re-runs this component immediately with the new state and
+  // never commits the stale text, so there's no flash and no cascading render.
+  const [syncedFrom, setSyncedFrom] = useState(decomposed.value);
+  if (syncedFrom !== decomposed.value) {
+    setSyncedFrom(decomposed.value);
+    setText(String(decomposed.value));
+  }
+
+  const factor = DELAY_UNITS.find((u) => u.value === decomposed.unit)!.factor;
+  const border = invalid ? 'border-destructive focus:border-destructive' : 'border-border focus:border-ring focus:ring-1 focus:ring-ring';
+
+  return (
+    <div className="flex gap-2">
+      <input
+        type="number"
+        min={1}
+        value={text}
+        aria-label={ariaLabel}
+        onChange={(e) => {
+          setText(e.target.value);
+          const parsed = parseInt(e.target.value);
+          if (!isNaN(parsed) && parsed > 0) onChange(parsed * factor);
+        }}
+        onBlur={() => {
+          const parsed = parseInt(text);
+          if (isNaN(parsed) || parsed <= 0) setText(String(decomposed.value));
+        }}
+        className={`flex-1 bg-background border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${border}`}
+      />
+      <select
+        value={decomposed.unit}
+        aria-label={`${ariaLabel} unit`}
+        onChange={(e) => {
+          const next = DELAY_UNITS.find((u) => u.value === e.target.value)!.factor;
+          onChange((parseInt(text) || decomposed.value) * next);
+        }}
+        className={`w-28 bg-background border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none ${border}`}
+      >
+        {DELAY_UNITS.map((u) => (
+          <option key={u.value} value={u.value}>{u.label}</option>
+        ))}
+      </select>
+    </div>
+  );
+};
+
+// WaitEventFields (A9): park the run until this contact engages with a campaign
+// email, or until the timeout — whichever lands first. Unlike a hard Yes/No
+// fork, the step always completes and publishes its outcome, so a following
+// If/Else can branch on it (or not) as many steps later as you like.
+const WaitEventFields: React.FC<ParamProps> = ({ action, setParam }) => {
+  const campaigns = useCampaigns();
+  const waitEvent = (String(action.params.wait_event || 'email_opened')) as WaitEventType;
+  const timeoutSec = Number(action.params.timeout_sec) || 0;
+  const campaignID = String(action.params.campaign_id || '');
+  const isOverMax = timeoutSec > MAX_DELAY_SEC;
+
+  // Same orphaned-option guard as the engagement TRIGGER picker: a campaign that
+  // isn't in the loaded list (still loading, marketing-gated request failed, or
+  // the campaign was deleted) must stay visible — a blank select reads as "Any
+  // campaign" and is one save away from silently widening the wait.
+  const known = (campaigns.data ?? []).some((c) => c.id === campaignID);
+  const showOrphan = !!campaignID && !known;
+
+  const inputCls =
+    'bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-ring focus:ring-1 focus:ring-ring';
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <label className="block text-sm text-muted-foreground mb-1">Wait until the contact…</label>
+        <div className="space-y-1.5">
+          {WAIT_EVENT_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setParam('wait_event', opt.value)}
+              aria-pressed={waitEvent === opt.value}
+              className={`w-full text-left px-3 py-2 rounded-lg border transition-all duration-150 ${
+                waitEvent === opt.value
+                  ? 'border-primary bg-primary/10'
+                  : 'border-border bg-background hover:bg-accent'
+              }`}
+            >
+              <span className="block text-sm text-foreground">{opt.label}</span>
+              <span className="block text-[11px] text-muted-foreground mt-0.5">{opt.hint}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-sm text-muted-foreground mb-1">In which campaign</label>
+        <select
+          value={campaignID}
+          onChange={(e) => setParam('campaign_id', e.target.value)}
+          aria-label="Campaign to wait on"
+          className={`${inputCls} w-full`}
+        >
+          <option value="">Any campaign</option>
+          {showOrphan && (
+            <option value={campaignID} disabled>
+              ⚠ {campaigns.isLoading ? 'Loading…' : `${campaignID.slice(0, 8)}… (not in your campaign list)`}
+            </option>
+          )}
+          {(campaigns.data ?? []).map((c) => (
+            <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
+        </select>
+        {campaigns.isError && (
+          <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-0.5">
+            ⚠ Couldn't load your campaigns (this may need marketing access) — an existing choice still applies.
+          </p>
+        )}
+      </div>
+
+      <div>
+        <label className="block text-sm text-muted-foreground mb-1">Give up after</label>
+        <DurationInput
+          seconds={timeoutSec > 0 ? timeoutSec : DEFAULT_WAIT_TIMEOUT_SEC}
+          onChange={(sec) => setParam('timeout_sec', sec)}
+          ariaLabel="Timeout"
+          invalid={isOverMax || timeoutSec <= 0}
+        />
+        {isOverMax ? (
+          <div className="flex items-center gap-2 px-3 py-2 mt-2 rounded-lg bg-destructive/10 border border-destructive/40">
+            <span className="text-xs text-destructive">⚠ Timeout exceeds the maximum of 30 days. Reduce it to save.</span>
+          </div>
+        ) : timeoutSec <= 0 ? (
+          // The mode toggle always writes a timeout, so this shape only arrives
+          // from an AI draft or an imported workflow. Say so plainly rather than
+          // showing the suggested value as if it were already saved.
+          <div className="flex items-center gap-2 px-3 py-2 mt-2 rounded-lg bg-destructive/10 border border-destructive/40">
+            <span className="text-xs text-destructive">
+              ⚠ No timeout set. Confirm the value above to save — without one the automation would have no guaranteed way forward.
+            </span>
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground mt-1">
+            The automation carries on either way — this is only how long it holds here first.
+          </p>
+        )}
+      </div>
+
+      {/* What this step hands downstream. This is the part a hard Yes/No fork
+          can't do: the outcome is a value, so any later If/Else can read it. */}
+      <div className="px-3 py-2 rounded-lg bg-muted/40 border border-border/60 space-y-1">
+        <p className="text-xs text-muted-foreground">
+          Then continue. Add an <span className="text-foreground font-medium">If / Else</span> below and pick{' '}
+          <span className="text-foreground font-medium">Wait outcomes → {waitEvent === 'email_clicked' ? 'Clicked' : 'Opened'}</span>{' '}
+          to send engaged contacts down a different path.
+        </p>
+        <p className="text-[11px] text-muted-foreground/70 font-mono">
+          {`{{actions.${action.id}.happened}}`}
+        </p>
+      </div>
     </div>
   );
 };

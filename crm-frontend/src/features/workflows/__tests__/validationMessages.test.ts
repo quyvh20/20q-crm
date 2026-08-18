@@ -76,7 +76,7 @@ describe('humanizeValidationError', () => {
       message: "delay requires 'delay' with 'duration_sec' or 'until_field'",
     });
     expect(issue.location).toBe('Step 2');
-    expect(issue.text).toBe('This Wait step needs a duration, or a date field to wait until.');
+    expect(issue.text).toBe('This Wait step needs a duration, a date field to wait until, or an event to wait for.');
   });
 
   it('maps a Wait step’s own delay params (validator.go emits steps[N].delay.*)', () => {
