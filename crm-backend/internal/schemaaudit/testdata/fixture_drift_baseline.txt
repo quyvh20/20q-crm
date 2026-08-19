@@ -1,6 +1,5 @@
 internal/automation/assign_exec_db_test.go	deals	1	closed_at,company_id,contact_id,custom_fields,expected_close_at,probability,stage_id,value
 internal/automation/assign_exec_db_test.go	users	1	avatar_url,created_at,default_org_id,deleted_at,email_verified_at,full_name,google_id,locale,onboarding_completed,password_hash,timezone,token_version,totp_enabled_at,totp_last_step,totp_secret,updated_at
-internal/automation/datefield_backfill_test.go	deals	1	pipeline_id
 internal/automation/dod_log_activity_e2e_test.go	deals	1	closed_at,company_id,contact_id,created_at,custom_fields,deleted_at,expected_close_at,is_lost,is_won,owner_user_id,probability,stage_id,updated_at,value
 internal/automation/dod_log_activity_e2e_test.go	organizations	1	created_at,currency,deleted_at,locale,paddle_subscription_id,plan_tier,require_two_factor,timezone,type,updated_at
 internal/automation/executor_log_activity_test.go	activities	1	deleted_at,duration_minutes,sentiment
@@ -61,7 +60,6 @@ internal/repository/pipeline_backfill_db_test.go	deals	1	closed_at,company_id,co
 internal/repository/pipeline_backfill_db_test.go	organizations	1	created_at,currency,deleted_at,locale,paddle_subscription_id,plan_tier,require_two_factor,timezone,type,updated_at
 internal/repository/record_embedding_repository_test.go	custom_object_defs	2	created_at,deleted_at,fields,icon,label,label_plural,org_id,searchable,slug,updated_at
 internal/repository/record_embedding_repository_test.go	organizations	2	created_at,currency,deleted_at,locale,name,paddle_subscription_id,plan_tier,require_two_factor,timezone,type,updated_at
-internal/repository/record_index_backlog_test.go	contacts	1	lead_score
 internal/repository/record_index_backlog_test.go	custom_object_defs	1	created_at,fields,icon,label,label_plural,searchable,updated_at
 internal/repository/record_index_backlog_test.go	custom_object_records	1	created_by
 internal/repository/record_index_backlog_test.go	organizations	1	created_at,currency,deleted_at,locale,name,paddle_subscription_id,plan_tier,require_two_factor,timezone,type,updated_at
@@ -73,6 +71,5 @@ internal/repository/segment_integration_test.go	user_groups	1	created_at,created
 internal/repository/task_activity_scope_db_test.go	contacts	1	company_id,created_at,custom_fields,email,embedding,first_name,last_name,lead_score,lead_score_at,phone,updated_at
 internal/repository/task_activity_scope_db_test.go	deals	1	closed_at,company_id,contact_id,created_at,custom_fields,expected_close_at,is_lost,is_won,pipeline_id,probability,stage_id,title,updated_at,value
 internal/repository/task_activity_scope_db_test.go	record_shares	1	created_by,grantee_user_id
-internal/repository/task_activity_scope_db_test.go	tasks	1	last_reminded_at
 internal/repository/task_activity_scope_db_test.go	user_groups	1	created_at,created_by,description,updated_at
 internal/repository/two_factor_replay_test.go	users	1	avatar_url,default_org_id,email_verified_at,first_name,full_name,google_id,last_name,locale,onboarding_completed,org_id,password_hash,timezone,token_version,totp_enabled_at,totp_secret

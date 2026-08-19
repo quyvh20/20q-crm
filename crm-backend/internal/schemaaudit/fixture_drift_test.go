@@ -274,20 +274,36 @@ func parseCreateTables(src string) []fixtureTable {
 		}
 		i = pos + open + end
 
-		out = append(out, fixtureTable{table: name, columns: columnNames(body)})
+		out = append(out, fixtureTable{table: name, columns: columnNames(stripLineComments(body))})
 	}
 }
 
 // balancedBody returns the contents between s[0]=='(' and its matching ')',
 // plus the index just past that ')'. Quoted strings are skipped so a paren
-// inside a default value cannot unbalance the scan.
+// inside a default value cannot unbalance the scan — and so is a `--` line
+// comment, for the same reason: every current comment near a CREATE TABLE
+// happens to parenthesize its migration number ("(R8.1)"), which nets to zero
+// and is harmless today, but a future comment with an UNMATCHED paren (a
+// stray "(see below" or a mid-sentence aside) would silently desync depth and
+// either truncate real columns or swallow the next statement whole.
 func balancedBody(s string) (string, int) {
 	depth := 0
 	inQuote := false
+	inComment := false
 	for i := 0; i < len(s); i++ {
+		if inComment {
+			if s[i] == '\n' {
+				inComment = false
+			}
+			continue
+		}
 		switch s[i] {
 		case '\'':
 			inQuote = !inQuote
+		case '-':
+			if !inQuote && i+1 < len(s) && s[i+1] == '-' {
+				inComment = true
+			}
 		case '(':
 			if !inQuote {
 				depth++
@@ -304,21 +320,34 @@ func balancedBody(s string) (string, int) {
 	return "", -1
 }
 
+// stripLineComments removes everything from `--` to end-of-line, for every
+// line in s. MUST run before splitTopLevel, not after: several fixtures carry
+// a prose `--` comment that itself contains a comma (e.g. "gorm INSERTs every
+// column on domain.Task, so Create died with"), and splitTopLevel has no idea
+// that comma is inside a comment. Stripped too late, that comma still cuts a
+// real column declaration in half — the trailing half's first token becomes
+// some ordinary English word ("so", "with", …) that columnNames then records
+// as a bogus column name instead of the real one, which silently vanishes
+// from the comparison. Found via task_activity_scope_db_test.go: its `tasks`
+// fixture demonstrably HAS last_reminded_at, yet the sweep reported it
+// missing — a false positive in the tool, not a real fixture gap.
+func stripLineComments(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		if c := strings.Index(line, "--"); c >= 0 {
+			lines[i] = line[:c]
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // columnNames extracts the declared column names from a CREATE TABLE body:
 // the first token of each top-level comma-separated item that is not a
-// table-level constraint.
+// table-level constraint. body must already be comment-free (stripLineComments).
 func columnNames(body string) map[string]bool {
 	cols := map[string]bool{}
 	for _, item := range splitTopLevel(body) {
-		// Strip SQL line comments before looking for the name.
-		var cleaned []string
-		for _, line := range strings.Split(item, "\n") {
-			if c := strings.Index(line, "--"); c >= 0 {
-				line = line[:c]
-			}
-			cleaned = append(cleaned, line)
-		}
-		fields := strings.Fields(strings.Join(cleaned, " "))
+		fields := strings.Fields(item)
 		if len(fields) == 0 {
 			continue
 		}
