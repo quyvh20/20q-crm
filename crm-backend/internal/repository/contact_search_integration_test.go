@@ -26,10 +26,16 @@ func setupContactSearch(t *testing.T) (domain.ContactRepository, *gorm.DB, func(
 	require.NoError(t, db.Exec(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE organizations (id uuid PRIMARY KEY DEFAULT uuid_generate_v4())`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE users (id uuid PRIMARY KEY DEFAULT uuid_generate_v4(), full_name varchar, email varchar)`).Error)
+	// industry/website: contactRepository.List unconditionally .Preload("Company"),
+	// and this file seeds a contact WITH a company_id and calls List — the preload
+	// issues a real SELECT naming every domain.Company column, so a fixture
+	// missing either one fails with "column does not exist".
 	require.NoError(t, db.Exec(`CREATE TABLE companies (
 		id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
 		org_id uuid NOT NULL,
 		name varchar(255) NOT NULL,
+		industry varchar(100),
+		website varchar(500),
 		custom_fields jsonb DEFAULT '{}',
 		created_at timestamptz NOT NULL DEFAULT NOW(),
 		updated_at timestamptz NOT NULL DEFAULT NOW(),

@@ -26,7 +26,6 @@ internal/integrations/repository_integration_test.go	org_users	1	joined_at,role_
 internal/integrations/repository_integration_test.go	organizations	1	created_at,currency,locale,name,paddle_subscription_id,plan_tier,require_two_factor,timezone,type,updated_at
 internal/integrations/repository_integration_test.go	users	1	avatar_url,created_at,default_org_id,deleted_at,email,email_verified_at,first_name,full_name,google_id,last_name,locale,onboarding_completed,org_id,password_hash,timezone,token_version,totp_enabled_at,totp_last_step,totp_secret,updated_at
 internal/marketing/campaign_integration_test.go	contacts	1	company_id,embedding,lead_score,lead_score_at,phone,updated_at
-internal/repository/contact_search_integration_test.go	companies	1	industry,website
 internal/repository/contact_search_integration_test.go	contacts	1	embedding,lead_score,lead_score_at
 internal/repository/contact_search_integration_test.go	organizations	1	created_at,currency,deleted_at,locale,name,paddle_subscription_id,plan_tier,require_two_factor,timezone,type,updated_at
 internal/repository/contact_search_integration_test.go	users	1	avatar_url,created_at,default_org_id,deleted_at,email_verified_at,first_name,google_id,last_name,locale,onboarding_completed,org_id,password_hash,timezone,token_version,totp_enabled_at,totp_last_step,totp_secret,updated_at
@@ -54,7 +53,7 @@ internal/repository/pagination_integration_test.go	pipeline_stages	1	pipeline_id
 internal/repository/pagination_integration_test.go	users	1	avatar_url,created_at,default_org_id,deleted_at,email_verified_at,first_name,google_id,last_name,locale,onboarding_completed,org_id,password_hash,timezone,token_version,totp_enabled_at,totp_last_step,totp_secret,updated_at
 internal/repository/permission_repository_test.go	object_defs	1	color,created_at,display_field_id,icon,label,label_plural,number_prefix,record_table,searchable,storage,updated_at
 internal/repository/permission_repository_test.go	organizations	3	created_at,currency,deleted_at,locale,name,paddle_subscription_id,plan_tier,require_two_factor,timezone,type,updated_at
-internal/repository/permission_repository_test.go	roles	3	created_at,data_scope,description,is_owner,seeded_from_role_id,template_key
+internal/repository/permission_repository_test.go	roles	2	created_at,data_scope,description,is_owner,seeded_from_role_id,template_key
 internal/repository/permission_repository_test.go	users	2	avatar_url,created_at,default_org_id,deleted_at,email,email_verified_at,first_name,full_name,google_id,last_name,locale,onboarding_completed,org_id,password_hash,timezone,token_version,totp_enabled_at,totp_last_step,totp_secret,updated_at
 internal/repository/pipeline_backfill_db_test.go	deals	1	closed_at,company_id,contact_id,custom_fields,expected_close_at,is_lost,is_won,owner_user_id,probability,value
 internal/repository/pipeline_backfill_db_test.go	organizations	1	created_at,currency,deleted_at,locale,paddle_subscription_id,plan_tier,require_two_factor,timezone,type,updated_at

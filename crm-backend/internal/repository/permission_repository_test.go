@@ -24,7 +24,17 @@ func setupPermissions(t *testing.T) (orgID uuid.UUID, roleIDs map[string]uuid.UU
 	require.NoError(t, db.Exec(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS organizations (id uuid PRIMARY KEY DEFAULT uuid_generate_v4())`).Error)
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS users (id uuid PRIMARY KEY DEFAULT uuid_generate_v4(), full_name varchar, email varchar)`).Error)
-	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS roles (id uuid PRIMARY KEY DEFAULT uuid_generate_v4(), org_id uuid, name varchar NOT NULL, is_system boolean NOT NULL DEFAULT false)`).Error)
+	// Full column set: seedAccessByRole (permission_repository.go) does a bare
+	// `db.Find(&roles)` on []domain.Role with no .Select(), so gorm names every
+	// model column in the SELECT — a hand-rolled fixture missing any of them
+	// fails with "column does not exist", not a silently-empty field.
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS roles (
+		id uuid PRIMARY KEY DEFAULT uuid_generate_v4(), org_id uuid, name varchar NOT NULL,
+		is_system boolean NOT NULL DEFAULT false, is_owner boolean NOT NULL DEFAULT false,
+		template_key varchar(40), description text NOT NULL DEFAULT '',
+		seeded_from_role_id uuid, data_scope varchar(10) NOT NULL DEFAULT 'all',
+		created_at timestamptz NOT NULL DEFAULT NOW()
+	)`).Error)
 	// Post-P7, the OLS seed reads custom slugs from object_defs (is_system=false).
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS object_defs (id uuid PRIMARY KEY DEFAULT uuid_generate_v4(), org_id uuid NOT NULL, slug varchar NOT NULL, is_system boolean NOT NULL DEFAULT false, deleted_at timestamptz)`).Error)
 
