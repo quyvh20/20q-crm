@@ -795,10 +795,10 @@ func (e *Engine) scanTasksForBackfill(ctx context.Context, db *gorm.DB, orgID uu
 			m["assigned_to"] = r.AssignedTo.String()
 		}
 		if r.DueAt != nil {
-			m["due_at"] = r.DueAt.Format(time.RFC3339)
+			m["due_at"] = rfc3339UTC(*r.DueAt)
 		}
 		if r.CompletedAt != nil {
-			m["completed_at"] = r.CompletedAt.Format(time.RFC3339)
+			m["completed_at"] = rfc3339UTC(*r.CompletedAt)
 		}
 		out.records = append(out.records, backfillRecord{id: r.ID.String(), record: m})
 	}

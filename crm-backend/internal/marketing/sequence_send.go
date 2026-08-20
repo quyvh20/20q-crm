@@ -97,6 +97,15 @@ func (p *SequenceSendPreparer) PrepareMarketingSend(ctx context.Context, req aut
 	if content == nil {
 		return automation.MarketingSendDecision{Skip: true, SkipReason: "content_not_found"}, nil
 	}
+	// Size gate — the SAME one the campaign launch checklist applies. Gmail clips a
+	// body past ~100KB, and buildMJML appends the compliance footer LAST, so a
+	// clipped send is a marketing email delivered with no unsubscribe link and no
+	// postal address. Retryable, not terminal: an author can trim the email and the
+	// parked run resumes (the no_sender_profile shape), and parking is louder than
+	// silently skipping a step for a problem someone has to fix.
+	if content.CompiledSizeBytes >= gmailClipBytes {
+		return automation.MarketingSendDecision{Skip: true, Retry: true, SkipReason: "content_too_large"}, nil
+	}
 
 	// Sender profile — CAN-SPAM postal address + from-name + reply-to. A missing address
 	// or from-name blocks the send by law; treat as a transient config gap (an admin can

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useEditor, EditorContent, type Editor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import {
+  AlignCenter, AlignLeft, AlignRight,
   Bold, Italic, Underline as UnderlineIcon, Strikethrough, List, ListOrdered, Link2, Link2Off,
 } from 'lucide-react';
 import { MergeTag } from './mergeTag';
@@ -18,6 +19,7 @@ interface Props {
   level?: number;                   // heading level 1-3
   nested?: boolean;                 // inside a column (compiler renders 18px headings there)
   align?: 'left' | 'center' | 'right';
+  onAlign?: (align: 'left' | 'center' | 'right') => void; // block-level align patch (toolbar buttons)
   readOnly?: boolean;               // mobile preview: contenteditable off
   overrideSize?: number;            // block-level font-size override (px)
   overrideColor?: string;           // block-level text color override (#hex)
@@ -37,7 +39,7 @@ function headingSizePx(level: number | undefined, nested: boolean | undefined): 
  *  renders WITH the email's own typography (Arial #111827, compile.go constants)
  *  so what you type is what recipients get, and keeps state wire-format: chips
  *  serialize to bare tokens on every update, deserialize on load. */
-export const InlineRichText: React.FC<Props> = ({ html, variableGroups, onChange, active, variant, level, nested, align, readOnly, overrideSize, overrideColor }) => {
+export const InlineRichText: React.FC<Props> = ({ html, variableGroups, onChange, active, variant, level, nested, align, onAlign, readOnly, overrideSize, overrideColor }) => {
   // Track the last html WE emitted so an external change (undo/redo) can be told
   // apart from the echo of our own onUpdate.
   const lastEmitted = useRef(html);
@@ -48,6 +50,11 @@ export const InlineRichText: React.FC<Props> = ({ html, variableGroups, onChange
         // openOnClick would navigate away mid-edit; authors follow links from
         // the preview instead.
         link: { openOnClick: false },
+        // ONE undo stack: TipTap's own history is disabled so document-level
+        // undo (builderStore) is the single source of truth. A TipTap-side
+        // Ctrl+Z would otherwise re-enter the store as a NEW edit and wipe the
+        // document redo stack.
+        undoRedo: false,
         // Kill the markdown input rules for content the pipeline can't carry:
         // headings are a dedicated BLOCK type here, and hr/code/codeBlock are
         // stripped by the backend sanitizer — letting authors type `---` or
@@ -88,7 +95,9 @@ export const InlineRichText: React.FC<Props> = ({ html, variableGroups, onChange
 
   return (
     <div className="relative">
-      {active && !readOnly && editor && <FormatToolbar editor={editor} variant={variant} variableGroups={variableGroups} />}
+      {active && !readOnly && editor && (
+        <FormatToolbar editor={editor} variant={variant} variableGroups={variableGroups} align={align} onAlign={onAlign} />
+      )}
       <div
         className={`email-rte ${variant === 'heading' ? 'email-rte-heading' : ''}`}
         style={{ fontSize: `${px}px`, textAlign: align ?? 'left', color: overrideColor || undefined }}
@@ -99,10 +108,25 @@ export const InlineRichText: React.FC<Props> = ({ html, variableGroups, onChange
   );
 };
 
-const FormatToolbar: React.FC<{ editor: Editor; variant: 'text' | 'heading'; variableGroups: VariableGroup[] }> = ({ editor, variant, variableGroups }) => {
+const FormatToolbar: React.FC<{
+  editor: Editor;
+  variant: 'text' | 'heading';
+  variableGroups: VariableGroup[];
+  align?: 'left' | 'center' | 'right';
+  onAlign?: (align: 'left' | 'center' | 'right') => void;
+}> = ({ editor, variant, variableGroups, align, onAlign }) => {
   const [linkOpen, setLinkOpen] = useState(false);
   const [linkUrl, setLinkUrl] = useState('');
   const linkHasToken = /\{\{/.test(linkUrl);
+  const inLink = editor.isActive('link');
+
+  const openLinkEditor = () => {
+    // Pre-fill with the current href so an existing link is EDITED, not
+    // remove-and-retype-from-memory.
+    const current = (editor.getAttributes('link').href as string | undefined) ?? '';
+    setLinkUrl(current);
+    setLinkOpen((v) => !v);
+  };
 
   const applyLink = () => {
     let url = linkUrl.trim();
@@ -127,6 +151,14 @@ const FormatToolbar: React.FC<{ editor: Editor; variant: 'text' | 'heading'; var
       <TB active={editor.isActive('italic')} title="Italic" onClick={() => editor.chain().focus().toggleItalic().run()}><Italic className="h-3.5 w-3.5" /></TB>
       <TB active={editor.isActive('underline')} title="Underline" onClick={() => editor.chain().focus().toggleUnderline().run()}><UnderlineIcon className="h-3.5 w-3.5" /></TB>
       <TB active={editor.isActive('strike')} title="Strikethrough" onClick={() => editor.chain().focus().toggleStrike().run()}><Strikethrough className="h-3.5 w-3.5" /></TB>
+      {onAlign && (
+        <>
+          <div className="mx-0.5 h-4 w-px bg-border" />
+          <TB active={(align ?? 'left') === 'left'} title="Align left" onClick={() => onAlign('left')}><AlignLeft className="h-3.5 w-3.5" /></TB>
+          <TB active={align === 'center'} title="Align center" onClick={() => onAlign('center')}><AlignCenter className="h-3.5 w-3.5" /></TB>
+          <TB active={align === 'right'} title="Align right" onClick={() => onAlign('right')}><AlignRight className="h-3.5 w-3.5" /></TB>
+        </>
+      )}
       {variant === 'text' && (
         <>
           <div className="mx-0.5 h-4 w-px bg-border" />
@@ -135,10 +167,9 @@ const FormatToolbar: React.FC<{ editor: Editor; variant: 'text' | 'heading'; var
         </>
       )}
       <div className="mx-0.5 h-4 w-px bg-border" />
-      {editor.isActive('link') ? (
-        <TB active title="Remove link" onClick={() => editor.chain().focus().unsetLink().run()}><Link2Off className="h-3.5 w-3.5" /></TB>
-      ) : (
-        <TB active={linkOpen} title="Add link" onClick={() => setLinkOpen((v) => !v)}><Link2 className="h-3.5 w-3.5" /></TB>
+      <TB active={linkOpen || inLink} title={inLink ? 'Edit link' : 'Add link'} onClick={openLinkEditor}><Link2 className="h-3.5 w-3.5" /></TB>
+      {inLink && (
+        <TB active title="Remove link" onClick={() => { editor.chain().focus().unsetLink().run(); setLinkOpen(false); }}><Link2Off className="h-3.5 w-3.5" /></TB>
       )}
       <div className="mx-0.5 h-4 w-px bg-border" />
       <MergeTagMenu

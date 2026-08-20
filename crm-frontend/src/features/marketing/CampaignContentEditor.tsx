@@ -8,7 +8,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-  ArrowLeft, Code, Eye, LayoutGrid, Monitor, Redo2, Send, Undo2,
+  ArrowLeft, Code, Eye, LayoutGrid, Monitor, Redo2, Send, Sparkles, Undo2,
 } from 'lucide-react';
 import { usePermissions } from '../../lib/auth';
 import AccessDeniedPanel from '../../components/common/AccessDeniedPanel';
@@ -18,8 +18,9 @@ import { useToast } from '@/lib/useToast';
 import { EmailBuilder } from './composer/EmailBuilder';
 import { CodeView } from './composer/CodeView';
 import { PreviewModal } from './composer/PreviewModal';
+import { AICopilotModal, type AIMode } from './composer/AICopilotModal';
 import { blocksToSimpleHtml } from './composer/htmlSerializer';
-import { useBuilderStore, DEFAULT_SCOPE, type DocStyles } from './composer/builderStore';
+import { useBuilderStore, DEFAULT_SCOPE, type BuilderSeed, type DocStyles } from './composer/builderStore';
 import type { Block, BlockDocument } from './composer/blocks';
 import { variableGroupsForScope } from './composer/mergeScope';
 import type { Check } from './composer/InspectorPanel';
@@ -59,6 +60,10 @@ const Editor: React.FC = () => {
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [previewErr, setPreviewErr] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
+  // The copilot surface. Mode is chosen by the entry point: the toolbar writes a
+  // whole email on an empty canvas and adds a section otherwise; the inspector's
+  // per-block button rewrites.
+  const [aiMode, setAiMode] = useState<AIMode | null>(null);
   const { confirm, dialog } = useConfirm();
 
   // Design vs Code (raw HTML) editing. Code mode requires the document to be a
@@ -95,20 +100,46 @@ const Editor: React.FC = () => {
     return () => window.removeEventListener('resize', check);
   }, []);
 
+  // Draft persistence: the SPA router can't block in-app navigation
+  // (BrowserRouter, no data router), so instead of trying to trap every exit,
+  // the working copy is checkpointed to localStorage while dirty and offered
+  // back on the next visit — work survives navigation, crashes and reloads.
+  const draftKey = `mkt_builder_draft_${isNew ? 'new' : id}`;
+  const [draftOffer, setDraftOffer] = useState<BuilderSeed | null>(null);
+
   // Seed the store ONCE per id — a react-query background refetch must not
   // clobber in-progress edits (the A5 seed-once trap).
   const seededId = useRef<string | null>(null);
   useEffect(() => {
+    const offerDraft = (serverSeed: BuilderSeed) => {
+      try {
+        const raw = localStorage.getItem(draftKey);
+        if (!raw) return;
+        const d = JSON.parse(raw) as BuilderSeed;
+        // A draft identical to the server copy is stale bookkeeping, not work.
+        const strip = (s: BuilderSeed) => JSON.stringify([s.name, s.subject, s.preheader, s.scope, s.blocks, s.bodyBg ?? '', s.styles ?? {}]);
+        if (strip(d) === strip(serverSeed)) {
+          localStorage.removeItem(draftKey);
+          return;
+        }
+        setDraftOffer(d);
+      } catch {
+        // Unreadable draft — drop it.
+        try { localStorage.removeItem(draftKey); } catch { /* ignore */ }
+      }
+    };
     if (isNew) {
       if (seededId.current !== 'new') {
-        useBuilderStore.getState().hydrate({ name: '', subject: '', preheader: '', scope: [...DEFAULT_SCOPE], blocks: [] });
+        const seed: BuilderSeed = { name: '', subject: '', preheader: '', scope: [...DEFAULT_SCOPE], blocks: [] };
+        useBuilderStore.getState().hydrate(seed);
         seededId.current = 'new';
+        offerDraft(seed);
       }
       return;
     }
     if (data && seededId.current !== data.id) {
       const bj = data.body_json;
-      useBuilderStore.getState().hydrate({
+      const seed: BuilderSeed = {
         name: data.name,
         subject: data.subject,
         preheader: data.preheader,
@@ -120,14 +151,49 @@ const Editor: React.FC = () => {
           fontFamily: bj?.font_family,
           textColor: bj?.text_color,
           linkColor: bj?.link_color,
+          lineHeight: bj?.line_height,
           footerBg: bj?.footer?.bg,
           footerColor: bj?.footer?.color,
           footerText: bj?.footer?.text,
         },
-      });
+      };
+      useBuilderStore.getState().hydrate(seed);
       seededId.current = data.id;
+      offerDraft(seed);
     }
-  }, [isNew, data]);
+  }, [isNew, data, draftKey]);
+
+  // Checkpoint the working copy while dirty (debounced; best-effort).
+  useEffect(() => {
+    if (!dirty) return;
+    const t = setTimeout(() => {
+      // The route id can change without unmounting this component (in-app
+      // navigation between two emails). Only checkpoint once the store is
+      // known to hold THIS id's document, or one email's content would be
+      // written under another's key and offered back as its "draft".
+      if (seededId.current !== (isNew ? 'new' : id)) return;
+      const s = useBuilderStore.getState();
+      try {
+        localStorage.setItem(draftKey, JSON.stringify({
+          name: s.name, subject: s.subject, preheader: s.preheader, scope: s.scope,
+          blocks: s.blocks, bodyBg: s.bodyBg, styles: s.styles,
+        } satisfies BuilderSeed));
+      } catch { /* quota/private mode — checkpointing is best-effort */ }
+    }, 800);
+    return () => clearTimeout(t);
+  }, [dirty, name, subject, preheader, scope, blocks, bodyBg, styles, draftKey, isNew, id]);
+
+  const restoreDraft = () => {
+    if (!draftOffer) return;
+    // Applied as a normal undoable edit — restoring never silently discards
+    // work done in this session, and Ctrl+Z undoes the restore itself.
+    useBuilderStore.getState().applyDraft(draftOffer);
+    setDraftOffer(null);
+  };
+  const discardDraft = () => {
+    try { localStorage.removeItem(draftKey); } catch { /* ignore */ }
+    setDraftOffer(null);
+  };
 
   // Leave the store clean for the next mount (a stale doc flashing on
   // /marketing/content/new would look like data corruption).
@@ -164,19 +230,55 @@ const Editor: React.FC = () => {
     return () => window.removeEventListener('beforeunload', h);
   }, [dirty]);
 
-  // Document-level undo/redo + Escape-deselect. Skipped while typing in inputs
-  // or TipTap (they own their local history / focus).
+  // Document-level keyboard verbs: undo/redo, Escape-deselect, Delete-remove,
+  // Ctrl+D duplicate. Skipped while typing in inputs or TipTap (they own their
+  // local editing / focus).
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      const el = e.target as HTMLElement | null;
-      if (el?.closest('input, textarea, select, [contenteditable="true"]')) return;
+      // e.target is not always an Element (window/document dispatch, synthetic
+      // events in tests) — closest() would throw and kill the handler.
+      const el = e.target instanceof Element ? e.target : null;
+      // A dialog owns the keyboard while it is open: Escape should close IT, and
+      // Ctrl+Z should not rewrite the document behind it.
+      if (el?.closest('[role="dialog"], [role="alertdialog"]')) return;
       const s = useBuilderStore.getState();
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
+      const isUndo = (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z';
+      const isRedo = (e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'));
+      // Inside TipTap, only undo/redo route to the document history (its own
+      // history is disabled — one undo stack); every other key stays native so
+      // Delete deletes text, not the block. Form fields keep everything native.
+      if (el?.closest('[contenteditable="true"]')) {
+        if (isUndo) {
+          e.preventDefault();
+          s.undo();
+        } else if (isRedo) {
+          e.preventDefault();
+          s.redo();
+        }
+        return;
+      }
+      if (el?.closest('input, textarea, select')) return;
+      // Destructive verbs only fire when the canvas owns the interaction.
+      // Selecting a block leaves focus on <body> (clicks on divs don't focus),
+      // so body counts — but a focused control elsewhere in the chrome must
+      // never let Backspace delete the block behind it.
+      const canvasOwnsKey = !el || el === document.body || !!el.closest('[data-testid="builder-canvas"]');
+      if (isUndo) {
         e.preventDefault();
         s.undo();
-      } else if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'))) {
+      } else if (isRedo) {
         e.preventDefault();
         s.redo();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
+        if (s.selectedId && canvasOwnsKey) {
+          e.preventDefault();
+          s.duplicateBlock(s.selectedId);
+        }
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (s.selectedId && canvasOwnsKey) {
+          e.preventDefault();
+          s.removeBlock(s.selectedId);
+        }
       } else if (e.key === 'Escape') {
         s.select(null);
       }
@@ -185,7 +287,7 @@ const Editor: React.FC = () => {
     return () => window.removeEventListener('keydown', h);
   }, []);
 
-  const save = async () => {
+  const save = async (): Promise<boolean> => {
     setSaveErrors([]);
     const s = useBuilderStore.getState();
     const input = {
@@ -195,29 +297,51 @@ const Editor: React.FC = () => {
       body_json: buildBodyJson(s.blocks, s.bodyBg, s.styles),
       merge_scope: s.scope,
     };
+    // The document can move on while the request is in flight; markSaved only
+    // reports clean when the working copy still matches what was sent, and the
+    // checkpoint is kept otherwise so those keystrokes stay recoverable.
+    const sentSignature = s.docSignature();
     try {
       if (isNew) {
         const created = await createMut.mutateAsync(input);
         // Claim the new id BEFORE navigating so the seed effect doesn't re-hydrate
         // over live state when the detail query lands.
         seededId.current = created.id;
-        s.markSaved();
+        if (s.markSaved(sentSignature)) {
+          try { localStorage.removeItem(draftKey); } catch { /* ignore */ }
+        }
         toast.show('Content created');
         navigate(`/marketing/content/${created.id}`, { replace: true });
       } else {
         await updateMut.mutateAsync({ id: id as string, input });
-        s.markSaved();
+        if (s.markSaved(sentSignature)) {
+          try { localStorage.removeItem(draftKey); } catch { /* ignore */ }
+        }
         toast.show('Saved');
       }
+      return true;
     } catch (e) {
       const se = e as SaveError;
       if (se.validationErrors?.length) setSaveErrors(se.validationErrors);
       toast.error(se.message || 'Save failed');
+      return false;
     }
   };
 
   const testSend = async () => {
     if (isNew) return;
+    // The endpoint sends the last SAVED version — a dirty editor would silently
+    // test stale content, so offer to save first.
+    if (useBuilderStore.getState().dirty) {
+      const ok = await confirm({
+        title: 'Save before sending the test?',
+        body: 'The test email sends the last saved version — your current changes aren’t in it yet.',
+        confirmLabel: 'Save & send test',
+      });
+      if (!ok) return;
+      const saved = await save();
+      if (!saved) return;
+    }
     try {
       const to = await testSendContent(id as string);
       toast.show(`Test sent to ${to}`);
@@ -243,6 +367,8 @@ const Editor: React.FC = () => {
         tone: 'danger',
       });
       if (!ok) return;
+      // An explicit discard also drops the checkpoint — no zombie restore offer.
+      try { localStorage.removeItem(draftKey); } catch { /* ignore */ }
     }
     navigate('/marketing/content');
   };
@@ -307,6 +433,14 @@ const Editor: React.FC = () => {
                 {Math.round(preview.size_bytes / 1024)} KB
               </span>
             )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setAiMode(blocks.length === 0 ? 'email' : 'section')}
+              title={blocks.length === 0 ? 'Write this email with AI' : 'Add a section with AI'}
+            >
+              <Sparkles className="h-4 w-4" /> AI
+            </Button>
             <Button variant="outline" size="sm" onClick={() => setPreviewOpen(true)}>
               <Eye className="h-4 w-4" /> Preview
             </Button>
@@ -327,17 +461,27 @@ const Editor: React.FC = () => {
         </div>
       )}
 
+      {draftOffer && !isMobile && (
+        <div className="flex items-center gap-3 border-b border-border bg-primary/5 px-4 py-2 text-xs text-foreground">
+          <span>You have unsaved changes from a previous session of this email.</span>
+          <Button size="sm" onClick={restoreDraft}>Restore</Button>
+          <Button variant="outline" size="sm" onClick={discardDraft}>Discard</Button>
+        </div>
+      )}
+
       {view === 'code' && !isMobile ? (
         <CodeView />
       ) : (
         <EmailBuilder
           variableGroups={variableGroups}
-          inspector={{ preview, previewErr, saveErrors, checklist }}
+          inspector={{ preview, previewErr, saveErrors, checklist, onRewriteWithAI: () => setAiMode('rewrite') }}
           readOnly={isMobile}
         />
       )}
 
-      <PreviewModal open={previewOpen} onClose={() => setPreviewOpen(false)} preview={preview} previewErr={previewErr} previewInput={previewInput} />
+      <AICopilotModal open={aiMode !== null} mode={aiMode ?? 'section'} onClose={() => setAiMode(null)} />
+
+      <PreviewModal open={previewOpen} onClose={() => setPreviewOpen(false)} preview={preview} previewErr={previewErr} previewInput={previewInput} docWidth={styles.width} />
     </div>
   );
 };
@@ -368,6 +512,7 @@ function buildBodyJson(blocks: Block[], bodyBg: string, styles: DocStyles): Bloc
     font_family: styles.fontFamily && styles.fontFamily !== 'arial' ? styles.fontFamily : undefined,
     text_color: styles.textColor || undefined,
     link_color: styles.linkColor || undefined,
+    line_height: styles.lineHeight || undefined,
     footer,
   };
 }
@@ -393,10 +538,23 @@ function buildChecklist(
   ];
   // A seeded button ships href 'https://' — the backend lint counts any non-empty
   // href as "has a link", so catch the dead placeholder client-side.
-  const buttons = blocks.flatMap((b) => (b.type === 'button' ? [b] : (b.columns ?? []).flat().filter((s) => s.type === 'button')));
+  const flat = blocks.flatMap((b) => [b, ...(b.columns ?? []).flat()]);
+  const buttons = flat.filter((b) => b.type === 'button');
   if (buttons.length > 0) {
     const ok = buttons.every((b) => { const h = (b.href ?? '').trim(); return h !== '' && h !== 'https://'; });
     out.push({ label: 'Every button has a real link', ok });
+  }
+  // Empty-src image/video blocks ship as broken images (the compiler emits the
+  // tag unconditionally).
+  const media = flat.filter((b) => b.type === 'image' || b.type === 'video');
+  if (media.length > 0) {
+    out.push({ label: 'Every image has a picture selected', ok: media.every((b) => (b.src ?? '').trim() !== '') });
+  }
+  // Menu links seeded from presets keep the 'https://' placeholder — dead nav.
+  const menuItems = flat.filter((b) => b.type === 'menu').flatMap((b) => b.items ?? []).filter((it) => it.label.trim() !== '');
+  if (menuItems.length > 0) {
+    const ok = menuItems.every((it) => { const h = it.href.trim(); return h !== '' && h !== 'https://'; });
+    out.push({ label: 'Every menu link has a real URL', ok });
   }
   for (const w of preview?.warnings ?? []) out.push({ label: w, ok: false });
   return out;

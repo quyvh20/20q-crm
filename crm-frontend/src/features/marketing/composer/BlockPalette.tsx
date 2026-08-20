@@ -1,8 +1,8 @@
 import React from 'react';
 import { useDraggable } from '@dnd-kit/core';
-import { Bookmark, LayoutTemplate, Trash2 } from 'lucide-react';
-import { PALETTE, type BlockTypeMeta } from './blocks';
-import { cloneWithNewIds, LAYOUT_PRESETS, type LayoutPreset } from './blockUtils';
+import { Bookmark, LayoutTemplate, RefreshCw, Trash2 } from 'lucide-react';
+import { PALETTE, type Block, type BlockTypeMeta } from './blocks';
+import { clickInsertAddress, cloneWithNewIds, LAYOUT_PRESETS, type LayoutPreset } from './blockUtils';
 import { useBuilderStore } from './builderStore';
 import { PALETTE_ICONS } from './EmailBuilder';
 import { useConfirm } from '../../../components/common/ConfirmDialog';
@@ -10,8 +10,9 @@ import { useRemoveSavedBlock, useSavedBlocks } from '../savedBlocksQueries';
 import type { SavedBlockRow } from '../savedBlocksApi';
 
 /** BlockPalette is the left rail: draggable tiles for single blocks and
- *  multi-block layout presets. Everything is also clickable (appends to the end
- *  of the email) so keyboard/assistive users aren't locked out of adding blocks. */
+ *  multi-block layout presets. Everything is also clickable (inserts after the
+ *  current selection, or at the end) so keyboard/assistive users aren't locked
+ *  out of adding blocks. */
 export const BlockPalette: React.FC = () => {
   const saved = useSavedBlocks();
 
@@ -44,29 +45,43 @@ export const BlockPalette: React.FC = () => {
         </div>
       </div>
       <p className="mt-auto p-3 text-[11px] leading-relaxed text-muted-foreground">
-        Drag onto the canvas to place precisely, or click to add at the end.
-        Save any block from its settings to reuse it here.
+        Drag onto the canvas to place precisely, or click to add near your
+        selection. Save any block from its settings to reuse it here.
       </p>
     </aside>
   );
 };
 
-/** SavedRow is one library entry: drag in (or click to append) a DEEP COPY;
- *  deleting never touches content built from earlier inserts. */
+/** linkedInstance returns what a library row inserts: a synced row becomes a
+ *  LINKED instance (ref set, so a library update reaches it), a plain row stays
+ *  an independent deep copy. Either way the ids are fresh. */
+function linkedInstance(row: SavedBlockRow): Block {
+  const copy = cloneWithNewIds(row.block);
+  return row.synced ? { ...copy, ref: row.id } : { ...copy, ref: undefined };
+}
+
+/** SavedRow is one library entry: drag in (or click to append) a copy — linked
+ *  to the library when the row is synced. Deleting the row never touches content
+ *  already placed. */
 const SavedRow: React.FC<{ row: SavedBlockRow }> = ({ row }) => {
   const insertBlocks = useBuilderStore((s) => s.insertBlocks);
   const remove = useRemoveSavedBlock();
   const { confirm, dialog } = useConfirm();
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `saved:${row.id}`,
-    data: { kind: 'saved', label: row.name, block: row.block },
+    // The drag carries the row so the drop can build a linked instance.
+    data: { kind: 'saved', label: row.name, block: row.block, savedRow: row },
   });
 
   const onDelete = async (e: React.MouseEvent) => {
     e.stopPropagation();
     const ok = await confirm({
       title: 'Delete saved block?',
-      body: `"${row.name}" is removed from the library. Emails already using copies of it are unaffected.`,
+      // A synced row is different: its instances keep their content but lose the
+      // link, so telling the user they are "unaffected" would be false.
+      body: row.synced
+        ? `"${row.name}" is removed from the library. Emails using it keep the block exactly as it is, but it stops being synced — future edits will no longer reach them.`
+        : `"${row.name}" is removed from the library. Emails already using copies of it are unaffected.`,
       confirmLabel: 'Delete',
       tone: 'danger',
     });
@@ -81,7 +96,7 @@ const SavedRow: React.FC<{ row: SavedBlockRow }> = ({ row }) => {
         type="button"
         onClick={() => {
           const s = useBuilderStore.getState();
-          insertBlocks([cloneWithNewIds(row.block)], { parentId: null, colIndex: 0, index: s.blocks.length });
+          insertBlocks([linkedInstance(row)], clickInsertAddress(s.blocks, s.selectedId, row.block.type));
         }}
         className={`flex w-full cursor-grab items-start gap-2 rounded-lg border border-border/60 px-2.5 py-2 text-left transition-colors hover:border-ring hover:bg-accent active:cursor-grabbing ${
           isDragging ? 'opacity-40' : ''
@@ -89,10 +104,14 @@ const SavedRow: React.FC<{ row: SavedBlockRow }> = ({ row }) => {
         {...attributes}
         {...pointerOnly(listeners)}
       >
-        <Bookmark className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+        {row.synced
+          ? <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+          : <Bookmark className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />}
         <span className="min-w-0">
           <span className="block truncate text-xs font-medium text-foreground">{row.name}</span>
-          <span className="block truncate text-[11px] uppercase text-muted-foreground">{row.block.type}</span>
+          <span className="block truncate text-[11px] uppercase text-muted-foreground">
+            {row.synced ? `Synced · ${row.block.type}` : row.block.type}
+          </span>
         </span>
       </button>
       <button
@@ -156,7 +175,8 @@ const LayoutRow: React.FC<{ preset: LayoutPreset }> = ({ preset }) => {
       type="button"
       onClick={() => {
         const s = useBuilderStore.getState();
-        insertBlocks(preset.make(), { parentId: null, colIndex: 0, index: s.blocks.length });
+        // Presets may contain root-only blocks — resolve as a root-level insert.
+        insertBlocks(preset.make(), clickInsertAddress(s.blocks, s.selectedId, null));
       }}
       className={`flex w-full cursor-grab items-start gap-2 rounded-lg border border-border/60 px-2.5 py-2 text-left transition-colors hover:border-ring hover:bg-accent active:cursor-grabbing ${
         isDragging ? 'opacity-40' : ''

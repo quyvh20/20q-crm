@@ -1,6 +1,7 @@
 // React Query layer for marketing campaign content (M6).
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { listContent, getContent, createContent, updateContent, removeContent, setContentFolder, type CampaignContent, type ContentInput } from './contentApi';
+import { savedBlockKeys } from './savedBlocksQueries';
 
 export const contentKeys = {
   all: ['marketing', 'content'] as const,
@@ -24,7 +25,12 @@ export function useCreateContent() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: ContentInput) => createContent(input),
-    onSuccess: () => qc.invalidateQueries({ queryKey: contentKeys.all }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: contentKeys.all });
+      // Saving an email changes where synced blocks are USED, so the counts the
+      // inspector shows before "update everywhere" are now stale.
+      qc.invalidateQueries({ queryKey: savedBlockKeys.all });
+    },
   });
 }
 
@@ -35,6 +41,7 @@ export function useUpdateContent() {
     onSuccess: (_d, vars) => {
       qc.invalidateQueries({ queryKey: contentKeys.list() });
       qc.invalidateQueries({ queryKey: contentKeys.detail(vars.id) });
+      qc.invalidateQueries({ queryKey: savedBlockKeys.all });
     },
   });
 }

@@ -472,6 +472,114 @@ func TestCompile_EmptyHTMLBlockRendersNothing(t *testing.T) {
 	}
 }
 
+func TestCompile_ColumnWidthsAndKeepColumns(t *testing.T) {
+	c := NewCompiler()
+	doc := BlockDocument{Blocks: []Block{
+		{ID: "ratio", Type: BlockColumns, ColWidths: []int{33, 67}, Columns: [][]Block{
+			{{ID: "l", Type: BlockImage, Src: "https://x.example.com/a.png", Alt: "A"}},
+			{{ID: "r", Type: BlockText, Text: "beside"}},
+		}},
+		{ID: "keep", Type: BlockColumns, KeepColumns: true, Columns: [][]Block{
+			{{ID: "k1", Type: BlockText, Text: "left"}},
+			{{ID: "k2", Type: BlockText, Text: "right"}},
+		}},
+		// Incoherent widths (sum far from 100) must be ignored, not shipped.
+		{ID: "bad", Type: BlockColumns, ColWidths: []int{10, 10}, Columns: [][]Block{
+			{{ID: "b1", Type: BlockText, Text: "badL"}},
+			{{ID: "b2", Type: BlockText, Text: "badR"}},
+		}},
+	}}
+	res, err := c.Compile(context.Background(), doc, "")
+	if err != nil {
+		t.Fatalf("compile column widths: %v", err)
+	}
+	html := res.HTML
+	// 33/67 shows up as real width styling in the table output.
+	if !strings.Contains(html, "33%") || !strings.Contains(html, "67%") {
+		t.Fatalf("column ratio widths missing from output")
+	}
+	// mj-group renders its no-stack wrapper (columns stay inline on mobile).
+	if !strings.Contains(html, "left") || !strings.Contains(html, "right") {
+		t.Fatalf("keep-columns content missing")
+	}
+	if strings.Contains(html, "10%") {
+		t.Fatalf("incoherent col_widths must be ignored")
+	}
+}
+
+func TestCompile_FullWidthAndBackgroundImage(t *testing.T) {
+	c := NewCompiler()
+	doc := BlockDocument{Blocks: []Block{
+		{ID: "hero", Type: BlockHeading, Level: 1, Text: "Over an image", Align: "center",
+			FullWidth: true, BgURL: "https://x.example.com/hero.jpg", Color: "#ffffff"},
+		{ID: "evil", Type: BlockText, Text: "bad bg", BgURL: `javascript:alert(1)`},
+		{ID: "evil2", Type: BlockText, Text: "quoted bg", BgURL: `https://x.example.com/a.jpg" onload="x`},
+	}}
+	res, err := c.Compile(context.Background(), doc, "")
+	if err != nil {
+		t.Fatalf("compile full-width/bg-url: %v", err)
+	}
+	html := res.HTML
+	if !strings.Contains(html, "hero.jpg") {
+		t.Fatalf("section background image missing")
+	}
+	if strings.Contains(html, "javascript:alert") || strings.Contains(html, "onload") {
+		t.Fatalf("invalid background URLs must be dropped")
+	}
+	// Full-width sections paint their band outside the 600px content table.
+	if !strings.Contains(html, "Over an image") {
+		t.Fatalf("full-width section content missing")
+	}
+}
+
+func TestCompile_SpacerInsideColumns(t *testing.T) {
+	c := NewCompiler()
+	doc := BlockDocument{Blocks: []Block{{ID: "cols", Type: BlockColumns, Columns: [][]Block{
+		{{ID: "t", Type: BlockText, Text: "above"}, {ID: "sp", Type: BlockSpacer, Height: 32}, {ID: "b", Type: BlockText, Text: "below"}},
+		{{ID: "big", Type: BlockSpacer, Height: 9999}},
+	}}}}
+	res, err := c.Compile(context.Background(), doc, "")
+	if err != nil {
+		t.Fatalf("compile spacer-in-column: %v", err)
+	}
+	if !strings.Contains(res.HTML, "32px") {
+		t.Fatalf("in-column spacer height missing")
+	}
+	if strings.Contains(res.HTML, "9999px") {
+		t.Fatalf("spacer height must be clamped")
+	}
+}
+
+func TestCompile_PerBlockFontAndLineHeightAndPadX(t *testing.T) {
+	c := NewCompiler()
+	padX, padY := 40, 0
+	doc := BlockDocument{
+		LineHeight: 1.8,
+		Blocks: []Block{
+			{ID: "serif", Type: BlockHeading, Level: 2, Text: "Serif headline", Font: "georgia"},
+			{ID: "body", Type: BlockText, Text: "sans body", Font: `x" evil`},
+			{ID: "pad", Type: BlockText, Text: "inset", PadY: &padY, PadX: &padX},
+		},
+	}
+	res, err := c.Compile(context.Background(), doc, "")
+	if err != nil {
+		t.Fatalf("compile font/line-height: %v", err)
+	}
+	html := res.HTML
+	if !strings.Contains(html, "Georgia") {
+		t.Fatalf("per-block font override missing")
+	}
+	if strings.Contains(html, "evil") {
+		t.Fatalf("unknown per-block font keys must be dropped, never injected")
+	}
+	if !strings.Contains(html, "1.8") {
+		t.Fatalf("document line-height missing")
+	}
+	if !strings.Contains(html, "40px") {
+		t.Fatalf("horizontal padding override missing")
+	}
+}
+
 func between(s, a, b string) string {
 	i := strings.Index(s, a)
 	if i < 0 {

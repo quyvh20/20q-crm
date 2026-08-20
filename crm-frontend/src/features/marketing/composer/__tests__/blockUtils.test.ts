@@ -3,6 +3,7 @@ import { makeBlock, type Block } from '../blocks';
 import {
   allIds,
   canPlaceIn,
+  clickInsertAddress,
   cloneWithNewIds,
   COLUMN_ALLOWED,
   duplicateById,
@@ -12,6 +13,7 @@ import {
   listAt,
   moveTo,
   removeById,
+  validColWidths,
 } from '../blockUtils';
 
 // A stable fixture: [text a, columns c (col0: [t1], col1: [t2, btn]), divider d]
@@ -71,13 +73,13 @@ describe('insertAt / listAt', () => {
     expect(listAt(next, 'c', 1)).toEqual(listAt(fixture(), 'c', 1));
   });
 
-  it('refuses column-illegal types (spacer, columns) — compiler would drop them', () => {
+  it('refuses column-illegal types (columns) — compiler would drop them', () => {
     const blocks = fixture();
-    for (const type of ['spacer', 'columns'] as const) {
-      expect(canPlaceIn('c', type)).toBe(false);
-      const next = insertAt(blocks, makeBlock(type), { parentId: 'c', colIndex: 0, index: 0 });
-      expect(next).toBe(blocks); // unchanged reference = rejected
-    }
+    expect(canPlaceIn('c', 'columns')).toBe(false);
+    const next = insertAt(blocks, makeBlock('columns'), { parentId: 'c', colIndex: 0, index: 0 });
+    expect(next).toBe(blocks); // unchanged reference = rejected
+    // Spacers are column-legal (compiler emits mj-spacer inside mj-column).
+    expect(COLUMN_ALLOWED.has('spacer')).toBe(true);
     expect(COLUMN_ALLOWED.has('text')).toBe(true);
   });
 
@@ -145,9 +147,10 @@ describe('moveTo', () => {
     expect(moveTo(blocks, 'c', { parentId: 'c', colIndex: 0, index: 0 })).toBe(blocks);
   });
 
-  it('refuses moving a root-only type into a column', () => {
+  it('moves a spacer into a column (column-legal since the compiler gained mj-spacer there)', () => {
     const blocks: Block[] = [...fixture(), { id: 's', type: 'spacer', height: 24 }];
-    expect(moveTo(blocks, 's', { parentId: 'c', colIndex: 0, index: 0 })).toBe(blocks);
+    const next = moveTo(blocks, 's', { parentId: 'c', colIndex: 0, index: 0 });
+    expect(listAt(next, 'c', 0)!.map((b) => b.id)).toEqual(['s', 't1']);
   });
 });
 
@@ -170,6 +173,41 @@ describe('duplicateById / cloneWithNewIds', () => {
   it('duplicates a nested block inside its column', () => {
     const { next, newId } = duplicateById(fixture(), 't2');
     expect(listAt(next, 'c', 1)!.map((b) => b.id)).toEqual(['t2', newId, 'btn']);
+  });
+});
+
+describe('clickInsertAddress', () => {
+  it('lands after a root selection', () => {
+    expect(clickInsertAddress(fixture(), 'a', 'divider')).toEqual({ parentId: null, colIndex: 0, index: 1 });
+  });
+
+  it('lands inside the column after a nested selection for column-legal types', () => {
+    expect(clickInsertAddress(fixture(), 't2', 'button')).toEqual({ parentId: 'c', colIndex: 1, index: 1 });
+  });
+
+  it('escapes to root beside the columns block for root-only payloads', () => {
+    expect(clickInsertAddress(fixture(), 't2', 'columns')).toEqual({ parentId: null, colIndex: 0, index: 2 });
+    expect(clickInsertAddress(fixture(), 't2', null)).toEqual({ parentId: null, colIndex: 0, index: 2 });
+  });
+
+  it('falls back to the end without a selection', () => {
+    expect(clickInsertAddress(fixture(), null, 'text')).toEqual({ parentId: null, colIndex: 0, index: 3 });
+  });
+});
+
+describe('validColWidths', () => {
+  const cols = (w?: number[]): Block => ({ id: 'c', type: 'columns', col_widths: w, columns: [[], []] });
+
+  it('accepts coherent ratios', () => {
+    expect(validColWidths(cols([33, 67]))).toEqual([33, 67]);
+    expect(validColWidths(cols([50, 50]))).toEqual([50, 50]);
+  });
+
+  it('rejects wrong count, out-of-range and bad sums', () => {
+    expect(validColWidths(cols(undefined))).toBeNull();
+    expect(validColWidths(cols([100]))).toBeNull();
+    expect(validColWidths(cols([2, 98]))).toBeNull();
+    expect(validColWidths(cols([10, 10]))).toBeNull();
   });
 });
 

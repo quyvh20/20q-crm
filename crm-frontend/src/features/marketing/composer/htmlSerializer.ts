@@ -3,7 +3,8 @@
 // html block — every element/attribute used here survives the backend's wide
 // raw-HTML sanitizer, so converting never silently loses content.
 
-import type { Block } from './blocks';
+import { FONT_OPTIONS, type Block } from './blocks';
+import { validColWidths } from './blockUtils';
 
 const escAttr = (s: string) =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -83,8 +84,11 @@ function renderBlock(b: Block): string {
     case 'columns': {
       const cols = b.columns ?? [];
       if (cols.length === 0) return '';
+      // Honor authored ratios — converting a 33/67 layout must not silently
+      // hand back a 50/50 one.
+      const widths = validColWidths(b);
       const tds = cols
-        .map((col) => `    <td valign="top" width="${Math.floor(100 / cols.length)}%">\n${col.map((sub) => renderBlock(sub)).map(indent(6)).join('\n')}\n    </td>`)
+        .map((col, i) => `    <td valign="top" width="${widths ? widths[i] : Math.floor(100 / cols.length)}%">\n${col.map((sub) => renderBlock(sub)).map(indent(6)).join('\n')}\n    </td>`)
         .join('\n');
       return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0">\n  <tr>\n${tds}\n  </tr>\n</table>`;
     }
@@ -96,14 +100,25 @@ function renderBlock(b: Block): string {
 const indent = (n: number) => (s: string) => s.split('\n').map((l) => ' '.repeat(n) + l).join('\n');
 
 /** blocksToSimpleHtml renders the whole design as one editable HTML document
- *  body (backgrounds/padding of individual sections included). */
+ *  body — section backgrounds (color and image), padding, and per-block fonts
+ *  included, so the conversion changes the markup, not the design. */
 export function blocksToSimpleHtml(blocks: Block[]): string {
   return blocks
     .map((b) => {
       const inner = renderBlock(b);
       if (!inner) return '';
       const padY = b.pad_y != null ? Math.min(Math.max(b.pad_y, 0), 80) : 20;
-      return `<div${styleOf([`padding:${padY}px 0`, b.bg ? `background:${b.bg}` : false])}>\n${inner}\n</div>`;
+      const padX = b.pad_x != null ? Math.min(Math.max(b.pad_x, 0), 60) : 0;
+      const font = b.font ? FONT_OPTIONS.find((f) => f.key === b.font)?.stack : undefined;
+      const bgImage = b.bg_url && /^https?:\/\//i.test(b.bg_url)
+        ? `background-image:url(${escAttr(b.bg_url)});background-size:cover;background-position:center center;background-repeat:no-repeat`
+        : false;
+      return `<div${styleOf([
+        `padding:${padY}px ${padX}px`,
+        b.bg ? `background-color:${b.bg}` : false,
+        bgImage,
+        font ? `font-family:${font}` : false,
+      ])}>\n${inner}\n</div>`;
     })
     .filter(Boolean)
     .join('\n\n');

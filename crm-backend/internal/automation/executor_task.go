@@ -153,7 +153,7 @@ func (e *TaskExecutor) Execute(ctx context.Context, run *WorkflowRun, action Act
 			m["assigned_to"] = assigneeID.String()
 		}
 		if dueAt != nil {
-			m["due_at"] = dueAt.Format(time.RFC3339)
+			m["due_at"] = rfc3339UTC(*dueAt)
 		}
 		payload := map[string]any{
 			"entity_id": taskID.String(),

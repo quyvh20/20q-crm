@@ -22,6 +22,10 @@ type SavedBlock struct {
 	OrgID     uuid.UUID      `gorm:"type:uuid;not null;index" json:"org_id"`
 	Name      string         `gorm:"type:varchar(120);not null" json:"name"`
 	Block     datatypes.JSON `gorm:"type:jsonb;not null" json:"block"`
+	// Synced marks a "universal" block: inserting it creates a LINKED instance
+	// (Block.Ref = this id) and updating it propagates to every email using it.
+	// A non-synced row keeps the original copy-on-insert behaviour.
+	Synced    bool           `gorm:"not null;default:false" json:"synced"`
 	CreatedBy *uuid.UUID     `gorm:"type:uuid" json:"created_by,omitempty"`
 	CreatedAt time.Time      `gorm:"not null;default:now()" json:"created_at"`
 }
@@ -70,16 +74,19 @@ func (r *Repository) RenameSavedBlockByID(ctx context.Context, orgID, id uuid.UU
 
 // SavedBlockHandler serves the saved-block library under marketing.manage.
 type SavedBlockHandler struct {
-	repo   *Repository
-	logger *slog.Logger
+	repo *Repository
+	// compiler recompiles dependents when a synced block changes — nil-tolerant
+	// (the sync endpoint 503s rather than writing body_json without its HTML).
+	compiler *Compiler
+	logger   *slog.Logger
 }
 
 // NewSavedBlockHandler builds the handler.
-func NewSavedBlockHandler(repo *Repository, logger *slog.Logger) *SavedBlockHandler {
+func NewSavedBlockHandler(repo *Repository, compiler *Compiler, logger *slog.Logger) *SavedBlockHandler {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &SavedBlockHandler{repo: repo, logger: logger}
+	return &SavedBlockHandler{repo: repo, compiler: compiler, logger: logger}
 }
 
 // RegisterRoutes mounts the saved-block routes.
@@ -91,13 +98,18 @@ func (h *SavedBlockHandler) RegisterRoutes(router *gin.Engine, protected []gin.H
 		g.GET("", h.List)
 		g.POST("", h.Create)
 		g.PUT("/:id", h.Rename)
+		// Synced-block operations: how many emails would an update touch, and
+		// the update itself (which rewrites AND recompiles every dependent).
+		g.GET("/:id/usage", h.Usage)
+		g.PUT("/:id/content", h.UpdateContent)
 		g.DELETE("/:id", h.Remove)
 	}
 }
 
 type savedBlockRequest struct {
-	Name  string          `json:"name"`
-	Block json.RawMessage `json:"block"`
+	Name   string          `json:"name"`
+	Block  json.RawMessage `json:"block"`
+	Synced bool            `json:"synced"`
 }
 
 // List returns the org's saved blocks.
@@ -152,7 +164,7 @@ func (h *SavedBlockHandler) Create(c *gin.Context) {
 		abortErr(c, http.StatusBadRequest, "invalid block")
 		return
 	}
-	row := &SavedBlock{OrgID: orgID, Name: name, Block: clean, CreatedBy: &userID}
+	row := &SavedBlock{OrgID: orgID, Name: name, Block: clean, Synced: req.Synced, CreatedBy: &userID}
 	if err := h.repo.CreateSavedBlock(c.Request.Context(), row); err != nil {
 		h.logger.Error("marketing: saved-block create failed", "error", err, "org_id", orgID.String())
 		abortErr(c, http.StatusInternalServerError, "could not save the block")

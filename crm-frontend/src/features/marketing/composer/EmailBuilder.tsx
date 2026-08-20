@@ -39,7 +39,9 @@ type ActiveDrag =
   | { kind: 'block'; id: string; type: BlockType }
   | { kind: 'palette'; type: BlockType; label: string; icon: string }
   | { kind: 'layout'; key: string; label: string }
-  | { kind: 'saved'; label: string; block: Block };
+  // ref is set when the library row is SYNCED — the dropped instance stays
+  // linked so a later library update reaches it.
+  | { kind: 'saved'; label: string; block: Block; ref?: string };
 
 interface Props {
   variableGroups: VariableGroup[];
@@ -111,7 +113,13 @@ export const EmailBuilder: React.FC<Props> = ({ variableGroups, inspector, readO
     } else if (d.kind === 'layout') {
       setActiveDrag({ kind: 'layout', key: String(d.key), label: String(d.label) });
     } else if (d.kind === 'saved') {
-      setActiveDrag({ kind: 'saved', label: String(d.label), block: d.block as Block });
+      const row = d.savedRow as { id: string; synced?: boolean } | undefined;
+      setActiveDrag({
+        kind: 'saved',
+        label: String(d.label),
+        block: d.block as Block,
+        ref: row?.synced ? row.id : undefined,
+      });
     }
   };
 
@@ -205,7 +213,7 @@ export const EmailBuilder: React.FC<Props> = ({ variableGroups, inspector, readO
       const blocks = drag.kind === 'palette'
         ? [makeBlock(drag.type)]
         : drag.kind === 'saved'
-          ? [cloneWithNewIds(drag.block)]
+          ? [{ ...cloneWithNewIds(drag.block), ref: drag.ref }]
           : LAYOUT_PRESETS.find((p) => p.key === drag.key)?.make() ?? [];
       store.getState().insertBlocks(blocks, hint);
       return;

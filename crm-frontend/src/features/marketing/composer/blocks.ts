@@ -39,6 +39,8 @@ export const COND_OPS: { key: string; label: string; needsValue: boolean }[] = [
   { key: 'eq', label: 'is', needsValue: true },
   { key: 'neq', label: 'is not', needsValue: true },
   { key: 'contains', label: 'contains', needsValue: true },
+  { key: 'gt', label: 'is greater than', needsValue: true },
+  { key: 'lt', label: 'is less than', needsValue: true },
 ];
 
 export interface Block {
@@ -61,11 +63,18 @@ export interface Block {
   radius?: number;        // button/image border-radius px
   width_px?: number;      // image width px
   pad_y?: number;         // section vertical padding override (0 allowed)
+  pad_x?: number;         // section horizontal padding override (root blocks; 0-60)
   btn_bg?: string;        // button background (#hex)
   btn_color?: string;     // button text color (#hex)
+  font?: string;          // per-block font override — key into FONT_OPTIONS (text/heading/button/quote)
+  full_width?: boolean;   // root blocks: section background bleeds edge-to-edge in the inbox
+  bg_url?: string;        // root blocks: section background image (https URL; renders cover/center)
+  col_widths?: number[];  // columns: per-column % widths (one per column, ~100 total; else equal)
+  keep_columns?: boolean; // columns: stay side-by-side on mobile (mj-group) instead of stacking
   hide_mobile?: boolean;  // device visibility: hidden under 480px
   hide_desktop?: boolean; // device visibility: hidden at/over 480px
   cond?: BlockCondition;  // show-only-if rule, evaluated per recipient at send (root blocks)
+  ref?: string;           // linked to a SYNCED saved block (its id) — content stays materialized here
   social?: SocialLink[];  // social block entries
   items?: LinkItem[];     // menu block entries
   columns?: Block[][];    // columns: one sub-block list per column
@@ -78,6 +87,7 @@ export interface BlockDocument {
   font_family?: string;   // key into the server's allowlisted font stacks
   text_color?: string;    // default text color (#hex)
   link_color?: string;    // <a> color (#hex)
+  line_height?: number;   // body text line-height (1.0-2.5, default 1.5)
   footer?: FooterStyle;   // compliance-footer styling
 }
 

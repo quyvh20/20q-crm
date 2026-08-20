@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"crm-backend/internal/automation"
@@ -20,6 +21,7 @@ import (
 // condOps is the operator allowlist (also enforced at save by the validator).
 var condOps = map[string]bool{
 	"exists": true, "not_exists": true, "eq": true, "neq": true, "contains": true,
+	"gt": true, "lt": true,
 }
 
 // ValidCondition reports whether a condition is well-formed enough to compile.
@@ -115,6 +117,19 @@ func evalCondition(c *BlockCondition, ec automation.EvalContext) bool {
 		return !strings.EqualFold(val, want)
 	case "contains":
 		return strings.Contains(strings.ToLower(val), strings.ToLower(want))
+	case "gt", "lt":
+		// Numeric comparison. A non-numeric recipient value (or rule value) is
+		// simply "no match" — fail closed for comparisons, unlike the malformed-
+		// condition fail-open above, because the author expressed a threshold.
+		a, errA := strconv.ParseFloat(val, 64)
+		b, errB := strconv.ParseFloat(want, 64)
+		if errA != nil || errB != nil {
+			return false
+		}
+		if c.Op == "gt" {
+			return a > b
+		}
+		return a < b
 	default:
 		return true
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	mjml "github.com/Boostport/mjml-go"
@@ -82,6 +83,34 @@ func bgAttr(bg string) string {
 		return ""
 	}
 	return fmt.Sprintf(` background-color=%q`, bg)
+}
+
+// bgURLRe gates section background-image URLs: absolute http(s), no quotes or
+// whitespace (the value lands in an MJML attribute). Merge tokens are NOT
+// allowed here — backgrounds resolve at compile, not per recipient.
+var bgURLRe = regexp.MustCompile(`^https?://[^\s"'<>]+$`)
+
+// bgURLAttr renders a section background image. cover/center/no-repeat are
+// emitted explicitly so the canvas preview and the inbox agree; MJML generates
+// the Outlook VML fallback itself.
+func bgURLAttr(u string) string {
+	if !bgURLRe.MatchString(u) {
+		return ""
+	}
+	return fmt.Sprintf(` background-url=%q background-size="cover" background-repeat="no-repeat" background-position="center center"`, attr(u))
+}
+
+// fontAttr renders a per-block font-family override resolved through the same
+// allowlisted fontStacks map as the document font (never free-form input).
+func fontAttr(key string) string {
+	if key == "" {
+		return ""
+	}
+	s, ok := fontStacks[key]
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf(` font-family=%q`, s)
 }
 
 var attrReplacer = strings.NewReplacer(`&`, "&amp;", `<`, "&lt;", `>`, "&gt;", `"`, "&quot;")
@@ -220,7 +249,11 @@ func buildMJML(doc BlockDocument, preheader string) string {
 	if hexColorRe.MatchString(doc.TextColor) {
 		textColor = doc.TextColor
 	}
-	b.WriteString(fmt.Sprintf(`<mj-attributes><mj-all font-family=%q /><mj-text color=%q font-size="15px" line-height="1.5" /></mj-attributes>`, font, textColor))
+	lineHeight := "1.5"
+	if doc.LineHeight >= 1.0 && doc.LineHeight <= 2.5 {
+		lineHeight = strconv.FormatFloat(doc.LineHeight, 'f', -1, 64)
+	}
+	b.WriteString(fmt.Sprintf(`<mj-attributes><mj-all font-family=%q /><mj-text color=%q font-size="15px" line-height=%q /></mj-attributes>`, font, textColor, lineHeight))
 	// Device-visibility classes (Brevo-style). 480px is MJML's own mobile
 	// breakpoint, so hide/show flips exactly where the layout stacks.
 	b.WriteString(`<mj-style>@media only screen and (max-width:479px){ .hide-mobile { display:none !important; } } @media only screen and (min-width:480px){ .hide-desktop { display:none !important; } }</mj-style>`)
@@ -267,11 +300,7 @@ func compileBlock(blk Block, depth int) string {
 	case BlockDivider:
 		return section(dividerMJML(blk), blk)
 	case BlockSpacer:
-		h := blk.Height
-		if h <= 0 {
-			h = 20
-		}
-		return section(fmt.Sprintf(`<mj-spacer height="%dpx" />`, h), blk)
+		return section(spacerMJML(blk), blk)
 	case BlockHTML:
 		// An empty html block (the builder seeds them blank) renders NOTHING —
 		// not an empty padded section.
@@ -301,14 +330,26 @@ func compileBlock(blk Block, depth int) string {
 		if depth > 0 || len(blk.Columns) == 0 {
 			return "" // no nested columns; drop an empty/oversized columns block
 		}
+		widths := columnWidths(blk)
 		var cols strings.Builder
-		cols.WriteString("<mj-section" + bgAttr(blk.Bg) + padAttr(blk.PadY) + visAttr(blk) + ">")
-		for _, col := range blk.Columns {
-			cols.WriteString("<mj-column>")
+		cols.WriteString("<mj-section" + sectionAttrs(blk) + ">")
+		// mj-group keeps columns side-by-side on mobile instead of stacking.
+		if blk.KeepColumns {
+			cols.WriteString("<mj-group>")
+		}
+		for i, col := range blk.Columns {
+			if widths != nil {
+				cols.WriteString(fmt.Sprintf(`<mj-column width="%d%%">`, widths[i]))
+			} else {
+				cols.WriteString("<mj-column>")
+			}
 			for _, sub := range col {
 				cols.WriteString(columnInner(sub))
 			}
 			cols.WriteString("</mj-column>")
+		}
+		if blk.KeepColumns {
+			cols.WriteString("</mj-group>")
 		}
 		cols.WriteString("</mj-section>")
 		return cols.String()
@@ -343,6 +384,7 @@ func textMJML(blk Block, nested bool) string {
 	if hexColorRe.MatchString(blk.Color) {
 		a += fmt.Sprintf(` color=%q`, blk.Color)
 	}
+	a += fontAttr(blk.Font)
 	return "<mj-text" + a + ">" + sanitizeBlockHTML(blk.Text) + "</mj-text>"
 }
 
@@ -370,6 +412,7 @@ func buttonMJML(blk Block) string {
 	if blk.Size >= 10 && blk.Size <= 40 {
 		a += fmt.Sprintf(` font-size="%dpx"`, blk.Size)
 	}
+	a += fontAttr(blk.Font)
 	return "<mj-button" + a + ">" + mjmlText(blk.Label) + "</mj-button>"
 }
 
@@ -460,7 +503,7 @@ func quoteMJML(blk Block) string {
 	if strings.TrimSpace(blk.Label) != "" {
 		inner += `<p style="margin:8px 0 0;color:#6b7280;font-size:13px">— ` + mjmlText(blk.Label) + `</p>`
 	}
-	return fmt.Sprintf(`<mj-text align=%q>%s</mj-text>`, alignOf(blk.Align), inner)
+	return fmt.Sprintf(`<mj-text align=%q%s>%s</mj-text>`, alignOf(blk.Align), fontAttr(blk.Font), inner)
 }
 
 // menuMJML renders a horizontal nav of links. Link color comes from the global
@@ -512,8 +555,8 @@ func productMJML(blk Block) string {
 }
 
 // columnInner renders a sub-block WITHOUT its own section wrapper (it is already
-// inside a column). Spacers and nested columns are refused (dropped). Device
-// visibility rides on each component's css-class (mj-raw content gets a div).
+// inside a column). Nested columns are refused (dropped). Device visibility
+// rides on each component's css-class (mj-raw content gets a div).
 func columnInner(blk Block) string {
 	switch blk.Type {
 	case BlockText, BlockHeading:
@@ -524,6 +567,9 @@ func columnInner(blk Block) string {
 		return withVisClass(blk, imageMJML(blk))
 	case BlockDivider:
 		return withVisClass(blk, dividerMJML(blk))
+	case BlockSpacer:
+		// mj-spacer is valid inside mj-column — in-column vertical rhythm.
+		return withVisClass(blk, spacerMJML(blk))
 	case BlockHTML:
 		if strings.TrimSpace(blk.Text) == "" {
 			return ""
@@ -622,20 +668,64 @@ func withVisClass(blk Block, mjml string) string {
 	return mjml[:pos] + ` css-class="` + class + `"` + mjml[pos:]
 }
 
-// padAttr renders a section vertical-padding override (0 allowed for compact
-// layouts; nil = MJML's 20px default).
-func padAttr(padY *int) string {
-	if padY == nil {
+// padAttr renders a section padding override. Vertical only (the historical
+// shape, byte-identical for existing docs) unless a horizontal override is
+// also set; nil/nil = MJML's 20px 0 default.
+func padAttr(padY, padX *int) string {
+	if padY == nil && padX == nil {
 		return ""
 	}
-	p := *padY
-	if p < 0 {
-		p = 0
+	y := 20
+	if padY != nil {
+		y = clampInt(*padY, 0, 80)
 	}
-	if p > 80 {
-		p = 80
+	if padX == nil {
+		return fmt.Sprintf(` padding="%dpx 0"`, y)
 	}
-	return fmt.Sprintf(` padding="%dpx 0"`, p)
+	return fmt.Sprintf(` padding="%dpx %dpx"`, y, clampInt(*padX, 0, 60))
+}
+
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+// columnWidths returns the block's per-column percentage widths when they are
+// coherent (one per column, each 5-95, summing to ~100); anything else is
+// ignored so a malformed document still compiles to safe equal columns.
+func columnWidths(blk Block) []int {
+	if len(blk.ColWidths) == 0 || len(blk.ColWidths) != len(blk.Columns) {
+		return nil
+	}
+	sum := 0
+	for _, w := range blk.ColWidths {
+		if w < 5 || w > 95 {
+			return nil
+		}
+		sum += w
+	}
+	if sum < 95 || sum > 105 {
+		return nil
+	}
+	return blk.ColWidths
+}
+
+// spacerMJML renders a spacer with a sane clamp (the wire model carries any
+// int; nothing should ship a 9999px gap).
+func spacerMJML(blk Block) string {
+	h := blk.Height
+	if h <= 0 {
+		h = 20
+	}
+	if h > 600 {
+		h = 600
+	}
+	return fmt.Sprintf(`<mj-spacer height="%dpx" />`, h)
 }
 
 // footerMJML is the always-present compliance footer. The org name/address and the
@@ -669,7 +759,17 @@ func footerMJML(fs *FooterStyle) string {
 }
 
 func section(inner string, blk Block) string {
-	return "<mj-section" + bgAttr(blk.Bg) + padAttr(blk.PadY) + visAttr(blk) + "><mj-column>" + inner + "</mj-column></mj-section>"
+	return "<mj-section" + sectionAttrs(blk) + "><mj-column>" + inner + "</mj-column></mj-section>"
+}
+
+// sectionAttrs renders the shared root-section attributes: full-width bleed,
+// background color/image, padding overrides, device visibility.
+func sectionAttrs(blk Block) string {
+	attrs := ""
+	if blk.FullWidth {
+		attrs += ` full-width="full-width"`
+	}
+	return attrs + bgAttr(blk.Bg) + bgURLAttr(blk.BgURL) + padAttr(blk.PadY, blk.PadX) + visAttr(blk)
 }
 
 // visAttr renders the device-visibility css-class. Both flags together would

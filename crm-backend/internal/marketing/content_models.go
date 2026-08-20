@@ -145,14 +145,34 @@ type Block struct {
 	Radius    int    `json:"radius,omitempty"`    // button/image border-radius px
 	WidthPx   int    `json:"width_px,omitempty"`  // image width px
 	PadY      *int   `json:"pad_y,omitempty"`     // section vertical padding override (0 allowed — pointer keeps 0 distinct from unset)
+	PadX      *int   `json:"pad_x,omitempty"`     // section horizontal padding override (root blocks; 0-60)
 	BtnBg     string `json:"btn_bg,omitempty"`    // button background (#hex)
 	BtnColor  string `json:"btn_color,omitempty"` // button text color (#hex)
+	Font      string `json:"font,omitempty"`      // per-block font override — key into fontStacks (text/heading/button/quote)
+
+	// Root-block section extras. FullWidth makes the section's background bleed
+	// edge-to-edge in the inbox (mj-section full-width); BgURL paints a section
+	// background image (https-gated; MJML emits the Outlook VML fallback itself).
+	FullWidth bool   `json:"full_width,omitempty"`
+	BgURL     string `json:"bg_url,omitempty"`
+
+	// Columns extras: ColWidths sets per-column percentage widths (must cover
+	// every column and sum to ~100 or it is ignored); KeepColumns keeps columns
+	// side-by-side on mobile instead of stacking (mj-group).
+	ColWidths   []int `json:"col_widths,omitempty"`
+	KeepColumns bool  `json:"keep_columns,omitempty"`
 
 	// Device visibility (Brevo-style "Content visibility"). Implemented with
 	// media-query classes: clients without media-query support (old Outlook)
 	// show everything — the industry-standard caveat.
 	HideMobile  bool `json:"hide_mobile,omitempty"`
 	HideDesktop bool `json:"hide_desktop,omitempty"`
+
+	// Ref links this block to a SYNCED saved block (marketing_saved_blocks.id).
+	// The content stays materialized here — Ref only records the link, so every
+	// compile/validate path is unaffected; updating the library rewrites and
+	// recompiles the instances (saved_blocks_sync.go).
+	Ref string `json:"ref,omitempty"`
 
 	// Cond shows the block only to recipients matching the rule — evaluated
 	// per recipient at RENDER time (the compiler embeds a marker; see
@@ -177,5 +197,6 @@ type BlockDocument struct {
 	FontFamily string       `json:"font_family,omitempty"` // key into fontStacks (allowlisted)
 	TextColor  string       `json:"text_color,omitempty"`  // default mj-text color (#hex)
 	LinkColor  string       `json:"link_color,omitempty"`  // <a> color (#hex)
+	LineHeight float64      `json:"line_height,omitempty"` // body text line-height (1.0-2.5; default 1.5)
 	Footer     *FooterStyle `json:"footer,omitempty"`      // compliance-footer styling
 }
