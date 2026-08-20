@@ -142,19 +142,20 @@ const BlockTab: React.FC<{ variableGroups: VariableGroup[]; onRewriteWithAI?: ()
   const pickerFor = useBuilderStore((s) => s.pickerFor);
   const clearPickerRequest = useBuilderStore((s) => s.clearPickerRequest);
   const htmlRef = useRef<HTMLTextAreaElement>(null);
-  const [pickerOpen, setPickerOpen] = useState(false);
   // Which field the ImagePicker fills: the block's media src, or its section
-  // background image.
-  const [pickerTarget, setPickerTarget] = useState<'src' | 'bg'>('src');
-
-  // A canvas placeholder click asked for the image library — open it directly.
-  useEffect(() => {
-    if (pickerFor && pickerFor === selectedId) {
-      setPickerTarget('src');
-      setPickerOpen(true);
-      clearPickerRequest();
-    }
-  }, [pickerFor, selectedId, clearPickerRequest]);
+  // background image. A canvas placeholder click asks for the library through the
+  // store, so "open" is DERIVED from that request rather than synced into local
+  // state by an effect (setState in an effect cascades a render for nothing).
+  const [localPicker, setLocalPicker] = useState<{ open: boolean; target: 'src' | 'bg' }>({ open: false, target: 'src' });
+  const pickerRequested = pickerFor != null && pickerFor === selectedId;
+  const pickerOpen = localPicker.open || pickerRequested;
+  const pickerTarget: 'src' | 'bg' = localPicker.open ? localPicker.target : 'src';
+  const openPicker = (target: 'src' | 'bg') => setLocalPicker({ open: true, target });
+  const closePicker = () => {
+    setLocalPicker({ open: false, target: 'src' });
+    // Clear the store request too, or the derived state reopens immediately.
+    if (pickerRequested) clearPickerRequest();
+  };
 
   const found = selectedId ? findBlock(blocks, selectedId) : null;
   if (!found) {
@@ -278,7 +279,7 @@ const BlockTab: React.FC<{ variableGroups: VariableGroup[]; onRewriteWithAI?: ()
         <>
           <Field label="Thumbnail image">
             <div className="flex gap-1.5">
-              <Button variant="outline" size="sm" className="shrink-0" onClick={() => { setPickerTarget('src'); setPickerOpen(true); }}>
+              <Button variant="outline" size="sm" className="shrink-0" onClick={() => openPicker('src')}>
                 <Images className="h-4 w-4" /> Library
               </Button>
               <Input value={b.src ?? ''} onChange={(e) => patch({ src: e.target.value }, `src:${b.id}`)} placeholder="or paste a URL…" />
@@ -340,7 +341,7 @@ const BlockTab: React.FC<{ variableGroups: VariableGroup[]; onRewriteWithAI?: ()
           </Field>
           <Field label="Image">
             <div className="flex gap-1.5">
-              <Button variant="outline" size="sm" className="shrink-0" onClick={() => { setPickerTarget('src'); setPickerOpen(true); }}>
+              <Button variant="outline" size="sm" className="shrink-0" onClick={() => openPicker('src')}>
                 <Images className="h-4 w-4" /> Library
               </Button>
               <Input value={b.src ?? ''} onChange={(e) => patch({ src: e.target.value }, `src:${b.id}`)} placeholder="or paste a URL…" />
@@ -379,7 +380,7 @@ const BlockTab: React.FC<{ variableGroups: VariableGroup[]; onRewriteWithAI?: ()
         <>
           <Field label="Image">
             <div className="flex gap-1.5">
-              <Button variant="outline" size="sm" className="shrink-0" onClick={() => { setPickerTarget('src'); setPickerOpen(true); }}>
+              <Button variant="outline" size="sm" className="shrink-0" onClick={() => openPicker('src')}>
                 <Images className="h-4 w-4" /> Library
               </Button>
               <Input value={b.src ?? ''} onChange={(e) => patch({ src: e.target.value }, `src:${b.id}`)} placeholder="or paste a URL…" />
@@ -547,7 +548,7 @@ const BlockTab: React.FC<{ variableGroups: VariableGroup[]; onRewriteWithAI?: ()
 
       <ImagePicker
         open={pickerOpen}
-        onClose={() => setPickerOpen(false)}
+        onClose={closePicker}
         onSelect={(url) => patch(pickerTarget === 'bg' ? { bg_url: url } : { src: url })}
       />
 
@@ -560,7 +561,7 @@ const BlockTab: React.FC<{ variableGroups: VariableGroup[]; onRewriteWithAI?: ()
           </Field>
           <Field label="Background image (URL)">
             <div className="flex gap-1.5">
-              <Button variant="outline" size="sm" className="shrink-0" onClick={() => { setPickerTarget('bg'); setPickerOpen(true); }}>
+              <Button variant="outline" size="sm" className="shrink-0" onClick={() => openPicker('bg')}>
                 <Images className="h-4 w-4" />
               </Button>
               <Input value={b.bg_url ?? ''} onChange={(e) => patch({ bg_url: e.target.value || undefined }, `bg_url:${b.id}`)} placeholder="https://…" />
@@ -1166,11 +1167,15 @@ const EmailTab: React.FC<{ variableGroups: VariableGroup[] }> = ({ variableGroup
 
   // Merge tags land at the CARET (or replace the selection), not at the end of
   // the string — the html-block textarea's idiom, applied to both inbox fields.
+  // Called from the insert callback, never during render: handing a ref to a
+  // function the render invokes reads as ref-access-during-render.
   const insertAtCaret = (
     ref: React.RefObject<HTMLInputElement | null>,
     value: string,
     apply: (v: string) => void,
-  ) => (p: string, f: string) => {
+    p: string,
+    f: string,
+  ) => {
     const tok = token(p, f);
     const el = ref.current;
     if (el && el.selectionStart != null) {
@@ -1187,7 +1192,7 @@ const EmailTab: React.FC<{ variableGroups: VariableGroup[] }> = ({ variableGroup
       <div>
         <div className="mb-1 flex items-center justify-between">
           <label htmlFor="insp-subject" className="text-xs font-medium text-muted-foreground">Subject line</label>
-          <MergeTagMenu variableGroups={variableGroups} onInsert={insertAtCaret(subjectRef, subject, setSubject)} />
+          <MergeTagMenu variableGroups={variableGroups} onInsert={(p, f) => insertAtCaret(subjectRef, subject, setSubject, p, f)} />
         </div>
         <Input ref={subjectRef} id="insp-subject" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Your subject…" maxLength={998} />
         <p className={`mt-1 text-[11px] ${subject.length > 60 ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'}`}>
@@ -1198,7 +1203,7 @@ const EmailTab: React.FC<{ variableGroups: VariableGroup[] }> = ({ variableGroup
       <div>
         <div className="mb-1 flex items-center justify-between">
           <label htmlFor="insp-preheader" className="text-xs font-medium text-muted-foreground">Preheader</label>
-          <MergeTagMenu variableGroups={variableGroups} onInsert={insertAtCaret(preheaderRef, preheader, setPreheader)} />
+          <MergeTagMenu variableGroups={variableGroups} onInsert={(p, f) => insertAtCaret(preheaderRef, preheader, setPreheader, p, f)} />
         </div>
         <Input ref={preheaderRef} id="insp-preheader" value={preheader} onChange={(e) => setPreheader(e.target.value)} placeholder="Short summary shown in the inbox…" maxLength={255} />
         <p className="mt-1 text-[11px] text-muted-foreground">{preheader.length}/255 — the inbox preview text after the subject.</p>
