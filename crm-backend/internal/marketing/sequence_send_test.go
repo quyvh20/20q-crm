@@ -116,6 +116,45 @@ func TestPrepare_HappyPath(t *testing.T) {
 	}
 }
 
+// Gmail clips a body past the limit and the compliance footer is appended LAST,
+// so an oversize send is a marketing email delivered with no unsubscribe link.
+// Campaigns refuse to launch on this; the sequence path must refuse too.
+func TestPrepare_OversizeContentIsRetryableSkip(t *testing.T) {
+	big := completeContent()
+	big.CompiledSizeBytes = gmailClipBytes + 1
+	p := newSeqPreparer(NewSuppressionGuard(sendableLedger()), &seqStore{content: big, profile: completeProfile()}, recFrom{})
+	dec, err := p.PrepareMarketingSend(context.Background(), seqReq())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !dec.Skip {
+		t.Fatalf("an oversize email must never be sent — it would arrive clipped, without its unsubscribe link")
+	}
+	if !dec.Retry {
+		t.Fatalf("must park for a fix (an author can trim it), not silently skip the step")
+	}
+	if dec.SkipReason != "content_too_large" {
+		t.Errorf("reason = %q", dec.SkipReason)
+	}
+	// Right at the limit is still refused (the campaign gate is >=, and both send
+	// paths must agree byte for byte).
+	atLimit := completeContent()
+	atLimit.CompiledSizeBytes = gmailClipBytes
+	p2 := newSeqPreparer(NewSuppressionGuard(sendableLedger()), &seqStore{content: atLimit, profile: completeProfile()}, recFrom{})
+	dec2, _ := p2.PrepareMarketingSend(context.Background(), seqReq())
+	if !dec2.Skip {
+		t.Fatalf("content exactly at the limit must be refused, matching the campaign gate")
+	}
+	// A normal-sized email is unaffected.
+	ok := completeContent()
+	ok.CompiledSizeBytes = gmailClipBytes - 1
+	p3 := newSeqPreparer(NewSuppressionGuard(sendableLedger()), &seqStore{content: ok, profile: completeProfile()}, recFrom{})
+	dec3, _ := p3.PrepareMarketingSend(context.Background(), seqReq())
+	if dec3.Skip {
+		t.Fatalf("content under the limit must still send, got skip: %s", dec3.SkipReason)
+	}
+}
+
 func TestPrepare_SuppressedIsTerminalSkip(t *testing.T) {
 	led := &fakeLedger{sups: []Suppression{{Reason: ReasonUnsubscribe, Scope: ScopeMarketing}}}
 	p := newSeqPreparer(NewSuppressionGuard(led), &seqStore{content: completeContent(), profile: completeProfile()}, recFrom{})

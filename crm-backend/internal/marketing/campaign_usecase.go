@@ -73,9 +73,16 @@ func NewCampaignUseCase(repo campaignStore, segments audienceResolver, domains d
 
 const maxCampaignNameLen = 200
 
-// gmailClipBytes: Gmail clips a message body at ~102 KB; M6 flags content at/above
-// this, and the launch gate refuses to send it.
-const gmailClipBytes = 102 * 1024
+// gmailClipBytes is the single "too big to send" threshold, shared by the campaign
+// launch checklist and the sequence send path so the two can never disagree.
+//
+// It is deliberately the COMPILER's limit (maxCompiledBytes, 100KB) rather than
+// Gmail's ~102KB clip point: a save already refuses anything over the compiler
+// limit, so a 101KB email is one an author can neither save nor fix — gating
+// launch 2KB higher only created a band of content that was unsaveable yet
+// launchable. Clipping costs the compliance footer (it is appended last), so the
+// tighter number is also the safer one.
+const gmailClipBytes = maxCompiledBytes
 
 func (uc *CampaignUseCase) List(ctx context.Context, orgID uuid.UUID) ([]domain.Campaign, error) {
 	return uc.repo.ListCampaignsByOrg(ctx, orgID)
