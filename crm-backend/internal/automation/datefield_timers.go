@@ -93,6 +93,15 @@ func parseHHMM(s string) (hour, minute int, ok bool) {
 var dateFieldLayouts = []string{time.RFC3339, "2006-01-02T15:04:05", "2006-01-02"}
 
 // parseDateValue interprets a date field value from an event payload.
+// rfc3339UTC renders a time for an automation payload. Always UTC: a value's own
+// location is an accident of where it came from (pgx returns a timestamptz in the
+// server's local zone; an in-process value may already be UTC), so formatting
+// as-is makes the SAME instant render as "…Z" on one server and "…+07:00" on
+// another, and makes the live and backfill paths disagree. parseDateValue (below)
+// accepts either, but a payload whose shape tracks the server clock is a trap for
+// anything that compares, dedupes or diffs it.
+func rfc3339UTC(t time.Time) string { return t.UTC().Format(time.RFC3339) }
+
 func parseDateValue(v any) (time.Time, bool) {
 	switch val := v.(type) {
 	case time.Time:
