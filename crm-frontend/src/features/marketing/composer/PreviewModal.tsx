@@ -14,13 +14,16 @@ interface Props {
   // The current editor state as a preview request — lets the modal re-render
   // the email AS a chosen recipient (real merge data, like a live send).
   previewInput: Omit<ContentInput, 'name'>;
+  // The document's content width — an 800px design must not be clipped by a
+  // fixed 640px desktop preview.
+  docWidth?: number;
 }
 
 /** PreviewModal shows the SERVER-compiled email (mjml-go output — the exact HTML
  *  recipients get, footer included) in a sandboxed iframe, with desktop/mobile
  *  widths (media queries — device-visibility rules really apply), a dark-scheme
  *  toggle, and Brevo-style "view as" any contact in the CRM. */
-export const PreviewModal: React.FC<Props> = ({ open, onClose, preview, previewErr, previewInput }) => {
+export const PreviewModal: React.FC<Props> = ({ open, onClose, preview, previewErr, previewInput, docWidth }) => {
   const [device, setDevice] = useState<'desktop' | 'mobile'>('desktop');
   const [dark, setDark] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -47,7 +50,7 @@ export const PreviewModal: React.FC<Props> = ({ open, onClose, preview, previewE
   }, [open, contact, previewInput]);
 
   const active = contact && resolved?.html ? resolved : preview;
-  const width = device === 'desktop' ? 640 : 375;
+  const width = device === 'desktop' ? Math.max(640, (docWidth && docWidth >= 480 && docWidth <= 800 ? docWidth : 600) + 40) : 375;
 
   const copyHtml = async () => {
     if (!active?.html) return;
@@ -58,7 +61,7 @@ export const PreviewModal: React.FC<Props> = ({ open, onClose, preview, previewE
   };
 
   return (
-    <Modal open={open} onClose={onClose} title="Email preview" widthClass="max-w-[760px]" padded={false}>
+    <Modal open={open} onClose={onClose} title="Email preview" widthClass="max-w-[900px]" padded={false}>
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2">
         <div className="flex items-center gap-1">
           <DeviceButton active={device === 'desktop'} title="Desktop width" onClick={() => setDevice('desktop')}>

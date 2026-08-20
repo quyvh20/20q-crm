@@ -1,12 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  AlertCircle, AlignCenter, AlignLeft, AlignRight, BookmarkPlus, CheckCircle2, Clock, Copy, Filter, Images, Monitor, MousePointerClick, Smartphone, Trash2, X,
+  AlertCircle, AlignCenter, AlignLeft, AlignRight, BookmarkPlus, CheckCircle2, Clock, Copy, Filter, Images, Monitor, MousePointerClick, RefreshCw, Smartphone, Sparkles, Trash2, X,
 } from 'lucide-react';
 import { Button, Input, Select, Textarea } from '@/components/ui';
 import { COND_OPS, FONT_OPTIONS, SOCIAL_NETWORKS, type Block, type BlockCondition, type LinkItem, type SocialLink } from './blocks';
 import { ImagePicker } from './ImagePicker';
 import Modal from '../../../components/common/Modal';
-import { useCreateSavedBlock } from '../savedBlocksQueries';
+import { useCreateSavedBlock, useSavedBlocks, useSavedBlockUsage, useUpdateSavedBlockContent } from '../savedBlocksQueries';
+import { useConfirm } from '../../../components/common/ConfirmDialog';
+import { useToast } from '@/lib/useToast';
 import { RecordFillPicker } from './RecordFillPicker';
 import { useBuilderStore } from './builderStore';
 import { MergeTagMenu } from './MergeTagMenu';
@@ -26,9 +28,18 @@ export interface InspectorMeta {
   previewErr: boolean;
   saveErrors: string[];
   checklist: Check[];
+  /** Opens the AI copilot in rewrite mode for the selected block. */
+  onRewriteWithAI?: () => void;
 }
 
 type Tab = 'block' | 'email' | 'review';
+
+/** Block types whose WORDS the copilot can rewrite. MUST stay a subset of the
+ *  backend's aiBlockTypes (content_ai.go): offering a rewrite for a type the
+ *  copilot cannot emit — product, for one — is an action guaranteed to fail.
+ *  Blocks with no authored copy (divider, spacer, columns, image) are excluded
+ *  for the same reason. */
+const AI_REWRITABLE: ReadonlySet<string> = new Set(['text', 'heading', 'button', 'quote']);
 
 /** InspectorPanel is the right rail: Block (settings for the selected block),
  *  Email (subject/preheader/scope), Review (pre-send checklist). Panels stay
@@ -72,7 +83,7 @@ export const InspectorPanel: React.FC<{ variableGroups: VariableGroup[]; meta: I
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div role="tabpanel" id="panel-block" aria-labelledby="tab-block" hidden={tab !== 'block'} className="p-4">
-          <BlockTab variableGroups={variableGroups} />
+          <BlockTab variableGroups={variableGroups} onRewriteWithAI={meta.onRewriteWithAI} />
         </div>
         <div role="tabpanel" id="panel-email" aria-labelledby="tab-email" hidden={tab !== 'email'} className="p-4">
           <EmailTab variableGroups={variableGroups} />
@@ -106,15 +117,44 @@ const TabButton: React.FC<{ id: string; active: boolean; onClick: () => void; ch
 // Block tab
 // ---------------------------------------------------------------------------
 
-const BlockTab: React.FC<{ variableGroups: VariableGroup[] }> = ({ variableGroups }) => {
+// Column-ratio presets (percentages mirror <mj-column width>). undefined =
+// equal widths (the wire field is omitted).
+const RATIOS_2: { label: string; w?: number[] }[] = [
+  { label: '50 / 50' },
+  { label: '33 / 67', w: [33, 67] },
+  { label: '67 / 33', w: [67, 33] },
+];
+const RATIOS_3: { label: string; w?: number[] }[] = [
+  { label: 'Equal' },
+  { label: '25 / 50 / 25', w: [25, 50, 25] },
+  { label: '50 / 25 / 25', w: [50, 25, 25] },
+  { label: '25 / 25 / 50', w: [25, 25, 50] },
+];
+
+const BlockTab: React.FC<{ variableGroups: VariableGroup[]; onRewriteWithAI?: () => void }> = ({ variableGroups, onRewriteWithAI }) => {
   const blocks = useBuilderStore((s) => s.blocks);
   const selectedId = useBuilderStore((s) => s.selectedId);
   const patchBlock = useBuilderStore((s) => s.patchBlock);
   const removeBlock = useBuilderStore((s) => s.removeBlock);
   const duplicateBlock = useBuilderStore((s) => s.duplicateBlock);
   const setColumnCount = useBuilderStore((s) => s.setColumnCount);
+  const setColumnWidths = useBuilderStore((s) => s.setColumnWidths);
+  const pickerFor = useBuilderStore((s) => s.pickerFor);
+  const clearPickerRequest = useBuilderStore((s) => s.clearPickerRequest);
   const htmlRef = useRef<HTMLTextAreaElement>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Which field the ImagePicker fills: the block's media src, or its section
+  // background image.
+  const [pickerTarget, setPickerTarget] = useState<'src' | 'bg'>('src');
+
+  // A canvas placeholder click asked for the image library — open it directly.
+  useEffect(() => {
+    if (pickerFor && pickerFor === selectedId) {
+      setPickerTarget('src');
+      setPickerOpen(true);
+      clearPickerRequest();
+    }
+  }, [pickerFor, selectedId, clearPickerRequest]);
 
   const found = selectedId ? findBlock(blocks, selectedId) : null;
   if (!found) {
@@ -134,6 +174,10 @@ const BlockTab: React.FC<{ variableGroups: VariableGroup[] }> = ({ variableGroup
       <div className="flex items-center justify-between">
         <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{b.type} settings</p>
         <div className="flex gap-1">
+          {onRewriteWithAI && AI_REWRITABLE.has(b.type) && (
+            <button type="button" title="Rewrite with AI" aria-label="Rewrite this block with AI" onClick={onRewriteWithAI}
+              className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"><Sparkles className="h-4 w-4" /></button>
+          )}
           <SaveToLibrary block={b} />
           <button type="button" title="Duplicate block" aria-label="Duplicate block" onClick={() => duplicateBlock(b.id)}
             className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"><Copy className="h-4 w-4" /></button>
@@ -152,6 +196,9 @@ const BlockTab: React.FC<{ variableGroups: VariableGroup[] }> = ({ variableGroup
           </Field>
           <Field label="Text color">
             <ColorField label="Text color" value={b.color} onChange={(color) => patch({ color })} />
+          </Field>
+          <Field label="Font (blank = email font)">
+            <FontField value={b.font} onChange={(font) => patch({ font })} />
           </Field>
         </>
       )}
@@ -173,6 +220,9 @@ const BlockTab: React.FC<{ variableGroups: VariableGroup[] }> = ({ variableGroup
           </Field>
           <Field label="Text color">
             <ColorField label="Text color" value={b.color} onChange={(color) => patch({ color })} />
+          </Field>
+          <Field label="Font (blank = email font)">
+            <FontField value={b.font} onChange={(font) => patch({ font })} />
           </Field>
           {found.parentId && !b.size && (
             <p className="text-[11px] text-muted-foreground">Inside columns, headings render at a fixed 18px unless you set a custom size.</p>
@@ -206,6 +256,9 @@ const BlockTab: React.FC<{ variableGroups: VariableGroup[] }> = ({ variableGroup
               <NumField value={b.size} min={10} max={40} onChange={(size) => patch({ size })} />
             </Field>
           </div>
+          <Field label="Font (blank = email font)">
+            <FontField value={b.font} onChange={(font) => patch({ font })} />
+          </Field>
         </>
       )}
 
@@ -225,7 +278,7 @@ const BlockTab: React.FC<{ variableGroups: VariableGroup[] }> = ({ variableGroup
         <>
           <Field label="Thumbnail image">
             <div className="flex gap-1.5">
-              <Button variant="outline" size="sm" className="shrink-0" onClick={() => setPickerOpen(true)}>
+              <Button variant="outline" size="sm" className="shrink-0" onClick={() => { setPickerTarget('src'); setPickerOpen(true); }}>
                 <Images className="h-4 w-4" /> Library
               </Button>
               <Input value={b.src ?? ''} onChange={(e) => patch({ src: e.target.value }, `src:${b.id}`)} placeholder="or paste a URL…" />
@@ -239,6 +292,9 @@ const BlockTab: React.FC<{ variableGroups: VariableGroup[] }> = ({ variableGroup
           <Field label="Alt text">
             <Input value={b.alt ?? ''} onChange={(e) => patch({ alt: e.target.value }, `alt:${b.id}`)} placeholder="Describe the video" />
           </Field>
+          {!b.alt?.trim() && (
+            <p className="text-[11px] text-amber-600 dark:text-amber-400">Alt text helps accessibility and deliverability.</p>
+          )}
           <Field label="Button label">
             <Input value={b.label ?? ''} onChange={(e) => patch({ label: e.target.value }, `label:${b.id}`)} placeholder="▶ Watch video" />
           </Field>
@@ -262,6 +318,9 @@ const BlockTab: React.FC<{ variableGroups: VariableGroup[] }> = ({ variableGroup
           <Field label="Accent color">
             <ColorField label="Accent color" value={b.color} onChange={(color) => patch({ color })} />
           </Field>
+          <Field label="Font (blank = email font)">
+            <FontField value={b.font} onChange={(font) => patch({ font })} />
+          </Field>
           <p className="text-[11px] text-muted-foreground">Edit the quote text directly on the canvas.</p>
         </>
       )}
@@ -281,7 +340,7 @@ const BlockTab: React.FC<{ variableGroups: VariableGroup[] }> = ({ variableGroup
           </Field>
           <Field label="Image">
             <div className="flex gap-1.5">
-              <Button variant="outline" size="sm" className="shrink-0" onClick={() => setPickerOpen(true)}>
+              <Button variant="outline" size="sm" className="shrink-0" onClick={() => { setPickerTarget('src'); setPickerOpen(true); }}>
                 <Images className="h-4 w-4" /> Library
               </Button>
               <Input value={b.src ?? ''} onChange={(e) => patch({ src: e.target.value }, `src:${b.id}`)} placeholder="or paste a URL…" />
@@ -320,7 +379,7 @@ const BlockTab: React.FC<{ variableGroups: VariableGroup[] }> = ({ variableGroup
         <>
           <Field label="Image">
             <div className="flex gap-1.5">
-              <Button variant="outline" size="sm" className="shrink-0" onClick={() => setPickerOpen(true)}>
+              <Button variant="outline" size="sm" className="shrink-0" onClick={() => { setPickerTarget('src'); setPickerOpen(true); }}>
                 <Images className="h-4 w-4" /> Library
               </Button>
               <Input value={b.src ?? ''} onChange={(e) => patch({ src: e.target.value }, `src:${b.id}`)} placeholder="or paste a URL…" />
@@ -408,22 +467,17 @@ const BlockTab: React.FC<{ variableGroups: VariableGroup[] }> = ({ variableGroup
           <div className="flex items-center gap-3">
             <input
               type="range"
-              min={8}
-              max={120}
+              min={4}
+              max={200}
               step={4}
               value={b.height ?? 24}
               onChange={(e) => patch({ height: Number(e.target.value) }, `height:${b.id}`)}
               className="flex-1 accent-[hsl(var(--primary))]"
               aria-label="Spacer height"
             />
-            <Input
-              type="number"
-              min={4}
-              max={200}
-              value={String(b.height ?? 24)}
-              onChange={(e) => patch({ height: Number(e.target.value) }, `height:${b.id}`)}
-              className="w-20"
-            />
+            <div className="w-20">
+              <NumField value={b.height ?? 24} min={4} max={200} onChange={(height) => patch({ height }, `height:${b.id}`)} />
+            </div>
           </div>
         </Field>
       )}
@@ -432,7 +486,7 @@ const BlockTab: React.FC<{ variableGroups: VariableGroup[] }> = ({ variableGroup
         <>
           <Field label="Columns">
             <div className="flex gap-2">
-              {[2, 3].map((n) => (
+              {[2, 3, 4].map((n) => (
                 <button
                   key={n}
                   type="button"
@@ -448,32 +502,96 @@ const BlockTab: React.FC<{ variableGroups: VariableGroup[] }> = ({ variableGroup
               ))}
             </div>
           </Field>
+          {(b.columns?.length ?? 2) <= 3 && (
+            <Field label="Column widths">
+              <div className="flex gap-1.5">
+                {((b.columns?.length ?? 2) === 2 ? RATIOS_2 : RATIOS_3).map((r) => {
+                  const active = JSON.stringify(b.col_widths ?? null) === JSON.stringify(r.w ?? null);
+                  return (
+                    <button
+                      key={r.label}
+                      type="button"
+                      onClick={() => setColumnWidths(b.id, r.w)}
+                      className={`flex-1 rounded-lg border px-1 py-1.5 text-xs font-medium transition-colors ${
+                        active
+                          ? 'border-primary bg-primary/10 text-primary'
+                          : 'border-border text-muted-foreground hover:border-ring hover:text-foreground'
+                      }`}
+                    >
+                      {r.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </Field>
+          )}
+          <label className="flex items-center gap-2 text-sm text-foreground">
+            <input
+              type="checkbox"
+              checked={!!b.keep_columns}
+              onChange={(e) => patch({ keep_columns: e.target.checked || undefined })}
+            />
+            Keep side by side on mobile (don’t stack)
+          </label>
           <p className="text-[11px] text-muted-foreground">
-            Drag text, headings, buttons, images or dividers into each column. A column must be empty before it can be removed.
+            Drag content into each column. A column must be empty before it can be removed.
           </p>
         </>
       )}
+
+      {b.ref && <SyncedPanel block={b} />}
 
       <Field label="Show on">
         <VisibilityPicker block={b} onChange={(p) => patch(p)} />
       </Field>
 
-      {(b.type === 'image' || b.type === 'video' || b.type === 'product') && (
-        <ImagePicker open={pickerOpen} onClose={() => setPickerOpen(false)} onSelect={(url) => patch({ src: url })} />
-      )}
+      <ImagePicker
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        onSelect={(url) => patch(pickerTarget === 'bg' ? { bg_url: url } : { src: url })}
+      />
 
-      {/* Root blocks compile to their own section — background + vertical
-          padding are stylable. Nested blocks share their columns block's section. */}
+      {/* Root blocks compile to their own section — background + padding are
+          stylable. Nested blocks share their columns block's section. */}
       {found.parentId === null ? (
         <>
           <Field label="Block background">
             <ColorField label="Block background" value={b.bg} onChange={(bg) => patch({ bg })} />
           </Field>
-          <Field label="Vertical padding (px, blank = 20, 0 = flush)">
-            <NumField value={b.pad_y} min={0} max={80} onChange={(pad_y) => patch({ pad_y })} />
+          <Field label="Background image (URL)">
+            <div className="flex gap-1.5">
+              <Button variant="outline" size="sm" className="shrink-0" onClick={() => { setPickerTarget('bg'); setPickerOpen(true); }}>
+                <Images className="h-4 w-4" />
+              </Button>
+              <Input value={b.bg_url ?? ''} onChange={(e) => patch({ bg_url: e.target.value || undefined }, `bg_url:${b.id}`)} placeholder="https://…" />
+            </div>
           </Field>
+          <UrlHint value={b.bg_url} />
+          {b.bg_url ? (
+            <p className="text-[11px] text-muted-foreground">
+              The image covers this section (centered). Outlook shows it via a fallback — keep the background color set too.
+            </p>
+          ) : null}
+          <label className="flex items-center gap-2 text-sm text-foreground">
+            <input
+              type="checkbox"
+              checked={!!b.full_width}
+              onChange={(e) => patch({ full_width: e.target.checked || undefined })}
+            />
+            Full-width background (bleeds edge-to-edge in the inbox)
+          </label>
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="Vertical padding (px, blank = 20)">
+              <NumField value={b.pad_y} min={0} max={80} onChange={(pad_y) => patch({ pad_y })} />
+            </Field>
+            <Field label="Side padding (px, blank = 0)">
+              <NumField value={b.pad_x} min={0} max={60} onChange={(pad_x) => patch({ pad_x })} />
+            </Field>
+          </div>
           <Field label="Show only if (per recipient)">
-            <ConditionEditor cond={b.cond} variableGroups={variableGroups} onChange={(cond) => patch({ cond })} />
+            {/* keyed by block: the editor's custom-path mode is per-block state
+                and must not follow the selection to another block */}
+            <ConditionEditor key={b.id} cond={b.cond} variableGroups={variableGroups} onChange={(cond) => patch({ cond })} />
           </Field>
         </>
       ) : (
@@ -494,35 +612,73 @@ const ConditionEditor: React.FC<{
   variableGroups: VariableGroup[];
   onChange: (cond: BlockCondition | undefined) => void;
 }> = ({ cond, variableGroups, onChange }) => {
+  // Custom-path mode: type a field like contact.custom_fields.plan_tier
+  // directly (the backend validates it at save). Entered via the Select's
+  // "Custom field…" row; also active for an out-of-catalog stored value.
+  const [customMode, setCustomMode] = useState(false);
   if (!cond) {
     return (
       <button
         type="button"
-        onClick={() => onChange({ field: variableGroups[0]?.fields[0]?.path ?? 'contact.email', op: 'exists' })}
+        onClick={() => { setCustomMode(false); onChange({ field: variableGroups[0]?.fields[0]?.path ?? 'contact.email', op: 'exists' }); }}
         className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-border py-2 text-xs font-medium text-muted-foreground hover:border-ring hover:text-foreground"
       >
         <Filter className="h-3.5 w-3.5" /> Add condition
       </button>
     );
   }
+  const inCatalog = variableGroups.some((g) => g.fields.some((f) => f.path === cond.field));
+  const showCustom = customMode || !inCatalog;
   const opMeta = COND_OPS.find((o) => o.key === cond.op) ?? COND_OPS[0];
+  const field = cond.field.trim();
+  // A path left mid-typing ("contact.custom_fields.") resolves to nothing at
+  // send, so the block would silently vanish for every recipient.
+  const pathIncomplete = field === '' || field.endsWith('.') || !field.includes('.');
+  const numericOp = cond.op === 'gt' || cond.op === 'lt';
+  const numericValueOk = (cond.value ?? '').trim() !== '' && Number.isFinite(Number((cond.value ?? '').trim()));
   return (
     <div className="space-y-1.5 rounded-lg border border-border p-2">
       <div className="flex items-center gap-1.5">
-        <Select value={cond.field} onChange={(e) => onChange({ ...cond, field: e.target.value })} className="min-w-0 flex-1" aria-label="Condition field">
-          {variableGroups.map((g) => (
-            <optgroup key={g.key} label={g.label}>
-              {g.fields.map((f) => (
-                <option key={f.path} value={f.path}>{f.label}</option>
-              ))}
-            </optgroup>
-          ))}
-          {/* keep an out-of-catalog value (e.g. custom_fields.*) selectable */}
-          {!variableGroups.some((g) => g.fields.some((f) => f.path === cond.field)) && (
-            <option value={cond.field}>{cond.field}</option>
-          )}
-        </Select>
-        <button type="button" title="Remove condition" aria-label="Remove condition" onClick={() => onChange(undefined)}
+        {showCustom ? (
+          <Input
+            value={cond.field}
+            onChange={(e) => onChange({ ...cond, field: e.target.value })}
+            placeholder="contact.custom_fields.plan_tier"
+            className="min-w-0 flex-1 font-mono text-xs"
+            aria-label="Condition field path"
+          />
+        ) : (
+          <Select
+            value={cond.field}
+            onChange={(e) => {
+              if (e.target.value === '__custom__') {
+                setCustomMode(true);
+                onChange({ ...cond, field: 'contact.custom_fields.' });
+                return;
+              }
+              onChange({ ...cond, field: e.target.value });
+            }}
+            className="min-w-0 flex-1"
+            aria-label="Condition field"
+          >
+            {variableGroups.map((g) => (
+              <optgroup key={g.key} label={g.label}>
+                {g.fields.map((f) => (
+                  <option key={f.path} value={f.path}>{f.label}</option>
+                ))}
+              </optgroup>
+            ))}
+            <option value="__custom__">Custom field…</option>
+          </Select>
+        )}
+        {showCustom && (
+          <button type="button" title="Pick from the field list" aria-label="Pick from the field list"
+            onClick={() => { setCustomMode(false); onChange({ ...cond, field: variableGroups[0]?.fields[0]?.path ?? 'contact.email' }); }}
+            className="shrink-0 rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground">
+            <Filter className="h-4 w-4" />
+          </button>
+        )}
+        <button type="button" title="Remove condition" aria-label="Remove condition" onClick={() => { setCustomMode(false); onChange(undefined); }}
           className="shrink-0 rounded p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
           <X className="h-4 w-4" />
         </button>
@@ -534,9 +690,26 @@ const ConditionEditor: React.FC<{
           ))}
         </Select>
         {opMeta.needsValue && (
-          <Input value={cond.value ?? ''} onChange={(e) => onChange({ ...cond, value: e.target.value })} placeholder="value…" aria-label="Condition value" />
+          <Input
+            value={cond.value ?? ''}
+            onChange={(e) => onChange({ ...cond, value: e.target.value })}
+            placeholder={numericOp ? '100' : 'value…'}
+            aria-label="Condition value"
+          />
         )}
       </div>
+      {/* Both of these save "successfully" but would hide the block from every
+          recipient at send — surface them where the mistake is made. */}
+      {pathIncomplete && (
+        <p className="text-[11px] text-amber-600 dark:text-amber-400">
+          Finish the field path (e.g. contact.custom_fields.plan_tier) — as written this matches nobody.
+        </p>
+      )}
+      {numericOp && !numericValueOk && (
+        <p className="text-[11px] text-amber-600 dark:text-amber-400">
+          Greater/less than compares numbers — enter a plain number like 100 (no currency or thousands separators).
+        </p>
+      )}
       <p className="text-[11px] text-muted-foreground">
         Recipients who don’t match skip this block. Check it with “view as contact” in the preview.
       </p>
@@ -549,11 +722,13 @@ const ConditionEditor: React.FC<{
 const SaveToLibrary: React.FC<{ block: Block }> = ({ block }) => {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
+  const [synced, setSynced] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const create = useCreateSavedBlock();
 
   const openModal = () => {
     setName(`${block.type.charAt(0).toUpperCase()}${block.type.slice(1)} block`);
+    setSynced(false);
     setError(null);
     setOpen(true);
   };
@@ -561,7 +736,7 @@ const SaveToLibrary: React.FC<{ block: Block }> = ({ block }) => {
   const save = async () => {
     if (!name.trim()) return;
     try {
-      await create.mutateAsync({ name: name.trim(), block });
+      await create.mutateAsync({ name: name.trim(), block, synced });
       setOpen(false);
     } catch (e) {
       setError((e as Error).message || 'Could not save the block');
@@ -581,8 +756,18 @@ const SaveToLibrary: React.FC<{ block: Block }> = ({ block }) => {
             <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={120}
               onKeyDown={(e) => { if (e.key === 'Enter') save(); }} placeholder="e.g. Footer CTA" />
           </Field>
+          <label className="flex items-start gap-2 text-sm text-foreground">
+            <input type="checkbox" className="mt-0.5" checked={synced} onChange={(e) => setSynced(e.target.checked)} />
+            <span>
+              Keep in sync
+              <span className="block text-[11px] font-normal text-muted-foreground">
+                Editing it later updates every email that uses it — for headers, footers and legal text.
+              </span>
+            </span>
+          </label>
           <p className="text-[11px] text-muted-foreground">
-            Saved blocks appear in the left rail for every email. Inserting one adds an independent copy.
+            Saved blocks appear in the left rail for every email.
+            {synced ? ' A synced block stays linked wherever you place it.' : ' Inserting one adds an independent copy.'}
           </p>
           {error && <p className="text-xs text-destructive">{error}</p>}
           <div className="flex justify-end gap-2">
@@ -594,6 +779,93 @@ const SaveToLibrary: React.FC<{ block: Block }> = ({ block }) => {
         </div>
       </Modal>
     </>
+  );
+};
+
+/** SyncedPanel is the control surface for a block linked to a synced library
+ *  entry. Two deliberate choices, both from what practitioners complain about
+ *  elsewhere: the instance stays fully EDITABLE (fragments you cannot override
+ *  per campaign are the top complaint about reusable content), and the usage
+ *  count is shown BEFORE the update button, because "is it safe to change this?"
+ *  is the question that decides whether you press it. */
+const SyncedPanel: React.FC<{ block: Block }> = ({ block }) => {
+  const unlinkBlock = useBuilderStore((s) => s.unlinkBlock);
+  const syncLocalInstances = useBuilderStore((s) => s.syncLocalInstances);
+  const usage = useSavedBlockUsage(block.ref ?? null);
+  const update = useUpdateSavedBlockContent();
+  const { confirm, dialog } = useConfirm();
+  const toast = useToast();
+
+  // The count comes from SAVED documents, so this email is only in it once it
+  // has been saved with the instance. Never derive "other emails" by
+  // subtracting one — that undercounts, and on a just-dropped instance it turns
+  // a real "2 emails" into a reassuring "no other email uses it".
+  const emails = usage.data?.email_count ?? 0;
+  const known = usage.isSuccess;
+  // The library row can be deleted while an instance still points at it. Offering
+  // "update everywhere" then just 404s, so say what happened instead.
+  const library = useSavedBlocks();
+  const orphaned = library.isSuccess && !library.data.some((r) => r.id === block.ref);
+
+  const impact = () => {
+    if (!known) {
+      return 'The number of emails using this block could not be checked, so this may change more emails than you expect.';
+    }
+    if (emails === 0) return 'This updates the saved block in your library. No saved email uses it yet.';
+    return `This replaces the block in ${emails} saved email${emails === 1 ? '' : 's'} and recompiles ${emails === 1 ? 'it' : 'them'}. Their next send uses the new version.`;
+  };
+
+  const push = async () => {
+    if (!block.ref) return;
+    const ok = await confirm({
+      title: 'Update this block everywhere?',
+      body: impact(),
+      confirmLabel: 'Update everywhere',
+      tone: known ? undefined : 'danger',
+    });
+    if (!ok) return;
+    try {
+      const res = await update.mutateAsync({ id: block.ref, block });
+      // The server rewrote every stored instance; bring this document's other
+      // copies in line so the next save can't write the old content back.
+      syncLocalInstances(block.ref, block);
+      const n = res.updated.length;
+      toast.show(n > 0 ? `Updated ${n} email${n === 1 ? '' : 's'}` : 'Saved block updated');
+      if (res.skipped.length > 0) {
+        toast.error(`Not updated: ${res.skipped.join(', ')}`);
+      }
+    } catch (e) {
+      toast.error((e as Error).message || 'Could not update the synced block');
+    }
+  };
+
+  return (
+    <div className="space-y-2 rounded-lg border border-primary/30 bg-primary/5 p-2.5">
+      {dialog}
+      <p className="flex items-center gap-1.5 text-xs font-semibold text-primary">
+        <RefreshCw className="h-3.5 w-3.5" /> Synced block
+      </p>
+      <p className="text-[11px] text-muted-foreground">
+        {usage.isLoading
+          ? 'Checking where this block is used…'
+          : orphaned
+            ? 'The library block this was linked to no longer exists. The content here is unaffected — unlink it to tidy up.'
+            : usage.isError
+              ? 'Could not check where this block is used.'
+              : `Used in ${emails} saved email${emails === 1 ? '' : 's'}. Your edits here stay in this email until you update everywhere.`}
+      </p>
+      <div className="flex gap-1.5">
+        {!orphaned && (
+          <Button size="sm" onClick={push} disabled={update.isPending || usage.isLoading}>
+            {update.isPending ? 'Updating…' : 'Update everywhere'}
+          </Button>
+        )}
+        <Button variant="outline" size="sm" onClick={() => unlinkBlock(block.id)}>Unlink</Button>
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Unlinking keeps this copy exactly as it is and stops it receiving library updates.
+      </p>
+    </div>
   );
 };
 
@@ -636,6 +908,17 @@ const VisibilityPicker: React.FC<{ block: Block; onChange: (p: Partial<Block>) =
   );
 };
 
+/** FontField picks a per-block font from the same allowlisted stacks as the
+ *  document font (blank = inherit the email font). */
+const FontField: React.FC<{ value?: string; onChange: (v: string | undefined) => void }> = ({ value, onChange }) => (
+  <Select value={value ?? ''} onChange={(e) => onChange(e.target.value || undefined)}>
+    <option value="">Email default</option>
+    {FONT_OPTIONS.map((f) => (
+      <option key={f.key} value={f.key}>{f.label}</option>
+    ))}
+  </Select>
+);
+
 /** NumField is an optional bounded number input: blank = "use the default". */
 const NumField: React.FC<{ value?: number; min: number; max: number; onChange: (v: number | undefined) => void }> = ({ value, min, max, onChange }) => (
   <Input
@@ -664,18 +947,21 @@ const SocialEditor: React.FC<{ value: SocialLink[]; onChange: (v: SocialLink[]) 
     <div className="space-y-2">
       <p className="text-[11px] font-medium text-muted-foreground">Networks</p>
       {value.map((row, i) => (
-        <div key={i} className="flex items-center gap-1.5">
-          <Select value={row.network} onChange={(e) => setRow(i, { network: e.target.value })} className="w-32 shrink-0">
-            {SOCIAL_NETWORKS.map((n) => (
-              <option key={n.key} value={n.key}>{n.label}</option>
-            ))}
-          </Select>
-          <Input value={row.href} onChange={(e) => setRow(i, { href: e.target.value })} placeholder="https://…" />
-          <button type="button" title="Remove network" aria-label="Remove network"
-            onClick={() => onChange(value.filter((_, j) => j !== i))}
-            className="shrink-0 rounded p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
-            <Trash2 className="h-4 w-4" />
-          </button>
+        <div key={i}>
+          <div className="flex items-center gap-1.5">
+            <Select value={row.network} onChange={(e) => setRow(i, { network: e.target.value })} className="w-32 shrink-0">
+              {SOCIAL_NETWORKS.map((n) => (
+                <option key={n.key} value={n.key}>{n.label}</option>
+              ))}
+            </Select>
+            <Input value={row.href} onChange={(e) => setRow(i, { href: e.target.value })} placeholder="https://…" />
+            <button type="button" title="Remove network" aria-label="Remove network"
+              onClick={() => onChange(value.filter((_, j) => j !== i))}
+              className="shrink-0 rounded p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
+              <Trash2 className="h-4 w-4" />
+            </button>
+          </div>
+          <UrlHint value={row.href} />
         </div>
       ))}
       {value.length < 8 && (
@@ -697,14 +983,17 @@ const MenuEditor: React.FC<{ value: LinkItem[]; onChange: (v: LinkItem[]) => voi
     <div className="space-y-2">
       <p className="text-[11px] font-medium text-muted-foreground">Links</p>
       {value.map((row, i) => (
-        <div key={i} className="flex items-center gap-1.5">
-          <Input value={row.label} onChange={(e) => setRow(i, { label: e.target.value })} placeholder="Label" className="w-28 shrink-0" />
-          <Input value={row.href} onChange={(e) => setRow(i, { href: e.target.value })} placeholder="https://…" />
-          <button type="button" title="Remove link" aria-label="Remove link"
-            onClick={() => onChange(value.filter((_, j) => j !== i))}
-            className="shrink-0 rounded p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
-            <Trash2 className="h-4 w-4" />
-          </button>
+        <div key={i}>
+          <div className="flex items-center gap-1.5">
+            <Input value={row.label} onChange={(e) => setRow(i, { label: e.target.value })} placeholder="Label" className="w-28 shrink-0" />
+            <Input value={row.href} onChange={(e) => setRow(i, { href: e.target.value })} placeholder="https://…" />
+            <button type="button" title="Remove link" aria-label="Remove link"
+              onClick={() => onChange(value.filter((_, j) => j !== i))}
+              className="shrink-0 rounded p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
+              <Trash2 className="h-4 w-4" />
+            </button>
+          </div>
+          <UrlHint value={row.href} />
         </div>
       ))}
       {value.length < 6 && (
@@ -717,37 +1006,97 @@ const MenuEditor: React.FC<{ value: LinkItem[]; onChange: (v: LinkItem[]) => voi
   );
 };
 
-/** ColorField pairs a native color swatch with a hex input and a clear button
- *  (empty = transparent / inherit the email background). */
-const ColorField: React.FC<{ label: string; value?: string; onChange: (v: string) => void }> = ({ label, value, onChange }) => (
-  <div className="flex items-center gap-2">
-    <input
-      type="color"
-      value={/^#[0-9a-fA-F]{6}$/.test(value ?? '') ? (value as string) : '#ffffff'}
-      onChange={(e) => onChange(e.target.value)}
-      aria-label={`${label} color picker`}
-      className="h-9 w-10 cursor-pointer rounded-lg border border-border bg-background p-1"
-    />
-    <Input
-      value={value ?? ''}
-      onChange={(e) => onChange(e.target.value.trim())}
-      placeholder="none"
-      className="w-28 font-mono text-xs"
-      aria-label={`${label} hex value`}
-    />
-    {value && (
-      <button
-        type="button"
-        title="Clear color"
-        aria-label={`Clear ${label}`}
-        onClick={() => onChange('')}
-        className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground"
-      >
-        <X className="h-4 w-4" />
-      </button>
-    )}
-  </div>
-);
+/** hexColorOk mirrors the backend's hexColorRe: 3/6/8-digit #hex only. Anything
+ *  else renders on the canvas as raw CSS but is silently DROPPED by the
+ *  compiler — the exact WYSIWYG lie this validation exists to prevent. */
+const hexColorOk = (v: string) => /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(v);
+
+/** expandHex widens #abc to #aabbcc so the native swatch can display it. */
+const expandHex = (v: string): string | null => {
+  if (/^#[0-9a-fA-F]{6}/.test(v)) return v.slice(0, 7);
+  if (/^#[0-9a-fA-F]{3}$/.test(v)) return `#${v[1]}${v[1]}${v[2]}${v[2]}${v[3]}${v[3]}`;
+  return null;
+};
+
+/** documentColors harvests the hex colors already used in this document — a
+ *  zero-setup "recently used" strip that nudges palette consistency. */
+function documentColors(): string[] {
+  const s = useBuilderStore.getState();
+  const out: string[] = [];
+  const push = (v?: string) => {
+    if (v && hexColorOk(v) && !out.includes(v)) out.push(v);
+  };
+  const walk = (bs: Block[]) => {
+    for (const b of bs) {
+      push(b.color); push(b.bg); push(b.btn_bg); push(b.btn_color);
+      for (const col of b.columns ?? []) walk(col);
+    }
+  };
+  walk(s.blocks);
+  push(s.bodyBg);
+  push(s.styles.textColor); push(s.styles.linkColor); push(s.styles.footerBg); push(s.styles.footerColor);
+  return out.slice(0, 8);
+}
+
+/** ColorField pairs a native color swatch with a hex input, a clear button and
+ *  a document-colors strip. Only #hex values the compiler accepts are treated
+ *  as valid; anything else gets an inline warning instead of a silent drop. */
+const ColorField: React.FC<{ label: string; value?: string; onChange: (v: string) => void }> = ({ label, value, onChange }) => {
+  const invalid = !!value && !hexColorOk(value);
+  const swatch = value ? expandHex(value) : null;
+  const recents = documentColors().filter((c) => c !== value);
+  return (
+    <div>
+      <div className="flex items-center gap-2">
+        <input
+          type="color"
+          value={swatch ?? '#ffffff'}
+          onChange={(e) => onChange(e.target.value)}
+          aria-label={`${label} color picker`}
+          className="h-9 w-10 cursor-pointer rounded-lg border border-border bg-background p-1"
+        />
+        <Input
+          value={value ?? ''}
+          onChange={(e) => onChange(e.target.value.trim())}
+          placeholder="none"
+          className="w-28 font-mono text-xs"
+          aria-label={`${label} hex value`}
+        />
+        {value && (
+          <button
+            type="button"
+            title="Clear color"
+            aria-label={`Clear ${label}`}
+            onClick={() => onChange('')}
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+      {invalid && (
+        <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
+          Not a #hex color — the sent email would ignore it. Use e.g. #2563eb.
+        </p>
+      )}
+      {recents.length > 0 && (
+        <div className="mt-1.5 flex items-center gap-1">
+          {recents.map((c) => (
+            <button
+              key={c}
+              type="button"
+              title={c}
+              aria-label={`Use color ${c}`}
+              onClick={() => onChange(c)}
+              className="h-5 w-5 rounded border border-border"
+              style={{ background: expandHex(c) ?? c }}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
 
 const Field: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
   <label className="block">
@@ -812,15 +1161,35 @@ const EmailTab: React.FC<{ variableGroups: VariableGroup[] }> = ({ variableGroup
   const setBodyBg = useBuilderStore((s) => s.setBodyBg);
   const patchStyles = useBuilderStore((s) => s.patchStyles);
   const toggleScope = useBuilderStore((s) => s.toggleScope);
+  const subjectRef = useRef<HTMLInputElement>(null);
+  const preheaderRef = useRef<HTMLInputElement>(null);
+
+  // Merge tags land at the CARET (or replace the selection), not at the end of
+  // the string — the html-block textarea's idiom, applied to both inbox fields.
+  const insertAtCaret = (
+    ref: React.RefObject<HTMLInputElement | null>,
+    value: string,
+    apply: (v: string) => void,
+  ) => (p: string, f: string) => {
+    const tok = token(p, f);
+    const el = ref.current;
+    if (el && el.selectionStart != null) {
+      const s = el.selectionStart;
+      const e = el.selectionEnd ?? s;
+      apply(value.slice(0, s) + tok + value.slice(e));
+    } else {
+      apply(value + tok);
+    }
+  };
 
   return (
     <div className="space-y-4">
       <div>
         <div className="mb-1 flex items-center justify-between">
           <label htmlFor="insp-subject" className="text-xs font-medium text-muted-foreground">Subject line</label>
-          <MergeTagMenu variableGroups={variableGroups} onInsert={(p, f) => setSubject(subject + token(p, f))} />
+          <MergeTagMenu variableGroups={variableGroups} onInsert={insertAtCaret(subjectRef, subject, setSubject)} />
         </div>
-        <Input id="insp-subject" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Your subject…" maxLength={998} />
+        <Input ref={subjectRef} id="insp-subject" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Your subject…" maxLength={998} />
         <p className={`mt-1 text-[11px] ${subject.length > 60 ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'}`}>
           {subject.length} characters{subject.length > 60 ? ' — long subjects get cut off on mobile' : ''}
         </p>
@@ -829,9 +1198,9 @@ const EmailTab: React.FC<{ variableGroups: VariableGroup[] }> = ({ variableGroup
       <div>
         <div className="mb-1 flex items-center justify-between">
           <label htmlFor="insp-preheader" className="text-xs font-medium text-muted-foreground">Preheader</label>
-          <MergeTagMenu variableGroups={variableGroups} onInsert={(p, f) => setPreheader(preheader + token(p, f))} />
+          <MergeTagMenu variableGroups={variableGroups} onInsert={insertAtCaret(preheaderRef, preheader, setPreheader)} />
         </div>
-        <Input id="insp-preheader" value={preheader} onChange={(e) => setPreheader(e.target.value)} placeholder="Short summary shown in the inbox…" maxLength={255} />
+        <Input ref={preheaderRef} id="insp-preheader" value={preheader} onChange={(e) => setPreheader(e.target.value)} placeholder="Short summary shown in the inbox…" maxLength={255} />
         <p className="mt-1 text-[11px] text-muted-foreground">{preheader.length}/255 — the inbox preview text after the subject.</p>
       </div>
 
@@ -847,6 +1216,17 @@ const EmailTab: React.FC<{ variableGroups: VariableGroup[] }> = ({ variableGroup
           </Field>
           <Field label="Content width (px, 480–800, blank = 600)">
             <NumField value={styles.width} min={480} max={800} onChange={(width) => patchStyles({ width })} />
+          </Field>
+          <Field label="Line height">
+            <Select
+              value={styles.lineHeight != null ? String(styles.lineHeight) : ''}
+              onChange={(e) => patchStyles({ lineHeight: e.target.value ? Number(e.target.value) : undefined })}
+            >
+              <option value="">Default (1.5)</option>
+              {['1.2', '1.3', '1.4', '1.6', '1.8', '2'].map((v) => (
+                <option key={v} value={v}>{v}</option>
+              ))}
+            </Select>
           </Field>
           <Field label="Text color">
             <ColorField label="Text color" value={styles.textColor} onChange={(textColor) => patchStyles({ textColor })} />

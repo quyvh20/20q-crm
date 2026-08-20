@@ -1,6 +1,6 @@
 // Marketing campaign-content API (M6). apiFetch/parseJsonSafe/apiError shared from lib/api.
 import { apiFetch, parseJsonSafe, apiError } from '../../lib/api';
-import type { BlockDocument } from './composer/blocks';
+import type { Block, BlockDocument } from './composer/blocks';
 
 export interface CampaignContent {
   id: string;
@@ -112,4 +112,51 @@ export async function testSendContent(id: string): Promise<string> {
   const json = await parseJsonSafe(res);
   if (!res.ok) throw apiError(res, json, 'Failed to send test');
   return (json.data?.sent_to as string) ?? '';
+}
+
+/** What the builder copilot asks for. Mode picks the job: a whole email, one
+ *  section to insert, or a rewrite of the selected block. */
+export interface AIDraftInput {
+  prompt: string;
+  mode: 'email' | 'section' | 'rewrite';
+  merge_scope: string[];
+  current_doc?: Block[];
+  block?: Block;
+  subject?: string;
+}
+
+/** The copilot's result. `repairs` lists what the server had to fix in the
+ *  model's output (an out-of-scope field removed, a fallback added) — shown to
+ *  the user so the copilot's limits are visible rather than silent. */
+export interface AIDraftResult {
+  blocks: Block[];
+  subject?: string;
+  preheader?: string;
+  repairs?: string[];
+}
+
+/** POST /api/marketing/content/ai/draft — a natural-language brief becomes real
+ *  blocks. The server never saves; the caller inserts them into the canvas as one
+ *  undoable step, so the canvas stays the review gate. */
+export async function draftEmailAI(input: AIDraftInput): Promise<AIDraftResult> {
+  // 75s abort, in step with the backend's 60s aiDraftTimeout (content_ai.go —
+  // keep BOTH in step): the server must own the deadline and answer clean JSON
+  // before we would ever abort, or a slow model surfaces as an unparseable
+  // gateway-timeout page.
+  let res: Response;
+  try {
+    res = await apiFetch('/api/marketing/content/ai/draft', {
+      method: 'POST',
+      body: JSON.stringify(input),
+      timeoutMs: 75000,
+    });
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      throw new Error('The copilot took too long to respond — try a shorter brief.');
+    }
+    throw new Error('Could not reach the copilot — check your connection and try again.');
+  }
+  const json = await parseJsonSafe(res);
+  if (!res.ok) throw apiError(res, json, 'The copilot could not write that');
+  return (json.data ?? { blocks: [] }) as AIDraftResult;
 }

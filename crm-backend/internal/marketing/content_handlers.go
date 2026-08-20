@@ -46,6 +46,7 @@ type ContentHandler struct {
 	hydrator     RecipientHydrator   // nil-tolerant: preview-as-contact unavailable
 	orgName      OrgNameResolver     // nil-tolerant
 	postal       PostalResolver      // nil-tolerant
+	contentAI    contentAICaller     // nil-tolerant: the AI copilot 503s if unset
 	logger       *slog.Logger
 }
 
@@ -80,6 +81,9 @@ func (h *ContentHandler) RegisterRoutes(router *gin.Engine, protected []gin.Hand
 		g.PUT("/:id/folder", h.SetFolder)
 		g.DELETE("/:id", h.Remove)
 		g.POST("/:id/test-send", h.TestSend)
+		// The builder copilot. Never saves — it returns blocks the client inserts
+		// into the canvas as one undoable step.
+		g.POST("/ai/draft", h.AIDraft)
 	}
 }
 
@@ -477,13 +481,28 @@ func parseAndValidate(subject, preheader string, rawBody json.RawMessage, scope 
 func lintWarnings(doc BlockDocument, res CompileResult) []string {
 	var w []string
 	hasImageNoAlt := false
+	hasImageNoSrc := false
+	hasPlaceholderMenuLink := false
 	hasLink := false
 	hasRawHTML := false
 	var walk func([]Block)
 	walk = func(bs []Block) {
 		for _, b := range bs {
-			if b.Type == BlockImage && strings.TrimSpace(b.Alt) == "" {
+			// Video compiles to the same mj-image as an image block — both need alt.
+			if (b.Type == BlockImage || b.Type == BlockVideo) && strings.TrimSpace(b.Alt) == "" {
 				hasImageNoAlt = true
+			}
+			// An empty src ships a broken image; product cards may legitimately
+			// omit the image, so only image/video blocks are flagged.
+			if (b.Type == BlockImage || b.Type == BlockVideo) && strings.TrimSpace(b.Src) == "" {
+				hasImageNoSrc = true
+			}
+			if b.Type == BlockMenu {
+				for _, it := range b.Items {
+					if strings.TrimSpace(it.Href) == "https://" && strings.TrimSpace(it.Label) != "" {
+						hasPlaceholderMenuLink = true
+					}
+				}
 			}
 			if (b.Type == BlockButton || b.Type == BlockProduct) && b.Href != "" {
 				hasLink = true
@@ -500,8 +519,14 @@ func lintWarnings(doc BlockDocument, res CompileResult) []string {
 		}
 	}
 	walk(doc.Blocks)
+	if hasImageNoSrc {
+		w = append(w, "one or more image blocks have no image yet — they would send as broken images")
+	}
 	if hasImageNoAlt {
 		w = append(w, "one or more images have no alt text (hurts accessibility and spam score)")
+	}
+	if hasPlaceholderMenuLink {
+		w = append(w, "one or more menu links still have the placeholder URL (https://)")
 	}
 	if hasRawHTML {
 		w = append(w, "contains a custom HTML block — it renders as-is, so send yourself a test before launching")

@@ -50,7 +50,7 @@ func TestConditions_CompileThenRenderPerRecipient(t *testing.T) {
 }
 
 func TestConditions_Operators(t *testing.T) {
-	ec := automation.EvalContext{Contact: map[string]any{"first_name": "Katherine", "phone": ""}}
+	ec := automation.EvalContext{Contact: map[string]any{"first_name": "Katherine", "phone": "", "deal_count": 4}}
 	cases := []struct {
 		cond BlockCondition
 		want bool
@@ -63,6 +63,12 @@ func TestConditions_Operators(t *testing.T) {
 		{BlockCondition{Field: "contact.first_name", Op: "contains", Value: "ather"}, true},
 		{BlockCondition{Field: "contact.first_name", Op: "contains", Value: "zzz"}, false},
 		{BlockCondition{Field: "contact.missing_field", Op: "exists"}, false},
+		// Numeric comparisons: non-numeric on either side fails CLOSED.
+		{BlockCondition{Field: "contact.deal_count", Op: "gt", Value: "3"}, true},
+		{BlockCondition{Field: "contact.deal_count", Op: "gt", Value: "5"}, false},
+		{BlockCondition{Field: "contact.deal_count", Op: "lt", Value: "5"}, true},
+		{BlockCondition{Field: "contact.first_name", Op: "gt", Value: "3"}, false},
+		{BlockCondition{Field: "contact.deal_count", Op: "gt", Value: "many"}, false},
 	}
 	for i, tc := range cases {
 		if got := evalCondition(&tc.cond, ec); got != tc.want {
@@ -87,6 +93,30 @@ func TestConditions_StripKeepsContent(t *testing.T) {
 	}
 	if strings.Contains(got, "data-cond") {
 		t.Fatalf("strip must remove the markers")
+	}
+}
+
+// A condition that saves "successfully" but matches nobody hides the block from
+// EVERY recipient with no error anywhere — these two shapes must fail the save.
+func TestConditions_ValidationRejectsSilentlyEmptyRules(t *testing.T) {
+	doc := BlockDocument{Blocks: []Block{
+		{ID: "money", Type: BlockText, Text: "x", Cond: &BlockCondition{Field: "contact.custom_fields.mrr", Op: "gt", Value: "$100"}},
+		{ID: "blank", Type: BlockText, Text: "x", Cond: &BlockCondition{Field: "contact.custom_fields.mrr", Op: "lt", Value: ""}},
+		{ID: "dangling", Type: BlockText, Text: "x", Cond: &BlockCondition{Field: "contact.custom_fields.", Op: "exists"}},
+		{ID: "ok", Type: BlockText, Text: "x", Cond: &BlockCondition{Field: "contact.custom_fields.mrr", Op: "gt", Value: "100"}},
+	}}
+	errs := ValidateContent("", "", doc, []string{"contact", "org", "campaign"})
+	found := map[string]bool{}
+	for _, e := range errs {
+		found[e.Field] = true
+	}
+	for _, id := range []string{"block:money", "block:blank", "block:dangling"} {
+		if !found[id] {
+			t.Fatalf("%s should have failed validation; got %+v", id, errs)
+		}
+	}
+	if found["block:ok"] {
+		t.Fatalf("a plain numeric threshold must validate; got %+v", errs)
 	}
 }
 

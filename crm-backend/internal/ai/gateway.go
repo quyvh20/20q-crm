@@ -47,6 +47,12 @@ const (
 	// draft completes inside its deadline, with the frontier model as a quality
 	// fallback. (Separate from TaskCommandCenter so the assistant chat is untouched.)
 	TaskWorkflowDraft      AITask = "workflow_draft"
+	// TaskMarketingEmailDraft backs the email builder's copilot: a natural-language
+	// brief becomes a BLOCK DOCUMENT (the same wire shape a manual edit produces),
+	// so generated output stays editable block-by-block instead of arriving as an
+	// opaque HTML blob. Needs more output room than a workflow draft: a full email
+	// is a dozen blocks of copy, not a handful of step params.
+	TaskMarketingEmailDraft AITask = "marketing_email_draft"
 )
 
 // advancedTasks are only available to pro+ plans
@@ -83,6 +89,7 @@ var taskPrimaryProvider = map[AITask]provider{
 	TaskCommandCenter:     providerCFWorkers,
 	TaskWorkflowAI:        providerCFWorkers,
 	TaskWorkflowDraft:     providerCFWorkers,
+	TaskMarketingEmailDraft: providerCFWorkers,
 }
 
 // Task → model mapping per provider
@@ -106,6 +113,9 @@ var taskModels = map[AITask]map[provider]string{
 	// Draft copilot: fast MoE primary so it finishes inside the 28s deadline; the
 	// frontier kimi-k2.6 is the fallback (below) for when the fast model errors.
 	TaskWorkflowDraft:     {providerCFWorkers: "@cf/qwen/qwen3-30b-a3b-fp8"},
+	// Email copilot: same fast-MoE-primary / frontier-fallback split as the
+	// workflow draft — the builder is interactive, so latency is a feature.
+	TaskMarketingEmailDraft: {providerCFWorkers: "@cf/qwen/qwen3-30b-a3b-fp8"},
 }
 
 // taskFallbackModels — tried when the primary model fails (timeout, error, empty response).
@@ -114,6 +124,7 @@ var taskFallbackModels = map[AITask][]string{
 	TaskCommandCenter: {"@cf/qwen/qwen3-30b-a3b-fp8"},
 	TaskEmailCompose:  {"@cf/moonshotai/kimi-k2.6"},
 	TaskWorkflowDraft: {"@cf/moonshotai/kimi-k2.6"},
+	TaskMarketingEmailDraft: {"@cf/moonshotai/kimi-k2.6"},
 }
 
 // taskMaxTokens enforces strict output boundaries based on empirically measured p99 usage
@@ -129,6 +140,7 @@ var taskMaxTokens = map[AITask]int{
 	TaskVoiceIntelligence: 2000,
 	TaskWorkflowAI:        1024,
 	TaskWorkflowDraft:     2048,
+	TaskMarketingEmailDraft: 3000,
 }
 
 func maxTokensFor(task AITask) int {

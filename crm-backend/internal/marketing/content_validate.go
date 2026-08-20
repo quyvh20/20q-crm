@@ -2,6 +2,7 @@ package marketing
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"crm-backend/internal/automation"
@@ -75,6 +76,7 @@ func ValidateContent(subject, preheader string, doc BlockDocument, scope []strin
 			check(field, blk.Alt)
 			check(field, blk.Title)
 			check(field, blk.Price)
+			check(field, blk.BgURL)
 			for _, it := range blk.Items {
 				check(field, it.Label)
 				check(field, it.Href)
@@ -95,6 +97,19 @@ func ValidateContent(subject, preheader string, doc BlockDocument, scope []strin
 				}
 				if !condOps[blk.Cond.Op] {
 					errs = append(errs, ContentError{Field: field, Tag: blk.Cond.Op, Reason: "condition: unknown operator"})
+				}
+				// gt/lt compare numbers: a non-numeric value parses to nothing at
+				// render and the block silently disappears for EVERY recipient.
+				// Fail the save instead of shipping an invisible block.
+				if blk.Cond.Op == "gt" || blk.Cond.Op == "lt" {
+					v := strings.TrimSpace(blk.Cond.Value)
+					if _, err := strconv.ParseFloat(v, 64); err != nil {
+						errs = append(errs, ContentError{
+							Field:  field,
+							Tag:    blk.Cond.Value,
+							Reason: "condition: greater/less than needs a plain number (e.g. 100)",
+						})
+					}
 				}
 			}
 			for _, col := range blk.Columns {
@@ -117,8 +132,13 @@ func validateTag(ref automation.MergeRef, allowed map[string]bool) *ContentError
 	if leaf == "" {
 		return &ContentError{Tag: ref.Raw, Reason: "a bare root is not a mergeable field — use e.g. " + root + ".name"}
 	}
-	// custom_fields.<key> is always allowed for roots that have them.
+	// custom_fields.<key> is always allowed for roots that have them — but the
+	// key must actually be there: a dangling "custom_fields." resolves to
+	// nothing per recipient, so it is a typo, not a field.
 	isCustom := strings.HasPrefix(leaf, "custom_fields.") && rootsWithCustomFields[root]
+	if isCustom && strings.TrimSpace(strings.TrimPrefix(leaf, "custom_fields.")) == "" {
+		return &ContentError{Tag: ref.Raw, Reason: "a custom field needs a key, e.g. " + root + ".custom_fields.plan_tier"}
+	}
 	if !isCustom {
 		if set := knownLeaves[root]; set != nil && !set[leaf] {
 			return &ContentError{Tag: ref.Raw, Reason: fmt.Sprintf("%q is not a known %s field", ref.Path, root)}

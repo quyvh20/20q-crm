@@ -18,9 +18,9 @@ export interface FoundBlock extends BlockAddress {
 }
 
 /** Block types that may live inside a column. Mirrors compile.go columnInner:
- *  spacer and columns are silently dropped there, so the builder refuses them. */
+ *  nested columns are silently dropped there, so the builder refuses them. */
 export const COLUMN_ALLOWED: ReadonlySet<BlockType> = new Set([
-  'text', 'heading', 'button', 'image', 'divider', 'html', 'social', 'video', 'quote', 'menu', 'product',
+  'text', 'heading', 'button', 'image', 'divider', 'spacer', 'html', 'social', 'video', 'quote', 'menu', 'product',
 ]);
 
 export function canPlaceIn(parentId: string | null, type: BlockType): boolean {
@@ -129,6 +129,42 @@ export function duplicateById(blocks: Block[], id: string): { next: Block[]; new
     index: found.index + 1,
   });
   return { next, newId: copy.id };
+}
+
+/** validColWidths mirrors the compiler's coherence rule for columns ratios:
+ *  one width per column, each 5-95, summing to ~100 — anything else renders
+ *  (and compiles) as equal widths. */
+export function validColWidths(b: Block): number[] | null {
+  const w = b.col_widths;
+  if (!w || !b.columns || w.length !== b.columns.length || w.length === 0) return null;
+  let sum = 0;
+  for (const v of w) {
+    if (v < 5 || v > 95) return null;
+    sum += v;
+  }
+  return sum >= 95 && sum <= 105 ? w : null;
+}
+
+/** clickInsertAddress resolves where a palette/layout/saved CLICK should land:
+ *  right after the current selection when the payload is legal there (root
+ *  payloads beside a nested selection land after its columns block), else at
+ *  the end of the document. Keeps click-to-add near where the user is working
+ *  instead of always dumping at the bottom. */
+export function clickInsertAddress(blocks: Block[], selectedId: string | null, type: BlockType | null): BlockAddress {
+  const end: BlockAddress = { parentId: null, colIndex: 0, index: blocks.length };
+  if (!selectedId) return end;
+  const found = findBlock(blocks, selectedId);
+  if (!found) return end;
+  if (found.parentId === null) {
+    return { parentId: null, colIndex: 0, index: found.index + 1 };
+  }
+  // Nested selection: insert into the same column when the type may live there,
+  // otherwise beside the enclosing columns block.
+  if (type !== null && COLUMN_ALLOWED.has(type)) {
+    return { parentId: found.parentId, colIndex: found.colIndex, index: found.index + 1 };
+  }
+  const parentIdx = blocks.findIndex((b) => b.id === found.parentId);
+  return parentIdx >= 0 ? { parentId: null, colIndex: 0, index: parentIdx + 1 } : end;
 }
 
 /** allIds lists every block id (root + nested), for dnd registration and pruning

@@ -1979,6 +1979,12 @@ func main() {
 			)`},
 			{"marketing_saved_blocks org index", `CREATE INDEX IF NOT EXISTS idx_marketing_saved_blocks_org
 				ON marketing_saved_blocks(org_id, created_at DESC)`},
+			// Synced ("universal") saved blocks: a library row marked synced is
+			// inserted as a LINKED instance, and editing it propagates to every
+			// email using it. An ALTER-added column via GORM fails silently on
+			// prod, so this guard is the migration there.
+			{"marketing_saved_blocks synced", `ALTER TABLE marketing_saved_blocks
+				ADD COLUMN IF NOT EXISTS synced BOOLEAN NOT NULL DEFAULT FALSE`},
 			// Template folders (an ALTER-added column via GORM fails silently on
 			// prod — this guard is the migration there).
 			{"marketing_campaign_content folder", `ALTER TABLE marketing_campaign_content
@@ -3205,6 +3211,10 @@ func main() {
 			return u.Email, nil
 		}
 		marketingContentHandler := marketing.NewContentHandler(marketingRepo, marketingCompiler, marketingTestSender, callerEmail, autoLogger)
+		// Builder copilot: NL brief -> BLOCKS on the shared AI gateway. Like the
+		// automation copilot it never saves; the client inserts the returned blocks
+		// into the canvas as one undoable step, so the canvas stays the review gate.
+		marketingContentHandler.SetContentAI(gateway)
 		marketingContentHandler.RegisterRoutes(router,
 			integrationsProtected,
 			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
@@ -3241,7 +3251,7 @@ func main() {
 		)
 		marketing.NewPublicAssetHandler(marketingRepo, integrationsIPLimiter).RegisterRoutes(router)
 		// Saved-block library (reusable builder blocks).
-		marketing.NewSavedBlockHandler(marketingRepo, autoLogger).RegisterRoutes(router,
+		marketing.NewSavedBlockHandler(marketingRepo, marketingCompiler, autoLogger).RegisterRoutes(router,
 			integrationsProtected,
 			func(code string) gin.HandlerFunc { return delivery.RequireCapability(permissionUC, code) },
 		)

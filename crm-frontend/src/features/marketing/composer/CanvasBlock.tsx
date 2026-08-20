@@ -2,10 +2,10 @@ import React, { useRef, useState } from 'react';
 import { useSortable, SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { useDroppable } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
-import { ChevronDown, ChevronUp, CirclePlay, CodeXml, Copy, Filter, GripVertical, Image as ImageIcon, Monitor, Share2, Smartphone, Trash2 } from 'lucide-react';
-import type { Block } from './blocks';
+import { ChevronDown, ChevronUp, CirclePlay, CodeXml, Copy, Filter, GripVertical, Image as ImageIcon, Monitor, MoveHorizontal, RefreshCw, Share2, Smartphone, Trash2 } from 'lucide-react';
+import { FONT_OPTIONS, type Block } from './blocks';
 import { displayImageSrc } from '../assetsApi';
-import type { BlockAddress } from './blockUtils';
+import { validColWidths, type BlockAddress } from './blockUtils';
 import { useBuilderStore } from './builderStore';
 import { InlineRichText } from './InlineRichText';
 import type { VariableGroup } from './mergeScope';
@@ -15,6 +15,19 @@ import type { VariableGroup } from './mergeScope';
 // carry MJML's default 10px 25px padding — so canvas spacing ≈ inbox spacing.
 const SECTION_PAD = '20px 0';
 const COMPONENT_PAD = '10px 25px';
+
+/** Blocks with no text-editing surface are draggable by their whole body (the
+ *  grip stays for keyboard users). Text-bearing blocks would fight the caret. */
+const DRAG_BY_BODY: ReadonlySet<Block['type']> = new Set(['image', 'divider', 'spacer', 'social', 'video', 'menu', 'html']);
+
+/** pointerListeners strips dnd-kit's keyboard activator from a listeners map —
+ *  Enter/Space body-wide would swallow clicks on inner controls; keyboard drag
+ *  stays available on the grip button. */
+function pointerListeners(listeners: Record<string, unknown> | undefined) {
+  if (!listeners) return {};
+  const { onKeyDown: _kb, ...rest } = listeners;
+  return rest;
+}
 
 export interface CanvasBlockProps {
   block: Block;
@@ -45,6 +58,11 @@ export const CanvasBlock: React.FC<CanvasBlockProps> = ({ block, parentId, colIn
   const selected = selectedId === block.id;
   const nested = parentId !== null;
 
+  // Blocks without an editing surface can be dragged by their whole body —
+  // grabbing an image or divider anywhere just works. Text-bearing blocks keep
+  // the grip only (their body is a text cursor / edit surface).
+  const dragByBody = !readOnly && DRAG_BY_BODY.has(block.type);
+
   // Explicit hover state with stopPropagation instead of Tailwind `group`:
   // blocks nest (columns > sub-blocks) and group-hover matches ANY ancestor
   // group, so hovering a sub-block would light up the parent's chrome too —
@@ -72,7 +90,7 @@ export const CanvasBlock: React.FC<CanvasBlockProps> = ({ block, parentId, colIn
     <div
       ref={setNodeRef}
       style={style}
-      className={`relative ${isDragging ? 'opacity-40' : ''}`}
+      className={`relative ${isDragging ? 'opacity-40' : ''} ${dragByBody ? 'cursor-grab active:cursor-grabbing' : ''}`}
       onClick={(e) => {
         e.stopPropagation();
         select(block.id);
@@ -82,6 +100,11 @@ export const CanvasBlock: React.FC<CanvasBlockProps> = ({ block, parentId, colIn
       onFocusCapture={() => { if (!readOnly && !selected) select(block.id); }}
       onMouseOver={(e) => { e.stopPropagation(); setHovered(true); }}
       onMouseOut={(e) => { e.stopPropagation(); setHovered(false); }}
+      // Whole-body drag for media/layout blocks. PointerSensor's 8px activation
+      // distance keeps plain clicks selecting instead of dragging; the keyboard
+      // activator stays on the grip button only (Enter/Space there must not be
+      // swallowed body-wide).
+      {...(dragByBody ? pointerListeners(listeners) : {})}
     >
       {/* selection / hover ring */}
       <div
@@ -101,9 +124,9 @@ export const CanvasBlock: React.FC<CanvasBlockProps> = ({ block, parentId, colIn
             {block.type}
           </span>
 
-          {/* persistent targeting badges — a hidden-on-X or conditional block
-              must never be a surprise at send time */}
-          {(block.hide_mobile !== block.hide_desktop || block.cond) && (
+          {/* persistent targeting badges — a hidden-on-X, conditional or
+              full-width block must never be a surprise at send time */}
+          {(block.hide_mobile !== block.hide_desktop || block.cond || block.full_width || block.ref) && (
             <span className="absolute left-2 bottom-1 z-20 flex items-center gap-1">
               {block.hide_mobile !== block.hide_desktop && (
                 <span
@@ -121,6 +144,24 @@ export const CanvasBlock: React.FC<CanvasBlockProps> = ({ block, parentId, colIn
                 >
                   <Filter className="h-2.5 w-2.5" />
                   Conditional
+                </span>
+              )}
+              {block.ref && (
+                <span
+                  title="Synced with the block library — updating it here can update every email that uses it"
+                  className="flex items-center gap-0.5 rounded bg-card/90 px-1 py-px text-[9px] font-medium text-primary shadow-sm ring-1 ring-border"
+                >
+                  <RefreshCw className="h-2.5 w-2.5" />
+                  Synced
+                </span>
+              )}
+              {block.full_width && (
+                <span
+                  title="This section's background bleeds edge-to-edge in the inbox (wider than the content area)"
+                  className="flex items-center gap-0.5 rounded bg-card/90 px-1 py-px text-[9px] font-medium text-muted-foreground shadow-sm ring-1 ring-border"
+                >
+                  <MoveHorizontal className="h-2.5 w-2.5" />
+                  Full width
                 </span>
               )}
             </span>
@@ -190,16 +231,43 @@ const BlockBody: React.FC<{
   readOnly?: boolean;
   onText: (html: string) => void;
 }> = ({ block, nested, selected, hovered, variableGroups, dropHint, readOnly, onText }) => {
+  const patchBlock = useBuilderStore((s) => s.patchBlock);
+  const requestImagePicker = useBuilderStore((s) => s.requestImagePicker);
+  const onAlign = readOnly ? undefined : (align: 'left' | 'center' | 'right') => patchBlock(block.id, { align });
+
+  // A per-block font override must SHOW on the canvas — an inspector control
+  // whose effect is invisible until the preview reads as broken.
+  const fontStack = block.font ? FONT_OPTIONS.find((f) => f.key === block.font)?.stack : undefined;
+
   const padY = block.pad_y != null ? Math.min(Math.max(block.pad_y, 0), 80) : null;
-  const sectionPad = nested ? undefined : padY != null ? `${padY}px 0` : SECTION_PAD;
+  const padX = block.pad_x != null ? Math.min(Math.max(block.pad_x, 0), 60) : null;
+  const sectionPad = nested ? undefined : padY != null || padX != null ? `${padY ?? 20}px ${padX ?? 0}px` : SECTION_PAD;
   // Root blocks compile to their own mj-section, so bg paints the full section
-  // area (padding included) — exactly what the recipient sees.
-  const sectionBg = nested ? undefined : block.bg || undefined;
+  // area (padding included) — exactly what the recipient sees. backgroundColor
+  // (not the background shorthand) so a bg_url image can compose with it.
+  const sectionStyle: React.CSSProperties = {
+    ...(nested
+      ? {}
+      : {
+          padding: sectionPad,
+          backgroundColor: block.bg || undefined,
+          ...(block.bg_url && /^https?:\/\//i.test(block.bg_url)
+            ? {
+                // cover/center/no-repeat mirror the compiler's explicit bg attrs.
+                backgroundImage: `url(${displayImageSrc(block.bg_url)})`,
+                backgroundSize: 'cover',
+                backgroundRepeat: 'no-repeat',
+                backgroundPosition: 'center center',
+              }
+            : {}),
+        }),
+    ...(fontStack ? { fontFamily: fontStack } : {}),
+  };
 
   switch (block.type) {
     case 'text':
       return (
-        <div style={{ padding: sectionPad, background: sectionBg }}>
+        <div style={sectionStyle}>
           <div style={{ padding: COMPONENT_PAD }}>
             <InlineRichText
               html={block.text ?? ''}
@@ -208,6 +276,7 @@ const BlockBody: React.FC<{
               active={selected}
               variant="text"
               align={block.align}
+              onAlign={onAlign}
               readOnly={readOnly}
               overrideSize={block.size}
               overrideColor={block.color}
@@ -218,7 +287,7 @@ const BlockBody: React.FC<{
 
     case 'heading':
       return (
-        <div style={{ padding: sectionPad, background: sectionBg }}>
+        <div style={sectionStyle}>
           <div style={{ padding: COMPONENT_PAD }}>
             <InlineRichText
               html={block.text ?? ''}
@@ -229,6 +298,7 @@ const BlockBody: React.FC<{
               level={block.level}
               nested={nested}
               align={block.align}
+              onAlign={onAlign}
               readOnly={readOnly}
               overrideSize={block.size}
               overrideColor={block.color}
@@ -246,7 +316,7 @@ const BlockBody: React.FC<{
       };
       const btnAlign = block.align === 'left' || block.align === 'right' ? block.align : 'center';
       return (
-        <div style={{ padding: sectionPad, background: sectionBg }}>
+        <div style={sectionStyle}>
           <div style={{ padding: COMPONENT_PAD, textAlign: btnAlign }}>
             <span className="email-button-preview" style={btnStyle}>{block.label || 'Button'}</span>
           </div>
@@ -257,7 +327,7 @@ const BlockBody: React.FC<{
     case 'image': {
       const imgAlign = block.align === 'left' || block.align === 'right' ? block.align : 'center';
       return (
-        <div style={{ padding: sectionPad, background: sectionBg }}>
+        <div style={sectionStyle}>
           <div style={{ padding: COMPONENT_PAD, textAlign: imgAlign }}>
             {block.src ? (
               <img
@@ -273,11 +343,16 @@ const BlockBody: React.FC<{
               />
             ) : (
               // email-hint: fixed grays — theme tokens flip in dark mode and
-              // wash out on this always-white surface.
-              <div className="email-hint flex flex-col items-center gap-1 rounded border border-dashed py-8">
+              // wash out on this always-white surface. Clicking goes straight
+              // to the image library — no inspector round-trip.
+              <button
+                type="button"
+                className="email-hint flex w-full flex-col items-center gap-1 rounded border border-dashed py-8"
+                onClick={(e) => { e.stopPropagation(); if (!readOnly) requestImagePicker(block.id); }}
+              >
                 <ImageIcon className="h-6 w-6" />
-                <span className="text-xs">Set an image URL in the inspector</span>
-              </div>
+                <span className="text-xs">Click to choose an image</span>
+              </button>
             )}
           </div>
         </div>
@@ -286,7 +361,7 @@ const BlockBody: React.FC<{
 
     case 'divider':
       return (
-        <div style={{ padding: sectionPad, background: sectionBg }}>
+        <div style={sectionStyle}>
           <div style={{ padding: COMPONENT_PAD }}>
             <div style={{ borderTop: `${block.thickness && block.thickness >= 1 && block.thickness <= 10 ? block.thickness : 1}px solid ${block.color || '#e5e7eb'}` }} />
           </div>
@@ -299,7 +374,7 @@ const BlockBody: React.FC<{
       const configured = (block.social ?? []).filter((s) => s.network);
       const anyHref = configured.some((s) => s.href.trim() !== '');
       return (
-        <div style={{ padding: sectionPad, background: sectionBg }}>
+        <div style={sectionStyle}>
           <div style={{ padding: COMPONENT_PAD, textAlign: align }}>
             {configured.length === 0 ? (
               <div className="email-hint flex flex-col items-center gap-1 rounded border border-dashed py-6">
@@ -328,7 +403,7 @@ const BlockBody: React.FC<{
 
     case 'video':
       return (
-        <div style={{ padding: sectionPad, background: sectionBg }}>
+        <div style={sectionStyle}>
           <div style={{ padding: COMPONENT_PAD, textAlign: 'center' }}>
             {block.src ? (
               <div style={{ position: 'relative', display: 'inline-block', maxWidth: '100%' }}>
@@ -344,10 +419,14 @@ const BlockBody: React.FC<{
                 />
               </div>
             ) : (
-              <div className="email-hint flex flex-col items-center gap-1 rounded border border-dashed py-8">
+              <button
+                type="button"
+                className="email-hint flex w-full flex-col items-center gap-1 rounded border border-dashed py-8"
+                onClick={(e) => { e.stopPropagation(); if (!readOnly) requestImagePicker(block.id); }}
+              >
                 <CirclePlay className="h-6 w-6" />
-                <span className="text-xs">Set a thumbnail image and video link in the inspector</span>
-              </div>
+                <span className="text-xs">Click to choose a thumbnail — set the video link in the inspector</span>
+              </button>
             )}
           </div>
           <div style={{ padding: COMPONENT_PAD, paddingTop: 0, textAlign: 'center' }}>
@@ -358,7 +437,7 @@ const BlockBody: React.FC<{
 
     case 'quote':
       return (
-        <div style={{ padding: sectionPad, background: sectionBg }}>
+        <div style={sectionStyle}>
           <div style={{ padding: COMPONENT_PAD }}>
             <div style={{ borderLeft: `3px solid ${block.color || '#d1d5db'}`, padding: '4px 0 4px 16px', fontStyle: 'italic' }}>
               <InlineRichText
@@ -368,6 +447,7 @@ const BlockBody: React.FC<{
                 active={selected}
                 variant="text"
                 align={block.align}
+                onAlign={onAlign}
                 readOnly={readOnly}
               />
             </div>
@@ -381,7 +461,7 @@ const BlockBody: React.FC<{
     case 'menu': {
       const items = (block.items ?? []).filter((it) => it.label.trim() !== '');
       return (
-        <div style={{ padding: sectionPad, background: sectionBg }}>
+        <div style={sectionStyle}>
           <div style={{ padding: COMPONENT_PAD, textAlign: 'center' }}>
             {items.length === 0 ? (
               <div className="email-hint rounded border border-dashed py-4 text-xs">Add menu links in the inspector</div>
@@ -401,7 +481,7 @@ const BlockBody: React.FC<{
     case 'spacer': {
       const h = block.height && block.height > 0 ? block.height : 20;
       return (
-        <div style={{ padding: sectionPad, background: sectionBg }}>
+        <div style={sectionStyle}>
           <div className="email-spacer-hatch relative" style={{ height: `${h}px` }}>
             <span
               className={`email-hint absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded px-1.5 py-px text-[10px] transition-opacity ${
@@ -418,7 +498,7 @@ const BlockBody: React.FC<{
 
     case 'html':
       return (
-        <div style={{ padding: sectionPad, background: sectionBg }}>
+        <div style={sectionStyle}>
           {block.text?.trim() ? (
             <RawHTMLPreview html={block.text} />
           ) : (
@@ -439,7 +519,7 @@ const BlockBody: React.FC<{
         borderRadius: block.radius ? `${block.radius}px` : undefined,
       };
       return (
-        <div style={{ padding: sectionPad, background: sectionBg }}>
+        <div style={sectionStyle}>
           {block.src ? (
             <div style={{ padding: COMPONENT_PAD, textAlign: 'center' }}>
               <img
@@ -451,10 +531,14 @@ const BlockBody: React.FC<{
             </div>
           ) : (
             <div style={{ padding: COMPONENT_PAD }}>
-              <div className="email-hint flex flex-col items-center gap-1 rounded border border-dashed py-6">
+              <button
+                type="button"
+                className="email-hint flex w-full flex-col items-center gap-1 rounded border border-dashed py-6"
+                onClick={(e) => { e.stopPropagation(); if (!readOnly) requestImagePicker(block.id); }}
+              >
                 <ImageIcon className="h-5 w-5" />
-                <span className="text-xs">Product image — pick a record or set a URL in the inspector</span>
-              </div>
+                <span className="text-xs">Click to choose an image — or fill the card from a CRM record in the inspector</span>
+              </button>
             </div>
           )}
           <div style={{ padding: '10px 25px 0', textAlign: align, fontSize: 18, fontWeight: 700, color: block.color || undefined }}>
@@ -468,6 +552,7 @@ const BlockBody: React.FC<{
               active={selected}
               variant="text"
               align={block.align}
+              onAlign={onAlign}
               readOnly={readOnly}
             />
           </div>
@@ -485,8 +570,9 @@ const BlockBody: React.FC<{
 
     case 'columns': {
       const cols = block.columns ?? [];
+      const widths = validColWidths(block);
       return (
-        <div style={{ padding: sectionPad, background: sectionBg }}>
+        <div style={sectionStyle}>
           <div className="flex items-stretch">
             {cols.map((col, ci) => (
               <Column
@@ -494,6 +580,7 @@ const BlockBody: React.FC<{
                 parentBlock={block}
                 colIndex={ci}
                 subBlocks={col}
+                widthPct={widths ? widths[ci] : undefined}
                 variableGroups={variableGroups}
                 dropHint={dropHint}
                 readOnly={readOnly}
@@ -537,10 +624,11 @@ const Column: React.FC<{
   parentBlock: Block;
   colIndex: number;
   subBlocks: Block[];
+  widthPct?: number;
   variableGroups: VariableGroup[];
   dropHint: BlockAddress | null;
   readOnly?: boolean;
-}> = ({ parentBlock, colIndex, subBlocks, variableGroups, dropHint, readOnly }) => {
+}> = ({ parentBlock, colIndex, subBlocks, widthPct, variableGroups, dropHint, readOnly }) => {
   const { setNodeRef, isOver } = useDroppable({
     id: `col:${parentBlock.id}:${colIndex}`,
     data: { kind: 'container', parentId: parentBlock.id, colIndex },
@@ -552,7 +640,9 @@ const Column: React.FC<{
   return (
     <div
       ref={setNodeRef}
-      className={`min-w-0 flex-1 rounded-sm ${isOver ? 'bg-primary/5' : ''}`}
+      className={`min-w-0 rounded-sm ${widthPct == null ? 'flex-1' : ''} ${isOver ? 'bg-primary/5' : ''}`}
+      // Ratio columns mirror the compiler's <mj-column width="N%">.
+      style={widthPct != null ? { width: `${widthPct}%`, flex: 'none' } : undefined}
     >
       <SortableContext items={subBlocks.map((b) => b.id)} strategy={verticalListSortingStrategy}>
         {subBlocks.length === 0 ? (

@@ -2,11 +2,43 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Braces, Search } from 'lucide-react';
 import { isGuaranteed, type VariableGroup } from './mergeScope';
 
+// Per-path fallback memory: the mandatory-fallback rule is right, but retyping
+// "there" on every {{contact.first_name}} insert is the most repetitive
+// keystroke in the composer. Local (per browser), capped, best-effort.
+const FALLBACK_STORE_KEY = 'mkt_merge_fallbacks';
+
+function recallFallback(path: string): string {
+  try {
+    const map = JSON.parse(localStorage.getItem(FALLBACK_STORE_KEY) ?? '{}') as Record<string, string>;
+    return typeof map[path] === 'string' ? map[path] : '';
+  } catch {
+    return '';
+  }
+}
+
+function rememberFallback(path: string, fallback: string) {
+  if (!fallback) return;
+  try {
+    const map = JSON.parse(localStorage.getItem(FALLBACK_STORE_KEY) ?? '{}') as Record<string, string>;
+    map[path] = fallback;
+    const keys = Object.keys(map);
+    if (keys.length > 100) delete map[keys[0]];
+    localStorage.setItem(FALLBACK_STORE_KEY, JSON.stringify(map));
+  } catch {
+    // Private mode / quota — memory is a convenience, never a failure.
+  }
+}
+
+// Roots whose custom_fields.<key> namespace the backend validates (mirrors
+// rootsWithCustomFields in content_validate.go).
+const CUSTOM_FIELD_ROOTS = new Set(['contact', 'company']);
+
 /** MergeTagMenu is the two-step "insert variable" popover: a searchable grouped
- *  field list, then a fallback capture step. A fallback is REQUIRED unless the
- *  path is guaranteed (contact.email / org.name) — mirroring the backend's
- *  mandatory-fallback validation — and may not contain { } or | (the
- *  {{path|fallback}} grammar uses [^}], so those silently corrupt the token). */
+ *  field list (plus free-path custom fields for contact/company), then a
+ *  fallback capture step. A fallback is REQUIRED unless the path is guaranteed
+ *  (contact.email / org.name) — mirroring the backend's mandatory-fallback
+ *  validation — and may not contain { } or | (the {{path|fallback}} grammar
+ *  uses [^}], so those silently corrupt the token). */
 export const MergeTagMenu: React.FC<{
   variableGroups: VariableGroup[];
   onInsert: (path: string, fallback: string) => void;
@@ -14,6 +46,10 @@ export const MergeTagMenu: React.FC<{
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [pending, setPending] = useState<{ path: string; label: string } | null>(null);
+  // customRoot: the "Custom field…" flow — the user types the field key and the
+  // path is assembled as <root>.custom_fields.<key>.
+  const [customRoot, setCustomRoot] = useState<string | null>(null);
+  const [customKey, setCustomKey] = useState('');
   const [fallback, setFallback] = useState('');
   const ref = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -22,7 +58,7 @@ export const MergeTagMenu: React.FC<{
   // calls stable setState setters so no stale-closure bug was reachable, but
   // referencing it above its declaration made React Compiler bail out of
   // optimising the whole component. Pure statement reorder, no behaviour change.
-  const reset = () => { setOpen(false); setSearch(''); setPending(null); setFallback(''); };
+  const reset = () => { setOpen(false); setSearch(''); setPending(null); setCustomRoot(null); setCustomKey(''); setFallback(''); };
 
   useEffect(() => {
     if (!open) return;
@@ -46,13 +82,28 @@ export const MergeTagMenu: React.FC<{
       .filter((g) => g.fields.length > 0);
   }, [variableGroups, search]);
 
-  const guaranteed = pending ? isGuaranteed(pending.path) : false;
+  // The custom-field key becomes part of a {{path}} token — the grammar can't
+  // carry braces/pipes/spaces, so gate to a safe identifier shape.
+  const customKeyInvalid = customKey !== '' && !/^[A-Za-z0-9_.-]+$/.test(customKey);
+  const effective = customRoot
+    ? (customKey.trim() && !customKeyInvalid
+        ? { path: `${customRoot}.custom_fields.${customKey.trim()}`, label: `${customRoot} custom field: ${customKey.trim()}` }
+        : null)
+    : pending;
+
+  const guaranteed = effective ? isGuaranteed(effective.path) : false;
   const fallbackInvalid = /[{}|]/.test(fallback);
-  const canInsert = !!pending && !fallbackInvalid && (guaranteed || fallback.trim() !== '');
+  const canInsert = !!effective && !fallbackInvalid && (guaranteed || fallback.trim() !== '');
+
+  const pick = (f: { path: string; label: string }) => {
+    setPending(f);
+    setFallback(recallFallback(f.path));
+  };
 
   const doInsert = () => {
-    if (!pending || !canInsert) return;
-    onInsert(pending.path, fallback.trim());
+    if (!effective || !canInsert) return;
+    rememberFallback(effective.path, fallback.trim());
+    onInsert(effective.path, fallback.trim());
     reset();
   };
 
@@ -65,7 +116,7 @@ export const MergeTagMenu: React.FC<{
       </button>
       {open && (
         <div className="absolute right-0 top-full z-50 mt-1 flex max-h-80 w-72 flex-col overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl">
-          {!pending ? (
+          {!pending && !customRoot ? (
             <>
               <div className="border-b border-border px-2 py-2">
                 <div className="relative">
@@ -81,29 +132,47 @@ export const MergeTagMenu: React.FC<{
                   <div key={g.key}>
                     <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{g.label}</div>
                     {g.fields.map((f) => (
-                      <button key={f.path} type="button" onClick={() => { setPending(f); setFallback(''); }}
+                      <button key={f.path} type="button" onClick={() => pick(f)}
                         className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-accent hover:text-accent-foreground">
                         <span className="flex-1 truncate text-xs">{f.label}</span>
                         <code className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">{`{{${f.path}}}`}</code>
                       </button>
                     ))}
+                    {CUSTOM_FIELD_ROOTS.has(g.key) && (
+                      <button type="button" onClick={() => { setCustomRoot(g.key); setCustomKey(''); setFallback(''); }}
+                        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground">
+                        Custom field…
+                        <code className="ml-auto shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">{`{{${g.key}.custom_fields.*}}`}</code>
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
             </>
           ) : (
             <div className="p-3">
-              <p className="mb-1 text-xs font-medium text-foreground">{pending.label}</p>
+              {customRoot ? (
+                <>
+                  <p className="mb-1 text-xs font-medium text-foreground">Custom {customRoot} field</p>
+                  <label className="mb-1 block text-[11px] text-muted-foreground">Field key (as defined in your workspace)</label>
+                  <input autoFocus value={customKey} onChange={(e) => setCustomKey(e.target.value)}
+                    placeholder="e.g. plan_tier"
+                    className="mb-2 w-full rounded-lg border border-border/60 bg-background px-2 py-1.5 font-mono text-xs text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring" />
+                  {customKeyInvalid && <p className="mb-2 text-[11px] text-destructive">Use letters, numbers, dots, dashes or underscores only.</p>}
+                </>
+              ) : (
+                <p className="mb-1 text-xs font-medium text-foreground">{pending!.label}</p>
+              )}
               <label className="mb-1 block text-[11px] text-muted-foreground">
                 Fallback {guaranteed ? '(optional)' : '(required — shown when the value is empty)'}
               </label>
-              <input autoFocus value={fallback} onChange={(e) => setFallback(e.target.value)}
+              <input autoFocus={!customRoot} value={fallback} onChange={(e) => setFallback(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') doInsert(); }}
                 placeholder="e.g. there"
                 className="w-full rounded-lg border border-border/60 bg-background px-2 py-1.5 text-xs text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring" />
               {fallbackInvalid && <p className="mt-1 text-[11px] text-destructive">A fallback can’t contain {'{'}, {'}'} or |.</p>}
               <div className="mt-2 flex justify-end gap-2">
-                <button type="button" onClick={() => setPending(null)} className="rounded-lg px-2 py-1 text-xs text-muted-foreground hover:text-foreground">Back</button>
+                <button type="button" onClick={() => { setPending(null); setCustomRoot(null); setCustomKey(''); }} className="rounded-lg px-2 py-1 text-xs text-muted-foreground hover:text-foreground">Back</button>
                 <button type="button" disabled={!canInsert} onClick={doInsert}
                   className="rounded-lg bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground disabled:opacity-50">Insert</button>
               </div>
