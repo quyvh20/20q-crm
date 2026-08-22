@@ -311,6 +311,28 @@ func main() {
 				zap.Int64("visible_only_via_linked_record", linkOnlyTasks))
 		}
 
+		// ai_token_usages.stop_reason: settle the column's DEFAULT before AutoMigrate
+		// compares it, or gorm re-emits the same ALTER on every boot, forever. The tag
+		// says `default:''` because migrations/000007 creates the column
+		// `VARCHAR(100) NOT NULL DEFAULT ''` — but golang-migrate is dead on prod, so
+		// the prod table is the one AutoMigrate built, and it was built before that tag
+		// existed: NOT NULL, no default. gorm's remedy for a default mismatch is
+		// `ALTER COLUMN ... TYPE varchar(100)`, which changes the type (a no-op) and
+		// never the default — so it cannot converge and re-runs at every boot, taking
+		// an ACCESS EXCLUSIVE lock each time.
+		//
+		// It hides three ways at once: the ALTER SUCCEEDS, and a successful ALTER
+		// writes nothing to the Postgres log; internal/schemaaudit only ever runs
+		// against the E2E database, which golang-migrate DID build, so there the tag
+		// and the column agree and the gate is green by construction; and the two views
+		// over this table that would have REFUSED the retype come from migration
+		// 000009, which prod never ran either.
+		//
+		// IF EXISTS so a fresh database — where AutoMigrate below creates the column
+		// with the default straight from the tag — is a clean no-op. Placed BEFORE
+		// AutoMigrate so this very boot is settled, not merely the next one.
+		db.Exec(`ALTER TABLE IF EXISTS ai_token_usages ALTER COLUMN stop_reason SET DEFAULT ''`)
+
 		// One model at a time, each bounded and each reported — NOT the single
 		// `db.AutoMigrate(a, b, c, …)` this replaced, whose error was discarded.
 		//
