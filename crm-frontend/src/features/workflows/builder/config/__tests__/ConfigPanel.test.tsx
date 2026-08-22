@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { useBuilderStore } from '../../../store';
 import { ConfigPanel } from '../ConfigPanel';
 import type { DryRunState } from '../../BuilderContext';
@@ -131,6 +131,69 @@ describe('ConfigPanel routing', () => {
     // including the FieldPicker trigger (label shown as button text, not typed).
     expect(screen.getByText('Conditions')).toBeInTheDocument();
     expect(screen.getByText('Select field…')).toBeInTheDocument();
+  });
+});
+
+// A deal-triggered run carries contact.* and company.*: engine.go's
+// buildEvalContext loads the deal's contact (then its company) before any
+// condition is evaluated. The panel used to scope its picker to the trigger's own
+// object alone, so those fields were unreachable from the UI while the engine
+// resolved them perfectly well. Scoped to the listbox because the panel prints the
+// source object's label in its own chrome too.
+const DEAL_AND_CONTACT_SCHEMA: WorkflowSchema = {
+  entities: [
+    {
+      key: 'contact',
+      label: 'Contact',
+      icon: '👤',
+      fields: [{ path: 'contact.email', label: 'Email', type: 'string' }],
+    },
+    {
+      key: 'deal',
+      label: 'Deal',
+      icon: '💼',
+      fields: [{ path: 'deal.amount', label: 'Amount', type: 'number' }],
+    },
+  ],
+  custom_objects: [],
+  stages: [],
+  tags: [],
+  users: [],
+};
+
+function seedConditionWithTrigger(trigger: TriggerSpec) {
+  useBuilderStore.getState().reset();
+  useBuilderStore.setState({
+    schema: DEAL_AND_CONTACT_SCHEMA,
+    schemaLoading: false,
+    schemaError: null,
+    trigger,
+  });
+  const step = conditionStep();
+  useBuilderStore.getState().addStep(step, null, null, 0);
+  useBuilderStore.getState().selectNode(step.id);
+  return step;
+}
+
+describe('ConditionConfig field scope', () => {
+  it('offers the hydrated contact alongside the deal for a deal trigger', () => {
+    seedConditionWithTrigger({ type: 'deal_stage_changed', params: {} });
+    render(<ConfigPanel />);
+    fireEvent.click(screen.getByText('Select field…'));
+    const list = within(screen.getByRole('listbox'));
+    expect(list.getByText('Deal')).toBeInTheDocument();
+    expect(list.getByText('Contact')).toBeInTheDocument();
+  });
+
+  it('does NOT offer the deal for a contact trigger — the union is the eval context, not everything', () => {
+    seedConditionWithTrigger({ type: 'contact_created', params: {} });
+    render(<ConfigPanel />);
+    fireEvent.click(screen.getByText('Select field…'));
+    const list = within(screen.getByRole('listbox'));
+    expect(list.getByText('Contact')).toBeInTheDocument();
+    // A contact run hydrates company, never a deal — engine.go has no
+    // contact -> deal hop, so offering it would ship a silently-false rule.
+    expect(list.queryByText('Deal')).not.toBeInTheDocument();
   });
 });
 

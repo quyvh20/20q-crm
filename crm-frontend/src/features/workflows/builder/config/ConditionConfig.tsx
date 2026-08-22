@@ -7,6 +7,7 @@ import type { FiresOn } from '../../useSchema';
 import { FieldPicker, type FieldMeta } from './FieldPicker';
 import { SmartValueInput } from './SmartValueInput';
 import { waitOutcomeEntity } from '../waitOutcomes';
+import { resolvableObjectsForTrigger } from '../../dateField';
 
 const MAX_CONDITIONS = 10;
 
@@ -72,13 +73,33 @@ export const ConditionConfig: React.FC = () => {
   // (so the right operators are offered), its preview label, and the
   // orphaned-field check — a synthetic field missing from it would be flagged as
   // "no longer accessible" the moment it was picked.
+  // Every object a rule may reference: the trigger's own object PLUS the relations
+  // the backend hydrates into the eval context (deal -> contact/company,
+  // task -> contact/deal/company, contact -> company; engine.go buildEvalContext,
+  // which resolvableObjectsForTrigger already mirrors for the wait-until picker).
+  // Without this the panel offered ONLY the trigger's object, so a deal trigger
+  // could not condition on contact.* even though the engine resolves it — the
+  // capability existed and was unreachable from the UI.
+  //
+  // A UNION, not a replacement: resolvableObjectsForTrigger and deriveObjectSlug
+  // disagree on webhook_inbound ('contact' vs 'webhook'), and dropping the primary
+  // would retire fields that work today. Primary stays first so the picker still
+  // opens on the object the run is about.
+  const entityKeys = useMemo(() => {
+    const keys: string[] = objectSlug ? [objectSlug] : [];
+    for (const key of resolvableObjectsForTrigger(trigger)) {
+      if (!keys.includes(key)) keys.push(key);
+    }
+    return keys;
+  }, [objectSlug, trigger]);
+
   const scopedFields = useMemo(() => {
     const outcomes = waitOutcomes?.fields ?? [];
-    if (!schema || !objectSlug) return outcomes;
+    if (!schema || !entityKeys.length) return outcomes;
     const allEntities = [...schema.entities, ...(schema.custom_objects || [])];
-    const entity = allEntities.find((e) => e.key === objectSlug);
-    return [...(entity?.fields || []), ...outcomes];
-  }, [schema, objectSlug, waitOutcomes]);
+    const fields = entityKeys.flatMap((key) => allEntities.find((e) => e.key === key)?.fields || []);
+    return [...fields, ...outcomes];
+  }, [schema, entityKeys, waitOutcomes]);
 
   // Entity label for preview
   const objectLabel = useMemo(() => {
@@ -441,7 +462,7 @@ export const ConditionConfig: React.FC = () => {
                       onChange={(path, fieldMeta) => handleFieldChange(idx, path, fieldMeta)}
                       disabled={!!schemaError}
                       placeholder="Select field…"
-                      entities={[objectSlug]}
+                      entities={entityKeys}
                       extraEntities={waitOutcomeEntities}
                     />
                   </div>
